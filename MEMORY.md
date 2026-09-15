@@ -24,7 +24,7 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 
 - `src/App.tsx` 是外壳与总控：侧边栏、页面切换、全局状态与快捷键；`src/lib/navigation.ts` 负责旧标签到新导航目标的解析（`resolveNavigationTarget`）。
 - 每个业务域是一个 `src/components/<Domain>/` 目录或同名组件；每个组件目录通常包含 `index.tsx`、子组件、`*.test.tsx`，复杂域再拆分 `components/`、`hooks/`、`helpers/`、`types.ts`（参见 `Workspaces/`）。
-- 命令封装与领域类型放在 `src/lib/`，按域一文件（如 `workflows.ts`、`skills.ts`、`subagents.ts`、`sshTunnels.ts`、`fileSharing.ts`、`shortLink.ts`、`aiAssistant.ts`）。
+- 命令封装与领域类型放在 `src/lib/`，按域一文件（如 `workflows.ts`、`skills.ts`、`subagents.ts`、`sshTunnels.ts`、`fileSharing.ts`、`shortLink.ts`、`aiAssistant.ts`、`apiFusion.ts`）。
 - 文案统一走 `src/i18n.ts`，新增界面文本必须同时提供中英文；`en_keys.txt` / `zh_keys.txt` 为键清单。
 - 共享基础组件在 `src/components/ui/`，Provider（主题、Toast、确认框、错误边界）在 `src/components/` 顶层。
 
@@ -42,6 +42,16 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 - `~/.claude/skills` 是指向 `~/.agents/skills` 的兼容符号链接；若该路径被普通文件/目录或错误、损坏的符号链接占用，则保持原样并返回可操作的失败，绝不覆盖。
 - 同名冲突以统一目录版本为准；工具特定版本备份到 `~/.agents/skills/.backups/<tool>/<skill>/<content-hash>/`，按来源工具、Skill 名与内容哈希做幂等键，重复初始化不产生重复备份。
 - 兼容性矩阵由后端记录 Claude / OpenCode / Codex / Antigravity 对 `~/.agents/skills` 的读取行为；无法直接读取的工具显式标记为依赖兼容路径或不受支持。
+
+## API Fusion 模块与边界
+
+- API Fusion 是独立模块：前端域 `src/components/ApiFusion/` 加命令封装 `src/lib/apiFusion.ts`，后端 `src-tauri/src/api_fusion.rs` 加同名子目录（`types_config`、`storage`、`selection`、`runtime_http`、`forwarding`、`commands`）。
+- 导航 id 固定为 `api-fusion`（feature 归属模块根 `frontend`，owner `frontend`）与 `api-fusion-backend`（模块根 `tauri-backend`，owner `backend`）。新增工具 id 必须同时接入 `navigation.ts`、`moreToolPresentation.ts`、`launcherToolVisibility.ts`、`MoreToolsHub.tsx`、`Launcher.tsx` 与 `App.tsx`，否则页签不可达或启动器清单不一致。
+- 本地服务固定监听 `127.0.0.1` 加配置端口（默认 `17688`），bind 失败即返回包含端口与原因的可操作错误，不回退到其他端口；启用状态持久化，重启后按上次状态自动恢复监听。
+- 上游服务商、本地 Key 与终端同步台账保存在独立加密文件 `api_fusion.json`（经 `crate::crypto` 加密并临时文件加 rename 原子写入），与 Protocol Router、AI Environments 的存储互不共享，密钥不得以明文落盘。
+- 终端写入边界：仅在用户主动“一键配置/同步”时写入 `tool` 为 `opencode`/`codex` 的既有服务商记录，且只替换 `base_url` 与 `api_key`（先读取既有记录再合并提交）；不改写 Protocol Router 的 route 数据，不触碰 `claude`/`antigravity` 记录。
+- 失败分类与自动禁用集中在 `selection::classify_failure`：401/403 立即禁用，网络错误、非 JSON 响应体与 5xx 连续失败达 3 次禁用，429/404 仅切换候选，其余 4xx 把上游错误回传调用方；`enabled` 表示用户意图、`auto_disabled` 表示运行状态，二者独立持久化，手动重新启用只清理运行状态。
+- 上述架构决策的由来见本地 ADR；用 `ai-workflow adr list --project <root>` 查看 ADR 状态与主题，不要扫描目录或维护独立索引。
 
 ## 数据与存储不变量
 
@@ -62,3 +72,4 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 - Planning 逐条澄清业务影响问题并冻结 `spec.md` / `plan.md`；Plan-to-tasks 生成不可变任务文件。
 - Coding 以 TDD 在项目内临时 worktree 实现单个已批准任务，完成后依次通过 Spec Review 与 Standards Review 才可合并。
 - 架构、归属、公共符号、路径或工作流规则变化时，必须同步更新 `MEMORY.md` 与 `navigation.json` 并重新生成、校验 `navigation.md`。
+- 架构、模块边界与归属、公共协议或 schema、跨领域标准、工作流或 agent 规则、难以回退的技术选型发生变更时，写一条本地 ADR 到 `.ai-workflow/adr/`（`NNNN-kebab-title.md`，编号单调递增且不复用）。ADR 记录决策历史（为什么），`MEMORY.md` 记录当前标准（怎么做），二者不一致即为缺陷，须在同一变更内一起更新。
