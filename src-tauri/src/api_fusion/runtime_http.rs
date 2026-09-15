@@ -418,6 +418,27 @@ pub(in crate::api_fusion) async fn attempt_non_streaming(
     json_response(502, all_unavailable_payload(all_unavailable_message(&failures)))
 }
 
+/// A 2xx streaming response is only a success if it actually looks like a
+/// Server-Sent Events stream. Checked before any byte reaches the caller so a
+/// plain non-SSE body stays a retryable failure and can still switch.
+fn is_sse_response_chunk(content_type: &str, first_chunk: &[u8]) -> bool {
+    if !content_type.to_ascii_lowercase().contains("text/event-stream") {
+        return false;
+    }
+    if first_chunk.is_empty() {
+        return true;
+    }
+    let Ok(text) = std::str::from_utf8(first_chunk) else {
+        return false;
+    };
+    let trimmed = text.trim_start_matches(['\r', '\n', ' ', '\t']);
+    trimmed.starts_with("data:")
+        || trimmed.starts_with("event:")
+        || trimmed.starts_with("id:")
+        || trimmed.starts_with("retry:")
+        || trimmed.starts_with(':')
+}
+
 /// Try each candidate at most once for a streaming request.
 ///
 /// Switching is permitted only until the first byte is written to `writer`; once
@@ -475,9 +496,23 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             continue;
         }
 
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
         let mut chunks = response.bytes_stream();
         match chunks.next().await {
             Some(Ok(first)) => {
+                if !is_sse_response_chunk(&content_type, &first) {
+                    let reason = format!(
+                        "2xx response is not a valid SSE stream (content-type: {content_type})"
+                    );
+                    apply_failure(config, provider, FailureClass::Retryable, &reason);
+                    failures.push((provider.name.clone(), reason));
+                    continue;
+                }
                 write_stream_headers(writer, status).await?;
                 writer.write_all(&first).await.map_err(|e| e.to_string())?;
                 let _ = writer.flush().await;

@@ -260,14 +260,31 @@ pub fn api_fusion_set_default_key(key_id: String) -> Result<FusionConfig, String
     read_config()
 }
 
+/// Persist the enable intent after a successful start/stop so a later autostart
+/// restores the last state. Re-reads the config first so other fields (and any
+/// concurrent edits) are preserved; the flag is only written once the listener
+/// transition succeeded.
+fn persist_enabled(enabled: bool) -> Result<(), String> {
+    let mut config = read_config()?;
+    if config.enabled != enabled {
+        config.enabled = enabled;
+        write_config(&config)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn api_fusion_start() -> Result<FusionStatus, String> {
-    start_server().await
+    let status = start_server().await?;
+    persist_enabled(true)?;
+    Ok(status)
 }
 
 #[tauri::command]
 pub async fn api_fusion_stop() -> Result<FusionStatus, String> {
-    stop_server().await
+    let status = stop_server().await?;
+    persist_enabled(false)?;
+    Ok(status)
 }
 
 #[tauri::command]
@@ -341,24 +358,34 @@ pub fn api_fusion_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
     Ok(targets)
 }
 
-async fn apply_terminal_sync(
-    app: tauri::AppHandle,
+/// Boxed future returned by an injected terminal upsert, kept `Send` so the
+/// pipeline can run on the Tauri async runtime.
+pub(in crate::api_fusion) type UpsertFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+
+/// Terminal sync pipeline with an injectable upsert seam: plan the merged
+/// provider records, upsert each one, then refresh the ledger. Any upsert error
+/// aborts before the ledger is written, so the ledger never claims a sync that
+/// did not happen.
+pub(in crate::api_fusion) async fn apply_terminal_sync_with<F>(
+    providers_data: &serde_json::Value,
+    mut upsert: F,
     target_ids: Vec<String>,
-) -> Result<Vec<TerminalSyncRecord>, String> {
+) -> Result<Vec<TerminalSyncRecord>, String>
+where
+    F: FnMut(serde_json::Value) -> UpsertFuture,
+{
     let mut config = read_config()?;
     let (key_id, key_value) = default_key_for_sync(&config)?;
     if target_ids.is_empty() {
         return Err("no terminal targets selected".to_string());
     }
     let base_url = local_base_url(config.port);
-    let payload = crate::app_store::service_providers_list().map_err(api_err_to_string)?;
-    let plans = plan_terminal_sync(&payload.data, &target_ids, &base_url, &key_value)?;
+    let plans = plan_terminal_sync(providers_data, &target_ids, &base_url, &key_value)?;
 
     let mut synced = Vec::new();
     for plan in plans {
-        crate::app_store::service_providers_upsert(app.clone(), plan.merged)
-            .await
-            .map_err(api_err_to_string)?;
+        upsert(plan.merged).await?;
         let record = TerminalSyncRecord {
             provider_id: plan.provider_id.clone(),
             tool: plan.tool.clone(),
@@ -374,6 +401,27 @@ async fn apply_terminal_sync(
     }
     write_config(&config)?;
     Ok(synced)
+}
+
+async fn apply_terminal_sync(
+    app: tauri::AppHandle,
+    target_ids: Vec<String>,
+) -> Result<Vec<TerminalSyncRecord>, String> {
+    let payload = crate::app_store::service_providers_list().map_err(api_err_to_string)?;
+    apply_terminal_sync_with(
+        &payload.data,
+        move |value| -> UpsertFuture {
+            let app = app.clone();
+            Box::pin(async move {
+                crate::app_store::service_providers_upsert(app, value)
+                    .await
+                    .map(|_| ())
+                    .map_err(api_err_to_string)
+            })
+        },
+        target_ids,
+    )
+    .await
 }
 
 #[tauri::command]

@@ -2255,3 +2255,526 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
     drop(home);
 }
 
+// ---------------------------------------------------------------------------
+// Step 6: regression tests for dual-axis review findings (A/C/D/E)
+//
+// These drive the Tauri command functions and the real forwarding / streaming
+// path against in-process mock upstreams, using the shared temp-home isolation
+// and free-port helpers defined above.
+// ---------------------------------------------------------------------------
+
+/// Finding A (error): `api_fusion_start` / `api_fusion_stop` must persist
+/// `FusionConfig.enabled` so the enable intent survives a reload (AC-003,
+/// AC-019). The test reads the flag back from disk after each command.
+#[tokio::test]
+async fn api_fusion_start_and_stop_persist_enabled_flag() {
+    let _home = temp_home("enabled-persist");
+    let port = free_port().await;
+    let mut config = config_with_key(port);
+    config.enabled = false;
+    super::storage::write_config(&config).unwrap();
+
+    let started = super::commands::api_fusion_start().await.unwrap();
+    assert!(started.running, "start must report a running server");
+    let enabled_after_start = super::storage::read_config().unwrap().enabled;
+
+    let stopped = super::commands::api_fusion_stop().await.unwrap();
+    assert!(!stopped.running, "stop must report a stopped server");
+    let enabled_after_stop = super::storage::read_config().unwrap().enabled;
+
+    assert!(
+        enabled_after_start,
+        "api_fusion_start must persist enabled=true (reloaded {enabled_after_start})"
+    );
+    assert!(
+        !enabled_after_stop,
+        "api_fusion_stop must persist enabled=false (reloaded {enabled_after_stop})"
+    );
+}
+
+/// Finding C (low): a blackholed upstream connect must be classified as a
+/// retryable failure and switch to the next candidate instead of hanging or
+/// being treated as success (AC-010, AC-011).
+///
+/// TEST-NET-1 (`192.0.2.0/24`) is reserved and non-routable, so the SYN is
+/// dropped and the connect blackholes until a connect/request timeout is
+/// enforced. The 15s bound below encodes "must not hang"; it is generous enough
+/// for a conventional connect timeout (the repo's `proxy.rs` uses 10s).
+#[tokio::test]
+async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
+    let _home = temp_home("connect-timeout-retry");
+    let blackhole_url = "http://192.0.2.1:81";
+    let (ok_url, ok_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
+
+    let mut config = config_with_key(0);
+    let a = upstream_provider("a", "Provider A", blackhole_url, "sk-a", Some("remote-model"));
+    let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    config.providers.push(a.clone());
+    config.providers.push(b.clone());
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        super::runtime_http::attempt_non_streaming(
+            &[a, b],
+            "/v1/chat/completions",
+            &body,
+            Some("local-model"),
+            &mut config,
+        ),
+    )
+    .await
+    .expect("a blackhole connect must not hang; it must time out and be retryable");
+
+    assert_eq!(response.status, 200, "a timed-out candidate must switch");
+    assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
+    assert_eq!(
+        ok_log.lock().unwrap().len(),
+        1,
+        "fallback must use the second candidate"
+    );
+    let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+    assert_eq!(
+        a_stored.consecutive_failures, 1,
+        "a connection timeout must count as a failure"
+    );
+    assert!(!a_stored.auto_disabled, "one timeout must not auto-disable");
+}
+
+/// Bind a loopback listener that accepts connections, reads the request and
+/// then holds the socket open without ever sending a response.
+async fn spawn_unresponsive_upstream() -> String {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind unresponsive upstream");
+    let addr = listener.local_addr().expect("unresponsive addr");
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            tauri::async_runtime::spawn(async move {
+                let _ = super::runtime_http::read_http_request(&mut stream).await;
+                tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+            });
+        }
+    });
+    format!("http://{}", addr)
+}
+
+/// Finding C (low), deterministic path: an upstream that accepts the TCP
+/// connection but never answers must not hang the forwarding request. The
+/// enforced timeout is a retryable failure that switches to the next candidate
+/// and counts toward the failure threshold (AC-010, AC-011).
+#[tokio::test]
+async fn unresponsive_upstream_is_a_retryable_timeout_not_a_hang() {
+    let _home = temp_home("unresponsive-timeout");
+    let hang_url = spawn_unresponsive_upstream().await;
+    let (ok_url, ok_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
+
+    let mut config = config_with_key(0);
+    let a = upstream_provider("a", "Provider A", &hang_url, "sk-a", Some("remote-model"));
+    let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    config.providers.push(a.clone());
+    config.providers.push(b.clone());
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        super::runtime_http::attempt_non_streaming(
+            &[a, b],
+            "/v1/chat/completions",
+            &body,
+            Some("local-model"),
+            &mut config,
+        ),
+    )
+    .await
+    .expect("an unresponsive upstream must not hang; a timeout must be enforced");
+
+    assert_eq!(response.status, 200, "a timed-out candidate must switch");
+    assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
+    assert_eq!(ok_log.lock().unwrap().len(), 1);
+    let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+    assert_eq!(
+        a_stored.consecutive_failures, 1,
+        "a response timeout must count as a failure"
+    );
+    assert!(!a_stored.auto_disabled, "one timeout must not auto-disable");
+}
+
+/// Finding D (low): for a streaming request, a 2xx upstream body that is neither
+/// JSON nor an SSE fragment must not be passed through as success. It must be a
+/// counted retryable failure and the next candidate must serve the complete
+/// stream (AC-012, AC-016).
+#[tokio::test]
+async fn streaming_2xx_non_json_is_retryable_and_switches_before_first_byte() {
+    let _home = temp_home("stream-non-json-2xx");
+    let (bad_url, bad_log) = spawn_mock_upstream(|_| {
+        MockReply::Raw(200, "text/plain", b"this is not json".to_vec())
+    })
+    .await;
+    let stream_body =
+        "data: {\"choices\":[{\"delta\":{\"content\":\"from-b\"}}]}\n\ndata: [DONE]\n\n";
+    let (stream_url, stream_log) =
+        spawn_mock_upstream(move |_| MockReply::Stream(stream_body.to_string())).await;
+
+    let mut config = config_with_key(0);
+    let a = upstream_provider("a", "Provider A", &bad_url, "sk-a", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &stream_url, "sk-b", Some("remote-default"));
+    // The runtime only records failures for candidates registered in the config,
+    // so the fixture must mirror the listeners it is about to drive.
+    config.providers.push(a.clone());
+    config.providers.push(b.clone());
+    let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
+
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    super::runtime_http::attempt_streaming(
+        &mut server,
+        &[a, b],
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+    )
+    .await
+    .unwrap();
+    drop(server);
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.unwrap();
+    let text = String::from_utf8_lossy(&out);
+
+    assert!(
+        !text.contains("this is not json"),
+        "a 2xx non-JSON body must not be written to the caller: {text}"
+    );
+    assert!(
+        text.contains("from-b"),
+        "the second candidate must serve the complete stream: {text}"
+    );
+    assert!(
+        text.contains("data: [DONE]"),
+        "the stream must terminate: {text}"
+    );
+    assert_eq!(bad_log.lock().unwrap().len(), 1);
+    assert_eq!(stream_log.lock().unwrap().len(), 1);
+    let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+    assert_eq!(
+        a_stored.consecutive_failures, 1,
+        "a 2xx non-JSON stream must count as a failure"
+    );
+    assert!(!a_stored.auto_disabled);
+}
+
+/// Finding E (low): the local service listens on `127.0.0.1` only, so the same
+/// port on the machine's primary non-loopback IPv4 must refuse connections
+/// (AC-003). The primary address is discovered with a UDP "connect" that only
+/// selects the outbound route and sends no packets.
+#[tokio::test]
+async fn loopback_listener_rejects_non_loopback_address_on_same_port() {
+    let _home = temp_home("non-loopback-refused");
+    let port = free_port().await;
+    let config = config_with_key(port);
+    super::storage::write_config(&config).unwrap();
+    super::commands::api_fusion_start().await.unwrap();
+
+    let loopback_ok = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .is_ok();
+
+    let primary_ip = std::net::UdpSocket::bind("0.0.0.0:0")
+        .ok()
+        .and_then(|socket| {
+            socket.connect("8.8.8.8:80").ok()?;
+            socket.local_addr().ok()
+        })
+        .map(|addr| addr.ip())
+        .filter(|ip| !ip.is_loopback());
+
+    let non_loopback_refused = match primary_ip {
+        Some(ip) => tokio::net::TcpStream::connect((ip, port)).await.is_err(),
+        None => true,
+    };
+
+    super::commands::api_fusion_stop().await.unwrap();
+
+    assert!(loopback_ok, "loopback listener must accept connections");
+    if let Some(ip) = primary_ip {
+        assert!(
+            non_loopback_refused,
+            "loopback-only listener must refuse {ip}:{port}, but the connection succeeded"
+        );
+    } else {
+        eprintln!(
+            "environment limitation: no non-loopback IPv4 available; \
+             loopback-only listener assertion was not exercised"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Step 7: terminal one-click configure / sync through the injectable upsert
+// seam (Finding B)
+//
+// `apply_terminal_sync_with` accepts an injected upsert so the external
+// app_store boundary is a fake here; everything else (planning, merge, ledger)
+// runs as production code against an isolated config directory.
+// ---------------------------------------------------------------------------
+
+fn terminal_providers_payload() -> Value {
+    json!({
+        "providers": [
+            {
+                "id": "oc-1",
+                "tool": "opencode",
+                "name": "My OpenCode",
+                "model": "gpt-x",
+                "icon": "star",
+                "is_enabled": false,
+                "base_url": "https://old-opencode.example.com",
+                "api_key": "old-key-1",
+                "tool_config": { "keep": true }
+            },
+            {
+                "id": "cx-1",
+                "tool": "codex",
+                "name": "My Codex",
+                "model": "gpt-y",
+                "icon": "bolt",
+                "is_enabled": true,
+                "base_url": "https://old-codex.example.com",
+                "api_key": "old-key-2",
+                "tool_config": { "nested": { "keep": 42 } }
+            },
+            {
+                "id": "oc-2",
+                "tool": "opencode",
+                "name": "Unselected",
+                "model": "gpt-z",
+                "base_url": "https://old-unselected.example.com",
+                "api_key": "old-key-3"
+            }
+        ]
+    })
+}
+
+/// Finding B: one-click configure/sync merges the local base URL and default key
+/// into every selected target through the injectable upsert, preserves all other
+/// fields exactly, and never touches unselected targets (AC-017).
+#[tokio::test]
+async fn terminal_sync_with_seam_merges_selected_targets_and_preserves_fields() {
+    let _home = temp_home("terminal-sync-seam-merge");
+    let mut config = FusionConfig::default();
+    config.port = 17688;
+    config.keys.push(key_named("k1", "local-key-123"));
+    super::storage::write_config(&config).unwrap();
+    let local_base_url = super::storage::local_base_url(config.port);
+
+    let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = captured.clone();
+    let records = super::commands::apply_terminal_sync_with(
+        &terminal_providers_payload(),
+        move |value| -> super::commands::UpsertFuture {
+            let sink = sink.clone();
+            Box::pin(async move {
+                sink.lock().expect("capture lock").push(value);
+                Ok(())
+            })
+        },
+        vec!["oc-1".to_string(), "cx-1".to_string()],
+    )
+    .await
+    .expect("terminal sync must succeed");
+
+    let submitted = captured.lock().unwrap().clone();
+    assert_eq!(
+        submitted.len(),
+        2,
+        "upsert calls must match target_ids: {submitted:?}"
+    );
+    assert!(
+        submitted.iter().all(|value| value["id"] != "oc-2"),
+        "an unselected target must not be upserted: {submitted:?}"
+    );
+
+    let by_id = |id: &str| {
+        submitted
+            .iter()
+            .find(|value| value["id"] == id)
+            .unwrap_or_else(|| panic!("missing submitted record for {id}"))
+    };
+
+    let opencode = by_id("oc-1");
+    assert_eq!(opencode["base_url"], local_base_url.as_str());
+    assert_eq!(opencode["api_key"], "local-key-123");
+    assert_eq!(opencode["name"], "My OpenCode");
+    assert_eq!(opencode["model"], "gpt-x");
+    assert_eq!(opencode["icon"], "star");
+    assert_eq!(opencode["is_enabled"], false);
+    assert_eq!(opencode["tool_config"]["keep"], true);
+
+    let codex = by_id("cx-1");
+    assert_eq!(codex["base_url"], local_base_url.as_str());
+    assert_eq!(codex["api_key"], "local-key-123");
+    assert_eq!(codex["name"], "My Codex");
+    assert_eq!(codex["model"], "gpt-y");
+    assert_eq!(codex["icon"], "bolt");
+    assert_eq!(codex["is_enabled"], true);
+    assert_eq!(codex["tool_config"]["nested"]["keep"], 42);
+
+    assert_eq!(records.len(), 2);
+    for record in &records {
+        assert_eq!(record.synced_key_id, "k1");
+        assert_eq!(record.synced_base_url, local_base_url);
+    }
+    let mut tools: Vec<&str> = records.iter().map(|record| record.tool.as_str()).collect();
+    tools.sort();
+    assert_eq!(tools, vec!["codex", "opencode"]);
+}
+
+/// Finding B: a successful sync refreshes the persisted ledger to this run's
+/// default key id and local base URL, and re-running it for the same providers
+/// replaces the entries instead of accumulating duplicates (AC-018).
+#[tokio::test]
+async fn terminal_sync_with_seam_refreshes_ledger_without_duplicates() {
+    let _home = temp_home("terminal-sync-seam-ledger");
+    let mut config = FusionConfig::default();
+    config.port = 17688;
+    config.keys.push(key_named("k1", "local-key-123"));
+    super::storage::write_config(&config).unwrap();
+    let local_base_url = super::storage::local_base_url(config.port);
+
+    let ids = vec!["oc-1".to_string(), "cx-1".to_string()];
+    let payload = terminal_providers_payload();
+    let first = super::commands::apply_terminal_sync_with(
+        &payload,
+        |_value| -> super::commands::UpsertFuture { Box::pin(async move { Ok(()) }) },
+        ids.clone(),
+    )
+    .await
+    .expect("first sync must succeed");
+    assert_eq!(first.len(), 2);
+
+    let reloaded = super::storage::read_config().unwrap();
+    assert_eq!(
+        reloaded.terminal_syncs.len(),
+        2,
+        "one ledger entry per synced provider: {:?}",
+        reloaded.terminal_syncs
+    );
+    let mut ledger_ids: Vec<String> = reloaded
+        .terminal_syncs
+        .iter()
+        .map(|record| record.provider_id.clone())
+        .collect();
+    ledger_ids.sort();
+    assert_eq!(ledger_ids, vec!["cx-1".to_string(), "oc-1".to_string()]);
+    for record in &reloaded.terminal_syncs {
+        assert_eq!(record.synced_key_id, "k1");
+        assert_eq!(record.synced_base_url, local_base_url);
+    }
+    let mut expected: Vec<(&str, &str, &str)> = first
+        .iter()
+        .map(|record| {
+            (
+                record.provider_id.as_str(),
+                record.synced_key_id.as_str(),
+                record.synced_base_url.as_str(),
+            )
+        })
+        .collect();
+    expected.sort();
+    let mut persisted: Vec<(&str, &str, &str)> = reloaded
+        .terminal_syncs
+        .iter()
+        .map(|record| {
+            (
+                record.provider_id.as_str(),
+                record.synced_key_id.as_str(),
+                record.synced_base_url.as_str(),
+            )
+        })
+        .collect();
+    persisted.sort();
+    assert_eq!(persisted, expected, "returned records must match the ledger");
+
+    let second = super::commands::apply_terminal_sync_with(
+        &payload,
+        |_value| -> super::commands::UpsertFuture { Box::pin(async move { Ok(()) }) },
+        ids,
+    )
+    .await
+    .expect("second sync must succeed");
+    assert_eq!(second.len(), 2);
+
+    let reloaded = super::storage::read_config().unwrap();
+    assert_eq!(
+        reloaded.terminal_syncs.len(),
+        2,
+        "re-syncing the same provider must replace, not duplicate, ledger entries: {:?}",
+        reloaded.terminal_syncs
+    );
+}
+
+/// Finding B atomicity: when the injected upsert fails, the pipeline returns the
+/// error and the persisted ledger keeps its previous value, so the ledger never
+/// claims a sync that did not happen (AC-017/AC-018).
+#[tokio::test]
+async fn terminal_sync_with_seam_aborts_without_writing_ledger_on_upsert_error() {
+    let _home = temp_home("terminal-sync-seam-error");
+    let mut config = FusionConfig::default();
+    config.port = 17688;
+    config.keys.push(key_named("k1", "local-key-123"));
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "existing".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k-old".to_string(),
+        synced_base_url: "http://127.0.0.1:1".to_string(),
+        synced_at: 111,
+    });
+    super::storage::write_config(&config).unwrap();
+    let before = super::storage::read_config().unwrap().terminal_syncs;
+
+    let calls = Arc::new(Mutex::new(0usize));
+    let calls_for_upsert = calls.clone();
+    let error = super::commands::apply_terminal_sync_with(
+        &terminal_providers_payload(),
+        move |_value| -> super::commands::UpsertFuture {
+            let calls = calls_for_upsert.clone();
+            Box::pin(async move {
+                let should_fail = {
+                    let mut count = calls.lock().expect("call counter");
+                    *count += 1;
+                    *count >= 2
+                };
+                if should_fail {
+                    return Err("injected upsert failure".to_string());
+                }
+                Ok(())
+            })
+        },
+        vec!["oc-1".to_string(), "cx-1".to_string()],
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        error.contains("injected upsert failure"),
+        "error must surface the upsert failure: {error}"
+    );
+    assert_eq!(
+        *calls.lock().unwrap(),
+        2,
+        "every selected target up to the failure is attempted"
+    );
+
+    let after = super::storage::read_config().unwrap().terminal_syncs;
+    assert_eq!(
+        after, before,
+        "ledger must be unchanged when an upsert fails"
+    );
+}
+
+

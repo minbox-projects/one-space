@@ -1,6 +1,7 @@
 use super::FusionUpstreamProvider;
 use reqwest::Client;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 /// Parsed upstream response for a non-streaming attempt.
 pub(in crate::api_fusion) struct UpstreamJsonResponse {
@@ -9,9 +10,25 @@ pub(in crate::api_fusion) struct UpstreamJsonResponse {
     pub(in crate::api_fusion) parsed: bool,
 }
 
+/// Bound only the connect phase (the repo's `proxy.rs` uses 10s) so a
+/// blackholed/unroutable upstream fails fast instead of hanging.
+const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Idle read timeout: applied to each read and reset after every successful
+/// read, so an upstream that connects but never answers is a retryable failure
+/// while an active long response or stream is never truncated by a fixed total
+/// deadline.
+const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn shared_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
-    CLIENT.get_or_init(Client::new)
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .connect_timeout(UPSTREAM_CONNECT_TIMEOUT)
+            .read_timeout(UPSTREAM_READ_TIMEOUT)
+            .build()
+            .expect("build API Fusion upstream HTTP client")
+    })
 }
 
 pub(in crate::api_fusion) fn join_url(base: &str, path: &str) -> String {
