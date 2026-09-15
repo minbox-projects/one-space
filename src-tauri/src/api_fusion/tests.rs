@@ -343,6 +343,8 @@ enum MockReply {
     Stream(String),
     /// Declare a larger content-length than the bytes sent, then close early.
     PartialStream(String, usize),
+    /// Arbitrary status and content type with a raw (possibly non-JSON) body.
+    Raw(u16, &'static str, Vec<u8>),
     /// Close the connection without answering.
     Drop,
 }
@@ -435,6 +437,14 @@ where
                         let _ = stream.write_all(header.as_bytes()).await;
                         let _ = stream.write_all(body.as_bytes()).await;
                         let _ = stream.flush().await;
+                    }
+                    MockReply::Raw(status, content_type, body) => {
+                        let header = format!(
+                            "HTTP/1.1 {status} OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(header.as_bytes()).await;
+                        let _ = stream.write_all(&body).await;
                     }
                     MockReply::Drop => {}
                 }
@@ -1465,5 +1475,783 @@ async fn return_to_client_error_is_passed_through_without_switching_or_disabling
         .unwrap();
     assert!(!stored.auto_disabled);
     assert_eq!(stored.consecutive_failures, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Step 5: cross-module end-to-end behavior (task-003)
+//
+// Each test below drives the real local listener or the real forwarding path
+// against an in-process mock upstream; no real network or user configuration.
+// ---------------------------------------------------------------------------
+
+async fn closed_port_base_url() -> String {
+    let port = free_port().await;
+    format!("http://127.0.0.1:{port}")
+}
+
+fn config_with_key(port: u16) -> FusionConfig {
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    config
+}
+
+#[tokio::test]
+async fn end_to_end_random_pool_selects_every_resolvable_candidate() {
+    // AC-009: two providers resolve the same model; the exact runtime selection
+    // (`candidate_providers` + `shuffled_candidates`) must pick both over time,
+    // and the chosen provider is reached over real HTTP.
+    let (url_a, _log_a) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-a"}))).await;
+    let (url_b, _log_b) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
+
+    let providers = vec![
+        upstream_provider("a", "Provider A", &url_a, "sk-a", Some("remote-model")),
+        upstream_provider("b", "Provider B", &url_b, "sk-b", Some("remote-model")),
+    ];
+    let candidates: Vec<FusionUpstreamProvider> =
+        candidate_providers(&providers, Some("local-model"))
+            .into_iter()
+            .cloned()
+            .collect();
+    assert_eq!(candidates.len(), 2, "both providers can serve the request model");
+
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+    let mut seen_a = 0usize;
+    let mut seen_b = 0usize;
+    for _ in 0..64 {
+        let ordered = super::selection::shuffled_candidates(&candidates);
+        let chosen = ordered.first().expect("at least one candidate");
+        let response = super::forwarding::forward_non_streaming(
+            chosen,
+            "/v1/chat/completions",
+            &body,
+            "remote-model",
+        )
+        .await
+        .expect("forward to mock upstream");
+        assert_eq!(response.status, 200);
+        match chosen.id.as_str() {
+            "a" => seen_a += 1,
+            "b" => seen_b += 1,
+            other => panic!("unexpected provider selected: {other}"),
+        }
+    }
+    assert!(
+        seen_a > 0 && seen_b > 0,
+        "both candidates must be selected over time: a={seen_a}, b={seen_b}"
+    );
+}
+
+#[tokio::test]
+async fn end_to_end_network_failure_falls_back_and_tries_first_candidate_once() {
+    // AC-010: first candidate network error -> caller gets the second provider's
+    // success response and the first candidate is attempted only once.
+    let _home = temp_home("e2e-failover-network");
+    let (drop_url, drop_log) = spawn_mock_upstream(|_| MockReply::Drop).await;
+    let (ok_url, ok_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
+
+    let mut config = config_with_key(0);
+    let a = upstream_provider("a", "Provider A", &drop_url, "sk-a", Some("remote-model"));
+    let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    config.providers.push(a.clone());
+    config.providers.push(b.clone());
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+
+    let response = super::runtime_http::attempt_non_streaming(
+        &[a, b],
+        "/v1/chat/completions",
+        &body,
+        Some("local-model"),
+        &mut config,
+    )
+    .await;
+
+    assert_eq!(response.status, 200, "network error must fall back");
+    assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
+    assert_eq!(
+        drop_log.lock().unwrap().len(),
+        1,
+        "first candidate must be attempted exactly once"
+    );
+    assert_eq!(ok_log.lock().unwrap().len(), 1, "fallback must use the second candidate");
+}
+
+#[tokio::test]
+async fn end_to_end_5xx_falls_back_and_tries_first_candidate_once() {
+    // AC-010: first candidate 5xx -> second provider succeeds; first is not retried.
+    let _home = temp_home("e2e-failover-5xx");
+    let (fail_url, fail_log) =
+        spawn_mock_upstream(|_| MockReply::Json(503, json!({"error": {"message": "down"}}))).await;
+    let (ok_url, ok_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
+
+    let mut config = config_with_key(0);
+    let a = upstream_provider("a", "Provider A", &fail_url, "sk-a", Some("remote-model"));
+    let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    config.providers.push(a.clone());
+    config.providers.push(b.clone());
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+
+    let response = super::runtime_http::attempt_non_streaming(
+        &[a, b],
+        "/v1/chat/completions",
+        &body,
+        Some("local-model"),
+        &mut config,
+    )
+    .await;
+
+    assert_eq!(response.status, 200, "5xx must fall back");
+    assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
+    assert_eq!(fail_log.lock().unwrap().len(), 1);
+    assert_eq!(ok_log.lock().unwrap().len(), 1);
+
+    let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+    assert_eq!(a_stored.consecutive_failures, 1);
+    assert!(!a_stored.auto_disabled, "a single 5xx must not disable the provider");
+}
+
+#[tokio::test]
+async fn end_to_end_auth_failures_disable_immediately_and_switch() {
+    // AC-011: 401/403 disable the provider right away, record the reason, and the
+    // request continues on the next candidate.
+    for status in [401u16, 403u16] {
+        let home = temp_home(&format!("e2e-auth-{status}"));
+        let (auth_url, auth_log) = spawn_mock_upstream(move |_| {
+            MockReply::Json(status, json!({"error": {"message": "denied"}}))
+        })
+        .await;
+        let (ok_url, ok_log) =
+            spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
+
+        let mut config = config_with_key(0);
+        let a = upstream_provider("a", "Provider A", &auth_url, "sk-a", Some("remote-model"));
+        let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+        config.providers.push(a.clone());
+        config.providers.push(b.clone());
+        let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+
+        let response = super::runtime_http::attempt_non_streaming(
+            &[a, b],
+            "/v1/chat/completions",
+            &body,
+            Some("local-model"),
+            &mut config,
+        )
+        .await;
+
+        assert_eq!(response.status, 200, "status {status} must fall back");
+        assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
+        assert_eq!(auth_log.lock().unwrap().len(), 1);
+        assert_eq!(ok_log.lock().unwrap().len(), 1);
+
+        let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+        assert!(a_stored.auto_disabled, "status {status} must auto-disable immediately");
+        assert!(
+            a_stored
+                .disabled_reason
+                .as_deref()
+                .unwrap_or("")
+                .contains(&status.to_string()),
+            "reason must record the status: {:?}",
+            a_stored.disabled_reason
+        );
+        assert!(a_stored.disabled_at.is_some());
+        let b_stored = config.providers.iter().find(|p| p.id == "b").unwrap();
+        assert!(!b_stored.auto_disabled);
+        drop(home);
+    }
+}
+
+#[tokio::test]
+async fn end_to_end_retryable_failures_auto_disable_at_threshold_and_stop_calling() {
+    // AC-011: three consecutive 500s auto-disable the provider; once disabled it
+    // is no longer contacted and the caller keeps receiving all-unavailable.
+    let home = temp_home("e2e-threshold");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "boom"}}))).await;
+
+    let mut config = config_with_key(port);
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &upstream_url,
+        "sk",
+        Some("remote-model"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    for attempt in 1..=3 {
+        let (status, _, text) = call_fusion(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[("authorization", "Bearer local-key")],
+            Some(json!({"model": "local-model"})),
+        )
+        .await;
+        assert_eq!(status, 502, "attempt {attempt} unexpected: {text}");
+    }
+
+    let stored = super::storage::read_config().unwrap();
+    let a_stored = stored.providers.iter().find(|p| p.id == "a").unwrap();
+    assert!(a_stored.auto_disabled, "third consecutive failure must auto-disable");
+    assert_eq!(a_stored.consecutive_failures, 3);
+
+    let (status, _, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-model"})),
+    )
+    .await;
+    assert_eq!(status, 502);
+    let body: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+    assert_eq!(
+        log.lock().unwrap().len(),
+        3,
+        "auto-disabled provider must not be contacted again"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+#[tokio::test]
+async fn end_to_end_below_threshold_provider_stays_enabled() {
+    // AC-011 negative: two consecutive failures are below the threshold of three.
+    let home = temp_home("e2e-below-threshold");
+    let port = free_port().await;
+    let (upstream_url, _log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "boom"}}))).await;
+
+    let mut config = config_with_key(port);
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &upstream_url,
+        "sk",
+        Some("remote-model"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    for _ in 0..2 {
+        let (status, _, _) = call_fusion(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[("authorization", "Bearer local-key")],
+            Some(json!({"model": "local-model"})),
+        )
+        .await;
+        assert_eq!(status, 502);
+    }
+
+    let stored = super::storage::read_config().unwrap();
+    let a_stored = stored.providers.iter().find(|p| p.id == "a").unwrap();
+    assert!(
+        !a_stored.auto_disabled,
+        "below the threshold the provider must stay enabled"
+    );
+    assert_eq!(a_stored.consecutive_failures, 2);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+#[tokio::test]
+async fn end_to_end_network_errors_accumulate_and_disable() {
+    // AC-011: network errors count as retryable failures and reach the threshold.
+    let home = temp_home("e2e-network-threshold");
+    let port = free_port().await;
+    let dead_url = closed_port_base_url().await;
+
+    let mut config = config_with_key(port);
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &dead_url,
+        "sk",
+        Some("remote-model"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    for _ in 0..3 {
+        let (status, _, _) = call_fusion(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[("authorization", "Bearer local-key")],
+            Some(json!({"model": "local-model"})),
+        )
+        .await;
+        assert_eq!(status, 502);
+    }
+
+    let stored = super::storage::read_config().unwrap();
+    let a_stored = stored.providers.iter().find(|p| p.id == "a").unwrap();
+    assert!(a_stored.auto_disabled);
+    assert_eq!(a_stored.consecutive_failures, 3);
+    assert!(
+        a_stored
+            .disabled_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("network error"),
+        "reason must describe the network failure: {:?}",
+        a_stored.disabled_reason
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+#[tokio::test]
+async fn end_to_end_transient_429_and_404_switch_without_disabling() {
+    // AC-011: 429/404 switch to the next candidate but never count as failures.
+    for status in [429u16, 404u16] {
+        let home = temp_home(&format!("e2e-transient-{status}"));
+        let (transient_url, transient_log) = spawn_mock_upstream(move |_| {
+            MockReply::Json(status, json!({"error": {"message": "transient"}}))
+        })
+        .await;
+        let (ok_url, ok_log) =
+            spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
+
+        let mut config = config_with_key(0);
+        let a = upstream_provider("a", "Provider A", &transient_url, "sk-a", Some("remote-model"));
+        let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+        config.providers.push(a.clone());
+        config.providers.push(b.clone());
+        let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+
+        let response = super::runtime_http::attempt_non_streaming(
+            &[a, b],
+            "/v1/chat/completions",
+            &body,
+            Some("local-model"),
+            &mut config,
+        )
+        .await;
+
+        assert_eq!(response.status, 200, "status {status} must switch");
+        assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
+        assert_eq!(transient_log.lock().unwrap().len(), 1);
+        assert_eq!(ok_log.lock().unwrap().len(), 1);
+
+        let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+        assert!(!a_stored.auto_disabled, "status {status} must not disable");
+        assert_eq!(a_stored.consecutive_failures, 0, "status {status} must not count");
+        drop(home);
+    }
+}
+
+#[tokio::test]
+async fn end_to_end_client_4xx_returns_to_caller_without_switching_or_disabling() {
+    // AC-011 negative: 400/422 and other unlisted 4xx are the caller's problem,
+    // so they are returned directly and no provider is disabled.
+    for status in [400u16, 422u16, 418u16] {
+        let home = temp_home(&format!("e2e-client-{status}"));
+        let (bad_url, bad_log) = spawn_mock_upstream(move |_| {
+            MockReply::Json(status, json!({"error": {"message": "bad request"}}))
+        })
+        .await;
+        let (ok_url, ok_log) =
+            spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
+
+        let mut config = config_with_key(0);
+        let a = upstream_provider("a", "Provider A", &bad_url, "sk-a", Some("remote-model"));
+        let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+        config.providers.push(a.clone());
+        config.providers.push(b.clone());
+        let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+
+        let response = super::runtime_http::attempt_non_streaming(
+            &[a, b],
+            "/v1/chat/completions",
+            &body,
+            Some("local-model"),
+            &mut config,
+        )
+        .await;
+
+        assert_eq!(response.status, status, "status {status} must pass through");
+        assert_eq!(bad_log.lock().unwrap().len(), 1);
+        assert!(ok_log.lock().unwrap().is_empty(), "status {status} must not switch");
+
+        let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+        assert!(!a_stored.auto_disabled, "status {status} must not disable");
+        assert_eq!(a_stored.consecutive_failures, 0, "status {status} must not count");
+        drop(home);
+    }
+}
+
+#[tokio::test]
+async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
+    // AC-012: a non-JSON body (including a 2xx status) is not a success; it
+    // switches and counts toward the consecutive-failure threshold.
+    let home = temp_home("e2e-non-json-2xx");
+    let (bad_url, bad_log) = spawn_mock_upstream(|_| {
+        MockReply::Raw(200, "text/plain", b"this is not json".to_vec())
+    })
+    .await;
+    let (ok_url, ok_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
+
+    let mut config = config_with_key(0);
+    let a = upstream_provider("a", "Provider A", &bad_url, "sk-a", Some("remote-model"));
+    let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    config.providers.push(a.clone());
+    config.providers.push(b.clone());
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+
+    for attempt in 1..=3u32 {
+        let response = super::runtime_http::attempt_non_streaming(
+            &[a.clone(), b.clone()],
+            "/v1/chat/completions",
+            &body,
+            Some("local-model"),
+            &mut config,
+        )
+        .await;
+        assert_eq!(response.status, 200, "attempt {attempt}");
+        assert!(
+            String::from_utf8_lossy(&response.body).contains("from-b"),
+            "a non-JSON 2xx must not reach the caller as success"
+        );
+        let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+        assert_eq!(
+            a_stored.consecutive_failures, attempt,
+            "non-JSON must count as a failure"
+        );
+        assert_eq!(a_stored.auto_disabled, attempt >= 3);
+    }
+    assert_eq!(bad_log.lock().unwrap().len(), 3);
+    assert_eq!(ok_log.lock().unwrap().len(), 3);
+    drop(home);
+
+    // A non-JSON body on a 5xx status is likewise a counted failure.
+    let home = temp_home("e2e-non-json-500");
+    let (bad_url, _bad_log) = spawn_mock_upstream(|_| {
+        MockReply::Raw(500, "text/html", b"<html>upstream error</html>".to_vec())
+    })
+    .await;
+    let (ok_url, _ok_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
+
+    let mut config = config_with_key(0);
+    let a = upstream_provider("a", "Provider A", &bad_url, "sk-a", Some("remote-model"));
+    let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    config.providers.push(a.clone());
+    config.providers.push(b.clone());
+
+    let response = super::runtime_http::attempt_non_streaming(
+        &[a, b],
+        "/v1/chat/completions",
+        &body,
+        Some("local-model"),
+        &mut config,
+    )
+    .await;
+    assert_eq!(response.status, 200);
+    assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
+    let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+    assert_eq!(a_stored.consecutive_failures, 1);
+    assert!(!a_stored.auto_disabled);
+    drop(home);
+}
+
+#[tokio::test]
+async fn end_to_end_all_unavailable_non_streaming_lists_each_provider_failure() {
+    // AC-014: non-streaming all-unavailable is HTTP 502 with code
+    // all_providers_unavailable and a per-provider failure summary.
+    let home = temp_home("e2e-all-unavailable-summary");
+    let port = free_port().await;
+    let (url_a, _) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "a-down"}}))).await;
+    let (url_b, _) =
+        spawn_mock_upstream(|_| MockReply::Json(503, json!({"error": {"message": "b-down"}}))).await;
+
+    let mut config = config_with_key(port);
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &url_a,
+        "sk-a",
+        Some("remote-model"),
+    ));
+    config.providers.push(upstream_provider(
+        "b",
+        "Provider B",
+        &url_b,
+        "sk-b",
+        Some("remote-model"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-model"})),
+    )
+    .await;
+    assert_eq!(status, 502, "unexpected response: {text}");
+    let body: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("Provider A"), "message: {message}");
+    assert!(message.contains("Provider B"), "message: {message}");
+    assert!(message.contains("HTTP 500"), "message: {message}");
+    assert!(message.contains("HTTP 503"), "message: {message}");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+#[tokio::test]
+async fn end_to_end_all_unavailable_streaming_error_event_precedes_done() {
+    // AC-015: streaming all-unavailable is HTTP 200 SSE whose error object event
+    // comes before the terminating `data: [DONE]`.
+    let home = temp_home("e2e-all-unavailable-stream");
+    let port = free_port().await;
+    let (url_a, _) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "a-down"}}))).await;
+    let (url_b, _) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "b-down"}}))).await;
+
+    let mut config = config_with_key(port);
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &url_a,
+        "sk-a",
+        Some("remote-model"),
+    ));
+    config.providers.push(upstream_provider(
+        "b",
+        "Provider B",
+        &url_b,
+        "sk-b",
+        Some("remote-model"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-model", "stream": true})),
+    )
+    .await;
+    assert_eq!(status, 200, "streaming stop response uses HTTP 200");
+    assert!(
+        content_type.contains("text/event-stream"),
+        "content-type: {content_type}"
+    );
+    let error_index = text
+        .find("all_providers_unavailable")
+        .unwrap_or_else(|| panic!("missing error payload: {text}"));
+    let done_index = text
+        .find("data: [DONE]")
+        .unwrap_or_else(|| panic!("missing [DONE]: {text}"));
+    assert!(
+        error_index < done_index,
+        "error event must precede [DONE]: {text}"
+    );
+
+    let first_event = text.split("\n\n").next().unwrap();
+    let payload = first_event
+        .strip_prefix("data: ")
+        .unwrap_or_else(|| panic!("first event must be a data event: {text}"));
+    let value: Value = serde_json::from_str(payload).expect("error event must be JSON");
+    assert_eq!(value["error"]["code"], "all_providers_unavailable");
+    let message = value["error"]["message"].as_str().unwrap();
+    assert!(message.contains("Provider A"), "message: {message}");
+    assert!(message.contains("Provider B"), "message: {message}");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+#[tokio::test]
+async fn end_to_end_path_prefix_and_body_equivalence_for_chat_and_responses() {
+    // AC-007/AC-008: upstream path is the provider base URL (including its own
+    // path prefix) joined verbatim with the request path; auth is the provider
+    // key and only `model` changes in the body.
+    let home = temp_home("e2e-path-prefix");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
+    let base_url = format!("{upstream_url}/custom/prefix");
+
+    let mut config = config_with_key(port);
+    let mut provider = upstream_provider("p1", "Provider One", &base_url, "upstream-secret", None);
+    provider.mappings = vec![ModelMapping {
+        local_model: "local-a".to_string(),
+        upstream_model: "remote-a".to_string(),
+    }];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let chat_body = json!({
+        "model": "local-a",
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 0.5,
+        "stream": false
+    });
+    let (status, _, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(chat_body.clone()),
+    )
+    .await;
+    assert_eq!(status, 200, "unexpected response: {text}");
+
+    let (status, _, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a", "input": "hi"})),
+    )
+    .await;
+    assert_eq!(status, 200, "unexpected response: {text}");
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0].method, "POST");
+    assert_eq!(captured[0].path, "/custom/prefix/v1/chat/completions");
+    assert_eq!(
+        captured[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer upstream-secret")
+    );
+    let sent: Value = serde_json::from_slice(&captured[0].body).unwrap();
+    assert_eq!(sent["model"], "remote-a");
+    assert_eq!(sent["messages"], chat_body["messages"]);
+    assert_eq!(sent["temperature"], chat_body["temperature"]);
+    assert_eq!(sent["stream"], chat_body["stream"]);
+
+    assert_eq!(captured[1].method, "POST");
+    assert_eq!(captured[1].path, "/custom/prefix/v1/responses");
+    assert_eq!(
+        captured[1].headers.get("authorization").map(String::as_str),
+        Some("Bearer upstream-secret")
+    );
+    let sent: Value = serde_json::from_slice(&captured[1].body).unwrap();
+    assert_eq!(sent["model"], "remote-a");
+    assert_eq!(sent["input"], "hi");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+#[tokio::test]
+async fn end_to_end_models_union_and_unknown_route_error_shape() {
+    // AC-008: GET /v1/models returns only the union of models from enabled,
+    // non-auto-disabled providers and never contacts upstream; unknown routes
+    // return a standard OpenAI 404 error body.
+    let home = temp_home("e2e-models-404");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-be-called"}))).await;
+
+    let mut config = config_with_key(port);
+    let mut active = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    active.mappings = vec![
+        ModelMapping {
+            local_model: "local-b".to_string(),
+            upstream_model: "remote-b".to_string(),
+        },
+        ModelMapping {
+            local_model: "local-a".to_string(),
+            upstream_model: "remote-a".to_string(),
+        },
+    ];
+    let mut disabled = upstream_provider("p2", "Provider Two", &upstream_url, "sk", None);
+    disabled.enabled = false;
+    disabled.mappings = vec![ModelMapping {
+        local_model: "local-disabled".to_string(),
+        upstream_model: "x".to_string(),
+    }];
+    let mut auto_disabled = upstream_provider("p3", "Provider Three", &upstream_url, "sk", None);
+    auto_disabled.auto_disabled = true;
+    auto_disabled.mappings = vec![ModelMapping {
+        local_model: "local-auto".to_string(),
+        upstream_model: "x".to_string(),
+    }];
+    let no_model = upstream_provider("p4", "Provider Four", &upstream_url, "sk", None);
+    config
+        .providers
+        .extend([active, disabled, auto_disabled, no_model]);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _, text) = call_fusion(
+        port,
+        "GET",
+        "/v1/models",
+        &[("authorization", "Bearer local-key")],
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let body: Value = serde_json::from_str(&text).unwrap();
+    let mut ids: Vec<String> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap().to_string())
+        .collect();
+    ids.sort();
+    assert_eq!(ids, vec!["local-a".to_string(), "local-b".to_string()]);
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "GET /v1/models must not contact upstream"
+    );
+
+    let (status, _, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/embeddings",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(status, 404);
+    let body: Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        body["error"]["message"].is_string() && body["error"]["type"].is_string(),
+        "404 must carry a standard OpenAI error body: {text}"
+    );
+
+    let (status, _, _) = call_fusion(
+        port,
+        "GET",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        None,
+    )
+    .await;
+    assert_eq!(status, 404);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
 }
 
