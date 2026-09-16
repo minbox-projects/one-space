@@ -9,6 +9,7 @@ import {
   type FusionConfig,
   type FusionStatus,
   type FusionTerminalTarget,
+  type FusionUpstreamProvider,
 } from "@/lib/apiFusion";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
@@ -79,6 +80,45 @@ function mockStore(store: Store) {
         throw new Error(`Unhandled command: ${command}`);
     }
   });
+}
+
+function mockStoreWithUpsert(store: Store) {
+  mockStore(store);
+  const read = invokeMock.getMockImplementation()!;
+  invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+    if (command === "api_fusion_upsert_provider") {
+      const { provider } = args as { provider: FusionUpstreamProvider };
+      store.config = {
+        ...store.config,
+        providers: [
+          ...store.config.providers.filter((entry) => entry.id !== provider.id),
+          provider,
+        ],
+      };
+      return store.config;
+    }
+    return read(command, args);
+  });
+}
+
+function makeProvider(
+  overrides: Partial<FusionUpstreamProvider> = {},
+): FusionUpstreamProvider {
+  return {
+    id: "p1",
+    name: "Upstream A",
+    base_url: "https://api.a.example",
+    api_key: API_FUSION_KEY_MASK,
+    default_model: null,
+    mappings: [],
+    enabled: true,
+    auto_disabled: false,
+    disabled_reason: null,
+    disabled_at: null,
+    consecutive_failures: 0,
+    last_error_at: null,
+    ...overrides,
+  };
 }
 
 describe("ApiFusion", () => {
@@ -336,29 +376,120 @@ describe("ApiFusion", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(rawKey));
   });
 
-  it("上游模型解析预览优先映射再回退默认模型", async () => {
+  it("映射协议默认跟随服务商，新增映射行同样默认跟随", async () => {
     const store: Store = {
       config: makeConfig({
         providers: [
-          {
-            id: "p1",
-            name: "Upstream A",
-            base_url: "https://api.a.example",
-            api_key: API_FUSION_KEY_MASK,
-            default_model: "remote-default",
+          makeProvider({
             mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
-            enabled: true,
-            auto_disabled: false,
-            disabled_reason: null,
-            disabled_at: null,
-            consecutive_failures: 0,
-            last_error_at: null,
-          },
+          }),
         ],
-        keys: [{ id: "k1", label: "Main", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
-        default_key_id: "k1",
       }),
-      status: makeStatus({ provider_count: 1, key_count: 1, default_key_id: "k1" }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [openCodeTarget()],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    fireEvent.click(await screen.findByText("Upstream A"));
+
+    expect(screen.getByLabelText("Mapping protocol 1")).toHaveValue("");
+
+    fireEvent.click(screen.getByRole("button", { name: /Add mapping/ }));
+    expect(screen.getByLabelText("Mapping protocol 2")).toHaveValue("");
+  });
+
+  it("保存继承行时映射协议缺省或为 null 且不为空字符串", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [
+          makeProvider({
+            mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
+          }),
+        ],
+      }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [openCodeTarget()],
+    };
+    mockStoreWithUpsert(store);
+
+    renderWithProviders(<ApiFusion />);
+    fireEvent.click(await screen.findByText("Upstream A"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "api_fusion_upsert_provider",
+        expect.objectContaining({
+          provider: expect.objectContaining({ id: "p1" }),
+        }),
+      ),
+    );
+
+    const call = invokeMock.mock.calls.find(
+      ([command]) => command === "api_fusion_upsert_provider",
+    );
+    const payload = call?.[1] as { provider: FusionUpstreamProvider };
+    expect(payload.provider.mappings[0].protocol ?? null).toBeNull();
+    expect(payload.provider.mappings[0].protocol).not.toBe("");
+  });
+
+  it("保存显式协议时提交该协议", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [
+          makeProvider({
+            mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
+          }),
+        ],
+      }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [openCodeTarget()],
+    };
+    mockStoreWithUpsert(store);
+
+    renderWithProviders(<ApiFusion />);
+    fireEvent.click(await screen.findByText("Upstream A"));
+    fireEvent.change(screen.getByLabelText("Mapping protocol 1"), {
+      target: { value: "responses" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "api_fusion_upsert_provider",
+        expect.objectContaining({
+          provider: expect.objectContaining({ id: "p1" }),
+        }),
+      ),
+    );
+
+    const call = invokeMock.mock.calls.find(
+      ([command]) => command === "api_fusion_upsert_provider",
+    );
+    const payload = call?.[1] as { provider: FusionUpstreamProvider };
+    expect(payload.provider.mappings[0].protocol).toBe("responses");
+  });
+
+  it("预览同时展示解析后的上游模型与目标 endpoint", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [
+          makeProvider({
+            protocol: "chat_completions",
+            default_model: "remote-default",
+            mappings: [
+              {
+                local_model: "local-a",
+                upstream_model: "remote-a",
+                protocol: "responses",
+              },
+              { local_model: "local-b", upstream_model: "remote-b" },
+            ],
+          }),
+        ],
+      }),
+      status: makeStatus({ provider_count: 1 }),
       targets: [openCodeTarget()],
     };
     mockStore(store);
@@ -366,16 +497,23 @@ describe("ApiFusion", () => {
     renderWithProviders(<ApiFusion />);
     fireEvent.click(await screen.findByText("Upstream A"));
     const previewInput = screen.getByLabelText("Preview model");
-    const preview = screen.getByTestId("api-fusion-model-preview");
+    const modelPreview = screen.getByTestId("api-fusion-model-preview");
+    const endpointPreview = screen.getByTestId("api-fusion-endpoint-preview");
 
     fireEvent.change(previewInput, { target: { value: "local-a" } });
-    expect(preview).toHaveTextContent("remote-a");
+    expect(modelPreview).toHaveTextContent("remote-a");
+    expect(endpointPreview).toHaveTextContent("/responses");
+
+    fireEvent.change(previewInput, { target: { value: "local-b" } });
+    expect(modelPreview).toHaveTextContent("remote-b");
+    expect(endpointPreview).toHaveTextContent("/chat/completions");
 
     fireEvent.change(previewInput, { target: { value: "local-unknown" } });
-    expect(preview).toHaveTextContent("remote-default");
+    expect(modelPreview).toHaveTextContent("remote-default");
+    expect(endpointPreview).toHaveTextContent("/chat/completions");
 
     fireEvent.change(previewInput, { target: { value: "" } });
-    expect(preview).toHaveTextContent("remote-default");
+    expect(modelPreview).toHaveTextContent("remote-default");
   });
 
   it("新增本地 Key 只需名称，值留空交由后端随机生成", async () => {
