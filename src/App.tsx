@@ -37,11 +37,13 @@ import {
   X,
   Route,
   BarChart3,
+  Network,
 } from "lucide-react";
 import { AiSessions } from "./components/AiSessions";
 import { Workspaces } from "./components/Workspaces";
 import { AiEnvironments } from "./components/AiEnvironments";
 import { AiUsageStats } from "./components/AiUsageStats";
+import { ApiFusion } from "./components/ApiFusion";
 import { Skills } from "./components/Skills";
 import { Subagents } from "./components/Subagents";
 import { MCPServers } from "./components/MCPServers";
@@ -1205,6 +1207,11 @@ function App() {
             count: counts.environments,
           },
           {
+            id: "api-fusion",
+            name: t("apiFusion", "API Fusion"),
+            icon: Network,
+          },
+          {
             id: "ai-usage",
             name: t("aiUsageStatsMenu", "AI Usage Stats"),
             icon: BarChart3,
@@ -1544,6 +1551,11 @@ function App() {
             className={activeTab === "ai-environments" ? "h-full" : "hidden"}
           >
             <AiEnvironments isVisible={activeTab === "ai-environments"} />
+          </div>
+        )}
+        {shouldRenderTab("api-fusion") && (
+          <div className={activeTab === "api-fusion" ? "h-full" : "hidden"}>
+            <ApiFusion isVisible={activeTab === "api-fusion"} />
           </div>
         )}
         {shouldRenderTab("ai-usage") && (

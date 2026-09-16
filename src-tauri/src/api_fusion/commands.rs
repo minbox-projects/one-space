@@ -1,8 +1,8 @@
 use super::runtime_http::{autostart, server_status, start_server, stop_server};
 use super::selection::{manual_reenable, set_user_enabled};
 use super::storage::{
-    effective_default_key, find_provider_mut, local_base_url, new_key_id, new_provider_id,
-    read_config, touch_key_created_at, write_config,
+    effective_default_key, find_provider_mut, local_base_url, new_key_id, new_key_value,
+    new_provider_id, read_config, touch_key_created_at, write_config,
 };
 use super::{now_ts, FusionConfig, FusionKey, FusionStatus, FusionUpstreamProvider, TerminalSyncRecord};
 use serde::{Deserialize, Serialize};
@@ -229,6 +229,9 @@ pub fn api_fusion_upsert_key(mut key: FusionKey) -> Result<FusionConfig, String>
         }
         *existing = key;
     } else {
+        if key.value.trim().is_empty() {
+            key.value = new_key_value();
+        }
         config.keys.push(key);
     }
     write_config(&config)?;

@@ -4,6 +4,7 @@ import { Eye, EyeOff, Plus, Trash2 } from "lucide-react";
 import {
   resolveUpstreamModelPreview,
   type FusionModelMapping,
+  type FusionUpstreamProtocol,
   type FusionUpstreamProvider,
 } from "@/lib/apiFusion";
 
@@ -29,6 +30,9 @@ export function UpstreamProviderDetail({
   const [baseUrl, setBaseUrl] = useState(provider.base_url);
   const [apiKey, setApiKey] = useState(provider.api_key);
   const [defaultModel, setDefaultModel] = useState(provider.default_model ?? "");
+  const [protocol, setProtocol] = useState<FusionUpstreamProtocol>(
+    provider.protocol ?? "chat_completions",
+  );
   const [mappings, setMappings] = useState<FusionModelMapping[]>(provider.mappings);
   const [revealApiKey, setRevealApiKey] = useState(false);
   const [previewModel, setPreviewModel] = useState(
@@ -55,6 +59,7 @@ export function UpstreamProviderDetail({
       base_url: baseUrl.trim(),
       api_key: apiKey,
       default_model: defaultModel.trim() ? defaultModel.trim() : null,
+      protocol,
       mappings,
     });
   };
@@ -121,6 +126,24 @@ export function UpstreamProviderDetail({
             aria-label={t("apiFusionDefaultModel", "Default model")}
             className={`${inputClass} font-mono`}
           />
+        </label>
+        <label className="space-y-1">
+          <span className={labelClass}>{t("apiFusionProtocol", "API protocol")}</span>
+          <select
+            value={protocol}
+            onChange={(event) =>
+              setProtocol(event.target.value as FusionUpstreamProtocol)
+            }
+            aria-label={t("apiFusionProtocol", "API protocol")}
+            className={inputClass}
+          >
+            <option value="chat_completions">
+              {t("apiFusionProtocolChat", "Chat Completions (/chat/completions)")}
+            </option>
+            <option value="responses">
+              {t("apiFusionProtocolResponses", "Responses (/responses)")}
+            </option>
+          </select>
         </label>
       </div>
 

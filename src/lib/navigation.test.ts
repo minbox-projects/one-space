@@ -11,6 +11,13 @@ describe("snippets and notes navigation", () => {
   });
 });
 
+describe("API Fusion navigation", () => {
+  it("resolves api-fusion to a standalone tab instead of a More Tools section", () => {
+    expect(resolveNavigationTarget("api-fusion")).toEqual({ tab: "api-fusion" });
+    expect(isMoreToolsTab("api-fusion")).toBe(false);
+  });
+});
+
 describe("MD5 navigation", () => {
   it("resolves the shared MD5 tool target to its More Tools detail", () => {
     expect(resolveNavigationTarget("md5-encryption")).toEqual({

@@ -99,6 +99,12 @@ pub(in crate::api_fusion) fn new_key_id() -> String {
     format!("key-{}", uuid::Uuid::new_v4().simple())
 }
 
+/// Generate a random local API key value from OS entropy so clients never
+/// supply one themselves; 128 bits of randomness, no separators to copy wrong.
+pub(in crate::api_fusion) fn new_key_value() -> String {
+    format!("sk-fusion-{}", uuid::Uuid::new_v4().simple())
+}
+
 pub(in crate::api_fusion) fn find_provider_mut<'a>(
     config: &'a mut FusionConfig,
     provider_id: &str,

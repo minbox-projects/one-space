@@ -6,6 +6,7 @@ use super::selection::{
 use super::storage::{config_path, resolve_default_key_id};
 use super::{
     FusionConfig, FusionKey, FusionUpstreamProvider, ModelMapping, TerminalSyncRecord,
+    UpstreamProtocol,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -59,6 +60,7 @@ fn provider(id: &str) -> FusionUpstreamProvider {
         base_url: "https://api.example.com/v1".to_string(),
         api_key: "sk-test".to_string(),
         default_model: None,
+        protocol: UpstreamProtocol::ChatCompletions,
         mappings: Vec::new(),
         enabled: true,
         auto_disabled: false,
@@ -209,7 +211,11 @@ fn candidate_providers_requires_enabled_active_and_resolvable() {
     let unresolvable = provider("unresolvable");
 
     let providers = vec![serving, disabled, auto_disabled, unresolvable];
-    let candidates = candidate_providers(&providers, Some("local-unknown"));
+    let candidates = candidate_providers(
+        &providers,
+        Some("local-unknown"),
+        UpstreamProtocol::ChatCompletions,
+    );
     let ids: Vec<&str> = candidates.iter().map(|item| item.id.as_str()).collect();
     assert_eq!(ids, vec!["serving"]);
 }
@@ -511,6 +517,7 @@ fn upstream_provider(
         base_url: base_url.to_string(),
         api_key: api_key.to_string(),
         default_model: default_model.map(str::to_string),
+        protocol: UpstreamProtocol::ChatCompletions,
         mappings: Vec::new(),
         enabled: true,
         auto_disabled: false,
@@ -580,10 +587,11 @@ async fn forwards_chat_completions_path_body_and_provider_auth() {
 }
 
 #[tokio::test]
-async fn forwards_responses_path() {
-    let home = temp_home("forward-responses");
+async fn unversioned_openai_paths_are_normalized_before_forwarding() {
+    let home = temp_home("unversioned-paths");
     let port = free_port().await;
-    let (upstream_url, log) = spawn_mock_upstream(|_| MockReply::Json(200, json!({"id":"resp"}))).await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id":"chatcmpl","choices":[]}))).await;
 
     let mut config = FusionConfig::default();
     config.port = port;
@@ -595,6 +603,55 @@ async fn forwards_responses_path() {
         "sk",
         Some("remote-default"),
     ));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _, text) = call_fusion(
+        port,
+        "POST",
+        "/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a", "messages": []})),
+    )
+    .await;
+    assert_eq!(status, 200, "unexpected response: {text}");
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].path, "/v1/chat/completions");
+
+    let (models_status, _, _) = call_fusion(
+        port,
+        "GET",
+        "/models",
+        &[("authorization", "Bearer local-key")],
+        None,
+    )
+    .await;
+    assert_eq!(models_status, 200);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+#[tokio::test]
+async fn forwards_responses_path() {
+    let home = temp_home("forward-responses");
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|_| MockReply::Json(200, json!({"id":"resp"}))).await;
+
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider(
+        "p1",
+        "Provider One",
+        &upstream_url,
+        "sk",
+        Some("remote-default"),
+    );
+    provider.protocol = UpstreamProtocol::Responses;
+    config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
@@ -611,6 +668,60 @@ async fn forwards_responses_path() {
     let captured = log.lock().unwrap().clone();
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].path, "/v1/responses");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+#[tokio::test]
+async fn providers_are_only_offered_the_protocol_they_are_configured_for() {
+    let home = temp_home("protocol-routing");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
+
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut responses_only = upstream_provider(
+        "p1",
+        "Responses Only",
+        &upstream_url,
+        "sk",
+        Some("remote-default"),
+    );
+    responses_only.protocol = UpstreamProtocol::Responses;
+    config.providers.push(responses_only);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(status, 502, "unexpected response: {text}");
+    assert!(
+        text.contains("configured for /responses"),
+        "mismatch reason must be actionable: {text}"
+    );
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "a protocol mismatch must not contact upstream"
+    );
+
+    let (status, _, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(status, 200, "unexpected response: {text}");
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
@@ -1321,6 +1432,33 @@ fn key_commands_persist_and_advance_default_key() {
 }
 
 #[test]
+fn new_keys_without_a_value_get_a_random_secret() {
+    with_temp_home("key-autogen", |_home| {
+        let first = super::commands::api_fusion_upsert_key(FusionKey {
+            id: String::new(),
+            label: "CI".to_string(),
+            value: String::new(),
+            enabled: true,
+            created_at: 0,
+        })
+        .unwrap();
+        let first_value = first.keys[0].value.clone();
+        assert!(first_value.starts_with("sk-fusion-"), "unexpected key: {first_value}");
+        assert!(first_value.len() > "sk-fusion-".len());
+
+        let second = super::commands::api_fusion_upsert_key(FusionKey {
+            id: String::new(),
+            label: "CI 2".to_string(),
+            value: String::new(),
+            enabled: true,
+            created_at: 0,
+        })
+        .unwrap();
+        assert_ne!(first_value, second.keys[1].value, "generated keys must differ");
+    });
+}
+
+#[test]
 fn provider_delete_removes_ledger_entry() {
     with_temp_home("provider-delete", |_home| {
         let mut config = FusionConfig::default();
@@ -1511,7 +1649,7 @@ async fn end_to_end_random_pool_selects_every_resolvable_candidate() {
         upstream_provider("b", "Provider B", &url_b, "sk-b", Some("remote-model")),
     ];
     let candidates: Vec<FusionUpstreamProvider> =
-        candidate_providers(&providers, Some("local-model"))
+        candidate_providers(&providers, Some("local-model"), UpstreamProtocol::ChatCompletions)
             .into_iter()
             .cloned()
             .collect();
@@ -2091,7 +2229,8 @@ async fn end_to_end_all_unavailable_streaming_error_event_precedes_done() {
 async fn end_to_end_path_prefix_and_body_equivalence_for_chat_and_responses() {
     // AC-007/AC-008: upstream path is the provider base URL (including its own
     // path prefix) joined verbatim with the request path; auth is the provider
-    // key and only `model` changes in the body.
+    // key and only `model` changes in the body. Each protocol has its own
+    // provider because routing is configured per provider.
     let home = temp_home("e2e-path-prefix");
     let port = free_port().await;
     let (upstream_url, log) =
@@ -2099,12 +2238,19 @@ async fn end_to_end_path_prefix_and_body_equivalence_for_chat_and_responses() {
     let base_url = format!("{upstream_url}/custom/prefix");
 
     let mut config = config_with_key(port);
-    let mut provider = upstream_provider("p1", "Provider One", &base_url, "upstream-secret", None);
-    provider.mappings = vec![ModelMapping {
+    let mapping = ModelMapping {
         local_model: "local-a".to_string(),
         upstream_model: "remote-a".to_string(),
-    }];
-    config.providers.push(provider);
+    };
+    let mut chat_provider =
+        upstream_provider("p1", "Provider One", &base_url, "upstream-secret", None);
+    chat_provider.mappings = vec![mapping.clone()];
+    config.providers.push(chat_provider);
+    let mut responses_provider =
+        upstream_provider("p2", "Provider Two", &base_url, "upstream-secret", None);
+    responses_provider.protocol = UpstreamProtocol::Responses;
+    responses_provider.mappings = vec![mapping];
+    config.providers.push(responses_provider);
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 

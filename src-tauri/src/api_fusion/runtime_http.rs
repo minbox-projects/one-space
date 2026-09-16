@@ -4,7 +4,7 @@ use super::selection::{
     shuffled_candidates, FailureClass,
 };
 use super::storage::{local_base_url, read_config, write_config};
-use super::{now_ts, FusionConfig, FusionKey, FusionStatus, FusionUpstreamProvider};
+use super::{now_ts, FusionConfig, FusionKey, FusionStatus, FusionUpstreamProvider, UpstreamProtocol};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -211,6 +211,20 @@ fn clean_path(path: &str) -> &str {
     path.split('?').next().unwrap_or(path)
 }
 
+/// Normalize the incoming path to its canonical `/v1` form.
+///
+/// OpenAI-compatible clients disagree on whether the configured base URL
+/// already ends in `/v1`, so `/chat/completions` and `/v1/chat/completions`
+/// must both resolve; upstream always receives the versioned path.
+fn canonical_api_path(path: &str) -> Option<&'static str> {
+    match path {
+        "/v1/models" | "/models" => Some("/v1/models"),
+        "/v1/chat/completions" | "/chat/completions" => Some("/v1/chat/completions"),
+        "/v1/responses" | "/responses" => Some("/v1/responses"),
+        _ => None,
+    }
+}
+
 pub(in crate::api_fusion) fn json_response(status: u16, body: Value) -> HttpResponse {
     let payload = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
     HttpResponse {
@@ -305,19 +319,36 @@ fn all_unavailable_payload(message: impl Into<String>) -> Value {
     })
 }
 
-fn no_candidate_message(config: &FusionConfig, requested: Option<&str>) -> String {
+fn no_candidate_message(
+    config: &FusionConfig,
+    requested: Option<&str>,
+    protocol: UpstreamProtocol,
+) -> String {
     let model = requested.unwrap_or("<none>");
+    let endpoint = protocol.endpoint_path();
     let enabled: Vec<String> = config
         .providers
         .iter()
         .filter(|provider| provider.enabled && !provider.auto_disabled)
-        .map(|provider| format!("{} cannot serve model '{}'", provider.name, model))
+        .map(|provider| {
+            if provider.protocol != protocol {
+                format!(
+                    "{} is configured for {}",
+                    provider.name,
+                    provider.protocol.endpoint_path()
+                )
+            } else {
+                format!("{} cannot serve model '{}'", provider.name, model)
+            }
+        })
         .collect();
     if enabled.is_empty() {
-        format!("all providers unavailable: no enabled provider can serve model '{model}'")
+        format!(
+            "all providers unavailable: no enabled provider can serve model '{model}' via {endpoint}"
+        )
     } else {
         format!(
-            "all providers unavailable: no enabled provider can serve model '{model}'; {}",
+            "all providers unavailable: no enabled provider can serve model '{model}' via {endpoint}; {}",
             enabled.join("; ")
         )
     }
@@ -602,15 +633,13 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
         }
     };
 
-    let path = clean_path(&request.path).to_string();
-    let is_models = path == "/v1/models";
-    let is_forward = path == "/v1/chat/completions" || path == "/v1/responses";
-    if !is_models && !is_forward {
+    let raw_path = clean_path(&request.path);
+    let Some(path) = canonical_api_path(raw_path) else {
         let response = json_response(
             404,
             json!({
                 "error": {
-                    "message": format!("unknown path: {path}"),
+                    "message": format!("unknown path: {raw_path}"),
                     "type": "invalid_request_error",
                     "code": "not_found",
                 }
@@ -621,7 +650,8 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
             .await
             .map_err(|e| e.to_string())?;
         return Ok(());
-    }
+    };
+    let is_models = path == "/v1/models";
 
     if !is_authorized(&request, &config) {
         let response = json_response(
@@ -696,13 +726,18 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
 
+    let protocol = if path == "/v1/responses" {
+        UpstreamProtocol::Responses
+    } else {
+        UpstreamProtocol::ChatCompletions
+    };
     let candidates: Vec<FusionUpstreamProvider> =
-        candidate_providers(&config.providers, requested.as_deref())
+        candidate_providers(&config.providers, requested.as_deref(), protocol)
             .into_iter()
             .cloned()
             .collect();
     if candidates.is_empty() {
-        let message = no_candidate_message(&config, requested.as_deref());
+        let message = no_candidate_message(&config, requested.as_deref(), protocol);
         if wants_stream {
             let payload = all_unavailable_payload(message);
             let sse = format!(
@@ -729,7 +764,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
         attempt_streaming(
             &mut stream,
             &ordered,
-            &path,
+            path,
             &request.body,
             requested.as_deref(),
             &mut config,
@@ -738,7 +773,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
     } else {
         let response = attempt_non_streaming(
             &ordered,
-            &path,
+            path,
             &request.body,
             requested.as_deref(),
             &mut config,

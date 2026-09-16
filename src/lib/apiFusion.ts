@@ -13,12 +13,16 @@ export interface FusionModelMapping {
   upstream_model: string;
 }
 
+/** Upstream endpoint family a provider exposes; request bodies are not translated. */
+export type FusionUpstreamProtocol = "chat_completions" | "responses";
+
 export interface FusionUpstreamProvider {
   id: string;
   name: string;
   base_url: string;
   api_key: string;
   default_model: string | null;
+  protocol?: FusionUpstreamProtocol;
   mappings: FusionModelMapping[];
   enabled: boolean;
   auto_disabled: boolean;

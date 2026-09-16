@@ -44,7 +44,6 @@ const MORE_TOOLS_ALIAS_MAP: Record<string, MoreToolsSection> = {
   ssh: "ssh",
   ["ssh-tunnels"]: "ssh-tunnels",
   ["protocol-router"]: "protocol-router",
-  ["api-fusion"]: "api-fusion",
   ["random-password"]: "random-password",
   ["json-parser"]: "json-parser",
   ["md5-encryption"]: "md5-encryption",

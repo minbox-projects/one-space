@@ -46,7 +46,9 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 ## API Fusion 模块与边界
 
 - API Fusion 是独立模块：前端域 `src/components/ApiFusion/` 加命令封装 `src/lib/apiFusion.ts`，后端 `src-tauri/src/api_fusion.rs` 加同名子目录（`types_config`、`storage`、`selection`、`runtime_http`、`forwarding`、`commands`）。
-- 导航 id 固定为 `api-fusion`（feature 归属模块根 `frontend`，owner `frontend`）与 `api-fusion-backend`（模块根 `tauri-backend`，owner `backend`）。新增工具 id 必须同时接入 `navigation.ts`、`moreToolPresentation.ts`、`launcherToolVisibility.ts`、`MoreToolsHub.tsx`、`Launcher.tsx` 与 `App.tsx`，否则页签不可达或启动器清单不一致。
+- 导航 id 固定为 `api-fusion`（feature 归属模块根 `frontend`，owner `frontend`）与 `api-fusion-backend`（模块根 `tauri-backend`，owner `backend`）。`api-fusion` 是左侧「AI 能力」分组的顶层页签，位于 `ai-environments` 与 `ai-usage` 之间；`resolveNavigationTarget("api-fusion")` 解析为顶层 tab，不再归入 More Tools，More Tools 卡片与 Launcher 入口保留。新增工具 id 必须同时接入 `navigation.ts`、`moreToolPresentation.ts`、`launcherToolVisibility.ts`、`MoreToolsHub.tsx`、`Launcher.tsx` 与 `App.tsx`，否则页签不可达或启动器清单不一致。
+- 每个上游服务商带 `protocol` 字段（`chat_completions` 默认 / `responses`）。中继接受 `/chat/completions`、`/responses` 及其无 `/v1` 形式并统一成 `/v1/...` 上游路径；候选选择按 `protocol` 过滤，协议不匹配的服务商不作为候选，且不做请求体转换，调用方需让客户端协议与服务商协议一致。
+- 新建本地 Key 只需名称，值由后端用 OS 熵随机生成（`sk-fusion-<128bit hex>`）；编辑既有 Key 时留空或回传脱敏占位符保留原值。
 - 本地服务固定监听 `127.0.0.1` 加配置端口（默认 `17688`），bind 失败即返回包含端口与原因的可操作错误，不回退到其他端口；启用状态持久化，重启后按上次状态自动恢复监听。
 - 上游服务商、本地 Key 与终端同步台账保存在独立加密文件 `api_fusion.json`（经 `crate::crypto` 加密并临时文件加 rename 原子写入），与 Protocol Router、AI Environments 的存储互不共享，密钥不得以明文落盘。
 - 终端写入边界：仅在用户主动“一键配置/同步”时写入 `tool` 为 `opencode`/`codex` 的既有服务商记录，且只替换 `base_url` 与 `api_key`（先读取既有记录再合并提交）；不改写 Protocol Router 的 route 数据，不触碰 `claude`/`antigravity` 记录。

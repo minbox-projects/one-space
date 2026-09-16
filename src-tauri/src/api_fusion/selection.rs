@@ -1,4 +1,4 @@
-use super::{FusionUpstreamProvider, FAILURE_THRESHOLD};
+use super::{FusionUpstreamProvider, UpstreamProtocol, FAILURE_THRESHOLD};
 use rand::seq::SliceRandom;
 
 /// Outcome class for an upstream attempt, driving switching and auto-disable decisions.
@@ -47,14 +47,21 @@ pub(in crate::api_fusion) fn can_serve(
     resolve_model(provider, requested).is_some()
 }
 
-/// Candidate set: enabled, not auto-disabled, and able to resolve the request model.
+/// Candidate set: enabled, not auto-disabled, speaking the requested protocol,
+/// and able to resolve the request model.
 pub(in crate::api_fusion) fn candidate_providers<'a>(
     providers: &'a [FusionUpstreamProvider],
     requested: Option<&str>,
+    protocol: UpstreamProtocol,
 ) -> Vec<&'a FusionUpstreamProvider> {
     providers
         .iter()
-        .filter(|provider| provider.enabled && !provider.auto_disabled && can_serve(provider, requested))
+        .filter(|provider| {
+            provider.enabled
+                && !provider.auto_disabled
+                && provider.protocol == protocol
+                && can_serve(provider, requested)
+        })
         .collect()
 }
 

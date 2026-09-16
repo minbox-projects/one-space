@@ -377,4 +377,42 @@ describe("ApiFusion", () => {
     fireEvent.change(previewInput, { target: { value: "" } });
     expect(preview).toHaveTextContent("remote-default");
   });
+
+  it("新增本地 Key 只需名称，值留空交由后端随机生成", async () => {
+    const store: Store = {
+      config: makeConfig({ keys: [], default_key_id: null }),
+      status: makeStatus({ key_count: 0, default_key_id: null }),
+      targets: [],
+    };
+    invokeMock.mockImplementation(async (command: string) => {
+      switch (command) {
+        case "api_fusion_get_config":
+        case "api_fusion_upsert_key":
+          return store.config;
+        case "api_fusion_status":
+          return store.status;
+        case "api_fusion_terminal_targets":
+          return store.targets;
+        default:
+          throw new Error(`Unhandled command: ${command}`);
+      }
+    });
+
+    renderWithProviders(<ApiFusion />);
+    await screen.findByTestId("api-fusion-keys");
+
+    const addButton = screen.getByRole("button", { name: /Add key/ });
+    expect(addButton).toBeDisabled();
+    expect(screen.queryByLabelText("Key")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Label"), { target: { value: "CI" } });
+    expect(addButton).toBeEnabled();
+    fireEvent.click(addButton);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_upsert_key", {
+        key: expect.objectContaining({ label: "CI", value: "" }),
+      }),
+    );
+  });
 });

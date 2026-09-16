@@ -29,6 +29,28 @@ pub struct ModelMapping {
 /// Upper bound on consecutive failures before a provider is automatically disabled.
 pub const FAILURE_THRESHOLD: u32 = 3;
 
+/// Which OpenAI-compatible endpoint family an upstream provider exposes.
+///
+/// The relay accepts `/chat/completions` and `/responses` from clients and only
+/// offers a provider to requests matching its configured protocol.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamProtocol {
+    #[default]
+    ChatCompletions,
+    Responses,
+}
+
+impl UpstreamProtocol {
+    /// Canonical upstream path suffix for this protocol.
+    pub fn endpoint_path(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "/chat/completions",
+            Self::Responses => "/responses",
+        }
+    }
+}
+
 /// An upstream OpenAI-compatible provider used as a forwarding target.
 ///
 /// `enabled` carries the user's intent while `auto_disabled` carries runtime health.
@@ -42,6 +64,8 @@ pub struct FusionUpstreamProvider {
     pub api_key: String,
     #[serde(default)]
     pub default_model: Option<String>,
+    #[serde(default)]
+    pub protocol: UpstreamProtocol,
     #[serde(default)]
     pub mappings: Vec<ModelMapping>,
     #[serde(default = "default_true")]
@@ -66,6 +90,7 @@ impl Default for FusionUpstreamProvider {
             base_url: String::new(),
             api_key: String::new(),
             default_model: None,
+            protocol: UpstreamProtocol::ChatCompletions,
             mappings: Vec::new(),
             enabled: true,
             auto_disabled: false,

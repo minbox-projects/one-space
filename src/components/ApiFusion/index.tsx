@@ -39,6 +39,7 @@ function emptyProvider(): FusionUpstreamProvider {
     base_url: "",
     api_key: "",
     default_model: null,
+    protocol: "chat_completions",
     mappings: [],
     enabled: true,
     auto_disabled: false,

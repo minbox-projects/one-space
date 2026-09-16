@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Copy, Eye, EyeOff, KeyRound, Plus, Trash2 } from "lucide-react";
+import { Check, Copy, KeyRound, Plus, Trash2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { maskSecret, type FusionKey } from "@/lib/apiFusion";
 
@@ -29,17 +29,12 @@ export function LocalKeyList({
 }: LocalKeyListProps) {
   const { t } = useTranslation();
   const [labelInput, setLabelInput] = useState("");
-  const [valueInput, setValueInput] = useState("");
-  const [revealValue, setRevealValue] = useState(false);
 
   const handleAdd = () => {
     const label = labelInput.trim();
-    const value = valueInput.trim();
-    if (!label || !value) return;
-    onSave({ id: "", label, value, enabled: true, created_at: 0 });
+    if (!label) return;
+    onSave({ id: "", label, value: "", enabled: true, created_at: 0 });
     setLabelInput("");
-    setValueInput("");
-    setRevealValue(false);
   };
 
   return (
@@ -49,7 +44,7 @@ export function LocalKeyList({
         <h3 className="text-sm font-semibold">{t("apiFusionKeys", "Local keys")}</h3>
       </div>
 
-      <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto]">
+      <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
         <input
           type="text"
           value={labelInput}
@@ -58,37 +53,10 @@ export function LocalKeyList({
           aria-label={t("apiFusionKeyLabel", "Label")}
           className="h-10 rounded-md border border-input bg-background px-3 text-sm"
         />
-        <div className="relative">
-          <input
-            type={revealValue ? "text" : "password"}
-            value={valueInput}
-            onChange={(event) => setValueInput(event.target.value)}
-            placeholder={t("apiFusionKeyValuePlaceholder", "sk-...")}
-            aria-label={t("apiFusionKeyValue", "Key")}
-            className="h-10 w-full rounded-md border border-input bg-background px-3 pr-10 font-mono text-sm"
-          />
-          <button
-            type="button"
-            onClick={() => setRevealValue((prev) => !prev)}
-            aria-label={
-              revealValue
-                ? t("apiFusionHideSecret", "Hide secret")
-                : t("apiFusionShowSecret", "Show secret")
-            }
-            title={
-              revealValue
-                ? t("apiFusionHideSecret", "Hide secret")
-                : t("apiFusionShowSecret", "Show secret")
-            }
-            className="absolute right-1 top-1 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"
-          >
-            {revealValue ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-          </button>
-        </div>
         <button
           type="button"
           onClick={handleAdd}
-          disabled={busy || !labelInput.trim() || !valueInput.trim()}
+          disabled={busy || !labelInput.trim()}
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
         >
           <Plus className="h-4 w-4" />
