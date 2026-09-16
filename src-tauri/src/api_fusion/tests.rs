@@ -3681,6 +3681,106 @@ async fn mapping_without_protocol_inherits_the_provider_protocol() {
     drop(home);
 }
 
+/// REQ-001 / REQ-007: a mapping whose protocol is submitted as an explicit JSON
+/// `null` — the shape the UI sends for "follow the provider" — must be treated
+/// exactly like a missing field. It is persisted as an inheritance marker (key
+/// absent or `null`, never a concrete value), forwards through the provider
+/// protocol, and cannot serve the opposite endpoint.
+#[tokio::test]
+async fn mapping_with_explicit_null_protocol_inherits_the_provider_protocol() {
+    let home = temp_home("per-model-null-inherit");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
+
+    // Explicitly present `"protocol": null`, unlike `json_mapping(.., None)`.
+    let explicit_null_mapping = json!({
+        "local_model": "inherit-local",
+        "upstream_model": "inherit-remote",
+        "protocol": null,
+    });
+    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+        port,
+        vec![json_provider(
+            "p1",
+            "OpenCode Go",
+            &upstream_url,
+            "responses",
+            None,
+            vec![explicit_null_mapping],
+        )],
+    ))
+    .expect("decode config with an explicit null mapping protocol");
+
+    // Persistence round trip: the declaration must survive as inheritance, never
+    // as a concrete protocol value.
+    super::storage::write_config(&config).unwrap();
+    let reloaded = super::storage::read_config().expect("read config");
+    let serialized = serde_json::to_value(&reloaded).expect("encode reloaded config");
+    let persisted = &serialized["providers"][0]["mappings"][0];
+    assert_eq!(persisted["local_model"], "inherit-local", "{serialized}");
+    assert!(
+        persisted["protocol"].is_null(),
+        "an explicit null protocol must stay null/absent when persisted, not become a value: {serialized}"
+    );
+
+    super::runtime_http::start_server().await.unwrap();
+
+    let (responses_status, _, responses_text) = call_fusion(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "inherit-local", "input": "hi"})),
+    )
+    .await;
+    let (chat_status, _, chat_text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "inherit-local", "messages": [{"role": "user", "content": "hi"}]})),
+    )
+    .await;
+
+    let captured = log.lock().unwrap().clone();
+    let summary = format!(
+        "responses=(status={responses_status}, body={responses_text}) chat=(status={chat_status}, body={chat_text}) upstream=[{}]",
+        captured_summary(&captured)
+    );
+
+    assert_eq!(
+        responses_status, 200,
+        "a null-protocol mapping must inherit the responses provider protocol: {summary}"
+    );
+    assert_eq!(
+        captured.len(), 1,
+        "only the responses request may reach upstream: {summary}"
+    );
+    assert_eq!(
+        captured[0].path, "/v1/responses",
+        "inheritance must not fall back to the chat_completions default: {summary}"
+    );
+    let sent: Value = serde_json::from_slice(&captured[0].body).unwrap();
+    assert_eq!(
+        sent["model"], "inherit-remote",
+        "the matched mapping's own remote model must be used: {summary}"
+    );
+
+    assert_eq!(
+        chat_status, 502,
+        "the inherited responses protocol cannot serve a chat request: {summary}"
+    );
+    let body: Value = serde_json::from_str(&chat_text).unwrap();
+    assert_eq!(
+        body["error"]["code"], "all_providers_unavailable",
+        "body={chat_text}"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
 // ---------------------------------------------------------------------------
 // Plan 20260916-api-fusion-per-model-endpoint, Step 3 (cross-module E2E)
 //

@@ -393,10 +393,17 @@ describe("ApiFusion", () => {
     renderWithProviders(<ApiFusion />);
     fireEvent.click(await screen.findByText("Upstream A"));
 
-    expect(screen.getByLabelText("Mapping protocol 1")).toHaveValue("");
+    const firstMappingProtocol = screen.getByLabelText("Mapping protocol 1");
+    expect(firstMappingProtocol).toHaveValue("");
+    expect(firstMappingProtocol).toHaveDisplayValue("Inherit from provider");
+    expect(
+      screen.getByRole("option", { name: "Inherit from provider" }),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /Add mapping/ }));
-    expect(screen.getByLabelText("Mapping protocol 2")).toHaveValue("");
+    const secondMappingProtocol = screen.getByLabelText("Mapping protocol 2");
+    expect(secondMappingProtocol).toHaveValue("");
+    expect(secondMappingProtocol).toHaveDisplayValue("Inherit from provider");
   });
 
   it("保存继承行时映射协议缺省或为 null 且不为空字符串", async () => {
