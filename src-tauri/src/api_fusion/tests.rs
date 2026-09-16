@@ -2713,8 +2713,15 @@ async fn spawn_unresponsive_upstream() -> String {
 
 /// Finding C (low), deterministic path: an upstream that accepts the TCP
 /// connection but never answers must not hang the forwarding request. The
-/// enforced timeout is a retryable failure that switches to the next candidate
-/// and counts toward the failure threshold (AC-010, AC-011).
+/// enforced idle read timeout (60s, see `forwarding::UPSTREAM_READ_TIMEOUT`)
+/// makes it a retryable failure that switches to the next candidate and counts
+/// toward the failure threshold (AC-010, AC-011).
+///
+/// The 75s bound only encodes "must not hang": it is deliberately generous
+/// because the idle budget before the first byte arrives is now 60s. It no
+/// longer encodes "fails fast" — a fast first-byte deadline is not a
+/// requirement, as `slow_first_byte_upstream_is_served_within_the_relaxed_budget`
+/// pins down.
 #[tokio::test]
 async fn unresponsive_upstream_is_a_retryable_timeout_not_a_hang() {
     let _home = temp_home("unresponsive-timeout");
@@ -2730,7 +2737,7 @@ async fn unresponsive_upstream_is_a_retryable_timeout_not_a_hang() {
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
     let response = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
+        std::time::Duration::from_secs(75),
         super::runtime_http::attempt_non_streaming(
             &[a, b],
             "/v1/chat/completions",
@@ -2752,6 +2759,85 @@ async fn unresponsive_upstream_is_a_retryable_timeout_not_a_hang() {
         "a response timeout must count as a failure"
     );
     assert!(!a_stored.auto_disabled, "one timeout must not auto-disable");
+}
+
+/// Bind a loopback listener that accepts connections, reads the request and only
+/// then thinks for 12s before sending a valid JSON response. The think time is
+/// past the old 10s idle read timeout but inside the relaxed 60s budget, which
+/// is exactly the slow-reasoning-model shape observed in the smoke run. The
+/// marker pins the relayed body to this upstream so a fallback cannot mask it.
+async fn spawn_slow_first_byte_upstream() -> String {
+    const MARKER: &str = "slow-first-byte-ok";
+    const THINK_TIME: std::time::Duration = std::time::Duration::from_secs(12);
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind slow-first-byte upstream");
+    let addr = listener.local_addr().expect("slow-first-byte addr");
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            tauri::async_runtime::spawn(async move {
+                let Ok(_request) = super::runtime_http::read_http_request(&mut stream).await else {
+                    return;
+                };
+                tokio::time::sleep(THINK_TIME).await;
+                let body = serde_json::to_vec(&json!({
+                    "id": MARKER,
+                    "choices": [{"message": {"role": "assistant", "content": "slow but alive"}}]
+                }))
+                .unwrap_or_default();
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(&body).await;
+                let _ = stream.flush().await;
+            });
+        }
+    });
+    format!("http://{}", addr)
+}
+
+/// A slow-but-alive inference upstream must be served as success: a first byte
+/// at ~12s is inside the relaxed 60s idle read budget and must not be turned
+/// into a 502 "network error" that counts toward the 3-strikes auto-disable
+/// threshold (AC-010, AC-011).
+#[tokio::test]
+async fn slow_first_byte_upstream_is_served_within_the_relaxed_budget() {
+    let _home = temp_home("slow-first-byte");
+    let slow_url = spawn_slow_first_byte_upstream().await;
+
+    let mut config = config_with_key(0);
+    let a = upstream_provider("a", "Provider A", &slow_url, "sk-a", Some("remote-model"));
+    config.providers.push(a.clone());
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(40),
+        super::runtime_http::attempt_non_streaming(
+            &[a],
+            "/v1/chat/completions",
+            &body,
+            Some("local-model"),
+            &mut config,
+            &HashMap::new(),
+        ),
+    )
+    .await
+    .expect("a slow first byte inside the relaxed budget must not hang the relay");
+
+    assert_eq!(
+        response.status, 200,
+        "a first byte at ~12s (inside the 60s idle read budget) must be served, not turned into an upstream failure; body was {}",
+        String::from_utf8_lossy(&response.body)
+    );
+    assert!(
+        String::from_utf8_lossy(&response.body).contains("slow-first-byte-ok"),
+        "the slow upstream body must be relayed unchanged"
+    );
 }
 
 /// Finding D (low): for a streaming request, a 2xx upstream body that is neither
