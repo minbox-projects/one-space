@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Eye, EyeOff, Plus, Trash2 } from "lucide-react";
 import {
-  resolveUpstreamModelPreview,
+  resolveMappingPreview,
   type FusionModelMapping,
   type FusionUpstreamProtocol,
   type FusionUpstreamProvider,
@@ -18,6 +18,11 @@ type UpstreamProviderDetailProps = {
 const inputClass =
   "h-10 w-full rounded-md border border-input bg-background px-3 text-sm";
 const labelClass = "text-[10px] uppercase tracking-wide text-muted-foreground";
+
+/** Target endpoint path for a protocol; `/responses` vs `/chat/completions`. */
+function endpointPath(protocol: FusionUpstreamProtocol): string {
+  return protocol === "responses" ? "/responses" : "/chat/completions";
+}
 
 export function UpstreamProviderDetail({
   provider,
@@ -39,8 +44,12 @@ export function UpstreamProviderDetail({
     provider.mappings[0]?.local_model ?? "",
   );
 
-  const preview = resolveUpstreamModelPreview(
-    { mappings, default_model: defaultModel.trim() ? defaultModel.trim() : null },
+  const preview = resolveMappingPreview(
+    {
+      protocol,
+      mappings,
+      default_model: defaultModel.trim() ? defaultModel.trim() : null,
+    },
     previewModel,
   );
 
@@ -60,7 +69,10 @@ export function UpstreamProviderDetail({
       api_key: apiKey,
       default_model: defaultModel.trim() ? defaultModel.trim() : null,
       protocol,
-      mappings,
+      mappings: mappings.map((mapping) => ({
+        ...mapping,
+        protocol: mapping.protocol ?? null,
+      })),
     });
   };
 
@@ -198,6 +210,32 @@ export function UpstreamProviderDetail({
                   })}
                   className={`${inputClass} font-mono`}
                 />
+                <select
+                  value={mapping.protocol ?? ""}
+                  onChange={(event) =>
+                    updateMapping(index, {
+                      protocol:
+                        event.target.value === ""
+                          ? null
+                          : (event.target.value as FusionUpstreamProtocol),
+                    })
+                  }
+                  aria-label={t("apiFusionMappingProtocolAria", {
+                    index: index + 1,
+                    defaultValue: `Mapping protocol ${index + 1}`,
+                  })}
+                  className="h-10 shrink-0 rounded-md border border-input bg-background px-2 text-sm"
+                >
+                  <option value="">
+                    {t("apiFusionProtocolInherit", "Inherit from provider")}
+                  </option>
+                  <option value="chat_completions">
+                    {t("apiFusionProtocolChat", "Chat Completions (/chat/completions)")}
+                  </option>
+                  <option value="responses">
+                    {t("apiFusionProtocolResponses", "Responses (/responses)")}
+                  </option>
+                </select>
                 <button
                   type="button"
                   onClick={() =>
@@ -217,7 +255,7 @@ export function UpstreamProviderDetail({
         )}
       </div>
 
-      <div className="mt-5 grid gap-3 rounded-2xl border bg-muted/10 p-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      <div className="mt-5 grid gap-3 rounded-2xl border bg-muted/10 p-4 md:grid-cols-3">
         <label className="space-y-1">
           <span className={labelClass}>{t("apiFusionPreviewModel", "Preview model")}</span>
           <input
@@ -236,7 +274,20 @@ export function UpstreamProviderDetail({
             }`}
             data-testid="api-fusion-model-preview"
           >
-            {preview ?? t("apiFusionPreviewUnavailable", "Not resolvable")}
+            {preview?.upstreamModel ?? t("apiFusionPreviewUnavailable", "Not resolvable")}
+          </div>
+        </div>
+        <div className="space-y-1">
+          <span className={labelClass}>{t("apiFusionPreviewEndpoint", "Target endpoint")}</span>
+          <div
+            className={`rounded-md border px-3 py-2 font-mono text-sm ${
+              preview ? "text-foreground" : "text-muted-foreground"
+            }`}
+            data-testid="api-fusion-endpoint-preview"
+          >
+            {preview
+              ? endpointPath(preview.endpoint)
+              : t("apiFusionPreviewUnavailable", "Not resolvable")}
           </div>
         </div>
       </div>

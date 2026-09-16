@@ -11,6 +11,8 @@ export const API_FUSION_SUPPORTED_TERMINAL_TOOLS = ["opencode", "codex"] as cons
 export interface FusionModelMapping {
   local_model: string;
   upstream_model: string;
+  /** `null`/absent means this row inherits the provider protocol. */
+  protocol?: FusionUpstreamProtocol | null;
 }
 
 /** Upstream endpoint family a provider exposes; request bodies are not translated. */
@@ -113,21 +115,44 @@ export function localBaseUrl(port: number): string {
   return `http://127.0.0.1:${port}`;
 }
 
+/** Resolved upstream model plus the endpoint family the request is sent to. */
+export interface FusionMappingPreview {
+  upstreamModel: string;
+  endpoint: FusionUpstreamProtocol;
+}
+
 /**
- * Resolve the upstream model forwarded for a requested local model.
+ * Resolve the upstream model and target endpoint for a requested local model.
  *
- * Exact mapping match wins, then the provider default model; `null` means the
- * provider cannot serve the requested model.
+ * An exact, non-blank mapping match wins and may override the protocol per row;
+ * otherwise the provider default model is used with the provider protocol.
+ * `null` means the provider cannot serve the requested model.
  */
-export function resolveUpstreamModelPreview(
-  provider: Pick<FusionUpstreamProvider, "mappings" | "default_model">,
+export function resolveMappingPreview(
+  provider: {
+    protocol?: FusionUpstreamProtocol;
+    mappings: FusionModelMapping[];
+    default_model: string | null;
+  },
   localModel: string,
-): string | null {
+): FusionMappingPreview | null {
   const mapping = provider.mappings.find(
-    (entry) => entry.local_model === localModel,
+    (entry) =>
+      entry.local_model === localModel && entry.upstream_model.trim() !== "",
   );
-  if (mapping) return mapping.upstream_model;
-  return provider.default_model ?? null;
+  if (mapping) {
+    return {
+      upstreamModel: mapping.upstream_model,
+      endpoint: mapping.protocol ?? provider.protocol ?? "chat_completions",
+    };
+  }
+  if (provider.default_model) {
+    return {
+      upstreamModel: provider.default_model,
+      endpoint: provider.protocol ?? "chat_completions",
+    };
+  }
+  return null;
 }
 
 /**

@@ -14,41 +14,63 @@ pub(in crate::api_fusion) enum FailureClass {
     ReturnToClient,
 }
 
-/// Resolve the upstream model for a provider: exact mapping first, default model fallback.
-/// Returns `None` when the provider can neither map nor fall back for the request.
-pub(in crate::api_fusion) fn resolve_model(
+/// Outcome of resolving a request model against one provider for an inbound protocol.
+#[derive(Debug)]
+pub(in crate::api_fusion) enum ModelResolution {
+    /// Forward using this upstream model.
+    Serve(String),
+    /// A valid mapping row matches the requested model but declares another
+    /// protocol. The provider must not serve this request and must never fall
+    /// back to `default_model`; the payload carries the protocol it targets so
+    /// the error can name the required endpoint.
+    ProtocolMismatch(UpstreamProtocol),
+    /// Neither a matching row nor an eligible default model.
+    NoMatch,
+}
+
+/// Resolve the upstream model for a provider under the inbound `protocol`.
+///
+/// Rows with an empty `upstream_model` are discarded and count as no match.
+/// A matching row is served with its own remote model only when the row's
+/// effective protocol (its own declaration, else the provider protocol) equals
+/// `protocol`; when matching rows exist but none matches, the request is a
+/// `ProtocolMismatch` and the default model is not used as a fallback. The
+/// default model serves an unmapped model only when the provider protocol
+/// itself matches.
+pub(in crate::api_fusion) fn resolve_model_for_protocol(
     provider: &FusionUpstreamProvider,
     requested: Option<&str>,
-) -> Option<String> {
-    if let Some(requested) = requested.map(str::trim).filter(|value| !value.is_empty()) {
-        if let Some(mapping) = provider
-            .mappings
-            .iter()
-            .find(|mapping| mapping.local_model.trim() == requested)
-        {
-            let upstream = mapping.upstream_model.trim();
-            if !upstream.is_empty() {
-                return Some(upstream.to_string());
+    protocol: UpstreamProtocol,
+) -> ModelResolution {
+    let requested = requested.map(str::trim).filter(|value| !value.is_empty());
+    let mut configured: Option<UpstreamProtocol> = None;
+    if let Some(requested) = requested {
+        for mapping in provider.mappings.iter().filter(|mapping| {
+            mapping.local_model.trim() == requested && !mapping.upstream_model.trim().is_empty()
+        }) {
+            let effective = mapping.effective_protocol(provider.protocol);
+            if effective == protocol {
+                return ModelResolution::Serve(mapping.upstream_model.trim().to_string());
             }
+            configured.get_or_insert(effective);
         }
+    }
+    if let Some(configured) = configured {
+        return ModelResolution::ProtocolMismatch(configured);
     }
     provider
         .default_model
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
+        .filter(|_| provider.protocol == protocol)
+        .map(|value| ModelResolution::Serve(value.to_string()))
+        .unwrap_or(ModelResolution::NoMatch)
 }
 
-pub(in crate::api_fusion) fn can_serve(
-    provider: &FusionUpstreamProvider,
-    requested: Option<&str>,
-) -> bool {
-    resolve_model(provider, requested).is_some()
-}
-
-/// Candidate set: enabled, not auto-disabled, speaking the requested protocol,
-/// and able to resolve the request model.
+/// Candidate set: enabled, not auto-disabled, and able to serve the request
+/// model under the inbound protocol. A provider is not filtered by its own
+/// protocol alone, because a mapping row may declare the inbound protocol.
 pub(in crate::api_fusion) fn candidate_providers<'a>(
     providers: &'a [FusionUpstreamProvider],
     requested: Option<&str>,
@@ -59,8 +81,10 @@ pub(in crate::api_fusion) fn candidate_providers<'a>(
         .filter(|provider| {
             provider.enabled
                 && !provider.auto_disabled
-                && provider.protocol == protocol
-                && can_serve(provider, requested)
+                && matches!(
+                    resolve_model_for_protocol(provider, requested, protocol),
+                    ModelResolution::Serve(_)
+                )
         })
         .collect()
 }

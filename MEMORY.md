@@ -47,7 +47,8 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 
 - API Fusion 是独立模块：前端域 `src/components/ApiFusion/` 加命令封装 `src/lib/apiFusion.ts`，后端 `src-tauri/src/api_fusion.rs` 加同名子目录（`types_config`、`storage`、`selection`、`runtime_http`、`forwarding`、`commands`）。
 - 导航 id 固定为 `api-fusion`（feature 归属模块根 `frontend`，owner `frontend`）与 `api-fusion-backend`（模块根 `tauri-backend`，owner `backend`）。`api-fusion` 是左侧「AI 能力」分组的顶层页签，位于 `ai-environments` 与 `ai-usage` 之间；`resolveNavigationTarget("api-fusion")` 解析为顶层 tab。API Fusion 不作为工具存在：已从 `MoreToolsSection`、`moreToolPresentation`、`launcherToolVisibility`、`MoreToolsHub.tsx` 卡片与 `Launcher.tsx` 内部工具清单移除，仅保留在 `Launcher` 的导航目标中。新增工具 id 必须同时接入 `navigation.ts`、`moreToolPresentation.ts`、`launcherToolVisibility.ts`、`MoreToolsHub.tsx`、`Launcher.tsx` 与 `App.tsx`，否则页签不可达或启动器清单不一致。
-- 每个上游服务商带 `protocol` 字段（`chat_completions` 默认 / `responses`）。中继接受 `/chat/completions`、`/responses` 及其无 `/v1` 形式并统一成 `/v1/...` 上游路径；候选选择按 `protocol` 过滤，协议不匹配的服务商不作为候选，且不做请求体转换，调用方需让客户端协议与服务商协议一致。
+- 上游服务商保留 `protocol` 字段（`chat_completions` 默认 / `responses`）作为继承来源；每条模型映射可另行声明 `protocol`，缺省或 `null` 即继承所属服务商协议。候选选择依据映射行协议（缺省继承服务商协议）能否服务入站协议，不再用服务商 `protocol` 字段硬过滤；命中映射但协议不一致的服务商不参与本次请求且不回退 `default_model`，未命中映射才回退 `default_model` 并要求服务商协议一致。中继不做请求体转换，调用方协议需与服务商或映射行协议一致；`/v1/messages`（Anthropic）不受支持属已知边界。
+- 中继接受 `/chat/completions`、`/responses` 及其无 `/v1` 形式并统一成 `/v1/...` 上游路径，拼接上游 URL 时折叠重复的 `/v1` 版本段，因此 `base_url` 带不带 `/v1` 均可。转发按拒绝列表透传客户端入站请求头（如 `x-opencode-session`），hop-by-hop 与传输头以及 `content-type`、`accept` 丢弃；本地中继凭据（本地 Key 的 `authorization` / `x-api-key`）一律不得透传给上游，上游凭据由中继显式设置为 `authorization: Bearer <provider api_key>`。
 - 新建本地 Key 只需名称，值由后端用 OS 熵随机生成（`sk-fusion-<128bit hex>`）；编辑既有 Key 时留空或回传脱敏占位符保留原值。
 - 本地服务固定监听 `127.0.0.1` 加配置端口（默认 `17688`），bind 失败即返回包含端口与原因的可操作错误，不回退到其他端口；启用状态持久化，重启后按上次状态自动恢复监听。
 - 上游服务商、本地 Key 与终端同步台账保存在独立加密文件 `api_fusion.json`（经 `crate::crypto` 加密并临时文件加 rename 原子写入），与 Protocol Router、AI Environments 的存储互不共享，密钥不得以明文落盘。

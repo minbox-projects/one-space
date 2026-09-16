@@ -22,7 +22,7 @@ import {
   localBaseUrl,
   maskSecret,
   resolveDefaultKeyId,
-  resolveUpstreamModelPreview,
+  resolveMappingPreview,
   type FusionConfig,
   type FusionKey,
   type FusionUpstreamProvider,
@@ -198,26 +198,79 @@ describe("localBaseUrl 本地 Api 地址", () => {
   });
 });
 
-describe("resolveUpstreamModelPreview 模型解析预览", () => {
-  it("优先命中本地到远端模型映射", () => {
+describe("resolveMappingPreview 模型解析预览", () => {
+  it("映射行协议优先于服务商协议", () => {
+    const p = provider({
+      protocol: "chat_completions",
+      mappings: [
+        { local_model: "local-a", upstream_model: "remote-a", protocol: "responses" },
+      ],
+      default_model: "remote-default",
+    });
+    expect(resolveMappingPreview(p, "local-a")).toEqual({
+      upstreamModel: "remote-a",
+      endpoint: "responses",
+    });
+  });
+
+  it("映射行未声明协议时继承服务商协议", () => {
+    const p = provider({
+      protocol: "responses",
+      mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
+      default_model: "remote-default",
+    });
+    expect(resolveMappingPreview(p, "local-a")).toEqual({
+      upstreamModel: "remote-a",
+      endpoint: "responses",
+    });
+  });
+
+  it("服务商与映射行都未声明协议时回落 chat_completions", () => {
     const p = provider({
       mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
       default_model: "remote-default",
     });
-    expect(resolveUpstreamModelPreview(p, "local-a")).toBe("remote-a");
+    expect(resolveMappingPreview(p, "local-a")).toEqual({
+      upstreamModel: "remote-a",
+      endpoint: "chat_completions",
+    });
   });
 
-  it("未命中映射时回退默认模型", () => {
+  it("未命中映射时回退默认模型并使用服务商协议", () => {
     const p = provider({
+      protocol: "responses",
       mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
       default_model: "remote-default",
     });
-    expect(resolveUpstreamModelPreview(p, "local-unknown")).toBe("remote-default");
+    expect(resolveMappingPreview(p, "local-unknown")).toEqual({
+      upstreamModel: "remote-default",
+      endpoint: "responses",
+    });
   });
 
-  it("既无映射也无默认模型时不可解析", () => {
+  it("既无匹配映射也无默认模型时不可解析", () => {
     const p = provider({ mappings: [], default_model: null });
-    expect(resolveUpstreamModelPreview(p, "local-a")).toBeNull();
+    expect(resolveMappingPreview(p, "local-a")).toBeNull();
+  });
+
+  it("远端模型为空白的映射行不构成命中", () => {
+    const p = provider({
+      protocol: "responses",
+      mappings: [
+        { local_model: "local-a", upstream_model: "   ", protocol: "chat_completions" },
+      ],
+      default_model: "remote-default",
+    });
+    expect(resolveMappingPreview(p, "local-a")).toEqual({
+      upstreamModel: "remote-default",
+      endpoint: "responses",
+    });
+
+    const noDefault = provider({
+      mappings: [{ local_model: "local-a", upstream_model: "   " }],
+      default_model: null,
+    });
+    expect(resolveMappingPreview(noDefault, "local-a")).toBeNull();
   });
 });
 
