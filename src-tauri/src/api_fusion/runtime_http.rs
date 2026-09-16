@@ -1,7 +1,7 @@
 use super::forwarding::{forward_non_streaming, open_streaming_response};
 use super::selection::{
-    candidate_providers, classify_failure, register_failure, register_success, resolve_model,
-    shuffled_candidates, FailureClass,
+    candidate_providers, classify_failure, register_failure, register_success,
+    resolve_model_for_protocol, shuffled_candidates, FailureClass, ModelResolution,
 };
 use super::storage::{local_base_url, read_config, write_config};
 use super::{now_ts, FusionConfig, FusionKey, FusionStatus, FusionUpstreamProvider, UpstreamProtocol};
@@ -225,6 +225,15 @@ fn canonical_api_path(path: &str) -> Option<&'static str> {
     }
 }
 
+/// The protocol an inbound canonical path speaks.
+fn protocol_for_path(path: &str) -> UpstreamProtocol {
+    if path == "/v1/responses" {
+        UpstreamProtocol::Responses
+    } else {
+        UpstreamProtocol::ChatCompletions
+    }
+}
+
 pub(in crate::api_fusion) fn json_response(status: u16, body: Value) -> HttpResponse {
     let payload = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
     HttpResponse {
@@ -330,16 +339,19 @@ fn no_candidate_message(
         .providers
         .iter()
         .filter(|provider| provider.enabled && !provider.auto_disabled)
-        .map(|provider| {
-            if provider.protocol != protocol {
-                format!(
-                    "{} is configured for {}",
-                    provider.name,
-                    provider.protocol.endpoint_path()
-                )
-            } else {
-                format!("{} cannot serve model '{}'", provider.name, model)
-            }
+        .map(|provider| match resolve_model_for_protocol(provider, requested, protocol) {
+            ModelResolution::ProtocolMismatch(configured) => format!(
+                "{} serves model '{}' via {}",
+                provider.name,
+                model,
+                configured.endpoint_path()
+            ),
+            _ if provider.protocol != protocol => format!(
+                "{} is configured for {}",
+                provider.name,
+                provider.protocol.endpoint_path()
+            ),
+            _ => format!("{} cannot serve model '{}'", provider.name, model),
         })
         .collect();
     if enabled.is_empty() {
@@ -413,10 +425,12 @@ pub(in crate::api_fusion) async fn attempt_non_streaming(
     config: &mut FusionConfig,
     client_headers: &HashMap<String, String>,
 ) -> HttpResponse {
+    let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
     for provider in ordered {
-        let Some(model) = resolve_model(provider, requested) else {
-            continue;
+        let model = match resolve_model_for_protocol(provider, requested, protocol) {
+            ModelResolution::Serve(model) => model,
+            ModelResolution::ProtocolMismatch(_) | ModelResolution::NoMatch => continue,
         };
         match forward_non_streaming(provider, path, body, &model, client_headers).await {
             Ok(response) => {
@@ -484,10 +498,12 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     config: &mut FusionConfig,
     client_headers: &HashMap<String, String>,
 ) -> Result<(), String> {
+    let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
     for provider in ordered {
-        let Some(model) = resolve_model(provider, requested) else {
-            continue;
+        let model = match resolve_model_for_protocol(provider, requested, protocol) {
+            ModelResolution::Serve(model) => model,
+            ModelResolution::ProtocolMismatch(_) | ModelResolution::NoMatch => continue,
         };
         let streamed = open_streaming_response(provider, path, body, &model, client_headers).await;
         let response = match streamed {
@@ -729,11 +745,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
 
-    let protocol = if path == "/v1/responses" {
-        UpstreamProtocol::Responses
-    } else {
-        UpstreamProtocol::ChatCompletions
-    };
+    let protocol = protocol_for_path(path);
     let candidates: Vec<FusionUpstreamProvider> =
         candidate_providers(&config.providers, requested.as_deref(), protocol)
             .into_iter()
