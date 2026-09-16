@@ -209,26 +209,66 @@ describe("buildJt808PositionJson", () => {
     expect(record.json).toBeUndefined();
   });
 
-  it("parses the 0x0704 body as a position report with a raw time field", () => {
+  it("renders 0x0704 batch position upload items with a BCD date-time", () => {
     const [record] = analyzeJt808(JT808_POSITION_0704, "automatic");
 
     expect(record.kind).toBe("success");
     const json = record.json as Record<string, unknown>;
     expect(json["[0704]消息Id"]).toBe(1796);
     expect(json["[028920258605]终端手机号"]).toBe("028920258605");
+
     const dataBody = json["数据体对象"] as Record<string, unknown>;
-    expect(dataBody["位置信息汇报"]).toBe(
+    expect(Object.keys(dataBody)).toEqual([
+      "位置信息批量上传",
+      "[0001]数据项个数",
+      "[01]数据类型",
+      "数据项列表",
+    ]);
+    expect(dataBody["位置信息批量上传"]).toBe(
       "000101006000000000000C00030232BD3E070B523B0024000000B326062713383701040002258E030200001404000000001504000000001604000000001702000018030000001904000000002504000000002A0200002B040000000030010031011C520100",
     );
-    expect(dataBody["[24000000B326]定位时间"]).toBe("24000000B326");
-    expect(dataBody["[00000C00]纬度"]).toBe(3072);
-    expect(dataBody["[030232BD]经度"]).toBe(50475709);
-    const alarmObject = dataBody["报警标志对象"] as Record<string, string>;
-    expect(alarmObject["[bit8]终端主电源掉电"]).toBe("1");
-    const additional = dataBody["附加信息列表"] as Array<Record<string, unknown>>;
-    expect(additional).toHaveLength(2);
-    expect(additional[0]["[06]未知附加信息Id"]).toBe(6);
-    expect(additional[1]["[00]未知附加信息Id"]).toBe(0);
+    expect(dataBody["[0001]数据项个数"]).toBe(1);
+    expect(dataBody["[01]数据类型"]).toBe(1);
+
+    const items = dataBody["数据项列表"] as Array<Record<string, unknown>>;
+    expect(items).toHaveLength(1);
+    const item = items[0];
+    expect(Object.keys(item)).toEqual([
+      "位置信息汇报",
+      "[00000000000000000000000000000000]报警标志",
+      "报警标志对象",
+      "[00000000000011000000000000000011]状态位标志",
+      "状态标志对象",
+      "[0232BD3E]纬度",
+      "[070B523B]经度",
+      "[0024]高程",
+      "[0000]速度",
+      "[00B3]方向",
+      "[260627133837]定位时间",
+      "附加信息列表",
+    ]);
+    expect(item["位置信息汇报"]).toBe(
+      "00000000000C00030232BD3E070B523B0024000000B326062713383701040002258E030200001404000000001504000000001604000000001702000018030000001904000000002504000000002A0200002B040000000030010031011C520100",
+    );
+    expect(item["[00000000000000000000000000000000]报警标志"]).toBe(0);
+    expect(item["[00000000000011000000000000000011]状态位标志"]).toBe(786435);
+    expect(item["[0232BD3E]纬度"]).toBe(36879678);
+    expect(item["[070B523B]经度"]).toBe(118182459);
+    expect(item["[0024]高程"]).toBe(36);
+    expect(item["[0000]速度"]).toBe(0);
+    expect(item["[00B3]方向"]).toBe(179);
+
+    expect(item["[260627133837]定位时间"]).toBe("2026-06-27 13:38:37");
+    expect(item["[260627133837]定位时间"]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(item["[24000000B326]定位时间"]).toBeUndefined();
+
+    const additional = item["附加信息列表"] as Array<Record<string, unknown>>;
+    expect(additional).toHaveLength(14);
+    expect(additional[0]).toEqual({
+      "[01]附加信息Id": 1,
+      "[04]附加信息长度": 4,
+      "[0002258E]里程": 140686,
+    });
   });
 
   it("parses the 0x8001 platform general answer with reply fields", () => {

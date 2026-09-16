@@ -360,12 +360,11 @@ function buildFrameJson(
   };
 }
 
-export function buildJt808PositionJson(header: ParsedJt808Header): Record<string, unknown> {
-  const body = header.body;
+function positionDataObject(body: number[]): Record<string, unknown> {
   const alarm = readUint32(body, 0);
   const status = readUint32(body, 4);
   const timeBytes = body.slice(22, 28);
-  const dataBody: Record<string, unknown> = {
+  return {
     位置信息汇报: bytesToHex(body),
     [`[${binary32(alarm)}]报警标志`]: alarm,
     报警标志对象: alarmObject(alarm),
@@ -381,6 +380,34 @@ export function buildJt808PositionJson(header: ParsedJt808Header): Record<string
       additionalInfoObject(entry.id, entry.length, entry.data),
     ),
   };
+}
+
+function batchPositionDataObject(body: number[]): Record<string, unknown> {
+  const count = readUint16(body, 0);
+  const dataType = readUint8(body, 2);
+  const items: Array<Record<string, unknown>> = [];
+  let offset = 3;
+  while (offset + 2 <= body.length) {
+    const length = readUint16(body, offset);
+    const dataStart = offset + 2;
+    const dataEnd = dataStart + length;
+    if (dataEnd > body.length) break;
+    items.push(positionDataObject(body.slice(dataStart, dataEnd)));
+    offset = dataEnd;
+  }
+  return {
+    位置信息批量上传: bytesToHex(body),
+    [`[${hex4(count)}]数据项个数`]: count,
+    [`[${hex2(dataType)}]数据类型`]: dataType,
+    数据项列表: items,
+  };
+}
+
+export function buildJt808PositionJson(header: ParsedJt808Header): Record<string, unknown> {
+  const dataBody =
+    header.messageId === 0x0704
+      ? batchPositionDataObject(header.body)
+      : positionDataObject(header.body);
   return buildFrameJson(header, dataBody);
 }
 
