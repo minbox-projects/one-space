@@ -1,5 +1,7 @@
 use super::FusionUpstreamProvider;
+use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::Client;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -32,10 +34,40 @@ fn shared_client() -> &'static Client {
 }
 
 pub(in crate::api_fusion) fn join_url(base: &str, path: &str) -> String {
-    format!(
-        "{}/{}",
-        base.trim_end_matches('/'),
-        path.trim_start_matches('/')
+    let base = base.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    // Providers are commonly configured with a base URL that already ends in
+    // `/v1` while the canonical inbound path is versioned as well; drop the
+    // duplicated version segment so upstream never sees `.../v1/v1/...`.
+    let path = if base.ends_with("/v1") {
+        path.strip_prefix("v1/").unwrap_or(path)
+    } else {
+        path
+    };
+    format!("{base}/{path}")
+}
+
+/// Hop-by-hop and credential headers that must never be copied from the local
+/// client onto the upstream request. `authorization` / `x-api-key` carry the
+/// LOCAL relay key; the provider credential is set explicitly afterwards.
+fn is_forwardable_client_header(name: &str) -> bool {
+    !matches!(
+        name,
+        "host"
+            | "content-length"
+            | "connection"
+            | "accept-encoding"
+            | "transfer-encoding"
+            | "te"
+            | "trailer"
+            | "upgrade"
+            | "keep-alive"
+            | "proxy-connection"
+            | "proxy-authorization"
+            | "authorization"
+            | "x-api-key"
+            | "content-type"
+            | "accept"
     )
 }
 
@@ -64,11 +96,26 @@ fn build_request(
     body: &[u8],
     model: &str,
     stream: bool,
+    client_headers: &HashMap<String, String>,
 ) -> Result<reqwest::RequestBuilder, String> {
     let url = join_url(&provider.base_url, path);
     let rewritten = rewrite_body_model(body, model)?;
-    let mut request = shared_client()
-        .post(url)
+    let mut request = shared_client().post(url);
+    // Forward unknown client headers (e.g. vendor session headers) so upstream
+    // requirements like `x-opencode-session` survive the relay. Invalid names
+    // or values are skipped rather than failing the whole request.
+    for (name, value) in client_headers {
+        if !is_forwardable_client_header(name) {
+            continue;
+        }
+        if let (Ok(header_name), Ok(header_value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            request = request.header(header_name, header_value);
+        }
+    }
+    request = request
         .header("content-type", "application/json")
         .header(
             "accept",
@@ -92,8 +139,9 @@ pub(in crate::api_fusion) async fn forward_non_streaming(
     path: &str,
     body: &[u8],
     model: &str,
+    client_headers: &HashMap<String, String>,
 ) -> Result<UpstreamJsonResponse, String> {
-    let request = build_request(provider, path, body, model, false)?;
+    let request = build_request(provider, path, body, model, false, client_headers)?;
     let response = request.send().await.map_err(|e| e.to_string())?;
     let status = response.status().as_u16();
     let bytes = response.bytes().await.map_err(|e| e.to_string())?.to_vec();
@@ -112,7 +160,8 @@ pub(in crate::api_fusion) async fn open_streaming_response(
     path: &str,
     body: &[u8],
     model: &str,
+    client_headers: &HashMap<String, String>,
 ) -> Result<reqwest::Response, String> {
-    let request = build_request(provider, path, body, model, true)?;
+    let request = build_request(provider, path, body, model, true, client_headers)?;
     request.send().await.map_err(|e| e.to_string())
 }

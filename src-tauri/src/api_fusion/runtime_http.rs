@@ -411,13 +411,14 @@ pub(in crate::api_fusion) async fn attempt_non_streaming(
     body: &[u8],
     requested: Option<&str>,
     config: &mut FusionConfig,
+    client_headers: &HashMap<String, String>,
 ) -> HttpResponse {
     let mut failures: Vec<(String, String)> = Vec::new();
     for provider in ordered {
         let Some(model) = resolve_model(provider, requested) else {
             continue;
         };
-        match forward_non_streaming(provider, path, body, &model).await {
+        match forward_non_streaming(provider, path, body, &model, client_headers).await {
             Ok(response) => {
                 if response.status < 400 && response.parsed {
                     apply_success(config, provider);
@@ -481,13 +482,15 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     body: &[u8],
     requested: Option<&str>,
     config: &mut FusionConfig,
+    client_headers: &HashMap<String, String>,
 ) -> Result<(), String> {
     let mut failures: Vec<(String, String)> = Vec::new();
     for provider in ordered {
         let Some(model) = resolve_model(provider, requested) else {
             continue;
         };
-        let response = match open_streaming_response(provider, path, body, &model).await {
+        let streamed = open_streaming_response(provider, path, body, &model, client_headers).await;
+        let response = match streamed {
             Ok(response) => response,
             Err(error) => {
                 let reason = format!("network error: {error}");
@@ -768,6 +771,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
             &request.body,
             requested.as_deref(),
             &mut config,
+            &request.headers,
         )
         .await?;
     } else {
@@ -777,6 +781,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
             &request.body,
             requested.as_deref(),
             &mut config,
+            &request.headers,
         )
         .await;
         stream

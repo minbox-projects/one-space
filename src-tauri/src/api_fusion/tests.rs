@@ -673,6 +673,137 @@ async fn forwards_responses_path() {
     drop(home);
 }
 
+/// Defect 1: a provider base URL that already ends in `/v1` must not be joined
+/// with a canonical path that also starts with `v1/`.
+#[test]
+fn join_url_collapses_duplicate_v1_between_base_and_path() {
+    assert_eq!(
+        super::forwarding::join_url("https://opencode.ai/zen/go/v1", "/v1/responses"),
+        "https://opencode.ai/zen/go/v1/responses"
+    );
+    assert_eq!(
+        super::forwarding::join_url("https://opencode.ai/zen/go", "/v1/responses"),
+        "https://opencode.ai/zen/go/v1/responses"
+    );
+    assert_eq!(
+        super::forwarding::join_url("http://127.0.0.1:9999", "/v1/chat/completions"),
+        "http://127.0.0.1:9999/v1/chat/completions"
+    );
+}
+
+/// Defect 1 end-to-end: the canonical inbound path must reach a `/v1` base URL
+/// exactly once, never as `/v1/v1/...`.
+#[tokio::test]
+async fn provider_base_url_with_v1_does_not_double_the_version_segment() {
+    let home = temp_home("no-doubled-v1");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
+
+    let mut config = config_with_key(port);
+    let mut provider = upstream_provider(
+        "p1",
+        "Provider One",
+        &format!("{upstream_url}/v1"),
+        "sk",
+        None,
+    );
+    provider.mappings = vec![ModelMapping {
+        local_model: "local-a".to_string(),
+        upstream_model: "remote-a".to_string(),
+    }];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a", "messages": []})),
+    )
+    .await;
+    assert_eq!(status, 200, "unexpected response: {text}");
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(
+        captured[0].path, "/v1/chat/completions",
+        "a base URL ending in /v1 must not be doubled by the canonical path"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// Defect 2: client headers such as `x-opencode-session` are forwarded upstream,
+/// while the local relay credential (`authorization`, `x-api-key`) is replaced
+/// by the provider credential and never leaks.
+#[tokio::test]
+async fn client_headers_are_forwarded_except_relay_credentials() {
+    let home = temp_home("forward-client-headers");
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({"id":"chatcmpl","choices":[{"message":{"role":"assistant","content":"ok"}}]}),
+        )
+    })
+    .await;
+
+    let mut config = config_with_key(port);
+    config.providers.push(upstream_provider(
+        "p1",
+        "Provider One",
+        &upstream_url,
+        "provider-key",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-api-key", "local-key"),
+            ("x-opencode-session", "sess-1"),
+        ],
+        Some(json!({"model": "local-model", "messages": []})),
+    )
+    .await;
+    assert_eq!(status, 200, "unexpected response: {text}");
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(captured.len(), 1);
+    let headers = &captured[0].headers;
+    assert_eq!(
+        headers.get("x-opencode-session").map(String::as_str),
+        Some("sess-1"),
+        "vendor session header must reach upstream: {headers:?}"
+    );
+    assert_eq!(
+        headers.get("authorization").map(String::as_str),
+        Some("Bearer provider-key"),
+        "upstream must receive exactly the provider credential: {headers:?}"
+    );
+    assert_ne!(
+        headers.get("authorization").map(String::as_str),
+        Some("Bearer local-key"),
+        "the local relay key must never leak upstream: {headers:?}"
+    );
+    assert!(
+        !headers.contains_key("x-api-key"),
+        "the local x-api-key must never leak upstream: {headers:?}"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
 #[tokio::test]
 async fn providers_are_only_offered_the_protocol_they_are_configured_for() {
     let home = temp_home("protocol-routing");
@@ -1085,6 +1216,7 @@ async fn streaming_switches_when_first_provider_fails_before_first_byte() {
         &body,
         Some("local"),
         &mut config,
+        &HashMap::new(),
     )
     .await
     .unwrap();
@@ -1126,6 +1258,7 @@ async fn streaming_terminates_after_first_byte_without_switching() {
         &body,
         Some("local"),
         &mut config,
+        &HashMap::new(),
     )
     .await
     .unwrap();
@@ -1570,6 +1703,7 @@ async fn non_json_upstream_response_is_retryable_and_switches() {
         &body,
         Some("local"),
         &mut config,
+        &HashMap::new(),
     )
     .await;
     assert_eq!(response.status, 200);
@@ -1601,6 +1735,7 @@ async fn return_to_client_error_is_passed_through_without_switching_or_disabling
         &body,
         Some("local"),
         &mut config,
+        &HashMap::new(),
     )
     .await;
     assert_eq!(response.status, 400, "upstream client error must pass through");
@@ -1666,6 +1801,7 @@ async fn end_to_end_random_pool_selects_every_resolvable_candidate() {
             "/v1/chat/completions",
             &body,
             "remote-model",
+            &HashMap::new(),
         )
         .await
         .expect("forward to mock upstream");
@@ -1704,6 +1840,7 @@ async fn end_to_end_network_failure_falls_back_and_tries_first_candidate_once() 
         &body,
         Some("local-model"),
         &mut config,
+        &HashMap::new(),
     )
     .await;
 
@@ -1739,6 +1876,7 @@ async fn end_to_end_5xx_falls_back_and_tries_first_candidate_once() {
         &body,
         Some("local-model"),
         &mut config,
+        &HashMap::new(),
     )
     .await;
 
@@ -1778,6 +1916,7 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
             &body,
             Some("local-model"),
             &mut config,
+            &HashMap::new(),
         )
         .await;
 
@@ -1978,6 +2117,7 @@ async fn end_to_end_transient_429_and_404_switch_without_disabling() {
             &body,
             Some("local-model"),
             &mut config,
+            &HashMap::new(),
         )
         .await;
 
@@ -2019,6 +2159,7 @@ async fn end_to_end_client_4xx_returns_to_caller_without_switching_or_disabling(
             &body,
             Some("local-model"),
             &mut config,
+            &HashMap::new(),
         )
         .await;
 
@@ -2059,6 +2200,7 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
             &body,
             Some("local-model"),
             &mut config,
+            &HashMap::new(),
         )
         .await;
         assert_eq!(response.status, 200, "attempt {attempt}");
@@ -2098,6 +2240,7 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
         &body,
         Some("local-model"),
         &mut config,
+        &HashMap::new(),
     )
     .await;
     assert_eq!(response.status, 200);
@@ -2468,6 +2611,7 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
             &body,
             Some("local-model"),
             &mut config,
+            &HashMap::new(),
         ),
     )
     .await
@@ -2535,6 +2679,7 @@ async fn unresponsive_upstream_is_a_retryable_timeout_not_a_hang() {
             &body,
             Some("local-model"),
             &mut config,
+            &HashMap::new(),
         ),
     )
     .await
@@ -2584,6 +2729,7 @@ async fn streaming_2xx_non_json_is_retryable_and_switches_before_first_byte() {
         &body,
         Some("local"),
         &mut config,
+        &HashMap::new(),
     )
     .await
     .unwrap();
