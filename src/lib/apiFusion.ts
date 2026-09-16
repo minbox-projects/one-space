@@ -169,12 +169,13 @@ export function isTerminalSyncPending(
     "keys" | "default_key_id" | "terminal_syncs" | "port"
   >,
 ): boolean {
-  const record = config.terminal_syncs.find(
+  const syncs = config.terminal_syncs ?? [];
+  const record = syncs.find(
     (entry) => entry.provider_id === target.provider_id,
   );
   if (!record) return true;
 
-  const currentKeyId = resolveDefaultKeyId(config.keys, config.default_key_id);
+  const currentKeyId = resolveDefaultKeyId(config.keys ?? [], config.default_key_id);
   if (!currentKeyId) return true;
 
   return (

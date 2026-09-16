@@ -1555,7 +1555,9 @@ function App() {
         )}
         {shouldRenderTab("api-fusion") && (
           <div className={activeTab === "api-fusion" ? "h-full" : "hidden"}>
-            <ApiFusion isVisible={activeTab === "api-fusion"} />
+            <AppErrorBoundary label="API 融合" resetKey={activeTab}>
+              <ApiFusion isVisible={activeTab === "api-fusion"} />
+            </AppErrorBoundary>
           </div>
         )}
         {shouldRenderTab("ai-usage") && (

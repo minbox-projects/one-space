@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Network } from "lucide-react";
+import { KeyRound, Network, Server, TerminalSquare } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
 import { errorToMessage } from "@/lib/messages";
 import {
@@ -18,6 +18,7 @@ import {
   apiFusionTerminalTargets,
   apiFusionUpsertKey,
   apiFusionUpsertProvider,
+  isTerminalSyncPending,
   localBaseUrl,
   resolveDefaultKeyId,
   type FusionConfig,
@@ -28,9 +29,11 @@ import {
 } from "@/lib/apiFusion";
 import { RuntimeStatusCard } from "./RuntimeStatusCard";
 import { UpstreamProviderList } from "./UpstreamProviderList";
-import { UpstreamProviderDetail } from "./UpstreamProviderDetail";
+import { ProviderDetailDialog } from "./ProviderDetailDialog";
 import { LocalKeyList } from "./LocalKeyList";
 import { TerminalSyncPanel } from "./TerminalSyncPanel";
+
+type ApiFusionTab = "providers" | "keys" | "terminals";
 
 function emptyProvider(): FusionUpstreamProvider {
   return {
@@ -56,21 +59,49 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
   const ToolIcon = Network;
   const iconClassName = "bg-indigo-500/10 text-indigo-600";
 
+  const [activeTab, setActiveTab] = useState<ApiFusionTab>("providers");
   const [config, setConfig] = useState<FusionConfig | null>(null);
   const [status, setStatus] = useState<FusionStatus | null>(null);
   const [targets, setTargets] = useState<FusionTerminalTarget[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [editingProvider, setEditingProvider] =
     useState<FusionUpstreamProvider | null>(null);
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [selectedTargetIds, setSelectedTargetIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [addressCopied, setAddressCopied] = useState(false);
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
 
   const load = useCallback(async () => {
-    if (!isTauri) return;
+    if (!isTauri) {
+      // 在非 Tauri 浏览器预览环境下提供默认初始配置，避免页面永久 Loading
+      setConfig({
+        enabled: false,
+        port: 17688,
+        providers: [],
+        keys: [],
+        default_key_id: null,
+        terminal_syncs: [],
+      });
+      setStatus({
+        running: false,
+        enabled: false,
+        port: 17688,
+        local_base_url: "http://127.0.0.1:17688",
+        provider_count: 0,
+        auto_disabled_count: 0,
+        key_count: 0,
+        default_key_id: null,
+      });
+      setTargets([]);
+      setLoadError(null);
+      return;
+    }
+
+    setLoadError(null);
     try {
       const [nextConfig, nextStatus, nextTargets] = await Promise.all([
         apiFusionGetConfig(),
@@ -79,11 +110,13 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
       ]);
       setConfig(nextConfig);
       setStatus(nextStatus);
-      setTargets(nextTargets);
+      setTargets(nextTargets ?? []);
     } catch (err) {
+      const msg = errorToMessage(err);
+      setLoadError(msg);
       pushToast({
         title: t("apiFusionLoadFailed", "Failed to load API Fusion configuration."),
-        description: errorToMessage(err),
+        description: msg,
         kind: "error",
       });
     }
@@ -163,6 +196,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
       await applyConfig(await apiFusionDeleteProvider(providerId));
       setEditingProvider(null);
       setSelectedProviderId(null);
+      setIsDialogOpen(false);
     }, t("apiFusionDeleted", "Deleted."));
 
   const handleSaveKey = (key: FusionKey) =>
@@ -240,22 +274,80 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
   if (!config) {
     return (
       <div className="h-full overflow-y-auto">
-        <div className="mx-auto max-w-7xl p-6 text-sm text-muted-foreground">
-          {t("loading", "Loading...")}
+        <div className="mx-auto max-w-7xl p-6">
+          {loadError ? (
+            <div className="flex flex-col items-center justify-center rounded-2xl border border-destructive/20 bg-destructive/5 p-8 text-center">
+              <div className="rounded-full bg-destructive/10 p-3 text-destructive">
+                <Network className="h-6 w-6" />
+              </div>
+              <h3 className="mt-3 text-base font-semibold text-foreground">
+                {t("apiFusionLoadFailed", "Failed to load API Fusion configuration.")}
+              </h3>
+              <p className="mt-1 max-w-md text-xs text-muted-foreground">{loadError}</p>
+              <button
+                type="button"
+                onClick={() => void load()}
+                className="mt-4 inline-flex items-center rounded-lg bg-primary px-4 py-2 text-xs font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
+              >
+                {t("retry", "Retry")}
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+              <span>{t("loading", "Loading...")}</span>
+            </div>
+          )}
         </div>
       </div>
     );
   }
 
+  const pendingSyncCount = config
+    ? (targets ?? []).filter((target) => isTerminalSyncPending(target, config)).length
+    : 0;
+  const autoDisabledCount = status?.auto_disabled_count ?? 0;
+
+  const tabs: Array<{
+    id: ApiFusionTab;
+    label: string;
+    icon: typeof Server;
+    count?: number;
+    hasAlert?: boolean;
+  }> = [
+    {
+      id: "providers",
+      label: t("apiFusionProviders", "Upstream providers"),
+      icon: Server,
+      count: config?.providers?.length ?? 0,
+      hasAlert: autoDisabledCount > 0,
+    },
+    {
+      id: "keys",
+      label: t("apiFusionKeys", "Local keys"),
+      icon: KeyRound,
+      count: config?.keys?.length ?? 0,
+    },
+    {
+      id: "terminals",
+      label: t("apiFusionTerminalSync", "Terminal sync"),
+      icon: TerminalSquare,
+      hasAlert: pendingSyncCount > 0,
+    },
+  ];
+
   return (
     <div className="h-full overflow-y-auto" data-testid="api-fusion-console">
-      <div className="mx-auto max-w-7xl space-y-6 p-6">
-        <header className="flex items-start gap-3">
-          <div className={`rounded-lg p-2 ${iconClassName}`}>
-            <ToolIcon className="h-5 w-5" />
+      <div className="mx-auto max-w-7xl space-y-5 p-6">
+        {/* 头部标题与简介 */}
+        <header className="flex items-start gap-3.5">
+          <div className={`rounded-xl p-2.5 ${iconClassName}`}>
+            <ToolIcon className="h-6 w-6" />
           </div>
           <div className="space-y-1">
-            <h1 className="text-2xl font-semibold tracking-tight">{t("apiFusion", "API Fusion")}</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">
+              {t("apiFusion", "API Fusion")}
+            </h1>
             <p className="max-w-3xl text-sm text-muted-foreground">
               {t(
                 "apiFusionWorkspaceDesc",
@@ -265,6 +357,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           </div>
         </header>
 
+        {/* 常驻运行时服务状态卡片 */}
         <RuntimeStatusCard
           status={status}
           config={config}
@@ -275,16 +368,68 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           onCopyAddress={() => void handleCopyAddress()}
         />
 
-        <div className="grid gap-6 xl:grid-cols-2">
+        {/* 工作区 Tabs 标签页导航 */}
+        <div
+          role="tablist"
+          aria-label={t("apiFusionWorkspaceTabs", "API Fusion tabs")}
+          className="flex flex-wrap items-center gap-1.5 rounded-xl border bg-muted/40 p-1"
+        >
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                onClick={() => setActiveTab(tab.id)}
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${
+                  isActive
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+                }`}
+              >
+                <Icon className={`h-4 w-4 ${isActive ? "text-indigo-600" : ""}`} />
+                <span>{tab.label}</span>
+                {tab.count !== undefined ? (
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                      isActive
+                        ? "bg-muted text-foreground"
+                        : "bg-muted/70 text-muted-foreground"
+                    }`}
+                  >
+                    {tab.count}
+                  </span>
+                ) : null}
+                {tab.hasAlert ? (
+                  <span
+                    className="h-2 w-2 rounded-full bg-amber-500"
+                    title={t("apiFusionHasPendingItems", "Has items needing attention")}
+                  />
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Tab 1: 上游服务商 */}
+        <div
+          role="tabpanel"
+          aria-label={t("apiFusionProviders", "Upstream providers")}
+          className={activeTab === "providers" ? "block" : "hidden"}
+        >
           <UpstreamProviderList
             providers={config.providers}
             selectedProviderId={selectedProviderId}
             busy={busy}
             onSelect={(providerId) => {
               setSelectedProviderId(providerId);
-              setEditingProvider(
-                config.providers.find((provider) => provider.id === providerId) ?? null,
-              );
+              const found =
+                config.providers.find((provider) => provider.id === providerId) ?? null;
+              setEditingProvider(found);
+              setIsDialogOpen(true);
             }}
             onToggleEnabled={(provider, enabled) =>
               void handleToggleProviderEnabled(provider, enabled)
@@ -293,43 +438,62 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
             onAdd={() => {
               setSelectedProviderId(null);
               setEditingProvider(emptyProvider());
+              setIsDialogOpen(true);
             }}
+            onDelete={(providerId) => void handleDeleteProvider(providerId)}
           />
-          {editingProvider ? (
-            <UpstreamProviderDetail
-              key={editingProvider.id || "new"}
-              provider={editingProvider}
-              busy={busy}
-              onSave={(draft) => void handleSaveProvider(draft)}
-              onDelete={(providerId) => void handleDeleteProvider(providerId)}
-            />
-          ) : (
-            <section className="rounded-[24px] border border-dashed bg-card p-5 text-sm text-muted-foreground">
-              {t("apiFusionSelectProviderHint", "Select a provider to edit its mappings.")}
-            </section>
-          )}
         </div>
 
-        <LocalKeyList
-          keys={config.keys}
-          defaultKeyId={defaultKeyId}
-          busy={busy}
-          copiedKeyId={copiedKeyId}
-          onSave={(key) => void handleSaveKey(key)}
-          onDelete={(keyId) => void handleDeleteKey(keyId)}
-          onSetDefault={(keyId) => void handleSetDefaultKey(keyId)}
-          onToggleEnabled={(key, enabled) => void handleToggleKeyEnabled(key, enabled)}
-          onCopy={(key) => void handleCopyKey(key)}
-        />
+        {/* Tab 2: 本地密钥 */}
+        <div
+          role="tabpanel"
+          aria-label={t("apiFusionKeys", "Local keys")}
+          className={activeTab === "keys" ? "block" : "hidden"}
+        >
+          <LocalKeyList
+            keys={config.keys}
+            defaultKeyId={defaultKeyId}
+            busy={busy}
+            copiedKeyId={copiedKeyId}
+            onSave={(key) => void handleSaveKey(key)}
+            onDelete={(keyId) => void handleDeleteKey(keyId)}
+            onSetDefault={(keyId) => void handleSetDefaultKey(keyId)}
+            onToggleEnabled={(key, enabled) => void handleToggleKeyEnabled(key, enabled)}
+            onCopy={(key) => void handleCopyKey(key)}
+          />
+        </div>
 
-        <TerminalSyncPanel
-          targets={targets}
-          config={config}
-          selectedTargetIds={selectedTargetIds}
+        {/* Tab 3: 终端同步 */}
+        <div
+          role="tabpanel"
+          aria-label={t("apiFusionTerminalSync", "Terminal sync")}
+          className={activeTab === "terminals" ? "block" : "hidden"}
+        >
+          <TerminalSyncPanel
+            targets={targets}
+            config={config}
+            selectedTargetIds={selectedTargetIds}
+            busy={busy}
+            onToggleTarget={handleToggleTarget}
+            onConfigure={() => void handleConfigureTargets()}
+            onSync={() => void handleSyncTargets()}
+          />
+        </div>
+
+        {/* 服务商新增与编辑模态弹窗 */}
+        <ProviderDetailDialog
+          open={isDialogOpen}
+          onOpenChange={(open) => {
+            setIsDialogOpen(open);
+            if (!open) {
+              setSelectedProviderId(null);
+              setEditingProvider(null);
+            }
+          }}
+          provider={editingProvider}
           busy={busy}
-          onToggleTarget={handleToggleTarget}
-          onConfigure={() => void handleConfigureTargets()}
-          onSync={() => void handleSyncTargets()}
+          onSave={(draft) => void handleSaveProvider(draft)}
+          onDelete={(providerId) => void handleDeleteProvider(providerId)}
         />
       </div>
     </div>

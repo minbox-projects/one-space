@@ -493,6 +493,29 @@ const resources = {
       apiFusionSyncSuccess: "Terminal targets synced.",
       apiFusionCopied: "Copied to clipboard",
       apiFusionCopyFailed: "Copy failed",
+      apiFusionWorkspaceTabs: "API Fusion tabs",
+      apiFusionHasPendingItems: "Has items needing attention",
+      apiFusionProvidersDesc:
+        "Manage remote AI provider endpoints, protocols, and model route mappings.",
+      apiFusionNoProvidersGuide:
+        "Add upstream providers like OpenAI, DeepSeek, or any OpenAI-compatible API to start proxying requests.",
+      apiFusionEdit: "Edit",
+      apiFusionMappingCount: "{{count}} mappings configured",
+      apiFusionNoMappingsShort: "No mappings (default routing)",
+      apiFusionDeleteProviderAria: "Delete provider {{name}}",
+      apiFusionProviderDialogDesc:
+        "Configure upstream provider credentials, endpoint protocol, and model routing mappings.",
+      apiFusionTestRouting: "Test routing & mapping",
+      apiFusionKeysDesc:
+        "Manage local bearer tokens used by clients to authenticate with this relay.",
+      apiFusionNoKeysGuide:
+        "Create a local key to start accessing the proxy service securely from external tools.",
+      apiFusionUsageTipTitle: "How to use:",
+      apiFusionUsageTipDesc:
+        "Pass the key as Bearer token in the Authorization header: `Authorization: Bearer <key>`.",
+      apiFusionDefaultKeyRequiredTitle: "Local default key required",
+      apiFusionNoTerminalTargetsGuide:
+        "Install or configure OpenCode / Codex providers first to enable automatic endpoint synchronization.",
       protocolRouterTokenLabel: "Router Token",
       protocolRouterTokenDesc:
         "Claude profiles use this token to access the local router. Rotate it here if you need to invalidate older profile credentials.",
@@ -3825,6 +3848,26 @@ const resources = {
       apiFusionSyncSuccess: "终端已同步。",
       apiFusionCopied: "已复制到剪贴板",
       apiFusionCopyFailed: "复制失败",
+      apiFusionWorkspaceTabs: "API 融合选项卡",
+      apiFusionHasPendingItems: "有待处理项",
+      apiFusionProvidersDesc: "管理远端 AI 服务商、通信协议与模型路由映射规则。",
+      apiFusionNoProvidersGuide:
+        "添加 OpenAI、DeepSeek 或任何兼容 OpenAI 格式的上游接口以启动转发。",
+      apiFusionEdit: "编辑",
+      apiFusionMappingCount: "已配置 {{count}} 个映射",
+      apiFusionNoMappingsShort: "未配置映射（默认路由）",
+      apiFusionDeleteProviderAria: "删除服务商 {{name}}",
+      apiFusionProviderDialogDesc:
+        "配置上游服务商认证凭据、通信协议与模型路由映射规则。",
+      apiFusionTestRouting: "测试路由解析与映射",
+      apiFusionKeysDesc: "管理客户端请求本代理服务所需的 Bearer 密钥。",
+      apiFusionNoKeysGuide: "创建本地密钥以安全地从外部工具调用本代理服务。",
+      apiFusionUsageTipTitle: "调用方式：",
+      apiFusionUsageTipDesc:
+        "在请求头中传入 Bearer 密钥：`Authorization: Bearer <key>`。",
+      apiFusionDefaultKeyRequiredTitle: "需要默认本地密钥",
+      apiFusionNoTerminalTargetsGuide:
+        "请先安装或配置 OpenCode / Codex 服务商记录，即可一键自动同步本地入口。",
       protocolRouterTokenLabel: "Router Token",
       protocolRouterTokenDesc:
         "Claude Profile 会使用这个 Token 访问本地协议路由。如需让旧凭证失效，请在这里轮换。",

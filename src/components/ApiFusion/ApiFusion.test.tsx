@@ -560,4 +560,87 @@ describe("ApiFusion", () => {
       }),
     );
   });
+
+  it("支持在 Tabs 之间顺畅切换且保持各面板挂载与状态", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [makeProvider()],
+        keys: [{ id: "k1", label: "Dev Key", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
+      }),
+      status: makeStatus({ provider_count: 1, key_count: 1 }),
+      targets: [openCodeTarget()],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    await screen.findByText("Upstream A");
+
+    const tabsList = screen.getByRole("tablist", { name: /API Fusion tabs/i });
+    expect(tabsList).toBeInTheDocument();
+
+    const keysTab = screen.getByRole("tab", { name: /Local keys/i });
+    const terminalsTab = screen.getByRole("tab", { name: /Terminal sync/i });
+    const providersTab = screen.getByRole("tab", { name: /Upstream providers/i });
+
+    expect(providersTab).toHaveAttribute("aria-selected", "true");
+    expect(keysTab).toHaveAttribute("aria-selected", "false");
+
+    fireEvent.click(keysTab);
+    expect(keysTab).toHaveAttribute("aria-selected", "true");
+    expect(providersTab).toHaveAttribute("aria-selected", "false");
+
+    fireEvent.click(terminalsTab);
+    expect(terminalsTab).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("点击添加服务商打开弹框并成功保存", async () => {
+    const store: Store = {
+      config: makeConfig({ providers: [] }),
+      status: makeStatus({ provider_count: 0 }),
+      targets: [],
+    };
+    invokeMock.mockImplementation(async (command: string, args: any) => {
+      switch (command) {
+        case "api_fusion_get_config":
+          return store.config;
+        case "api_fusion_status":
+          return store.status;
+        case "api_fusion_terminal_targets":
+          return store.targets;
+        case "api_fusion_upsert_provider":
+          store.config = {
+            ...store.config,
+            providers: [...store.config.providers, { ...args.provider, id: "p-new" }],
+          };
+          return store.config;
+        default:
+          throw new Error(`Unhandled command: ${command}`);
+      }
+    });
+
+    renderWithProviders(<ApiFusion />);
+    await screen.findByTestId("api-fusion-providers");
+
+    const addButtons = screen.getAllByRole("button", { name: /Add provider/i });
+    fireEvent.click(addButtons[0]);
+
+    const dialog = await screen.findByTestId("api-fusion-provider-detail");
+    expect(dialog).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "New Remote" } });
+    fireEvent.change(screen.getByLabelText("API base URL"), {
+      target: { value: "https://new.example.com" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_upsert_provider", {
+        provider: expect.objectContaining({
+          name: "New Remote",
+          base_url: "https://new.example.com",
+        }),
+      }),
+    );
+  });
 });
