@@ -38,16 +38,16 @@ export function LocalKeyList({
   };
 
   return (
-    <section className="space-y-4" data-testid="api-fusion-keys">
+    <section className="space-y-3.5" data-testid="api-fusion-keys">
       {/* 头部说明与添加栏 */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-0.5">
           <div className="flex items-center gap-2">
             <KeyRound className="h-4 w-4 text-indigo-600" />
-            <h3 className="text-base font-semibold">
+            <h3 className="text-sm font-semibold text-foreground">
               {t("apiFusionKeys", "Local keys")}
             </h3>
-            <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+            <span className="rounded-full bg-muted px-2 py-0.2 text-[10px] font-semibold text-muted-foreground">
               {keys.length}
             </span>
           </div>
@@ -72,26 +72,26 @@ export function LocalKeyList({
             }}
             placeholder={t("apiFusionKeyLabelPlaceholder", "Key name / label...")}
             aria-label={t("apiFusionKeyLabel", "Label")}
-            className="h-9 w-48 rounded-lg border border-input bg-background px-3 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:w-64"
+            className="h-8 w-44 rounded-lg border border-input bg-background px-2.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:w-56"
           />
           <button
             type="button"
             onClick={handleAdd}
             disabled={busy || !labelInput.trim()}
-            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
           >
-            <Plus className="h-3.5 w-3.5" />
+            <Plus className="h-3 w-3" />
             {t("apiFusionAddKey", "Add key")}
           </button>
         </div>
       </div>
 
       {keys.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed bg-card/50 px-6 py-12 text-center">
-          <div className="rounded-full bg-muted/60 p-3 text-muted-foreground">
-            <KeyRound className="h-6 w-6" />
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/50 px-6 py-10 text-center">
+          <div className="rounded-full bg-muted/60 p-2.5 text-muted-foreground">
+            <KeyRound className="h-5 w-5" />
           </div>
-          <h4 className="mt-3 text-sm font-medium">
+          <h4 className="mt-2.5 text-xs font-medium text-foreground">
             {t("apiFusionNoKeys", "No local keys yet.")}
           </h4>
           <p className="mt-1 max-w-sm text-xs text-muted-foreground">
@@ -102,7 +102,7 @@ export function LocalKeyList({
           </p>
         </div>
       ) : (
-        <div className="space-y-2.5">
+        <div className="space-y-2">
           {keys.map((key) => {
             const isDefault = key.id === defaultKeyId;
             const isCopied = copiedKeyId === key.id;
@@ -111,25 +111,27 @@ export function LocalKeyList({
               <div
                 key={key.id}
                 data-testid={`api-fusion-key-${key.id}`}
-                className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-card p-3.5 shadow-sm transition hover:border-primary/40 ${
+                className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-3 shadow-sm transition hover:border-primary/40 ${
                   isDefault ? "border-primary/30 bg-primary/[0.02]" : ""
                 }`}
               >
                 {/* 密钥信息 */}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <span className="truncate text-sm font-semibold">{key.label}</span>
+                    <span className="truncate text-sm font-semibold leading-5 text-foreground">
+                      {key.label}
+                    </span>
                     {isDefault ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium leading-4 text-primary">
                         <ShieldCheck className="h-3 w-3" />
                         {t("apiFusionDefaultKey", "Default key")}
                       </span>
                     ) : null}
                   </div>
 
-                  <div className="mt-1.5 flex items-center gap-2">
+                  <div className="mt-1 flex items-center gap-2">
                     <code
-                      className="rounded bg-muted/60 px-2 py-0.5 font-mono text-xs text-muted-foreground"
+                      className="rounded bg-muted/60 px-1.5 py-0.5 font-mono text-xs text-muted-foreground"
                       data-testid={`api-fusion-key-value-${key.id}`}
                     >
                       {maskSecret(key.value)}
@@ -154,7 +156,7 @@ export function LocalKeyList({
                 </div>
 
                 {/* 状态开关与操作 */}
-                <div className="flex items-center gap-2.5">
+                <div className="flex items-center gap-2">
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs text-muted-foreground">
                       {key.enabled
@@ -177,7 +179,7 @@ export function LocalKeyList({
                       type="button"
                       onClick={() => onSetDefault(key.id)}
                       disabled={busy}
-                      className="rounded-lg border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
+                      className="h-7 rounded-md border bg-background px-2.5 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
                     >
                       {t("apiFusionSetDefault", "Set as default")}
                     </button>
@@ -191,9 +193,9 @@ export function LocalKeyList({
                       defaultValue: `Delete key ${key.label}`,
                     })}
                     title={t("apiFusionDelete", "Delete")}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </div>
               </div>
@@ -203,7 +205,7 @@ export function LocalKeyList({
       )}
 
       {/* 使用说明底栏 */}
-      <div className="rounded-xl border bg-muted/20 p-3 text-xs text-muted-foreground">
+      <div className="rounded-lg border bg-muted/20 p-2.5 text-xs text-muted-foreground">
         <span className="font-medium text-foreground">
           {t("apiFusionUsageTipTitle", "How to use:")}
         </span>{" "}

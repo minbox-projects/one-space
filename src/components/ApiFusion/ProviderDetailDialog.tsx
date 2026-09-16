@@ -10,7 +10,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  resolveMappingPreview,
   type FusionModelMapping,
   type FusionUpstreamProtocol,
   type FusionUpstreamProvider,
@@ -25,13 +24,8 @@ type ProviderDetailDialogProps = {
   onDelete?: (providerId: string) => void;
 };
 
-const inputClass =
-  "h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-const labelClass = "text-[11px] font-medium uppercase tracking-wider text-muted-foreground";
-
-function endpointPath(protocol: FusionUpstreamProtocol): string {
-  return protocol === "responses" ? "/responses" : "/chat/completions";
-}
+const mappingInputClass =
+  "h-[38px] rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/50";
 
 export function ProviderDetailDialog({
   open,
@@ -50,7 +44,6 @@ export function ProviderDetailDialog({
   const [protocol, setProtocol] = useState<FusionUpstreamProtocol>("chat_completions");
   const [mappings, setMappings] = useState<FusionModelMapping[]>([]);
   const [revealApiKey, setRevealApiKey] = useState(false);
-  const [previewModel, setPreviewModel] = useState("");
 
   useEffect(() => {
     if (!provider) {
@@ -61,7 +54,6 @@ export function ProviderDetailDialog({
       setProtocol("chat_completions");
       setMappings([]);
       setRevealApiKey(false);
-      setPreviewModel("");
       return;
     }
     setName(provider.name);
@@ -71,21 +63,11 @@ export function ProviderDetailDialog({
     setProtocol(provider.protocol ?? "chat_completions");
     setMappings(provider.mappings ?? []);
     setRevealApiKey(false);
-    setPreviewModel(provider.mappings[0]?.local_model ?? "");
   }, [provider, open]);
 
   if (!provider) return null;
 
   const isEditing = Boolean(provider.id);
-
-  const preview = resolveMappingPreview(
-    {
-      protocol,
-      mappings,
-      default_model: defaultModel.trim() ? defaultModel.trim() : null,
-    },
-    previewModel,
-  );
 
   const updateMapping = (index: number, patch: Partial<FusionModelMapping>) => {
     setMappings((prev) =>
@@ -120,16 +102,16 @@ export function ProviderDetailDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-h-[90vh] max-w-2xl overflow-y-auto sm:rounded-2xl"
+        className="max-h-[90vh] w-full sm:max-w-4xl overflow-y-auto sm:rounded-xl p-5"
         data-testid="api-fusion-provider-detail"
       >
-        <DialogHeader>
-          <DialogTitle>
+        <DialogHeader className="space-y-1">
+          <DialogTitle className="text-base font-semibold">
             {isEditing
               ? t("apiFusionEditProvider", "Edit provider")
               : t("apiFusionNewProvider", "New provider")}
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="text-xs text-muted-foreground">
             {t(
               "apiFusionProviderDialogDesc",
               "Configure upstream provider credentials, endpoint protocol, and model routing mappings.",
@@ -137,30 +119,30 @@ export function ProviderDetailDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-5 py-2">
-          {/* 基础配置两列网格 */}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="space-y-1.5 sm:col-span-1">
-              <span className={labelClass}>{t("apiFusionName", "Name")}</span>
+        <div className="space-y-4 py-2">
+          {/* 基础配置两列网格（使用 AI 终端服务商统一的标准 field-grid 和 field） */}
+          <div className="field-grid col-2 mb-0">
+            {/* 第 1 行：名称独占一行 */}
+            <div className="field full-span">
+              <label className="required">{t("apiFusionName", "Name")}</label>
               <input
                 type="text"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 placeholder="e.g. DeepSeek / OpenAI"
                 aria-label={t("apiFusionName", "Name")}
-                className={inputClass}
               />
-            </label>
+            </div>
 
-            <label className="space-y-1.5 sm:col-span-1">
-              <span className={labelClass}>{t("apiFusionProtocol", "API protocol")}</span>
+            {/* 第 2 行：接口协议与默认模型并排 */}
+            <div className="field">
+              <label className="required">{t("apiFusionProtocol", "API protocol")}</label>
               <select
                 value={protocol}
                 onChange={(event) =>
                   setProtocol(event.target.value as FusionUpstreamProtocol)
                 }
                 aria-label={t("apiFusionProtocol", "API protocol")}
-                className={inputClass}
               >
                 <option value="chat_completions">
                   {t("apiFusionProtocolChat", "Chat Completions (/chat/completions)")}
@@ -169,22 +151,36 @@ export function ProviderDetailDialog({
                   {t("apiFusionProtocolResponses", "Responses (/responses)")}
                 </option>
               </select>
-            </label>
+            </div>
 
-            <label className="space-y-1.5 sm:col-span-2">
-              <span className={labelClass}>{t("apiFusionBaseUrl", "API base URL")}</span>
+            <div className="field">
+              <label>{t("apiFusionDefaultModel", "Default model")}</label>
+              <input
+                type="text"
+                value={defaultModel}
+                onChange={(event) => setDefaultModel(event.target.value)}
+                placeholder="e.g. gpt-4o / deepseek-chat"
+                aria-label={t("apiFusionDefaultModel", "Default model")}
+                className="font-mono"
+              />
+            </div>
+
+            {/* 第 3 行：API Base URL 独占一行 */}
+            <div className="field full-span">
+              <label className="required">{t("apiFusionBaseUrl", "API base URL")}</label>
               <input
                 type="text"
                 value={baseUrl}
                 onChange={(event) => setBaseUrl(event.target.value)}
                 placeholder="https://api.openai.com"
                 aria-label={t("apiFusionBaseUrl", "API base URL")}
-                className={`${inputClass} font-mono`}
+                className="font-mono"
               />
-            </label>
+            </div>
 
-            <label className="space-y-1.5 sm:col-span-1">
-              <span className={labelClass}>{t("apiFusionApiKey", "API key")}</span>
+            {/* 第 4 行：API Key 独占一行 */}
+            <div className="field full-span">
+              <label>{t("apiFusionApiKey", "API key")}</label>
               <div className="relative">
                 <input
                   type={revealApiKey ? "text" : "password"}
@@ -192,7 +188,7 @@ export function ProviderDetailDialog({
                   onChange={(event) => setApiKey(event.target.value)}
                   placeholder="sk-..."
                   aria-label={t("apiFusionApiKey", "API key")}
-                  className={`${inputClass} pr-10 font-mono`}
+                  className="pr-10 font-mono"
                 />
                 <button
                   type="button"
@@ -202,32 +198,22 @@ export function ProviderDetailDialog({
                       ? t("apiFusionHideSecret", "Hide secret")
                       : t("apiFusionShowSecret", "Show secret")
                   }
-                  className="absolute right-1 top-1 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted"
+                  className="absolute right-1 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
                 >
                   {revealApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
-            </label>
-
-            <label className="space-y-1.5 sm:col-span-1">
-              <span className={labelClass}>{t("apiFusionDefaultModel", "Default model")}</span>
-              <input
-                type="text"
-                value={defaultModel}
-                onChange={(event) => setDefaultModel(event.target.value)}
-                placeholder="e.g. gpt-4o / deepseek-chat"
-                aria-label={t("apiFusionDefaultModel", "Default model")}
-                className={`${inputClass} font-mono`}
-              />
-            </label>
+            </div>
           </div>
 
-          {/* 模型映射列表 */}
-          <div className="space-y-2.5 rounded-xl border bg-muted/20 p-4">
+          {/* 模型映射列表（宽幅舒展设计，输入框尺寸与标准 field 保持一致） */}
+          <div className="space-y-2 rounded-xl border bg-muted/20 p-3.5">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <span className={labelClass}>{t("apiFusionModelMappings", "Model mappings")}</span>
-                <p className="text-xs text-muted-foreground">
+                <div className="text-xs font-semibold text-foreground">
+                  {t("apiFusionModelMappings", "Model mappings")}
+                </div>
+                <p className="text-[11px] text-muted-foreground">
                   {t(
                     "apiFusionModelMappingsDesc",
                     "Map local request model name to the upstream model name.",
@@ -242,21 +228,21 @@ export function ProviderDetailDialog({
                     { local_model: "", upstream_model: "", protocol: null },
                   ])
                 }
-                className="inline-flex items-center gap-1.5 rounded-md border bg-background px-2.5 py-1 text-xs font-medium shadow-sm transition hover:bg-muted"
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs font-medium shadow-sm transition hover:bg-muted"
               >
-                <Plus className="h-3.5 w-3.5" />
+                <Plus className="h-3 w-3" />
                 {t("apiFusionAddMapping", "Add mapping")}
               </button>
             </div>
 
             {mappings.length === 0 ? (
-              <p className="rounded-lg border border-dashed bg-background/50 px-3 py-4 text-center text-xs text-muted-foreground">
+              <p className="rounded-lg border border-dashed bg-background/50 px-3 py-3 text-center text-xs text-muted-foreground">
                 {t("apiFusionNoMappings", "No model mappings configured.")}
               </p>
             ) : (
               <ul className="space-y-2">
                 {mappings.map((mapping, index) => (
-                  <li key={index} className="flex flex-wrap items-center gap-2">
+                  <li key={index} className="flex items-center gap-2">
                     <input
                       type="text"
                       value={mapping.local_model}
@@ -268,9 +254,9 @@ export function ProviderDetailDialog({
                         index: index + 1,
                         defaultValue: `Local model ${index + 1}`,
                       })}
-                      className={`${inputClass} min-w-[120px] flex-1 font-mono`}
+                      className={`${mappingInputClass} min-w-[140px] flex-1 font-mono`}
                     />
-                    <span aria-hidden="true" className="shrink-0 text-muted-foreground font-semibold">
+                    <span aria-hidden="true" className="shrink-0 text-muted-foreground font-semibold text-sm">
                       →
                     </span>
                     <input
@@ -284,7 +270,7 @@ export function ProviderDetailDialog({
                         index: index + 1,
                         defaultValue: `Upstream model ${index + 1}`,
                       })}
-                      className={`${inputClass} min-w-[120px] flex-1 font-mono`}
+                      className={`${mappingInputClass} min-w-[140px] flex-1 font-mono`}
                     />
                     <select
                       value={mapping.protocol ?? ""}
@@ -300,7 +286,7 @@ export function ProviderDetailDialog({
                         index: index + 1,
                         defaultValue: `Mapping protocol ${index + 1}`,
                       })}
-                      className="h-10 shrink-0 rounded-md border border-input bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className={`${mappingInputClass} min-w-[180px] shrink-0`}
                     >
                       <option value="">
                         {t("apiFusionProtocolInherit", "Inherit from provider")}
@@ -321,7 +307,7 @@ export function ProviderDetailDialog({
                         index: index + 1,
                         defaultValue: `Remove mapping ${index + 1}`,
                       })}
-                      className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                      className="inline-flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
@@ -329,50 +315,6 @@ export function ProviderDetailDialog({
                 ))}
               </ul>
             )}
-          </div>
-
-          {/* 实时预览器 */}
-          <div className="rounded-xl border bg-muted/10 p-4">
-            <div className="mb-2 text-xs font-medium text-foreground">
-              {t("apiFusionTestRouting", "Test routing & mapping")}
-            </div>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <label className="space-y-1">
-                <span className={labelClass}>{t("apiFusionPreviewModel", "Preview model")}</span>
-                <input
-                  type="text"
-                  value={previewModel}
-                  onChange={(event) => setPreviewModel(event.target.value)}
-                  placeholder="Enter local model name"
-                  aria-label={t("apiFusionPreviewModel", "Preview model")}
-                  className={`${inputClass} font-mono`}
-                />
-              </label>
-              <div className="space-y-1">
-                <span className={labelClass}>{t("apiFusionPreviewResult", "Resolved upstream model")}</span>
-                <div
-                  className={`flex h-10 items-center rounded-md border bg-background px-3 font-mono text-sm ${
-                    preview ? "text-foreground font-medium" : "text-muted-foreground"
-                  }`}
-                  data-testid="api-fusion-model-preview"
-                >
-                  {preview?.upstreamModel ?? t("apiFusionPreviewUnavailable", "Not resolvable")}
-                </div>
-              </div>
-              <div className="space-y-1">
-                <span className={labelClass}>{t("apiFusionPreviewEndpoint", "Target endpoint")}</span>
-                <div
-                  className={`flex h-10 items-center rounded-md border bg-background px-3 font-mono text-sm ${
-                    preview ? "text-foreground font-medium" : "text-muted-foreground"
-                  }`}
-                  data-testid="api-fusion-endpoint-preview"
-                >
-                  {preview
-                    ? endpointPath(preview.endpoint)
-                    : t("apiFusionPreviewUnavailable", "Not resolvable")}
-                </div>
-              </div>
-            </div>
           </div>
         </div>
 
@@ -383,9 +325,9 @@ export function ProviderDetailDialog({
                 type="button"
                 onClick={handleDelete}
                 disabled={busy}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-destructive/30 px-3 py-2 text-xs font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
+                className="acc-panel-btn danger"
               >
-                <Trash2 className="h-3.5 w-3.5" />
+                <Trash2 />
                 {t("apiFusionDelete", "Delete")}
               </button>
             ) : null}
@@ -395,7 +337,7 @@ export function ProviderDetailDialog({
               type="button"
               onClick={() => onOpenChange(false)}
               disabled={busy}
-              className="rounded-lg border px-4 py-2 text-sm font-medium text-muted-foreground transition hover:bg-muted disabled:opacity-50"
+              className="acc-panel-btn"
             >
               {t("cancel", "Cancel")}
             </button>
@@ -403,7 +345,7 @@ export function ProviderDetailDialog({
               type="button"
               onClick={handleSave}
               disabled={busy || !name.trim() || !baseUrl.trim()}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow transition hover:bg-primary/90 disabled:opacity-50"
+              className="acc-panel-btn primary"
             >
               {t("apiFusionSave", "Save")}
             </button>

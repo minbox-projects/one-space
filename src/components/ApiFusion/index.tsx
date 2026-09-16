@@ -338,17 +338,17 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
 
   return (
     <div className="h-full overflow-y-auto" data-testid="api-fusion-console">
-      <div className="mx-auto max-w-7xl space-y-5 p-6">
-        {/* 头部标题与简介 */}
-        <header className="flex items-start gap-3.5">
-          <div className={`rounded-xl p-2.5 ${iconClassName}`}>
-            <ToolIcon className="h-6 w-6" />
+      <div className="mx-auto max-w-7xl space-y-4 p-6">
+        {/* 头部标题与简介（对齐 AiEnvironments 规范） */}
+        <header className="flex items-start gap-3">
+          <div className={`rounded-lg p-2 ${iconClassName}`}>
+            <ToolIcon className="h-5 w-5" />
           </div>
-          <div className="space-y-1">
-            <h1 className="text-2xl font-semibold tracking-tight">
+          <div className="space-y-0.5">
+            <h1 className="text-xl font-bold tracking-tight text-foreground">
               {t("apiFusion", "API Fusion")}
             </h1>
-            <p className="max-w-3xl text-sm text-muted-foreground">
+            <p className="max-w-3xl text-xs text-muted-foreground">
               {t(
                 "apiFusionWorkspaceDesc",
                 "Run a local OpenAI-compatible relay across multiple upstream providers, manage local keys, and push the local endpoint to OpenCode / Codex.",
@@ -368,11 +368,11 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           onCopyAddress={() => void handleCopyAddress()}
         />
 
-        {/* 工作区 Tabs 标签页导航 */}
+        {/* 工作区 Tabs 标签页导航（对齐 AiEnvironments 的紧凑导航规范） */}
         <div
           role="tablist"
           aria-label={t("apiFusionWorkspaceTabs", "API Fusion tabs")}
-          className="flex flex-wrap items-center gap-1.5 rounded-xl border bg-muted/40 p-1"
+          className="flex flex-wrap items-center gap-1 rounded-lg border bg-muted/40 p-1"
         >
           {tabs.map((tab) => {
             const Icon = tab.icon;
@@ -384,17 +384,17 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
                 role="tab"
                 aria-selected={isActive}
                 onClick={() => setActiveTab(tab.id)}
-                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${
+                className={`inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-all ${
                   isActive
                     ? "bg-background text-foreground shadow-sm"
                     : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
                 }`}
               >
-                <Icon className={`h-4 w-4 ${isActive ? "text-indigo-600" : ""}`} />
+                <Icon className={`h-3.5 w-3.5 ${isActive ? "text-indigo-600" : ""}`} />
                 <span>{tab.label}</span>
                 {tab.count !== undefined ? (
                   <span
-                    className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                    className={`rounded-full px-1.5 py-0.2 text-[10px] font-semibold ${
                       isActive
                         ? "bg-muted text-foreground"
                         : "bg-muted/70 text-muted-foreground"
@@ -405,7 +405,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
                 ) : null}
                 {tab.hasAlert ? (
                   <span
-                    className="h-2 w-2 rounded-full bg-amber-500"
+                    className="h-1.5 w-1.5 rounded-full bg-amber-500"
                     title={t("apiFusionHasPendingItems", "Has items needing attention")}
                   />
                 ) : null}

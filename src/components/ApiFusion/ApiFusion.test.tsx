@@ -478,51 +478,6 @@ describe("ApiFusion", () => {
     expect(payload.provider.mappings[0].protocol).toBe("responses");
   });
 
-  it("预览同时展示解析后的上游模型与目标 endpoint", async () => {
-    const store: Store = {
-      config: makeConfig({
-        providers: [
-          makeProvider({
-            protocol: "chat_completions",
-            default_model: "remote-default",
-            mappings: [
-              {
-                local_model: "local-a",
-                upstream_model: "remote-a",
-                protocol: "responses",
-              },
-              { local_model: "local-b", upstream_model: "remote-b" },
-            ],
-          }),
-        ],
-      }),
-      status: makeStatus({ provider_count: 1 }),
-      targets: [openCodeTarget()],
-    };
-    mockStore(store);
-
-    renderWithProviders(<ApiFusion />);
-    fireEvent.click(await screen.findByText("Upstream A"));
-    const previewInput = screen.getByLabelText("Preview model");
-    const modelPreview = screen.getByTestId("api-fusion-model-preview");
-    const endpointPreview = screen.getByTestId("api-fusion-endpoint-preview");
-
-    fireEvent.change(previewInput, { target: { value: "local-a" } });
-    expect(modelPreview).toHaveTextContent("remote-a");
-    expect(endpointPreview).toHaveTextContent("/responses");
-
-    fireEvent.change(previewInput, { target: { value: "local-b" } });
-    expect(modelPreview).toHaveTextContent("remote-b");
-    expect(endpointPreview).toHaveTextContent("/chat/completions");
-
-    fireEvent.change(previewInput, { target: { value: "local-unknown" } });
-    expect(modelPreview).toHaveTextContent("remote-default");
-    expect(endpointPreview).toHaveTextContent("/chat/completions");
-
-    fireEvent.change(previewInput, { target: { value: "" } });
-    expect(modelPreview).toHaveTextContent("remote-default");
-  });
-
   it("新增本地 Key 只需名称，值留空交由后端随机生成", async () => {
     const store: Store = {
       config: makeConfig({ keys: [], default_key_id: null }),
