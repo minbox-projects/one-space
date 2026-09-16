@@ -15,7 +15,6 @@ export type MoreToolsSection =
   | "ssh"
   | "ssh-tunnels"
   | "protocol-router"
-  | "api-fusion"
   | "random-password"
   | "json-parser"
   | "md5-encryption"

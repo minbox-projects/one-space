@@ -646,7 +646,6 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 - `SSH Servers`
 - `SSH Tunnels`
 - `Protocol Router`
-- `API Fusion`
 - `File Sharing`
 - `Bookmarks`
 - `Cloud Drive`
@@ -684,7 +683,7 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 
 ### 15.3 API Fusion
 
-`API Fusion` 是把多个上游服务商聚合成一个本地入口的转发服务，默认监听 `127.0.0.1:17688`，并提供独立的上游服务商、本地 Key 与终端同步管理。入口是左侧 `AI 能力` 分组下的 `API 融合`（位于 `AI 终端服务商` 与 `AI 用量统计` 之间），`More Tools` 卡片与 `Launcher` 内部工具中也可进入。
+`API Fusion` 是把多个上游服务商聚合成一个本地入口的转发服务。它不是 `More Tools` 工具，而是左侧 `AI 能力` 分组下的独立功能 `API 融合`（位于 `AI 终端服务商` 与 `AI 用量统计` 之间），默认监听 `127.0.0.1:17688`，并提供独立的上游服务商、本地 Key 与终端同步管理。
 
 启用服务：
 

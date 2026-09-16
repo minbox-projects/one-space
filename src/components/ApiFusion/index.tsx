@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Network } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
 import { errorToMessage } from "@/lib/messages";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 import {
   apiFusionConfigureTerminal,
   apiFusionDeleteKey,
@@ -53,7 +53,8 @@ function emptyProvider(): FusionUpstreamProvider {
 export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const { pushToast } = useToast();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("api-fusion");
+  const ToolIcon = Network;
+  const iconClassName = "bg-indigo-500/10 text-indigo-600";
 
   const [config, setConfig] = useState<FusionConfig | null>(null);
   const [status, setStatus] = useState<FusionStatus | null>(null);

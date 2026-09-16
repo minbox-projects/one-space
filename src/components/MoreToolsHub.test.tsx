@@ -192,7 +192,6 @@ describe("MoreToolsHub", () => {
     "ssh",
     "ssh-tunnels",
     "protocol-router",
-    "api-fusion",
     "random-password",
     "json-parser",
     "short-link",
@@ -256,7 +255,6 @@ describe("MoreToolsHub", () => {
     "ssh",
     "ssh-tunnels",
     "protocol-router",
-    "api-fusion",
     "random-password",
     "json-parser",
     "md5-encryption",
@@ -330,23 +328,14 @@ describe("MoreToolsHub", () => {
     expect(screen.getByText(/JT\/T Data Parser detail/)).toBeInTheDocument();
   });
 
-  it("展示 API 融合卡片并分发同一详情组件", () => {
-    const onSelectTool = vi.fn();
-    const { rerender } = renderWithProviders(
-      <MoreToolsHub activeTool={null} onSelectTool={onSelectTool} onBack={vi.fn()} />,
+  it("不再把 API 融合作为更多工具卡片展示", () => {
+    renderWithProviders(
+      <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
     );
 
-    fireEvent.click(screen.getByTestId("more-tool-card-api-fusion"));
-    expect(onSelectTool).toHaveBeenCalledWith("api-fusion");
-
-    rerender(
-      <MoreToolsHub
-        activeTool="api-fusion"
-        onSelectTool={onSelectTool}
-        onBack={vi.fn()}
-      />,
-    );
-    expect(screen.getByText("API Fusion detail")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("more-tool-card-api-fusion"),
+    ).not.toBeInTheDocument();
   });
 
   it("将可选 JT/T 子标签页传达到解析器组件", () => {
@@ -487,7 +476,6 @@ describe("MoreToolsHub", () => {
         "bookmarks",
         "ssh-tunnels",
         "protocol-router",
-        "api-fusion",
         "random-password",
         "json-parser",
         "md5-encryption",

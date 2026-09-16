@@ -6,7 +6,6 @@ import { CloudDrive } from "./CloudDrive";
 import { SshServers } from "./SshServers";
 import { SshTunnels } from "./SshTunnels";
 import { ProtocolRouterTool } from "./ProtocolRouterTool";
-import { ApiFusion } from "./ApiFusion";
 import { RandomPasswordTool } from "./RandomPasswordTool";
 import { JsonParserTool } from "./JsonParserTool";
 import { Md5EncryptionTool } from "./Md5EncryptionTool";
@@ -120,15 +119,6 @@ export function MoreToolsHub({
         launcherToolId: "protocol-router" as LauncherToolId,
       },
       {
-        id: "api-fusion" as const,
-        label: t("apiFusion", "API Fusion"),
-        description: t(
-          "apiFusionToolDesc",
-          "Relay across multiple upstream providers and push the local endpoint to OpenCode / Codex.",
-        ),
-        launcherToolId: "api-fusion" as LauncherToolId,
-      },
-      {
         id: "random-password" as const,
         label: t("randomPassword", "Random Password"),
         description: t("randomPasswordToolDesc", "Generate passwords locally with the character groups you need."),
@@ -234,7 +224,6 @@ export function MoreToolsHub({
           {activeTool === "ssh" ? <SshServers /> : null}
           {activeTool === "ssh-tunnels" ? <SshTunnels isVisible /> : null}
           {activeTool === "protocol-router" ? <ProtocolRouterTool isVisible /> : null}
-          {activeTool === "api-fusion" ? <ApiFusion isVisible /> : null}
           {activeTool === "random-password" ? <RandomPasswordTool /> : null}
           {activeTool === "json-parser" ? <JsonParserTool /> : null}
           {activeTool === "md5-encryption" ? <Md5EncryptionTool /> : null}

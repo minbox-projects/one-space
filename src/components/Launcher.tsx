@@ -670,18 +670,6 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         visible: toolVisibility["protocol-router"],
       },
       {
-        id: "quick-api-fusion",
-        name: t("apiFusion", "API Fusion"),
-        description: t(
-          "apiFusionLauncherDesc",
-          "Run a local relay across upstream providers and sync the endpoint to OpenCode / Codex.",
-        ),
-        target: "api-fusion",
-        ...getMoreToolPresentation("api-fusion"),
-        statusBadge: null,
-        visible: toolVisibility["api-fusion"],
-      },
-      {
         id: "quick-random-password",
         name: t("randomPassword", "Random Password"),
         description: t(
