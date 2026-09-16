@@ -1,8 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { analyzeJt808 } from "./jt808";
 import { buildJt808PositionJson } from "./jt808Json";
-import { JT808_ANSWER_8001, JT808_POSITION_0200, JT808_POSITION_0704 } from "./fixtures";
+import {
+  JT808_ANSWER_8001,
+  JT808_POSITION_0200,
+  JT808_POSITION_0704,
+  JT808_POSITION_0704_COUNT_MISMATCH,
+  JT808_POSITION_0704_TRUNCATED_ITEM,
+  JT808_POSITION_0704_TWO_ITEMS,
+  JT808_POSITION_0704_ZERO_LENGTH_ITEM,
+} from "./fixtures";
 import { parseJt808Wire } from "./frame";
+
+const POSITION_0704_ITEM_1_HEX =
+  "00000000000C00030232BD3E070B523B0024000000B326062713383701040002258E030200001404000000001504000000001604000000001702000018030000001904000000002504000000002A0200002B040000000030010031011C520100";
+const POSITION_0704_ITEM_2_HEX =
+  "00000000000C000301020304070B523B0024000000B326091609300001040002258E030200001404000000001504000000001604000000001702000018030000001904000000002504000000002A0200002B040000000030010031011C520100";
+
+function batchItems(json: Record<string, unknown>): Array<Record<string, unknown>> {
+  const dataBody = json["数据体对象"] as Record<string, unknown>;
+  return dataBody["数据项列表"] as Array<Record<string, unknown>>;
+}
 
 const REFERENCE_JSON = `{
   "[7E]开始": 126,
@@ -269,6 +287,77 @@ describe("buildJt808PositionJson", () => {
       "[04]附加信息长度": 4,
       "[0002258E]里程": 140686,
     });
+  });
+
+  it("renders every item of a single 0x0704 frame in order", () => {
+    const [record] = analyzeJt808(JT808_POSITION_0704_TWO_ITEMS, "automatic");
+
+    expect(record.kind).toBe("success");
+    const json = record.json as Record<string, unknown>;
+    const dataBody = json["数据体对象"] as Record<string, unknown>;
+    expect(dataBody["[0002]数据项个数"]).toBe(2);
+    expect(dataBody["[01]数据类型"]).toBe(1);
+
+    const items = batchItems(json);
+    expect(items).toHaveLength(2);
+
+    const [first, second] = items;
+    expect(first["[0232BD3E]纬度"]).toBe(36879678);
+    expect(first["[260627133837]定位时间"]).toBe("2026-06-27 13:38:37");
+    expect(first["位置信息汇报"]).toBe(POSITION_0704_ITEM_1_HEX);
+
+    expect(second["[01020304]纬度"]).toBe(16909060);
+    expect(second["[260916093000]定位时间"]).toBe("2026-09-16 09:30:00");
+    expect(second["[260916093000]定位时间"]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(second["位置信息汇报"]).toBe(POSITION_0704_ITEM_2_HEX);
+
+    expect(first["位置信息汇报"]).not.toBe(second["位置信息汇报"]);
+  });
+
+  it("ignores position items beyond the declared item count", () => {
+    const [record] = analyzeJt808(JT808_POSITION_0704_COUNT_MISMATCH, "automatic");
+
+    expect(record.kind).toBe("success");
+    const json = record.json as Record<string, unknown>;
+    const dataBody = json["数据体对象"] as Record<string, unknown>;
+    expect(dataBody["[0001]数据项个数"]).toBe(1);
+
+    const items = batchItems(json);
+    expect(items).toHaveLength(1);
+    expect(items[0]["[260627133837]定位时间"]).toBe("2026-06-27 13:38:37");
+  });
+
+  it("stops parsing when a declared item length exceeds the body", () => {
+    expect(() =>
+      analyzeJt808(JT808_POSITION_0704_TRUNCATED_ITEM, "automatic"),
+    ).not.toThrow();
+    const [record] = analyzeJt808(JT808_POSITION_0704_TRUNCATED_ITEM, "automatic");
+
+    expect(record.kind).toBe("success");
+    const json = record.json as Record<string, unknown>;
+    const dataBody = json["数据体对象"] as Record<string, unknown>;
+    expect(dataBody["[0002]数据项个数"]).toBe(2);
+
+    const items = batchItems(json);
+    expect(items).toHaveLength(1);
+    expect(items[0]["[260627133837]定位时间"]).toBe("2026-06-27 13:38:37");
+  });
+
+  it("keeps a zero-length item out of the BCD date-time path", () => {
+    const [record] = analyzeJt808(JT808_POSITION_0704_ZERO_LENGTH_ITEM, "automatic");
+
+    expect(record.kind).toBe("success");
+    const json = record.json as Record<string, unknown>;
+    const dataBody = json["数据体对象"] as Record<string, unknown>;
+    expect(dataBody["[00]数据类型"]).toBe(0);
+
+    const items = batchItems(json);
+    expect(items).toHaveLength(1);
+
+    const item = items[0];
+    const timeKey = Object.keys(item).find((key) => key.endsWith("定位时间"));
+    expect(timeKey).toBeDefined();
+    expect(item[timeKey as string]).toBe("");
   });
 
   it("parses the 0x8001 platform general answer with reply fields", () => {

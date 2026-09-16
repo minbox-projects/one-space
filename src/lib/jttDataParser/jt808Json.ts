@@ -336,6 +336,9 @@ function bcdTimeString(bytes: number[]): string {
 }
 
 function formatPositionTime(bytes: number[]): string {
+  if (bytes.length !== 6) {
+    return bytesToHex(bytes);
+  }
   for (const byte of bytes) {
     if (((byte >> 4) & 0x0f) > 9 || (byte & 0x0f) > 9) {
       return bytesToHex(bytes);
@@ -387,7 +390,7 @@ function batchPositionDataObject(body: number[]): Record<string, unknown> {
   const dataType = readUint8(body, 2);
   const items: Array<Record<string, unknown>> = [];
   let offset = 3;
-  while (offset + 2 <= body.length) {
+  while (offset + 2 <= body.length && items.length < count) {
     const length = readUint16(body, offset);
     const dataStart = offset + 2;
     const dataEnd = dataStart + length;
