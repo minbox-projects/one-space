@@ -44,8 +44,10 @@ pub const FAILURE_THRESHOLD: u32 = 3;
 
 /// Which OpenAI-compatible endpoint family an upstream provider exposes.
 ///
-/// The relay accepts `/chat/completions` and `/responses` from clients and only
-/// offers a provider to requests matching its configured protocol.
+/// The relay accepts `/chat/completions` and `/responses` from clients. A
+/// provider's `protocol` is the default its mapping rows inherit; each row may
+/// pin its own, so candidates are selected by a row's effective protocol and a
+/// provider is not filtered by its own protocol alone.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamProtocol {
