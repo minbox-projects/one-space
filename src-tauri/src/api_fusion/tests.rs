@@ -3681,4 +3681,477 @@ async fn mapping_without_protocol_inherits_the_provider_protocol() {
     drop(home);
 }
 
+// ---------------------------------------------------------------------------
+// Plan 20260916-api-fusion-per-model-endpoint, Step 3 (cross-module E2E)
+//
+// Each case drives the real local relay listener (`call_fusion` -> loopback
+// HTTP) against an in-process mock upstream and asserts on the upstream
+// capture log. Only the relay's observable HTTP surface and the persisted
+// config round trip are asserted; no private collaborator is touched.
+// ---------------------------------------------------------------------------
+
+/// AC-002 streaming path: inside one provider record, each model streams
+/// successfully through the endpoint its own mapping row declares. The client
+/// receives HTTP 200, `text/event-stream`, and the exact SSE bytes the mock
+/// upstream produced, while upstream sees the declared path and request model.
+#[tokio::test]
+async fn streaming_forwarding_reaches_each_models_own_endpoint_in_one_record() {
+    let home = temp_home("per-model-stream-both-protocols");
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|captured| {
+        let marker = if captured.path == "/v1/responses" {
+            "responses-stream-ok"
+        } else {
+            "chat-stream-ok"
+        };
+        MockReply::Stream(format!(
+            "data: {{\"marker\":\"{marker}\"}}\n\ndata: [DONE]\n\n"
+        ))
+    })
+    .await;
+
+    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+        port,
+        vec![json_provider(
+            "p1",
+            "OpenCode Go",
+            &upstream_url,
+            "responses",
+            Some("deepseek-v4.1-flash"),
+            vec![
+                json_mapping("deepseek-v4.1-flash", "deepseek-v4.1-flash", Some("responses")),
+                json_mapping("mimo-v2.5", "mimo-v2.5", Some("chat_completions")),
+            ],
+        )],
+    ))
+    .expect("decode config with mapping-level protocols");
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (responses_status, responses_type, responses_text) = call_fusion(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "deepseek-v4.1-flash", "input": "hi", "stream": true})),
+    )
+    .await;
+    let (chat_status, chat_type, chat_text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({
+            "model": "mimo-v2.5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true
+        })),
+    )
+    .await;
+
+    let captured = log.lock().unwrap().clone();
+    let summary = format!(
+        "responses=(status={responses_status}, type={responses_type}, body={responses_text}) chat=(status={chat_status}, type={chat_type}, body={chat_text}) upstream=[{}]",
+        captured_summary(&captured)
+    );
+
+    assert_eq!(
+        responses_status, 200,
+        "the responses model must stream successfully: {summary}"
+    );
+    assert!(
+        responses_type.contains("text/event-stream"),
+        "responses content-type must be SSE: {summary}"
+    );
+    assert!(
+        responses_text.contains("responses-stream-ok"),
+        "the responses client must receive the mock upstream's SSE bytes: {summary}"
+    );
+    assert!(responses_text.contains("data: [DONE]"), "{summary}");
+
+    assert_eq!(
+        chat_status, 200,
+        "the chat model must stream successfully from the same record: {summary}"
+    );
+    assert!(
+        chat_type.contains("text/event-stream"),
+        "chat content-type must be SSE: {summary}"
+    );
+    assert!(
+        chat_text.contains("chat-stream-ok"),
+        "the chat client must receive the mock upstream's SSE bytes: {summary}"
+    );
+    assert!(chat_text.contains("data: [DONE]"), "{summary}");
+
+    assert_eq!(captured.len(), 2, "each stream must reach upstream once: {summary}");
+    assert_eq!(captured[0].method, "POST", "{summary}");
+    assert_eq!(captured[0].path, "/v1/responses", "{summary}");
+    let sent: Value = serde_json::from_slice(&captured[0].body).unwrap();
+    assert_eq!(
+        sent["model"], "deepseek-v4.1-flash",
+        "the responses stream must carry the deepseek model: {summary}"
+    );
+    assert_eq!(captured[1].method, "POST", "{summary}");
+    assert_eq!(captured[1].path, "/v1/chat/completions", "{summary}");
+    let sent: Value = serde_json::from_slice(&captured[1].body).unwrap();
+    assert_eq!(
+        sent["model"], "mimo-v2.5",
+        "the chat stream must carry the mimo model: {summary}"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// Spec counterexample "协议不一致的服务商不得被选中、不得发起上游请求、不得计入
+/// 连续失败": a provider whose matching row declares another protocol is not a
+/// candidate, so repeated mismatched requests stay HTTP 502 with zero upstream
+/// calls and leave `consecutive_failures == 0` / `auto_disabled == false` on
+/// disk. The mismatch direction is `/v1/responses` requesting a chat-only row,
+/// which is the direction the spec's mismatch scenario defines; a
+/// `chat_completions` request for the same row would match and be served.
+#[tokio::test]
+async fn protocol_mismatch_never_counts_as_failure_or_auto_disables() {
+    let home = temp_home("per-model-mismatch-no-failure-count");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-run"}))).await;
+
+    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+        port,
+        vec![json_provider(
+            "p1",
+            "OpenCode Go",
+            &upstream_url,
+            "responses",
+            Some("deepseek-v4.1-flash"),
+            vec![json_mapping("mimo-v2.5", "mimo-v2.5", Some("chat_completions"))],
+        )],
+    ))
+    .expect("decode config with a mapping-level protocol");
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    for attempt in 1..=4u32 {
+        let (status, _content_type, text) = call_fusion(
+            port,
+            "POST",
+            "/v1/responses",
+            &[("authorization", "Bearer local-key")],
+            Some(json!({"model": "mimo-v2.5", "input": "hi"})),
+        )
+        .await;
+        let body: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            status, 502,
+            "mismatched attempt {attempt} must stay all-unavailable: {text}"
+        );
+        assert_eq!(
+            body["error"]["code"], "all_providers_unavailable",
+            "attempt {attempt}: {text}"
+        );
+    }
+
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "an ineligible, protocol-mismatched provider must never contact upstream"
+    );
+
+    let stored = super::storage::read_config().unwrap();
+    let p1 = stored.providers.iter().find(|p| p.id == "p1").unwrap();
+    assert_eq!(
+        p1.consecutive_failures, 0,
+        "a protocol mismatch must not count toward the failure threshold"
+    );
+    assert!(
+        !p1.auto_disabled,
+        "a protocol mismatch must never auto-disable the provider"
+    );
+    assert_eq!(p1.disabled_reason, None);
+    assert_eq!(p1.disabled_at, None);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-002/REQ-002 across records: two records declare the same local model but
+/// different provider protocols, so each inbound protocol selects its own
+/// record (proved by the distinct upstream credential) and its own remote model.
+#[tokio::test]
+async fn cross_record_candidates_are_selected_by_each_records_protocol() {
+    let home = temp_home("per-model-cross-record");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
+
+    let mut config = config_with_key(port);
+    let mut chat_record =
+        upstream_provider("chat-record", "Chat Record", &upstream_url, "sk-chat", None);
+    chat_record.protocol = UpstreamProtocol::ChatCompletions;
+    chat_record.mappings = vec![ModelMapping {
+        local_model: "shared-model".to_string(),
+        upstream_model: "remote-chat".to_string(),
+        protocol: None,
+    }];
+    let mut responses_record = upstream_provider(
+        "responses-record",
+        "Responses Record",
+        &upstream_url,
+        "sk-responses",
+        None,
+    );
+    responses_record.protocol = UpstreamProtocol::Responses;
+    responses_record.mappings = vec![ModelMapping {
+        local_model: "shared-model".to_string(),
+        upstream_model: "remote-responses".to_string(),
+        protocol: None,
+    }];
+    config.providers.push(chat_record);
+    config.providers.push(responses_record);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (chat_status, _, chat_text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "shared-model", "messages": []})),
+    )
+    .await;
+    let (responses_status, _, responses_text) = call_fusion(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "shared-model", "input": "hi"})),
+    )
+    .await;
+
+    let captured = log.lock().unwrap().clone();
+    let summary = format!(
+        "chat=(status={chat_status}, body={chat_text}) responses=(status={responses_status}, body={responses_text}) upstream=[{}]",
+        captured_summary(&captured)
+    );
+    assert_eq!(chat_status, 200, "the chat record must serve the chat request: {summary}");
+    assert_eq!(
+        responses_status, 200,
+        "the responses record must serve the responses request: {summary}"
+    );
+    assert_eq!(captured.len(), 2, "each request reaches its own record once: {summary}");
+
+    assert_eq!(captured[0].path, "/v1/chat/completions", "{summary}");
+    assert_eq!(
+        captured[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer sk-chat"),
+        "the chat-completions record must be the one contacted: {summary}"
+    );
+    let sent: Value = serde_json::from_slice(&captured[0].body).unwrap();
+    assert_eq!(sent["model"], "remote-chat", "{summary}");
+
+    assert_eq!(captured[1].path, "/v1/responses", "{summary}");
+    assert_eq!(
+        captured[1].headers.get("authorization").map(String::as_str),
+        Some("Bearer sk-responses"),
+        "the responses record must be the one contacted: {summary}"
+    );
+    let sent: Value = serde_json::from_slice(&captured[1].body).unwrap();
+    assert_eq!(sent["model"], "remote-responses", "{summary}");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// Spec counterexample "请求体除 `model` 外必须保持等价，不得插入任何协议转换
+/// 字段": for both protocols the upstream request body must be field-for-field
+/// identical to the client body once `model` is removed (no dropped fields, no
+/// injected conversion fields).
+#[tokio::test]
+async fn request_body_is_equivalent_except_model_for_chat_and_responses() {
+    let home = temp_home("per-model-body-equivalence");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
+
+    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+        port,
+        vec![json_provider(
+            "p1",
+            "OpenCode Go",
+            &upstream_url,
+            "responses",
+            None,
+            vec![
+                json_mapping("deepseek-v4.1-flash", "remote-responses", Some("responses")),
+                json_mapping("mimo-v2.5", "remote-chat", Some("chat_completions")),
+            ],
+        )],
+    ))
+    .expect("decode config with mapping-level protocols");
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let responses_body = json!({
+        "model": "deepseek-v4.1-flash",
+        "input": [{"role": "user", "content": "hi"}],
+        "temperature": 0.25,
+        "max_output_tokens": 128,
+        "metadata": {"trace": "abc", "nested": {"keep": [1, 2, 3]}},
+        "relay_custom_flag": true
+    });
+    let chat_body = json!({
+        "model": "mimo-v2.5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 0.5,
+        "max_tokens": 64,
+        "top_p": 0.9,
+        "custom_object": {"a": 1, "b": "two"}
+    });
+
+    let (responses_status, _, responses_text) = call_fusion(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(responses_body.clone()),
+    )
+    .await;
+    let (chat_status, _, chat_text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(chat_body.clone()),
+    )
+    .await;
+
+    let captured = log.lock().unwrap().clone();
+    let summary = format!(
+        "responses=(status={responses_status}, body={responses_text}) chat=(status={chat_status}, body={chat_text}) upstream=[{}]",
+        captured_summary(&captured)
+    );
+    assert_eq!(responses_status, 200, "{summary}");
+    assert_eq!(chat_status, 200, "{summary}");
+    assert_eq!(captured.len(), 2, "{summary}");
+
+    let sent_responses: Value = serde_json::from_slice(&captured[0].body).unwrap();
+    assert_eq!(sent_responses["model"], "remote-responses", "{summary}");
+    let mut sent_rest = sent_responses.clone();
+    sent_rest.as_object_mut().unwrap().remove("model");
+    let mut expected_rest = responses_body.clone();
+    expected_rest.as_object_mut().unwrap().remove("model");
+    assert_eq!(
+        sent_rest, expected_rest,
+        "only `model` may change on /v1/responses; no field may be added or dropped: {summary}"
+    );
+
+    let sent_chat: Value = serde_json::from_slice(&captured[1].body).unwrap();
+    assert_eq!(sent_chat["model"], "remote-chat", "{summary}");
+    let mut sent_rest = sent_chat.clone();
+    sent_rest.as_object_mut().unwrap().remove("model");
+    let mut expected_rest = chat_body.clone();
+    expected_rest.as_object_mut().unwrap().remove("model");
+    assert_eq!(
+        sent_rest, expected_rest,
+        "only `model` may change on /v1/chat/completions; no field may be added or dropped: {summary}"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-005 across records: the same local model declared by two records under
+/// different protocols is listed once, and `GET /v1/models` is the deduplicated
+/// union of both records' models without contacting upstream.
+#[tokio::test]
+async fn models_endpoint_deduplicates_the_same_local_model_across_records() {
+    let home = temp_home("per-model-models-dedup-cross-record");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"data": []}))).await;
+
+    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+        port,
+        vec![
+            json_provider(
+                "p-chat",
+                "Chat Record",
+                &upstream_url,
+                "chat_completions",
+                None,
+                vec![
+                    json_mapping("shared-model", "remote-chat", Some("chat_completions")),
+                    json_mapping("chat-only", "remote-chat-only", Some("chat_completions")),
+                ],
+            ),
+            json_provider(
+                "p-responses",
+                "Responses Record",
+                &upstream_url,
+                "responses",
+                None,
+                vec![
+                    json_mapping("shared-model", "remote-responses", Some("responses")),
+                    json_mapping("responses-only", "remote-responses-only", Some("responses")),
+                ],
+            ),
+        ],
+    ))
+    .expect("decode two per-protocol records");
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_fusion(
+        port,
+        "GET",
+        "/v1/models",
+        &[("authorization", "Bearer local-key")],
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{text}");
+
+    let body: Value = serde_json::from_str(&text).unwrap();
+    let ids: Vec<String> = body["data"]
+        .as_array()
+        .expect("models data array")
+        .iter()
+        .map(|item| item["id"].as_str().unwrap().to_string())
+        .collect();
+    let shared_occurrences = ids.iter().filter(|id| id.as_str() == "shared-model").count();
+    assert_eq!(
+        shared_occurrences, 1,
+        "a local model served by two records must be listed once: {text}"
+    );
+    assert_eq!(
+        ids.len(),
+        {
+            let mut unique = ids.clone();
+            unique.sort();
+            unique.dedup();
+            unique.len()
+        },
+        "the models payload must not contain duplicate ids: {text}"
+    );
+    let mut unique = ids.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(
+        unique,
+        vec![
+            "chat-only".to_string(),
+            "responses-only".to_string(),
+            "shared-model".to_string()
+        ],
+        "GET /v1/models must return the sorted deduplicated union of both records: {text}"
+    );
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "GET /v1/models must not contact upstream"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
 
