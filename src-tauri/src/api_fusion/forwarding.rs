@@ -16,11 +16,16 @@ pub(in crate::api_fusion) struct UpstreamJsonResponse {
 /// blackholed/unroutable upstream fails fast instead of hanging.
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Idle read timeout: applied to each read and reset after every successful
-/// read, so an upstream that connects but never answers is a retryable failure
-/// while an active long response or stream is never truncated by a fixed total
-/// deadline.
-const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// Idle read timeout (waiting for the first byte, then per read): applied to
+/// each read and reset after every successful read. Measured slow reasoning
+/// models take 2.7s-10.8s to emit their first byte, so the budget must
+/// accommodate that long and jittery first-byte latency; 10s classified those
+/// live upstreams as failures. The cost, accepted deliberately: an upstream
+/// that connects but never sends anything is only judged a retryable failure
+/// after 60s, so switching to the next candidate can take that long. Because
+/// the budget resets on every successful read, an active long response or
+/// stream is still never truncated by a fixed total deadline.
+const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn shared_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
