@@ -353,7 +353,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
     },
     {
       id: "terminals",
-      label: t("apiFusionTerminalSync", "Terminal sync"),
+      label: t("apiFusionTerminalSync", "AI terminal integration"),
       icon: TerminalSquare,
       hasAlert: pendingSyncCount > 0,
     },
@@ -486,10 +486,10 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           />
         </div>
 
-        {/* Tab 3: 终端同步 */}
+        {/* Tab 3: AI 终端集成 */}
         <div
           role="tabpanel"
-          aria-label={t("apiFusionTerminalSync", "Terminal sync")}
+          aria-label={t("apiFusionTerminalSync", "AI terminal integration")}
           className={activeTab === "terminals" ? "block" : "hidden"}
         >
           <TerminalSyncPanel

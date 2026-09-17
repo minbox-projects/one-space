@@ -712,7 +712,7 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 
 把本地 Api / Key 一键配置到 OpenCode / Codex：
 
-1. 打开 `终端同步`；列表固定为每个受支持工具（`opencode`、`codex`）各一行，不依赖该工具是否已有服务商记录
+1. 打开 `AI 终端集成`；列表固定为每个受支持工具（`opencode`、`codex`）各一行，不依赖该工具是否已有服务商记录
 2. 点目标工具所在行最右侧的单个按钮：尚未添加过显示 `添加服务商`（调用 `api_fusion_configure_terminal`），已添加过显示 `同步`（调用 `api_fusion_sync_terminal`）
 3. 写入内容是本地 Api 地址、当前默认本地 Key，以及网关的模型映射列表
 

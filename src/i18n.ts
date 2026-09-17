@@ -477,7 +477,7 @@ const resources = {
       apiFusionShowSecret: "Show secret",
       apiFusionHideSecret: "Hide secret",
       apiFusionNoValue: "not set",
-      apiFusionTerminalSync: "Terminal sync",
+      apiFusionTerminalSync: "AI terminal integration",
       apiFusionTerminalSyncDesc:
         "Each row shows Add provider or Sync on its right depending on whether it has been added, and it is not activated automatically. Re-adding or syncing creates a brand-new API Gateway provider when its gateway provider is missing.",
       apiFusionConfigureSelected: "Add provider",
@@ -3837,7 +3837,7 @@ const resources = {
       apiFusionShowSecret: "显示密钥",
       apiFusionHideSecret: "隐藏密钥",
       apiFusionNoValue: "未设置",
-      apiFusionTerminalSync: "终端同步",
+      apiFusionTerminalSync: "AI 终端集成",
       apiFusionTerminalSyncDesc:
         "每行右侧按是否添加过显示“添加服务商”或“同步”，且不会自动启用；重新添加或同步时，若对应网关服务商不存在，会新建一个全新的 API 网关服务商。",
       apiFusionConfigureSelected: "添加服务商",

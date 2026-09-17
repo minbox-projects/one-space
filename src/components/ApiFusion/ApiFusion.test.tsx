@@ -698,7 +698,7 @@ describe("ApiFusion", () => {
     expect(tabsList).toBeInTheDocument();
 
     const keysTab = screen.getByRole("tab", { name: /Api Keys/i });
-    const terminalsTab = screen.getByRole("tab", { name: /Terminal sync/i });
+    const terminalsTab = screen.getByRole("tab", { name: /AI terminal integration/i });
     const providersTab = screen.getByRole("tab", { name: /Upstream providers/i });
 
     expect(providersTab).toHaveAttribute("aria-selected", "true");
