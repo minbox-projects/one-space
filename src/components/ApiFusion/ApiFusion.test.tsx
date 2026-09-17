@@ -1163,4 +1163,182 @@ describe("ApiFusion", () => {
     const terminalsTab = screen.getByRole("tab", { name: /AI terminal integration/i });
     expect(terminalsTab).toHaveAttribute("aria-selected", "true");
   });
+
+  it("点击聚合模型指标卡打开弹框并列出有效模型及其上游服务商映射", async () => {
+    const provider1 = makeProvider({
+      id: "p1",
+      name: "Provider 1",
+      protocol: "chat_completions",
+      enabled: true,
+      auto_disabled: false,
+      default_model: "gpt-4o",
+      mappings: [
+        { local_model: "gpt-4o", upstream_model: "gpt-4o-2024" },
+        { local_model: "claude-3-7-sonnet", upstream_model: "claude-3-7" },
+      ],
+    });
+    const provider2 = makeProvider({
+      id: "p2",
+      name: "Provider 2",
+      enabled: false,
+      auto_disabled: false,
+      mappings: [
+        { local_model: "deepseek-v3", upstream_model: "deepseek-chat" },
+      ],
+    });
+
+    const store: Store = {
+      config: makeConfig({ providers: [provider1, provider2] }),
+      status: makeStatus({ provider_count: 2 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+
+    const modelsCard = await screen.findByTestId("api-fusion-metric-models");
+    const cardModelCount = Number(within(modelsCard).getByText("2").textContent);
+    fireEvent.click(modelsCard);
+
+    const dialog = await screen.findByTestId("api-fusion-aggregated-models");
+
+    const modelNodes = within(dialog).getAllByTestId("api-fusion-aggregated-model");
+    expect(modelNodes).toHaveLength(2);
+    expect(modelNodes).toHaveLength(cardModelCount);
+    expect(
+      modelNodes.map((node) => node.getAttribute("data-model")).sort(),
+    ).toEqual(["claude-3-7-sonnet", "gpt-4o"]);
+
+    // 「默认」徽标只出现在 isDefault 条目所在的模型节点内
+    const gptNode = modelNodes.find(
+      (node) => node.getAttribute("data-model") === "gpt-4o",
+    );
+    const claudeNode = modelNodes.find(
+      (node) => node.getAttribute("data-model") === "claude-3-7-sonnet",
+    );
+    expect(gptNode).not.toBeUndefined();
+    expect(claudeNode).not.toBeUndefined();
+    expect(within(gptNode!).getByText(/Default|默认/)).toBeInTheDocument();
+    expect(
+      within(claudeNode!).queryByText(/Default|默认/),
+    ).not.toBeInTheDocument();
+
+    expect(
+      within(dialog).getAllByTestId("api-fusion-aggregated-model-provider"),
+    ).toHaveLength(3);
+
+    expect(within(dialog).getAllByText("Provider 1").length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText("gpt-4o-2024").length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText("claude-3-7").length).toBeGreaterThan(0);
+    expect(within(dialog).queryAllByText("deepseek-v3")).toHaveLength(0);
+    expect(within(dialog).queryAllByText("Provider 2")).toHaveLength(0);
+  });
+
+  it("聚合模型弹框以路径形式展示 endpoint 而非协议枚举", async () => {
+    const provider1 = makeProvider({
+      id: "p1",
+      name: "Provider 1",
+      protocol: "chat_completions",
+      enabled: true,
+      auto_disabled: false,
+      default_model: "gpt-4o",
+      mappings: [
+        { local_model: "gpt-4o", upstream_model: "gpt-4o-2024" },
+        { local_model: "claude-3-7-sonnet", upstream_model: "claude-3-7" },
+      ],
+    });
+
+    const store: Store = {
+      config: makeConfig({ providers: [provider1] }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+
+    fireEvent.click(await screen.findByTestId("api-fusion-metric-models"));
+
+    const dialog = await screen.findByTestId("api-fusion-aggregated-models");
+    expect(within(dialog).getAllByText("/chat/completions")).toHaveLength(3);
+    expect(within(dialog).queryAllByText("chat_completions")).toHaveLength(0);
+  });
+
+  it("在聚合模型指标卡上按 Enter 打开弹框且不切换页签", async () => {
+    const store: Store = {
+      config: makeConfig({ providers: [makeProvider()] }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+
+    const keysTab = await screen.findByRole("tab", { name: /Api Keys/i });
+    fireEvent.click(keysTab);
+    expect(keysTab).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.keyDown(screen.getByTestId("api-fusion-metric-models"), {
+      key: "Enter",
+    });
+
+    expect(
+      await screen.findByTestId("api-fusion-aggregated-models"),
+    ).toBeInTheDocument();
+    expect(keysTab).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("在聚合模型指标卡上按空格打开弹框且不切换页签", async () => {
+    const store: Store = {
+      config: makeConfig({ providers: [makeProvider()] }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+
+    const keysTab = await screen.findByRole("tab", { name: /Api Keys/i });
+    fireEvent.click(keysTab);
+    expect(keysTab).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.keyDown(screen.getByTestId("api-fusion-metric-models"), {
+      key: " ",
+    });
+
+    expect(
+      await screen.findByTestId("api-fusion-aggregated-models"),
+    ).toBeInTheDocument();
+    expect(keysTab).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("没有启用服务商时聚合模型弹框展示空态且不渲染任何模型", async () => {
+    const disabledProvider = makeProvider({
+      id: "p1",
+      name: "Provider 1",
+      enabled: false,
+      auto_disabled: false,
+      default_model: "gpt-4o",
+      mappings: [{ local_model: "gpt-4o", upstream_model: "gpt-4o-2024" }],
+    });
+
+    const store: Store = {
+      config: makeConfig({ providers: [disabledProvider] }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+
+    fireEvent.click(await screen.findByTestId("api-fusion-metric-models"));
+
+    const dialog = await screen.findByTestId("api-fusion-aggregated-models");
+    expect(
+      within(dialog).getByTestId("api-fusion-aggregated-models-empty"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryAllByTestId("api-fusion-aggregated-model"),
+    ).toHaveLength(0);
+  });
 });

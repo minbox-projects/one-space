@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   API_FUSION_DEFAULT_PORT,
   API_FUSION_KEY_MASK,
+  aggregateModels,
   apiFusionConfigureTerminal,
   apiFusionDeleteKey,
   apiFusionDeleteProvider,
@@ -501,5 +502,157 @@ describe("用量与日志命令封装", () => {
       model: null,
       page: 1,
     });
+  });
+});
+
+describe("aggregateModels 聚合本地模型", () => {
+  it("仅统计启用且未自动禁用的服务商，去重模型并保留全部上游来源与解析协议", () => {
+    const providers: FusionUpstreamProvider[] = [
+      provider({
+        id: "pa",
+        name: "Alpha",
+        protocol: "responses",
+        default_model: "gpt-4o",
+        mappings: [
+          { local_model: "gpt-4o", upstream_model: "gpt-4o-2024" },
+          {
+            local_model: "claude-3-7-sonnet",
+            upstream_model: "  claude-3-7  ",
+            protocol: "chat_completions",
+          },
+        ],
+      }),
+      provider({
+        id: "pb",
+        name: "Beta",
+        default_model: "  gpt-4o  ",
+        mappings: [
+          { local_model: "gpt-4o", upstream_model: "gpt-4o-mini" },
+          { local_model: "   ", upstream_model: "ignored" },
+        ],
+      }),
+      provider({
+        id: "pc",
+        name: "Gamma",
+        enabled: false,
+        default_model: "disabled-default",
+        mappings: [
+          { local_model: "gpt-4o", upstream_model: "disabled-upstream" },
+        ],
+      }),
+      provider({
+        id: "pd",
+        name: "Delta",
+        auto_disabled: true,
+        default_model: "auto-disabled-default",
+        mappings: [
+          {
+            local_model: "auto-disabled-local",
+            upstream_model: "auto-disabled-upstream",
+          },
+        ],
+      }),
+      provider({ id: "pe", name: "Epsilon", default_model: "   ", mappings: [] }),
+    ];
+
+    expect(aggregateModels(providers)).toEqual([
+      {
+        model: "claude-3-7-sonnet",
+        providers: [
+          {
+            providerId: "pa",
+            providerName: "Alpha",
+            upstreamModel: "claude-3-7",
+            endpoint: "chat_completions",
+            isDefault: false,
+          },
+        ],
+      },
+      {
+        model: "gpt-4o",
+        providers: [
+          {
+            providerId: "pa",
+            providerName: "Alpha",
+            upstreamModel: "gpt-4o",
+            endpoint: "responses",
+            isDefault: true,
+          },
+          {
+            providerId: "pa",
+            providerName: "Alpha",
+            upstreamModel: "gpt-4o-2024",
+            endpoint: "responses",
+            isDefault: false,
+          },
+          {
+            providerId: "pb",
+            providerName: "Beta",
+            upstreamModel: "gpt-4o",
+            endpoint: "chat_completions",
+            isDefault: true,
+          },
+          {
+            providerId: "pb",
+            providerName: "Beta",
+            upstreamModel: "gpt-4o-mini",
+            endpoint: "chat_completions",
+            isDefault: false,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("远端模型去空格后为空且无默认模型时不产生聚合模型", () => {
+    const providers: FusionUpstreamProvider[] = [
+      provider({
+        id: "p-ghost",
+        name: "Ghost",
+        default_model: null,
+        mappings: [{ local_model: "ghost", upstream_model: "   " }],
+      }),
+    ];
+
+    expect(aggregateModels(providers)).toEqual([]);
+  });
+
+  it("默认模型与同名空白远端映射共存时只保留默认条目一次", () => {
+    const providers: FusionUpstreamProvider[] = [
+      provider({
+        id: "p1",
+        name: "Provider",
+        default_model: "gpt-4o",
+        mappings: [{ local_model: "gpt-4o", upstream_model: "" }],
+      }),
+    ];
+
+    const aggregated = aggregateModels(providers);
+    const gpt = aggregated.filter((entry) => entry.model === "gpt-4o");
+    expect(gpt).toHaveLength(1);
+    expect(gpt[0].providers).toHaveLength(1);
+    expect(gpt[0].providers.filter((entry) => entry.isDefault)).toHaveLength(1);
+    expect(gpt[0].providers[0]).toMatchObject({
+      providerId: "p1",
+      providerName: "Provider",
+      upstreamModel: "gpt-4o",
+      endpoint: "chat_completions",
+      isDefault: true,
+    });
+  });
+
+  it("没有有效服务商时返回空数组", () => {
+    expect(aggregateModels([])).toEqual([]);
+    expect(
+      aggregateModels([
+        provider({ id: "off", name: "Off", enabled: false, default_model: "x" }),
+        provider({
+          id: "auto",
+          name: "Auto",
+          auto_disabled: true,
+          default_model: "y",
+        }),
+      ]),
+    ).toEqual([]);
   });
 });

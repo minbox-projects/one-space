@@ -13,6 +13,7 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import {
+  aggregateModels,
   localBaseUrl,
   type FusionConfig,
   type FusionStatus,
@@ -26,6 +27,7 @@ type RuntimeStatusCardProps = {
   addressCopied: boolean;
   targets?: FusionTerminalTarget[];
   onSelectTab?: (tab: "providers" | "keys" | "terminals") => void;
+  onShowModels?: () => void;
   onStart: () => void;
   onStop: () => void;
   onCopyAddress: () => void;
@@ -38,6 +40,7 @@ export function RuntimeStatusCard({
   addressCopied,
   targets = [],
   onSelectTab,
+  onShowModels,
   onStart,
   onStop,
   onCopyAddress,
@@ -53,22 +56,11 @@ export function RuntimeStatusCard({
     return config.providers.filter((p) => p.enabled && !p.auto_disabled).length;
   }, [config.providers]);
 
-  // 2. 聚合模型数（去重统计所有有效服务商的映射及默认模型）
-  const aggregatedModelsCount = useMemo(() => {
-    const set = new Set<string>();
-    config.providers.forEach((p) => {
-      if (!p.enabled || p.auto_disabled) return;
-      if (p.default_model && p.default_model.trim()) {
-        set.add(p.default_model.trim());
-      }
-      p.mappings.forEach((m) => {
-        if (m.local_model && m.local_model.trim()) {
-          set.add(m.local_model.trim());
-        }
-      });
-    });
-    return set.size;
-  }, [config.providers]);
+  // 2. 聚合模型数（与聚合模型弹框内容严格一致）
+  const aggregatedModelsCount = useMemo(
+    () => aggregateModels(config.providers).length,
+    [config.providers],
+  );
 
   // 3. 本地有效密钥
   const totalKeys = status?.key_count ?? config.keys.length;
@@ -237,16 +229,16 @@ export function RuntimeStatusCard({
         {/* 指标卡 2：聚合模型数 */}
         <div
           data-testid="api-fusion-metric-models"
-          onClick={() => onSelectTab?.("providers")}
-          role={onSelectTab ? "button" : undefined}
-          tabIndex={onSelectTab ? 0 : undefined}
+          onClick={() => onShowModels?.()}
+          role={onShowModels ? "button" : undefined}
+          tabIndex={onShowModels ? 0 : undefined}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
-              onSelectTab?.("providers");
+              onShowModels?.();
             }
           }}
           className={`group flex flex-col justify-between rounded-lg border border-border/60 bg-muted/20 p-3 transition-colors hover:border-border hover:bg-muted/30 ${
-            onSelectTab ? "cursor-pointer" : ""
+            onShowModels ? "cursor-pointer" : ""
           }`}
         >
           <div className="flex items-center justify-between text-muted-foreground">
