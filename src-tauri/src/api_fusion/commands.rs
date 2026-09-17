@@ -6,21 +6,26 @@ use super::storage::{
 };
 use super::{now_ts, FusionConfig, FusionKey, FusionStatus, FusionUpstreamProvider, TerminalSyncRecord};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// Terminal tools that API Fusion is allowed to write to.
 pub(in crate::api_fusion) const SUPPORTED_TERMINAL_TOOLS: [&str; 2] = ["opencode", "codex"];
 
+/// Display name and provider key of the managed API Fusion gateway record.
+const GATEWAY_PROVIDER_NAME: &str = "API Gateway";
+const GATEWAY_PROVIDER_KEY: &str = "api_gateway";
+/// Stable marker identifying a provider record written by API Fusion.
+const GATEWAY_MARKER_KEY: &str = "api_fusion_gateway";
+
 /// A terminal service provider record that API Fusion can configure or sync.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalTarget {
-    pub provider_id: String,
     pub tool: String,
     pub name: String,
     #[serde(default)]
-    pub base_url: Option<String>,
+    pub provider_id: Option<String>,
     #[serde(default)]
-    pub api_key: String,
+    pub base_url: Option<String>,
     pub synced: bool,
     pub pending_sync: bool,
     #[serde(default)]
@@ -29,70 +34,119 @@ pub struct TerminalTarget {
     pub synced_at: Option<u64>,
 }
 
-/// Plan describing the merged record to submit for one terminal target.
-#[derive(Debug)]
-pub(in crate::api_fusion) struct TerminalSyncPlan {
-    pub(in crate::api_fusion) provider_id: String,
-    pub(in crate::api_fusion) tool: String,
-    pub(in crate::api_fusion) merged: Value,
-}
-
 pub(in crate::api_fusion) fn is_supported_terminal_tool(tool: &str) -> bool {
     SUPPORTED_TERMINAL_TOOLS
         .iter()
         .any(|supported| supported.eq_ignore_ascii_case(tool.trim()))
 }
 
-/// Merge only `base_url` and `api_key` into an existing provider record so every
-/// other field (name, model, icon, enabled state, tool config, ...) is preserved.
-pub(in crate::api_fusion) fn merge_terminal_provider(
-    existing: &Value,
-    base_url: &str,
-    api_key: &str,
-) -> Result<Value, String> {
-    let mut object = existing
-        .as_object()
-        .cloned()
-        .ok_or_else(|| "terminal provider record must be a JSON object".to_string())?;
-    object.insert("base_url".to_string(), Value::String(base_url.to_string()));
-    object.insert("api_key".to_string(), Value::String(api_key.to_string()));
-    Ok(Value::Object(object))
+fn provider_tool(provider: &Value) -> &str {
+    provider
+        .get("tool")
+        .and_then(Value::as_str)
+        .unwrap_or("")
 }
 
-pub(in crate::api_fusion) fn plan_terminal_sync(
-    providers_payload: &Value,
-    target_ids: &[String],
+/// A provider carries the gateway marker either at the top level or under
+/// `tool_config`; both shapes are recognized.
+fn provider_has_gateway_marker(provider: &Value) -> bool {
+    provider.get(GATEWAY_MARKER_KEY).and_then(Value::as_bool) == Some(true)
+        || provider
+            .get("tool_config")
+            .and_then(|tool_config| tool_config.get(GATEWAY_MARKER_KEY))
+            .and_then(Value::as_bool)
+            == Some(true)
+}
+
+fn non_empty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// Build the terminal provider record written by API Fusion for one tool.
+///
+/// The record is always marked as an API Fusion gateway and never carries an
+/// `active`/`is_active` flag, so configuring a tool never switches it on.
+pub(in crate::api_fusion) fn build_gateway_provider(
+    provider_id: &str,
+    tool: &str,
     base_url: &str,
     api_key: &str,
-) -> Result<Vec<TerminalSyncPlan>, String> {
-    let providers = providers_payload
-        .get("providers")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "service providers payload is missing 'providers'".to_string())?;
-    let mut plans = Vec::new();
-    for target_id in target_ids {
-        let existing = providers
-            .iter()
-            .find(|provider| provider.get("id").and_then(Value::as_str) == Some(target_id.as_str()))
-            .ok_or_else(|| format!("terminal provider not found: {target_id}"))?;
-        let tool = existing
-            .get("tool")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        if !is_supported_terminal_tool(&tool) {
-            return Err(format!(
-                "unsupported terminal tool '{tool}': only opencode and codex are supported"
-            ));
-        }
-        let merged = merge_terminal_provider(existing, base_url, api_key)?;
-        plans.push(TerminalSyncPlan {
-            provider_id: target_id.clone(),
-            tool,
-            merged,
-        });
+    gateways: &[FusionUpstreamProvider],
+) -> Result<serde_json::Value, String> {
+    let tool = tool.trim();
+    if !is_supported_terminal_tool(tool) {
+        return Err(format!(
+            "unsupported terminal tool '{tool}': only opencode and codex are supported"
+        ));
     }
-    Ok(plans)
+
+    let mut tool_config = Map::new();
+    tool_config.insert(GATEWAY_MARKER_KEY.to_string(), Value::Bool(true));
+
+    let mut object = Map::new();
+    object.insert("id".to_string(), Value::String(provider_id.to_string()));
+    object.insert(
+        "name".to_string(),
+        Value::String(GATEWAY_PROVIDER_NAME.to_string()),
+    );
+    object.insert("tool".to_string(), Value::String(tool.to_string()));
+    object.insert("base_url".to_string(), Value::String(base_url.to_string()));
+    object.insert("api_key".to_string(), Value::String(api_key.to_string()));
+
+    if tool.eq_ignore_ascii_case("opencode") {
+        object.insert(
+            "provider_key".to_string(),
+            Value::String(GATEWAY_PROVIDER_KEY.to_string()),
+        );
+        tool_config.insert(
+            "npm".to_string(),
+            Value::String("@ai-sdk/openai-compatible".to_string()),
+        );
+        let mut options = Map::new();
+        options.insert("baseURL".to_string(), Value::String(base_url.to_string()));
+        options.insert("apiKey".to_string(), Value::String(api_key.to_string()));
+        tool_config.insert("options".to_string(), Value::Object(options));
+
+        let mut models = Map::new();
+        for gateway in gateways {
+            for mapping in &gateway.mappings {
+                let Some(local_model) = non_empty(Some(mapping.local_model.as_str())) else {
+                    continue;
+                };
+                if models.contains_key(&local_model) {
+                    continue;
+                }
+                let name = non_empty(mapping.display_name.as_deref())
+                    .or_else(|| non_empty(Some(mapping.upstream_model.as_str())))
+                    .unwrap_or_default();
+                let mut model = Map::new();
+                model.insert("name".to_string(), Value::String(name));
+                models.insert(local_model, Value::Object(model));
+            }
+        }
+        tool_config.insert("models".to_string(), Value::Object(models));
+    } else {
+        tool_config.insert("wire_api".to_string(), Value::String("chat".to_string()));
+        let model = gateways
+            .iter()
+            .find_map(|gateway| non_empty(gateway.default_model.as_deref()))
+            .or_else(|| {
+                gateways.iter().find_map(|gateway| {
+                    gateway.mappings.iter().find_map(|mapping| {
+                        non_empty(Some(mapping.local_model.as_str()))
+                    })
+                })
+            });
+        if let Some(model) = model {
+            object.insert("model".to_string(), Value::String(model));
+        }
+    }
+
+    object.insert("tool_config".to_string(), Value::Object(tool_config));
+    Ok(Value::Object(object))
 }
 
 /// Pending-sync is derived from the persisted ledger, never from the redacted api_key.
@@ -299,6 +353,62 @@ pub async fn api_fusion_autostart() -> Result<FusionStatus, String> {
     autostart().await
 }
 
+/// Find the managed gateway provider for a tool: the ledger record's provider id
+/// when it still exists for the same tool, else the marked provider for the tool.
+fn find_managed_gateway_provider<'a>(
+    tool: &str,
+    providers: &'a [Value],
+    ledger: Option<&TerminalSyncRecord>,
+) -> Option<&'a Value> {
+    if let Some(record) = ledger {
+        if record.tool.eq_ignore_ascii_case(tool) {
+            let found = providers.iter().find(|provider| {
+                provider.get("id").and_then(Value::as_str) == Some(record.provider_id.as_str())
+                    && provider_tool(provider).eq_ignore_ascii_case(tool)
+            });
+            if found.is_some() {
+                return found;
+            }
+        }
+    }
+    providers
+        .iter()
+        .find(|provider| provider_tool(provider).eq_ignore_ascii_case(tool) && provider_has_gateway_marker(provider))
+}
+
+/// Resolve the provider id a sync should write to for one tool: first the ledger
+/// record that still matches a same-tool provider, then a marked gateway
+/// provider, then a freshly generated id.
+fn resolve_gateway_provider_id(
+    tool: &str,
+    providers: &[Value],
+    config: &FusionConfig,
+) -> String {
+    for record in &config.terminal_syncs {
+        if !record.tool.eq_ignore_ascii_case(tool) {
+            continue;
+        }
+        let existing = providers.iter().find(|provider| {
+            provider.get("id").and_then(Value::as_str) == Some(record.provider_id.as_str())
+                && provider_tool(provider).eq_ignore_ascii_case(tool)
+        });
+        if let Some(id) = existing.and_then(|provider| provider.get("id").and_then(Value::as_str)) {
+            return id.to_string();
+        }
+    }
+    if let Some(id) = providers
+        .iter()
+        .find(|provider| {
+            provider_tool(provider).eq_ignore_ascii_case(tool)
+                && provider_has_gateway_marker(provider)
+        })
+        .and_then(|provider| provider.get("id").and_then(Value::as_str))
+    {
+        return id.to_string();
+    }
+    uuid::Uuid::new_v4().to_string()
+}
+
 #[tauri::command]
 pub fn api_fusion_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
     let config = read_config()?;
@@ -311,48 +421,34 @@ pub fn api_fusion_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
         .unwrap_or_default();
     let base_url = local_base_url(config.port);
     let mut targets = Vec::new();
-    for provider in providers {
-        let tool = provider
-            .get("tool")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        if !is_supported_terminal_tool(&tool) {
-            continue;
-        }
-        let provider_id = provider
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
+    for tool in SUPPORTED_TERMINAL_TOOLS {
         let ledger = config
             .terminal_syncs
             .iter()
-            .find(|record| record.provider_id == provider_id);
-        let pending_sync = match ledger {
-            Some(record) => {
+            .find(|record| record.tool.eq_ignore_ascii_case(tool));
+        let managed = find_managed_gateway_provider(tool, &providers, ledger);
+        let provider_id = managed
+            .and_then(|provider| provider.get("id").and_then(Value::as_str))
+            .map(str::to_string);
+        let provider_base_url = managed
+            .and_then(|provider| provider.get("base_url").and_then(Value::as_str))
+            .map(str::to_string);
+        let synced = provider_id.is_some();
+        let pending_sync = match (synced, ledger) {
+            (true, Some(record)) => {
                 terminal_sync_pending(record, config.default_key_id.as_deref(), &base_url)
             }
-            None => true,
+            _ => true,
         };
         targets.push(TerminalTarget {
+            tool: tool.to_string(),
+            name: match tool {
+                "opencode" => "OpenCode".to_string(),
+                _ => "Codex".to_string(),
+            },
             provider_id,
-            tool,
-            name: provider
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            base_url: provider
-                .get("base_url")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            api_key: provider
-                .get("api_key")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            synced: ledger.is_some(),
+            base_url: provider_base_url,
+            synced,
             pending_sync,
             synced_key_id: ledger.map(|record| record.synced_key_id.clone()),
             synced_at: ledger.map(|record| record.synced_at),
@@ -366,39 +462,71 @@ pub fn api_fusion_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
 pub(in crate::api_fusion) type UpsertFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
-/// Terminal sync pipeline with an injectable upsert seam: plan the merged
-/// provider records, upsert each one, then refresh the ledger. Any upsert error
-/// aborts before the ledger is written, so the ledger never claims a sync that
-/// did not happen.
+/// Terminal sync pipeline with an injectable upsert seam: build one gateway
+/// provider per requested tool, upsert each one, then refresh the ledger. Any
+/// upsert error aborts before the ledger is written, so the ledger never claims
+/// a sync that did not happen. This pipeline never touches activation state.
 pub(in crate::api_fusion) async fn apply_terminal_sync_with<F>(
     providers_data: &serde_json::Value,
     mut upsert: F,
-    target_ids: Vec<String>,
+    target_tools: Vec<String>,
 ) -> Result<Vec<TerminalSyncRecord>, String>
 where
     F: FnMut(serde_json::Value) -> UpsertFuture,
 {
     let mut config = read_config()?;
     let (key_id, key_value) = default_key_for_sync(&config)?;
-    if target_ids.is_empty() {
+    if target_tools.is_empty() {
         return Err("no terminal targets selected".to_string());
     }
+
+    let mut tools: Vec<String> = Vec::new();
+    for tool in target_tools {
+        let tool = tool.trim().to_string();
+        if tools
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&tool))
+        {
+            continue;
+        }
+        tools.push(tool);
+    }
+    for tool in &tools {
+        if !is_supported_terminal_tool(tool) {
+            return Err(format!(
+                "unsupported terminal tool '{tool}': only opencode and codex are supported"
+            ));
+        }
+    }
+
     let base_url = local_base_url(config.port);
-    let plans = plan_terminal_sync(providers_data, &target_ids, &base_url, &key_value)?;
+    let providers: &[Value] = providers_data
+        .get("providers")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
 
     let mut synced = Vec::new();
-    for plan in plans {
-        upsert(plan.merged).await?;
+    for tool in &tools {
+        let provider_id = resolve_gateway_provider_id(tool, providers, &config);
+        let payload = build_gateway_provider(
+            &provider_id,
+            tool,
+            &base_url,
+            &key_value,
+            &config.providers,
+        )?;
+        upsert(payload).await?;
         let record = TerminalSyncRecord {
-            provider_id: plan.provider_id.clone(),
-            tool: plan.tool.clone(),
+            provider_id,
+            tool: tool.clone(),
             synced_key_id: key_id.clone(),
             synced_base_url: base_url.clone(),
             synced_at: now_ts(),
         };
         config
             .terminal_syncs
-            .retain(|existing| existing.provider_id != record.provider_id);
+            .retain(|existing| !existing.tool.eq_ignore_ascii_case(&record.tool));
         config.terminal_syncs.push(record.clone());
         synced.push(record);
     }
@@ -446,7 +574,7 @@ pub async fn api_fusion_sync_terminal(
         _ => config
             .terminal_syncs
             .iter()
-            .map(|record| record.provider_id.clone())
+            .map(|record| record.tool.clone())
             .collect(),
     };
     apply_terminal_sync(app, targets).await
