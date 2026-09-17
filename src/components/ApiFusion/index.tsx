@@ -36,6 +36,7 @@ import {
 import { RuntimeStatusCard } from "./RuntimeStatusCard";
 import { UpstreamProviderList } from "./UpstreamProviderList";
 import { ProviderDetailDialog } from "./ProviderDetailDialog";
+import { LocalKeyDialog } from "./LocalKeyDialog";
 import { LocalKeyList } from "./LocalKeyList";
 import { TerminalSyncPanel } from "./TerminalSyncPanel";
 import { UsageStatsPanel } from "./UsageStatsPanel";
@@ -65,7 +66,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const { pushToast } = useToast();
   const ToolIcon = Network;
-  const iconClassName = "bg-indigo-500/10 text-indigo-600";
+  const iconClassName = "bg-primary/10 text-primary";
 
   const [activeTab, setActiveTab] = useState<ApiFusionTab>("providers");
   const [config, setConfig] = useState<FusionConfig | null>(null);
@@ -75,6 +76,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
   const [editingProvider, setEditingProvider] =
     useState<FusionUpstreamProvider | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isKeyDialogOpen, setIsKeyDialogOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [syncingTools, setSyncingTools] = useState<Record<string, boolean>>({});
   const [addressCopied, setAddressCopied] = useState(false);
@@ -146,17 +148,22 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
   }, []);
 
   const runAction = useCallback(
-    async (action: () => Promise<void>, successTitle: string) => {
+    async (
+      action: () => Promise<void>,
+      successTitle: string,
+    ): Promise<boolean> => {
       setBusy(true);
       try {
         await action();
         pushToast({ title: successTitle, kind: "success" });
+        return true;
       } catch (err) {
         pushToast({
           title: t("apiFusionActionFailed", "Action failed"),
           description: errorToMessage(err),
           kind: "error",
         });
+        return false;
       } finally {
         setBusy(false);
       }
@@ -207,7 +214,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
       setIsDialogOpen(false);
     }, t("apiFusionDeleted", "Deleted."));
 
-  const handleSaveKey = (key: FusionKey) =>
+  const handleSaveKey = (key: FusionKey): Promise<boolean> =>
     runAction(async () => {
       await applyConfig(await apiFusionUpsertKey(key));
     }, t("apiFusionKeySaved", "Key saved."));
@@ -405,16 +412,18 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           config={config}
           busy={busy}
           addressCopied={addressCopied}
+          targets={targets}
+          onSelectTab={setActiveTab}
           onStart={handleToggleService}
           onStop={handleToggleService}
           onCopyAddress={() => void handleCopyAddress()}
         />
 
-        {/* 工作区 Tabs 标签页导航（对齐 AiEnvironments 的紧凑导航规范） */}
+        {/* 工作区 Tabs 标签页导航 */}
         <div
           role="tablist"
           aria-label={t("apiFusionWorkspaceTabs", "API Gateway tabs")}
-          className="flex flex-wrap items-center gap-1 rounded-lg border bg-muted/40 p-1"
+          className="flex flex-wrap items-center gap-1.5 rounded-xl border bg-muted/50 p-1.5 shadow-xs"
         >
           {tabs.map((tab) => {
             const Icon = tab.icon;
@@ -426,20 +435,26 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
                 role="tab"
                 aria-selected={isActive}
                 onClick={() => setActiveTab(tab.id)}
-                className={`inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-all ${
+                className={`group inline-flex h-9 items-center gap-2 rounded-lg px-3.5 text-xs font-medium transition-all ${
                   isActive
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+                    ? "bg-background text-foreground font-semibold shadow-xs ring-1 ring-border/80 dark:ring-border"
+                    : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
                 }`}
               >
-                <Icon className={`h-3.5 w-3.5 ${isActive ? "text-indigo-600" : ""}`} />
+                <Icon
+                  className={`h-4 w-4 transition-colors ${
+                    isActive
+                      ? "text-primary"
+                      : "text-muted-foreground/70 group-hover:text-foreground"
+                  }`}
+                />
                 <span>{tab.label}</span>
                 {tab.count !== undefined ? (
                   <span
-                    className={`rounded-full px-1.5 py-0.2 text-[10px] font-semibold ${
+                    className={`rounded-full px-2 py-0.5 text-[11px] font-semibold transition-colors ${
                       isActive
-                        ? "bg-muted text-foreground"
-                        : "bg-muted/70 text-muted-foreground"
+                        ? "bg-primary/10 text-primary"
+                        : "bg-muted text-muted-foreground group-hover:bg-muted/80 group-hover:text-foreground"
                     }`}
                   >
                     {tab.count}
@@ -447,9 +462,12 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
                 ) : null}
                 {tab.hasAlert ? (
                   <span
-                    className="h-1.5 w-1.5 rounded-full bg-amber-500"
+                    className="relative flex h-2 w-2"
                     title={t("apiFusionHasPendingItems", "Has items needing attention")}
-                  />
+                  >
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
+                  </span>
                 ) : null}
               </button>
             );
@@ -497,7 +515,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
             defaultKeyId={defaultKeyId}
             busy={busy}
             copiedKeyId={copiedKeyId}
-            onSave={(key) => void handleSaveKey(key)}
+            onAdd={() => setIsKeyDialogOpen(true)}
             onDelete={(keyId) => void handleDeleteKey(keyId)}
             onSetDefault={(keyId) => void handleSetDefaultKey(keyId)}
             onToggleEnabled={(key, enabled) => void handleToggleKeyEnabled(key, enabled)}
@@ -552,6 +570,14 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           busy={busy}
           onSave={(draft) => void handleSaveProvider(draft)}
           onDelete={(providerId) => void handleDeleteProvider(providerId)}
+        />
+
+        {/* 本地密钥新增模态弹窗 */}
+        <LocalKeyDialog
+          open={isKeyDialogOpen}
+          onOpenChange={setIsKeyDialogOpen}
+          busy={busy}
+          onSave={handleSaveKey}
         />
       </div>
     </div>

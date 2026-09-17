@@ -590,7 +590,6 @@ describe("ApiFusion", () => {
     expect(await screen.findByTestId("api-fusion-runtime-state")).toHaveTextContent(
       "Running",
     );
-    expect(screen.getByText("Port 17688")).toBeInTheDocument();
     expect(screen.getByTestId("api-fusion-local-address")).toHaveTextContent(
       "http://127.0.0.1:17688",
     );
@@ -740,19 +739,158 @@ describe("ApiFusion", () => {
     renderWithProviders(<ApiFusion />);
     await screen.findByTestId("api-fusion-keys");
 
+    // 页头不再有内联名称输入框，"新增 Key" 按钮始终可用
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
     const addButton = screen.getByRole("button", { name: /Add key/ });
-    expect(addButton).toBeDisabled();
-    expect(screen.queryByLabelText("Key")).not.toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText("Label"), { target: { value: "CI" } });
     expect(addButton).toBeEnabled();
+
+    // 点击按钮弹出对话框
     fireEvent.click(addButton);
+    const dialog = await screen.findByTestId("api-fusion-key-dialog");
+    expect(dialog).toBeInTheDocument();
+
+    // 对话框中只有名称输入，没有 Key 值输入
+    expect(within(dialog).queryByLabelText("Key")).not.toBeInTheDocument();
+
+    const saveButton = within(dialog).getByRole("button", { name: "Save" });
+    expect(saveButton).toBeDisabled();
+
+    fireEvent.change(within(dialog).getByLabelText("Name"), {
+      target: { value: "CI" },
+    });
+    expect(saveButton).toBeEnabled();
+    fireEvent.click(saveButton);
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_fusion_upsert_key", {
         key: expect.objectContaining({ label: "CI", value: "" }),
       }),
     );
+
+    // 值留空交由后端随机生成，其余字段按约定初始化
+    const call = invokeMock.mock.calls.find(
+      ([command]) => command === "api_fusion_upsert_key",
+    );
+    expect(call?.[1]).toEqual({
+      key: {
+        id: "",
+        label: "CI",
+        value: "",
+        enabled: true,
+        created_at: 0,
+      },
+    });
+  });
+
+  it("取消新增 Key 弹框后重新打开会清空名称输入", async () => {
+    const store: Store = {
+      config: makeConfig({ keys: [], default_key_id: null }),
+      status: makeStatus({ key_count: 0, default_key_id: null }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    await screen.findByTestId("api-fusion-keys");
+
+    fireEvent.click(screen.getByRole("button", { name: /Add key/ }));
+    const dialog = await screen.findByTestId("api-fusion-key-dialog");
+    fireEvent.change(within(dialog).getByLabelText("Name"), {
+      target: { value: "CI" },
+    });
+    expect(within(dialog).getByLabelText("Name")).toHaveValue("CI");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("api-fusion-key-dialog"),
+      ).not.toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Add key/ }));
+    const reopened = await screen.findByTestId("api-fusion-key-dialog");
+    expect(within(reopened).getByLabelText("Name")).toHaveValue("");
+  });
+
+  it("在名称输入中按 Enter 会提交新增 Key 且载荷初始化字段正确", async () => {
+    const store: Store = {
+      config: makeConfig({ keys: [], default_key_id: null }),
+      status: makeStatus({ key_count: 0, default_key_id: null }),
+      targets: [],
+    };
+    invokeMock.mockImplementation(async (command: string) => {
+      switch (command) {
+        case "api_fusion_get_config":
+        case "api_fusion_upsert_key":
+          return store.config;
+        case "api_fusion_status":
+          return store.status;
+        case "api_fusion_terminal_targets":
+          return store.targets;
+        default:
+          throw new Error(`Unhandled command: ${command}`);
+      }
+    });
+
+    renderWithProviders(<ApiFusion />);
+    await screen.findByTestId("api-fusion-keys");
+
+    fireEvent.click(screen.getByRole("button", { name: /Add key/ }));
+    const dialog = await screen.findByTestId("api-fusion-key-dialog");
+    const nameInput = within(dialog).getByLabelText("Name");
+    fireEvent.change(nameInput, { target: { value: "CI" } });
+    fireEvent.keyDown(nameInput, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_upsert_key", {
+        key: {
+          id: "",
+          label: "CI",
+          value: "",
+          enabled: true,
+          created_at: 0,
+        },
+      }),
+    );
+  });
+
+  it("保存新 Key 失败时弹框保持打开并保留名称输入", async () => {
+    const store: Store = {
+      config: makeConfig({ keys: [], default_key_id: null }),
+      status: makeStatus({ key_count: 0, default_key_id: null }),
+      targets: [],
+    };
+    invokeMock.mockImplementation(async (command: string) => {
+      switch (command) {
+        case "api_fusion_get_config":
+          return store.config;
+        case "api_fusion_upsert_key":
+          throw new Error("boom");
+        case "api_fusion_status":
+          return store.status;
+        case "api_fusion_terminal_targets":
+          return store.targets;
+        default:
+          throw new Error(`Unhandled command: ${command}`);
+      }
+    });
+
+    renderWithProviders(<ApiFusion />);
+    await screen.findByTestId("api-fusion-keys");
+
+    fireEvent.click(screen.getByRole("button", { name: /Add key/ }));
+    const dialog = await screen.findByTestId("api-fusion-key-dialog");
+    fireEvent.change(within(dialog).getByLabelText("Name"), {
+      target: { value: "CI" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("api-fusion-key-dialog")).toBeInTheDocument(),
+    );
+    expect(
+      within(screen.getByTestId("api-fusion-key-dialog")).getByLabelText("Name"),
+    ).toHaveValue("CI");
   });
 
   it("支持在 Tabs 之间顺畅切换且保持各面板挂载与状态", async () => {
@@ -902,5 +1040,104 @@ describe("ApiFusion", () => {
         }),
       }),
     );
+  });
+
+  it("启停按钮在服务运行时显示停止红色方块按钮", async () => {
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus({ running: true }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    const runningToggleBtn = await screen.findByTestId("api-fusion-toggle-service");
+    expect(runningToggleBtn).toHaveAttribute("title", "Stop service");
+    expect(runningToggleBtn).toHaveClass("text-destructive");
+  });
+
+  it("启停按钮在服务停止时显示启动图标按钮", async () => {
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus({ running: false }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    const stoppedToggleBtn = await screen.findByTestId("api-fusion-toggle-service");
+    expect(stoppedToggleBtn).toHaveAttribute("title", "Start service");
+    expect(stoppedToggleBtn).toHaveClass("text-emerald-600");
+  });
+
+  it("顶部状态卡片展示健康率、聚合模型数、有效密钥及终端同步指标，且点击指标卡可切换对应 Tab", async () => {
+    const provider1 = makeProvider({
+      id: "p1",
+      name: "Provider 1",
+      enabled: true,
+      auto_disabled: false,
+      mappings: [
+        { local_model: "gpt-4o", upstream_model: "gpt-4o-2024" },
+        { local_model: "claude-3-7-sonnet", upstream_model: "claude-3-7" },
+      ],
+      default_model: "gpt-4o",
+    });
+    const provider2 = makeProvider({
+      id: "p2",
+      name: "Provider 2",
+      enabled: false,
+      auto_disabled: false,
+      mappings: [
+        { local_model: "deepseek-v3", upstream_model: "deepseek-chat" },
+      ],
+    });
+
+    const store: Store = {
+      config: makeConfig({
+        providers: [provider1, provider2],
+        keys: [
+          { id: "k1", label: "Key 1", value: "sk-1", enabled: true, created_at: 1 },
+          { id: "k2", label: "Key 2", value: "sk-2", enabled: false, created_at: 2 },
+        ],
+      }),
+      status: makeStatus({
+        running: true,
+        provider_count: 2,
+        key_count: 2,
+      }),
+      targets: [
+        openCodeTarget({ tool: "opencode", name: "OpenCode", synced: true, pending_sync: false }),
+        openCodeTarget({ tool: "codex", name: "Codex", synced: false, pending_sync: true }),
+      ],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+
+    // 1. 服务商健康率展示：1/2 在线 (因为 provider2 是 disabled)
+    const healthCard = await screen.findByTestId("api-fusion-metric-health");
+    expect(within(healthCard).getByText("1/2")).toBeInTheDocument();
+    expect(within(healthCard).getByText(/Provider health/i)).toBeInTheDocument();
+
+    // 2. 聚合模型数：provider1 贡献了 gpt-4o 和 claude-3-7-sonnet（去重后 2 个，provider2 被禁用不计入）
+    const modelsCard = screen.getByTestId("api-fusion-metric-models");
+    expect(within(modelsCard).getByText("2")).toBeInTheDocument();
+    expect(within(modelsCard).getByText(/Aggregated models/i)).toBeInTheDocument();
+
+    // 3. 本地有效密钥：1 个有效 (共 2 个)
+    const keysCard = screen.getByTestId("api-fusion-metric-keys");
+    expect(within(keysCard).getByText("1")).toBeInTheDocument();
+    expect(within(keysCard).getByText("/ 2")).toBeInTheDocument();
+
+    // 4. 终端同步：1/2 已同步，且有 1 个待同步提示
+    const terminalsCard = screen.getByTestId("api-fusion-metric-terminals");
+    expect(within(terminalsCard).getByText("1/2")).toBeInTheDocument();
+    expect(within(terminalsCard).getByText(/1.*pending sync/i)).toBeInTheDocument();
+
+    // 5. 点击终端指标卡可切换到 terminals Tab
+    fireEvent.click(terminalsCard);
+
+    const terminalsTab = screen.getByRole("tab", { name: /AI terminal integration/i });
+    expect(terminalsTab).toHaveAttribute("aria-selected", "true");
   });
 });

@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Copy, KeyRound, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
@@ -9,7 +8,7 @@ type LocalKeyListProps = {
   defaultKeyId: string | null;
   busy: boolean;
   copiedKeyId: string | null;
-  onSave: (key: FusionKey) => void;
+  onAdd: () => void;
   onDelete: (keyId: string) => void;
   onSetDefault: (keyId: string) => void;
   onToggleEnabled: (key: FusionKey, enabled: boolean) => void;
@@ -21,21 +20,13 @@ export function LocalKeyList({
   defaultKeyId,
   busy,
   copiedKeyId,
-  onSave,
+  onAdd,
   onDelete,
   onSetDefault,
   onToggleEnabled,
   onCopy,
 }: LocalKeyListProps) {
   const { t } = useTranslation();
-  const [labelInput, setLabelInput] = useState("");
-
-  const handleAdd = () => {
-    const label = labelInput.trim();
-    if (!label) return;
-    onSave({ id: "", label, value: "", enabled: true, created_at: 0 });
-    setLabelInput("");
-  };
 
   return (
     <section className="space-y-3.5" data-testid="api-fusion-keys">
@@ -43,7 +34,7 @@ export function LocalKeyList({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-0.5">
           <div className="flex items-center gap-2">
-            <KeyRound className="h-4 w-4 text-indigo-600" />
+            <KeyRound className="h-4 w-4 text-primary" />
             <h3 className="text-sm font-semibold text-foreground">
               {t("apiFusionKeys", "Api Keys")}
             </h3>
@@ -59,25 +50,12 @@ export function LocalKeyList({
           </p>
         </div>
 
-        {/* 快速添加 Key 输入框与按钮 */}
+        {/* 新增 Key 按钮（点击后在对话框中输入名称） */}
         <div className="flex items-center gap-2">
-          <input
-            type="text"
-            value={labelInput}
-            onChange={(event) => setLabelInput(event.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && labelInput.trim() && !busy) {
-                handleAdd();
-              }
-            }}
-            placeholder={t("apiFusionKeyLabelPlaceholder", "Key name / label...")}
-            aria-label={t("apiFusionKeyLabel", "Label")}
-            className="h-8 w-44 rounded-lg border border-input bg-background px-2.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:w-56"
-          />
           <button
             type="button"
-            onClick={handleAdd}
-            disabled={busy || !labelInput.trim()}
+            onClick={onAdd}
+            disabled={busy}
             className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
           >
             <Plus className="h-3 w-3" />
