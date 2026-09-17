@@ -2223,6 +2223,36 @@ fn new_keys_without_a_value_get_a_random_secret() {
     });
 }
 
+/// A brand-new key submitted with the UI mask placeholder must be treated the
+/// same as a blank value: the command generates a fresh secret instead of
+/// persisting the literal `"********"`.
+#[test]
+fn new_keys_with_mask_placeholder_get_a_random_secret() {
+    with_temp_home("key-mask-autogen", |_home| {
+        let created = super::commands::api_fusion_upsert_key(FusionKey {
+            id: String::new(),
+            label: "Masked".to_string(),
+            value: "********".to_string(),
+            enabled: true,
+            created_at: 0,
+        })
+        .unwrap();
+        let created_value = created.keys[0].value.clone();
+        assert_ne!(
+            created_value, "********",
+            "the mask placeholder must never be stored as a key value"
+        );
+        assert!(
+            created_value.starts_with("sk-fusion-"),
+            "a masked new key must receive a generated secret: {created_value}"
+        );
+        assert!(
+            created_value.len() > "sk-fusion-".len(),
+            "a generated secret must carry entropy after the prefix: {created_value}"
+        );
+    });
+}
+
 #[test]
 fn provider_delete_removes_ledger_entry() {
     with_temp_home("provider-delete", |_home| {

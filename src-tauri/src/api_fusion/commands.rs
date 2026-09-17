@@ -294,7 +294,7 @@ pub fn api_fusion_upsert_key(mut key: FusionKey) -> Result<FusionConfig, String>
         }
         *existing = key;
     } else {
-        if key.value.trim().is_empty() {
+        if key.value.trim().is_empty() || key.value == "********" {
             key.value = new_key_value();
         }
         config.keys.push(key);
