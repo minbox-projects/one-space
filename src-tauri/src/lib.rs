@@ -42,3 +42,9 @@ pub(crate) use app_runtime::{
     atomic_write_string, get_data_dir, get_git_command, get_hostname, get_ssh_hosts,
     open_path_with_system,
 };
+// Usage statistics, request logs, model prices and retention commands. Each one
+// is also registered in `app_runtime::run_app`'s `generate_handler!`.
+pub use api_fusion::{
+    api_fusion_model_prices_get, api_fusion_model_prices_save, api_fusion_request_logs,
+    api_fusion_usage_retention_get, api_fusion_usage_retention_save, api_fusion_usage_stats,
+};

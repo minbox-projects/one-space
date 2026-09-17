@@ -5,6 +5,10 @@ use super::selection::{
     FailureClass, ModelResolution, MAX_RETRIES_PER_PROVIDER,
 };
 use super::storage::{local_base_url, read_config, write_config};
+use super::usage_log::{
+    compute_cost, match_price, normalize_retention_days, now_millis, parse_usage_from_response,
+    SseUsageAccumulator, UsageLogRecord, UsageLogStore, UsageResult, UsageTokens,
+};
 use super::{now_ts, FusionConfig, FusionKey, FusionStatus, FusionUpstreamProvider, UpstreamProtocol};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -148,6 +152,40 @@ pub(in crate::api_fusion) struct HttpResponse {
     pub(in crate::api_fusion) status: u16,
     pub(in crate::api_fusion) content_type: &'static str,
     pub(in crate::api_fusion) body: Vec<u8>,
+    /// Usage/provider metadata captured while forwarding, consumed by the
+    /// request logger. Never forwarded to the caller.
+    pub(in crate::api_fusion) capture: Option<ForwardCapture>,
+}
+
+/// Per-request forwarding metadata used to write exactly one usage log row.
+#[derive(Debug, Clone, Default)]
+pub(in crate::api_fusion) struct ForwardCapture {
+    pub(in crate::api_fusion) status: u16,
+    pub(in crate::api_fusion) provider_id: String,
+    pub(in crate::api_fusion) provider_name: String,
+    pub(in crate::api_fusion) upstream_model: String,
+    pub(in crate::api_fusion) usage: Option<UsageTokens>,
+    /// No candidate could serve the request (including every candidate failing).
+    pub(in crate::api_fusion) all_unavailable: bool,
+    /// The upstream stream failed after bytes had already reached the caller.
+    pub(in crate::api_fusion) upstream_error: bool,
+    /// The downstream client went away mid-forward, so the request is neither
+    /// a success nor an error.
+    pub(in crate::api_fusion) downstream_cancelled: bool,
+}
+
+impl ForwardCapture {
+    /// Final result classification: an HTTP 2xx is success only when the
+    /// request was not cancelled, all-unavailable or an upstream error.
+    pub(in crate::api_fusion) fn result(&self) -> UsageResult {
+        if self.downstream_cancelled {
+            UsageResult::Cancelled
+        } else if self.all_unavailable || self.upstream_error || self.status >= 400 || self.status == 0 {
+            UsageResult::Failure
+        } else {
+            UsageResult::Success
+        }
+    }
 }
 
 pub(in crate::api_fusion) async fn read_http_request(
@@ -243,6 +281,7 @@ pub(in crate::api_fusion) fn json_response(status: u16, body: Value) -> HttpResp
         status,
         content_type: "application/json",
         body: payload,
+        capture: None,
     }
 }
 
@@ -563,11 +602,21 @@ async fn attempt_candidate(
 ) -> AttemptResult {
     match forward_non_streaming(provider, path, body, model, client_headers).await {
         Ok(response) => {
+            let usage = parse_usage_from_response(&response.body);
+            let capture = ForwardCapture {
+                status: response.status,
+                provider_id: provider.id.clone(),
+                provider_name: provider.name.clone(),
+                upstream_model: model.to_string(),
+                usage,
+                ..Default::default()
+            };
             if response.status < 400 && response.parsed {
                 return AttemptResult::Success(HttpResponse {
                     status: response.status,
                     content_type: "application/json",
                     body: response.body,
+                    capture: Some(capture),
                 });
             }
             let class = classify_failure(response.status, false, response.parsed);
@@ -576,6 +625,7 @@ async fn attempt_candidate(
                     status: response.status,
                     content_type: "application/json",
                     body: response.body,
+                    capture: Some(capture),
                 });
             }
             AttemptResult::Failure {
@@ -618,6 +668,8 @@ pub(in crate::api_fusion) async fn attempt_non_streaming(
     let mut failures: Vec<(String, String)> = Vec::new();
     let mut health = RequestHealth::default();
     let mut retries: Vec<RetryCandidate> = Vec::new();
+    // Last attempted provider/model, reported when every candidate is unavailable.
+    let mut last_capture: Option<ForwardCapture> = None;
 
     // Initial pass (REQ-001): every candidate is tried once, in order, without
     // waiting for any backoff, so a healthy later candidate answers before a
@@ -645,6 +697,12 @@ pub(in crate::api_fusion) async fn attempt_non_streaming(
             } => {
                 health.record_failure(config, provider, class, &reason);
                 record_provider_failure(&mut failures, &provider.name, reason);
+                last_capture = Some(ForwardCapture {
+                    provider_id: provider.id.clone(),
+                    provider_name: provider.name.clone(),
+                    upstream_model: model.clone(),
+                    ..Default::default()
+                });
                 if retryable {
                     retries.push(RetryCandidate {
                         provider: provider.clone(),
@@ -694,6 +752,12 @@ pub(in crate::api_fusion) async fn attempt_non_streaming(
             } => {
                 health.record_failure(config, &candidate.provider, class, &reason);
                 record_provider_failure(&mut failures, &candidate.provider.name, reason);
+                last_capture = Some(ForwardCapture {
+                    provider_id: candidate.provider.id.clone(),
+                    provider_name: candidate.provider.name.clone(),
+                    upstream_model: candidate.model.clone(),
+                    ..Default::default()
+                });
                 candidate.attempts += 1;
                 if retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
                     candidate.ready_at = Instant::now().checked_add(
@@ -706,7 +770,12 @@ pub(in crate::api_fusion) async fn attempt_non_streaming(
     }
 
     health.apply(config);
-    json_response(502, all_unavailable_payload(all_unavailable_message(&failures)))
+    let mut response = json_response(502, all_unavailable_payload(all_unavailable_message(&failures)));
+    let mut capture = last_capture.unwrap_or_default();
+    capture.status = 502;
+    capture.all_unavailable = true;
+    response.capture = Some(capture);
+    response
 }
 
 /// A 2xx streaming response is only a success if it actually looks like a
@@ -742,13 +811,17 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     requested: Option<&str>,
     config: &mut FusionConfig,
     client_headers: &HashMap<String, String>,
-) -> Result<(), String> {
+) -> Result<ForwardCapture, String> {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
     let mut health = RequestHealth::default();
     let mut retries = Vec::new();
     let mut remaining_wait = Duration::from_secs(120);
     let mut initial = ordered.iter();
+    // Read-only usage parser fed from the relay's own passthrough loop; it never
+    // influences the bytes written to the caller.
+    let mut usage = SseUsageAccumulator::default();
+    let mut capture = ForwardCapture::default();
     loop {
         let (mut candidate, retry_index) = if let Some(provider) = initial.next() {
             let model = match resolve_model_for_protocol(provider, requested, protocol) {
@@ -769,6 +842,9 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         } else {
             break;
         };
+        capture.provider_id = candidate.provider.id.clone();
+        capture.provider_name = candidate.provider.name.clone();
+        capture.upstream_model = candidate.model.clone();
         let provider = &candidate.provider;
         let (class, retryable, reason, retry_delay) = 'attempt: {
             let streamed = open_streaming_response(
@@ -791,16 +867,18 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 let class = classify_failure(status, false, parsed);
                 if class == FailureClass::ReturnToClient {
                     health.apply(config);
+                    capture.status = status;
                     write_response(
                         writer,
                         HttpResponse {
                             status,
                             content_type: "application/json",
                             body: bytes.to_vec(),
+                            capture: None,
                         },
                     )
                     .await?;
-                    return Ok(());
+                    return Ok(capture);
                 }
                 let reason = failure_reason(status, parsed);
                 break 'attempt (class, is_retryable_failure(class, status), reason, retry_delay);
@@ -825,20 +903,26 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         health.apply(config);
                         return Err(error);
                     }
+                    // Capture usage from a read-only copy before the bytes are
+                    // written; the forwarded payload is unchanged.
+                    usage.feed(&first);
                     if let Err(error) = writer.write_all(&first).await {
                         health.apply(config);
                         return Err(error.to_string());
                     }
                     if writer.flush().await.is_err() {
                         health.apply(config);
-                        return Ok(());
+                        capture.downstream_cancelled = true;
+                        return Ok(capture);
                     }
                     loop {
                         match chunks.next().await {
                             Some(Ok(chunk)) => {
+                                usage.feed(&chunk);
                                 if writer.write_all(&chunk).await.is_err() {
                                     health.apply(config);
-                                    return Ok(());
+                                    capture.downstream_cancelled = true;
+                                    return Ok(capture);
                                 }
                             }
                             // Bytes already sent: terminate the stream, never switch.
@@ -848,12 +932,17 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     &format!("stream failed after first byte: {error}"),
                                 );
                                 health.apply(config);
-                                return Ok(());
+                                capture.status = status;
+                                capture.usage = usage.usage();
+                                capture.upstream_error = true;
+                                return Ok(capture);
                             }
                             None => {
                                 health.record_success(&provider.id);
                                 health.apply(config);
-                                return Ok(());
+                                capture.status = status;
+                                capture.usage = usage.usage();
+                                return Ok(capture);
                             }
                         }
                     }
@@ -890,7 +979,11 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         .write_all(sse.as_bytes())
         .await
         .map_err(|e| e.to_string())?;
-    Ok(())
+    // HTTP 200 with an SSE error event is still a failure: never a success.
+    capture.status = 200;
+    capture.usage = None;
+    capture.all_unavailable = true;
+    Ok(capture)
 }
 
 async fn write_response<W: AsyncWrite + Unpin>(
@@ -930,6 +1023,10 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
             return Ok(());
         }
     };
+
+    // Measured across the whole handled request so the recorded duration is
+    // always within the gateway's processing time.
+    let started = Instant::now();
 
     let mut config = match read_config() {
         Ok(config) => config,
@@ -1041,6 +1138,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
             .collect();
     if candidates.is_empty() {
         let message = no_candidate_message(&config, requested.as_deref(), protocol);
+        let status = if wants_stream { 200 } else { 502 };
         if wants_stream {
             let payload = all_unavailable_payload(message);
             let sse = format!(
@@ -1059,6 +1157,20 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
                 .await
                 .map_err(|e| e.to_string())?;
         }
+        // A request that entered the normalized flow but had no serving
+        // upstream is a failure (REQ-007/REQ-008), never a silent no-log.
+        record_usage_log(
+            &config,
+            started,
+            requested.as_deref(),
+            UsageResult::Failure,
+            status,
+            ForwardCapture {
+                status,
+                all_unavailable: true,
+                ..Default::default()
+            },
+        );
         return Ok(());
     }
 
@@ -1086,7 +1198,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
             )
             .await
         } else {
-            let response = attempt_non_streaming(
+            let mut response = attempt_non_streaming(
                 &ordered,
                 path,
                 &request.body,
@@ -1095,15 +1207,86 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
                 &request.headers,
             )
             .await;
-            write_response(&mut writer, response).await
+            let status = response.status;
+            let capture = response.capture.take().unwrap_or_default();
+            write_response(&mut writer, response).await?;
+            Ok(ForwardCapture {
+                status,
+                ..capture
+            })
         }
     };
-    tokio::select! {
+    let outcome: Option<Result<ForwardCapture, String>> = tokio::select! {
         // Check disconnect first so a ready retry cannot start after EOF.
         // Dropping forwarding cancels upstream I/O and backoff without recording
         // the client cancellation as an upstream health failure.
         biased;
-        _ = disconnected => Ok(()),
-        result = forward => result,
+        _ = disconnected => None,
+        result = forward => Some(result),
+    };
+    // Exactly one log row per forwarded request. Logging is best-effort and
+    // never changes the caller-visible response.
+    match outcome {
+        Some(Ok(capture)) => record_usage_log(
+            &config,
+            started,
+            requested.as_deref(),
+            capture.result(),
+            capture.status,
+            capture,
+        ),
+        // A downstream disconnect (or a failed write to it) is a cancellation.
+        _ => record_usage_log(
+            &config,
+            started,
+            requested.as_deref(),
+            UsageResult::Cancelled,
+            0,
+            ForwardCapture {
+                downstream_cancelled: true,
+                ..Default::default()
+            },
+        ),
+    }
+    Ok(())
+}
+
+/// Persist one usage-log row for a forwarded request.
+///
+/// The amount is fixed at record time from the price table, so later price
+/// edits never rewrite history. Any storage failure is logged and swallowed:
+/// the response has already been produced and must not be affected.
+fn record_usage_log(
+    config: &FusionConfig,
+    started: Instant,
+    local_model: Option<&str>,
+    result: UsageResult,
+    status: u16,
+    capture: ForwardCapture,
+) {
+    let tokens = capture.usage.unwrap_or_default();
+    let amount = match_price(&capture.upstream_model, &config.model_prices)
+        .map(|price| compute_cost(price, &tokens));
+    let duration_ms = started.elapsed().as_millis().max(1) as u64;
+    let record = UsageLogRecord {
+        timestamp_ms: now_millis(),
+        local_model: local_model.unwrap_or_default().to_string(),
+        upstream_model: capture.upstream_model,
+        provider_id: capture.provider_id,
+        provider_name: capture.provider_name,
+        result,
+        status,
+        input_tokens: tokens.input_tokens,
+        cache_read_tokens: tokens.cache_read_tokens,
+        cache_write_tokens: tokens.cache_write_tokens,
+        output_tokens: tokens.output_tokens,
+        total_tokens: tokens.total(),
+        amount,
+        duration_ms,
+    };
+    let retention = normalize_retention_days(config.usage_retention_days);
+    let write = UsageLogStore::default_store().and_then(|store| store.append(&record, retention));
+    if let Err(error) = write {
+        log::warn!("API gateway usage log write failed: {error}");
     }
 }

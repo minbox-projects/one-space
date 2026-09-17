@@ -5,8 +5,11 @@ use super::selection::{
 };
 use super::storage::{config_path, resolve_default_key_id};
 use super::{
-    FusionConfig, FusionKey, FusionUpstreamProvider, ModelMapping, TerminalSyncRecord,
-    UpstreamProtocol,
+    compute_cost, match_price, normalize_retention_days, resolve_range, usage_tokens_from_value,
+    validate_retention_days, FusionConfig, FusionKey, FusionUpstreamProvider, LogFilter,
+    ModelMapping, ModelPrice, SseUsageAccumulator, TerminalSyncRecord, TimeRange, UpstreamProtocol,
+    UsageLogRecord, UsageLogStore, UsageResult, UsageTokens, DEFAULT_USAGE_RETENTION_DAYS,
+    USAGE_LOG_PAGE_SIZE,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -2292,6 +2295,13 @@ fn every_command_is_registered_in_the_invoke_handler() {
         "api_fusion_terminal_targets",
         "api_fusion_configure_terminal",
         "api_fusion_sync_terminal",
+        // 20260917-ai-gateway-usage-logs commands.
+        "api_fusion_usage_stats",
+        "api_fusion_request_logs",
+        "api_fusion_model_prices_get",
+        "api_fusion_model_prices_save",
+        "api_fusion_usage_retention_get",
+        "api_fusion_usage_retention_save",
     ];
     for command in commands {
         let registration = format!("api_fusion::{command},");
@@ -2299,6 +2309,20 @@ fn every_command_is_registered_in_the_invoke_handler() {
             RUN_APP_SOURCE.matches(&registration).count(),
             1,
             "command {command} must be registered exactly once in generate_handler!"
+        );
+    }
+    // The usage-log commands must also be exported through `lib.rs`.
+    for command in [
+        "api_fusion_usage_stats",
+        "api_fusion_request_logs",
+        "api_fusion_model_prices_get",
+        "api_fusion_model_prices_save",
+        "api_fusion_usage_retention_get",
+        "api_fusion_usage_retention_save",
+    ] {
+        assert!(
+            LIB_SOURCE.contains(command),
+            "command {command} must be exported from lib.rs"
         );
     }
 }
@@ -6411,4 +6435,1272 @@ async fn retry_cancel_disconnect_while_upstream_waits_exits_without_further_upst
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("; "));
+}
+
+// ---------------------------------------------------------------------------
+// 20260917-ai-gateway-usage-logs Step 1: pricing, retention, range and storage
+// ---------------------------------------------------------------------------
+
+fn tokens(input: u64, cache_read: u64, cache_write: u64, output: u64) -> UsageTokens {
+    UsageTokens {
+        input_tokens: input,
+        cache_read_tokens: cache_read,
+        cache_write_tokens: cache_write,
+        output_tokens: output,
+    }
+}
+
+fn sample_record(
+    timestamp_ms: i64,
+    local_model: &str,
+    upstream_model: &str,
+    provider_id: &str,
+    provider_name: &str,
+    result: UsageResult,
+    amount: Option<f64>,
+    token_counts: UsageTokens,
+) -> UsageLogRecord {
+    UsageLogRecord {
+        timestamp_ms,
+        local_model: local_model.to_string(),
+        upstream_model: upstream_model.to_string(),
+        provider_id: provider_id.to_string(),
+        provider_name: provider_name.to_string(),
+        result,
+        status: 200,
+        input_tokens: token_counts.input_tokens,
+        cache_read_tokens: token_counts.cache_read_tokens,
+        cache_write_tokens: token_counts.cache_write_tokens,
+        output_tokens: token_counts.output_tokens,
+        total_tokens: token_counts.total(),
+        amount,
+        duration_ms: 5,
+    }
+}
+
+fn rfc3339_millis(value: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .expect("valid rfc3339")
+        .timestamp_millis()
+}
+
+/// AC-007 / compatibility: an `api_fusion.json` written before this feature has
+/// no usage fields, yet still deserializes with the documented defaults, and
+/// the new fields round-trip without disturbing existing ones.
+#[test]
+fn fusion_config_accepts_legacy_json_and_round_trips_usage_fields() {
+    let legacy = serde_json::json!({
+        "enabled": true,
+        "port": 17688,
+        "providers": [],
+        "keys": [],
+        "default_key_id": null,
+        "terminal_syncs": []
+    });
+    let config: FusionConfig = serde_json::from_value(legacy).expect("legacy config parses");
+    assert!(config.enabled);
+    assert_eq!(config.usage_retention_days, DEFAULT_USAGE_RETENTION_DAYS);
+    assert!(config.model_prices.is_empty());
+
+    let mut updated = config;
+    updated.usage_retention_days = 30;
+    updated.model_prices.push(ModelPrice {
+        upstream_model: "remote-a".to_string(),
+        input: 1.0,
+        cache_read: 2.0,
+        cache_write: 3.0,
+        output: 4.0,
+    });
+    let encoded = serde_json::to_string(&updated).expect("encode config");
+    let decoded: FusionConfig = serde_json::from_str(&encoded).expect("round trip config");
+    assert_eq!(decoded.usage_retention_days, 30);
+    assert_eq!(decoded.model_prices.len(), 1);
+    assert_eq!(decoded.model_prices[0].upstream_model, "remote-a");
+    assert_eq!(decoded.model_prices[0].output, 4.0);
+
+    // Missing per-tier prices default to zero, not a deserialize error.
+    let partial: ModelPrice =
+        serde_json::from_value(serde_json::json!({ "upstream_model": "remote-b" })).unwrap();
+    assert_eq!(partial.input, 0.0);
+    assert_eq!(partial.cache_read, 0.0);
+    assert_eq!(partial.cache_write, 0.0);
+    assert_eq!(partial.output, 0.0);
+}
+
+/// AC-004 / AC-005 / REQ-004 / REQ-006: four-tier cost math and exact,
+/// case-sensitive model matching with `None` for unpriced models.
+#[test]
+fn usage_pricing_matches_exact_model_and_sums_four_tiers() {
+    let price = ModelPrice {
+        upstream_model: "gpt-x".to_string(),
+        input: 1.0,
+        cache_read: 0.5,
+        cache_write: 2.0,
+        output: 4.0,
+    };
+    let prices = vec![price.clone()];
+    assert_eq!(match_price("gpt-x", &prices), Some(&price));
+    assert_eq!(match_price("gpt-x ", &prices), None, "no trimming");
+    assert_eq!(match_price("GPT-X", &prices), None, "no case folding");
+    assert_eq!(match_price("gpt-y", &prices), None);
+
+    let cost = compute_cost(&price, &tokens(1_000_000, 2_000_000, 500_000, 1_000_000));
+    assert!((cost - 7.0).abs() < 1e-9, "expected $7.00, got {cost}");
+
+    // Missing fields are zero and never affect the other tiers.
+    let only_input = compute_cost(&price, &tokens(2_000_000, 0, 0, 0));
+    assert!((only_input - 2.0).abs() < 1e-9);
+}
+
+/// AC-012 / REQ-010: only 1-365 is accepted; invalid values are rejected and
+/// persisted garbage falls back to the default instead of propagating.
+#[test]
+fn retention_validation_accepts_one_and_365_and_rejects_zero_and_400() {
+    assert!(validate_retention_days(0).is_err());
+    assert!(validate_retention_days(400).is_err());
+    assert!(validate_retention_days(-1).is_err());
+    assert_eq!(validate_retention_days(1).expect("1 is valid"), 1);
+    assert_eq!(validate_retention_days(90).expect("90 is valid"), 90);
+    assert_eq!(validate_retention_days(365).expect("365 is valid"), 365);
+    assert_eq!(normalize_retention_days(0), DEFAULT_USAGE_RETENTION_DAYS);
+    assert_eq!(normalize_retention_days(400), DEFAULT_USAGE_RETENTION_DAYS);
+    assert_eq!(normalize_retention_days(7), 7);
+}
+
+/// AC-003 / REQ-003: field mapping across OpenAI chat, Responses and
+/// Anthropic-style cache fields; missing fields become 0.
+#[test]
+fn usage_field_mapping_handles_provider_shapes_and_missing_fields() {
+    let chat = serde_json::json!({
+        "prompt_tokens": 11,
+        "completion_tokens": 7,
+        "prompt_tokens_details": { "cached_tokens": 3 }
+    });
+    let mapped = usage_tokens_from_value(&chat);
+    assert_eq!(mapped, tokens(11, 3, 0, 7));
+
+    let responses = serde_json::json!({
+        "input_tokens": 20,
+        "output_tokens": 4,
+        "input_tokens_details": { "cached_tokens": 5 },
+        "cache_creation_input_tokens": 6
+    });
+    let mapped = usage_tokens_from_value(&responses);
+    assert_eq!(mapped, tokens(20, 5, 6, 4));
+
+    let anthropic = serde_json::json!({
+        "prompt_tokens": 9,
+        "completion_tokens": 1,
+        "cache_read_input_tokens": 8,
+        "cache_creation_input_tokens": 2
+    });
+    let mapped = usage_tokens_from_value(&anthropic);
+    assert_eq!(mapped, tokens(9, 8, 2, 1));
+
+    // Partial usage: missing tiers are zero without disturbing present ones.
+    let partial = usage_tokens_from_value(&serde_json::json!({ "input_tokens": 3 }));
+    assert_eq!(partial, tokens(3, 0, 0, 0));
+    assert_eq!(partial.total(), 3);
+}
+
+/// AC-013 / REQ-011: range resolution uses UTC+8 midnight boundaries.
+#[test]
+fn usage_range_resolution_uses_utc8_boundaries() {
+    // 00:30 on 2026-09-17 in UTC+8 (still 2026-09-16 in UTC).
+    let now = rfc3339_millis("2026-09-17T00:30:00+08:00");
+    let today = resolve_range(Some(1), now);
+    assert_eq!(
+        today.start_ms,
+        Some(rfc3339_millis("2026-09-17T00:00:00+08:00"))
+    );
+    assert_eq!(
+        today.end_ms,
+        Some(rfc3339_millis("2026-09-18T00:00:00+08:00"))
+    );
+
+    // `近 7 天` includes today plus the six previous natural days.
+    let week = resolve_range(Some(7), now);
+    assert_eq!(
+        week.start_ms,
+        Some(rfc3339_millis("2026-09-11T00:00:00+08:00"))
+    );
+    assert_eq!(week.end_ms, today.end_ms);
+
+    // 15:30Z is 23:30 in UTC+8 and must still belong to the 16th local day.
+    let near_midnight = rfc3339_millis("2026-09-16T15:30:00Z");
+    assert_eq!(
+        resolve_range(Some(1), near_midnight).start_ms,
+        Some(rfc3339_millis("2026-09-16T00:00:00+08:00"))
+    );
+    // 16:30Z has already crossed local midnight into the 17th.
+    let after_midnight = rfc3339_millis("2026-09-16T16:30:00Z");
+    assert_eq!(
+        resolve_range(Some(1), after_midnight).start_ms,
+        Some(rfc3339_millis("2026-09-17T00:00:00+08:00"))
+    );
+
+    assert_eq!(resolve_range(None, now), TimeRange::default());
+    assert_eq!(resolve_range(Some(0), now), TimeRange::default());
+}
+
+/// AC-002 (parsing half): SSE usage survives arbitrary chunk boundaries and
+/// absent usage stays `None`.
+#[test]
+fn sse_usage_accumulator_parses_usage_across_chunk_boundaries() {
+    let mut accumulator = SseUsageAccumulator::default();
+    accumulator.feed(b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n");
+    assert_eq!(accumulator.usage(), None);
+    accumulator.feed(b"data: {\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,");
+    accumulator.feed(b"\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\ndata: [DONE]\n\n");
+    assert_eq!(accumulator.usage(), Some(tokens(11, 3, 0, 7)));
+}
+
+fn usage_store(name: &str) -> (PathBuf, UsageLogStore) {
+    let dir = make_temp_dir(name);
+    let store = UsageLogStore::at(dir.join("api_fusion_usage.db"));
+    (dir, store)
+}
+
+/// AC-010 / REQ-009: records persist across a fresh connection and come back
+/// newest-first.
+#[test]
+fn usage_store_survives_reopen_and_returns_ordered_records() {
+    let (dir, store) = usage_store("usage-reopen");
+    let now = super::now_millis();
+    store
+        .append(
+            &sample_record(
+                now - 1_000,
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(0.25),
+                tokens(1, 2, 3, 4),
+            ),
+            365,
+        )
+        .unwrap();
+    store
+        .append(
+            &sample_record(
+                now,
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Failure,
+                None,
+                UsageTokens::default(),
+            ),
+            365,
+        )
+        .unwrap();
+
+    let reopened = UsageLogStore::at(dir.join("api_fusion_usage.db"));
+    let records = reopened.all_records().unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].timestamp_ms, now, "newest first");
+    assert_eq!(records[0].amount, None, "unpriced stays unpriced");
+    assert_eq!(records[1].amount, Some(0.25));
+    assert_eq!(records[1].total_tokens, 10);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-010 / REQ-009: writing with retention 7 deletes only the 10-day-old row.
+#[test]
+fn usage_store_retention_cleanup_deletes_only_expired_records() {
+    let (dir, store) = usage_store("usage-retention");
+    let now = super::now_millis();
+    let day = 86_400_000i64;
+    store
+        .append(
+            &sample_record(
+                now - 10 * day,
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(1.0),
+                tokens(1, 0, 0, 0),
+            ),
+            365,
+        )
+        .unwrap();
+    store
+        .append(
+            &sample_record(
+                now - 2 * day,
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(1.0),
+                tokens(1, 0, 0, 0),
+            ),
+            365,
+        )
+        .unwrap();
+    assert_eq!(store.count().unwrap(), 2);
+
+    store
+        .append(
+            &sample_record(
+                now,
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(1.0),
+                tokens(1, 0, 0, 0),
+            ),
+            7,
+        )
+        .unwrap();
+
+    let remaining = store.all_records().unwrap();
+    assert_eq!(remaining.len(), 2, "10-day-old row must be deleted");
+    assert!(remaining.iter().all(|record| record.timestamp_ms > now - 7 * day));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-015 / AC-016 / AC-018: cards, model/provider detail and UTC+8 day buckets.
+#[test]
+fn usage_store_stats_aggregates_models_providers_and_utc8_buckets() {
+    let (dir, store) = usage_store("usage-stats");
+    let day_one = rfc3339_millis("2026-09-15T10:00:00+08:00");
+    let day_two = rfc3339_millis("2026-09-16T10:00:00+08:00");
+    // local-a via Provider One
+    store.append(&sample_record(day_one, "local-a", "remote-a", "p1", "Provider One", UsageResult::Success, Some(0.5), tokens(10, 0, 0, 5)), 365).unwrap();
+    store.append(&sample_record(day_two, "local-a", "remote-a", "p1", "Provider One", UsageResult::Failure, Some(2.0), tokens(100, 0, 0, 0)), 365).unwrap();
+    // local-a via Provider Two
+    store.append(&sample_record(day_one, "local-a", "remote-a", "p2", "Provider Two", UsageResult::Success, Some(1.0), tokens(20, 0, 0, 10)), 365).unwrap();
+    // local-b unpriced
+    store.append(&sample_record(day_one, "local-b", "remote-b", "p1", "Provider One", UsageResult::Success, None, tokens(1, 0, 0, 1)), 365).unwrap();
+
+    let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
+    assert_eq!(stats.granularity, "day");
+    assert_eq!(stats.totals.request_count, 4);
+    assert_eq!(stats.totals.total_tokens, 10 + 5 + 100 + 20 + 10 + 2);
+    assert!((stats.totals.amount - 3.5).abs() < 1e-9);
+    assert_eq!(stats.totals.unpriced_count, 1);
+
+    let local_a = stats
+        .models
+        .iter()
+        .find(|row| row.local_model == "local-a")
+        .expect("local-a row");
+    assert_eq!(local_a.metrics.request_count, 3);
+    assert_eq!(local_a.providers.len(), 2, "only called providers appear");
+    let provider_one = local_a
+        .providers
+        .iter()
+        .find(|row| row.provider_id == "p1")
+        .expect("provider one detail");
+    assert_eq!(provider_one.metrics.request_count, 2);
+
+    let local_b = stats
+        .models
+        .iter()
+        .find(|row| row.local_model == "local-b")
+        .expect("local-b row");
+    assert_eq!(local_b.metrics.amount, 0.0);
+    assert_eq!(local_b.metrics.unpriced_count, 1);
+
+    assert_eq!(stats.buckets.len(), 2, "two UTC+8 days with data");
+    assert_eq!(stats.buckets[0].label, "2026-09-15");
+    assert_eq!(stats.buckets[1].label, "2026-09-16");
+
+    // Single-day range buckets by UTC+8 hour.
+    let single = store
+        .usage_stats(
+            &resolve_range(Some(1), rfc3339_millis("2026-09-15T12:00:00+08:00")),
+            true,
+        )
+        .unwrap();
+    assert_eq!(single.granularity, "hour");
+    assert_eq!(single.buckets.len(), 1);
+    assert_eq!(single.buckets[0].label, "10:00");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-020 / AC-021 / AC-022: filtering, grouping (error excludes cancelled) and
+/// 50-row pagination with clamped pages.
+#[test]
+fn usage_store_logs_filter_group_and_paginate() {
+    let (dir, store) = usage_store("usage-logs");
+    let base = rfc3339_millis("2026-09-16T08:00:00+08:00");
+    for index in 0..120i64 {
+        let result = match index % 3 {
+            0 => UsageResult::Success,
+            1 => UsageResult::Failure,
+            _ => UsageResult::Cancelled,
+        };
+        let model = if index % 2 == 0 { "local-a" } else { "local-b" };
+        store
+            .append(
+                &sample_record(
+                    base + index * 1_000,
+                    model,
+                    "remote-a",
+                    "p1",
+                    "Provider One",
+                    result,
+                    Some(0.1),
+                    tokens(1, 0, 0, 1),
+                ),
+                365,
+            )
+            .unwrap();
+    }
+
+    let page_one = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .unwrap();
+    assert_eq!(USAGE_LOG_PAGE_SIZE, 50);
+    assert_eq!(page_one.page_size, 50);
+    assert_eq!(page_one.records.len(), 50);
+    assert_eq!(page_one.total, 120);
+    assert_eq!(page_one.total_pages, 3);
+    assert!(
+        page_one.records[0].timestamp_ms > page_one.records[49].timestamp_ms,
+        "newest first"
+    );
+
+    let page_three = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 3)
+        .unwrap();
+    assert_eq!(page_three.page, 3);
+    assert_eq!(page_three.records.len(), 20);
+
+    let clamped = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 99)
+        .unwrap();
+    assert_eq!(clamped.page, 3, "out-of-range page clamps to the last page");
+
+    let failed = store
+        .query_logs(
+            &TimeRange::default(),
+            &LogFilter {
+                status: Some(UsageResult::Failure),
+                model: None,
+            },
+            1,
+        )
+        .unwrap();
+    assert_eq!(failed.total, 40);
+    assert!(failed.records.iter().all(|r| r.result == UsageResult::Failure));
+
+    let local_b = store
+        .query_logs(
+            &TimeRange::default(),
+            &LogFilter {
+                status: Some(UsageResult::Failure),
+                model: Some("local-b".to_string()),
+            },
+            1,
+        )
+        .unwrap();
+    assert_eq!(local_b.total, 20);
+    assert!(local_b
+        .records
+        .iter()
+        .all(|r| r.local_model == "local-b" && r.result == UsageResult::Failure));
+
+    let grouped = store
+        .group_logs(&TimeRange::default(), &LogFilter::default(), "day")
+        .unwrap();
+    assert_eq!(grouped.len(), 1, "all records share one UTC+8 day");
+    assert_eq!(grouped[0].group, "2026-09-16");
+    assert_eq!(grouped[0].request_count, 120);
+    assert_eq!(grouped[0].error_count, 40, "cancelled is not an error");
+
+    let by_model = store
+        .group_logs(&TimeRange::default(), &LogFilter::default(), "model")
+        .unwrap();
+    assert_eq!(by_model.len(), 2);
+    assert_eq!(by_model.iter().map(|g| g.request_count).sum::<u32>(), 120);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// REQ-001 / AC-001 privacy: no credential, header or body text can reach the
+/// log file or query results.
+#[test]
+fn usage_store_never_contains_credentials_headers_or_bodies() {
+    let (dir, store) = usage_store("usage-privacy");
+    let secret = "sk-upstream-super-secret";
+    store
+        .append(
+            &sample_record(
+                1_000,
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(0.1),
+                tokens(1, 1, 1, 1),
+            ),
+            365,
+        )
+        .unwrap();
+
+    let raw = fs::read(dir.join("api_fusion_usage.db")).expect("read usage db");
+    let raw_text = String::from_utf8_lossy(&raw);
+    assert!(!raw_text.contains(secret));
+    assert!(!raw_text.contains("authorization"));
+    assert!(!raw_text.contains("api_key"));
+
+    let serialized = serde_json::to_string(&store.all_records().unwrap()).unwrap();
+    assert!(!serialized.contains(secret));
+    assert!(!serialized.contains("authorization"));
+    assert!(!serialized.contains("\"body\""));
+    assert!(!serialized.contains("\"headers\""));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// 20260917-ai-gateway-usage-logs Step 2: forwarding capture (mock upstream)
+// ---------------------------------------------------------------------------
+
+fn default_usage_store() -> UsageLogStore {
+    UsageLogStore::default_store().expect("default usage store")
+}
+
+/// The relay records after the response is on the wire, so poll briefly.
+async fn wait_for_usage_logs(expected: u32) -> Vec<UsageLogRecord> {
+    let store = default_usage_store();
+    for _ in 0..400 {
+        let records = store.all_records().unwrap_or_default();
+        if records.len() as u32 >= expected {
+            return records;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    store.all_records().unwrap_or_default()
+}
+
+fn priced(upstream_model: &str, input: f64, cache_read: f64, cache_write: f64, output: f64) -> ModelPrice {
+    ModelPrice {
+        upstream_model: upstream_model.to_string(),
+        input,
+        cache_read,
+        cache_write,
+        output,
+    }
+}
+
+/// AC-001 / AC-003 / REQ-001: a successful non-streaming forward persists one
+/// success row with the mapped model/provider, usage tiers and fixed amount,
+/// and never any credential.
+#[tokio::test]
+async fn usage_log_records_successful_non_streaming_forward_and_privacy() {
+    let home = temp_home("usage-forward-success");
+    let port = free_port().await;
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "chatcmpl",
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "prompt_tokens_details": {"cached_tokens": 2}
+                }
+            }),
+        )
+    })
+    .await;
+
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "upstream-secret", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    config.usage_retention_days = 90;
+    config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, _text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1, "exactly one log row per forwarded request");
+    let record = &records[0];
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(record.local_model, "local-a");
+    assert_eq!(record.upstream_model, "remote-a");
+    assert_eq!(record.provider_id, "p1");
+    assert_eq!(record.provider_name, "Provider One");
+    assert_eq!(record.status, 200);
+    assert_eq!(record.input_tokens, 10);
+    assert_eq!(record.cache_read_tokens, 2);
+    assert_eq!(record.cache_write_tokens, 0);
+    assert_eq!(record.output_tokens, 5);
+    assert_eq!(record.total_tokens, 17);
+    let expected = compute_cost(
+        &priced("remote-a", 1.0, 0.5, 2.0, 4.0),
+        &tokens(10, 2, 0, 5),
+    );
+    assert!((record.amount.expect("priced") - expected).abs() < 1e-12);
+    assert!(record.duration_ms >= 1, "duration must be positive");
+
+    let serialized = serde_json::to_string(&records).unwrap();
+    assert!(!serialized.contains("local-key"));
+    assert!(!serialized.contains("upstream-secret"));
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-003 / REQ-003: a successful response without `usage` still creates a row
+/// with zero tokens and zero cost.
+#[tokio::test]
+async fn usage_log_records_zero_tokens_when_upstream_omits_usage() {
+    let home = temp_home("usage-forward-no-usage");
+    let port = free_port().await;
+    let (upstream_url, _log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "x", "choices": []}))).await;
+
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, _text) = call_fusion(
+        port,
+        "POST",
+        "/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a", "stream": false})),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1, "row exists even without usage");
+    let record = &records[0];
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(record.total_tokens, 0);
+    assert_eq!(record.amount, Some(0.0), "priced model with zero tokens costs 0");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-008 / REQ-007: an upstream error response is logged as failure with zero
+/// tokens and the caller still receives the upstream status unchanged.
+#[tokio::test]
+async fn usage_log_records_failure_for_upstream_error_response() {
+    let home = temp_home("usage-forward-upstream-error");
+    let port = free_port().await;
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(400, json!({"error": {"message": "bad request"}}))
+    })
+    .await;
+
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(status, 400, "caller must receive the upstream status: {text}");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.result, UsageResult::Failure);
+    assert_eq!(record.status, 400);
+    assert_eq!(record.total_tokens, 0);
+    assert_eq!(record.amount, Some(0.0));
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-008 / REQ-007: a request with no serving upstream returns 502 and is
+/// logged as failure with zero tokens.
+#[tokio::test]
+async fn usage_log_records_failure_when_no_upstream_can_serve() {
+    let home = temp_home("usage-forward-unavailable");
+    let port = free_port().await;
+
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", "http://127.0.0.1:1", "sk", None);
+    provider.mappings = vec![mapping("local-b", "remote-b", None)];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, _text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(status, 502);
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.result, UsageResult::Failure);
+    assert_eq!(record.status, 502);
+    assert_eq!(record.total_tokens, 0);
+    assert_eq!(record.amount.unwrap_or(0.0), 0.0);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-002 / AC-009 / REQ-002 / REQ-008: streaming forwards the upstream bytes
+/// verbatim, captures usage, and a 200 SSE all-unavailable event is failure.
+#[tokio::test]
+async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavailable() {
+    let home = temp_home("usage-forward-stream");
+    let port = free_port().await;
+    let sse = "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+               data: {\"id\":\"x\",\"choices\":[{\"delta\":{}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\n\
+               data: [DONE]\n\n"
+        .to_string();
+    let sse_for_mock = sse.clone();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
+
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a", "stream": true})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(text, sse, "forwarded bytes must be identical to upstream");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(record.input_tokens, 11);
+    assert_eq!(record.cache_read_tokens, 3);
+    assert_eq!(record.output_tokens, 7);
+    let expected = compute_cost(&priced("remote-a", 1.0, 0.5, 2.0, 4.0), &tokens(11, 3, 0, 7));
+    assert!((record.amount.expect("priced") - expected).abs() < 1e-12);
+
+    // Streaming with no serving upstream: HTTP 200 SSE error event is failure.
+    let (empty_status, _ct, empty_text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "unknown-local", "stream": true})),
+    )
+    .await;
+    assert_eq!(empty_status, 200);
+    assert!(empty_text.contains("all_providers_unavailable"));
+
+    let records = wait_for_usage_logs(2).await;
+    assert_eq!(records.len(), 2);
+    let failure = records
+        .iter()
+        .find(|record| record.result == UsageResult::Failure)
+        .expect("streaming all-unavailable row");
+    assert_eq!(failure.status, 200);
+    assert_eq!(failure.total_tokens, 0);
+    assert_eq!(failure.amount.unwrap_or(0.0), 0.0);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-008 / REQ-007: 401, `GET /v1/models` and unknown paths/methods add no row.
+#[tokio::test]
+async fn unauthorized_models_and_unknown_routes_are_not_logged() {
+    let home = temp_home("usage-forward-not-logged");
+    let port = free_port().await;
+
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (unauthorized, _ct, _body) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer wrong-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(unauthorized, 401);
+
+    let (models, _ct, _body) =
+        call_fusion(port, "GET", "/v1/models", &[("authorization", "Bearer local-key")], None).await;
+    assert_eq!(models, 200);
+
+    let (unknown_path, _ct, _body) = call_fusion(
+        port,
+        "POST",
+        "/v1/embeddings",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(unknown_path, 404);
+
+    let (unknown_method, _ct, _body) = call_fusion(
+        port,
+        "GET",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        None,
+    )
+    .await;
+    assert_eq!(unknown_method, 404);
+
+    // These requests never record; give any erroneous write a moment to appear.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(default_usage_store().count().unwrap(), 0);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-008: a downstream disconnect mid-forward is recorded as `cancelled`,
+/// never as success or an error.
+#[tokio::test]
+async fn downstream_cancel_records_cancelled() {
+    let home = temp_home("usage-forward-cancelled");
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind held upstream");
+    let upstream_url = format!("http://{}", listener.local_addr().expect("upstream address"));
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let upstream = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept held upstream");
+        super::runtime_http::read_http_request(&mut stream)
+            .await
+            .expect("read held upstream request");
+        let _ = entered_tx.send(());
+        let _ = release_rx.await;
+        let body = br#"{"id":"late"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.write_all(body).await;
+    });
+
+    let mut config = FusionConfig::default();
+    config.keys.push(key_named("k1", "local-key"));
+    config
+        .providers
+        .push(upstream_provider("p1", "Held Provider", &upstream_url, "sk", Some("remote-default")));
+    super::storage::write_config(&config).expect("write relay config");
+
+    let (client, mut handler) = spawn_handle_connection(false).await;
+    let entered = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::select! {
+            signal = entered_rx => signal,
+            result = &mut handler => panic!("handler exited before upstream wait: {result:?}"),
+        }
+    })
+    .await
+    .expect("upstream must begin waiting");
+    entered.expect("held upstream entry signal");
+    drop(client);
+
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), &mut handler).await;
+    let _ = release_tx.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), upstream).await;
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1, "cancelled request must still be recorded");
+    assert_eq!(records[0].result, UsageResult::Cancelled);
+    assert_eq!(records[0].total_tokens, 0);
+    assert_eq!(records[0].amount.unwrap_or(0.0), 0.0);
+    drop(home);
+}
+
+/// AC-005: an unpriced upstream model records `None` and contributes 0 to the
+/// aggregate amount while still counting as an unpriced request.
+#[tokio::test]
+async fn unpriced_model_records_none_amount_and_excludes_it_from_totals() {
+    let home = temp_home("usage-forward-unpriced");
+    let port = free_port().await;
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "x",
+                "choices": [],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5}
+            }),
+        )
+    })
+    .await;
+
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-unpriced", None)];
+    config.providers.push(provider);
+    // No price row for `remote-unpriced`.
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _ct, _text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records[0].amount, None, "unpriced stays None");
+    assert_eq!(records[0].total_tokens, 10);
+
+    let stats = default_usage_store()
+        .usage_stats(&TimeRange::default(), false)
+        .unwrap();
+    assert_eq!(stats.totals.request_count, 1);
+    assert_eq!(stats.totals.amount, 0.0, "unpriced excluded from amount");
+    assert_eq!(stats.totals.unpriced_count, 1);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+// ---------------------------------------------------------------------------
+// 20260917-ai-gateway-usage-logs Step 3: commands, merge semantics, registration
+// ---------------------------------------------------------------------------
+
+/// AC-007 / REQ-006: saving prices replaces only the price table and preserves
+/// providers, keys, default key, terminal_syncs and retention.
+#[test]
+fn api_fusion_model_prices_save_preserves_existing_config_fields() {
+    with_temp_home("prices-preserve", |_home| {
+        let mut config = FusionConfig::default();
+        config.providers.push(provider("p1"));
+        config.keys.push(key("k1", true));
+        config.default_key_id = Some("k1".to_string());
+        config.terminal_syncs.push(TerminalSyncRecord {
+            provider_id: "p1".to_string(),
+            tool: "opencode".to_string(),
+            synced_key_id: "k1".to_string(),
+            synced_base_url: "http://127.0.0.1:17688".to_string(),
+            synced_at: 7,
+        });
+        config.usage_retention_days = 30;
+        config.model_prices = vec![priced("old-model", 1.0, 1.0, 1.0, 1.0)];
+        super::storage::write_config(&config).expect("seed config");
+
+        let saved = super::commands::api_fusion_model_prices_save(vec![priced(
+            "new-model",
+            2.0,
+            0.0,
+            0.0,
+            3.0,
+        )])
+        .expect("save prices");
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].upstream_model, "new-model");
+
+        let reloaded = super::storage::read_config().expect("reload config");
+        assert_eq!(reloaded.providers.len(), 1);
+        assert_eq!(reloaded.providers[0].api_key, "sk-test");
+        assert_eq!(reloaded.keys.len(), 1);
+        assert_eq!(reloaded.keys[0].value, "value-k1");
+        assert_eq!(reloaded.default_key_id.as_deref(), Some("k1"));
+        assert_eq!(reloaded.terminal_syncs.len(), 1);
+        assert_eq!(reloaded.usage_retention_days, 30, "retention untouched");
+        assert_eq!(reloaded.model_prices[0].upstream_model, "new-model");
+        assert_eq!(
+            super::commands::api_fusion_model_prices_get().unwrap()[0].output,
+            3.0
+        );
+    });
+}
+
+/// AC-012 / REQ-010: invalid retention is rejected with an actionable error and
+/// the stored value plus the rest of the config are untouched; 1 and 365 work.
+#[test]
+fn api_fusion_usage_retention_save_rejects_invalid_and_keeps_stored_value() {
+    with_temp_home("retention-save", |_home| {
+        let mut config = FusionConfig::default();
+        config.usage_retention_days = 30;
+        config.providers.push(provider("p1"));
+        config.keys.push(key("k1", true));
+        super::storage::write_config(&config).expect("seed config");
+
+        let zero = super::commands::api_fusion_usage_retention_save(0).unwrap_err();
+        assert!(zero.contains("1") && zero.contains("365"), "actionable error: {zero}");
+        assert!(super::commands::api_fusion_usage_retention_save(400).is_err());
+
+        assert_eq!(
+            super::commands::api_fusion_usage_retention_get().unwrap(),
+            30,
+            "stored value unchanged after rejection"
+        );
+        let reloaded = super::storage::read_config().unwrap();
+        assert_eq!(reloaded.usage_retention_days, 30);
+        assert_eq!(reloaded.providers.len(), 1, "rejection must not rewrite config");
+
+        assert_eq!(
+            super::commands::api_fusion_usage_retention_save(1).unwrap(),
+            1
+        );
+        assert_eq!(
+            super::commands::api_fusion_usage_retention_save(365).unwrap(),
+            365
+        );
+        assert_eq!(
+            super::commands::api_fusion_usage_retention_get().unwrap(),
+            365
+        );
+        assert_eq!(
+            super::storage::read_config().unwrap().providers.len(),
+            1,
+            "accepted saves must also preserve providers"
+        );
+    });
+}
+
+/// AC-015 / AC-016 / AC-020 / AC-021 / AC-022: the stats/logs commands resolve
+/// the range, aggregate, group, filter and paginate entirely in the backend.
+#[test]
+fn api_fusion_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
+    with_temp_home("usage-commands", |_home| {
+        let store = UsageLogStore::default_store().expect("usage store");
+        let now = super::now_millis();
+        store
+            .append(
+                &sample_record(
+                    now - 1_000,
+                    "local-a",
+                    "remote-a",
+                    "p1",
+                    "Provider One",
+                    UsageResult::Success,
+                    Some(0.5),
+                    tokens(10, 0, 0, 5),
+                ),
+                90,
+            )
+            .unwrap();
+        store
+            .append(
+                &sample_record(
+                    now - 500,
+                    "local-a",
+                    "remote-a",
+                    "p2",
+                    "Provider Two",
+                    UsageResult::Failure,
+                    Some(1.0),
+                    tokens(20, 0, 0, 10),
+                ),
+                90,
+            )
+            .unwrap();
+
+        let stats = super::commands::api_fusion_usage_stats(None).unwrap();
+        assert_eq!(stats.granularity, "day");
+        assert_eq!(stats.totals.request_count, 2);
+        assert_eq!(stats.totals.total_tokens, 45);
+        assert!((stats.totals.amount - 1.5).abs() < 1e-9);
+        assert_eq!(stats.models.len(), 1);
+        assert_eq!(stats.models[0].providers.len(), 2, "per-provider detail");
+        assert_eq!(stats.buckets.len(), 1, "one day bucket");
+
+        let today = super::commands::api_fusion_usage_stats(Some(1)).unwrap();
+        assert_eq!(today.granularity, "hour", "today buckets by hour");
+
+        let page = super::commands::api_fusion_request_logs(None, None, None, None, None).unwrap();
+        assert_eq!(page.total, 2);
+        assert_eq!(page.page, 1);
+        assert_eq!(page.page_size, 50);
+        assert_eq!(page.records.len(), 2);
+        assert!(
+            page.records[0].timestamp_ms > page.records[1].timestamp_ms,
+            "newest first"
+        );
+
+        let failed = super::commands::api_fusion_request_logs(
+            None,
+            None,
+            Some("failure".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(failed.total, 1);
+        assert_eq!(failed.records[0].result, UsageResult::Failure);
+
+        let by_model = super::commands::api_fusion_request_logs(
+            None,
+            Some("model".to_string()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(by_model.group_by.as_deref(), Some("model"));
+        assert_eq!(by_model.groups.len(), 1);
+        assert_eq!(by_model.groups[0].error_count, 1, "failure counted as error");
+
+        let by_day = super::commands::api_fusion_request_logs(
+            None,
+            Some("day".to_string()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(by_day.groups.len(), 1);
+        assert_eq!(by_day.groups[0].request_count, 2);
+        assert_eq!(by_day.groups[0].error_count, 1);
+
+        let clamped = super::commands::api_fusion_request_logs(
+            None,
+            None,
+            None,
+            None,
+            Some(99),
+        )
+        .unwrap();
+        assert_eq!(clamped.page, 1, "page clamps to the only page");
+
+        // AC-021: a filter with no matches returns an empty, error-free page.
+        let empty = super::commands::api_fusion_request_logs(
+            None,
+            None,
+            Some("failure".to_string()),
+            Some("does-not-exist".to_string()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(empty.total, 0);
+        assert!(empty.records.is_empty());
+        assert_eq!(empty.total_pages, 1);
+
+        assert!(super::commands::api_fusion_request_logs(
+            None,
+            Some("bogus".to_string()),
+            None,
+            None,
+            None,
+        )
+        .is_err());
+    });
+}
+
+/// REQ-001: the unversioned `/responses` path also enters the normalized flow
+/// and is logged with the Responses usage shape.
+#[tokio::test]
+async fn usage_log_records_unversioned_responses_path() {
+    let home = temp_home("usage-forward-responses");
+    let port = free_port().await;
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "resp",
+                "output": [],
+                "usage": {
+                    "input_tokens": 4,
+                    "output_tokens": 6,
+                    "input_tokens_details": {"cached_tokens": 1}
+                }
+            }),
+        )
+    })
+    .await;
+
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.protocol = UpstreamProtocol::Responses;
+    provider.mappings = vec![mapping("local-r", "remote-r", None)];
+    config.providers.push(provider);
+    config.model_prices = vec![priced("remote-r", 1.0, 0.5, 2.0, 4.0)];
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/responses",
+        &[("x-api-key", "local-key")],
+        Some(json!({"model": "local-r"})),
+    )
+    .await;
+    assert_eq!(status, 200, "unexpected response: {text}");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(record.local_model, "local-r");
+    assert_eq!(record.upstream_model, "remote-r");
+    assert_eq!(record.input_tokens, 4);
+    assert_eq!(record.cache_read_tokens, 1);
+    assert_eq!(record.output_tokens, 6);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
 }

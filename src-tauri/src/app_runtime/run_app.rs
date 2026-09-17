@@ -322,6 +322,12 @@ pub fn run() {
             api_fusion::api_fusion_terminal_targets,
             api_fusion::api_fusion_configure_terminal,
             api_fusion::api_fusion_sync_terminal,
+            api_fusion::api_fusion_usage_stats,
+            api_fusion::api_fusion_request_logs,
+            api_fusion::api_fusion_model_prices_get,
+            api_fusion::api_fusion_model_prices_save,
+            api_fusion::api_fusion_usage_retention_get,
+            api_fusion::api_fusion_usage_retention_save,
             // New service_providers domain (replaces providers_*)
             app_store::service_providers_list,
             app_store::service_provider_read_opencode_config,

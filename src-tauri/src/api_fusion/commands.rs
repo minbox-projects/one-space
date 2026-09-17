@@ -4,7 +4,14 @@ use super::storage::{
     effective_default_key, find_provider_mut, local_base_url, new_key_id, new_key_value,
     new_provider_id, read_config, resolve_default_key_id, touch_key_created_at, write_config,
 };
-use super::{now_ts, FusionConfig, FusionKey, FusionStatus, FusionUpstreamProvider, TerminalSyncRecord};
+use super::usage_log::{
+    normalize_retention_days, now_millis, resolve_range, validate_retention_days, LogFilter,
+    UsageLogStore, UsageLogsPage, UsageStats, USAGE_LOG_PAGE_SIZE,
+};
+use super::{
+    now_ts, FusionConfig, FusionKey, FusionStatus, FusionUpstreamProvider, ModelPrice,
+    TerminalSyncRecord, UsageResult,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -651,4 +658,85 @@ pub async fn api_fusion_sync_terminal(
             .collect(),
     };
     apply_terminal_sync(app, targets).await
+}
+
+// ---------------------------------------------------------------------------
+// Usage statistics, request logs, model prices and retention
+// ---------------------------------------------------------------------------
+
+/// Aggregated cards, UTC+8 buckets and per-model/provider detail for `days`.
+/// `None` means all time, `Some(1)` means today; a single day buckets by hour.
+#[tauri::command]
+pub fn api_fusion_usage_stats(days: Option<i64>) -> Result<UsageStats, String> {
+    let range = resolve_range(days, now_millis());
+    let hour_buckets = days == Some(1);
+    UsageLogStore::default_store()?.usage_stats(&range, hour_buckets)
+}
+
+/// One page (50 rows, newest first) of request logs, or grouped rows when
+/// `group_by` is `"model"` or `"day"`. Range resolution, grouping, filtering and
+/// pagination all happen here in the backend.
+#[tauri::command]
+pub fn api_fusion_request_logs(
+    days: Option<i64>,
+    group_by: Option<String>,
+    status: Option<String>,
+    model: Option<String>,
+    page: Option<u32>,
+) -> Result<UsageLogsPage, String> {
+    let range = resolve_range(days, now_millis());
+    let filter = LogFilter {
+        status: status.as_deref().and_then(UsageResult::parse),
+        model: model.filter(|model| !model.trim().is_empty()),
+    };
+    let store = UsageLogStore::default_store()?;
+    let group = group_by.as_deref().unwrap_or("none");
+    match group {
+        "none" | "" => store.query_logs(&range, &filter, page.unwrap_or(1)),
+        "model" | "day" => {
+            let groups = store.group_logs(&range, &filter, group)?;
+            Ok(UsageLogsPage {
+                page: 1,
+                page_size: USAGE_LOG_PAGE_SIZE,
+                total: groups.len() as u32,
+                total_pages: 1,
+                group_by: Some(group.to_string()),
+                records: Vec::new(),
+                groups,
+            })
+        }
+        other => Err(format!(
+            "unsupported group_by '{other}': expected 'none', 'model' or 'day'"
+        )),
+    }
+}
+
+#[tauri::command]
+pub fn api_fusion_model_prices_get() -> Result<Vec<ModelPrice>, String> {
+    Ok(read_config()?.model_prices)
+}
+
+/// Replace only the price table, preserving providers, keys and terminal_syncs.
+#[tauri::command]
+pub fn api_fusion_model_prices_save(prices: Vec<ModelPrice>) -> Result<Vec<ModelPrice>, String> {
+    let mut config = read_config()?;
+    config.model_prices = prices;
+    write_config(&config)?;
+    Ok(read_config()?.model_prices)
+}
+
+#[tauri::command]
+pub fn api_fusion_usage_retention_get() -> Result<u32, String> {
+    Ok(normalize_retention_days(read_config()?.usage_retention_days))
+}
+
+/// Replace only the retention days; invalid values (not 1-365) are rejected
+/// with an actionable error and are never persisted.
+#[tauri::command]
+pub fn api_fusion_usage_retention_save(days: i64) -> Result<u32, String> {
+    let validated = validate_retention_days(days)?;
+    let mut config = read_config()?;
+    config.usage_retention_days = validated;
+    write_config(&config)?;
+    Ok(read_config()?.usage_retention_days)
 }

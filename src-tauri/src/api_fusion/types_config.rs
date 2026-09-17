@@ -4,8 +4,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub(in crate::api_fusion) const CONFIG_FILE: &str = "api_fusion.json";
 pub(in crate::api_fusion) const DEFAULT_PORT: u16 = 17688;
 
+/// Default request-log retention in days for configs written before the field existed.
+pub const DEFAULT_USAGE_RETENTION_DAYS: u32 = 90;
+/// Lower/upper bounds accepted by the retention-days setting.
+pub const MIN_USAGE_RETENTION_DAYS: u32 = 1;
+pub const MAX_USAGE_RETENTION_DAYS: u32 = 365;
+
 pub(in crate::api_fusion) fn default_port() -> u16 {
     DEFAULT_PORT
+}
+
+pub(in crate::api_fusion) fn default_usage_retention_days() -> u32 {
+    DEFAULT_USAGE_RETENTION_DAYS
 }
 
 pub(in crate::api_fusion) fn default_true() -> bool {
@@ -154,6 +164,24 @@ pub struct TerminalSyncRecord {
     pub synced_at: u64,
 }
 
+/// Unit prices for one upstream model, in US dollars per million tokens.
+///
+/// Prices are matched against the upstream model name recorded at request time;
+/// a missing row means the request is unpriced. Editing prices never rewrites
+/// already-persisted usage records.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelPrice {
+    pub upstream_model: String,
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub cache_read: f64,
+    #[serde(default)]
+    pub cache_write: f64,
+    #[serde(default)]
+    pub output: f64,
+}
+
 /// Persisted API Fusion configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FusionConfig {
@@ -169,6 +197,13 @@ pub struct FusionConfig {
     pub default_key_id: Option<String>,
     #[serde(default)]
     pub terminal_syncs: Vec<TerminalSyncRecord>,
+    /// Request-log retention in days (1-365, default 90). `#[serde(default)]`
+    /// keeps older `api_fusion.json` files readable without migration.
+    #[serde(default = "default_usage_retention_days")]
+    pub usage_retention_days: u32,
+    /// User-maintained upstream-model price table; absent in older configs.
+    #[serde(default)]
+    pub model_prices: Vec<ModelPrice>,
 }
 
 impl Default for FusionConfig {
@@ -180,6 +215,8 @@ impl Default for FusionConfig {
             keys: Vec::new(),
             default_key_id: None,
             terminal_syncs: Vec::new(),
+            usage_retention_days: DEFAULT_USAGE_RETENTION_DAYS,
+            model_prices: Vec::new(),
         }
     }
 }
