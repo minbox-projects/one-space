@@ -71,16 +71,16 @@ export function RuntimeStatusCard({
             title={running ? t("apiFusionStop", "Stop service") : t("apiFusionStart", "Start service")}
             aria-label={running ? t("apiFusionStop", "Stop service") : t("apiFusionStart", "Start service")}
             data-testid="api-fusion-toggle-service"
-            className={`inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-lg shadow-sm transition disabled:opacity-50 ${
+            className={`inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-lg border shadow-sm transition disabled:opacity-50 ${
               running
-                ? "bg-rose-600 text-white hover:bg-rose-700 active:bg-rose-800 dark:bg-rose-600 dark:hover:bg-rose-500"
-                : "bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 dark:bg-emerald-600 dark:hover:bg-emerald-500"
+                ? "border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20 active:bg-destructive/30"
+                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 active:bg-emerald-500/30 dark:border-emerald-500/40 dark:bg-emerald-500/15 dark:text-emerald-400"
             }`}
           >
             {running ? (
-              <Square className="h-3.5 w-3.5 fill-current" />
+              <Square className="h-4 w-4" />
             ) : (
-              <Play className="h-3.5 w-3.5 fill-current translate-x-0.5" />
+              <Play className="h-4 w-4 translate-x-0.5" />
             )}
           </button>
         </div>

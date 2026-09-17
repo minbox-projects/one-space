@@ -774,7 +774,7 @@ describe("ApiFusion", () => {
     renderWithProviders(<ApiFusion />);
     const runningToggleBtn = await screen.findByTestId("api-fusion-toggle-service");
     expect(runningToggleBtn).toHaveAttribute("title", "Stop service");
-    expect(runningToggleBtn).toHaveClass("bg-rose-600");
+    expect(runningToggleBtn).toHaveClass("text-destructive");
   });
 
   it("启停按钮在服务停止时显示启动图标按钮", async () => {
@@ -788,6 +788,6 @@ describe("ApiFusion", () => {
     renderWithProviders(<ApiFusion />);
     const stoppedToggleBtn = await screen.findByTestId("api-fusion-toggle-service");
     expect(stoppedToggleBtn).toHaveAttribute("title", "Start service");
-    expect(stoppedToggleBtn).toHaveClass("bg-emerald-600");
+    expect(stoppedToggleBtn).toHaveClass("text-emerald-600");
   });
 });
