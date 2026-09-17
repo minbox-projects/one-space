@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { Check, Copy, Power, Radio } from "lucide-react";
+import { Check, Copy, Play, Radio, Square } from "lucide-react";
 import { localBaseUrl, type FusionConfig, type FusionStatus } from "@/lib/apiFusion";
 
 type RuntimeStatusCardProps = {
@@ -68,14 +68,20 @@ export function RuntimeStatusCard({
             type="button"
             onClick={running ? onStop : onStart}
             disabled={busy}
-            className={`inline-flex h-7.5 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium shadow-sm transition disabled:opacity-50 ${
+            title={running ? t("apiFusionStop", "Stop service") : t("apiFusionStart", "Start service")}
+            aria-label={running ? t("apiFusionStop", "Stop service") : t("apiFusionStart", "Start service")}
+            data-testid="api-fusion-toggle-service"
+            className={`inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-lg shadow-sm transition disabled:opacity-50 ${
               running
-                ? "border border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20"
-                : "bg-primary text-primary-foreground hover:bg-primary/90"
+                ? "bg-rose-600 text-white hover:bg-rose-700 active:bg-rose-800 dark:bg-rose-600 dark:hover:bg-rose-500"
+                : "bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 dark:bg-emerald-600 dark:hover:bg-emerald-500"
             }`}
           >
-            <Power className="h-3 w-3" />
-            {running ? t("apiFusionStop", "Stop service") : t("apiFusionStart", "Start service")}
+            {running ? (
+              <Square className="h-3.5 w-3.5 fill-current" />
+            ) : (
+              <Play className="h-3.5 w-3.5 fill-current translate-x-0.5" />
+            )}
           </button>
         </div>
 

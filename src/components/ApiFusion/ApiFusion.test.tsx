@@ -762,4 +762,32 @@ describe("ApiFusion", () => {
       }),
     );
   });
+
+  it("启停按钮在服务运行时显示停止红色方块按钮", async () => {
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus({ running: true }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    const runningToggleBtn = await screen.findByTestId("api-fusion-toggle-service");
+    expect(runningToggleBtn).toHaveAttribute("title", "Stop service");
+    expect(runningToggleBtn).toHaveClass("bg-rose-600");
+  });
+
+  it("启停按钮在服务停止时显示启动图标按钮", async () => {
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus({ running: false }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    const stoppedToggleBtn = await screen.findByTestId("api-fusion-toggle-service");
+    expect(stoppedToggleBtn).toHaveAttribute("title", "Start service");
+    expect(stoppedToggleBtn).toHaveClass("bg-emerald-600");
+  });
 });
