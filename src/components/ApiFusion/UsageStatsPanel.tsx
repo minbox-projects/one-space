@@ -13,6 +13,7 @@ import {
 } from "@/lib/apiFusion";
 import { errorToMessage } from "@/lib/messages";
 import { ModelPriceDialog } from "./ModelPriceDialog";
+import { SelectDropdown } from "./SelectDropdown";
 
 function formatCount(value: number): string {
   return new Intl.NumberFormat().format(value);
@@ -118,23 +119,16 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
           </h2>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex flex-wrap items-center gap-1 rounded-lg border bg-muted/40 p-1">
-            {USAGE_RANGE_KEYS.map((key) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setRange(key)}
-                aria-pressed={range === key}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
-                  range === key
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {t(RANGE_LABEL_KEYS[key], RANGE_LABEL_FALLBACKS[key])}
-              </button>
-            ))}
-          </div>
+          <SelectDropdown
+            value={range}
+            options={USAGE_RANGE_KEYS.map((key) => ({
+              value: key,
+              label: t(RANGE_LABEL_KEYS[key], RANGE_LABEL_FALLBACKS[key]),
+            }))}
+            onChange={(nextRange) => setRange(nextRange)}
+            testId="api-fusion-usage-range"
+            ariaLabel={t("apiFusionRangeToday", "Time range")}
+          />
           <button
             type="button"
             onClick={() => void load({ refresh: true })}

@@ -70,7 +70,11 @@ describe("UsageLogsPanel", () => {
       }),
     );
 
-    await user.click(screen.getByRole("button", { name: "30d" }));
+    const rangeTrigger = screen.getByTestId("api-fusion-logs-range-trigger");
+    expect(rangeTrigger).toHaveTextContent("Today");
+    await user.click(rangeTrigger);
+    await user.click(screen.getByRole("option", { name: "30d" }));
+    expect(rangeTrigger).toHaveTextContent("30d");
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_fusion_request_logs", {
         days: 30,
@@ -139,6 +143,7 @@ describe("UsageLogsPanel", () => {
     // UTC+8 display: 2026-09-17T18:00Z is 2026-09-18 02:00.
     expect(within(rows[0]).getByText("2026-09-17 12:00")).toBeInTheDocument();
     expect(within(rows[0]).getByText("Success")).toBeInTheDocument();
+    expect(within(rows[0]).getByTestId("api-fusion-logs-status-badge")).toHaveClass("bg-emerald-500/10");
     expect(within(rows[0]).getByText("newest")).toBeInTheDocument();
   });
 
@@ -170,7 +175,11 @@ describe("UsageLogsPanel", () => {
     renderWithProviders(<UsageLogsPanel />);
     await screen.findByTestId("api-fusion-logs-ungrouped");
 
-    await user.click(screen.getByRole("button", { name: "Day (UTC+8)" }));
+    const groupTrigger = screen.getByTestId("api-fusion-logs-group-trigger");
+    expect(groupTrigger).toHaveTextContent("No grouping");
+    await user.click(groupTrigger);
+    await user.click(screen.getByRole("option", { name: "Day (UTC+8)" }));
+    expect(groupTrigger).toHaveTextContent("Day (UTC+8)");
 
     const grouped = await screen.findByTestId("api-fusion-logs-grouped");
     expect(within(grouped).getByText("Group")).toBeInTheDocument();
@@ -288,7 +297,10 @@ describe("UsageLogsPanel", () => {
     await user.click(screen.getByRole("button", { name: "Next" }));
     await screen.findByText("Page 2 / 3");
 
-    await user.click(screen.getByRole("button", { name: "Model" }));
+    const groupTrigger = screen.getByTestId("api-fusion-logs-group-trigger");
+    await user.click(groupTrigger);
+    await user.click(screen.getByRole("option", { name: "Model" }));
+    expect(groupTrigger).toHaveTextContent("Model");
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_fusion_request_logs", {
         days: 1,
@@ -317,7 +329,10 @@ describe("UsageLogsPanel", () => {
     await user.click(screen.getByRole("button", { name: "Next" }));
     await screen.findByText("Page 2 / 3");
 
-    await user.click(screen.getByRole("button", { name: "7d" }));
+    const rangeTrigger = screen.getByTestId("api-fusion-logs-range-trigger");
+    await user.click(rangeTrigger);
+    await user.click(screen.getByRole("option", { name: "7d" }));
+    expect(rangeTrigger).toHaveTextContent("7d");
 
     await waitFor(() =>
       expect(screen.getByText("Page 1 / 1")).toBeInTheDocument(),
@@ -414,4 +429,204 @@ describe("UsageLogsPanel", () => {
       }),
     );
   });
+
+  it("点击过滤选项即时生效，过滤按钮更新文本且清除按钮可重置", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_fusion_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({ records: [record({ local_model: "gpt-4o" })] });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-fusion-logs-ungrouped");
+
+    const filterTrigger = screen.getByTestId("api-fusion-logs-filter-trigger");
+    await user.click(filterTrigger);
+
+    const panel = await screen.findByTestId("api-fusion-logs-filter-panel");
+    const failureBtn = within(panel).getByRole("button", { name: "Failure" });
+    await user.click(failureBtn);
+
+    // Filter button updates its text immediately
+    await waitFor(() =>
+      expect(filterTrigger).toHaveTextContent("Failure"),
+    );
+    expect(failureBtn).toHaveClass("bg-primary");
+
+    // Click clear
+    const clearBtn = within(panel).getByRole("button", { name: "Clear" });
+    await user.click(clearBtn);
+
+    await waitFor(() =>
+      expect(filterTrigger).toHaveTextContent("Filter"),
+    );
+  });
+
+  it("失败记录展示状态码与标准失败原因副标题，成功记录不显示失败原因", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_fusion_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          record({
+            result: "failure",
+            status: 502,
+            local_model: "gpt-4o",
+          }),
+          record({
+            result: "success",
+            status: 200,
+            local_model: "claude-3-5",
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-fusion-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("api-fusion-logs-row");
+    expect(rows).toHaveLength(2);
+
+    // 第一行：失败记录
+    const failureBadge = within(rows[0]).getByTestId(
+      "api-fusion-logs-status-badge",
+    );
+    expect(failureBadge).toHaveTextContent("Failure");
+    expect(failureBadge).toHaveTextContent("502");
+    const failureReason = within(rows[0]).getByTestId(
+      "api-fusion-logs-status-reason",
+    );
+    expect(failureReason).toHaveTextContent(
+      "Bad gateway / Upstream unavailable",
+    );
+
+    // 第二行：成功记录
+    const successBadge = within(rows[1]).getByTestId(
+      "api-fusion-logs-status-badge",
+    );
+    expect(successBadge).toHaveTextContent("Success");
+    expect(
+      within(rows[1]).queryByTestId("api-fusion-logs-status-reason"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Tokens 列同时显示输入、输出、缓存 Tokens 数，并提供 info 图标展示完整明细", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_fusion_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          record({
+            input_tokens: 1250,
+            output_tokens: 340,
+            cache_read_tokens: 80,
+            cache_write_tokens: 20,
+            total_tokens: 1690,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-fusion-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("api-fusion-logs-row");
+    expect(rows).toHaveLength(1);
+
+    const tokensCell = within(rows[0]).getByTestId(
+      "api-fusion-logs-tokens-cell",
+    );
+    const breakdown = within(tokensCell).getByTestId(
+      "api-fusion-logs-tokens-breakdown",
+    );
+    expect(
+      within(breakdown).getByTestId("api-fusion-logs-tokens-input-icon"),
+    ).toBeInTheDocument();
+    expect(breakdown).toHaveTextContent("1,250");
+    expect(
+      within(breakdown).getByTestId("api-fusion-logs-tokens-output-icon"),
+    ).toBeInTheDocument();
+    expect(breakdown).toHaveTextContent("340");
+    expect(
+      within(breakdown).getByTestId("api-fusion-logs-tokens-cache-icon"),
+    ).toBeInTheDocument();
+    expect(breakdown).toHaveTextContent("100"); // 80 + 20
+
+    const infoBtn = within(tokensCell).getByTestId(
+      "api-fusion-logs-tokens-info-btn",
+    );
+    expect(infoBtn).toBeInTheDocument();
+    expect(infoBtn).toHaveAttribute(
+      "title",
+      expect.stringContaining("Input: 1,250"),
+    );
+    expect(infoBtn).toHaveAttribute(
+      "title",
+      expect.stringContaining("Output: 340"),
+    );
+    expect(infoBtn).toHaveAttribute(
+      "title",
+      expect.stringContaining("Cache: 100"),
+    );
+    expect(infoBtn).toHaveAttribute(
+      "title",
+      expect.stringContaining("Total: 1,690"),
+    );
+
+    const tooltip = within(tokensCell).getByTestId(
+      "api-fusion-logs-tokens-tooltip",
+    );
+    expect(tooltip).toHaveTextContent("Tokens breakdown");
+    expect(tooltip).toHaveTextContent("Input:");
+    expect(tooltip).toHaveTextContent("1,250");
+    expect(tooltip).toHaveTextContent("Output:");
+    expect(tooltip).toHaveTextContent("340");
+    expect(tooltip).toHaveTextContent("Cache:");
+    expect(tooltip).toHaveTextContent("100");
+    expect(tooltip).toHaveTextContent("Cache read:");
+    expect(tooltip).toHaveTextContent("80");
+    expect(tooltip).toHaveTextContent("Cache write:");
+    expect(tooltip).toHaveTextContent("20");
+    expect(tooltip).toHaveTextContent("Total:");
+    expect(tooltip).toHaveTextContent("1,690");
+  });
+
+  it("模型列展示本地模型，并在同一行展示上游服务商名称与上游模型", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_fusion_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          record({
+            local_model: "claude-3-7-sonnet",
+            upstream_model: "claude-3-7-sonnet-20250219",
+            provider_name: "Anthropic Direct",
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-fusion-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("api-fusion-logs-row");
+    expect(rows).toHaveLength(1);
+
+    expect(within(rows[0]).getByText("claude-3-7-sonnet")).toBeInTheDocument();
+    expect(
+      within(rows[0]).getByTestId("api-fusion-logs-provider-name"),
+    ).toHaveTextContent("Anthropic Direct");
+    expect(
+      within(rows[0]).getByTestId("api-fusion-logs-upstream-model"),
+    ).toHaveTextContent("claude-3-7-sonnet-20250219");
+  });
 });
+
+
+

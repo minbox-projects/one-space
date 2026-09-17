@@ -956,7 +956,8 @@ describe("ApiFusion", () => {
     expect(usageTab).toHaveAttribute("aria-selected", "true");
     const usagePanel = await screen.findByTestId("api-fusion-usage-stats");
     await within(usagePanel).findByTestId("api-fusion-usage-card-requests");
-    fireEvent.click(within(usagePanel).getByRole("button", { name: "7d" }));
+    fireEvent.click(within(usagePanel).getByTestId("api-fusion-usage-range-trigger"));
+    fireEvent.click(screen.getByRole("option", { name: "7d" }));
     await within(usagePanel).findByTestId("api-fusion-usage-card-requests");
 
     // The model-price entry must live only inside the usage-stats panel.
@@ -977,22 +978,23 @@ describe("ApiFusion", () => {
     fireEvent.click(providersTab);
     fireEvent.click(usageTab);
     expect(
-      within(usagePanel).getByRole("button", { name: "7d" }),
-    ).toHaveAttribute("aria-pressed", "true");
+      within(usagePanel).getByTestId("api-fusion-usage-range-trigger"),
+    ).toHaveTextContent("7d");
 
     fireEvent.click(logsTab);
     await screen.findByText("Page 2 / 3");
 
     // Grouping selection also survives a tab round-trip.
     fireEvent.click(
-      within(logsPanel).getByRole("button", { name: "Day (UTC+8)" }),
+      within(logsPanel).getByTestId("api-fusion-logs-group-trigger"),
     );
+    fireEvent.click(screen.getByRole("option", { name: "Day (UTC+8)" }));
     await screen.findByTestId("api-fusion-logs-grouped");
     fireEvent.click(providersTab);
     fireEvent.click(logsTab);
     expect(
-      within(logsPanel).getByRole("button", { name: "Day (UTC+8)" }),
-    ).toHaveAttribute("aria-pressed", "true");
+      within(logsPanel).getByTestId("api-fusion-logs-group-trigger"),
+    ).toHaveTextContent("Day (UTC+8)");
     // Flush the re-activation reloads before the test unmounts.
     await act(async () => {});
   });

@@ -64,7 +64,11 @@ describe("UsageStatsPanel", () => {
       "0.1234",
     );
 
-    await user.click(screen.getByRole("button", { name: "7d" }));
+    const rangeTrigger = screen.getByTestId("api-fusion-usage-range-trigger");
+    expect(rangeTrigger).toHaveTextContent("Today");
+    await user.click(rangeTrigger);
+    await user.click(screen.getByRole("option", { name: "7d" }));
+    expect(rangeTrigger).toHaveTextContent("7d");
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_stats", {
         days: 7,
