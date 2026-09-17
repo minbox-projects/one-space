@@ -655,12 +655,12 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                       })()}
                     </td>
                     <td className="px-3 py-2">
-                      <div className="font-medium">{item.local_model}</div>
+                      <div className="font-medium whitespace-nowrap">{item.local_model}</div>
                       {(item.provider_name || item.upstream_model) ? (
-                        <div className="text-[10px] text-muted-foreground flex items-center gap-1 truncate max-w-[220px]">
+                        <div className="text-[10px] text-muted-foreground flex items-center gap-1 whitespace-nowrap">
                           {item.provider_name ? (
                             <span
-                              className="font-medium shrink-0"
+                              className="font-medium"
                               data-testid="api-fusion-logs-provider-name"
                             >
                               {item.provider_name}
@@ -671,7 +671,6 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                           ) : null}
                           {item.upstream_model ? (
                             <span
-                              className="truncate"
                               title={item.upstream_model}
                               data-testid="api-fusion-logs-upstream-model"
                             >
