@@ -202,11 +202,13 @@ export function aggregateModels(
     provider.mappings.forEach((mapping) => {
       const localModel = mapping.local_model.trim();
       if (!localModel) return;
+      const upstreamModel = mapping.upstream_model.trim();
+      if (!upstreamModel) return;
       const entries = groups.get(localModel) ?? [];
       entries.push({
         providerId: provider.id,
         providerName: provider.name,
-        upstreamModel: mapping.upstream_model.trim(),
+        upstreamModel,
         endpoint: mapping.protocol ?? provider.protocol ?? "chat_completions",
         isDefault: false,
       });

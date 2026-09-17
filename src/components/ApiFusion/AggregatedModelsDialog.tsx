@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   aggregateModels,
+  type FusionUpstreamProtocol,
   type FusionUpstreamProvider,
 } from "@/lib/apiFusion";
 
@@ -17,6 +18,10 @@ type AggregatedModelsDialogProps = {
   onOpenChange: (open: boolean) => void;
   providers: FusionUpstreamProvider[];
 };
+
+function endpointPath(protocol: FusionUpstreamProtocol): string {
+  return protocol === "responses" ? "/responses" : "/chat/completions";
+}
 
 export function AggregatedModelsDialog({
   open,
@@ -88,7 +93,7 @@ export function AggregatedModelsDialog({
                         </span>
                       ) : null}
                       <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                        {entry.endpoint}
+                        {endpointPath(entry.endpoint)}
                       </span>
                     </li>
                   ))}

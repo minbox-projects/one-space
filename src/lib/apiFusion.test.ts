@@ -402,6 +402,43 @@ describe("aggregateModels 聚合本地模型", () => {
     ]);
   });
 
+  it("远端模型去空格后为空且无默认模型时不产生聚合模型", () => {
+    const providers: FusionUpstreamProvider[] = [
+      provider({
+        id: "p-ghost",
+        name: "Ghost",
+        default_model: null,
+        mappings: [{ local_model: "ghost", upstream_model: "   " }],
+      }),
+    ];
+
+    expect(aggregateModels(providers)).toEqual([]);
+  });
+
+  it("默认模型与同名空白远端映射共存时只保留默认条目一次", () => {
+    const providers: FusionUpstreamProvider[] = [
+      provider({
+        id: "p1",
+        name: "Provider",
+        default_model: "gpt-4o",
+        mappings: [{ local_model: "gpt-4o", upstream_model: "" }],
+      }),
+    ];
+
+    const aggregated = aggregateModels(providers);
+    const gpt = aggregated.filter((entry) => entry.model === "gpt-4o");
+    expect(gpt).toHaveLength(1);
+    expect(gpt[0].providers).toHaveLength(1);
+    expect(gpt[0].providers.filter((entry) => entry.isDefault)).toHaveLength(1);
+    expect(gpt[0].providers[0]).toMatchObject({
+      providerId: "p1",
+      providerName: "Provider",
+      upstreamModel: "gpt-4o",
+      endpoint: "chat_completions",
+      isDefault: true,
+    });
+  });
+
   it("没有有效服务商时返回空数组", () => {
     expect(aggregateModels([])).toEqual([]);
     expect(
