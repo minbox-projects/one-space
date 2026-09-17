@@ -107,9 +107,12 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
     void load();
   }, [isActive, load]);
 
-  const modelOptions = Array.from(
-    new Set((pageData?.records ?? []).map((item) => item.local_model)),
-  ).sort();
+  const modelOptions = [
+    ...(pageData?.models ??
+      Array.from(
+        new Set((pageData?.records ?? []).map((item) => item.local_model)),
+      )),
+  ].sort();
 
   const records = [...(pageData?.records ?? [])].sort(
     (first, second) => second.timestamp_ms - first.timestamp_ms,

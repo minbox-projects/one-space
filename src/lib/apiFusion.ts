@@ -344,6 +344,11 @@ export interface UsageLogsPage {
   group_by: string | null;
   records: UsageLogRecord[];
   groups: UsageLogGroup[];
+  /**
+   * Distinct non-empty in-range local models, independent of page and model
+   * filter. Optional for responses/fixtures that predate the facet.
+   */
+  models?: string[];
 }
 
 export interface UsageLogsQuery {

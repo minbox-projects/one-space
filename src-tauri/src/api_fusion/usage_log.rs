@@ -380,6 +380,10 @@ pub struct UsageLogsPage {
     pub records: Vec<UsageLogRecord>,
     #[serde(default)]
     pub groups: Vec<UsageLogGroupRow>,
+    /// Distinct, non-empty in-range `local_model` values, independent of the
+    /// current page and of the active model filter. Empty for grouped responses.
+    #[serde(default)]
+    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -388,7 +392,7 @@ pub(in crate::api_fusion) struct LogFilter {
     pub model: Option<String>,
 }
 
-const METRIC_COLUMNS: &str = "COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(amount), 0.0), COALESCE(SUM(CASE WHEN amount IS NULL THEN 1 ELSE 0 END), 0)";
+const METRIC_COLUMNS: &str = "COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(amount), 0.0), COALESCE(SUM(CASE WHEN amount IS NULL AND upstream_model <> '' THEN 1 ELSE 0 END), 0)";
 
 fn metrics_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<UsageMetrics> {
     Ok(UsageMetrics {
@@ -587,6 +591,30 @@ impl UsageLogStore {
             .map_err(|error| error.to_string())?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|error| error.to_string())?;
+        // The model facet spans the whole range and ignores the model filter, so
+        // the filter selector can offer in-range models absent from this page.
+        let facet_filter = LogFilter {
+            status: filter.status,
+            model: None,
+        };
+        let (facet_where_sql, facet_params) = bind(range, &facet_filter);
+        let facet_where = if facet_where_sql.is_empty() {
+            " WHERE local_model <> ''".to_string()
+        } else {
+            format!("{facet_where_sql} AND local_model <> ''")
+        };
+        let mut facet_statement = connection
+            .prepare(&format!(
+                "SELECT DISTINCT local_model FROM usage_logs{facet_where} ORDER BY local_model ASC"
+            ))
+            .map_err(|error| error.to_string())?;
+        let models = facet_statement
+            .query_map(params_from_iter(facet_params.iter()), |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?;
         Ok(UsageLogsPage {
             page,
             page_size: USAGE_LOG_PAGE_SIZE,
@@ -595,6 +623,7 @@ impl UsageLogStore {
             group_by: None,
             records,
             groups: Vec::new(),
+            models,
         })
     }
 

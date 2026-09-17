@@ -368,4 +368,50 @@ describe("UsageLogsPanel", () => {
       expect.anything(),
     );
   });
+
+  it("过滤面板的模型选项来自范围内模型清单，而不限于当前页记录", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_fusion_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      const value = page({
+        total: 1,
+        records: [
+          record({ local_model: "visible", upstream_model: "visible" }),
+        ],
+      });
+      // Page 1 only contains `visible`, but the range facet also exposes a
+      // model that lives on a later page.
+      return { ...value, models: ["hidden-model", "visible"] } as UsageLogsPage & {
+        models: string[];
+      };
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-fusion-logs-ungrouped");
+
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    const panel = await screen.findByTestId("api-fusion-logs-filter-panel");
+
+    // A model present in range but absent from page 1 must be selectable.
+    expect(
+      within(panel).getByRole("button", { name: "hidden-model" }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(panel).getByRole("button", { name: "hidden-model" }),
+    );
+    await user.click(within(panel).getByRole("button", { name: "Apply" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_request_logs", {
+        days: 1,
+        groupBy: "none",
+        status: null,
+        model: "hidden-model",
+        page: 1,
+      }),
+    );
+  });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RefreshCw, Tags } from "lucide-react";
 import {
@@ -321,22 +321,18 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
                 </thead>
                 <tbody>
                   {stats.models.map((model) => (
-                    <UsageAnalysisRow
-                      key={model.local_model}
-                      label={model.local_model}
-                      metrics={model}
-                    />
+                    <Fragment key={model.local_model}>
+                      <UsageAnalysisRow label={model.local_model} metrics={model} />
+                      {model.providers.map((provider) => (
+                        <UsageAnalysisRow
+                          key={`${model.local_model}-${provider.provider_id}`}
+                          label={provider.provider_name}
+                          metrics={provider}
+                          indent
+                        />
+                      ))}
+                    </Fragment>
                   ))}
-                  {stats.models.flatMap((model) =>
-                    model.providers.map((provider) => (
-                      <UsageAnalysisRow
-                        key={`${model.local_model}-${provider.provider_id}`}
-                        label={provider.provider_name}
-                        metrics={provider}
-                        indent
-                      />
-                    )),
-                  )}
                 </tbody>
               </table>
             </div>

@@ -602,7 +602,13 @@ async fn attempt_candidate(
 ) -> AttemptResult {
     match forward_non_streaming(provider, path, body, model, client_headers).await {
         Ok(response) => {
-            let usage = parse_usage_from_response(&response.body);
+            // Usage is only meaningful for a successful 2xx upstream response;
+            // an error body that happens to carry `usage` must never be billed.
+            let usage = if (200..300).contains(&response.status) {
+                parse_usage_from_response(&response.body)
+            } else {
+                None
+            };
             let capture = ForwardCapture {
                 status: response.status,
                 provider_id: provider.id.clone(),

@@ -703,6 +703,7 @@ pub fn api_fusion_request_logs(
                 group_by: Some(group.to_string()),
                 records: Vec::new(),
                 groups,
+                models: Vec::new(),
             })
         }
         other => Err(format!(

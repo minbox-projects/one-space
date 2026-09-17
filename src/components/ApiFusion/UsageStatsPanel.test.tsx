@@ -325,4 +325,84 @@ describe("UsageStatsPanel", () => {
       expect.anything(),
     );
   });
+
+  it("每个模型的提供商明细紧跟其模型行之后渲染", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_fusion_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({
+        request_count: 4,
+        total_tokens: 60,
+        models: [
+          {
+            local_model: "alpha-model",
+            request_count: 2,
+            input_tokens: 10,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 20,
+            total_tokens: 30,
+            amount: 0.1,
+            unpriced_count: 0,
+            providers: [
+              {
+                provider_id: "p-alpha",
+                provider_name: "Alpha Provider",
+                request_count: 2,
+                input_tokens: 10,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 20,
+                total_tokens: 30,
+                amount: 0.1,
+                unpriced_count: 0,
+              },
+            ],
+          },
+          {
+            local_model: "beta-model",
+            request_count: 2,
+            input_tokens: 10,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 20,
+            total_tokens: 30,
+            amount: 0.2,
+            unpriced_count: 0,
+            providers: [
+              {
+                provider_id: "p-beta",
+                provider_name: "Beta Provider",
+                request_count: 2,
+                input_tokens: 10,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 20,
+                total_tokens: 30,
+                amount: 0.2,
+                unpriced_count: 0,
+              },
+            ],
+          },
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+
+    const modelTable = await screen.findByTestId("api-fusion-usage-models");
+    const rows = within(modelTable).getAllByTestId(
+      /api-fusion-usage-(model|provider)-row/,
+    );
+    const labels = rows.map(
+      (row) => within(row).getAllByRole("cell")[0].textContent,
+    );
+    expect(labels).toEqual([
+      "alpha-model",
+      "Alpha Provider",
+      "beta-model",
+      "Beta Provider",
+    ]);
+  });
 });

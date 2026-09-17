@@ -140,4 +140,40 @@ describe("ProviderDetailDialog 模型映射", () => {
     });
     expect(displayNameInput).toHaveValue("");
   });
+
+  it("上游服务商表单不提供模型价格录入（价格由用量页独立弹窗负责）", () => {
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={makeProvider({
+          mappings: [
+            {
+              local_model: "gpt-4o",
+              upstream_model: "gpt-4o-2024",
+              display_name: "GPT-4o",
+              protocol: null,
+            },
+          ],
+        })}
+        busy={false}
+        onSave={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText(/model prices?/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/模型价格/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /price/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: /price/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("spinbutton", { name: /price/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("combobox", { name: /price/i }),
+    ).not.toBeInTheDocument();
+  });
 });

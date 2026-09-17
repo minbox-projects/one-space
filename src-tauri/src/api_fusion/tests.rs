@@ -8498,3 +8498,256 @@ fn resolve_range_covers_30_days_inclusive_and_treats_nonpositive_as_all() {
     assert_eq!(resolve_range(Some(0), now), TimeRange::default());
     assert_eq!(resolve_range(Some(-1), now), TimeRange::default());
 }
+
+// ---------------------------------------------------------------------------
+// 20260917-ai-gateway-usage-logs review-repair round (regression tests)
+// ---------------------------------------------------------------------------
+
+/// AC-003 / REQ-003 (repair F1): an upstream error response that nevertheless
+/// carries a JSON `usage` object must be recorded as a failure with zero tokens
+/// and zero cost in every tier. Error accounting never trusts upstream usage.
+#[tokio::test]
+async fn usage_log_zeroes_usage_for_error_response_with_usage_body() {
+    let home = temp_home("usage-forward-error-usage-body");
+    let port = free_port().await;
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            400,
+            json!({
+                "error": {"message": "bad request"},
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cache_read_input_tokens": 30,
+                    "cache_creation_input_tokens": 20
+                }
+            }),
+        )
+    })
+    .await;
+
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(status, 400, "caller must receive the upstream status: {text}");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1, "exactly one log row per forwarded request");
+    let record = &records[0];
+    assert_eq!(record.result, UsageResult::Failure);
+    assert_eq!(record.status, 400);
+    assert_eq!(
+        record.input_tokens, 0,
+        "an error response must never contribute input tokens"
+    );
+    assert_eq!(record.cache_read_tokens, 0);
+    assert_eq!(record.cache_write_tokens, 0);
+    assert_eq!(
+        record.output_tokens, 0,
+        "an error response must never contribute output tokens"
+    );
+    assert_eq!(record.total_tokens, 0);
+    assert_eq!(
+        record.amount.unwrap_or(0.0),
+        0.0,
+        "an error response must never contribute cost"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-005 / AC-008 (repair F4): `unpriced_count` counts only requests that
+/// reached an upstream model with no matching price row. Cancelled rows (and any
+/// row with an empty `upstream_model`) must not be counted or shown as unpriced.
+#[test]
+fn usage_stats_unpriced_count_excludes_rows_without_upstream_model() {
+    let (dir, store) = usage_store("usage-unpriced-upstream-model");
+    let base = rfc3339_millis("2026-09-16T08:00:00+08:00");
+    // Reached upstream `remote-unpriced` but no price row exists.
+    store
+        .append(
+            &sample_record(
+                base,
+                "local-unpriced",
+                "remote-unpriced",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                None,
+                tokens(10, 0, 0, 5),
+            ),
+            365,
+        )
+        .unwrap();
+    // A cancelled request never reached an upstream model.
+    store
+        .append(
+            &sample_record(
+                base + 1_000,
+                "local-cancelled",
+                "",
+                "p1",
+                "Provider One",
+                UsageResult::Cancelled,
+                None,
+                UsageTokens::default(),
+            ),
+            365,
+        )
+        .unwrap();
+
+    let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
+    assert_eq!(stats.totals.request_count, 2);
+    assert_eq!(
+        stats.totals.unpriced_count, 1,
+        "only the request that reached an unpriced upstream model is unpriced"
+    );
+
+    let cancelled = stats
+        .models
+        .iter()
+        .find(|row| row.local_model == "local-cancelled")
+        .expect("cancelled row");
+    assert_eq!(
+        cancelled.metrics.unpriced_count, 0,
+        "a row with no upstream model must not render as unpriced"
+    );
+
+    let unpriced = stats
+        .models
+        .iter()
+        .find(|row| row.local_model == "local-unpriced")
+        .expect("unpriced row");
+    assert_eq!(unpriced.metrics.unpriced_count, 1);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-021 / REQ-018 (repair F3): the ungrouped page response exposes a bounded,
+/// distinct, non-empty in-range model facet that is independent of the current
+/// page and of the model filter, so the frontend can offer every in-range model.
+#[test]
+fn request_logs_page_exposes_in_range_model_facet() {
+    let (dir, store) = usage_store("usage-model-facet");
+    let base = rfc3339_millis("2026-09-16T08:00:00+08:00");
+    // Oldest row has no local model (e.g. a cancelled request).
+    store
+        .append(
+            &sample_record(
+                base - 1_000,
+                "",
+                "",
+                "p1",
+                "Provider One",
+                UsageResult::Cancelled,
+                None,
+                UsageTokens::default(),
+            ),
+            365,
+        )
+        .unwrap();
+    // Second-oldest row is the only record of `local-hidden`, beyond page 1.
+    store
+        .append(
+            &sample_record(
+                base,
+                "local-hidden",
+                "remote-hidden",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(0.1),
+                tokens(1, 0, 0, 1),
+            ),
+            365,
+        )
+        .unwrap();
+    // 51 newer rows of `local-visible` fill page 1 and push both rows off it.
+    for index in 0..51i64 {
+        store
+            .append(
+                &sample_record(
+                    base + (index + 1) * 1_000,
+                    "local-visible",
+                    "remote-visible",
+                    "p1",
+                    "Provider One",
+                    UsageResult::Success,
+                    Some(0.1),
+                    tokens(1, 0, 0, 1),
+                ),
+                365,
+            )
+            .unwrap();
+    }
+
+    let page_one = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .unwrap();
+    assert_eq!(page_one.records.len(), USAGE_LOG_PAGE_SIZE as usize);
+    assert!(
+        page_one
+            .records
+            .iter()
+            .all(|record| record.local_model == "local-visible"),
+        "page 1 must not contain the hidden model"
+    );
+
+    let value = serde_json::to_value(&page_one).unwrap();
+    let facet = value
+        .get("models")
+        .and_then(Value::as_array)
+        .expect("UsageLogsPage must serialize a `models` facet");
+    let mut names: Vec<String> = facet
+        .iter()
+        .filter_map(|entry| entry.as_str().map(str::to_string))
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec!["local-hidden".to_string(), "local-visible".to_string()],
+        "facet must be distinct, non-empty and independent of the current page"
+    );
+
+    // The facet must ignore the model filter itself.
+    let filtered = store
+        .query_logs(
+            &TimeRange::default(),
+            &LogFilter {
+                status: None,
+                model: Some("local-visible".to_string()),
+            },
+            1,
+        )
+        .unwrap();
+    let filtered_value = serde_json::to_value(&filtered).unwrap();
+    let filtered_names: Vec<&str> = filtered_value
+        .get("models")
+        .and_then(Value::as_array)
+        .expect("UsageLogsPage must serialize a `models` facet")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        filtered_names.contains(&"local-hidden"),
+        "the model facet must ignore the active model filter, got {filtered_names:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
