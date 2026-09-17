@@ -212,6 +212,33 @@ fn default_key_choice_persists_across_reload() {
     });
 }
 
+/// Syncing must carry the default local key the UI shows: when the stored
+/// default points at a disabled key (or is absent), the sync falls through to
+/// the next enabled key instead of failing.
+#[test]
+fn default_key_for_sync_falls_through_to_next_enabled_key() {
+    let mut stale = FusionConfig::default();
+    stale.keys = vec![key("k1", false), key("k2", true), key("k3", true)];
+    stale.default_key_id = Some("k1".to_string());
+    let (id, value) = default_key_for_sync(&stale).expect("stale default must fall through");
+    assert_eq!(id, "k2");
+    assert_eq!(value, "value-k2");
+
+    let mut unset = FusionConfig::default();
+    unset.keys = vec![key("k1", true), key("k2", true)];
+    unset.default_key_id = None;
+    let (id, _) = default_key_for_sync(&unset).expect("absent default must resolve");
+    assert_eq!(id, "k1");
+
+    let mut none_enabled = FusionConfig::default();
+    none_enabled.keys = vec![key("k1", false)];
+    none_enabled.default_key_id = Some("k1".to_string());
+    assert!(
+        default_key_for_sync(&none_enabled).is_err(),
+        "no enabled key must still fail sync"
+    );
+}
+
 #[test]
 fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols() {
     // A row without its own protocol inherits the provider protocol; the default
@@ -1771,7 +1798,7 @@ fn build_gateway_provider_normalizes_tool_case_to_lowercase() {
     )
     .expect("mixed-case opencode must build");
     assert_eq!(opencode["tool"], "opencode", "emitted tool must be lowercase: {opencode}");
-    assert_eq!(opencode["provider_key"], "api_gateway");
+    assert_eq!(opencode["provider_key"], "apigateway");
     assert_eq!(opencode["tool_config"]["npm"], "@ai-sdk/openai-compatible");
 
     let codex = build_gateway_provider(
@@ -1878,7 +1905,7 @@ fn build_gateway_provider_opencode_carries_gateway_models_and_marker() {
     assert!(value.get("active").is_none(), "must never auto-activate: {value}");
     assert!(value.get("is_active").is_none(), "must never auto-activate: {value}");
 
-    assert_eq!(value["provider_key"], "api_gateway");
+    assert_eq!(value["provider_key"], "apigateway");
     assert_eq!(value["tool_config"]["npm"], "@ai-sdk/openai-compatible");
     assert_eq!(
         value["tool_config"]["options"]["baseURL"],
@@ -3663,7 +3690,9 @@ async fn capture_terminal_sync(
 
 /// New behavior: syncing creates exactly one independent gateway provider per
 /// requested tool, carrying the local base URL, the default local key and the
-/// gateway model mapping, and never auto-activating it.
+/// gateway model mapping. The submitted payload itself carries no
+/// `active`/`is_active` flag; opencode activation is applied separately via the
+/// service-provider active list after the upsert succeeds.
 #[tokio::test]
 async fn terminal_sync_with_seam_creates_one_gateway_provider_per_tool() {
     let _home = temp_home("terminal-sync-seam-create");
@@ -3703,7 +3732,7 @@ async fn terminal_sync_with_seam_creates_one_gateway_provider_per_tool() {
     assert_eq!(opencode["base_url"], local_base_url.as_str());
     assert_eq!(opencode["api_key"], "local-key-123");
     assert_eq!(opencode["tool_config"]["api_fusion_gateway"], true);
-    assert_eq!(opencode["provider_key"], "api_gateway");
+    assert_eq!(opencode["provider_key"], "apigateway");
     assert_eq!(
         opencode["tool_config"]["options"]["baseURL"],
         local_base_url.as_str()

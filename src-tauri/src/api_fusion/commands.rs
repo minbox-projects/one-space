@@ -2,7 +2,7 @@ use super::runtime_http::{autostart, server_status, start_server, stop_server};
 use super::selection::{manual_reenable, set_user_enabled};
 use super::storage::{
     effective_default_key, find_provider_mut, local_base_url, new_key_id, new_key_value,
-    new_provider_id, read_config, touch_key_created_at, write_config,
+    new_provider_id, read_config, resolve_default_key_id, touch_key_created_at, write_config,
 };
 use super::{now_ts, FusionConfig, FusionKey, FusionStatus, FusionUpstreamProvider, TerminalSyncRecord};
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,7 @@ pub(in crate::api_fusion) const SUPPORTED_TERMINAL_TOOLS: [&str; 2] = ["opencode
 
 /// Display name and provider key of the managed API Fusion gateway record.
 const GATEWAY_PROVIDER_NAME: &str = "API Gateway";
-const GATEWAY_PROVIDER_KEY: &str = "api_gateway";
+const GATEWAY_PROVIDER_KEY: &str = "apigateway";
 /// Stable marker identifying a provider record written by API Fusion.
 const GATEWAY_MARKER_KEY: &str = "api_fusion_gateway";
 
@@ -73,8 +73,11 @@ fn gateway_is_active(gateway: &FusionUpstreamProvider) -> bool {
 
 /// Build the terminal provider record written by API Fusion for one tool.
 ///
-/// The record is always marked as an API Fusion gateway and never carries an
-/// `active`/`is_active` flag, so configuring a tool never switches it on.
+/// The record is always marked as an API Fusion gateway, carries the resolved
+/// default local key value as its `api_key` (top-level and, for opencode,
+/// `tool_config.options.apiKey`), and never carries an `active`/`is_active`
+/// flag. Opencode activation is applied separately via the service-provider
+/// active list after the upsert succeeds.
 pub(in crate::api_fusion) fn build_gateway_provider(
     provider_id: &str,
     tool: &str,
@@ -177,12 +180,25 @@ pub(in crate::api_fusion) fn terminal_sync_pending(
 pub(in crate::api_fusion) fn default_key_for_sync(
     config: &FusionConfig,
 ) -> Result<(String, String), String> {
-    match effective_default_key(config) {
+    // Mirror the frontend `resolveDefaultKeyId` rule: the stored choice wins
+    // while it points at an enabled key, otherwise fall through to the next
+    // enabled key in list order (wrapping), so syncing still carries the
+    // default API key the UI shows.
+    let resolved = resolve_default_key_id(&config.keys, config.default_key_id.as_deref());
+    match resolved.and_then(|id| {
+        config
+            .keys
+            .iter()
+            .find(|key| key.id == id && key.enabled)
+    }) {
         Some(key) => Ok((key.id.clone(), key.value.clone())),
-        None => Err(
-            "no enabled local API key: add and enable a local key before configuring terminals"
-                .to_string(),
-        ),
+        None => match effective_default_key(config) {
+            Some(key) => Ok((key.id.clone(), key.value.clone())),
+            None => Err(
+                "no enabled local API key: add and enable a local key before configuring terminals"
+                    .to_string(),
+            ),
+        },
     }
 }
 
@@ -489,9 +505,12 @@ pub(in crate::api_fusion) type UpsertFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
 /// Terminal sync pipeline with an injectable upsert seam: build one gateway
-/// provider per requested tool, upsert each one, then refresh the ledger. Any
+/// provider per requested tool, upsert each one (carrying the resolved default
+/// local key value as its `api_key`), then refresh the ledger. Any
 /// upsert error aborts before the ledger is written, so the ledger never claims
-/// a sync that did not happen. This pipeline never touches activation state.
+/// a sync that did not happen. The payload itself never carries an
+/// `active`/`is_active` flag; opencode activation is applied separately in
+/// `apply_terminal_sync` after the ledger is persisted.
 pub(in crate::api_fusion) async fn apply_terminal_sync_with<F>(
     providers_data: &serde_json::Value,
     mut upsert: F,
@@ -565,10 +584,11 @@ async fn apply_terminal_sync(
     target_tools: Vec<String>,
 ) -> Result<Vec<TerminalSyncRecord>, String> {
     let payload = crate::app_store::service_providers_list().map_err(api_err_to_string)?;
-    apply_terminal_sync_with(
+    let upsert_app = app.clone();
+    let records = apply_terminal_sync_with(
         &payload.data,
         move |value| -> UpsertFuture {
-            let app = app.clone();
+            let app = upsert_app.clone();
             Box::pin(async move {
                 crate::app_store::service_providers_upsert(app, value)
                     .await
@@ -578,7 +598,23 @@ async fn apply_terminal_sync(
         },
         target_tools,
     )
-    .await
+    .await?;
+    // Auto-activate the gateway provider under opencode so the synced endpoint
+    // takes effect; codex keeps its manual activation. A stale ledger entry
+    // that resolved to an unmarked user record never reaches here because the
+    // pipeline writes a fresh gateway record instead.
+    for record in &records {
+        if record.tool.eq_ignore_ascii_case("opencode") {
+            crate::app_store::service_providers_set_active(
+                app.clone(),
+                "opencode".to_string(),
+                record.provider_id.clone(),
+            )
+            .await
+            .map_err(api_err_to_string)?;
+        }
+    }
+    Ok(records)
 }
 
 #[tauri::command]

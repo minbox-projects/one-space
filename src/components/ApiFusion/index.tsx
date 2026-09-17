@@ -67,6 +67,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
     useState<FusionUpstreamProvider | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [syncingTools, setSyncingTools] = useState<Record<string, boolean>>({});
   const [addressCopied, setAddressCopied] = useState(false);
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -217,17 +218,48 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
       await applyConfig(await apiFusionSetDefaultKey(keyId));
     }, t("apiFusionSaved", "Saved."));
 
+  const runTerminalAction = useCallback(
+    async (tool: string, action: () => Promise<void>, successTitle: string) => {
+      setSyncingTools((prev) => ({ ...prev, [tool]: true }));
+      try {
+        await action();
+        pushToast({ title: successTitle, kind: "success" });
+      } catch (err) {
+        pushToast({
+          title: t("apiFusionActionFailed", "Action failed"),
+          description: errorToMessage(err),
+          kind: "error",
+        });
+      } finally {
+        setSyncingTools((prev) => {
+          const next = { ...prev };
+          delete next[tool];
+          return next;
+        });
+      }
+    },
+    [pushToast, t],
+  );
+
   const handleConfigureTool = (tool: string) =>
-    runAction(async () => {
-      await apiFusionConfigureTerminal([tool]);
-      await applyConfig(await apiFusionGetConfig());
-    }, t("apiFusionConfigureSuccess", "Terminal targets configured."));
+    void runTerminalAction(
+      tool,
+      async () => {
+        await apiFusionConfigureTerminal([tool]);
+        await applyConfig(await apiFusionGetConfig());
+      },
+      t("apiFusionConfigureSuccess", "Terminal targets configured."),
+    );
 
   const handleSyncTool = (tool: string) =>
-    runAction(async () => {
-      await apiFusionSyncTerminal([tool]);
-      await applyConfig(await apiFusionGetConfig());
-    }, t("apiFusionSyncSuccess", "Terminal targets synced."));
+    void runTerminalAction(
+      tool,
+      async () => {
+        await apiFusionSyncTerminal([tool]);
+        await applyConfig(await apiFusionGetConfig());
+      },
+      t("apiFusionSyncSuccess", "Terminal targets synced."),
+    );
 
   const handleCopyAddress = async () => {
     if (!config) return;
@@ -463,9 +495,9 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           <TerminalSyncPanel
             targets={targets}
             config={config}
-            busy={busy}
-            onConfigureTool={(tool) => void handleConfigureTool(tool)}
-            onSyncTool={(tool) => void handleSyncTool(tool)}
+            syncingTools={syncingTools}
+            onConfigureTool={(tool) => handleConfigureTool(tool)}
+            onSyncTool={(tool) => handleSyncTool(tool)}
           />
         </div>
 

@@ -17,7 +17,7 @@ import {
 type TerminalSyncPanelProps = {
   targets: FusionTerminalTarget[];
   config: FusionConfig;
-  busy: boolean;
+  syncingTools: Record<string, boolean>;
   onConfigureTool: (tool: string) => void;
   onSyncTool: (tool: string) => void;
 };
@@ -25,7 +25,7 @@ type TerminalSyncPanelProps = {
 export function TerminalSyncPanel({
   targets,
   config,
-  busy,
+  syncingTools,
   onConfigureTool,
   onSyncTool,
 }: TerminalSyncPanelProps) {
@@ -37,7 +37,6 @@ export function TerminalSyncPanel({
       target.tool as (typeof API_FUSION_SUPPORTED_TERMINAL_TOOLS)[number],
     ),
   );
-  const actionsDisabled = busy || defaultKeyMissing;
 
   return (
     <section className="space-y-3.5" data-testid="api-fusion-terminals">
@@ -112,6 +111,8 @@ export function TerminalSyncPanel({
               target.synced ||
               target.synced_key_id !== null ||
               target.synced_at !== null;
+            const isSyncing = Boolean(syncingTools[target.tool]);
+            const rowDisabled = isSyncing || defaultKeyMissing;
 
             return (
               <div
@@ -158,20 +159,26 @@ export function TerminalSyncPanel({
                     <button
                       type="button"
                       onClick={() => onSyncTool(target.tool)}
-                      disabled={actionsDisabled}
+                      disabled={rowDisabled}
+                      data-testid={`api-fusion-sync-${target.tool}`}
                       className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
                     >
-                      <RefreshCw className="h-3.5 w-3.5" />
+                      <RefreshCw
+                        className={`h-3.5 w-3.5 ${isSyncing ? "animate-spin" : ""}`}
+                      />
                       {t("apiFusionSyncOne", "Sync")}
                     </button>
                   ) : (
                     <button
                       type="button"
                       onClick={() => onConfigureTool(target.tool)}
-                      disabled={actionsDisabled}
+                      disabled={rowDisabled}
+                      data-testid={`api-fusion-sync-${target.tool}`}
                       className="inline-flex h-7 items-center gap-1.5 rounded-lg border bg-background px-2.5 text-xs font-medium shadow-sm transition hover:bg-muted disabled:opacity-50"
                     >
-                      <Wand2 className="h-3.5 w-3.5" />
+                      <Wand2
+                        className={`h-3.5 w-3.5 ${isSyncing ? "animate-spin" : ""}`}
+                      />
                       {t("apiFusionConfigureSelected", "Add provider")}
                     </button>
                   )}
