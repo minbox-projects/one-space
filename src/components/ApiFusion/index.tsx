@@ -29,6 +29,7 @@ import {
 import { RuntimeStatusCard } from "./RuntimeStatusCard";
 import { UpstreamProviderList } from "./UpstreamProviderList";
 import { ProviderDetailDialog } from "./ProviderDetailDialog";
+import { LocalKeyDialog } from "./LocalKeyDialog";
 import { LocalKeyList } from "./LocalKeyList";
 import { TerminalSyncPanel } from "./TerminalSyncPanel";
 
@@ -66,6 +67,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
   const [editingProvider, setEditingProvider] =
     useState<FusionUpstreamProvider | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isKeyDialogOpen, setIsKeyDialogOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [syncingTools, setSyncingTools] = useState<Record<string, boolean>>({});
   const [addressCopied, setAddressCopied] = useState(false);
@@ -137,17 +139,22 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
   }, []);
 
   const runAction = useCallback(
-    async (action: () => Promise<void>, successTitle: string) => {
+    async (
+      action: () => Promise<void>,
+      successTitle: string,
+    ): Promise<boolean> => {
       setBusy(true);
       try {
         await action();
         pushToast({ title: successTitle, kind: "success" });
+        return true;
       } catch (err) {
         pushToast({
           title: t("apiFusionActionFailed", "Action failed"),
           description: errorToMessage(err),
           kind: "error",
         });
+        return false;
       } finally {
         setBusy(false);
       }
@@ -198,7 +205,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
       setIsDialogOpen(false);
     }, t("apiFusionDeleted", "Deleted."));
 
-  const handleSaveKey = (key: FusionKey) =>
+  const handleSaveKey = (key: FusionKey): Promise<boolean> =>
     runAction(async () => {
       await applyConfig(await apiFusionUpsertKey(key));
     }, t("apiFusionKeySaved", "Key saved."));
@@ -478,7 +485,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
             defaultKeyId={defaultKeyId}
             busy={busy}
             copiedKeyId={copiedKeyId}
-            onSave={(key) => void handleSaveKey(key)}
+            onAdd={() => setIsKeyDialogOpen(true)}
             onDelete={(keyId) => void handleDeleteKey(keyId)}
             onSetDefault={(keyId) => void handleSetDefaultKey(keyId)}
             onToggleEnabled={(key, enabled) => void handleToggleKeyEnabled(key, enabled)}
@@ -515,6 +522,14 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           busy={busy}
           onSave={(draft) => void handleSaveProvider(draft)}
           onDelete={(providerId) => void handleDeleteProvider(providerId)}
+        />
+
+        {/* 本地密钥新增模态弹窗 */}
+        <LocalKeyDialog
+          open={isKeyDialogOpen}
+          onOpenChange={setIsKeyDialogOpen}
+          busy={busy}
+          onSave={handleSaveKey}
         />
       </div>
     </div>
