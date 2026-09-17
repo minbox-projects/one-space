@@ -34,7 +34,7 @@ export function LocalKeyList({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-0.5">
           <div className="flex items-center gap-2">
-            <KeyRound className="h-4 w-4 text-indigo-600" />
+            <KeyRound className="h-4 w-4 text-primary" />
             <h3 className="text-sm font-semibold text-foreground">
               {t("apiFusionKeys", "Api Keys")}
             </h3>

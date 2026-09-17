@@ -8,7 +8,6 @@ import {
   KeyRound,
   Loader2,
   Play,
-  Radio,
   Server,
   Square,
   TerminalSquare,
@@ -114,11 +113,36 @@ export function RuntimeStatusCard({
               >
                 {running ? t("apiFusionRunning", "Running") : t("apiFusionStopped", "Stopped")}
               </span>
-              <span className="text-muted-foreground/50">·</span>
-              <span className="font-mono text-muted-foreground">
-                {t("apiFusionPortValue", { port: config.port, defaultValue: `Port ${config.port}` })}
-              </span>
-              <span className="text-muted-foreground/50">·</span>
+              <span className="text-muted-foreground/40">·</span>
+              <div className="flex items-center gap-1">
+                <code
+                  className={`font-mono text-xs font-medium select-all ${
+                    running ? "text-foreground" : "text-muted-foreground/70"
+                  }`}
+                  title={address}
+                  data-testid="api-fusion-local-address"
+                >
+                  {address}
+                </code>
+                <button
+                  type="button"
+                  onClick={onCopyAddress}
+                  aria-label={t("apiFusionCopyAddress", "Copy local API address")}
+                  title={
+                    addressCopied
+                      ? t("apiFusionCopied", "Copied")
+                      : t("apiFusionCopyAddress", "Copy local API address")
+                  }
+                  className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                >
+                  {addressCopied ? (
+                    <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                  ) : (
+                    <Copy className="h-3 w-3" />
+                  )}
+                </button>
+              </div>
+              <span className="text-muted-foreground/40">·</span>
               <span className="rounded bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                 OpenAI
               </span>
@@ -328,54 +352,6 @@ export function RuntimeStatusCard({
               </span>
             )}
           </div>
-        </div>
-      </div>
-
-      {/* 本地端点（Base URL）快捷复制栏 */}
-      <div className="flex flex-col gap-2 rounded-lg border bg-muted/15 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <div className="flex shrink-0 items-center gap-1.5 text-xs font-semibold text-muted-foreground">
-            <Radio className="h-3.5 w-3.5 text-indigo-500" />
-            <span>{t("apiFusionLocalAddress", "Local API address")}</span>
-          </div>
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <code
-              className={`min-w-0 truncate rounded bg-background/80 px-2 py-0.5 font-mono text-xs font-medium select-all ${
-                running ? "text-foreground" : "text-muted-foreground/70"
-              }`}
-              title={address}
-              data-testid="api-fusion-local-address"
-            >
-              {address}
-            </code>
-            {!running && (
-              <span className="hidden text-[11px] text-muted-foreground sm:inline">
-                ({t("apiFusionServiceOfflineNotice", "Service is stopped. Local API is currently unreachable.")})
-              </span>
-            )}
-          </div>
-        </div>
-
-        <div className="flex shrink-0 items-center justify-end gap-2">
-          {addressCopied && (
-            <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
-              {t("apiFusionCopied", "Copied")}
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={onCopyAddress}
-            aria-label={t("apiFusionCopyAddress", "Copy local API address")}
-            title={t("apiFusionCopyAddress", "Copy local API address")}
-            className="inline-flex items-center gap-1.5 rounded-md border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground shadow-xs transition hover:bg-muted hover:text-foreground"
-          >
-            {addressCopied ? (
-              <Check className="h-3.5 w-3.5 text-emerald-600" />
-            ) : (
-              <Copy className="h-3.5 w-3.5" />
-            )}
-            <span>{t("apiFusionCopyAddress", "Copy local API address")}</span>
-          </button>
         </div>
       </div>
     </section>

@@ -57,7 +57,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const { pushToast } = useToast();
   const ToolIcon = Network;
-  const iconClassName = "bg-indigo-500/10 text-indigo-600";
+  const iconClassName = "bg-primary/10 text-primary";
 
   const [activeTab, setActiveTab] = useState<ApiFusionTab>("providers");
   const [config, setConfig] = useState<FusionConfig | null>(null);
@@ -400,11 +400,11 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           onCopyAddress={() => void handleCopyAddress()}
         />
 
-        {/* 工作区 Tabs 标签页导航（对齐 AiEnvironments 的紧凑导航规范） */}
+        {/* 工作区 Tabs 标签页导航 */}
         <div
           role="tablist"
           aria-label={t("apiFusionWorkspaceTabs", "API Gateway tabs")}
-          className="flex flex-wrap items-center gap-1 rounded-lg border bg-muted/40 p-1"
+          className="flex flex-wrap items-center gap-1.5 rounded-xl border bg-muted/50 p-1.5 shadow-xs"
         >
           {tabs.map((tab) => {
             const Icon = tab.icon;
@@ -416,20 +416,26 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
                 role="tab"
                 aria-selected={isActive}
                 onClick={() => setActiveTab(tab.id)}
-                className={`inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-all ${
+                className={`group inline-flex h-9 items-center gap-2 rounded-lg px-3.5 text-xs font-medium transition-all ${
                   isActive
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+                    ? "bg-background text-foreground font-semibold shadow-xs ring-1 ring-border/80 dark:ring-border"
+                    : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
                 }`}
               >
-                <Icon className={`h-3.5 w-3.5 ${isActive ? "text-indigo-600" : ""}`} />
+                <Icon
+                  className={`h-4 w-4 transition-colors ${
+                    isActive
+                      ? "text-primary"
+                      : "text-muted-foreground/70 group-hover:text-foreground"
+                  }`}
+                />
                 <span>{tab.label}</span>
                 {tab.count !== undefined ? (
                   <span
-                    className={`rounded-full px-1.5 py-0.2 text-[10px] font-semibold ${
+                    className={`rounded-full px-2 py-0.5 text-[11px] font-semibold transition-colors ${
                       isActive
-                        ? "bg-muted text-foreground"
-                        : "bg-muted/70 text-muted-foreground"
+                        ? "bg-primary/10 text-primary"
+                        : "bg-muted text-muted-foreground group-hover:bg-muted/80 group-hover:text-foreground"
                     }`}
                   >
                     {tab.count}
@@ -437,9 +443,12 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
                 ) : null}
                 {tab.hasAlert ? (
                   <span
-                    className="h-1.5 w-1.5 rounded-full bg-amber-500"
+                    className="relative flex h-2 w-2"
                     title={t("apiFusionHasPendingItems", "Has items needing attention")}
-                  />
+                  >
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
+                  </span>
                 ) : null}
               </button>
             );

@@ -515,7 +515,6 @@ describe("ApiFusion", () => {
     expect(await screen.findByTestId("api-fusion-runtime-state")).toHaveTextContent(
       "Running",
     );
-    expect(screen.getByText("Port 17688")).toBeInTheDocument();
     expect(screen.getByTestId("api-fusion-local-address")).toHaveTextContent(
       "http://127.0.0.1:17688",
     );
