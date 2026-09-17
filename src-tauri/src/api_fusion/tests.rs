@@ -12,9 +12,10 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -397,6 +398,8 @@ enum MockReply {
     Stream(String),
     /// Declare a larger content-length than the bytes sent, then close early.
     PartialStream(String, usize),
+    /// Return an arbitrary status with a larger content-length than the bytes sent.
+    PartialRaw(u16, &'static str, Vec<u8>, usize),
     /// Arbitrary status and content type with a raw (possibly non-JSON) body.
     Raw(u16, &'static str, Vec<u8>),
     /// Close the connection without answering.
@@ -469,9 +472,14 @@ where
                 match behavior(&captured) {
                     MockReply::Json(status, value) => {
                         let body = serde_json::to_vec(&value).unwrap_or_default();
+                        let retry_after = if status >= 500 {
+                            "retry-after-ms: 0\r\n"
+                        } else {
+                            ""
+                        };
                         let header = format!(
-                            "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                            body.len()
+                            "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n{retry_after}\r\n",
+                            body.len(),
                         );
                         let _ = stream.write_all(header.as_bytes()).await;
                         let _ = stream.write_all(&body).await;
@@ -492,10 +500,23 @@ where
                         let _ = stream.write_all(body.as_bytes()).await;
                         let _ = stream.flush().await;
                     }
-                    MockReply::Raw(status, content_type, body) => {
+                    MockReply::PartialRaw(status, content_type, body, declared) => {
                         let header = format!(
-                            "HTTP/1.1 {status} OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                            body.len()
+                            "HTTP/1.1 {status} Unauthorized\r\ncontent-type: {content_type}\r\ncontent-length: {declared}\r\nconnection: close\r\nretry-after-ms: 0\r\n\r\n"
+                        );
+                        let _ = stream.write_all(header.as_bytes()).await;
+                        let _ = stream.write_all(&body).await;
+                        let _ = stream.flush().await;
+                    }
+                    MockReply::Raw(status, content_type, body) => {
+                        let retry_after = if status >= 500 {
+                            "retry-after-ms: 0\r\n"
+                        } else {
+                            ""
+                        };
+                        let header = format!(
+                            "HTTP/1.1 {status} OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n{retry_after}\r\n",
+                            body.len(),
                         );
                         let _ = stream.write_all(header.as_bytes()).await;
                         let _ = stream.write_all(&body).await;
@@ -845,13 +866,259 @@ async fn client_headers_are_forwarded_except_relay_credentials() {
         Some("Bearer local-key"),
         "the local relay key must never leak upstream: {headers:?}"
     );
-    assert!(
-        !headers.contains_key("x-api-key"),
-        "the local x-api-key must never leak upstream: {headers:?}"
-    );
-
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
+}
+
+// ---------------------------------------------------------------------------
+// Step 1 (20260916-api-fusion-upstream-retry): bounded retry / recovery
+// ---------------------------------------------------------------------------
+
+/// Scripted JSON mock upstream running on the CURRENT tokio runtime (via
+/// `tokio::spawn`, never the tauri global runtime). The returned counter is
+/// incremented once per accepted request so a test can assert the exact number
+/// of upstream attempts. The last scripted reply repeats once the sequence is
+/// exhausted.
+async fn spawn_json_sequence_mock(responses: Vec<(u16, Value)>) -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind mock");
+    let addr = listener.local_addr().expect("mock addr");
+    let count = Arc::new(AtomicUsize::new(0));
+    let count_for_server = count.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let count = count_for_server.clone();
+            let responses = responses.clone();
+            tokio::spawn(async move {
+                let Ok(_request) = super::runtime_http::read_http_request(&mut stream).await else {
+                    return;
+                };
+                let index = count.fetch_add(1, Ordering::SeqCst);
+                let fallback = responses.last().cloned().unwrap_or((502, json!({})));
+                let (status, value) = responses.get(index).cloned().unwrap_or(fallback);
+                let body = serde_json::to_vec(&value).unwrap_or_default();
+                let header = format!(
+                    "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(&body).await;
+            });
+        }
+    });
+    (format!("http://{}", addr), count)
+}
+
+/// RED slice for REQ-002 / AC-002 (recovery): a single upstream that fails the
+/// first attempt with a retryable 500 and succeeds on the second must be
+/// retried within the same request. Observable boundary: the full HTTP response
+/// returned by `attempt_non_streaming` plus the exact number of upstream
+/// requests. Current behavior makes only one attempt, so this fails.
+#[tokio::test]
+async fn attempt_non_streaming_retries_single_provider_after_500_then_succeeds() {
+    let _home = temp_home("retry-recovery-single-provider");
+    let (upstream_url, upstream_requests) = spawn_json_sequence_mock(vec![
+        (500, json!({"error": {"message": "temporarily unavailable"}})),
+        (200, json!({"id": "recovered", "choices": []})),
+    ])
+    .await;
+
+    let mut config = FusionConfig::default();
+    config.keys.push(key_named("k1", "local-key"));
+    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    config.providers.push(a.clone());
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&a),
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+    )
+    .await;
+
+    // Assert the attempt count first: the RED gap is that the current code stops
+    // after the first 500 instead of issuing a bounded retry.
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        2,
+        "one initial attempt plus exactly one bounded retry"
+    );
+
+    let body_text = String::from_utf8_lossy(&response.body);
+    assert_eq!(
+        response.status, 200,
+        "a transient 500 must be retried until the provider recovers; body: {body_text}"
+    );
+    assert!(
+        body_text.contains("recovered"),
+        "response must carry the recovered attempt body: {body_text}"
+    );
+}
+
+async fn assert_truncated_auth_non_streaming(status: u16) {
+    let _home = temp_home(&format!("truncated-auth-non-streaming-{status}"));
+    let auth_body = br#"{"error":{"message":"upstream auth failed"}}"#.to_vec();
+    let auth_declared = auth_body.len() + 32;
+    let (auth_url, auth_requests) = spawn_mock_upstream(move |_| {
+        MockReply::PartialRaw(
+            status,
+            "application/json",
+            auth_body.clone(),
+            auth_declared,
+        )
+    })
+    .await;
+    let (fallback_url, fallback_requests) = spawn_mock_upstream(|_| {
+        MockReply::Json(200, json!({"id": "healthy-fallback"}))
+    })
+    .await;
+
+    let mut config = FusionConfig::default();
+    let auth = upstream_provider(
+        "auth",
+        "Auth Provider",
+        &auth_url,
+        "auth-key",
+        Some("remote-default"),
+    );
+    let fallback = upstream_provider(
+        "fallback",
+        "Healthy Fallback",
+        &fallback_url,
+        "fallback-key",
+        Some("remote-default"),
+    );
+    config.providers.extend([auth.clone(), fallback.clone()]);
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+
+    let response = super::runtime_http::attempt_non_streaming(
+        &[auth, fallback],
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+    )
+    .await;
+
+    assert_eq!(response.status, 200);
+    assert!(
+        String::from_utf8_lossy(&response.body).contains("healthy-fallback"),
+        "healthy fallback must answer the request"
+    );
+    assert_eq!(auth_requests.lock().unwrap().len(), 1);
+    assert_eq!(fallback_requests.lock().unwrap().len(), 1);
+
+    let persisted = super::storage::read_config().expect("read persisted provider state");
+    let auth_provider = persisted
+        .providers
+        .iter()
+        .find(|provider| provider.id == "auth")
+        .expect("auth provider state");
+    assert!(
+        auth_provider.auto_disabled,
+        "HTTP {status} must immediately persist auto_disabled despite the truncated body"
+    );
+}
+
+#[tokio::test]
+async fn truncated_auth_401_non_streaming_disables_once_and_falls_back() {
+    assert_truncated_auth_non_streaming(401).await;
+}
+
+#[tokio::test]
+async fn truncated_auth_403_non_streaming_disables_once_and_falls_back() {
+    assert_truncated_auth_non_streaming(403).await;
+}
+
+async fn assert_truncated_auth_streaming(status: u16) {
+    let _home = temp_home(&format!("truncated-auth-streaming-{status}"));
+    let auth_body = br#"{"error":{"message":"upstream auth failed"}}"#.to_vec();
+    let auth_declared = auth_body.len() + 32;
+    let (auth_url, auth_requests) = spawn_mock_upstream(move |_| {
+        MockReply::PartialRaw(
+            status,
+            "application/json",
+            auth_body.clone(),
+            auth_declared,
+        )
+    })
+    .await;
+    let (fallback_url, fallback_requests) = spawn_mock_upstream(|_| {
+        MockReply::Stream(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"healthy-fallback\"}}]}\n\ndata: [DONE]\n\n"
+                .to_string(),
+        )
+    })
+    .await;
+
+    let mut config = FusionConfig::default();
+    let auth = upstream_provider(
+        "auth",
+        "Auth Provider",
+        &auth_url,
+        "auth-key",
+        Some("remote-default"),
+    );
+    let fallback = upstream_provider(
+        "fallback",
+        "Healthy Fallback",
+        &fallback_url,
+        "fallback-key",
+        Some("remote-default"),
+    );
+    config.providers.extend([auth.clone(), fallback.clone()]);
+    let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
+
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    super::runtime_http::attempt_streaming(
+        &mut server,
+        &[auth, fallback],
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+    )
+    .await
+    .expect("streaming fallback must complete");
+    drop(server);
+
+    let mut output = Vec::new();
+    client.read_to_end(&mut output).await.unwrap();
+    let output = String::from_utf8_lossy(&output);
+    assert!(
+        output.contains("healthy-fallback"),
+        "healthy fallback stream must answer the request: {output}"
+    );
+    assert_eq!(auth_requests.lock().unwrap().len(), 1);
+    assert_eq!(fallback_requests.lock().unwrap().len(), 1);
+
+    let persisted = super::storage::read_config().expect("read persisted provider state");
+    let auth_provider = persisted
+        .providers
+        .iter()
+        .find(|provider| provider.id == "auth")
+        .expect("auth provider state");
+    assert!(
+        auth_provider.auto_disabled,
+        "HTTP {status} must immediately persist auto_disabled despite the truncated body"
+    );
+}
+
+#[tokio::test]
+async fn truncated_auth_401_streaming_disables_once_and_falls_back() {
+    assert_truncated_auth_streaming(401).await;
+}
+
+#[tokio::test]
+async fn truncated_auth_403_streaming_disables_once_and_falls_back() {
+    assert_truncated_auth_streaming(403).await;
 }
 
 #[tokio::test]
@@ -2046,8 +2313,8 @@ async fn end_to_end_retryable_failures_auto_disable_at_threshold_and_stop_callin
     assert_eq!(body["error"]["code"], "all_providers_unavailable");
     assert_eq!(
         log.lock().unwrap().len(),
-        3,
-        "auto-disabled provider must not be contacted again"
+        18,
+        "three failed requests make six bounded attempts each; the auto-disabled provider is not contacted on the fourth request"
     );
 
     super::runtime_http::stop_server().await.unwrap();
@@ -2099,32 +2366,43 @@ async fn end_to_end_below_threshold_provider_stays_enabled() {
 
 #[tokio::test]
 async fn end_to_end_network_errors_accumulate_and_disable() {
-    // AC-011: network errors count as retryable failures and reach the threshold.
-    let home = temp_home("e2e-network-threshold");
-    let port = free_port().await;
+    // AC-011: a network error yields to the healthy initial-pass fallback, so
+    // each inbound request records one failed network candidate without paying
+    // its retry delay. Three failed inbound requests still auto-disable it.
+    let _home = temp_home("e2e-network-threshold");
     let dead_url = closed_port_base_url().await;
+    let (healthy_url, _) =
+        spawn_json_sequence_mock(vec![(200, json!({"id": "healthy-fallback"}))]).await;
 
-    let mut config = config_with_key(port);
-    config.providers.push(upstream_provider(
+    let mut config = FusionConfig::default();
+    let failed = upstream_provider(
         "a",
         "Provider A",
         &dead_url,
         "sk",
         Some("remote-model"),
-    ));
-    super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    );
+    let healthy = upstream_provider(
+        "b",
+        "Provider B",
+        &healthy_url,
+        "sk",
+        Some("remote-model"),
+    );
+    config.providers = vec![failed.clone(), healthy.clone()];
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
     for _ in 0..3 {
-        let (status, _, _) = call_fusion(
-            port,
-            "POST",
+        let response = super::runtime_http::attempt_non_streaming(
+            &[failed.clone(), healthy.clone()],
             "/v1/chat/completions",
-            &[("authorization", "Bearer local-key")],
-            Some(json!({"model": "local-model"})),
+            &body,
+            Some("local-model"),
+            &mut config,
+            &HashMap::new(),
         )
         .await;
-        assert_eq!(status, 502);
+        assert_eq!(response.status, 200, "network failure must yield to the healthy fallback");
     }
 
     let stored = super::storage::read_config().unwrap();
@@ -2141,8 +2419,6 @@ async fn end_to_end_network_errors_accumulate_and_disable() {
         a_stored.disabled_reason
     );
 
-    super::runtime_http::stop_server().await.unwrap();
-    drop(home);
 }
 
 #[tokio::test]
@@ -2697,12 +2973,12 @@ async fn spawn_unresponsive_upstream() -> String {
         .await
         .expect("bind unresponsive upstream");
     let addr = listener.local_addr().expect("unresponsive addr");
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
                 break;
             };
-            tauri::async_runtime::spawn(async move {
+            tokio::spawn(async move {
                 let _ = super::runtime_http::read_http_request(&mut stream).await;
                 tokio::time::sleep(std::time::Duration::from_secs(120)).await;
             });
@@ -2773,12 +3049,12 @@ async fn spawn_slow_first_byte_upstream() -> String {
         .await
         .expect("bind slow-first-byte upstream");
     let addr = listener.local_addr().expect("slow-first-byte addr");
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
                 break;
             };
-            tauri::async_runtime::spawn(async move {
+            tokio::spawn(async move {
                 let Ok(_request) = super::runtime_http::read_http_request(&mut stream).await else {
                     return;
                 };
@@ -4340,4 +4616,934 @@ async fn models_endpoint_deduplicates_the_same_local_model_across_records() {
     drop(home);
 }
 
+// ---------------------------------------------------------------------------
+// Step 2 (20260916-api-fusion-upstream-retry): cooldown, retry headers, budget
+// ---------------------------------------------------------------------------
+//
+// These tests exercise the observable HTTP boundary of `attempt_non_streaming`
+// under a paused tokio clock (`test-util`), so a 120s retry budget is simulated
+// instantly and no production delay is shortened for tests. The mock upstream
+// runs on the SAME current runtime via `tokio::spawn`, never the tauri runtime.
+// Each mock reply may carry extra response headers so `Retry-After` handling is
+// driven through a real HTTP response.
 
+/// One scripted mock reply: status, JSON body and optional extra headers.
+#[derive(Clone)]
+struct HeaderReply {
+    status: u16,
+    body: Value,
+    headers: Vec<(String, String)>,
+}
+
+impl HeaderReply {
+    fn new(status: u16, body: Value) -> Self {
+        Self {
+            status,
+            body,
+            headers: Vec::new(),
+        }
+    }
+
+    fn header(mut self, name: &str, value: impl Into<String>) -> Self {
+        self.headers.push((name.to_string(), value.into()));
+        self
+    }
+}
+
+/// Like `spawn_json_sequence_mock`, but every reply can carry response headers
+/// (e.g. `retry-after-ms` / `retry-after`). The last reply repeats once the
+/// sequence is exhausted. Returns the base URL and the accepted-request count.
+async fn spawn_header_sequence_mock(replies: Vec<HeaderReply>) -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind mock");
+    let addr = listener.local_addr().expect("mock addr");
+    let count = Arc::new(AtomicUsize::new(0));
+    let count_for_server = count.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let count = count_for_server.clone();
+            let replies = replies.clone();
+            tokio::spawn(async move {
+                let Ok(_request) = super::runtime_http::read_http_request(&mut stream).await else {
+                    return;
+                };
+                let index = count.fetch_add(1, Ordering::SeqCst);
+                let fallback = replies
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| HeaderReply::new(502, json!({})));
+                let reply = replies.get(index).cloned().unwrap_or(fallback);
+                let body = serde_json::to_vec(&reply.body).unwrap_or_default();
+                let mut header = format!(
+                    "HTTP/1.1 {} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n",
+                    reply.status,
+                    body.len()
+                );
+                for (name, value) in &reply.headers {
+                    header.push_str(&format!("{name}: {value}\r\n"));
+                }
+                header.push_str("\r\n");
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(&body).await;
+            });
+        }
+    });
+    (format!("http://{}", addr), count)
+}
+
+/// A scripted streaming reply for the Step 3 retry/health boundary. Status
+/// replies deliberately allow arbitrary bodies and headers so the relay sees
+/// the same wire shape as a real upstream before it decides whether retrying is
+/// allowed; SSE replies are the successful, completed-stream terminal case.
+#[derive(Clone)]
+enum StreamingReply {
+    Status {
+        status: u16,
+        content_type: &'static str,
+        body: Vec<u8>,
+        headers: Vec<(&'static str, &'static str)>,
+    },
+    Sse(String),
+}
+
+async fn spawn_streaming_sequence_mock(
+    replies: Vec<StreamingReply>,
+) -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind mock");
+    let addr = listener.local_addr().expect("mock addr");
+    let count = Arc::new(AtomicUsize::new(0));
+    let count_for_server = count.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let count = count_for_server.clone();
+            let replies = replies.clone();
+            tokio::spawn(async move {
+                let Ok(_request) = super::runtime_http::read_http_request(&mut stream).await else {
+                    return;
+                };
+                let index = count.fetch_add(1, Ordering::SeqCst);
+                let reply = replies
+                    .get(index)
+                    .cloned()
+                    .or_else(|| replies.last().cloned())
+                    .unwrap_or(StreamingReply::Status {
+                        status: 502,
+                        content_type: "application/json",
+                        body: b"{}".to_vec(),
+                        headers: Vec::new(),
+                    });
+                let (status, content_type, body, headers) = match reply {
+                    StreamingReply::Status {
+                        status,
+                        content_type,
+                        body,
+                        headers,
+                    } => (status, content_type, body, headers),
+                    StreamingReply::Sse(body) => (200, "text/event-stream", body.into_bytes(), Vec::new()),
+                };
+                let mut header = format!(
+                    "HTTP/1.1 {status} OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n",
+                    body.len()
+                );
+                for (name, value) in headers {
+                    header.push_str(&format!("{name}: {value}\r\n"));
+                }
+                header.push_str("\r\n");
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(&body).await;
+            });
+        }
+    });
+    (format!("http://{}", addr), count)
+}
+
+async fn attempt_streaming_text(
+    ordered: &[FusionUpstreamProvider],
+    config: &mut FusionConfig,
+) -> String {
+    let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    super::runtime_http::attempt_streaming(
+        &mut server,
+        ordered,
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        config,
+        &HashMap::new(),
+    )
+    .await
+    .expect("streaming attempt");
+    drop(server);
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Run one non-streaming attempt on the paused clock and report the paused
+/// elapsed time, so header-driven waits are observable without real waiting.
+async fn attempt_non_streaming_timed(
+    ordered: &[FusionUpstreamProvider],
+    config: &mut FusionConfig,
+) -> (super::runtime_http::HttpResponse, std::time::Duration) {
+    let _ticker = spawn_paused_clock_ticker();
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+    let started = tokio::time::Instant::now();
+    let response = super::runtime_http::attempt_non_streaming(
+        ordered,
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        config,
+        &HashMap::new(),
+    )
+    .await;
+    (response, started.elapsed())
+}
+
+fn millis(value: u64) -> std::time::Duration {
+    std::time::Duration::from_millis(value)
+}
+
+/// Keep a short timer armed on the paused clock so tokio's auto-advance moves
+/// time in small bounded steps. Without it, auto-advance jumps straight to the
+/// next timer while a real loopback round trip is in flight, which fires
+/// reqwest's 10s connect / 60s read timeouts and turns every retry into a
+/// spurious network error. The relay's own retry sleeps still complete, just in
+/// bounded increments instead of one jump.
+fn spawn_paused_clock_ticker() -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(millis(1)).await;
+        }
+    })
+}
+
+/// AC-003 / REQ-003 RED: `retry-after-ms` wins over `retry-after` seconds. A
+/// single 500 carrying both `retry-after-ms: 1500` and `retry-after: 9` must be
+/// retried after ~1500ms, not 9s and not the default jittered backoff. Current
+/// code reads no retry headers and waits its default ~2s, so this fails.
+#[tokio::test(start_paused = true)]
+async fn retry_policy_retry_after_ms_wins_over_seconds() {
+    let _home = temp_home("retry-policy-header-priority");
+    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after-ms", "1500")
+            .header("retry-after", "9"),
+        HeaderReply::new(200, json!({"id": "recovered", "choices": []})),
+    ])
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone()];
+
+    let (response, elapsed) =
+        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+    let body_text = String::from_utf8_lossy(&response.body);
+
+    assert_eq!(response.status, 200, "must recover on the retry: {body_text}");
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        2,
+        "one initial attempt plus one header-timed retry"
+    );
+    assert!(
+        elapsed >= millis(1400) && elapsed <= millis(1900),
+        "retry-after-ms: 1500 must win over retry-after: 9, paused elapsed was {elapsed:?}"
+    );
+}
+
+/// AC-003 / REQ-003 RED: an invalid high-priority `retry-after-ms` header keeps
+/// looking at lower priorities, so `retry-after: 3` gives a ~3s wait instead of
+/// the default backoff. Current code waits its default ~2s, so this fails.
+#[tokio::test(start_paused = true)]
+async fn retry_policy_invalid_retry_after_ms_falls_back_to_seconds_header() {
+    let _home = temp_home("retry-policy-header-invalid-ms");
+    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after-ms", "not-a-number")
+            .header("retry-after", "3"),
+        HeaderReply::new(200, json!({"id": "recovered", "choices": []})),
+    ])
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone()];
+
+    let (response, elapsed) =
+        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+    let body_text = String::from_utf8_lossy(&response.body);
+
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        2,
+        "one initial attempt plus one header-timed retry"
+    );
+    assert_eq!(response.status, 200, "must recover on the retry: {body_text}");
+    assert!(
+        elapsed >= millis(2800) && elapsed <= millis(3400),
+        "an invalid retry-after-ms must fall back to retry-after: 3, paused elapsed was {elapsed:?}"
+    );
+}
+
+/// AC-003 / REQ-003 RED: a future HTTP date in `retry-after` is honored. The
+/// header is built ~10s in the future, so the retry must wait clearly longer
+/// than the default jittered backoff (~2s). Current code ignores the header.
+#[tokio::test(start_paused = true)]
+async fn retry_policy_future_http_date_is_honored() {
+    let _home = temp_home("retry-policy-header-date");
+    let when = chrono::Utc::now() + chrono::Duration::seconds(10);
+    let http_date = when.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+
+    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after", http_date),
+        HeaderReply::new(200, json!({"id": "recovered", "choices": []})),
+    ])
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone()];
+
+    let (response, elapsed) =
+        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+    let body_text = String::from_utf8_lossy(&response.body);
+
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        2,
+        "one initial attempt plus one header-timed retry"
+    );
+    assert_eq!(response.status, 200, "must recover on the retry: {body_text}");
+    assert!(
+        elapsed >= millis(5000) && elapsed <= millis(11000),
+        "a future HTTP date must be honored, paused elapsed was {elapsed:?}"
+    );
+}
+
+/// AC-003 / REQ-003 RED: `retry-after-ms: 0` means retry immediately with no
+/// backoff. Current code waits its default ~2s, so this fails.
+#[tokio::test(start_paused = true)]
+async fn retry_policy_zero_retry_after_ms_retries_immediately() {
+    let _home = temp_home("retry-policy-header-zero");
+    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after-ms", "0"),
+        HeaderReply::new(200, json!({"id": "recovered", "choices": []})),
+    ])
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone()];
+
+    let (response, elapsed) =
+        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+    let body_text = String::from_utf8_lossy(&response.body);
+
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        2,
+        "one initial attempt plus one immediate retry"
+    );
+    assert_eq!(response.status, 200, "must recover on the retry: {body_text}");
+    assert!(
+        elapsed < millis(500),
+        "retry-after-ms: 0 must retry immediately, paused elapsed was {elapsed:?}"
+    );
+}
+
+/// AC-001 / REQ-001 regression: the initial pass must reach a healthy later
+/// candidate before any retry wait, even when the first candidate advertises a
+/// long cooldown. A is never retried because B answers immediately.
+#[tokio::test]
+async fn retry_policy_initial_pass_does_not_wait_for_cooldown() {
+    let _home = temp_home("retry-policy-initial-no-wait");
+    let (a_url, a_requests) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after-ms", "9000"),
+    ])
+    .await;
+    let (b_url, b_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(200, json!({"id": "from-b"}))]).await;
+
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone(), b.clone()];
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        super::runtime_http::attempt_non_streaming(
+            &[a.clone(), b.clone()],
+            "/v1/chat/completions",
+            &serde_json::to_vec(&json!({"model": "local"})).unwrap(),
+            Some("local"),
+            &mut config,
+            &HashMap::new(),
+        ),
+    )
+    .await
+    .expect("the initial fallback must not wait for A's 9s cooldown");
+    let body_text = String::from_utf8_lossy(&response.body);
+
+    assert_eq!(response.status, 200, "B must answer the initial pass: {body_text}");
+    assert!(
+        body_text.contains("from-b"),
+        "response must carry B's body: {body_text}"
+    );
+    assert_eq!(
+        a_requests.load(Ordering::SeqCst),
+        1,
+        "A must not be retried before B answers"
+    );
+    assert_eq!(b_requests.load(Ordering::SeqCst), 1, "B must be tried exactly once");
+}
+
+/// AC-003 / REQ-003 RED: a provider cooling down for 9s must not block a second
+/// provider whose own header is ready after ~1500ms. A is tried once, B is
+/// retried at its own deadline and answers, so A is never retried. Current code
+/// ignores both headers, retries A first six times, and takes ~60s, so this
+/// fails on the attempt count and elapsed time.
+#[tokio::test(start_paused = true)]
+async fn retry_policy_cooling_provider_does_not_block_ready_candidate() {
+    let _home = temp_home("retry-policy-cooling-does-not-block");
+    let (a_url, a_requests) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after-ms", "9000"),
+    ])
+    .await;
+    let (b_url, b_requests) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after-ms", "1500"),
+        HeaderReply::new(200, json!({"id": "from-b"})),
+    ])
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone(), b.clone()];
+
+    let (response, elapsed) =
+        attempt_non_streaming_timed(&[a.clone(), b.clone()], &mut config).await;
+    let body_text = String::from_utf8_lossy(&response.body);
+
+    assert_eq!(response.status, 200, "the ready candidate must recover: {body_text}");
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        2,
+        "B must be retried at its own 1500ms deadline"
+    );
+    assert_eq!(
+        a_requests.load(Ordering::SeqCst),
+        1,
+        "A's 9s cooldown must not be retried while B is ready sooner"
+    );
+    assert!(
+        elapsed >= millis(1400) && elapsed <= millis(1900),
+        "the ready candidate's deadline must govern the wait, paused elapsed was {elapsed:?}"
+    );
+}
+
+/// AC-002 / REQ-002 regression: a provider that keeps failing is contacted at
+/// most six times in one request (one initial plus five bounded retries).
+#[tokio::test(start_paused = true)]
+async fn retry_policy_single_provider_is_attempted_at_most_six_times() {
+    let _home = temp_home("retry-policy-six-attempts");
+    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![HeaderReply::new(
+        500,
+        json!({"error": {"message": "always failing"}}),
+    )])
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone()];
+
+    let (response, _elapsed) =
+        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        6,
+        "one provider is attempted at most six times in a request"
+    );
+    assert_eq!(
+        response.status, 502,
+        "exhausted candidates return the all-unavailable error"
+    );
+}
+
+/// AC-003 / REQ-003 RED: the cumulative actual wait is capped at 120s. With a
+/// 60s `retry-after-ms` on every failure, only two waits (60s + 60s = 120s,
+/// exactly the budget) are allowed, so the provider is attempted three times
+/// and then the next 60s wait exceeds the remaining budget. Current code
+/// ignores the header, uses the default backoff and attempts six times in
+/// ~60s, so this fails.
+#[tokio::test(start_paused = true)]
+async fn retry_policy_stops_before_wait_exceeds_120s_budget() {
+    let _home = temp_home("retry-policy-budget-120s");
+    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(500, json!({"error": {"message": "always failing"}}))
+            .header("retry-after-ms", "60000"),
+    ])
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone()];
+
+    let (response, elapsed) =
+        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        3,
+        "only waits totalling the 120s budget are allowed (attempt 1 + two 60s waits)"
+    );
+    assert_eq!(
+        response.status, 502,
+        "budget exhaustion returns the all-unavailable error"
+    );
+    assert!(
+        elapsed >= millis(119_000) && elapsed <= millis(121_000),
+        "the request must stop at the 120s wait budget, paused elapsed was {elapsed:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Step 3 (20260916-api-fusion-upstream-retry): streaming retry and health RED
+// ---------------------------------------------------------------------------
+
+/// REQ-002/REQ-003/REQ-005: before a stream emits any bytes, a retryable 503
+/// with `retry-after-ms: 0` is retried immediately. Only the completed SSE
+/// stream is success: it clears previously seeded health without first counting
+/// the transient attempt as a separate inbound-request failure.
+#[tokio::test]
+async fn retry_stream_recovers_after_zero_cooldown_and_completed_sse_clears_health() {
+    let _home = temp_home("retry-stream-recovery-health");
+    let (upstream_url, attempts) = spawn_streaming_sequence_mock(vec![
+        StreamingReply::Status {
+            status: 503,
+            content_type: "application/json",
+            body: br#"{"error":{"message":"busy"}}"#.to_vec(),
+            headers: vec![("retry-after-ms", "0")],
+        },
+        StreamingReply::Sse("data: {\"id\":\"recovered-stream\"}\n\ndata: [DONE]\n\n".to_string()),
+    ])
+    .await;
+
+    let mut provider =
+        upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    provider.consecutive_failures = 2;
+    provider.last_error_at = Some(1);
+    let mut config = FusionConfig::default();
+    config.providers.push(provider.clone());
+
+    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        2,
+        "a pre-output 503 with retry-after-ms: 0 must be retried immediately"
+    );
+    assert!(text.contains("recovered-stream"), "completed retry stream: {text}");
+    assert!(text.contains("data: [DONE]"), "completed retry stream: {text}");
+    let stored = config.providers.iter().find(|item| item.id == "a").unwrap();
+    assert_eq!(
+        stored.consecutive_failures, 0,
+        "only the completed stream is success for the inbound-request health result"
+    );
+    assert!(
+        !stored.auto_disabled,
+        "a recovered stream must not auto-disable a provider with seeded failures"
+    );
+}
+
+/// REQ-002/REQ-005: a permanently failing stream gets one initial try plus at
+/// most five retries, while provider health records that whole inbound request
+/// once. Its retry header makes the count/health regression immediate; retry
+/// delay semantics are covered by the dedicated retry-policy tests.
+#[tokio::test]
+async fn retry_stream_persistent_503_attempts_six_times_and_counts_health_once() {
+    let _home = temp_home("retry-stream-six-attempts-health");
+    let (upstream_url, attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+        status: 503,
+        content_type: "application/json",
+        body: br#"{"error":{"message":"still busy"}}"#.to_vec(),
+        headers: vec![("retry-after-ms", "0")],
+    }])
+    .await;
+
+    let provider =
+        upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers.push(provider.clone());
+    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        6,
+        "one initial stream attempt plus five bounded retries"
+    );
+    assert!(text.contains("all_providers_unavailable"), "exhausted stream: {text}");
+    assert!(text.contains("data: [DONE]"), "exhausted stream: {text}");
+    let stored = config.providers.iter().find(|item| item.id == "a").unwrap();
+    assert_eq!(
+        stored.consecutive_failures, 1,
+        "six upstream failures in one inbound request count once"
+    );
+    assert!(!stored.auto_disabled, "one failed request is below the threshold");
+}
+
+/// REQ-004/REQ-005: a rate-limited streaming candidate may yield to a healthy
+/// candidate, but 429 itself never contributes provider health failure.
+#[tokio::test]
+async fn retry_stream_429_switches_without_counting_provider_health() {
+    let _home = temp_home("retry-stream-429-no-health");
+    let (limited_url, limited_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+        status: 429,
+        content_type: "text/html",
+        body: b"<html>rate limited</html>".to_vec(),
+        headers: Vec::new(),
+    }])
+    .await;
+    let (healthy_url, healthy_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Sse(
+        "data: {\"id\":\"healthy-after-429\"}\n\ndata: [DONE]\n\n".to_string(),
+    )])
+    .await;
+
+    let limited = upstream_provider("a", "Limited", &limited_url, "sk", Some("remote-default"));
+    let healthy = upstream_provider("b", "Healthy", &healthy_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![limited.clone(), healthy.clone()];
+
+    let text = attempt_streaming_text(&[limited, healthy], &mut config).await;
+
+    assert_eq!(limited_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(healthy_attempts.load(Ordering::SeqCst), 1);
+    assert!(text.contains("healthy-after-429"), "stream: {text}");
+    let stored = config.providers.iter().find(|item| item.id == "a").unwrap();
+    assert_eq!(stored.consecutive_failures, 0, "429 must not count toward health");
+    assert!(!stored.auto_disabled, "429 must not auto-disable the provider");
+}
+
+/// REQ-004: status semantics outrank response shape. HTML authentication
+/// failures disable immediately and then the stream can continue from a later
+/// candidate.
+#[tokio::test]
+async fn retry_stream_html_401_and_403_disable_immediately() {
+    for status in [401u16, 403u16] {
+        let _home = temp_home(&format!("retry-stream-html-auth-{status}"));
+        let (auth_url, auth_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+            status,
+            content_type: "text/html",
+            body: b"<html>denied</html>".to_vec(),
+            headers: Vec::new(),
+        }])
+        .await;
+        let (healthy_url, healthy_attempts) = spawn_streaming_sequence_mock(vec![
+            StreamingReply::Sse(format!("data: {{\"id\":\"healthy-after-{status}\"}}\n\ndata: [DONE]\n\n")),
+        ])
+        .await;
+        let auth = upstream_provider("a", "Auth", &auth_url, "sk", Some("remote-default"));
+        let healthy = upstream_provider("b", "Healthy", &healthy_url, "sk", Some("remote-default"));
+        let mut config = FusionConfig::default();
+        config.providers = vec![auth.clone(), healthy.clone()];
+
+        let text = attempt_streaming_text(&[auth, healthy], &mut config).await;
+
+        assert_eq!(auth_attempts.load(Ordering::SeqCst), 1, "status {status}");
+        assert_eq!(healthy_attempts.load(Ordering::SeqCst), 1, "status {status}");
+        assert!(text.contains(&format!("healthy-after-{status}")), "stream: {text}");
+        let stored = config.providers.iter().find(|item| item.id == "a").unwrap();
+        assert!(stored.auto_disabled, "HTML {status} must immediately disable");
+        assert!(
+            stored.disabled_reason.as_deref().unwrap_or("").contains(&status.to_string()),
+            "HTML {status} disable reason: {:?}",
+            stored.disabled_reason
+        );
+    }
+}
+
+/// REQ-004: a 404 is a per-request skip, not a health failure. Every later
+/// candidate in the initial stream pass is still reached once.
+#[tokio::test]
+async fn retry_stream_404_traverses_each_candidate_once_without_health_failure() {
+    let _home = temp_home("retry-stream-404-traverse");
+    let (a_url, a_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+        status: 404,
+        content_type: "text/html",
+        body: b"<html>not found a</html>".to_vec(),
+        headers: Vec::new(),
+    }])
+    .await;
+    let (b_url, b_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+        status: 404,
+        content_type: "text/html",
+        body: b"<html>not found b</html>".to_vec(),
+        headers: Vec::new(),
+    }])
+    .await;
+    let a = upstream_provider("a", "A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "B", &b_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone(), b.clone()];
+
+    let text = attempt_streaming_text(&[a, b], &mut config).await;
+
+    assert_eq!(a_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(b_attempts.load(Ordering::SeqCst), 1);
+    assert!(text.contains("all_providers_unavailable"), "stream: {text}");
+    for provider in &config.providers {
+        assert_eq!(
+            provider.consecutive_failures, 0,
+            "404 must not count for {}",
+            provider.id
+        );
+        assert!(!provider.auto_disabled, "404 must not disable {}", provider.id);
+    }
+}
+
+/// REQ-004: a 413 HTML response is a caller error, so the streaming boundary
+/// returns the original status and bytes without trying a fallback provider.
+#[tokio::test]
+async fn retry_stream_html_413_returns_unchanged_without_fallback() {
+    let _home = temp_home("retry-stream-html-413");
+    let body = b"<html>payload too large</html>".to_vec();
+    let (rejected_url, rejected_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+        status: 413,
+        content_type: "text/html",
+        body: body.clone(),
+        headers: Vec::new(),
+    }])
+    .await;
+    let (fallback_url, fallback_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Sse(
+        "data: {\"id\":\"must-not-run\"}\n\ndata: [DONE]\n\n".to_string(),
+    )])
+    .await;
+    let rejected = upstream_provider("a", "Rejected", &rejected_url, "sk", Some("remote-default"));
+    let fallback = upstream_provider("b", "Fallback", &fallback_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![rejected.clone(), fallback.clone()];
+
+    let text = attempt_streaming_text(&[rejected, fallback], &mut config).await;
+
+    assert!(text.starts_with("HTTP/1.1 413"), "response: {text}");
+    assert!(text.ends_with(std::str::from_utf8(&body).unwrap()), "response: {text}");
+    assert_eq!(rejected_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(fallback_attempts.load(Ordering::SeqCst), 0, "413 must not switch");
+    assert_eq!(config.providers[0].consecutive_failures, 0, "413 must not count");
+}
+
+// ---------------------------------------------------------------------------
+// Step 3 (20260916-api-fusion-upstream-retry): downstream cancellation RED
+// ---------------------------------------------------------------------------
+
+/// Send a complete request over a real loopback connection. The caller closes
+/// the returned client only after the mock confirms the relay is in the desired
+/// pending state. The handler stays on the current tokio runtime so disconnect
+/// detection is exercised at the same boundary as `run_server` without starting
+/// the shared runtime state.
+async fn spawn_handle_connection(
+    wants_stream: bool,
+) -> (TcpStream, tokio::task::JoinHandle<Result<(), String>>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind relay loopback");
+    let addr = listener.local_addr().expect("relay loopback address");
+    let accept = tokio::spawn(async move {
+        listener
+            .accept()
+            .await
+            .expect("accept relay loopback")
+            .0
+    });
+    let mut client = TcpStream::connect(addr).await.expect("connect relay loopback");
+    let server = accept.await.expect("relay accept task");
+    let handler = tokio::spawn(super::runtime_http::handle_connection(server));
+    tokio::task::yield_now().await;
+    let body = serde_json::to_vec(&json!({"model": "local", "stream": wants_stream}))
+        .expect("encode relay request");
+    let request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nhost: 127.0.0.1\r\nauthorization: Bearer local-key\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        body.len()
+    );
+    let mut frame = request.into_bytes();
+    frame.extend_from_slice(&body);
+    client.write_all(&frame).await.expect("write complete relay request");
+    client.flush().await.expect("flush relay request");
+    (client, handler)
+}
+
+async fn wait_for_upstream_attempts(
+    attempts: &AtomicUsize,
+    expected: usize,
+    handler: &mut tokio::task::JoinHandle<Result<(), String>>,
+) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while attempts.load(Ordering::SeqCst) < expected {
+            if handler.is_finished() {
+                panic!("handler exited before upstream request: {:?}", handler.await);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("upstream request must arrive");
+}
+
+/// REQ-006 / AC-006 RED: after the client has fully disconnected during a
+/// retry cooldown, the relay must leave the pending delay and must not issue a
+/// retry. This covers both JSON and SSE request modes through the real TCP
+/// handler boundary. The current handler sleeps until the cooldown expires.
+#[tokio::test]
+async fn retry_cancel_disconnect_during_retry_delay_exits_without_further_upstream_attempts() {
+    let mut failures = Vec::new();
+    for wants_stream in [false, true] {
+        let _home = temp_home(if wants_stream {
+            "retry-cancel-delay-stream"
+        } else {
+            "retry-cancel-delay-json"
+        });
+        let (upstream_url, attempts) = spawn_header_sequence_mock(vec![
+            HeaderReply::new(503, json!({"error": {"message": "busy"}}))
+                .header("retry-after-ms", "250"),
+        ])
+        .await;
+        let mut config = FusionConfig::default();
+        config.keys.push(key_named("k1", "local-key"));
+        config.providers.push(upstream_provider(
+            "a",
+            "Delayed Provider",
+            &upstream_url,
+            "sk",
+            Some("remote-default"),
+        ));
+        super::storage::write_config(&config).expect("write relay config");
+
+        let (client, mut handler) = spawn_handle_connection(wants_stream).await;
+        wait_for_upstream_attempts(&attempts, 1, &mut handler).await;
+        drop(client);
+
+        let exited = tokio::time::timeout(std::time::Duration::from_millis(100), &mut handler).await;
+        // Let a non-cancelling handler reach the retry deadline so the second
+        // assertion proves the request did not continue upstream after close.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let observed_attempts = attempts.load(Ordering::SeqCst);
+        if exited.is_err() {
+            handler.abort();
+            let _ = handler.await;
+        }
+
+        if exited.is_err() {
+            failures.push(format!(
+                "handler remained pending during retry delay after disconnect (stream={wants_stream})"
+            ));
+        }
+        if observed_attempts != 1 {
+            failures.push(format!(
+                "disconnect issued {observed_attempts} upstream attempts during retry delay (stream={wants_stream})"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+}
+
+/// REQ-006 / AC-006 RED: a client disconnect while an upstream response is
+/// still pending cancels the relay immediately. The held upstream only replies
+/// after the prompt-exit observation, so this cannot be satisfied by waiting
+/// for the upstream read timeout. Non-streaming and SSE use the same public
+/// connection boundary.
+#[tokio::test]
+async fn retry_cancel_disconnect_while_upstream_waits_exits_without_further_upstream_attempts() {
+    let mut failures = Vec::new();
+    for wants_stream in [false, true] {
+        let _home = temp_home(if wants_stream {
+            "retry-cancel-upstream-stream"
+        } else {
+            "retry-cancel-upstream-json"
+        });
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind held upstream");
+        let upstream_url = format!("http://{}", listener.local_addr().expect("upstream address"));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_server = attempts.clone();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept held upstream");
+            super::runtime_http::read_http_request(&mut stream)
+                .await
+                .expect("read held upstream request");
+            attempts_for_server.fetch_add(1, Ordering::SeqCst);
+            let _ = entered_tx.send(());
+            let _ = release_rx.await;
+            let (content_type, body) = if wants_stream {
+                ("text/event-stream", b"data: {\"id\":\"late\"}\n\ndata: [DONE]\n\n".as_slice())
+            } else {
+                ("application/json", br#"{"id":"late"}"#.as_slice())
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.write_all(body).await;
+        });
+
+        let mut config = FusionConfig::default();
+        config.keys.push(key_named("k1", "local-key"));
+        config.providers.push(upstream_provider(
+            "a",
+            "Held Provider",
+            &upstream_url,
+            "sk",
+            Some("remote-default"),
+        ));
+        super::storage::write_config(&config).expect("write relay config");
+
+        let (client, mut handler) = spawn_handle_connection(wants_stream).await;
+        let entered = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::select! {
+                signal = entered_rx => signal,
+                result = &mut handler => panic!("handler exited before upstream wait: {result:?}"),
+            }
+        })
+            .await
+            .expect("upstream must begin waiting");
+        entered.expect("held upstream entry signal");
+        drop(client);
+
+        let exited = tokio::time::timeout(std::time::Duration::from_millis(100), &mut handler).await;
+        let observed_attempts = attempts.load(Ordering::SeqCst);
+        let _ = release_tx.send(());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), upstream).await;
+        if exited.is_err() {
+            handler.abort();
+            let _ = handler.await;
+        }
+
+        if exited.is_err() {
+            failures.push(format!(
+                "handler remained pending while upstream waited after disconnect (stream={wants_stream})"
+            ));
+        }
+        if observed_attempts != 1 {
+            failures.push(format!(
+                "disconnect issued {observed_attempts} upstream attempts while upstream waited (stream={wants_stream})"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+}

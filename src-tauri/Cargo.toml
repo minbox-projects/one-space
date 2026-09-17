@@ -59,6 +59,10 @@ futures-util = "0.3"
 if-addrs = "0.15.0"
 tokio-util = { version = "0.7.19", features = ["io-util", "rt"] }
 
+[dev-dependencies]
+# `start_paused`/`pause`/`advance` for the API Fusion retry timing tests.
+tokio = { version = "1", features = ["test-util"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSWorkspace"] }

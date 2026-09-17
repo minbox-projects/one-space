@@ -1,5 +1,6 @@
 use super::{FusionUpstreamProvider, UpstreamProtocol, FAILURE_THRESHOLD};
 use rand::seq::SliceRandom;
+use std::time::Duration;
 
 /// Outcome class for an upstream attempt, driving switching and auto-disable decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,26 +109,95 @@ pub(in crate::api_fusion) fn pick_candidate(
 
 /// Classify an upstream failure.
 ///
-/// Non-JSON / unparsable bodies are treated as retryable regardless of status (including 2xx),
-/// and network errors are always retryable.
+/// Status semantics take priority over the response body shape, so an HTML 401
+/// still disables immediately and a 5xx is retryable even without JSON. The
+/// caller treats a parsed `< 400` response as success before classifying, so a
+/// non-JSON success body falls through to retryable; network errors are always
+/// retryable.
 pub(in crate::api_fusion) fn classify_failure(
     status: u16,
     network_error: bool,
-    body_parsed: bool,
+    _body_parsed: bool,
 ) -> FailureClass {
     if network_error {
         return FailureClass::Retryable;
     }
-    if !body_parsed {
-        return FailureClass::Retryable;
-    }
     match status {
         401 | 403 => FailureClass::DisableImmediately,
-        429 | 404 => FailureClass::Transient,
+        404 => FailureClass::Transient,
+        // 429 rate limits are retried by the scheduler but never count toward
+        // provider health; 404 and 429 share the "no health count" class.
+        429 => FailureClass::Transient,
+        408 => FailureClass::Retryable,
+        // 413/422 and every other client error are returned unchanged.
+        400..=499 => FailureClass::ReturnToClient,
         500..=599 => FailureClass::Retryable,
-        400 | 422 => FailureClass::ReturnToClient,
-        other if (400..500).contains(&other) => FailureClass::ReturnToClient,
+        // A 2xx/3xx that did not parse as JSON is unusable and worth another
+        // bounded attempt; a parsed 2xx is handled as success before this.
         _ => FailureClass::Retryable,
+    }
+}
+
+/// Maximum bounded retries after a provider's first attempt in one request
+/// (so a provider is contacted at most `1 + MAX_RETRIES_PER_PROVIDER` times).
+pub(in crate::api_fusion) const MAX_RETRIES_PER_PROVIDER: u32 = 5;
+
+const RETRY_BASE_DELAY_MILLIS: u128 = 2_000;
+const RETRY_MAX_DELAY_MILLIS: u128 = 30_000;
+const RETRY_JITTER_RATIO: f64 = 0.25;
+
+/// Default delay before the `retry`-th retry (1-based): the spec's
+/// `min(2000ms * 2^(retry-1) * (1 + random[0,1]*0.25), 30000ms)`. Header-driven
+/// overrides take priority over this.
+pub(in crate::api_fusion) fn default_retry_delay(retry: u32) -> Duration {
+    let exponent = retry.saturating_sub(1).min(20);
+    let base = RETRY_BASE_DELAY_MILLIS.saturating_mul(1u128 << exponent);
+    let jitter = 1.0 + rand::random::<f64>() * RETRY_JITTER_RATIO;
+    let millis = (base as f64 * jitter).min(RETRY_MAX_DELAY_MILLIS as f64) as u64;
+    Duration::from_millis(millis)
+}
+
+/// Read the first value of each header, falling through invalid values.
+pub(in crate::api_fusion) fn retry_header_delay(
+    headers: &reqwest::header::HeaderMap,
+) -> Option<Duration> {
+    fn numeric_delay(value: &str, divisor: f64) -> Option<Duration> {
+        let number = value.trim().parse::<f64>().ok()?;
+        if !number.is_finite() || number < 0.0 {
+            return None;
+        }
+        // Finite but unrepresentably large delays remain valid header values;
+        // the request's wait budget will reject them instead of using backoff.
+        Some(Duration::try_from_secs_f64(number / divisor).unwrap_or(Duration::MAX))
+    }
+
+    if let Some(delay) = headers
+        .get("retry-after-ms")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| numeric_delay(value, 1000.0))
+    {
+        return Some(delay);
+    }
+    let value = headers.get("retry-after")?.to_str().ok()?.trim();
+    if let Some(delay) = numeric_delay(value, 1.0) {
+        return Some(delay);
+    }
+    let date = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+    let delay = date.signed_duration_since(chrono::Utc::now());
+    if delay <= chrono::Duration::zero() {
+        return None;
+    }
+    delay.to_std().ok()
+}
+
+/// Whether a classified failure is worth another bounded attempt. `404` is a
+/// permanent per-request skip and `ReturnToClient`/`DisableImmediately` never
+/// retry; `429` (classified `Transient` so it skips health) is still retried.
+pub(in crate::api_fusion) fn is_retryable_failure(class: FailureClass, status: u16) -> bool {
+    match class {
+        FailureClass::Retryable => true,
+        FailureClass::Transient => status == 429,
+        FailureClass::DisableImmediately | FailureClass::ReturnToClient => false,
     }
 }
 

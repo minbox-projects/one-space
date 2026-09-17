@@ -1,5 +1,5 @@
 use super::FusionUpstreamProvider;
-use reqwest::header::{HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -10,6 +10,7 @@ pub(in crate::api_fusion) struct UpstreamJsonResponse {
     pub(in crate::api_fusion) status: u16,
     pub(in crate::api_fusion) body: Vec<u8>,
     pub(in crate::api_fusion) parsed: bool,
+    pub(in crate::api_fusion) headers: HeaderMap,
 }
 
 /// Bound only the connect phase (the repo's `proxy.rs` uses 10s) so a
@@ -149,12 +150,20 @@ pub(in crate::api_fusion) async fn forward_non_streaming(
     let request = build_request(provider, path, body, model, false, client_headers)?;
     let response = request.send().await.map_err(|e| e.to_string())?;
     let status = response.status().as_u16();
-    let bytes = response.bytes().await.map_err(|e| e.to_string())?.to_vec();
+    let headers = response.headers().clone();
+    let bytes = match response.bytes().await {
+        Ok(bytes) => bytes.to_vec(),
+        // Preserve explicit HTTP failure policies even when the error body
+        // cannot be read. Successful responses still require a complete body.
+        Err(_) if status >= 400 => Vec::new(),
+        Err(error) => return Err(error.to_string()),
+    };
     let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).is_ok();
     Ok(UpstreamJsonResponse {
         status,
         body: bytes,
         parsed,
+        headers,
     })
 }
 
