@@ -479,9 +479,9 @@ const resources = {
       apiFusionNoValue: "not set",
       apiFusionTerminalSync: "Terminal sync",
       apiFusionTerminalSyncDesc:
-        "Write the gateway endpoint, default key, and model mappings as an independent provider into each selected tool. It is not activated automatically and can be synced again to update.",
+        "Each row shows Add provider or Sync on its right depending on whether it has been added, and it is not activated automatically. Re-adding or syncing creates a brand-new API Gateway provider when its gateway provider is missing.",
       apiFusionConfigureSelected: "Add provider",
-      apiFusionSyncSelected: "Sync again",
+      apiFusionSyncOne: "Sync",
       apiFusionDefaultKeyRequired:
         "Add and enable a local key before configuring terminals.",
       apiFusionNoTerminalTargets: "No supported terminal tools available.",
@@ -3839,9 +3839,9 @@ const resources = {
       apiFusionNoValue: "未设置",
       apiFusionTerminalSync: "终端同步",
       apiFusionTerminalSyncDesc:
-        "把网关入口、默认 Key 与模型映射作为独立服务商写入所选工具，不会自动启用，可再次同步以更新。",
+        "每行右侧按是否添加过显示“添加服务商”或“同步”，且不会自动启用；重新添加或同步时，若对应网关服务商不存在，会新建一个全新的 API 网关服务商。",
       apiFusionConfigureSelected: "添加服务商",
-      apiFusionSyncSelected: "再次同步",
+      apiFusionSyncOne: "同步",
       apiFusionDefaultKeyRequired: "请先新增并启用一个本地 Key，再配置终端。",
       apiFusionNoTerminalTargets: "没有可用的受支持终端工具。",
       apiFusionPendingSync: "待同步",

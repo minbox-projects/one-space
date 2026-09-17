@@ -66,7 +66,6 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
   const [editingProvider, setEditingProvider] =
     useState<FusionUpstreamProvider | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [selectedTargetIds, setSelectedTargetIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [addressCopied, setAddressCopied] = useState(false);
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
@@ -218,22 +217,15 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
       await applyConfig(await apiFusionSetDefaultKey(keyId));
     }, t("apiFusionSaved", "Saved."));
 
-  const handleToggleTarget = (tool: string) =>
-    setSelectedTargetIds((prev) =>
-      prev.includes(tool)
-        ? prev.filter((id) => id !== tool)
-        : [...prev, tool],
-    );
-
-  const handleConfigureTargets = () =>
+  const handleConfigureTool = (tool: string) =>
     runAction(async () => {
-      await apiFusionConfigureTerminal(selectedTargetIds);
+      await apiFusionConfigureTerminal([tool]);
       await applyConfig(await apiFusionGetConfig());
     }, t("apiFusionConfigureSuccess", "Terminal targets configured."));
 
-  const handleSyncTargets = () =>
+  const handleSyncTool = (tool: string) =>
     runAction(async () => {
-      await apiFusionSyncTerminal(selectedTargetIds);
+      await apiFusionSyncTerminal([tool]);
       await applyConfig(await apiFusionGetConfig());
     }, t("apiFusionSyncSuccess", "Terminal targets synced."));
 
@@ -471,11 +463,9 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           <TerminalSyncPanel
             targets={targets}
             config={config}
-            selectedTargetIds={selectedTargetIds}
             busy={busy}
-            onToggleTarget={handleToggleTarget}
-            onConfigure={() => void handleConfigureTargets()}
-            onSync={() => void handleSyncTargets()}
+            onConfigureTool={(tool) => void handleConfigureTool(tool)}
+            onSyncTool={(tool) => void handleSyncTool(tool)}
           />
         </div>
 
