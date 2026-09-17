@@ -9,7 +9,6 @@ import {
 } from "lucide-react";
 import {
   API_FUSION_SUPPORTED_TERMINAL_TOOLS,
-  isTerminalSyncPending,
   resolveDefaultKeyId,
   type FusionConfig,
   type FusionTerminalTarget,
@@ -130,7 +129,7 @@ export function TerminalSyncPanel({
       ) : (
         <div className="space-y-2">
           {supportedTargets.map((target) => {
-            const pending = isTerminalSyncPending(target, config);
+            const pending = target.pending_sync;
             const checked = selectedTargetIds.includes(target.tool);
 
             return (

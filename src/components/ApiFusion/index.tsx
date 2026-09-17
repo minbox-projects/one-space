@@ -18,7 +18,6 @@ import {
   apiFusionTerminalTargets,
   apiFusionUpsertKey,
   apiFusionUpsertProvider,
-  isTerminalSyncPending,
   localBaseUrl,
   resolveDefaultKeyId,
   type FusionConfig,
@@ -303,9 +302,9 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
     );
   }
 
-  const pendingSyncCount = config
-    ? (targets ?? []).filter((target) => isTerminalSyncPending(target, config)).length
-    : 0;
+  const pendingSyncCount = (targets ?? []).filter(
+    (target) => target.pending_sync,
+  ).length;
   const autoDisabledCount = status?.auto_disabled_count ?? 0;
 
   const tabs: Array<{

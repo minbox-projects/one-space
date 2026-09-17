@@ -18,7 +18,6 @@ import {
   apiFusionUpsertKey,
   apiFusionUpsertProvider,
   formatFusionTimestamp,
-  isTerminalSyncPending,
   localBaseUrl,
   maskSecret,
   resolveDefaultKeyId,
@@ -130,10 +129,10 @@ describe("apiFusion 命令封装", () => {
     expect(invokeMock).toHaveBeenCalledWith("api_fusion_status");
     expect(invokeMock).toHaveBeenCalledWith("api_fusion_terminal_targets");
     expect(invokeMock).toHaveBeenCalledWith("api_fusion_configure_terminal", {
-      targetIds: ["t-open"],
+      targetTools: ["t-open"],
     });
     expect(invokeMock).toHaveBeenCalledWith("api_fusion_sync_terminal", {
-      targetIds: ["t-open"],
+      targetTools: ["t-open"],
     });
   });
 
@@ -271,115 +270,6 @@ describe("resolveMappingPreview 模型解析预览", () => {
       default_model: null,
     });
     expect(resolveMappingPreview(noDefault, "local-a")).toBeNull();
-  });
-});
-
-describe("isTerminalSyncPending 待同步判定", () => {
-  const target = {
-    provider_id: "t-open" as string | null,
-    tool: "opencode",
-    name: "OpenCode",
-    base_url: "https://old.example",
-    synced: true,
-    pending_sync: false,
-    synced_key_id: "k1" as string | null,
-    synced_at: 1 as number | null,
-  };
-
-  it("台账缺失时视为待同步", () => {
-    const cfg = config({
-      keys: [key({ id: "k1" })],
-      default_key_id: "k1",
-      terminal_syncs: [],
-    });
-    expect(isTerminalSyncPending(target, cfg)).toBe(true);
-  });
-
-  it("台账 Key 与当前默认 Key 不一致时待同步", () => {
-    const cfg = config({
-      keys: [key({ id: "k1" }), key({ id: "k2" })],
-      default_key_id: "k2",
-      terminal_syncs: [
-        {
-          provider_id: "t-open",
-          tool: "opencode",
-          synced_key_id: "k1",
-          synced_base_url: "http://127.0.0.1:17688",
-          synced_at: 1,
-        },
-      ],
-    });
-    expect(isTerminalSyncPending(target, cfg)).toBe(true);
-  });
-
-  it("台账 Key 与地址均与当前值一致时不待同步", () => {
-    const cfg = config({
-      port: 17688,
-      keys: [key({ id: "k1" })],
-      default_key_id: "k1",
-      terminal_syncs: [
-        {
-          provider_id: "t-open",
-          tool: "opencode",
-          synced_key_id: "k1",
-          synced_base_url: "http://127.0.0.1:17688",
-          synced_at: 1,
-        },
-      ],
-    });
-    expect(isTerminalSyncPending(target, cfg)).toBe(false);
-  });
-
-  it("端口变化导致台账地址不一致时待同步", () => {
-    const cfg = config({
-      port: 19000,
-      keys: [key({ id: "k1" })],
-      default_key_id: "k1",
-      terminal_syncs: [
-        {
-          provider_id: "t-open",
-          tool: "opencode",
-          synced_key_id: "k1",
-          synced_base_url: "http://127.0.0.1:17688",
-          synced_at: 1,
-        },
-      ],
-    });
-    expect(isTerminalSyncPending(target, cfg)).toBe(true);
-  });
-
-  it("没有启用 Key 时待同步", () => {
-    const cfg = config({
-      keys: [key({ id: "k1", enabled: false })],
-      default_key_id: null,
-      terminal_syncs: [
-        {
-          provider_id: "t-open",
-          tool: "opencode",
-          synced_key_id: "k1",
-          synced_base_url: "http://127.0.0.1:17688",
-          synced_at: 1,
-        },
-      ],
-    });
-    expect(isTerminalSyncPending(target, cfg)).toBe(true);
-  });
-
-  it("目标未绑定服务商时待同步", () => {
-    const cfg = config({
-      keys: [key({ id: "k1" })],
-      default_key_id: "k1",
-      terminal_syncs: [
-        {
-          provider_id: "t-open",
-          tool: "opencode",
-          synced_key_id: "k1",
-          synced_base_url: "http://127.0.0.1:17688",
-          synced_at: 1,
-        },
-      ],
-    });
-    expect(isTerminalSyncPending({ provider_id: null }, cfg)).toBe(true);
   });
 });
 

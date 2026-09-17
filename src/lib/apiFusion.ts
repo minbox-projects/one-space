@@ -156,35 +156,6 @@ export function resolveMappingPreview(
   return null;
 }
 
-/**
- * Decide whether a terminal target must be synced again.
- *
- * Pending-sync is derived purely from the persisted `terminal_syncs` ledger
- * compared against the current default key id and local base address. The
- * redacted `api_key` echoed by the backend is intentionally never consulted.
- */
-export function isTerminalSyncPending(
-  target: Pick<FusionTerminalTarget, "provider_id">,
-  config: Pick<
-    FusionConfig,
-    "keys" | "default_key_id" | "terminal_syncs" | "port"
-  >,
-): boolean {
-  const syncs = config.terminal_syncs ?? [];
-  const record = syncs.find(
-    (entry) => entry.provider_id === target.provider_id,
-  );
-  if (!record) return true;
-
-  const currentKeyId = resolveDefaultKeyId(config.keys ?? [], config.default_key_id);
-  if (!currentKeyId) return true;
-
-  return (
-    record.synced_key_id !== currentKeyId ||
-    record.synced_base_url !== localBaseUrl(config.port)
-  );
-}
-
 /** Redact a secret for display while keeping head/tail recognizable. */
 export function maskSecret(value: string): string {
   if (!value) return "";
@@ -260,15 +231,15 @@ export function apiFusionTerminalTargets() {
   return invoke<FusionTerminalTarget[]>("api_fusion_terminal_targets");
 }
 
-export function apiFusionConfigureTerminal(targetIds: string[]) {
+export function apiFusionConfigureTerminal(targetTools: string[]) {
   return invoke<FusionTerminalSyncRecord[]>("api_fusion_configure_terminal", {
-    targetIds,
+    targetTools,
   });
 }
 
-export function apiFusionSyncTerminal(targetIds?: string[]) {
+export function apiFusionSyncTerminal(targetTools?: string[]) {
   return invoke<FusionTerminalSyncRecord[]>(
     "api_fusion_sync_terminal",
-    targetIds ? { targetIds } : {},
+    targetTools ? { targetTools } : {},
   );
 }

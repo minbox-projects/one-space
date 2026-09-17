@@ -187,7 +187,7 @@ describe("ApiFusion", () => {
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_fusion_configure_terminal", {
-        targetIds: ["opencode"],
+        targetTools: ["opencode"],
       }),
     );
   });
@@ -228,21 +228,11 @@ describe("ApiFusion", () => {
     const store: Store = {
       config: makeConfig({
         keys: [
-          { id: "k1", label: "Old", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 },
-          { id: "k2", label: "New", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 },
+          { id: "k1", label: "Main", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 },
         ],
-        default_key_id: "k2",
-        terminal_syncs: [
-          {
-            provider_id: "gw-open",
-            tool: "opencode",
-            synced_key_id: "k1",
-            synced_base_url: "http://127.0.0.1:17688",
-            synced_at: 1,
-          },
-        ],
+        default_key_id: "k1",
       }),
-      status: makeStatus({ key_count: 2, default_key_id: "k2" }),
+      status: makeStatus({ key_count: 1, default_key_id: "k1" }),
       targets: [
         openCodeTarget({
           provider_id: "gw-open",
@@ -263,28 +253,16 @@ describe("ApiFusion", () => {
         case "api_fusion_terminal_targets":
           return store.targets;
         case "api_fusion_sync_terminal": {
-          store.config = {
-            ...store.config,
-            terminal_syncs: [
-              {
-                provider_id: "gw-open",
-                tool: "opencode",
-                synced_key_id: "k2",
-                synced_base_url: "http://127.0.0.1:17688",
-                synced_at: 2,
-              },
-            ],
-          };
           store.targets = [
             openCodeTarget({
               provider_id: "gw-open",
               synced: true,
               pending_sync: false,
-              synced_key_id: "k2",
+              synced_key_id: "k1",
               synced_at: 2,
             }),
           ];
-          return store.config.terminal_syncs;
+          return [];
         }
         default:
           throw new Error(`Unhandled command: ${command}`);
@@ -294,7 +272,7 @@ describe("ApiFusion", () => {
     renderWithProviders(<ApiFusion />);
     await screen.findByText("OpenCode");
 
-    // Pending is derived from the persisted ledger, not from the target payload.
+    // Pending status comes from the backend target payload, not local re-derivation.
     expect(screen.getByText("Pending sync")).toBeInTheDocument();
 
     const panel = within(screen.getByTestId("api-fusion-terminals"));
@@ -303,13 +281,40 @@ describe("ApiFusion", () => {
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_fusion_sync_terminal", {
-        targetIds: ["opencode"],
+        targetTools: ["opencode"],
       }),
     );
     await waitFor(() =>
       expect(screen.queryByText("Pending sync")).not.toBeInTheDocument(),
     );
     expect(screen.getByText("Synced")).toBeInTheDocument();
+  });
+
+  it("待同步状态直接采用后端 pending_sync", async () => {
+    const store: Store = {
+      config: makeConfig({ keys: [], default_key_id: null, terminal_syncs: [] }),
+      status: makeStatus({ key_count: 0, default_key_id: null }),
+      targets: [
+        {
+          tool: "opencode",
+          name: "OpenCode",
+          provider_id: "gw-open",
+          base_url: "http://127.0.0.1:17688",
+          synced: true,
+          pending_sync: false,
+          synced_key_id: "k1",
+          synced_at: 1,
+        },
+      ],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    await screen.findByText("OpenCode");
+
+    const panel = within(screen.getByTestId("api-fusion-terminals"));
+    expect(panel.getByText("Synced")).toBeInTheDocument();
+    expect(panel.queryByText("Pending sync")).not.toBeInTheDocument();
   });
 
   it("展示运行状态、端口、自动禁用原因与时间，并支持复制地址与掩码 Key", async () => {

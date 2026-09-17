@@ -79,6 +79,46 @@ describe("ProviderDetailDialog 模型映射", () => {
     });
   });
 
+  it("清空本地模型名称时保存为 undefined 且不改动其他映射字段", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const provider = makeProvider({
+      mappings: [
+        {
+          local_model: "gpt-4o",
+          upstream_model: "gpt-4o-2024",
+          display_name: "GPT-4o",
+          protocol: null,
+        },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const displayNameInput = screen.getByRole("textbox", {
+      name: "Local model name 1",
+    });
+    await user.clear(displayNameInput);
+    expect(displayNameInput).toHaveValue("");
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as FusionUpstreamProvider;
+    expect(saved.mappings[0].local_model).toBe("gpt-4o");
+    expect(saved.mappings[0].upstream_model).toBe("gpt-4o-2024");
+    expect(saved.mappings[0].display_name).toBeUndefined();
+  });
+
   it("新增映射行包含空的本地模型名称输入", async () => {
     const user = userEvent.setup();
     const provider = makeProvider({ mappings: [] });
