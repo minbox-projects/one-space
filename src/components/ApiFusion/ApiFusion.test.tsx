@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { ApiFusion } from "@/components/ApiFusion";
@@ -53,8 +53,7 @@ function openCodeTarget(
     provider_id: "t-open",
     tool: "opencode",
     name: "OpenCode",
-    base_url: "https://old.example",
-    api_key: API_FUSION_KEY_MASK,
+    base_url: "http://127.0.0.1:17688",
     synced: false,
     pending_sync: true,
     synced_key_id: null,
@@ -134,7 +133,7 @@ describe("ApiFusion", () => {
     });
   });
 
-  it("一键配置只提交所选 OpenCode/Codex 目标 id，不重建记录也不触碰 claude/antigravity", async () => {
+  it("按工具提交所选目标名，且只渲染受支持工具", async () => {
     const store: Store = {
       config: makeConfig({
         providers: [
@@ -158,16 +157,16 @@ describe("ApiFusion", () => {
       }),
       status: makeStatus({ provider_count: 1, key_count: 1, default_key_id: "k1" }),
       targets: [
-        openCodeTarget(),
-        openCodeTarget({ provider_id: "t-codex", tool: "codex", name: "Codex" }),
+        openCodeTarget({ provider_id: "gw-open" }),
+        openCodeTarget({ provider_id: "gw-codex", tool: "codex", name: "Codex" }),
         openCodeTarget({
-          provider_id: "t-claude",
+          provider_id: "gw-claude",
           tool: "claude",
           name: "Claude Code",
           base_url: null,
         }),
         openCodeTarget({
-          provider_id: "t-antigravity",
+          provider_id: "gw-antigravity",
           tool: "antigravity",
           name: "Antigravity",
           base_url: null,
@@ -182,21 +181,18 @@ describe("ApiFusion", () => {
     expect(screen.queryByText("Claude Code")).not.toBeInTheDocument();
     expect(screen.queryByText("Antigravity")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "OpenCode" }));
-    fireEvent.click(screen.getByRole("button", { name: /Configure selected/ }));
+    const panel = within(screen.getByTestId("api-fusion-terminals"));
+    fireEvent.click(panel.getByRole("checkbox", { name: "OpenCode" }));
+    fireEvent.click(panel.getByRole("button", { name: /Add provider/ }));
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_fusion_configure_terminal", {
-        targetIds: ["t-open"],
+        targetTools: ["opencode"],
       }),
-    );
-    expect(invokeMock).not.toHaveBeenCalledWith(
-      "api_fusion_configure_terminal",
-      expect.objectContaining({ provider: expect.anything() }),
     );
   });
 
-  it("默认本地 Key 为空时阻止一键配置与同步并给出可操作提示", async () => {
+  it("默认本地 Key 为空时禁用添加与再次同步", async () => {
     const store: Store = {
       config: makeConfig({ keys: [], default_key_id: null }),
       status: makeStatus({ key_count: 0, default_key_id: null }),
@@ -210,8 +206,9 @@ describe("ApiFusion", () => {
     expect(screen.getByTestId("api-fusion-default-key-required")).toHaveTextContent(
       /Add and enable a local key/,
     );
-    const configure = screen.getByRole("button", { name: /Configure selected/ });
-    const sync = screen.getByRole("button", { name: /Sync selected/ });
+    const panel = within(screen.getByTestId("api-fusion-terminals"));
+    const configure = panel.getByRole("button", { name: /Add provider/ });
+    const sync = panel.getByRole("button", { name: /Sync again/ });
     expect(configure).toBeDisabled();
     expect(sync).toBeDisabled();
 
@@ -227,27 +224,18 @@ describe("ApiFusion", () => {
     );
   });
 
-  it("依据同步台账而非脱敏 api_key 判定待同步，同步后清除", async () => {
+  it("依据台账判定待同步，再次同步后清除", async () => {
     const store: Store = {
       config: makeConfig({
         keys: [
-          { id: "k1", label: "Old", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 },
-          { id: "k2", label: "New", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 },
+          { id: "k1", label: "Main", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 },
         ],
-        default_key_id: "k2",
-        terminal_syncs: [
-          {
-            provider_id: "t-open",
-            tool: "opencode",
-            synced_key_id: "k1",
-            synced_base_url: "http://127.0.0.1:17688",
-            synced_at: 1,
-          },
-        ],
+        default_key_id: "k1",
       }),
-      status: makeStatus({ key_count: 2, default_key_id: "k2" }),
+      status: makeStatus({ key_count: 1, default_key_id: "k1" }),
       targets: [
         openCodeTarget({
+          provider_id: "gw-open",
           synced: true,
           pending_sync: true,
           synced_key_id: "k1",
@@ -265,27 +253,16 @@ describe("ApiFusion", () => {
         case "api_fusion_terminal_targets":
           return store.targets;
         case "api_fusion_sync_terminal": {
-          store.config = {
-            ...store.config,
-            terminal_syncs: [
-              {
-                provider_id: "t-open",
-                tool: "opencode",
-                synced_key_id: "k2",
-                synced_base_url: "http://127.0.0.1:17688",
-                synced_at: 2,
-              },
-            ],
-          };
           store.targets = [
             openCodeTarget({
+              provider_id: "gw-open",
               synced: true,
               pending_sync: false,
-              synced_key_id: "k2",
+              synced_key_id: "k1",
               synced_at: 2,
             }),
           ];
-          return store.config.terminal_syncs;
+          return [];
         }
         default:
           throw new Error(`Unhandled command: ${command}`);
@@ -295,21 +272,49 @@ describe("ApiFusion", () => {
     renderWithProviders(<ApiFusion />);
     await screen.findByText("OpenCode");
 
-    // Pending is shown even though api_key is the redacted placeholder.
+    // Pending status comes from the backend target payload, not local re-derivation.
     expect(screen.getByText("Pending sync")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "OpenCode" }));
-    fireEvent.click(screen.getByRole("button", { name: /Sync selected/ }));
+    const panel = within(screen.getByTestId("api-fusion-terminals"));
+    fireEvent.click(panel.getByRole("checkbox", { name: "OpenCode" }));
+    fireEvent.click(panel.getByRole("button", { name: /Sync again/ }));
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_fusion_sync_terminal", {
-        targetIds: ["t-open"],
+        targetTools: ["opencode"],
       }),
     );
     await waitFor(() =>
       expect(screen.queryByText("Pending sync")).not.toBeInTheDocument(),
     );
     expect(screen.getByText("Synced")).toBeInTheDocument();
+  });
+
+  it("待同步状态直接采用后端 pending_sync", async () => {
+    const store: Store = {
+      config: makeConfig({ keys: [], default_key_id: null, terminal_syncs: [] }),
+      status: makeStatus({ key_count: 0, default_key_id: null }),
+      targets: [
+        {
+          tool: "opencode",
+          name: "OpenCode",
+          provider_id: "gw-open",
+          base_url: "http://127.0.0.1:17688",
+          synced: true,
+          pending_sync: false,
+          synced_key_id: "k1",
+          synced_at: 1,
+        },
+      ],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    await screen.findByText("OpenCode");
+
+    const panel = within(screen.getByTestId("api-fusion-terminals"));
+    expect(panel.getByText("Synced")).toBeInTheDocument();
+    expect(panel.queryByText("Pending sync")).not.toBeInTheDocument();
   });
 
   it("展示运行状态、端口、自动禁用原因与时间，并支持复制地址与掩码 Key", async () => {

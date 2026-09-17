@@ -87,6 +87,7 @@ export function ProviderDetailDialog({
       protocol,
       mappings: mappings.map((mapping) => ({
         ...mapping,
+        display_name: mapping.display_name?.trim() ? mapping.display_name.trim() : undefined,
         protocol: mapping.protocol ? mapping.protocol : undefined,
       })),
     });
@@ -102,7 +103,7 @@ export function ProviderDetailDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-h-[90vh] w-full sm:max-w-4xl overflow-y-auto sm:rounded-xl p-5"
+        className="max-h-[90vh] w-full sm:max-w-6xl overflow-y-auto sm:rounded-xl p-5"
         data-testid="api-fusion-provider-detail"
       >
         <DialogHeader className="space-y-1">
@@ -216,7 +217,7 @@ export function ProviderDetailDialog({
                 <p className="text-[11px] text-muted-foreground">
                   {t(
                     "apiFusionModelMappingsDesc",
-                    "Map local request model name to the upstream model name.",
+                    "Map local request model names to upstream models. Optionally set a display name shown in the gateway for each model.",
                   )}
                 </p>
               </div>
@@ -225,7 +226,12 @@ export function ProviderDetailDialog({
                 onClick={() =>
                   setMappings((prev) => [
                     ...prev,
-                    { local_model: "", upstream_model: "", protocol: null },
+                    {
+                      local_model: "",
+                      upstream_model: "",
+                      display_name: "",
+                      protocol: null,
+                    },
                   ])
                 }
                 className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs font-medium shadow-sm transition hover:bg-muted"
@@ -240,7 +246,8 @@ export function ProviderDetailDialog({
                 {t("apiFusionNoMappings", "No model mappings configured.")}
               </p>
             ) : (
-              <ul className="space-y-2">
+              <div className="overflow-x-auto">
+                <ul className="space-y-2">
                 {mappings.map((mapping, index) => (
                   <li key={index} className="flex items-center gap-2">
                     <input
@@ -254,7 +261,7 @@ export function ProviderDetailDialog({
                         index: index + 1,
                         defaultValue: `Local model ${index + 1}`,
                       })}
-                      className={`${mappingInputClass} min-w-[140px] flex-1 font-mono`}
+                      className={`${mappingInputClass} min-w-[120px] flex-1 font-mono`}
                     />
                     <span aria-hidden="true" className="shrink-0 text-muted-foreground font-semibold text-sm">
                       →
@@ -270,7 +277,20 @@ export function ProviderDetailDialog({
                         index: index + 1,
                         defaultValue: `Upstream model ${index + 1}`,
                       })}
-                      className={`${mappingInputClass} min-w-[140px] flex-1 font-mono`}
+                      className={`${mappingInputClass} min-w-[120px] flex-1 font-mono`}
+                    />
+                    <input
+                      type="text"
+                      value={mapping.display_name ?? ""}
+                      onChange={(event) =>
+                        updateMapping(index, { display_name: event.target.value })
+                      }
+                      placeholder={t("apiFusionLocalModelNamePlaceholder", "display name")}
+                      aria-label={t("apiFusionLocalModelNameAria", {
+                        index: index + 1,
+                        defaultValue: `Local model name ${index + 1}`,
+                      })}
+                      className={`${mappingInputClass} min-w-[120px] flex-1`}
                     />
                     <select
                       value={mapping.protocol ?? ""}
@@ -313,7 +333,8 @@ export function ProviderDetailDialog({
                     </button>
                   </li>
                 ))}
-              </ul>
+                </ul>
+              </div>
             )}
           </div>
         </div>

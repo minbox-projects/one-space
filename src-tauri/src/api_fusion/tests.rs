@@ -1,4 +1,4 @@
-use super::commands::{default_key_for_sync, plan_terminal_sync, terminal_sync_pending};
+use super::commands::{build_gateway_provider, default_key_for_sync, terminal_sync_pending};
 use super::selection::{
     candidate_providers, classify_failure, manual_reenable, pick_candidate, register_failure,
     register_success, resolve_model_for_protocol, set_user_enabled, FailureClass, ModelResolution,
@@ -83,6 +83,7 @@ fn fusion_config_round_trips_and_encrypts_secrets_on_disk() {
             local_model: "local-a".to_string(),
             upstream_model: "remote-a".to_string(),
             protocol: None,
+            display_name: None,
         }];
         config.providers.push(first);
         config.keys.push(FusionKey {
@@ -118,6 +119,51 @@ fn fusion_config_round_trips_and_encrypts_secrets_on_disk() {
         );
         assert!(raw.trim_start().starts_with("v2:"));
     });
+}
+
+/// The gateway model mapping may carry a display name; it survives a config
+/// write/read and stays optional for legacy rows.
+#[test]
+fn model_mapping_display_name_round_trips_and_stays_optional() {
+    with_temp_home("mapping-display-name", |_home| {
+        let mut config = FusionConfig::default();
+        let mut p = provider("p1");
+        p.mappings = vec![
+            mapping("local-named", "remote-named", Some("GPT-4o")),
+            mapping("local-plain", "remote-plain", None),
+        ];
+        config.providers.push(p);
+        super::storage::write_config(&config).expect("write config");
+
+        let loaded = super::storage::read_config().expect("read config");
+        assert_eq!(
+            loaded.providers[0].mappings[0].display_name.as_deref(),
+            Some("GPT-4o")
+        );
+        assert_eq!(loaded.providers[0].mappings[1].display_name, None);
+    });
+}
+
+#[test]
+fn model_mapping_display_name_is_skipped_when_absent() {
+    let legacy: ModelMapping =
+        serde_json::from_value(json!({"local_model": "local-a", "upstream_model": "remote-a"}))
+            .expect("a mapping without display_name must deserialize");
+    assert_eq!(legacy.display_name, None);
+
+    let named: ModelMapping = serde_json::from_value(json!({
+        "local_model": "local-a",
+        "upstream_model": "remote-a",
+        "display_name": "GPT-4o",
+    }))
+    .expect("a mapping with display_name must deserialize");
+    assert_eq!(named.display_name.as_deref(), Some("GPT-4o"));
+
+    let encoded = serde_json::to_value(&legacy).expect("serialize mapping");
+    assert!(
+        encoded.get("display_name").is_none(),
+        "an absent display_name must not be serialized: {encoded}"
+    );
 }
 
 #[test]
@@ -176,6 +222,7 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         local_model: "local-a".to_string(),
         upstream_model: "remote-a".to_string(),
         protocol: None,
+        display_name: None,
     }];
 
     // 1. A matching row whose effective protocol equals the inbound protocol is served,
@@ -211,6 +258,7 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         local_model: "local-r".to_string(),
         upstream_model: "remote-r".to_string(),
         protocol: Some(UpstreamProtocol::Responses),
+        display_name: None,
     }];
     assert!(matches!(
         resolve_model_for_protocol(&per_model, Some("local-r"), UpstreamProtocol::Responses),
@@ -229,6 +277,7 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         local_model: "local-blank".to_string(),
         upstream_model: "   ".to_string(),
         protocol: Some(UpstreamProtocol::Responses),
+        display_name: None,
     }];
     assert!(matches!(
         resolve_model_for_protocol(&blank_row, Some("local-blank"), UpstreamProtocol::ChatCompletions),
@@ -597,6 +646,15 @@ fn upstream_provider(
     }
 }
 
+fn mapping(local_model: &str, upstream_model: &str, display_name: Option<&str>) -> ModelMapping {
+    ModelMapping {
+        local_model: local_model.to_string(),
+        upstream_model: upstream_model.to_string(),
+        protocol: None,
+        display_name: display_name.map(str::to_string),
+    }
+}
+
 #[tokio::test]
 async fn forwards_chat_completions_path_body_and_provider_auth() {
     let home = temp_home("forward-chat");
@@ -617,6 +675,7 @@ async fn forwards_chat_completions_path_body_and_provider_auth() {
         local_model: "local-a".to_string(),
         upstream_model: "remote-a".to_string(),
         protocol: None,
+        display_name: None,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -782,6 +841,7 @@ async fn provider_base_url_with_v1_does_not_double_the_version_segment() {
         local_model: "local-a".to_string(),
         upstream_model: "remote-a".to_string(),
         protocol: None,
+        display_name: None,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -1191,11 +1251,13 @@ async fn models_endpoint_returns_local_union_without_upstream() {
             local_model: "local-a".to_string(),
             upstream_model: "remote-a".to_string(),
             protocol: None,
+            display_name: None,
         },
         ModelMapping {
             local_model: "local-b".to_string(),
             upstream_model: "remote-b".to_string(),
             protocol: None,
+            display_name: None,
         },
     ];
     config.providers.push(provider);
@@ -1682,68 +1744,319 @@ fn config_defaults_to_port_17688() {
 }
 
 #[test]
-fn terminal_sync_plan_preserves_other_fields() {
-    let payload = json!({
-        "providers": [
-            {
-                "id": "oc-1",
-                "tool": "opencode",
-                "name": "My OpenCode",
-                "model": "gpt-x",
-                "icon": "star",
-                "is_enabled": false,
-                "base_url": "https://old.example.com",
-                "api_key": "********",
-                "tool_config": { "keep": true }
-            }
-        ]
-    });
-    let plans = plan_terminal_sync(
-        &payload,
-        &["oc-1".to_string()],
-        "http://127.0.0.1:17688",
-        "local-key",
-    )
-    .unwrap();
-    assert_eq!(plans.len(), 1);
-    assert_eq!(plans[0].provider_id, "oc-1");
-    assert_eq!(plans[0].tool, "opencode");
-    let merged = &plans[0].merged;
-    assert_eq!(merged["base_url"], "http://127.0.0.1:17688");
-    assert_eq!(merged["api_key"], "local-key");
-    assert_eq!(merged["name"], "My OpenCode");
-    assert_eq!(merged["model"], "gpt-x");
-    assert_eq!(merged["icon"], "star");
-    assert_eq!(merged["is_enabled"], false);
-    assert_eq!(merged["tool_config"]["keep"], true);
-}
-
-#[test]
-fn terminal_sync_plan_rejects_unsupported_tools() {
-    for tool in ["claude", "antigravity"] {
-        let payload = json!({ "providers": [{ "id": "t-1", "tool": tool }] });
-        let error = plan_terminal_sync(
-            &payload,
-            &["t-1".to_string()],
+fn build_gateway_provider_rejects_unsupported_tools() {
+    for tool in ["claude", "antigravity", ""] {
+        let error = build_gateway_provider(
+            "g-1",
+            tool,
             "http://127.0.0.1:17688",
             "local-key",
+            &[],
         )
         .unwrap_err();
-        assert!(error.contains("unsupported"), "error: {error}");
+        assert!(error.contains("unsupported"), "tool {tool:?} error: {error}");
     }
 }
 
+/// The tool input is case-insensitive but the emitted `tool` value is always
+/// lowercase, and the tool-specific branch is selected case-insensitively.
 #[test]
-fn terminal_sync_plan_rejects_missing_target() {
-    let payload = json!({ "providers": [] });
-    let error = plan_terminal_sync(
-        &payload,
-        &["ghost".to_string()],
+fn build_gateway_provider_normalizes_tool_case_to_lowercase() {
+    let opencode = build_gateway_provider(
+        "fus-oc",
+        "OpenCode",
         "http://127.0.0.1:17688",
-        "local-key",
+        "local-key-123",
+        &[],
     )
-    .unwrap_err();
-    assert!(error.contains("not found"), "error: {error}");
+    .expect("mixed-case opencode must build");
+    assert_eq!(opencode["tool"], "opencode", "emitted tool must be lowercase: {opencode}");
+    assert_eq!(opencode["provider_key"], "api_gateway");
+    assert_eq!(opencode["tool_config"]["npm"], "@ai-sdk/openai-compatible");
+
+    let codex = build_gateway_provider(
+        "fus-cx",
+        "Codex",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[],
+    )
+    .expect("mixed-case codex must build");
+    assert_eq!(codex["tool"], "codex", "emitted tool must be lowercase: {codex}");
+    assert_eq!(codex["tool_config"]["wire_api"], "chat");
+    assert!(codex.get("provider_key").is_none(), "codex has no provider_key");
+}
+
+/// Only enabled gateways contribute: a gateway with `enabled == false` or
+/// `auto_disabled == true` is excluded from the opencode model map and from the
+/// codex model selection, even when it is listed first.
+#[test]
+fn build_gateway_provider_ignores_disabled_and_auto_disabled_gateways() {
+    let mut disabled = upstream_provider(
+        "g1",
+        "Disabled",
+        "https://disabled.example/v1",
+        "sk",
+        Some("disabled-default"),
+    );
+    disabled.enabled = false;
+    disabled.mappings = vec![mapping("disabled-local", "disabled-remote", Some("Disabled"))];
+
+    let mut auto_disabled = upstream_provider(
+        "g2",
+        "Auto Disabled",
+        "https://auto.example/v1",
+        "sk",
+        Some("auto-default"),
+    );
+    auto_disabled.auto_disabled = true;
+    auto_disabled.mappings = vec![mapping("auto-local", "auto-remote", Some("Auto"))];
+
+    let mut enabled = upstream_provider(
+        "g3",
+        "Enabled",
+        "https://enabled.example/v1",
+        "sk",
+        Some("enabled-default"),
+    );
+    enabled.mappings = vec![mapping("enabled-local", "enabled-remote", Some("Enabled"))];
+
+    let gateways = [disabled, auto_disabled, enabled];
+
+    let opencode = build_gateway_provider(
+        "fus-oc",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &gateways,
+    )
+    .expect("opencode provider must build");
+    assert_eq!(
+        opencode["tool_config"]["models"],
+        json!({ "enabled-local": { "name": "Enabled" } }),
+        "only the enabled gateway mappings may be emitted: {opencode}"
+    );
+
+    let codex = build_gateway_provider(
+        "fus-cx",
+        "codex",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &gateways,
+    )
+    .expect("codex provider must build");
+    assert_eq!(
+        codex["model"], "enabled-local",
+        "a disabled gateway must not win the model selection: {codex}"
+    );
+}
+
+#[test]
+fn build_gateway_provider_opencode_carries_gateway_models_and_marker() {
+    let mut gateway = upstream_provider("g1", "Gateway A", "https://upstream.example/v1", "sk", None);
+    gateway.mappings = vec![
+        mapping("gpt-4o", "gpt-4o-2024", Some("GPT-4o")),
+        mapping("ds", "deepseek-chat", None),
+        mapping("", "ignored", Some("Ignored")),
+    ];
+
+    let value = build_gateway_provider(
+        "fus-oc",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[gateway],
+    )
+    .expect("opencode provider must build");
+
+    assert_eq!(value["id"], "fus-oc");
+    assert_eq!(value["name"], "API Gateway");
+    assert_eq!(value["tool"], "opencode");
+    assert_eq!(value["base_url"], "http://127.0.0.1:17688");
+    assert_eq!(value["api_key"], "local-key-123");
+    assert_eq!(value["tool_config"]["api_fusion_gateway"], true);
+    assert!(value.get("active").is_none(), "must never auto-activate: {value}");
+    assert!(value.get("is_active").is_none(), "must never auto-activate: {value}");
+
+    assert_eq!(value["provider_key"], "api_gateway");
+    assert_eq!(value["tool_config"]["npm"], "@ai-sdk/openai-compatible");
+    assert_eq!(
+        value["tool_config"]["options"]["baseURL"],
+        "http://127.0.0.1:17688"
+    );
+    assert_eq!(value["tool_config"]["options"]["apiKey"], "local-key-123");
+    assert_eq!(
+        value["tool_config"]["models"],
+        json!({
+            "gpt-4o": { "name": "GPT-4o" },
+            "ds": { "name": "deepseek-chat" },
+        }),
+        "models are keyed by non-empty local_model: {value}"
+    );
+}
+
+#[test]
+fn build_gateway_provider_opencode_keeps_first_duplicate_and_falls_back_names() {
+    let mut first = upstream_provider("g1", "Gateway A", "https://a.example/v1", "sk", None);
+    first.mappings = vec![mapping("dup", "first-upstream", Some("First Name"))];
+    let mut second = upstream_provider("g2", "Gateway B", "https://b.example/v1", "sk", None);
+    second.mappings = vec![
+        mapping("dup", "second-upstream", Some("Second Name")),
+        mapping("plain", "plain-upstream", Some("")),
+    ];
+
+    let value = build_gateway_provider(
+        "fus-oc",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[first, second],
+    )
+    .expect("opencode provider must build");
+
+    assert_eq!(
+        value["tool_config"]["models"],
+        json!({
+            "dup": { "name": "First Name" },
+            "plain": { "name": "plain-upstream" },
+        }),
+        "the first duplicate wins and an empty display name falls back to the upstream model"
+    );
+}
+
+#[test]
+fn build_gateway_provider_codex_shape_is_wire_api_chat_without_options() {
+    let mut gateway = upstream_provider(
+        "g1",
+        "Gateway A",
+        "https://upstream.example/v1",
+        "sk",
+        Some("gateway-default"),
+    );
+    gateway.mappings = vec![mapping("local-a", "remote-a", None)];
+
+    let value = build_gateway_provider(
+        "fus-cx",
+        "codex",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[gateway],
+    )
+    .expect("codex provider must build");
+
+    assert_eq!(value["id"], "fus-cx");
+    assert_eq!(value["name"], "API Gateway");
+    assert_eq!(value["tool"], "codex");
+    assert_eq!(value["base_url"], "http://127.0.0.1:17688");
+    assert_eq!(value["api_key"], "local-key-123");
+    assert_eq!(value["tool_config"]["api_fusion_gateway"], true);
+    assert_eq!(value["tool_config"]["wire_api"], "chat");
+    assert_eq!(
+        value["model"], "local-a",
+        "a mapping local_model must win over default_model: {value}"
+    );
+    assert!(value.get("provider_key").is_none(), "codex has no provider_key: {value}");
+    assert!(
+        value["tool_config"].get("options").is_none(),
+        "codex has no options block: {value}"
+    );
+    assert!(value.get("active").is_none(), "must never auto-activate: {value}");
+    assert!(value.get("is_active").is_none(), "must never auto-activate: {value}");
+}
+
+#[test]
+fn build_gateway_provider_codex_skips_empty_default_models() {
+    let empty = upstream_provider("g1", "Gateway A", "https://a.example/v1", "sk", Some(""));
+    let named = upstream_provider(
+        "g2",
+        "Gateway B",
+        "https://b.example/v1",
+        "sk",
+        Some("gateway-default"),
+    );
+
+    let value = build_gateway_provider(
+        "fus-cx",
+        "codex",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[empty, named],
+    )
+    .expect("codex provider must build");
+
+    assert_eq!(value["model"], "gateway-default");
+}
+
+/// A mapping `local_model` anywhere wins over every `default_model`; the
+/// default is only a fallback when no enabled gateway has any mapping.
+#[test]
+fn build_gateway_provider_codex_prefers_mapping_local_model_over_default_model() {
+    let first = upstream_provider(
+        "g1",
+        "Gateway A",
+        "https://a.example/v1",
+        "sk",
+        Some("gateway-default"),
+    );
+    let mut second = upstream_provider(
+        "g2",
+        "Gateway B",
+        "https://b.example/v1",
+        "sk",
+        Some("gateway-default-2"),
+    );
+    second.mappings = vec![mapping("local-b", "remote-b", None)];
+
+    let value = build_gateway_provider(
+        "fus-cx",
+        "codex",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[first, second],
+    )
+    .expect("codex provider must build");
+
+    assert_eq!(
+        value["model"], "local-b",
+        "a later gateway's mapping local_model must beat an earlier default_model: {value}"
+    );
+}
+
+#[test]
+fn build_gateway_provider_codex_uses_first_non_empty_mapping_local_model() {
+    let mut gateway = upstream_provider("g1", "Gateway A", "https://a.example/v1", "sk", Some(""));
+    gateway.mappings = vec![
+        mapping("", "ignored", None),
+        mapping("local-a", "remote-a", None),
+        mapping("local-b", "remote-b", None),
+    ];
+
+    let value = build_gateway_provider(
+        "fus-cx",
+        "codex",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[gateway],
+    )
+    .expect("codex provider must build");
+
+    assert_eq!(value["model"], "local-a");
+}
+
+#[test]
+fn build_gateway_provider_codex_omits_model_without_any_mapping() {
+    let gateway = upstream_provider("g1", "Gateway A", "https://a.example/v1", "sk", None);
+
+    let value = build_gateway_provider(
+        "fus-cx",
+        "codex",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[gateway],
+    )
+    .expect("codex provider must build");
+
+    assert!(value.get("model").is_none(), "model key must be absent: {value}");
 }
 
 #[test]
@@ -1978,6 +2291,7 @@ async fn no_candidate_model_returns_all_unavailable_without_upstream_request() {
         local_model: "known-local".to_string(),
         upstream_model: "remote-a".to_string(),
         protocol: None,
+        display_name: None,
     }];
     config.providers.push(p);
     super::storage::write_config(&config).unwrap();
@@ -2714,6 +3028,7 @@ async fn end_to_end_path_prefix_and_body_equivalence_for_chat_and_responses() {
         local_model: "local-a".to_string(),
         upstream_model: "remote-a".to_string(),
         protocol: None,
+        display_name: None,
     };
     let mut chat_provider =
         upstream_provider("p1", "Provider One", &base_url, "upstream-secret", None);
@@ -2798,11 +3113,13 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
             local_model: "local-b".to_string(),
             upstream_model: "remote-b".to_string(),
             protocol: None,
+            display_name: None,
         },
         ModelMapping {
             local_model: "local-a".to_string(),
             upstream_model: "remote-a".to_string(),
             protocol: None,
+            display_name: None,
         },
     ];
     let mut disabled = upstream_provider("p2", "Provider Two", &upstream_url, "sk", None);
@@ -2811,6 +3128,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         local_model: "local-disabled".to_string(),
         upstream_model: "x".to_string(),
         protocol: None,
+        display_name: None,
     }];
     let mut auto_disabled = upstream_provider("p3", "Provider Three", &upstream_url, "sk", None);
     auto_disabled.auto_disabled = true;
@@ -2818,6 +3136,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         local_model: "local-auto".to_string(),
         upstream_model: "x".to_string(),
         protocol: None,
+        display_name: None,
     }];
     let no_model = upstream_provider("p4", "Provider Four", &upstream_url, "sk", None);
     config
@@ -3231,58 +3550,312 @@ async fn loopback_listener_rejects_non_loopback_address_on_same_port() {
 // seam (Finding B)
 //
 // `apply_terminal_sync_with` accepts an injected upsert so the external
-// app_store boundary is a fake here; everything else (planning, merge, ledger)
-// runs as production code against an isolated config directory.
+// app_store boundary is a fake here; everything else (gateway provider building,
+// provider-id reuse and ledger) runs as production code against an isolated
+// config directory.
 // ---------------------------------------------------------------------------
 
+/// A previously synced API Gateway provider as it appears in the terminal
+/// service provider list. `tool_config.api_fusion_gateway == true` is the stable
+/// marker emitted by `build_gateway_provider`.
+fn managed_gateway_provider(id: &str, tool: &str) -> Value {
+    json!({
+        "id": id,
+        "tool": tool,
+        "name": "API Gateway",
+        "base_url": "http://127.0.0.1:17688",
+        "api_key": "previous-local-key",
+        "tool_config": {
+            "api_fusion_gateway": true,
+            "wire_api": "chat",
+        }
+    })
+}
+
+/// A user-owned provider record without the API Fusion gateway marker. The
+/// stale-ledger protection must never claim or overwrite it.
+fn unmarked_user_provider(id: &str, tool: &str) -> Value {
+    json!({
+        "id": id,
+        "tool": tool,
+        "name": "My Provider",
+        "base_url": "https://user.example.com/v1",
+        "api_key": "user-key",
+        "tool_config": {
+            "npm": "@ai-sdk/openai-compatible"
+        }
+    })
+}
+
+/// The current terminal service provider list: one already-synced gateway
+/// provider per tool (recognized through the marker, under `tool_config` for
+/// opencode and at the top level for codex), an unmarked user-owned opencode
+/// provider, plus an unrelated legacy provider.
 fn terminal_providers_payload() -> Value {
     json!({
         "providers": [
+            managed_gateway_provider("managed-oc", "opencode"),
             {
-                "id": "oc-1",
-                "tool": "opencode",
-                "name": "My OpenCode",
-                "model": "gpt-x",
-                "icon": "star",
-                "is_enabled": false,
-                "base_url": "https://old-opencode.example.com",
-                "api_key": "old-key-1",
-                "tool_config": { "keep": true }
-            },
-            {
-                "id": "cx-1",
+                "id": "managed-cx",
                 "tool": "codex",
-                "name": "My Codex",
-                "model": "gpt-y",
-                "icon": "bolt",
-                "is_enabled": true,
-                "base_url": "https://old-codex.example.com",
-                "api_key": "old-key-2",
-                "tool_config": { "nested": { "keep": 42 } }
+                "name": "API Gateway",
+                "base_url": "http://127.0.0.1:17688",
+                "api_key": "previous-local-key",
+                "api_fusion_gateway": true
             },
+            unmarked_user_provider("user-oc", "opencode"),
             {
-                "id": "oc-2",
-                "tool": "opencode",
-                "name": "Unselected",
-                "model": "gpt-z",
-                "base_url": "https://old-unselected.example.com",
-                "api_key": "old-key-3"
+                "id": "legacy-other",
+                "tool": "claude",
+                "name": "Unrelated Tool",
+                "base_url": "https://old.example.com",
+                "api_key": "old-key"
             }
         ]
     })
 }
 
-/// Finding B: one-click configure/sync merges the local base URL and default key
-/// into every selected target through the injectable upsert, preserves all other
-/// fields exactly, and never touches unselected targets (AC-017).
-#[tokio::test]
-async fn terminal_sync_with_seam_merges_selected_targets_and_preserves_fields() {
-    let _home = temp_home("terminal-sync-seam-merge");
+/// A config with one enabled local key and a gateway provider carrying a model
+/// mapping with and without a display name.
+fn gateway_config(port: u16) -> FusionConfig {
     let mut config = FusionConfig::default();
-    config.port = 17688;
+    config.port = port;
     config.keys.push(key_named("k1", "local-key-123"));
+    let mut gateway = upstream_provider(
+        "g1",
+        "Gateway A",
+        "https://upstream.example/v1",
+        "sk-upstream",
+        None,
+    );
+    gateway.mappings = vec![
+        mapping("gpt-4o", "gpt-4o-2024", Some("GPT-4o")),
+        mapping("ds", "deepseek-chat", None),
+    ];
+    config.providers.push(gateway);
+    config
+}
+
+/// Run the real terminal sync pipeline against an injected capture-only upsert
+/// and return the submitted payloads plus the returned ledger records.
+async fn capture_terminal_sync(
+    providers_data: &Value,
+    tools: Vec<String>,
+) -> (Vec<Value>, Vec<TerminalSyncRecord>) {
+    let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = captured.clone();
+    let records = super::commands::apply_terminal_sync_with(
+        providers_data,
+        move |value| -> super::commands::UpsertFuture {
+            let sink = sink.clone();
+            Box::pin(async move {
+                sink.lock().expect("capture lock").push(value);
+                Ok(())
+            })
+        },
+        tools,
+    )
+    .await
+    .expect("terminal sync must succeed");
+    let submitted = captured.lock().unwrap().clone();
+    (submitted, records)
+}
+
+/// New behavior: syncing creates exactly one independent gateway provider per
+/// requested tool, carrying the local base URL, the default local key and the
+/// gateway model mapping, and never auto-activating it.
+#[tokio::test]
+async fn terminal_sync_with_seam_creates_one_gateway_provider_per_tool() {
+    let _home = temp_home("terminal-sync-seam-create");
+    let config = gateway_config(17688);
     super::storage::write_config(&config).unwrap();
     let local_base_url = super::storage::local_base_url(config.port);
+
+    let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = captured.clone();
+    let records = super::commands::apply_terminal_sync_with(
+        &json!({ "providers": [] }),
+        move |value| -> super::commands::UpsertFuture {
+            let sink = sink.clone();
+            Box::pin(async move {
+                sink.lock().expect("capture lock").push(value);
+                Ok(())
+            })
+        },
+        vec!["opencode".to_string(), "codex".to_string()],
+    )
+    .await
+    .expect("terminal sync must succeed");
+
+    let submitted = captured.lock().unwrap().clone();
+    assert_eq!(submitted.len(), 2, "exactly one upsert per tool: {submitted:?}");
+
+    let by_tool = |tool: &str| {
+        submitted
+            .iter()
+            .find(|value| value["tool"] == tool)
+            .unwrap_or_else(|| panic!("missing submitted record for tool {tool}"))
+    };
+
+    let opencode = by_tool("opencode");
+    assert!(!opencode["id"].as_str().unwrap_or("").is_empty());
+    assert_eq!(opencode["name"], "API Gateway");
+    assert_eq!(opencode["base_url"], local_base_url.as_str());
+    assert_eq!(opencode["api_key"], "local-key-123");
+    assert_eq!(opencode["tool_config"]["api_fusion_gateway"], true);
+    assert_eq!(opencode["provider_key"], "api_gateway");
+    assert_eq!(
+        opencode["tool_config"]["options"]["baseURL"],
+        local_base_url.as_str()
+    );
+    assert_eq!(opencode["tool_config"]["options"]["apiKey"], "local-key-123");
+    assert_eq!(
+        opencode["tool_config"]["models"],
+        json!({
+            "gpt-4o": { "name": "GPT-4o" },
+            "ds": { "name": "deepseek-chat" },
+        })
+    );
+    assert!(opencode.get("active").is_none(), "must never auto-activate");
+    assert!(opencode.get("is_active").is_none(), "must never auto-activate");
+
+    let codex = by_tool("codex");
+    assert!(!codex["id"].as_str().unwrap_or("").is_empty());
+    assert_eq!(codex["name"], "API Gateway");
+    assert_eq!(codex["base_url"], local_base_url.as_str());
+    assert_eq!(codex["api_key"], "local-key-123");
+    assert_eq!(codex["tool_config"]["api_fusion_gateway"], true);
+    assert_eq!(codex["tool_config"]["wire_api"], "chat");
+    assert!(codex.get("provider_key").is_none(), "codex has no provider_key");
+    assert!(
+        codex["tool_config"].get("options").is_none(),
+        "codex has no options block"
+    );
+    assert!(codex.get("active").is_none(), "must never auto-activate");
+    assert!(codex.get("is_active").is_none(), "must never auto-activate");
+
+    assert_ne!(opencode["id"], codex["id"], "each tool gets its own provider");
+
+    assert_eq!(records.len(), 2);
+    for record in &records {
+        assert_eq!(record.synced_key_id, "k1");
+        assert_eq!(record.synced_base_url, local_base_url);
+        assert!(!record.provider_id.is_empty());
+        assert_eq!(
+            by_tool(&record.tool)["id"].as_str(),
+            Some(record.provider_id.as_str())
+        );
+    }
+    let mut record_tools: Vec<&str> = records.iter().map(|record| record.tool.as_str()).collect();
+    record_tools.sort();
+    assert_eq!(record_tools, vec!["codex", "opencode"]);
+
+    let persisted = super::storage::read_config().unwrap().terminal_syncs;
+    assert_eq!(persisted.len(), 2, "one ledger entry per tool: {persisted:?}");
+    for record in &records {
+        assert!(
+            persisted.iter().any(|entry| entry == record),
+            "returned record must be persisted: {record:?}"
+        );
+    }
+}
+
+/// Re-syncing the same tools must not duplicate the ledger and must reuse the
+/// provider ids that are already present in the terminal service provider list.
+#[tokio::test]
+async fn terminal_sync_with_seam_reuses_provider_per_tool_without_duplicate_ledger() {
+    let _home = temp_home("terminal-sync-seam-idempotent");
+    super::storage::write_config(&gateway_config(17688)).unwrap();
+
+    let tools = vec!["opencode".to_string(), "codex".to_string()];
+    let first_captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = first_captured.clone();
+    let first = super::commands::apply_terminal_sync_with(
+        &json!({ "providers": [] }),
+        move |value| -> super::commands::UpsertFuture {
+            let sink = sink.clone();
+            Box::pin(async move {
+                sink.lock().expect("capture lock").push(value);
+                Ok(())
+            })
+        },
+        tools.clone(),
+    )
+    .await
+    .expect("first sync must succeed");
+    assert_eq!(first.len(), 2);
+    let first_payloads = first_captured.lock().unwrap().clone();
+    assert_eq!(first_payloads.len(), 2);
+
+    // Real life: the upserted records now appear in the terminal provider list.
+    let providers_data = json!({ "providers": first_payloads.clone() });
+    let second_captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = second_captured.clone();
+    let second = super::commands::apply_terminal_sync_with(
+        &providers_data,
+        move |value| -> super::commands::UpsertFuture {
+            let sink = sink.clone();
+            Box::pin(async move {
+                sink.lock().expect("capture lock").push(value);
+                Ok(())
+            })
+        },
+        tools,
+    )
+    .await
+    .expect("second sync must succeed");
+    assert_eq!(second.len(), 2);
+    let second_payloads = second_captured.lock().unwrap().clone();
+
+    for tool in ["opencode", "codex"] {
+        let first_id = first_payloads
+            .iter()
+            .find(|value| value["tool"] == tool)
+            .unwrap_or_else(|| panic!("first run missing {tool}"))["id"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let second_id = second_payloads
+            .iter()
+            .find(|value| value["tool"] == tool)
+            .unwrap_or_else(|| panic!("second run missing {tool}"))["id"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        assert_eq!(
+            first_id, second_id,
+            "re-sync must reuse the same provider id for {tool}"
+        );
+    }
+
+    let persisted = super::storage::read_config().unwrap().terminal_syncs;
+    assert_eq!(
+        persisted.len(),
+        2,
+        "re-syncing must not duplicate ledger entries: {persisted:?}"
+    );
+    for record in &second {
+        assert!(persisted.iter().any(|entry| entry == record));
+    }
+}
+
+/// When a tool already has a ledger entry whose `provider_id` matches a marked
+/// gateway provider in the terminal list (with the same tool), the submitted
+/// payload reuses that id instead of creating a new provider.
+#[tokio::test]
+async fn terminal_sync_with_seam_reuses_ledger_provider_marked_in_providers_data() {
+    let _home = temp_home("terminal-sync-seam-ledger-reuse");
+    let mut config = gateway_config(17688);
+    for (provider_id, tool) in [("managed-oc", "opencode"), ("managed-cx", "codex")] {
+        config.terminal_syncs.push(TerminalSyncRecord {
+            provider_id: provider_id.to_string(),
+            tool: tool.to_string(),
+            synced_key_id: "k-old".to_string(),
+            synced_base_url: "http://127.0.0.1:1".to_string(),
+            synced_at: 9,
+        });
+    }
+    super::storage::write_config(&config).unwrap();
 
     let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = captured.clone();
@@ -3295,150 +3868,192 @@ async fn terminal_sync_with_seam_merges_selected_targets_and_preserves_fields() 
                 Ok(())
             })
         },
-        vec!["oc-1".to_string(), "cx-1".to_string()],
+        vec!["opencode".to_string(), "codex".to_string()],
     )
     .await
-    .expect("terminal sync must succeed");
+    .expect("sync must succeed");
 
     let submitted = captured.lock().unwrap().clone();
-    assert_eq!(
-        submitted.len(),
-        2,
-        "upsert calls must match target_ids: {submitted:?}"
-    );
-    assert!(
-        submitted.iter().all(|value| value["id"] != "oc-2"),
-        "an unselected target must not be upserted: {submitted:?}"
-    );
-
-    let by_id = |id: &str| {
+    assert_eq!(submitted.len(), 2);
+    let by_tool = |tool: &str| {
         submitted
             .iter()
-            .find(|value| value["id"] == id)
-            .unwrap_or_else(|| panic!("missing submitted record for {id}"))
+            .find(|value| value["tool"] == tool)
+            .unwrap_or_else(|| panic!("missing submitted record for tool {tool}"))
     };
-
-    let opencode = by_id("oc-1");
-    assert_eq!(opencode["base_url"], local_base_url.as_str());
-    assert_eq!(opencode["api_key"], "local-key-123");
-    assert_eq!(opencode["name"], "My OpenCode");
-    assert_eq!(opencode["model"], "gpt-x");
-    assert_eq!(opencode["icon"], "star");
-    assert_eq!(opencode["is_enabled"], false);
-    assert_eq!(opencode["tool_config"]["keep"], true);
-
-    let codex = by_id("cx-1");
-    assert_eq!(codex["base_url"], local_base_url.as_str());
-    assert_eq!(codex["api_key"], "local-key-123");
-    assert_eq!(codex["name"], "My Codex");
-    assert_eq!(codex["model"], "gpt-y");
-    assert_eq!(codex["icon"], "bolt");
-    assert_eq!(codex["is_enabled"], true);
-    assert_eq!(codex["tool_config"]["nested"]["keep"], 42);
-
-    assert_eq!(records.len(), 2);
+    assert_eq!(by_tool("opencode")["id"], "managed-oc");
+    assert_eq!(by_tool("codex")["id"], "managed-cx");
+    assert!(
+        submitted.iter().all(|value| value["tool"] != "claude"),
+        "an unrelated legacy provider must not be touched: {submitted:?}"
+    );
     for record in &records {
+        assert!(
+            record.provider_id == "managed-oc" || record.provider_id == "managed-cx",
+            "ledger provider ids must be reused: {record:?}"
+        );
         assert_eq!(record.synced_key_id, "k1");
-        assert_eq!(record.synced_base_url, local_base_url);
     }
-    let mut tools: Vec<&str> = records.iter().map(|record| record.tool.as_str()).collect();
-    tools.sort();
-    assert_eq!(tools, vec!["codex", "opencode"]);
+
+    let persisted = super::storage::read_config().unwrap().terminal_syncs;
+    assert_eq!(persisted.len(), 2, "no ledger duplicates: {persisted:?}");
+    assert_eq!(
+        persisted
+            .iter()
+            .filter(|record| record.tool == "opencode")
+            .count(),
+        1
+    );
+    assert_eq!(
+        persisted
+            .iter()
+            .filter(|record| record.tool == "codex")
+            .count(),
+        1
+    );
 }
 
-/// Finding B: a successful sync refreshes the persisted ledger to this run's
-/// default key id and local base URL, and re-running it for the same providers
-/// replaces the entries instead of accumulating duplicates (AC-018).
+/// Stale-ledger protection: a ledger `provider_id` that matches a same-tool
+/// provider WITHOUT the gateway marker belongs to the user and must not be
+/// reused. With no marked gateway present, a fresh UUID v4 is generated and the
+/// returned/persisted ledger records that fresh id.
 #[tokio::test]
-async fn terminal_sync_with_seam_refreshes_ledger_without_duplicates() {
-    let _home = temp_home("terminal-sync-seam-ledger");
-    let mut config = FusionConfig::default();
-    config.port = 17688;
-    config.keys.push(key_named("k1", "local-key-123"));
+async fn terminal_sync_with_seam_does_not_reuse_unmarked_stale_ledger_provider() {
+    let _home = temp_home("terminal-sync-seam-stale-ledger");
+    let mut config = gateway_config(17688);
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "user-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k-old".to_string(),
+        synced_base_url: "http://127.0.0.1:1".to_string(),
+        synced_at: 9,
+    });
     super::storage::write_config(&config).unwrap();
-    let local_base_url = super::storage::local_base_url(config.port);
 
-    let ids = vec!["oc-1".to_string(), "cx-1".to_string()];
-    let payload = terminal_providers_payload();
-    let first = super::commands::apply_terminal_sync_with(
-        &payload,
-        |_value| -> super::commands::UpsertFuture { Box::pin(async move { Ok(()) }) },
-        ids.clone(),
-    )
-    .await
-    .expect("first sync must succeed");
-    assert_eq!(first.len(), 2);
+    let providers_data = json!({ "providers": [unmarked_user_provider("user-oc", "opencode")] });
+    let (submitted, records) =
+        capture_terminal_sync(&providers_data, vec!["opencode".to_string()]).await;
 
-    let reloaded = super::storage::read_config().unwrap();
-    assert_eq!(
-        reloaded.terminal_syncs.len(),
-        2,
-        "one ledger entry per synced provider: {:?}",
-        reloaded.terminal_syncs
+    assert_eq!(submitted.len(), 1, "one upsert for the requested tool: {submitted:?}");
+    let submitted_id = submitted[0]["id"].as_str().unwrap_or("");
+    assert_ne!(
+        submitted_id, "user-oc",
+        "a stale ledger must not claim the user's own provider record: {submitted:?}"
     );
-    let mut ledger_ids: Vec<String> = reloaded
-        .terminal_syncs
-        .iter()
-        .map(|record| record.provider_id.clone())
-        .collect();
-    ledger_ids.sort();
-    assert_eq!(ledger_ids, vec!["cx-1".to_string(), "oc-1".to_string()]);
-    for record in &reloaded.terminal_syncs {
-        assert_eq!(record.synced_key_id, "k1");
-        assert_eq!(record.synced_base_url, local_base_url);
-    }
-    let mut expected: Vec<(&str, &str, &str)> = first
-        .iter()
-        .map(|record| {
-            (
-                record.provider_id.as_str(),
-                record.synced_key_id.as_str(),
-                record.synced_base_url.as_str(),
-            )
-        })
-        .collect();
-    expected.sort();
-    let mut persisted: Vec<(&str, &str, &str)> = reloaded
-        .terminal_syncs
-        .iter()
-        .map(|record| {
-            (
-                record.provider_id.as_str(),
-                record.synced_key_id.as_str(),
-                record.synced_base_url.as_str(),
-            )
-        })
-        .collect();
-    persisted.sort();
-    assert_eq!(persisted, expected, "returned records must match the ledger");
-
-    let second = super::commands::apply_terminal_sync_with(
-        &payload,
-        |_value| -> super::commands::UpsertFuture { Box::pin(async move { Ok(()) }) },
-        ids,
-    )
-    .await
-    .expect("second sync must succeed");
-    assert_eq!(second.len(), 2);
-
-    let reloaded = super::storage::read_config().unwrap();
+    let parsed = uuid::Uuid::parse_str(submitted_id)
+        .expect("a stale ledger with no marked gateway must fall back to a fresh provider id");
     assert_eq!(
-        reloaded.terminal_syncs.len(),
-        2,
-        "re-syncing the same provider must replace, not duplicate, ledger entries: {:?}",
-        reloaded.terminal_syncs
+        parsed.get_version_num(),
+        4,
+        "fresh provider ids are UUID v4: {submitted_id}"
+    );
+
+    assert_eq!(
+        records.len(),
+        1,
+        "exactly one ledger record for the requested tool"
+    );
+    assert_eq!(
+        records[0].provider_id, submitted_id,
+        "the returned ledger must record the submitted provider id"
+    );
+    let persisted = super::storage::read_config().unwrap().terminal_syncs;
+    assert_eq!(
+        persisted[0].provider_id, submitted_id,
+        "the persisted ledger must record the submitted provider id"
     );
 }
 
-/// Finding B atomicity: when the injected upsert fails, the pipeline returns the
-/// error and the persisted ledger keeps its previous value, so the ledger never
-/// claims a sync that did not happen (AC-017/AC-018).
+/// Stale-ledger protection with a marked gateway also present: the unmarked user
+/// record must be skipped and the marked gateway reused instead.
+#[tokio::test]
+async fn terminal_sync_with_seam_prefers_marker_over_unmarked_stale_ledger() {
+    let _home = temp_home("terminal-sync-seam-stale-ledger-marker");
+    let mut config = gateway_config(17688);
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "user-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k-old".to_string(),
+        synced_base_url: "http://127.0.0.1:1".to_string(),
+        synced_at: 9,
+    });
+    super::storage::write_config(&config).unwrap();
+
+    let (submitted, records) = capture_terminal_sync(
+        &terminal_providers_payload(),
+        vec!["opencode".to_string()],
+    )
+    .await;
+
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(
+        submitted[0]["id"], "managed-oc",
+        "the marked gateway must be reused instead of the user record: {submitted:?}"
+    );
+    assert_eq!(records[0].provider_id, "managed-oc");
+}
+
+/// Marker-only fallback: with no ledger entry at all, a same-tool provider that
+/// carries the gateway marker is reused.
+#[tokio::test]
+async fn terminal_sync_with_seam_reuses_marker_provider_without_any_ledger() {
+    let _home = temp_home("terminal-sync-seam-marker-no-ledger");
+    super::storage::write_config(&gateway_config(17688)).unwrap();
+    assert!(
+        super::storage::read_config().unwrap().terminal_syncs.is_empty(),
+        "precondition: no ledger entry"
+    );
+
+    let (submitted, records) = capture_terminal_sync(
+        &terminal_providers_payload(),
+        vec!["opencode".to_string()],
+    )
+    .await;
+
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(
+        submitted[0]["id"], "managed-oc",
+        "the marked gateway must be reused without a ledger: {submitted:?}"
+    );
+    assert_eq!(records[0].provider_id, "managed-oc");
+}
+
+/// Marker-only fallback when the ledger points at an id absent from the terminal
+/// provider list: the marked gateway is reused, not the missing id.
+#[tokio::test]
+async fn terminal_sync_with_seam_reuses_marker_provider_when_ledger_id_absent() {
+    let _home = temp_home("terminal-sync-seam-marker-missing-ledger-id");
+    let mut config = gateway_config(17688);
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "missing-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k-old".to_string(),
+        synced_base_url: "http://127.0.0.1:1".to_string(),
+        synced_at: 9,
+    });
+    super::storage::write_config(&config).unwrap();
+
+    let (submitted, records) = capture_terminal_sync(
+        &terminal_providers_payload(),
+        vec!["opencode".to_string()],
+    )
+    .await;
+
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(
+        submitted[0]["id"], "managed-oc",
+        "an absent ledger id must fall back to the marked gateway: {submitted:?}"
+    );
+    assert_eq!(records[0].provider_id, "managed-oc");
+}
+
+/// Atomicity: when the injected upsert fails, the pipeline returns the error and
+/// the persisted ledger keeps its previous value, so the ledger never claims a
+/// sync that did not happen.
 #[tokio::test]
 async fn terminal_sync_with_seam_aborts_without_writing_ledger_on_upsert_error() {
     let _home = temp_home("terminal-sync-seam-error");
-    let mut config = FusionConfig::default();
-    config.port = 17688;
-    config.keys.push(key_named("k1", "local-key-123"));
+    let mut config = gateway_config(17688);
     config.terminal_syncs.push(TerminalSyncRecord {
         provider_id: "existing".to_string(),
         tool: "opencode".to_string(),
@@ -3452,7 +4067,7 @@ async fn terminal_sync_with_seam_aborts_without_writing_ledger_on_upsert_error()
     let calls = Arc::new(Mutex::new(0usize));
     let calls_for_upsert = calls.clone();
     let error = super::commands::apply_terminal_sync_with(
-        &terminal_providers_payload(),
+        &json!({ "providers": [] }),
         move |_value| -> super::commands::UpsertFuture {
             let calls = calls_for_upsert.clone();
             Box::pin(async move {
@@ -3467,7 +4082,7 @@ async fn terminal_sync_with_seam_aborts_without_writing_ledger_on_upsert_error()
                 Ok(())
             })
         },
-        vec!["oc-1".to_string(), "cx-1".to_string()],
+        vec!["opencode".to_string(), "codex".to_string()],
     )
     .await
     .unwrap_err();
@@ -3476,16 +4091,232 @@ async fn terminal_sync_with_seam_aborts_without_writing_ledger_on_upsert_error()
         error.contains("injected upsert failure"),
         "error must surface the upsert failure: {error}"
     );
-    assert_eq!(
-        *calls.lock().unwrap(),
-        2,
-        "every selected target up to the failure is attempted"
-    );
+    assert_eq!(*calls.lock().unwrap(), 2, "the failing target is attempted");
 
     let after = super::storage::read_config().unwrap().terminal_syncs;
+    assert_eq!(after, before, "ledger must be unchanged when an upsert fails");
+}
+
+#[tokio::test]
+async fn terminal_sync_with_seam_rejects_empty_target_tools() {
+    let _home = temp_home("terminal-sync-seam-empty");
+    super::storage::write_config(&gateway_config(17688)).unwrap();
+
+    let calls = Arc::new(Mutex::new(0usize));
+    let calls_for_upsert = calls.clone();
+    let error = super::commands::apply_terminal_sync_with(
+        &json!({ "providers": [] }),
+        move |_value| -> super::commands::UpsertFuture {
+            let calls = calls_for_upsert.clone();
+            Box::pin(async move {
+                *calls.lock().expect("call counter") += 1;
+                Ok(())
+            })
+        },
+        Vec::new(),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.contains("target"), "error: {error}");
+    assert_eq!(*calls.lock().unwrap(), 0, "nothing may be upserted");
+}
+
+#[tokio::test]
+async fn terminal_sync_with_seam_rejects_unsupported_tools() {
+    let _home = temp_home("terminal-sync-seam-unsupported");
+    super::storage::write_config(&gateway_config(17688)).unwrap();
+
+    let error = super::commands::apply_terminal_sync_with(
+        &json!({ "providers": [] }),
+        |_value| -> super::commands::UpsertFuture { Box::pin(async move { Ok(()) }) },
+        vec!["claude".to_string()],
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.contains("unsupported"), "error: {error}");
+}
+
+#[tokio::test]
+async fn terminal_sync_with_seam_requires_an_enabled_local_key() {
+    let _home = temp_home("terminal-sync-seam-no-key");
+    let mut config = gateway_config(17688);
+    config.keys[0].enabled = false;
+    super::storage::write_config(&config).unwrap();
+
+    let error = super::commands::apply_terminal_sync_with(
+        &json!({ "providers": [] }),
+        |_value| -> super::commands::UpsertFuture { Box::pin(async move { Ok(()) }) },
+        vec!["opencode".to_string()],
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.contains("local API key"), "error: {error}");
+}
+
+// ---------------------------------------------------------------------------
+// Terminal targets projection: `terminal_targets_from` is the pure function the
+// `api_fusion_terminal_targets` command delegates to. It must recognize a
+// managed gateway only through the marker, never through a stale ledger that
+// points at a user-owned provider.
+// ---------------------------------------------------------------------------
+
+fn target_for<'a>(
+    targets: &'a [super::TerminalTarget],
+    tool: &str,
+) -> &'a super::TerminalTarget {
+    targets
+        .iter()
+        .find(|target| target.tool == tool)
+        .unwrap_or_else(|| panic!("missing terminal target for {tool}"))
+}
+
+/// One target per supported tool, in the canonical order, with the display
+/// names the UI expects.
+#[test]
+fn terminal_targets_from_lists_supported_tools_in_order() {
+    let config = FusionConfig::default();
+    let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }));
+
+    assert_eq!(targets.len(), 2, "one target per supported tool: {targets:?}");
+    let tools: Vec<&str> = targets.iter().map(|target| target.tool.as_str()).collect();
+    assert_eq!(tools, vec!["opencode", "codex"]);
+    assert_eq!(targets[0].name, "OpenCode");
+    assert_eq!(targets[1].name, "Codex");
+}
+
+/// No ledger and no marker provider: every target is unsynced and pending.
+#[test]
+fn terminal_targets_from_reports_unsynced_without_ledger_or_marker() {
+    let mut config = FusionConfig::default();
+    config.keys.push(key_named("k1", "local-key-123"));
+
+    let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }));
+    for target in &targets {
+        assert_eq!(
+            target.provider_id, None,
+            "no provider may be claimed: {target:?}"
+        );
+        assert!(!target.synced, "must be unsynced: {target:?}");
+        assert!(target.pending_sync, "must be pending when unsynced: {target:?}");
+    }
+}
+
+/// A ledger id that matches a same-tool provider WITHOUT the marker is stale and
+/// must not make the target look synced; the user record stays untouched.
+#[test]
+fn terminal_targets_from_does_not_claim_unmarked_user_provider() {
+    let mut config = gateway_config(17688);
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "user-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_at: 10,
+    });
+    let providers_data = json!({ "providers": [unmarked_user_provider("user-oc", "opencode")] });
+
+    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let opencode = target_for(&targets, "opencode");
     assert_eq!(
-        after, before,
-        "ledger must be unchanged when an upsert fails"
+        opencode.provider_id, None,
+        "a stale ledger must not claim a user record: {opencode:?}"
+    );
+    assert!(!opencode.synced);
+    assert!(opencode.pending_sync);
+}
+
+/// Marker provider present and the ledger matches the default key and local base
+/// url: the target is synced and not pending.
+#[test]
+fn terminal_targets_from_marks_synced_when_marker_and_ledger_match() {
+    let mut config = gateway_config(17688);
+    config.default_key_id = Some("k1".to_string());
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "managed-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_at: 10,
+    });
+    let providers_data =
+        json!({ "providers": [managed_gateway_provider("managed-oc", "opencode")] });
+
+    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let opencode = target_for(&targets, "opencode");
+    assert_eq!(opencode.provider_id.as_deref(), Some("managed-oc"));
+    assert!(opencode.synced);
+    assert!(
+        !opencode.pending_sync,
+        "matching key and base url require no re-sync: {opencode:?}"
+    );
+    assert_eq!(opencode.synced_key_id.as_deref(), Some("k1"));
+    assert_eq!(opencode.synced_at, Some(10));
+
+    let codex = target_for(&targets, "codex");
+    assert_eq!(codex.provider_id, None);
+    assert!(!codex.synced);
+    assert!(codex.pending_sync);
+}
+
+/// The ledger survives but the managed provider was deleted: the target is
+/// unsynced and pending again.
+#[test]
+fn terminal_targets_from_reports_unsynced_when_managed_provider_deleted() {
+    let mut config = gateway_config(17688);
+    config.default_key_id = Some("k1".to_string());
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "managed-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_at: 10,
+    });
+
+    let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }));
+    let opencode = target_for(&targets, "opencode");
+    assert_eq!(opencode.provider_id, None);
+    assert!(!opencode.synced);
+    assert!(
+        opencode.pending_sync,
+        "a deleted managed provider must require a re-sync: {opencode:?}"
+    );
+}
+
+/// The managed provider is still there, but the ledger key id or base url
+/// drifted: the target stays synced yet must be pending.
+#[test]
+fn terminal_targets_from_marks_pending_when_ledger_key_or_base_url_drifted() {
+    let mut config = gateway_config(17688);
+    config.default_key_id = Some("k1".to_string());
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "managed-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k-old".to_string(),
+        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_at: 10,
+    });
+    let providers_data =
+        json!({ "providers": [managed_gateway_provider("managed-oc", "opencode")] });
+
+    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let opencode = target_for(&targets, "opencode");
+    assert!(opencode.synced, "the record still points at the marked provider");
+    assert!(
+        opencode.pending_sync,
+        "a drifted key id must require a re-sync: {opencode:?}"
+    );
+
+    config.terminal_syncs[0].synced_key_id = "k1".to_string();
+    config.terminal_syncs[0].synced_base_url = "http://127.0.0.1:1".to_string();
+    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let opencode = target_for(&targets, "opencode");
+    assert!(opencode.synced, "the record still points at the marked provider");
+    assert!(
+        opencode.pending_sync,
+        "a drifted base url must require a re-sync: {opencode:?}"
     );
 }
 
@@ -3777,6 +4608,7 @@ async fn default_model_fallback_requires_a_matching_provider_protocol() {
         local_model: "other-local".to_string(),
         upstream_model: "other-remote".to_string(),
         protocol: None,
+        display_name: None,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -4005,6 +4837,7 @@ async fn mapping_without_protocol_inherits_the_provider_protocol() {
         local_model: "legacy-local".to_string(),
         upstream_model: "legacy-remote".to_string(),
         protocol: None,
+        display_name: None,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -4354,6 +5187,7 @@ async fn cross_record_candidates_are_selected_by_each_records_protocol() {
         local_model: "shared-model".to_string(),
         upstream_model: "remote-chat".to_string(),
         protocol: None,
+        display_name: None,
     }];
     let mut responses_record = upstream_provider(
         "responses-record",
@@ -4367,6 +5201,7 @@ async fn cross_record_candidates_are_selected_by_each_records_protocol() {
         local_model: "shared-model".to_string(),
         upstream_model: "remote-responses".to_string(),
         protocol: None,
+        display_name: None,
     }];
     config.providers.push(chat_record);
     config.providers.push(responses_record);

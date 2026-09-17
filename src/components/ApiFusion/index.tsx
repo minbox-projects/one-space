@@ -18,7 +18,6 @@ import {
   apiFusionTerminalTargets,
   apiFusionUpsertKey,
   apiFusionUpsertProvider,
-  isTerminalSyncPending,
   localBaseUrl,
   resolveDefaultKeyId,
   type FusionConfig,
@@ -219,11 +218,11 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
       await applyConfig(await apiFusionSetDefaultKey(keyId));
     }, t("apiFusionSaved", "Saved."));
 
-  const handleToggleTarget = (providerId: string) =>
+  const handleToggleTarget = (tool: string) =>
     setSelectedTargetIds((prev) =>
-      prev.includes(providerId)
-        ? prev.filter((id) => id !== providerId)
-        : [...prev, providerId],
+      prev.includes(tool)
+        ? prev.filter((id) => id !== tool)
+        : [...prev, tool],
     );
 
   const handleConfigureTargets = () =>
@@ -303,9 +302,9 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
     );
   }
 
-  const pendingSyncCount = config
-    ? (targets ?? []).filter((target) => isTerminalSyncPending(target, config)).length
-    : 0;
+  const pendingSyncCount = (targets ?? []).filter(
+    (target) => target.pending_sync,
+  ).length;
   const autoDisabledCount = status?.auto_disabled_count ?? 0;
 
   const tabs: Array<{

@@ -30,6 +30,8 @@ pub struct ModelMapping {
     pub upstream_model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<UpstreamProtocol>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 impl ModelMapping {

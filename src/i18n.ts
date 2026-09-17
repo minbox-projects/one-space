@@ -436,9 +436,13 @@ const resources = {
       apiFusionProtocolResponses: "Responses (/responses)",
       apiFusionProtocolInherit: "Inherit from provider",
       apiFusionModelMappings: "Model mappings",
+      apiFusionModelMappingsDesc:
+        "Map local request model names to upstream models. Optionally set a display name shown in the gateway for each model.",
       apiFusionAddMapping: "Add mapping",
       apiFusionNoMappings: "No model mappings configured.",
       apiFusionLocalModelPlaceholder: "local model",
+      apiFusionLocalModelNamePlaceholder: "display name",
+      apiFusionLocalModelNameAria: "Local model name {{index}}",
       apiFusionUpstreamModelPlaceholder: "upstream model",
       apiFusionLocalModelAria: "Local model {{index}}",
       apiFusionUpstreamModelAria: "Upstream model {{index}}",
@@ -475,12 +479,12 @@ const resources = {
       apiFusionNoValue: "not set",
       apiFusionTerminalSync: "Terminal sync",
       apiFusionTerminalSyncDesc:
-        "Write the local API address and default local key to the selected OpenCode / Codex records. Only base_url and api_key change.",
-      apiFusionConfigureSelected: "Configure selected",
-      apiFusionSyncSelected: "Sync selected",
+        "Write the gateway endpoint, default key, and model mappings as an independent provider into each selected tool. It is not activated automatically and can be synced again to update.",
+      apiFusionConfigureSelected: "Add provider",
+      apiFusionSyncSelected: "Sync again",
       apiFusionDefaultKeyRequired:
         "Add and enable a local key before configuring terminals.",
-      apiFusionNoTerminalTargets: "No OpenCode or Codex terminal targets found.",
+      apiFusionNoTerminalTargets: "No supported terminal tools available.",
       apiFusionPendingSync: "Pending sync",
       apiFusionSynced: "Synced",
       apiFusionLoadFailed: "Failed to load API Gateway configuration.",
@@ -515,7 +519,7 @@ const resources = {
         "Pass the key as Bearer token in the Authorization header: `Authorization: Bearer <key>`.",
       apiFusionDefaultKeyRequiredTitle: "Local default key required",
       apiFusionNoTerminalTargetsGuide:
-        "Install or configure OpenCode / Codex providers first to enable automatic endpoint synchronization.",
+        "OpenCode and Codex are always listed; install the CLI if a tool is missing.",
       protocolRouterTokenLabel: "Router Token",
       protocolRouterTokenDesc:
         "Claude profiles use this token to access the local router. Rotate it here if you need to invalidate older profile credentials.",
@@ -3792,9 +3796,13 @@ const resources = {
       apiFusionProtocolResponses: "Responses (/responses)",
       apiFusionProtocolInherit: "跟随服务商协议",
       apiFusionModelMappings: "模型映射",
+      apiFusionModelMappingsDesc:
+        "把本地请求模型名映射到远端模型，并可为每个模型设置网关中显示的名称。",
       apiFusionAddMapping: "新增映射",
       apiFusionNoMappings: "尚未配置模型映射。",
       apiFusionLocalModelPlaceholder: "本地模型",
+      apiFusionLocalModelNamePlaceholder: "网关中显示的名称",
+      apiFusionLocalModelNameAria: "本地模型名称 {{index}}",
       apiFusionUpstreamModelPlaceholder: "远端模型",
       apiFusionLocalModelAria: "本地模型 {{index}}",
       apiFusionUpstreamModelAria: "远端模型 {{index}}",
@@ -3831,11 +3839,11 @@ const resources = {
       apiFusionNoValue: "未设置",
       apiFusionTerminalSync: "终端同步",
       apiFusionTerminalSyncDesc:
-        "把本地 Api 地址与默认本地 Key 写入所选 OpenCode / Codex 记录，仅修改 base_url 与 api_key。",
-      apiFusionConfigureSelected: "一键配置所选",
-      apiFusionSyncSelected: "同步所选",
+        "把网关入口、默认 Key 与模型映射作为独立服务商写入所选工具，不会自动启用，可再次同步以更新。",
+      apiFusionConfigureSelected: "添加服务商",
+      apiFusionSyncSelected: "再次同步",
       apiFusionDefaultKeyRequired: "请先新增并启用一个本地 Key，再配置终端。",
-      apiFusionNoTerminalTargets: "未找到 OpenCode 或 Codex 终端记录。",
+      apiFusionNoTerminalTargets: "没有可用的受支持终端工具。",
       apiFusionPendingSync: "待同步",
       apiFusionSynced: "已同步",
       apiFusionLoadFailed: "加载 API 网关配置失败。",
@@ -3867,7 +3875,7 @@ const resources = {
         "在请求头中传入 Bearer 密钥：`Authorization: Bearer <key>`。",
       apiFusionDefaultKeyRequiredTitle: "需要默认本地密钥",
       apiFusionNoTerminalTargetsGuide:
-        "请先安装或配置 OpenCode / Codex 服务商记录，即可一键自动同步本地入口。",
+        "OpenCode 与 Codex 始终会列出；如缺少某个工具，请先安装对应的 CLI。",
       protocolRouterTokenLabel: "Router Token",
       protocolRouterTokenDesc:
         "Claude Profile 会使用这个 Token 访问本地协议路由。如需让旧凭证失效，请在这里轮换。",
