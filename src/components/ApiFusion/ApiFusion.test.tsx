@@ -133,29 +133,13 @@ describe("ApiFusion", () => {
     });
   });
 
-  it("按工具提交所选目标名，且只渲染受支持工具", async () => {
+  it("只渲染受支持工具，且顶部不再渲染全局操作按钮", async () => {
     const store: Store = {
       config: makeConfig({
-        providers: [
-          {
-            id: "p1",
-            name: "Upstream A",
-            base_url: "https://api.a.example",
-            api_key: API_FUSION_KEY_MASK,
-            default_model: "gpt-4o",
-            mappings: [],
-            enabled: true,
-            auto_disabled: false,
-            disabled_reason: null,
-            disabled_at: null,
-            consecutive_failures: 0,
-            last_error_at: null,
-          },
-        ],
         keys: [{ id: "k1", label: "Main", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
         default_key_id: "k1",
       }),
-      status: makeStatus({ provider_count: 1, key_count: 1, default_key_id: "k1" }),
+      status: makeStatus({ key_count: 1, default_key_id: "k1" }),
       targets: [
         openCodeTarget({ provider_id: "gw-open" }),
         openCodeTarget({ provider_id: "gw-codex", tool: "codex", name: "Codex" }),
@@ -182,17 +166,198 @@ describe("ApiFusion", () => {
     expect(screen.queryByText("Antigravity")).not.toBeInTheDocument();
 
     const panel = within(screen.getByTestId("api-fusion-terminals"));
-    fireEvent.click(panel.getByRole("checkbox", { name: "OpenCode" }));
-    fireEvent.click(panel.getByRole("button", { name: /Add provider/ }));
+    // The header-level "Add provider / Sync again" actions must be gone:
+    // every button inside the panel belongs to a terminal target row.
+    const buttons = panel.getAllByRole("button");
+    expect(buttons.length).toBeGreaterThan(0);
+    for (const button of buttons) {
+      expect(button.closest('[data-testid^="api-fusion-target-"]')).not.toBeNull();
+    }
+    expect(
+      panel.queryByRole("button", { name: /sync again/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("待同步的行内显示添加，点击仅以该工具调用配置", async () => {
+    const store: Store = {
+      config: makeConfig({
+        keys: [{ id: "k1", label: "Main", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
+        default_key_id: "k1",
+      }),
+      status: makeStatus({ key_count: 1, default_key_id: "k1" }),
+      targets: [
+        openCodeTarget({ provider_id: "gw-open" }),
+        openCodeTarget({ provider_id: "gw-codex", tool: "codex", name: "Codex" }),
+      ],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    await screen.findByText("OpenCode");
+
+    const openRow = within(screen.getByTestId("api-fusion-target-opencode"));
+    const addButton = openRow.getByRole("button", { name: /add/i });
+    expect(addButton).toBeEnabled();
+    fireEvent.click(addButton);
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_fusion_configure_terminal", {
         targetTools: ["opencode"],
       }),
     );
+    const configureCalls = invokeMock.mock.calls.filter(
+      ([command]) => command === "api_fusion_configure_terminal",
+    );
+    expect(configureCalls).toHaveLength(1);
+    expect(invokeMock).not.toHaveBeenCalledWith("api_fusion_configure_terminal", {
+      targetTools: ["opencode", "codex"],
+    });
   });
 
-  it("默认本地 Key 为空时禁用添加与再次同步", async () => {
+  it("已添加的行内显示同步，点击仅以该工具调用同步", async () => {
+    const store: Store = {
+      config: makeConfig({
+        keys: [{ id: "k1", label: "Main", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
+        default_key_id: "k1",
+      }),
+      status: makeStatus({ key_count: 1, default_key_id: "k1" }),
+      targets: [
+        openCodeTarget({
+          provider_id: "gw-open",
+          synced: true,
+          pending_sync: false,
+          synced_key_id: "k1",
+          synced_at: 1,
+        }),
+        openCodeTarget({
+          provider_id: "gw-codex",
+          tool: "codex",
+          name: "Codex",
+          synced: true,
+          pending_sync: false,
+          synced_key_id: "k1",
+          synced_at: 1,
+        }),
+      ],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    await screen.findByText("OpenCode");
+
+    const openRow = within(screen.getByTestId("api-fusion-target-opencode"));
+    const syncButton = openRow.getByRole("button", { name: /sync/i });
+    expect(syncButton).toBeEnabled();
+    fireEvent.click(syncButton);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_sync_terminal", {
+        targetTools: ["opencode"],
+      }),
+    );
+    const syncCalls = invokeMock.mock.calls.filter(
+      ([command]) => command === "api_fusion_sync_terminal",
+    );
+    expect(syncCalls).toHaveLength(1);
+    expect(invokeMock).not.toHaveBeenCalledWith("api_fusion_sync_terminal", {
+      targetTools: ["opencode", "codex"],
+    });
+  });
+
+  it("已添加但 Key 或地址漂移（synced 为真且待同步）时行内显示同步并仅走同步通道", async () => {
+    const store: Store = {
+      config: makeConfig({
+        keys: [{ id: "k1", label: "Main", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
+        default_key_id: "k1",
+      }),
+      status: makeStatus({ key_count: 1, default_key_id: "k1" }),
+      targets: [
+        openCodeTarget({
+          provider_id: "gw-open",
+          // Gateway provider still exists, but the synced key/address drifted:
+          // the backend reports synced=true together with pending_sync=true.
+          synced: true,
+          pending_sync: true,
+          synced_key_id: "k0",
+          synced_at: 1,
+        }),
+      ],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    await screen.findByText("OpenCode");
+
+    const openRow = within(screen.getByTestId("api-fusion-target-opencode"));
+    const action = openRow.getByRole("button", { name: /sync/i });
+    expect(action).toBeEnabled();
+    expect(action).toHaveAccessibleName(/sync/i);
+    expect(action).not.toHaveAccessibleName(/sync again/i);
+    fireEvent.click(action);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_sync_terminal", {
+        targetTools: ["opencode"],
+      }),
+    );
+    const syncCalls = invokeMock.mock.calls.filter(
+      ([command]) => command === "api_fusion_sync_terminal",
+    );
+    expect(syncCalls).toHaveLength(1);
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "api_fusion_configure_terminal",
+      expect.anything(),
+    );
+  });
+
+  it("网关服务商被删除但同步台账仍在（synced 为假且 synced_key_id/synced_at 非空）时行内显示同步并仅走同步通道", async () => {
+    const store: Store = {
+      config: makeConfig({
+        keys: [{ id: "k1", label: "Main", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
+        default_key_id: "k1",
+      }),
+      status: makeStatus({ key_count: 1, default_key_id: "k1" }),
+      targets: [
+        openCodeTarget({
+          provider_id: null,
+          base_url: null,
+          // The managed gateway provider was removed by hand, so synced=false,
+          // but the local sync ledger still records a previous sync.
+          synced: false,
+          pending_sync: true,
+          synced_key_id: "k1",
+          synced_at: 1,
+        }),
+      ],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    await screen.findByText("OpenCode");
+
+    const openRow = within(screen.getByTestId("api-fusion-target-opencode"));
+    const action = openRow.getByRole("button", { name: /sync/i });
+    expect(action).toBeEnabled();
+    expect(action).toHaveAccessibleName(/sync/i);
+    expect(action).not.toHaveAccessibleName(/sync again/i);
+    fireEvent.click(action);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_sync_terminal", {
+        targetTools: ["opencode"],
+      }),
+    );
+    const syncCalls = invokeMock.mock.calls.filter(
+      ([command]) => command === "api_fusion_sync_terminal",
+    );
+    expect(syncCalls).toHaveLength(1);
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "api_fusion_configure_terminal",
+      expect.anything(),
+    );
+  });
+
+  it("默认本地 Key 为空时禁用行内操作按钮且不触发调用", async () => {
     const store: Store = {
       config: makeConfig({ keys: [], default_key_id: null }),
       status: makeStatus({ key_count: 0, default_key_id: null }),
@@ -206,14 +371,11 @@ describe("ApiFusion", () => {
     expect(screen.getByTestId("api-fusion-default-key-required")).toHaveTextContent(
       /Add and enable a local key/,
     );
-    const panel = within(screen.getByTestId("api-fusion-terminals"));
-    const configure = panel.getByRole("button", { name: /Add provider/ });
-    const sync = panel.getByRole("button", { name: /Sync again/ });
-    expect(configure).toBeDisabled();
-    expect(sync).toBeDisabled();
+    const openRow = within(screen.getByTestId("api-fusion-target-opencode"));
+    const action = openRow.getByRole("button", { name: /add/i });
+    expect(action).toBeDisabled();
 
-    fireEvent.click(configure);
-    fireEvent.click(sync);
+    fireEvent.click(action);
     expect(invokeMock).not.toHaveBeenCalledWith(
       "api_fusion_configure_terminal",
       expect.anything(),
@@ -224,7 +386,7 @@ describe("ApiFusion", () => {
     );
   });
 
-  it("依据台账判定待同步，再次同步后清除", async () => {
+  it("从未添加的行内显示添加，点击走配置通道并在配置后清除待同步", async () => {
     const store: Store = {
       config: makeConfig({
         keys: [
@@ -236,10 +398,8 @@ describe("ApiFusion", () => {
       targets: [
         openCodeTarget({
           provider_id: "gw-open",
-          synced: true,
+          synced: false,
           pending_sync: true,
-          synced_key_id: "k1",
-          synced_at: 1,
         }),
       ],
     };
@@ -252,7 +412,7 @@ describe("ApiFusion", () => {
           return store.status;
         case "api_fusion_terminal_targets":
           return store.targets;
-        case "api_fusion_sync_terminal": {
+        case "api_fusion_configure_terminal": {
           store.targets = [
             openCodeTarget({
               provider_id: "gw-open",
@@ -275,12 +435,11 @@ describe("ApiFusion", () => {
     // Pending status comes from the backend target payload, not local re-derivation.
     expect(screen.getByText("Pending sync")).toBeInTheDocument();
 
-    const panel = within(screen.getByTestId("api-fusion-terminals"));
-    fireEvent.click(panel.getByRole("checkbox", { name: "OpenCode" }));
-    fireEvent.click(panel.getByRole("button", { name: /Sync again/ }));
+    const openRow = within(screen.getByTestId("api-fusion-target-opencode"));
+    fireEvent.click(openRow.getByRole("button", { name: /add/i }));
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_sync_terminal", {
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_configure_terminal", {
         targetTools: ["opencode"],
       }),
     );
