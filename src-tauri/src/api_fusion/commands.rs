@@ -76,8 +76,9 @@ fn gateway_is_active(gateway: &FusionUpstreamProvider) -> bool {
 /// The record is always marked as an API Fusion gateway, carries the resolved
 /// default local key value as its `api_key` (top-level and, for opencode,
 /// `tool_config.options.apiKey`), and never carries an `active`/`is_active`
-/// flag. Opencode activation is applied separately via the service-provider
-/// active list after the upsert succeeds.
+/// flag. Opencode activation plus projection to opencode.json are applied
+/// separately via the service-provider active list and projection after the
+/// upsert succeeds.
 pub(in crate::api_fusion) fn build_gateway_provider(
     provider_id: &str,
     tool: &str,
@@ -509,8 +510,9 @@ pub(in crate::api_fusion) type UpsertFuture =
 /// local key value as its `api_key`), then refresh the ledger. Any
 /// upsert error aborts before the ledger is written, so the ledger never claims
 /// a sync that did not happen. The payload itself never carries an
-/// `active`/`is_active` flag; opencode activation is applied separately in
-/// `apply_terminal_sync` after the ledger is persisted.
+/// `active`/`is_active` flag; opencode activation plus projection to
+/// opencode.json are applied separately in `apply_terminal_sync` after the
+/// ledger is persisted.
 pub(in crate::api_fusion) async fn apply_terminal_sync_with<F>(
     providers_data: &serde_json::Value,
     mut upsert: F,
@@ -600,12 +602,21 @@ async fn apply_terminal_sync(
     )
     .await?;
     // Auto-activate the gateway provider under opencode so the synced endpoint
-    // takes effect; codex keeps its manual activation. A stale ledger entry
-    // that resolved to an unmarked user record never reaches here because the
-    // pipeline writes a fresh gateway record instead.
+    // takes effect, then project it to ~/.config/opencode/opencode.json so the
+    // entry (including options.apiKey) actually lands on disk; codex keeps its
+    // manual activation. A stale ledger entry that resolved to an unmarked user
+    // record never reaches here because the pipeline writes a fresh gateway
+    // record instead.
     for record in &records {
         if record.tool.eq_ignore_ascii_case("opencode") {
             crate::app_store::service_providers_set_active(
+                app.clone(),
+                "opencode".to_string(),
+                record.provider_id.clone(),
+            )
+            .await
+            .map_err(api_err_to_string)?;
+            crate::app_store::projection_apply(
                 app.clone(),
                 "opencode".to_string(),
                 record.provider_id.clone(),

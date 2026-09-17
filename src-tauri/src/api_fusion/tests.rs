@@ -3691,8 +3691,9 @@ async fn capture_terminal_sync(
 /// New behavior: syncing creates exactly one independent gateway provider per
 /// requested tool, carrying the local base URL, the default local key and the
 /// gateway model mapping. The submitted payload itself carries no
-/// `active`/`is_active` flag; opencode activation is applied separately via the
-/// service-provider active list after the upsert succeeds.
+/// `active`/`is_active` flag; opencode activation plus projection to
+/// opencode.json are applied separately via the service-provider active list
+/// and projection after the upsert succeeds.
 #[tokio::test]
 async fn terminal_sync_with_seam_creates_one_gateway_provider_per_tool() {
     let _home = temp_home("terminal-sync-seam-create");
