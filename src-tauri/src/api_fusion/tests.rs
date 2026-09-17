@@ -1758,6 +1758,99 @@ fn build_gateway_provider_rejects_unsupported_tools() {
     }
 }
 
+/// The tool input is case-insensitive but the emitted `tool` value is always
+/// lowercase, and the tool-specific branch is selected case-insensitively.
+#[test]
+fn build_gateway_provider_normalizes_tool_case_to_lowercase() {
+    let opencode = build_gateway_provider(
+        "fus-oc",
+        "OpenCode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[],
+    )
+    .expect("mixed-case opencode must build");
+    assert_eq!(opencode["tool"], "opencode", "emitted tool must be lowercase: {opencode}");
+    assert_eq!(opencode["provider_key"], "api_gateway");
+    assert_eq!(opencode["tool_config"]["npm"], "@ai-sdk/openai-compatible");
+
+    let codex = build_gateway_provider(
+        "fus-cx",
+        "Codex",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[],
+    )
+    .expect("mixed-case codex must build");
+    assert_eq!(codex["tool"], "codex", "emitted tool must be lowercase: {codex}");
+    assert_eq!(codex["tool_config"]["wire_api"], "chat");
+    assert!(codex.get("provider_key").is_none(), "codex has no provider_key");
+}
+
+/// Only enabled gateways contribute: a gateway with `enabled == false` or
+/// `auto_disabled == true` is excluded from the opencode model map and from the
+/// codex model selection, even when it is listed first.
+#[test]
+fn build_gateway_provider_ignores_disabled_and_auto_disabled_gateways() {
+    let mut disabled = upstream_provider(
+        "g1",
+        "Disabled",
+        "https://disabled.example/v1",
+        "sk",
+        Some("disabled-default"),
+    );
+    disabled.enabled = false;
+    disabled.mappings = vec![mapping("disabled-local", "disabled-remote", Some("Disabled"))];
+
+    let mut auto_disabled = upstream_provider(
+        "g2",
+        "Auto Disabled",
+        "https://auto.example/v1",
+        "sk",
+        Some("auto-default"),
+    );
+    auto_disabled.auto_disabled = true;
+    auto_disabled.mappings = vec![mapping("auto-local", "auto-remote", Some("Auto"))];
+
+    let mut enabled = upstream_provider(
+        "g3",
+        "Enabled",
+        "https://enabled.example/v1",
+        "sk",
+        Some("enabled-default"),
+    );
+    enabled.mappings = vec![mapping("enabled-local", "enabled-remote", Some("Enabled"))];
+
+    let gateways = [disabled, auto_disabled, enabled];
+
+    let opencode = build_gateway_provider(
+        "fus-oc",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &gateways,
+    )
+    .expect("opencode provider must build");
+    assert_eq!(
+        opencode["tool_config"]["models"],
+        json!({ "enabled-local": { "name": "Enabled" } }),
+        "only the enabled gateway mappings may be emitted: {opencode}"
+    );
+
+    let codex = build_gateway_provider(
+        "fus-cx",
+        "codex",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &gateways,
+    )
+    .expect("codex provider must build");
+    assert_eq!(
+        codex["model"], "enabled-local",
+        "a disabled gateway must not win the model selection: {codex}"
+    );
+}
+
 #[test]
 fn build_gateway_provider_opencode_carries_gateway_models_and_marker() {
     let mut gateway = upstream_provider("g1", "Gateway A", "https://upstream.example/v1", "sk", None);
@@ -1858,7 +1951,10 @@ fn build_gateway_provider_codex_shape_is_wire_api_chat_without_options() {
     assert_eq!(value["api_key"], "local-key-123");
     assert_eq!(value["tool_config"]["api_fusion_gateway"], true);
     assert_eq!(value["tool_config"]["wire_api"], "chat");
-    assert_eq!(value["model"], "gateway-default");
+    assert_eq!(
+        value["model"], "local-a",
+        "a mapping local_model must win over default_model: {value}"
+    );
     assert!(value.get("provider_key").is_none(), "codex has no provider_key: {value}");
     assert!(
         value["tool_config"].get("options").is_none(),
@@ -1891,8 +1987,43 @@ fn build_gateway_provider_codex_skips_empty_default_models() {
     assert_eq!(value["model"], "gateway-default");
 }
 
+/// A mapping `local_model` anywhere wins over every `default_model`; the
+/// default is only a fallback when no enabled gateway has any mapping.
 #[test]
-fn build_gateway_provider_codex_falls_back_to_first_non_empty_mapping_local_model() {
+fn build_gateway_provider_codex_prefers_mapping_local_model_over_default_model() {
+    let first = upstream_provider(
+        "g1",
+        "Gateway A",
+        "https://a.example/v1",
+        "sk",
+        Some("gateway-default"),
+    );
+    let mut second = upstream_provider(
+        "g2",
+        "Gateway B",
+        "https://b.example/v1",
+        "sk",
+        Some("gateway-default-2"),
+    );
+    second.mappings = vec![mapping("local-b", "remote-b", None)];
+
+    let value = build_gateway_provider(
+        "fus-cx",
+        "codex",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[first, second],
+    )
+    .expect("codex provider must build");
+
+    assert_eq!(
+        value["model"], "local-b",
+        "a later gateway's mapping local_model must beat an earlier default_model: {value}"
+    );
+}
+
+#[test]
+fn build_gateway_provider_codex_uses_first_non_empty_mapping_local_model() {
     let mut gateway = upstream_provider("g1", "Gateway A", "https://a.example/v1", "sk", Some(""));
     gateway.mappings = vec![
         mapping("", "ignored", None),
@@ -3441,9 +3572,25 @@ fn managed_gateway_provider(id: &str, tool: &str) -> Value {
     })
 }
 
+/// A user-owned provider record without the API Fusion gateway marker. The
+/// stale-ledger protection must never claim or overwrite it.
+fn unmarked_user_provider(id: &str, tool: &str) -> Value {
+    json!({
+        "id": id,
+        "tool": tool,
+        "name": "My Provider",
+        "base_url": "https://user.example.com/v1",
+        "api_key": "user-key",
+        "tool_config": {
+            "npm": "@ai-sdk/openai-compatible"
+        }
+    })
+}
+
 /// The current terminal service provider list: one already-synced gateway
 /// provider per tool (recognized through the marker, under `tool_config` for
-/// opencode and at the top level for codex) plus an unrelated legacy provider.
+/// opencode and at the top level for codex), an unmarked user-owned opencode
+/// provider, plus an unrelated legacy provider.
 fn terminal_providers_payload() -> Value {
     json!({
         "providers": [
@@ -3456,6 +3603,7 @@ fn terminal_providers_payload() -> Value {
                 "api_key": "previous-local-key",
                 "api_fusion_gateway": true
             },
+            unmarked_user_provider("user-oc", "opencode"),
             {
                 "id": "legacy-other",
                 "tool": "claude",
@@ -3486,6 +3634,31 @@ fn gateway_config(port: u16) -> FusionConfig {
     ];
     config.providers.push(gateway);
     config
+}
+
+/// Run the real terminal sync pipeline against an injected capture-only upsert
+/// and return the submitted payloads plus the returned ledger records.
+async fn capture_terminal_sync(
+    providers_data: &Value,
+    tools: Vec<String>,
+) -> (Vec<Value>, Vec<TerminalSyncRecord>) {
+    let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = captured.clone();
+    let records = super::commands::apply_terminal_sync_with(
+        providers_data,
+        move |value| -> super::commands::UpsertFuture {
+            let sink = sink.clone();
+            Box::pin(async move {
+                sink.lock().expect("capture lock").push(value);
+                Ok(())
+            })
+        },
+        tools,
+    )
+    .await
+    .expect("terminal sync must succeed");
+    let submitted = captured.lock().unwrap().clone();
+    (submitted, records)
 }
 
 /// New behavior: syncing creates exactly one independent gateway provider per
@@ -3740,6 +3913,140 @@ async fn terminal_sync_with_seam_reuses_ledger_provider_marked_in_providers_data
     );
 }
 
+/// Stale-ledger protection: a ledger `provider_id` that matches a same-tool
+/// provider WITHOUT the gateway marker belongs to the user and must not be
+/// reused. With no marked gateway present, a fresh UUID v4 is generated and the
+/// returned/persisted ledger records that fresh id.
+#[tokio::test]
+async fn terminal_sync_with_seam_does_not_reuse_unmarked_stale_ledger_provider() {
+    let _home = temp_home("terminal-sync-seam-stale-ledger");
+    let mut config = gateway_config(17688);
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "user-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k-old".to_string(),
+        synced_base_url: "http://127.0.0.1:1".to_string(),
+        synced_at: 9,
+    });
+    super::storage::write_config(&config).unwrap();
+
+    let providers_data = json!({ "providers": [unmarked_user_provider("user-oc", "opencode")] });
+    let (submitted, records) =
+        capture_terminal_sync(&providers_data, vec!["opencode".to_string()]).await;
+
+    assert_eq!(submitted.len(), 1, "one upsert for the requested tool: {submitted:?}");
+    let submitted_id = submitted[0]["id"].as_str().unwrap_or("");
+    assert_ne!(
+        submitted_id, "user-oc",
+        "a stale ledger must not claim the user's own provider record: {submitted:?}"
+    );
+    let parsed = uuid::Uuid::parse_str(submitted_id)
+        .expect("a stale ledger with no marked gateway must fall back to a fresh provider id");
+    assert_eq!(
+        parsed.get_version_num(),
+        4,
+        "fresh provider ids are UUID v4: {submitted_id}"
+    );
+
+    assert_eq!(
+        records.len(),
+        1,
+        "exactly one ledger record for the requested tool"
+    );
+    assert_eq!(
+        records[0].provider_id, submitted_id,
+        "the returned ledger must record the submitted provider id"
+    );
+    let persisted = super::storage::read_config().unwrap().terminal_syncs;
+    assert_eq!(
+        persisted[0].provider_id, submitted_id,
+        "the persisted ledger must record the submitted provider id"
+    );
+}
+
+/// Stale-ledger protection with a marked gateway also present: the unmarked user
+/// record must be skipped and the marked gateway reused instead.
+#[tokio::test]
+async fn terminal_sync_with_seam_prefers_marker_over_unmarked_stale_ledger() {
+    let _home = temp_home("terminal-sync-seam-stale-ledger-marker");
+    let mut config = gateway_config(17688);
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "user-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k-old".to_string(),
+        synced_base_url: "http://127.0.0.1:1".to_string(),
+        synced_at: 9,
+    });
+    super::storage::write_config(&config).unwrap();
+
+    let (submitted, records) = capture_terminal_sync(
+        &terminal_providers_payload(),
+        vec!["opencode".to_string()],
+    )
+    .await;
+
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(
+        submitted[0]["id"], "managed-oc",
+        "the marked gateway must be reused instead of the user record: {submitted:?}"
+    );
+    assert_eq!(records[0].provider_id, "managed-oc");
+}
+
+/// Marker-only fallback: with no ledger entry at all, a same-tool provider that
+/// carries the gateway marker is reused.
+#[tokio::test]
+async fn terminal_sync_with_seam_reuses_marker_provider_without_any_ledger() {
+    let _home = temp_home("terminal-sync-seam-marker-no-ledger");
+    super::storage::write_config(&gateway_config(17688)).unwrap();
+    assert!(
+        super::storage::read_config().unwrap().terminal_syncs.is_empty(),
+        "precondition: no ledger entry"
+    );
+
+    let (submitted, records) = capture_terminal_sync(
+        &terminal_providers_payload(),
+        vec!["opencode".to_string()],
+    )
+    .await;
+
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(
+        submitted[0]["id"], "managed-oc",
+        "the marked gateway must be reused without a ledger: {submitted:?}"
+    );
+    assert_eq!(records[0].provider_id, "managed-oc");
+}
+
+/// Marker-only fallback when the ledger points at an id absent from the terminal
+/// provider list: the marked gateway is reused, not the missing id.
+#[tokio::test]
+async fn terminal_sync_with_seam_reuses_marker_provider_when_ledger_id_absent() {
+    let _home = temp_home("terminal-sync-seam-marker-missing-ledger-id");
+    let mut config = gateway_config(17688);
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "missing-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k-old".to_string(),
+        synced_base_url: "http://127.0.0.1:1".to_string(),
+        synced_at: 9,
+    });
+    super::storage::write_config(&config).unwrap();
+
+    let (submitted, records) = capture_terminal_sync(
+        &terminal_providers_payload(),
+        vec!["opencode".to_string()],
+    )
+    .await;
+
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(
+        submitted[0]["id"], "managed-oc",
+        "an absent ledger id must fall back to the marked gateway: {submitted:?}"
+    );
+    assert_eq!(records[0].provider_id, "managed-oc");
+}
+
 /// Atomicity: when the injected upsert fails, the pipeline returns the error and
 /// the persisted ledger keeps its previous value, so the ledger never claims a
 /// sync that did not happen.
@@ -3847,6 +4154,170 @@ async fn terminal_sync_with_seam_requires_an_enabled_local_key() {
     .unwrap_err();
 
     assert!(error.contains("local API key"), "error: {error}");
+}
+
+// ---------------------------------------------------------------------------
+// Terminal targets projection: `terminal_targets_from` is the pure function the
+// `api_fusion_terminal_targets` command delegates to. It must recognize a
+// managed gateway only through the marker, never through a stale ledger that
+// points at a user-owned provider.
+// ---------------------------------------------------------------------------
+
+fn target_for<'a>(
+    targets: &'a [super::TerminalTarget],
+    tool: &str,
+) -> &'a super::TerminalTarget {
+    targets
+        .iter()
+        .find(|target| target.tool == tool)
+        .unwrap_or_else(|| panic!("missing terminal target for {tool}"))
+}
+
+/// One target per supported tool, in the canonical order, with the display
+/// names the UI expects.
+#[test]
+fn terminal_targets_from_lists_supported_tools_in_order() {
+    let config = FusionConfig::default();
+    let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }));
+
+    assert_eq!(targets.len(), 2, "one target per supported tool: {targets:?}");
+    let tools: Vec<&str> = targets.iter().map(|target| target.tool.as_str()).collect();
+    assert_eq!(tools, vec!["opencode", "codex"]);
+    assert_eq!(targets[0].name, "OpenCode");
+    assert_eq!(targets[1].name, "Codex");
+}
+
+/// No ledger and no marker provider: every target is unsynced and pending.
+#[test]
+fn terminal_targets_from_reports_unsynced_without_ledger_or_marker() {
+    let mut config = FusionConfig::default();
+    config.keys.push(key_named("k1", "local-key-123"));
+
+    let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }));
+    for target in &targets {
+        assert_eq!(
+            target.provider_id, None,
+            "no provider may be claimed: {target:?}"
+        );
+        assert!(!target.synced, "must be unsynced: {target:?}");
+        assert!(target.pending_sync, "must be pending when unsynced: {target:?}");
+    }
+}
+
+/// A ledger id that matches a same-tool provider WITHOUT the marker is stale and
+/// must not make the target look synced; the user record stays untouched.
+#[test]
+fn terminal_targets_from_does_not_claim_unmarked_user_provider() {
+    let mut config = gateway_config(17688);
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "user-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_at: 10,
+    });
+    let providers_data = json!({ "providers": [unmarked_user_provider("user-oc", "opencode")] });
+
+    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let opencode = target_for(&targets, "opencode");
+    assert_eq!(
+        opencode.provider_id, None,
+        "a stale ledger must not claim a user record: {opencode:?}"
+    );
+    assert!(!opencode.synced);
+    assert!(opencode.pending_sync);
+}
+
+/// Marker provider present and the ledger matches the default key and local base
+/// url: the target is synced and not pending.
+#[test]
+fn terminal_targets_from_marks_synced_when_marker_and_ledger_match() {
+    let mut config = gateway_config(17688);
+    config.default_key_id = Some("k1".to_string());
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "managed-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_at: 10,
+    });
+    let providers_data =
+        json!({ "providers": [managed_gateway_provider("managed-oc", "opencode")] });
+
+    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let opencode = target_for(&targets, "opencode");
+    assert_eq!(opencode.provider_id.as_deref(), Some("managed-oc"));
+    assert!(opencode.synced);
+    assert!(
+        !opencode.pending_sync,
+        "matching key and base url require no re-sync: {opencode:?}"
+    );
+    assert_eq!(opencode.synced_key_id.as_deref(), Some("k1"));
+    assert_eq!(opencode.synced_at, Some(10));
+
+    let codex = target_for(&targets, "codex");
+    assert_eq!(codex.provider_id, None);
+    assert!(!codex.synced);
+    assert!(codex.pending_sync);
+}
+
+/// The ledger survives but the managed provider was deleted: the target is
+/// unsynced and pending again.
+#[test]
+fn terminal_targets_from_reports_unsynced_when_managed_provider_deleted() {
+    let mut config = gateway_config(17688);
+    config.default_key_id = Some("k1".to_string());
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "managed-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_at: 10,
+    });
+
+    let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }));
+    let opencode = target_for(&targets, "opencode");
+    assert_eq!(opencode.provider_id, None);
+    assert!(!opencode.synced);
+    assert!(
+        opencode.pending_sync,
+        "a deleted managed provider must require a re-sync: {opencode:?}"
+    );
+}
+
+/// The managed provider is still there, but the ledger key id or base url
+/// drifted: the target stays synced yet must be pending.
+#[test]
+fn terminal_targets_from_marks_pending_when_ledger_key_or_base_url_drifted() {
+    let mut config = gateway_config(17688);
+    config.default_key_id = Some("k1".to_string());
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "managed-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k-old".to_string(),
+        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_at: 10,
+    });
+    let providers_data =
+        json!({ "providers": [managed_gateway_provider("managed-oc", "opencode")] });
+
+    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let opencode = target_for(&targets, "opencode");
+    assert!(opencode.synced, "the record still points at the marked provider");
+    assert!(
+        opencode.pending_sync,
+        "a drifted key id must require a re-sync: {opencode:?}"
+    );
+
+    config.terminal_syncs[0].synced_key_id = "k1".to_string();
+    config.terminal_syncs[0].synced_base_url = "http://127.0.0.1:1".to_string();
+    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let opencode = target_for(&targets, "opencode");
+    assert!(opencode.synced, "the record still points at the marked provider");
+    assert!(
+        opencode.pending_sync,
+        "a drifted base url must require a re-sync: {opencode:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

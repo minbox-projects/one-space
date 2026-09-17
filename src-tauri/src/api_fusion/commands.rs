@@ -65,6 +65,12 @@ fn non_empty(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// A gateway contributes models only while it is active: user-enabled and not
+/// auto-disabled, the same rule used by candidate selection and `/v1/models`.
+fn gateway_is_active(gateway: &FusionUpstreamProvider) -> bool {
+    gateway.enabled && !gateway.auto_disabled
+}
+
 /// Build the terminal provider record written by API Fusion for one tool.
 ///
 /// The record is always marked as an API Fusion gateway and never carries an
@@ -76,8 +82,8 @@ pub(in crate::api_fusion) fn build_gateway_provider(
     api_key: &str,
     gateways: &[FusionUpstreamProvider],
 ) -> Result<serde_json::Value, String> {
-    let tool = tool.trim();
-    if !is_supported_terminal_tool(tool) {
+    let tool = tool.trim().to_ascii_lowercase();
+    if !is_supported_terminal_tool(&tool) {
         return Err(format!(
             "unsupported terminal tool '{tool}': only opencode and codex are supported"
         ));
@@ -92,11 +98,11 @@ pub(in crate::api_fusion) fn build_gateway_provider(
         "name".to_string(),
         Value::String(GATEWAY_PROVIDER_NAME.to_string()),
     );
-    object.insert("tool".to_string(), Value::String(tool.to_string()));
+    object.insert("tool".to_string(), Value::String(tool.clone()));
     object.insert("base_url".to_string(), Value::String(base_url.to_string()));
     object.insert("api_key".to_string(), Value::String(api_key.to_string()));
 
-    if tool.eq_ignore_ascii_case("opencode") {
+    if tool == "opencode" {
         object.insert(
             "provider_key".to_string(),
             Value::String(GATEWAY_PROVIDER_KEY.to_string()),
@@ -111,7 +117,7 @@ pub(in crate::api_fusion) fn build_gateway_provider(
         tool_config.insert("options".to_string(), Value::Object(options));
 
         let mut models = Map::new();
-        for gateway in gateways {
+        for gateway in gateways.iter().filter(|gateway| gateway_is_active(gateway)) {
             for mapping in &gateway.mappings {
                 let Some(local_model) = non_empty(Some(mapping.local_model.as_str())) else {
                     continue;
@@ -132,13 +138,18 @@ pub(in crate::api_fusion) fn build_gateway_provider(
         tool_config.insert("wire_api".to_string(), Value::String("chat".to_string()));
         let model = gateways
             .iter()
-            .find_map(|gateway| non_empty(gateway.default_model.as_deref()))
+            .filter(|gateway| gateway_is_active(gateway))
+            .find_map(|gateway| {
+                gateway
+                    .mappings
+                    .iter()
+                    .find_map(|mapping| non_empty(Some(mapping.local_model.as_str())))
+            })
             .or_else(|| {
-                gateways.iter().find_map(|gateway| {
-                    gateway.mappings.iter().find_map(|mapping| {
-                        non_empty(Some(mapping.local_model.as_str()))
-                    })
-                })
+                gateways
+                    .iter()
+                    .filter(|gateway| gateway_is_active(gateway))
+                    .find_map(|gateway| non_empty(gateway.default_model.as_deref()))
             });
         if let Some(model) = model {
             object.insert("model".to_string(), Value::String(model));
@@ -354,7 +365,9 @@ pub async fn api_fusion_autostart() -> Result<FusionStatus, String> {
 }
 
 /// Find the managed gateway provider for a tool: the ledger record's provider id
-/// when it still exists for the same tool, else the marked provider for the tool.
+/// when it still exists for the same tool AND still carries the gateway marker,
+/// else the marked provider for the tool. A ledger id that now points at an
+/// unmarked user provider is stale and must never be claimed.
 fn find_managed_gateway_provider<'a>(
     tool: &str,
     providers: &'a [Value],
@@ -365,6 +378,7 @@ fn find_managed_gateway_provider<'a>(
             let found = providers.iter().find(|provider| {
                 provider.get("id").and_then(Value::as_str) == Some(record.provider_id.as_str())
                     && provider_tool(provider).eq_ignore_ascii_case(tool)
+                    && provider_has_gateway_marker(provider)
             });
             if found.is_some() {
                 return found;
@@ -377,8 +391,9 @@ fn find_managed_gateway_provider<'a>(
 }
 
 /// Resolve the provider id a sync should write to for one tool: first the ledger
-/// record that still matches a same-tool provider, then a marked gateway
-/// provider, then a freshly generated id.
+/// record that still matches a marked same-tool provider, then a marked gateway
+/// provider, then a freshly generated id. A ledger id pointing at an unmarked
+/// user provider is stale and is skipped.
 fn resolve_gateway_provider_id(
     tool: &str,
     providers: &[Value],
@@ -391,6 +406,7 @@ fn resolve_gateway_provider_id(
         let existing = providers.iter().find(|provider| {
             provider.get("id").and_then(Value::as_str) == Some(record.provider_id.as_str())
                 && provider_tool(provider).eq_ignore_ascii_case(tool)
+                && provider_has_gateway_marker(provider)
         });
         if let Some(id) = existing.and_then(|provider| provider.get("id").and_then(Value::as_str)) {
             return id.to_string();
@@ -409,16 +425,19 @@ fn resolve_gateway_provider_id(
     uuid::Uuid::new_v4().to_string()
 }
 
-#[tauri::command]
-pub fn api_fusion_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
-    let config = read_config()?;
-    let payload = crate::app_store::service_providers_list().map_err(api_err_to_string)?;
-    let providers = payload
-        .data
+/// Build the per-tool terminal target projection from the persisted config and
+/// the current terminal service provider list. Managed gateways are recognized
+/// through the gateway marker only; a stale ledger id that points at an unmarked
+/// user provider is never claimed.
+pub(in crate::api_fusion) fn terminal_targets_from(
+    config: &FusionConfig,
+    providers_data: &serde_json::Value,
+) -> Vec<TerminalTarget> {
+    let providers = providers_data
         .get("providers")
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     let base_url = local_base_url(config.port);
     let mut targets = Vec::new();
     for tool in SUPPORTED_TERMINAL_TOOLS {
@@ -426,7 +445,7 @@ pub fn api_fusion_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
             .terminal_syncs
             .iter()
             .find(|record| record.tool.eq_ignore_ascii_case(tool));
-        let managed = find_managed_gateway_provider(tool, &providers, ledger);
+        let managed = find_managed_gateway_provider(tool, providers, ledger);
         let provider_id = managed
             .and_then(|provider| provider.get("id").and_then(Value::as_str))
             .map(str::to_string);
@@ -454,7 +473,14 @@ pub fn api_fusion_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
             synced_at: ledger.map(|record| record.synced_at),
         });
     }
-    Ok(targets)
+    targets
+}
+
+#[tauri::command]
+pub fn api_fusion_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
+    let config = read_config()?;
+    let payload = crate::app_store::service_providers_list().map_err(api_err_to_string)?;
+    Ok(terminal_targets_from(&config, &payload.data))
 }
 
 /// Boxed future returned by an injected terminal upsert, kept `Send` so the
@@ -536,7 +562,7 @@ where
 
 async fn apply_terminal_sync(
     app: tauri::AppHandle,
-    target_ids: Vec<String>,
+    target_tools: Vec<String>,
 ) -> Result<Vec<TerminalSyncRecord>, String> {
     let payload = crate::app_store::service_providers_list().map_err(api_err_to_string)?;
     apply_terminal_sync_with(
@@ -550,7 +576,7 @@ async fn apply_terminal_sync(
                     .map_err(api_err_to_string)
             })
         },
-        target_ids,
+        target_tools,
     )
     .await
 }
@@ -558,19 +584,19 @@ async fn apply_terminal_sync(
 #[tauri::command]
 pub async fn api_fusion_configure_terminal(
     app: tauri::AppHandle,
-    target_ids: Vec<String>,
+    target_tools: Vec<String>,
 ) -> Result<Vec<TerminalSyncRecord>, String> {
-    apply_terminal_sync(app, target_ids).await
+    apply_terminal_sync(app, target_tools).await
 }
 
 #[tauri::command]
 pub async fn api_fusion_sync_terminal(
     app: tauri::AppHandle,
-    target_ids: Option<Vec<String>>,
+    target_tools: Option<Vec<String>>,
 ) -> Result<Vec<TerminalSyncRecord>, String> {
     let config = read_config()?;
-    let targets = match target_ids {
-        Some(ids) if !ids.is_empty() => ids,
+    let targets = match target_tools {
+        Some(tools) if !tools.is_empty() => tools,
         _ => config
             .terminal_syncs
             .iter()
