@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { emit } from "@tauri-apps/api/event";
 import { KeyRound, Network, Server, TerminalSquare } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
 import { errorToMessage } from "@/lib/messages";
 import {
+  API_FUSION_STATUS_UPDATED_EVENT,
   apiFusionConfigureTerminal,
   apiFusionDeleteKey,
   apiFusionDeleteProvider,
@@ -168,6 +170,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
       const nextStatus = running ? await apiFusionStop() : await apiFusionStart();
       setStatus(nextStatus);
       setConfig(await apiFusionGetConfig());
+      await emit(API_FUSION_STATUS_UPDATED_EVENT).catch(() => {});
     }, t("apiFusionSaved", "Saved."));
 
   const handleToggleProviderEnabled = (provider: FusionUpstreamProvider, enabled: boolean) =>

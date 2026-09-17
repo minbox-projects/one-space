@@ -12,7 +12,7 @@ import {
   type FusionUpstreamProvider,
 } from "@/lib/apiFusion";
 import { renderWithProviders } from "@/test/mocks/render";
-import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
+import { emitMock, invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
 type Store = {
   config: FusionConfig;
@@ -71,6 +71,12 @@ function mockStore(store: Store) {
         return store.status;
       case "api_fusion_terminal_targets":
         return store.targets;
+      case "api_fusion_start":
+        store.status = { ...store.status, running: true };
+        return store.status;
+      case "api_fusion_stop":
+        store.status = { ...store.status, running: false };
+        return store.status;
       case "api_fusion_configure_terminal":
         return store.config.terminal_syncs;
       case "api_fusion_sync_terminal":
@@ -927,6 +933,23 @@ describe("ApiFusion", () => {
     const stoppedToggleBtn = await screen.findByTestId("api-fusion-toggle-service");
     expect(stoppedToggleBtn).toHaveAttribute("title", "Start service");
     expect(stoppedToggleBtn).toHaveClass("text-emerald-600");
+  });
+
+  it("启停服务成功后广播 api-fusion-status-update 事件", async () => {
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus({ running: false }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    const toggleBtn = await screen.findByTestId("api-fusion-toggle-service");
+    fireEvent.click(toggleBtn);
+
+    await waitFor(() => {
+      expect(emitMock).toHaveBeenCalledWith("api-fusion-status-update");
+    });
   });
 
   it("顶部状态卡片展示健康率、聚合模型数、有效密钥及终端同步指标，且点击指标卡可切换对应 Tab", async () => {

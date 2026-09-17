@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export const API_FUSION_DEFAULT_PORT = 17688;
+export const API_FUSION_STATUS_UPDATED_EVENT = "api-fusion-status-update";
 
 /** Sentinel mask the frontend submits to keep a stored provider api key or local key; the backend reads it as "preserve existing value" (or generate a new one) and does not echo masked secrets. */
 export const API_FUSION_KEY_MASK = "********";

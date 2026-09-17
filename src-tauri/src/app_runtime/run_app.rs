@@ -116,6 +116,7 @@ pub fn run() {
                 let _ = protocol_router::protocol_router_autostart().await;
                 let _ = api_fusion::api_fusion_autostart().await;
                 let _ = app_handle.emit("protocol-router-status-update", ());
+                let _ = app_handle.emit("api-fusion-status-update", ());
             });
             setup_sessions_history_sync_service(app.handle());
             crate::ai_assistant::init_scheduler(app.handle().clone());
@@ -501,6 +502,12 @@ mod tests {
         assert_eq!(
             setup_source
                 .matches("app_handle.emit(\"protocol-router-status-update\", ())")
+                .count(),
+            1
+        );
+        assert_eq!(
+            setup_source
+                .matches("app_handle.emit(\"api-fusion-status-update\", ())")
                 .count(),
             1
         );
