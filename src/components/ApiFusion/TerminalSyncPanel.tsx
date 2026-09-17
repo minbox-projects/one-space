@@ -20,7 +20,7 @@ type TerminalSyncPanelProps = {
   config: FusionConfig;
   selectedTargetIds: string[];
   busy: boolean;
-  onToggleTarget: (providerId: string) => void;
+  onToggleTarget: (tool: string) => void;
   onConfigure: () => void;
   onSync: () => void;
 };
@@ -62,7 +62,7 @@ export function TerminalSyncPanel({
           <p className="text-xs text-muted-foreground">
             {t(
               "apiFusionTerminalSyncDesc",
-              "Write the local API address and default local key to the selected OpenCode / Codex records. Only base_url and api_key change.",
+              "Write the gateway endpoint, default key, and model mappings as an independent provider into each selected tool. It is not activated automatically and can be synced again to update.",
             )}
           </p>
         </div>
@@ -75,7 +75,7 @@ export function TerminalSyncPanel({
             className="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted disabled:opacity-50"
           >
             <Wand2 className="h-3.5 w-3.5" />
-            {t("apiFusionConfigureSelected", "Configure selected")}
+            {t("apiFusionConfigureSelected", "Add provider")}
           </button>
           <button
             type="button"
@@ -84,7 +84,7 @@ export function TerminalSyncPanel({
             className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            {t("apiFusionSyncSelected", "Sync selected")}
+            {t("apiFusionSyncSelected", "Sync again")}
           </button>
         </div>
       </div>
@@ -131,12 +131,12 @@ export function TerminalSyncPanel({
         <div className="space-y-2">
           {supportedTargets.map((target) => {
             const pending = isTerminalSyncPending(target, config);
-            const checked = selectedTargetIds.includes(target.provider_id);
+            const checked = selectedTargetIds.includes(target.tool);
 
             return (
               <div
-                key={target.provider_id}
-                data-testid={`api-fusion-target-${target.provider_id}`}
+                key={target.tool}
+                data-testid={`api-fusion-target-${target.tool}`}
                 className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-3 shadow-sm transition hover:border-primary/40 ${
                   checked ? "border-primary/40 bg-primary/[0.02]" : ""
                 }`}
@@ -145,7 +145,7 @@ export function TerminalSyncPanel({
                   <input
                     type="checkbox"
                     checked={checked}
-                    onChange={() => onToggleTarget(target.provider_id)}
+                    onChange={() => onToggleTarget(target.tool)}
                     aria-label={target.name}
                     className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
                   />
@@ -171,7 +171,7 @@ export function TerminalSyncPanel({
                         ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
                         : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
                     }`}
-                    data-testid={`api-fusion-target-status-${target.provider_id}`}
+                    data-testid={`api-fusion-target-status-${target.tool}`}
                   >
                     {pending ? (
                       <>

@@ -219,11 +219,11 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
       await applyConfig(await apiFusionSetDefaultKey(keyId));
     }, t("apiFusionSaved", "Saved."));
 
-  const handleToggleTarget = (providerId: string) =>
+  const handleToggleTarget = (tool: string) =>
     setSelectedTargetIds((prev) =>
-      prev.includes(providerId)
-        ? prev.filter((id) => id !== providerId)
-        : [...prev, providerId],
+      prev.includes(tool)
+        ? prev.filter((id) => id !== tool)
+        : [...prev, tool],
     );
 
   const handleConfigureTargets = () =>

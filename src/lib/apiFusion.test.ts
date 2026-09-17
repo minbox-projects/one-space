@@ -276,11 +276,10 @@ describe("resolveMappingPreview 模型解析预览", () => {
 
 describe("isTerminalSyncPending 待同步判定", () => {
   const target = {
-    provider_id: "t-open",
+    provider_id: "t-open" as string | null,
     tool: "opencode",
     name: "OpenCode",
     base_url: "https://old.example",
-    api_key: API_FUSION_KEY_MASK,
     synced: true,
     pending_sync: false,
     synced_key_id: "k1" as string | null,
@@ -364,6 +363,23 @@ describe("isTerminalSyncPending 待同步判定", () => {
       ],
     });
     expect(isTerminalSyncPending(target, cfg)).toBe(true);
+  });
+
+  it("目标未绑定服务商时待同步", () => {
+    const cfg = config({
+      keys: [key({ id: "k1" })],
+      default_key_id: "k1",
+      terminal_syncs: [
+        {
+          provider_id: "t-open",
+          tool: "opencode",
+          synced_key_id: "k1",
+          synced_base_url: "http://127.0.0.1:17688",
+          synced_at: 1,
+        },
+      ],
+    });
+    expect(isTerminalSyncPending({ provider_id: null }, cfg)).toBe(true);
   });
 });
 

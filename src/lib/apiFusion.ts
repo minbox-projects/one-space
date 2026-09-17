@@ -11,6 +11,8 @@ export const API_FUSION_SUPPORTED_TERMINAL_TOOLS = ["opencode", "codex"] as cons
 export interface FusionModelMapping {
   local_model: string;
   upstream_model: string;
+  /** Optional name surfaced by the gateway for this model. */
+  display_name?: string | null;
   /** `null`/absent means this row inherits the provider protocol. */
   protocol?: FusionUpstreamProtocol | null;
 }
@@ -71,11 +73,10 @@ export interface FusionStatus {
 }
 
 export interface FusionTerminalTarget {
-  provider_id: string;
   tool: string;
   name: string;
+  provider_id: string | null;
   base_url: string | null;
-  api_key: string;
   synced: boolean;
   pending_sync: boolean;
   synced_key_id: string | null;
