@@ -929,4 +929,75 @@ describe("ApiFusion", () => {
     expect(stoppedToggleBtn).toHaveAttribute("title", "Start service");
     expect(stoppedToggleBtn).toHaveClass("text-emerald-600");
   });
+
+  it("顶部状态卡片展示健康率、聚合模型数、有效密钥及终端同步指标，且点击指标卡可切换对应 Tab", async () => {
+    const provider1 = makeProvider({
+      id: "p1",
+      name: "Provider 1",
+      enabled: true,
+      auto_disabled: false,
+      mappings: [
+        { local_model: "gpt-4o", upstream_model: "gpt-4o-2024" },
+        { local_model: "claude-3-7-sonnet", upstream_model: "claude-3-7" },
+      ],
+      default_model: "gpt-4o",
+    });
+    const provider2 = makeProvider({
+      id: "p2",
+      name: "Provider 2",
+      enabled: false,
+      auto_disabled: false,
+      mappings: [
+        { local_model: "deepseek-v3", upstream_model: "deepseek-chat" },
+      ],
+    });
+
+    const store: Store = {
+      config: makeConfig({
+        providers: [provider1, provider2],
+        keys: [
+          { id: "k1", label: "Key 1", value: "sk-1", enabled: true, created_at: 1 },
+          { id: "k2", label: "Key 2", value: "sk-2", enabled: false, created_at: 2 },
+        ],
+      }),
+      status: makeStatus({
+        running: true,
+        provider_count: 2,
+        key_count: 2,
+      }),
+      targets: [
+        openCodeTarget({ tool: "opencode", name: "OpenCode", synced: true, pending_sync: false }),
+        openCodeTarget({ tool: "codex", name: "Codex", synced: false, pending_sync: true }),
+      ],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+
+    // 1. 服务商健康率展示：1/2 在线 (因为 provider2 是 disabled)
+    const healthCard = await screen.findByTestId("api-fusion-metric-health");
+    expect(within(healthCard).getByText("1/2")).toBeInTheDocument();
+    expect(within(healthCard).getByText(/Provider health/i)).toBeInTheDocument();
+
+    // 2. 聚合模型数：provider1 贡献了 gpt-4o 和 claude-3-7-sonnet（去重后 2 个，provider2 被禁用不计入）
+    const modelsCard = screen.getByTestId("api-fusion-metric-models");
+    expect(within(modelsCard).getByText("2")).toBeInTheDocument();
+    expect(within(modelsCard).getByText(/Aggregated models/i)).toBeInTheDocument();
+
+    // 3. 本地有效密钥：1 个有效 (共 2 个)
+    const keysCard = screen.getByTestId("api-fusion-metric-keys");
+    expect(within(keysCard).getByText("1")).toBeInTheDocument();
+    expect(within(keysCard).getByText("/ 2")).toBeInTheDocument();
+
+    // 4. 终端同步：1/2 已同步，且有 1 个待同步提示
+    const terminalsCard = screen.getByTestId("api-fusion-metric-terminals");
+    expect(within(terminalsCard).getByText("1/2")).toBeInTheDocument();
+    expect(within(terminalsCard).getByText(/1.*pending sync/i)).toBeInTheDocument();
+
+    // 5. 点击终端指标卡可切换到 terminals Tab
+    fireEvent.click(terminalsCard);
+
+    const terminalsTab = screen.getByRole("tab", { name: /AI terminal integration/i });
+    expect(terminalsTab).toHaveAttribute("aria-selected", "true");
+  });
 });

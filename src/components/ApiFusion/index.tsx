@@ -393,6 +393,8 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           config={config}
           busy={busy}
           addressCopied={addressCopied}
+          targets={targets}
+          onSelectTab={setActiveTab}
           onStart={handleToggleService}
           onStop={handleToggleService}
           onCopyAddress={() => void handleCopyAddress()}
