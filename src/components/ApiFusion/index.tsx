@@ -31,6 +31,7 @@ import {
 import { RuntimeStatusCard } from "./RuntimeStatusCard";
 import { UpstreamProviderList } from "./UpstreamProviderList";
 import { ProviderDetailDialog } from "./ProviderDetailDialog";
+import { AggregatedModelsDialog } from "./AggregatedModelsDialog";
 import { LocalKeyDialog } from "./LocalKeyDialog";
 import { LocalKeyList } from "./LocalKeyList";
 import { TerminalSyncPanel } from "./TerminalSyncPanel";
@@ -70,6 +71,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
     useState<FusionUpstreamProvider | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isKeyDialogOpen, setIsKeyDialogOpen] = useState(false);
+  const [isModelsDialogOpen, setIsModelsDialogOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [syncingTools, setSyncingTools] = useState<Record<string, boolean>>({});
   const [addressCopied, setAddressCopied] = useState(false);
@@ -398,6 +400,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           addressCopied={addressCopied}
           targets={targets}
           onSelectTab={setActiveTab}
+          onShowModels={() => setIsModelsDialogOpen(true)}
           onStart={handleToggleService}
           onStop={handleToggleService}
           onCopyAddress={() => void handleCopyAddress()}
@@ -544,6 +547,13 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           onOpenChange={setIsKeyDialogOpen}
           busy={busy}
           onSave={handleSaveKey}
+        />
+
+        {/* 聚合模型列表模态弹窗 */}
+        <AggregatedModelsDialog
+          open={isModelsDialogOpen}
+          onOpenChange={setIsModelsDialogOpen}
+          providers={config.providers}
         />
       </div>
     </div>

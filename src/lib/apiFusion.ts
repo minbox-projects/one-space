@@ -157,6 +157,74 @@ export function resolveMappingPreview(
   return null;
 }
 
+/** One upstream source that can serve an aggregated local model. */
+export interface AggregatedModelProvider {
+  providerId: string;
+  providerName: string;
+  upstreamModel: string;
+  endpoint: FusionUpstreamProtocol;
+  isDefault: boolean;
+}
+
+/** A local model name and every enabled upstream source mapped to it. */
+export interface AggregatedModel {
+  model: string;
+  providers: AggregatedModelProvider[];
+}
+
+/**
+ * Aggregate the local models served by enabled, non-auto-disabled providers.
+ *
+ * A provider contributes its default model (as `isDefault`) plus every non-blank
+ * local mapping. Results are grouped by local model and sorted deterministically.
+ */
+export function aggregateModels(
+  providers: FusionUpstreamProvider[],
+): AggregatedModel[] {
+  const groups = new Map<string, AggregatedModelProvider[]>();
+
+  providers.forEach((provider) => {
+    if (!provider.enabled || provider.auto_disabled) return;
+
+    const defaultModel = (provider.default_model ?? "").trim();
+    if (defaultModel) {
+      const entries = groups.get(defaultModel) ?? [];
+      entries.push({
+        providerId: provider.id,
+        providerName: provider.name,
+        upstreamModel: defaultModel,
+        endpoint: provider.protocol ?? "chat_completions",
+        isDefault: true,
+      });
+      groups.set(defaultModel, entries);
+    }
+
+    provider.mappings.forEach((mapping) => {
+      const localModel = mapping.local_model.trim();
+      if (!localModel) return;
+      const entries = groups.get(localModel) ?? [];
+      entries.push({
+        providerId: provider.id,
+        providerName: provider.name,
+        upstreamModel: mapping.upstream_model.trim(),
+        endpoint: mapping.protocol ?? provider.protocol ?? "chat_completions",
+        isDefault: false,
+      });
+      groups.set(localModel, entries);
+    });
+  });
+
+  return Array.from(groups.entries())
+    .map(([model, entries]) => ({
+      model,
+      providers: [...entries].sort((a, b) => {
+        const byName = a.providerName.localeCompare(b.providerName);
+        return byName !== 0 ? byName : a.upstreamModel.localeCompare(b.upstreamModel);
+      }),
+    }))
+    .sort((a, b) => a.model.localeCompare(b.model));
+}
+
 /** Redact a secret for display while keeping head/tail recognizable. */
 export function maskSecret(value: string): string {
   if (!value) return "";

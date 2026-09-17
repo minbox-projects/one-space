@@ -423,6 +423,11 @@ const resources = {
       apiFusionAggregatedModels: "Aggregated models",
       apiFusionAggregatedModelsCount: "{{count}} models",
       apiFusionAggregatedModelsDesc: "Unified local mappings",
+      apiFusionAggregatedModelsDialogDesc:
+        "Local models served by enabled upstream providers and the upstream models they map to.",
+      apiFusionAggregatedModelsEmpty:
+        "No local models are served by enabled upstream providers yet.",
+      apiFusionAggregatedModelDefaultBadge: "Default",
       apiFusionUpstreamHealth: "Provider health",
       apiFusionActiveRate: "{{active}}/{{total}} online",
       apiFusionAllHealthy: "All online",
@@ -3797,6 +3802,10 @@ const resources = {
       apiFusionAggregatedModels: "聚合模型",
       apiFusionAggregatedModelsCount: "{{count}} 个模型",
       apiFusionAggregatedModelsDesc: "统一本地请求分发",
+      apiFusionAggregatedModelsDialogDesc:
+        "由已启用上游服务商提供服务的本地模型及其映射的远端模型。",
+      apiFusionAggregatedModelsEmpty: "还没有已启用上游服务商提供的本地模型。",
+      apiFusionAggregatedModelDefaultBadge: "默认",
       apiFusionUpstreamHealth: "服务商健康度",
       apiFusionActiveRate: "{{active}}/{{total}} 在线",
       apiFusionAllHealthy: "全部在线",
