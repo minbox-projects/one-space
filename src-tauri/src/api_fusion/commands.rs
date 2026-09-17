@@ -231,6 +231,8 @@ pub async fn api_fusion_save_config(config: FusionConfig) -> Result<FusionConfig
         if key.value.trim().is_empty() || key.value == "********" {
             if let Some(previous) = existing.keys.iter().find(|candidate| candidate.id == key.id) {
                 key.value = previous.value.clone();
+            } else {
+                key.value = new_key_value();
             }
         }
     }
@@ -311,7 +313,7 @@ pub fn api_fusion_upsert_key(mut key: FusionKey) -> Result<FusionConfig, String>
         }
         *existing = key;
     } else {
-        if key.value.trim().is_empty() {
+        if key.value.trim().is_empty() || key.value == "********" {
             key.value = new_key_value();
         }
         config.keys.push(key);
