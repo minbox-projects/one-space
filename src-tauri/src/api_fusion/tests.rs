@@ -6412,3 +6412,113 @@ async fn retry_cancel_disconnect_while_upstream_waits_exits_without_further_upst
     }
     assert!(failures.is_empty(), "{}", failures.join("; "));
 }
+
+/// Spec F4: deleting the current default key must fall through to the next
+/// enabled key in list order instead of leaving a dangling default id.
+#[test]
+fn deleting_the_default_key_advances_to_the_next_enabled_key() {
+    with_temp_home("delete-default-key-advance", |_home| {
+        super::commands::api_fusion_upsert_key(FusionKey {
+            id: "k1".to_string(),
+            label: "K1".to_string(),
+            value: "v1".to_string(),
+            enabled: true,
+            created_at: 0,
+        })
+        .unwrap();
+        super::commands::api_fusion_upsert_key(FusionKey {
+            id: "k2".to_string(),
+            label: "K2".to_string(),
+            value: "v2".to_string(),
+            enabled: true,
+            created_at: 0,
+        })
+        .unwrap();
+        let defaulted = super::commands::api_fusion_set_default_key("k2".to_string()).unwrap();
+        assert_eq!(defaulted.default_key_id.as_deref(), Some("k2"));
+
+        let after_delete = super::commands::api_fusion_delete_key("k2".to_string()).unwrap();
+        assert_eq!(
+            after_delete.default_key_id.as_deref(),
+            Some("k1"),
+            "deleting the default key must advance to the next enabled key"
+        );
+        assert!(
+            after_delete.keys.iter().any(|key| key.id == "k1"),
+            "the surviving key must remain in the config"
+        );
+        assert!(
+            !after_delete.keys.iter().any(|key| key.id == "k2"),
+            "the deleted key must be gone from the config"
+        );
+    });
+}
+
+/// Standards S2: `api_fusion_save_config` must normalize brand-new keys whose
+/// submitted value is blank or the UI mask placeholder, generating a real
+/// `sk-fusion-` secret instead of persisting `""` or `"********"`.
+#[tokio::test]
+async fn save_config_generates_secret_for_new_keys_with_blank_or_masked_value() {
+    let _home = temp_home("save-config-key-normalize");
+
+    let mut config = FusionConfig::default();
+    // Keep the listener off so the test never binds a real port.
+    config.enabled = false;
+    // Providers intentionally empty: only key normalization is under test.
+    config.keys.push(FusionKey {
+        id: "brand-new-blank".to_string(),
+        label: "Brand New Blank".to_string(),
+        value: String::new(),
+        enabled: true,
+        created_at: 1,
+    });
+    config.keys.push(FusionKey {
+        id: "brand-new-masked".to_string(),
+        label: "Brand New Masked".to_string(),
+        value: "********".to_string(),
+        enabled: true,
+        created_at: 2,
+    });
+
+    let saved = super::commands::api_fusion_save_config(config)
+        .await
+        .expect("save config");
+
+    let blank = saved
+        .keys
+        .iter()
+        .find(|key| key.id == "brand-new-blank")
+        .expect("blank-valued key must be persisted");
+    assert!(
+        blank.value.starts_with("sk-fusion-"),
+        "a brand-new blank-valued key must receive a generated secret, got {:?}",
+        blank.value
+    );
+    assert_ne!(
+        blank.value, "********",
+        "the mask placeholder must never be stored as a key value"
+    );
+    assert!(
+        !blank.value.trim().is_empty(),
+        "a generated secret must not be empty"
+    );
+
+    let masked = saved
+        .keys
+        .iter()
+        .find(|key| key.id == "brand-new-masked")
+        .expect("masked-valued key must be persisted");
+    assert!(
+        masked.value.starts_with("sk-fusion-"),
+        "a brand-new masked key must receive a generated secret, got {:?}",
+        masked.value
+    );
+    assert_ne!(
+        masked.value, "********",
+        "the mask placeholder must never be stored as a key value"
+    );
+    assert!(
+        !masked.value.trim().is_empty(),
+        "a generated secret must not be empty"
+    );
+}
