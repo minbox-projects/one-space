@@ -17,14 +17,32 @@ import {
   apiFusionTerminalTargets,
   apiFusionUpsertKey,
   apiFusionUpsertProvider,
+  apiFusionModelPricesGet,
+  apiFusionModelPricesSave,
+  apiFusionRequestLogs,
+  apiFusionUsageRetentionGet,
+  apiFusionUsageRetentionSave,
+  apiFusionUsageStats,
+  clampUsagePage,
   formatFusionTimestamp,
+  formatUsageAmount,
+  formatUsageGroupLabel,
+  formatUsageRowAmount,
+  formatUtc8DateTime,
+  formatUtc8Day,
+  formatUtc8Hour,
+  isUnpricedOnly,
   localBaseUrl,
   maskSecret,
   resolveDefaultKeyId,
   resolveMappingPreview,
+  usageRangeToDays,
+  usageStatusTranslationKey,
   type FusionConfig,
   type FusionKey,
   type FusionUpstreamProvider,
+  type ModelPrice,
+  type UsageMetrics,
 } from "@/lib/apiFusion";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
@@ -299,5 +317,189 @@ describe("formatFusionTimestamp", () => {
   it("以稳定格式展示时间", () => {
     const formatted = formatFusionTimestamp(1_700_000_000);
     expect(formatted).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  });
+});
+
+function metrics(overrides: Partial<UsageMetrics> = {}): UsageMetrics {
+  return {
+    request_count: 0,
+    input_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    amount: 0,
+    unpriced_count: 0,
+    ...overrides,
+  };
+}
+
+describe("usageRangeToDays 快捷范围映射", () => {
+  it("今日映射为 1、近 N 天映射为 N", () => {
+    expect(usageRangeToDays("today")).toBe(1);
+    expect(usageRangeToDays("7d")).toBe(7);
+    expect(usageRangeToDays("15d")).toBe(15);
+    expect(usageRangeToDays("30d")).toBe(30);
+  });
+
+  it("全部范围映射为 null", () => {
+    expect(usageRangeToDays("all")).toBeNull();
+  });
+});
+
+describe("UTC+8 时间标签", () => {
+  it("跨 UTC 日界时按 UTC+8 展示日期与时间", () => {
+    // 2026-09-17T18:30:00Z == 2026-09-18 02:30 (UTC+8)
+    expect(formatUtc8DateTime(Date.UTC(2026, 8, 17, 18, 30))).toBe(
+      "2026-09-18 02:30",
+    );
+  });
+
+  it("提供日与小时标签", () => {
+    const noonUtc = Date.UTC(2026, 8, 16, 12, 0);
+    expect(formatUtc8Day(noonUtc)).toBe("2026-09-16");
+    expect(formatUtc8Hour(noonUtc)).toBe("20:00");
+  });
+
+  it("空值返回 null", () => {
+    expect(formatUtc8DateTime(null)).toBeNull();
+    expect(formatUtc8Day(undefined)).toBeNull();
+    expect(formatUtc8Hour(null)).toBeNull();
+  });
+});
+
+describe("金额格式化与未定价判定", () => {
+  it("保留 4 位小数", () => {
+    expect(formatUsageAmount(1.234567)).toBe("1.2346");
+    expect(formatUsageAmount(0)).toBe("0.0000");
+  });
+
+  it("无金额时显示破折号", () => {
+    expect(formatUsageAmount(null)).toBe("—");
+    expect(formatUsageAmount(undefined)).toBe("—");
+  });
+
+  it("全部请求未定价时判定为未定价行", () => {
+    expect(
+      isUnpricedOnly(metrics({ request_count: 3, unpriced_count: 3 })),
+    ).toBe(true);
+  });
+
+  it("存在已定价请求时不算未定价行", () => {
+    expect(
+      isUnpricedOnly(metrics({ request_count: 3, unpriced_count: 2 })),
+    ).toBe(false);
+    expect(
+      isUnpricedOnly(metrics({ request_count: 0, unpriced_count: 0 })),
+    ).toBe(false);
+  });
+
+  it("未定价行展示破折号，部分定价行展示金额", () => {
+    expect(
+      formatUsageRowAmount(
+        metrics({ request_count: 2, unpriced_count: 2, amount: 0 }),
+      ),
+    ).toBe("—");
+    expect(
+      formatUsageRowAmount(
+        metrics({ request_count: 2, unpriced_count: 1, amount: 0.5 }),
+      ),
+    ).toBe("0.5000");
+  });
+});
+
+describe("formatUsageGroupLabel 分组标签", () => {
+  it("有分组值时原样展示", () => {
+    expect(formatUsageGroupLabel("model", "gpt-4o")).toBe("gpt-4o");
+    expect(formatUsageGroupLabel("day", "2026-09-17")).toBe("2026-09-17");
+  });
+
+  it("分组值为空时展示破折号", () => {
+    expect(formatUsageGroupLabel("none", "")).toBe("—");
+    expect(formatUsageGroupLabel("model", "   ")).toBe("—");
+  });
+});
+
+describe("clampUsagePage 页码收敛", () => {
+  it("低于 1 收敛到 1", () => {
+    expect(clampUsagePage(0, 5)).toBe(1);
+    expect(clampUsagePage(-3, 5)).toBe(1);
+  });
+
+  it("超过总页数收敛到最后一页", () => {
+    expect(clampUsagePage(9, 3)).toBe(3);
+  });
+
+  it("无有效页时收敛到第 1 页", () => {
+    expect(clampUsagePage(4, 0)).toBe(1);
+    expect(clampUsagePage(4, -1)).toBe(1);
+  });
+});
+
+describe("usageStatusTranslationKey 状态展示", () => {
+  it("映射三种结果到稳定文案键", () => {
+    expect(usageStatusTranslationKey("success")).toBe("apiFusionStatusSuccess");
+    expect(usageStatusTranslationKey("failure")).toBe("apiFusionStatusFailure");
+    expect(usageStatusTranslationKey("cancelled")).toBe(
+      "apiFusionStatusCancelled",
+    );
+  });
+});
+
+describe("用量与日志命令封装", () => {
+  beforeEach(() => {
+    resetTauriMocks();
+  });
+
+  it("按 camelCase 参数调用六个用量/价格/保留天数命令", async () => {
+    await apiFusionUsageStats(7);
+    await apiFusionUsageStats(null);
+    await apiFusionRequestLogs({
+      days: 1,
+      groupBy: "day",
+      status: "failure",
+      model: "gpt-4o",
+      page: 2,
+    });
+    await apiFusionModelPricesGet();
+    const prices: ModelPrice[] = [
+      { upstream_model: "gpt-4o", input: 1, cache_read: 0.1, cache_write: 0.2, output: 2 },
+    ];
+    await apiFusionModelPricesSave(prices);
+    await apiFusionUsageRetentionGet();
+    await apiFusionUsageRetentionSave(30);
+
+    expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_stats", {
+      days: 7,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_stats", {
+      days: null,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("api_fusion_request_logs", {
+      days: 1,
+      groupBy: "day",
+      status: "failure",
+      model: "gpt-4o",
+      page: 2,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_get");
+    expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_save", {
+      prices,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_retention_get");
+    expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_retention_save", {
+      days: 30,
+    });
+  });
+
+  it("查询参数缺省时携带空筛选与第 1 页", async () => {
+    await apiFusionRequestLogs({ days: null });
+    expect(invokeMock).toHaveBeenCalledWith("api_fusion_request_logs", {
+      days: null,
+      groupBy: null,
+      status: null,
+      model: null,
+      page: 1,
+    });
   });
 });

@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { KeyRound, Network, Server, TerminalSquare } from "lucide-react";
+import {
+  BarChart3,
+  KeyRound,
+  Network,
+  ScrollText,
+  Server,
+  TerminalSquare,
+} from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
 import { errorToMessage } from "@/lib/messages";
 import {
@@ -31,8 +38,10 @@ import { UpstreamProviderList } from "./UpstreamProviderList";
 import { ProviderDetailDialog } from "./ProviderDetailDialog";
 import { LocalKeyList } from "./LocalKeyList";
 import { TerminalSyncPanel } from "./TerminalSyncPanel";
+import { UsageStatsPanel } from "./UsageStatsPanel";
+import { UsageLogsPanel } from "./UsageLogsPanel";
 
-type ApiFusionTab = "providers" | "keys" | "terminals";
+type ApiFusionTab = "providers" | "keys" | "terminals" | "usage" | "logs";
 
 function emptyProvider(): FusionUpstreamProvider {
   return {
@@ -357,6 +366,16 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
       icon: TerminalSquare,
       hasAlert: pendingSyncCount > 0,
     },
+    {
+      id: "usage",
+      label: t("apiFusionUsageTab", "Usage"),
+      icon: BarChart3,
+    },
+    {
+      id: "logs",
+      label: t("apiFusionLogsTab", "Request logs"),
+      icon: ScrollText,
+    },
   ];
 
   return (
@@ -499,6 +518,24 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
             onConfigureTool={(tool) => handleConfigureTool(tool)}
             onSyncTool={(tool) => handleSyncTool(tool)}
           />
+        </div>
+
+        {/* Tab 4: 用量统计（面板常驻以保留范围等状态） */}
+        <div
+          role="tabpanel"
+          aria-label={t("apiFusionUsageTab", "Usage")}
+          className={activeTab === "usage" ? "block" : "hidden"}
+        >
+          <UsageStatsPanel isActive={activeTab === "usage"} />
+        </div>
+
+        {/* Tab 5: 请求日志（面板常驻以保留分组/页码等状态） */}
+        <div
+          role="tabpanel"
+          aria-label={t("apiFusionLogsTab", "Request logs")}
+          className={activeTab === "logs" ? "block" : "hidden"}
+        >
+          <UsageLogsPanel isActive={activeTab === "logs"} />
         </div>
 
         {/* 服务商新增与编辑模态弹窗 */}

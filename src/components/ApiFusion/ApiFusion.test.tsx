@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { ApiFusion } from "@/components/ApiFusion";
@@ -10,6 +10,9 @@ import {
   type FusionStatus,
   type FusionTerminalTarget,
   type FusionUpstreamProvider,
+  type UsageLogRecord,
+  type UsageLogsPage,
+  type UsageStats,
 } from "@/lib/apiFusion";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
@@ -62,8 +65,60 @@ function openCodeTarget(
   };
 }
 
+function emptyUsageStats(overrides: Partial<UsageStats> = {}): UsageStats {
+  return {
+    request_count: 0,
+    input_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    amount: 0,
+    unpriced_count: 0,
+    granularity: "hour",
+    buckets: [],
+    models: [],
+    ...overrides,
+  };
+}
+
+function usageLogRecord(
+  overrides: Partial<UsageLogRecord> = {},
+): UsageLogRecord {
+  return {
+    timestamp_ms: 1_700_000_000_000,
+    local_model: "local-a",
+    upstream_model: "remote-a",
+    provider_id: "p1",
+    provider_name: "Provider",
+    result: "success",
+    status: 200,
+    input_tokens: 1,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    output_tokens: 1,
+    total_tokens: 2,
+    amount: 0.1,
+    duration_ms: 10,
+    ...overrides,
+  };
+}
+
+function usageLogsPage(overrides: Partial<UsageLogsPage> = {}): UsageLogsPage {
+  return {
+    page: 1,
+    page_size: 50,
+    total: 120,
+    total_pages: 3,
+    group_by: null,
+    records: [usageLogRecord()],
+    groups: [],
+    ...overrides,
+  };
+}
+
 function mockStore(store: Store) {
-  invokeMock.mockImplementation(async (command: string) => {
+  invokeMock.mockImplementation(async (command: string, args?: any) => {
     switch (command) {
       case "api_fusion_get_config":
         return store.config;
@@ -75,6 +130,26 @@ function mockStore(store: Store) {
         return store.config.terminal_syncs;
       case "api_fusion_sync_terminal":
         return store.config.terminal_syncs;
+      case "api_fusion_usage_stats":
+        return emptyUsageStats({ request_count: 1, total_tokens: 2 });
+      case "api_fusion_request_logs":
+        if (args?.groupBy === "day") {
+          return usageLogsPage({
+            group_by: "day",
+            records: [],
+            groups: [
+              {
+                group: "2026-09-17",
+                request_count: 3,
+                error_count: 1,
+                last_request_at_ms: 1_700_000_000_000,
+              },
+            ],
+          });
+        }
+        return usageLogsPage({ page: (args?.page as number) ?? 1 });
+      case "api_fusion_model_prices_get":
+        return [];
       default:
         throw new Error(`Unhandled command: ${command}`);
     }
@@ -710,6 +785,72 @@ describe("ApiFusion", () => {
 
     fireEvent.click(terminalsTab);
     expect(terminalsTab).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("两个新页签可达且各自范围/分组/页码在切换后保留，价格入口仅在用量页签", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [makeProvider()],
+        keys: [{ id: "k1", label: "Dev Key", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
+      }),
+      status: makeStatus({ provider_count: 1, key_count: 1 }),
+      targets: [openCodeTarget()],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+    await screen.findByText("Upstream A");
+
+    const tabsList = screen.getByRole("tablist", { name: /API Gateway tabs/i });
+    const usageTab = within(tabsList).getByRole("tab", { name: "Usage" });
+    const logsTab = within(tabsList).getByRole("tab", { name: "Request logs" });
+    const providersTab = within(tabsList).getByRole("tab", {
+      name: /Upstream providers/,
+    });
+
+    fireEvent.click(usageTab);
+    expect(usageTab).toHaveAttribute("aria-selected", "true");
+    const usagePanel = await screen.findByTestId("api-fusion-usage-stats");
+    await within(usagePanel).findByTestId("api-fusion-usage-card-requests");
+    fireEvent.click(within(usagePanel).getByRole("button", { name: "7d" }));
+    await within(usagePanel).findByTestId("api-fusion-usage-card-requests");
+
+    // The model-price entry must live only inside the usage-stats panel.
+    expect(
+      within(usagePanel).getByRole("button", { name: "Model prices" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(logsTab);
+    await screen.findByTestId("api-fusion-logs-ungrouped");
+    const logsPanel = screen.getByTestId("api-fusion-usage-logs");
+    expect(
+      within(logsPanel).queryByRole("button", { name: "Model prices" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(within(logsPanel).getByRole("button", { name: "Next" }));
+    await screen.findByText("Page 2 / 3");
+
+    // Switch away and back: usage range and logs page must survive.
+    fireEvent.click(providersTab);
+    fireEvent.click(usageTab);
+    expect(
+      within(usagePanel).getByRole("button", { name: "7d" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(logsTab);
+    await screen.findByText("Page 2 / 3");
+
+    // Grouping selection also survives a tab round-trip.
+    fireEvent.click(
+      within(logsPanel).getByRole("button", { name: "Day (UTC+8)" }),
+    );
+    await screen.findByTestId("api-fusion-logs-grouped");
+    fireEvent.click(providersTab);
+    fireEvent.click(logsTab);
+    expect(
+      within(logsPanel).getByRole("button", { name: "Day (UTC+8)" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    // Flush the re-activation reloads before the test unmounts.
+    await act(async () => {});
   });
 
   it("点击添加服务商打开弹框并成功保存", async () => {

@@ -1,6 +1,7 @@
 import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
 import { SettingsView } from "@/components/SettingsView";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
@@ -74,15 +75,28 @@ describe("SettingsView", () => {
     vi.restoreAllMocks();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTauriMocks();
     resetMessageMocks();
+    await i18n.changeLanguage("en");
 
     let currentConfig = structuredClone(baseStorageConfig);
+    let currentRetention = 90;
 
     invokeMock.mockImplementation(async (command: string, args?: any) => {
       if (command === "get_storage_config") {
         return structuredClone(currentConfig);
+      }
+      if (command === "api_fusion_usage_retention_get") {
+        return currentRetention;
+      }
+      if (command === "api_fusion_usage_retention_save") {
+        const days = args.days as number;
+        if (!Number.isInteger(days) || days < 1 || days > 365) {
+          throw new Error("Retention days must be between 1 and 365");
+        }
+        currentRetention = days;
+        return currentRetention;
       }
       if (command === "save_storage_config") {
         currentConfig = {
@@ -207,6 +221,133 @@ describe("SettingsView", () => {
         String(command).startsWith("sessions_usage"),
       ),
     ).toBe(false);
+  });
+
+  it("AI 网关分区独立保存保留天数且不改写其他配置", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsView initialTab="ai-gateway" onBack={() => {}} />);
+
+    const input = await screen.findByLabelText("Log retention days");
+    expect(input).toHaveValue(90);
+
+    await user.clear(input);
+    await user.type(input, "30");
+    await user.click(
+      screen.getByRole("button", { name: /Save Settings|保存设置/ }),
+    );
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_retention_save", {
+        days: 30,
+      }),
+    );
+    expect(screen.getByLabelText("Log retention days")).toHaveValue(30);
+    const commands = invokeMock.mock.calls.map(([command]) => command);
+    expect(commands).not.toContain("save_storage_config");
+    expect(commands).not.toContain("protocol_router_save_config");
+  });
+
+  it("保留天数 0 或 400 被拒绝并显示可操作错误，1 与 365 保存成功", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsView initialTab="ai-gateway" onBack={() => {}} />);
+
+    const input = await screen.findByLabelText("Log retention days");
+
+    await user.clear(input);
+    await user.type(input, "0");
+    await user.click(
+      screen.getByRole("button", { name: /Save Settings|保存设置/ }),
+    );
+    expect(
+      await screen.findByText(
+        /Retention days must be a whole number between 1 and 365/,
+      ),
+    ).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "api_fusion_usage_retention_save",
+      expect.anything(),
+    );
+
+    await user.clear(input);
+    await user.type(input, "400");
+    await user.click(
+      screen.getByRole("button", { name: /Save Settings|保存设置/ }),
+    );
+    expect(
+      await screen.findByText(
+        /Retention days must be a whole number between 1 and 365/,
+      ),
+    ).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "api_fusion_usage_retention_save",
+      expect.anything(),
+    );
+
+    await user.clear(input);
+    await user.type(input, "1");
+    await user.click(
+      screen.getByRole("button", { name: /Save Settings|保存设置/ }),
+    );
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_retention_save", {
+        days: 1,
+      }),
+    );
+
+    await user.clear(input);
+    await user.type(input, "365");
+    await user.click(
+      screen.getByRole("button", { name: /Save Settings|保存设置/ }),
+    );
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_retention_save", {
+        days: 365,
+      }),
+    );
+  });
+
+  it("重置恢复最近一次已保存的保留天数且不改写其他分区", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsView initialTab="ai-gateway" onBack={() => {}} />);
+
+    const input = await screen.findByLabelText("Log retention days");
+    await user.clear(input);
+    await user.type(input, "30");
+    await user.click(
+      screen.getByRole("button", { name: /Save Settings|保存设置/ }),
+    );
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_retention_save", {
+        days: 30,
+      }),
+    );
+
+    await user.clear(input);
+    await user.type(input, "45");
+    const resetButtons = screen.getAllByRole("button", {
+      name: /Reset|重置/,
+    });
+    await user.click(resetButtons[0]);
+    const confirmButtons = screen.getAllByRole("button", {
+      name: /Reset|重置/,
+    });
+    await user.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Log retention days")).toHaveValue(30),
+    );
+    const commands = invokeMock.mock.calls.map(([command]) => command);
+    expect(commands).not.toContain("save_storage_config");
+  });
+
+  it("AI 网关分区不包含模型价格维护入口", async () => {
+    renderWithProviders(<SettingsView initialTab="ai-gateway" onBack={() => {}} />);
+
+    await screen.findByLabelText("Log retention days");
+    expect(
+      screen.queryByRole("button", { name: /Model prices|模型价格/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/USD \/ million tokens/)).not.toBeInTheDocument();
   });
 
   it("keeps the random MD5 password generation contract", async () => {

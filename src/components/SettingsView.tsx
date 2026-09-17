@@ -39,6 +39,7 @@ import {
   X,
   Newspaper,
   Route,
+  Network,
 } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useTheme } from "./ThemeProvider";
@@ -62,6 +63,10 @@ import {
   type ProtocolRouterConfig,
   type ProtocolRouterStatus,
 } from "@/lib/protocolRouter";
+import {
+  apiFusionUsageRetentionGet,
+  apiFusionUsageRetentionSave,
+} from "@/lib/apiFusion";
 
 interface SyncPolicy {
   providers: boolean;
@@ -315,6 +320,7 @@ type SettingsTab =
   | "subagents"
   | "proxy"
   | "protocol-router"
+  | "ai-gateway"
   | "shortcuts"
   | "ai"
   | "assistant-models"
@@ -330,6 +336,7 @@ const SETTINGS_TABS: SettingsTab[] = [
   "subagents",
   "proxy",
   "protocol-router",
+  "ai-gateway",
   "shortcuts",
   "ai",
   "assistant-models",
@@ -425,6 +432,17 @@ function parseAiNewsSyncIntervalInput(value: string): number | null {
   if (!/^\d+$/.test(trimmed)) return null;
   const parsed = Number(trimmed);
   if (!Number.isInteger(parsed) || parsed < 10 || parsed > 1440) {
+    return null;
+  }
+  return parsed;
+}
+
+/** API Gateway log retention accepts whole days in the inclusive 1..365 range. */
+function parseUsageRetentionInput(value: string): number | null {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 365) {
     return null;
   }
   return parsed;
@@ -577,6 +595,8 @@ export function SettingsView({
   const [protocolRouterStatusState, setProtocolRouterStatusState] =
     useState<ProtocolRouterStatus | null>(null);
   const [protocolRouterBusy, setProtocolRouterBusy] = useState(false);
+  const [usageRetentionInput, setUsageRetentionInput] = useState("90");
+  const [savedUsageRetentionDays, setSavedUsageRetentionDays] = useState(90);
   const [newSkillSource, setNewSkillSource] = useState<SkillSourceConfig>({
     id: "",
     name: "",
@@ -639,6 +659,7 @@ export function SettingsView({
   useEffect(() => {
     loadConfig();
     void loadProtocolRouter();
+    void loadAiGateway();
   }, []);
 
   useEffect(() => {
@@ -908,6 +929,17 @@ export function SettingsView({
       setProtocolRouterConfig(normalized);
       setSavedProtocolRouterConfig(normalized);
       setProtocolRouterStatusState(nextStatus);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const loadAiGateway = async () => {
+    try {
+      const days = await apiFusionUsageRetentionGet();
+      const normalized = Number.isFinite(days) ? Number(days) : 90;
+      setSavedUsageRetentionDays(normalized);
+      setUsageRetentionInput(String(normalized));
     } catch (e) {
       console.error(e);
     }
@@ -1661,6 +1693,14 @@ export function SettingsView({
           );
         return;
       }
+      if (tab === "ai-gateway") {
+        const parsed = parseUsageRetentionInput(usageRetentionInput);
+        next[tab] =
+          parsed !== null
+            ? parsed !== savedUsageRetentionDays
+            : usageRetentionInput.trim() !== String(savedUsageRetentionDays);
+        return;
+      }
       if (tab === "news") {
         const current = getTabSnapshot(tab, config, proxyConfig);
         const saved = getTabSnapshot(tab, savedConfig, savedProxyConfig);
@@ -1689,6 +1729,8 @@ export function SettingsView({
     savedProtocolRouterConfig,
     aiNewsSyncIntervalInput,
     savedAiNewsSyncIntervalInput,
+    usageRetentionInput,
+    savedUsageRetentionDays,
   ]);
 
   const currentTabDirty = tabDirtyMap[activeTab];
@@ -1748,6 +1790,32 @@ export function SettingsView({
         setProtocolRouterConfig(normalized);
         setSavedProtocolRouterConfig(normalized);
         setProtocolRouterStatusState(await protocolRouterStatus());
+        setMessage({
+          type: "success",
+          text: t("currentSectionSavedSuccess", "Current section saved."),
+        });
+        setTimeout(() => {
+          setMessage({ type: "", text: "" });
+        }, 3000);
+        return;
+      }
+
+      if (activeTab === "ai-gateway") {
+        const parsed = parseUsageRetentionInput(usageRetentionInput);
+        if (parsed === null) {
+          setMessage({
+            type: "error",
+            text: t(
+              "aiGatewayRetentionInvalid",
+              "Retention days must be a whole number between 1 and 365.",
+            ),
+          });
+          return;
+        }
+        const saved = await apiFusionUsageRetentionSave(parsed);
+        const normalized = Number.isFinite(saved) ? Number(saved) : parsed;
+        setSavedUsageRetentionDays(normalized);
+        setUsageRetentionInput(String(normalized));
         setMessage({
           type: "success",
           text: t("currentSectionSavedSuccess", "Current section saved."),
@@ -1952,6 +2020,34 @@ export function SettingsView({
           ),
           kind: "success",
         });
+        setMessage({
+          type: "success",
+          text: t(
+            "currentSectionResetSuccess",
+            "Current section has been reset.",
+          ),
+        });
+        setTimeout(() => {
+          setMessage({ type: "", text: "" });
+        }, 3000);
+        return;
+      }
+
+      if (activeTab === "ai-gateway") {
+        const confirmed = await confirmDialog(
+          t(
+            "confirmResetSettingsSection",
+            "Discard unsaved changes in this settings section and reload the saved values?",
+          ),
+          {
+            title: t("confirmResetSettingsSectionTitle", "Reset settings"),
+            okLabel: t("reset", "Reset"),
+            cancelLabel: t("cancel", "Cancel"),
+            kind: "warning",
+          },
+        );
+        if (!confirmed) return;
+        await loadAiGateway();
         setMessage({
           type: "success",
           text: t(
@@ -2239,6 +2335,11 @@ export function SettingsView({
       id: "protocol-router",
       name: t("protocolRouter", "Protocol Router"),
       icon: Route,
+    },
+    {
+      id: "ai-gateway",
+      name: t("aiGatewaySettings", "AI Gateway"),
+      icon: Network,
     },
     { id: "shortcuts", name: t("shortcuts", "Shortcuts"), icon: KeyboardIcon },
     { id: "ai", name: t("aiSessions", "AI Terminal"), icon: Terminal },
@@ -5716,6 +5817,52 @@ export function SettingsView({
                         <Route className="h-4 w-4" />
                         {t("openProtocolRouterTool", "Open Protocol Router Tool")}
                       </button>
+                    </div>
+                  </section>
+                </div>
+              )}
+
+              {activeTab === "ai-gateway" && (
+                <div className="space-y-6">
+                  <section className="space-y-4">
+                    <div className="flex flex-col gap-1">
+                      <h2 className="text-lg font-semibold">
+                        {t("aiGatewaySettings", "AI Gateway")}
+                      </h2>
+                      <p className="text-sm text-muted-foreground">
+                        {t(
+                          "aiGatewaySettingsDesc",
+                          "Configure how long API Gateway request logs are retained. Prices and usage live in the AI Gateway workspace.",
+                        )}
+                      </p>
+                    </div>
+
+                    <div className="rounded-2xl border bg-card p-6 shadow-sm space-y-4">
+                      <label className="block space-y-2">
+                        <span className="text-sm font-medium">
+                          {t("aiGatewayRetentionLabel", "Log retention days")}
+                        </span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={365}
+                          value={usageRetentionInput}
+                          onChange={(event) =>
+                            setUsageRetentionInput(event.target.value)
+                          }
+                          aria-label={t(
+                            "aiGatewayRetentionLabel",
+                            "Log retention days",
+                          )}
+                          className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                        />
+                      </label>
+                      <p className="text-xs text-muted-foreground">
+                        {t(
+                          "aiGatewayRetentionDesc",
+                          "Request logs older than this many days are permanently deleted when new logs are written.",
+                        )}
+                      </p>
                     </div>
                   </section>
                 </div>

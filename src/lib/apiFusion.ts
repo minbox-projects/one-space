@@ -243,3 +243,240 @@ export function apiFusionSyncTerminal(targetTools?: string[]) {
     targetTools ? { targetTools } : {},
   );
 }
+
+/** Quick time ranges shared by the usage-stats and request-logs tabs. */
+export type UsageRangeKey = "today" | "7d" | "15d" | "30d" | "all";
+
+export const USAGE_RANGE_KEYS: readonly UsageRangeKey[] = [
+  "today",
+  "7d",
+  "15d",
+  "30d",
+  "all",
+];
+
+/**
+ * Map a quick-range selection to the backend `days` argument.
+ * `null` means all time, `1` means today, otherwise the last N calendar days.
+ */
+export function usageRangeToDays(range: UsageRangeKey): number | null {
+  switch (range) {
+    case "today":
+      return 1;
+    case "7d":
+      return 7;
+    case "15d":
+      return 15;
+    case "30d":
+      return 30;
+    case "all":
+      return null;
+  }
+}
+
+export interface UsageMetrics {
+  request_count: number;
+  input_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  /** Sum of already-priced record amounts in scope. */
+  amount: number;
+  /** Records with no matching price row in scope. */
+  unpriced_count: number;
+}
+
+export interface UsageBucket extends UsageMetrics {
+  label: string;
+}
+
+export interface UsageProviderBreakdown extends UsageMetrics {
+  provider_id: string;
+  provider_name: string;
+}
+
+export interface UsageModelBreakdown extends UsageMetrics {
+  local_model: string;
+  providers: UsageProviderBreakdown[];
+}
+
+export interface UsageStats extends UsageMetrics {
+  granularity: "hour" | "day";
+  buckets: UsageBucket[];
+  models: UsageModelBreakdown[];
+}
+
+export type UsageLogResult = "success" | "failure" | "cancelled";
+
+export interface UsageLogRecord {
+  timestamp_ms: number;
+  local_model: string;
+  upstream_model: string;
+  provider_id: string;
+  provider_name: string;
+  result: UsageLogResult;
+  status: number;
+  input_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  amount: number | null;
+  duration_ms: number;
+}
+
+export interface UsageLogGroup {
+  group: string;
+  request_count: number;
+  /** Failure records only; cancelled is excluded. */
+  error_count: number;
+  last_request_at_ms: number;
+}
+
+export type UsageGroupBy = "none" | "model" | "day";
+
+export interface UsageLogsPage {
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+  group_by: string | null;
+  records: UsageLogRecord[];
+  groups: UsageLogGroup[];
+}
+
+export interface UsageLogsQuery {
+  days: number | null;
+  groupBy?: UsageGroupBy | null;
+  status?: UsageLogResult | null;
+  model?: string | null;
+  page?: number;
+}
+
+export interface ModelPrice {
+  upstream_model: string;
+  /** USD per million tokens. */
+  input: number;
+  cache_read: number;
+  cache_write: number;
+  output: number;
+}
+
+const UTC8_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+/** Format a millisecond timestamp as `YYYY-MM-DD HH:mm` in UTC+8. */
+export function formatUtc8DateTime(ms: number | null | undefined): string | null {
+  if (ms === null || ms === undefined) return null;
+  const date = new Date(ms + UTC8_OFFSET_MS);
+  return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(
+    date.getUTCDate(),
+  )} ${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}`;
+}
+
+/** Format a millisecond timestamp as `YYYY-MM-DD` in UTC+8. */
+export function formatUtc8Day(ms: number | null | undefined): string | null {
+  if (ms === null || ms === undefined) return null;
+  const date = new Date(ms + UTC8_OFFSET_MS);
+  return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(
+    date.getUTCDate(),
+  )}`;
+}
+
+/** Format a millisecond timestamp as `HH:00` in UTC+8. */
+export function formatUtc8Hour(ms: number | null | undefined): string | null {
+  if (ms === null || ms === undefined) return null;
+  const date = new Date(ms + UTC8_OFFSET_MS);
+  return `${pad2(date.getUTCHours())}:00`;
+}
+
+/** Format an amount with 4 decimals; missing amounts render as `—`. */
+export function formatUsageAmount(amount: number | null | undefined): string {
+  if (amount === null || amount === undefined || Number.isNaN(amount)) return "—";
+  return amount.toFixed(4);
+}
+
+/**
+ * A row is "unpriced" only when every request in scope lacks a price row.
+ * A partially priced row still shows its priced amount.
+ */
+export function isUnpricedOnly(
+  metrics: Pick<UsageMetrics, "request_count" | "unpriced_count">,
+): boolean {
+  return (
+    metrics.request_count > 0 &&
+    metrics.unpriced_count > 0 &&
+    metrics.unpriced_count === metrics.request_count
+  );
+}
+
+/** Amount cell for a usage-analysis row (`—` when fully unpriced). */
+export function formatUsageRowAmount(metrics: UsageMetrics): string {
+  if (isUnpricedOnly(metrics)) return "—";
+  return formatUsageAmount(metrics.amount);
+}
+
+/** Display label for a grouped request-log row. */
+export function formatUsageGroupLabel(
+  _groupBy: UsageGroupBy,
+  group: string,
+): string {
+  return group && group.trim() !== "" ? group : "—";
+}
+
+/** Clamp a 1-based page number into the valid range for the given page count. */
+export function clampUsagePage(page: number, totalPages: number): number {
+  if (!Number.isFinite(page)) return 1;
+  if (!Number.isFinite(totalPages) || totalPages < 1) return 1;
+  const floored = Math.floor(page);
+  if (floored < 1) return 1;
+  return Math.min(floored, Math.floor(totalPages));
+}
+
+/** Stable i18n key for a request-log status result. */
+export function usageStatusTranslationKey(result: UsageLogResult): string {
+  switch (result) {
+    case "success":
+      return "apiFusionStatusSuccess";
+    case "failure":
+      return "apiFusionStatusFailure";
+    case "cancelled":
+      return "apiFusionStatusCancelled";
+  }
+}
+
+/** Card totals, time buckets and model/provider breakdown for a time range. */
+export function apiFusionUsageStats(days: number | null) {
+  return invoke<UsageStats>("api_fusion_usage_stats", { days });
+}
+
+/** Paged request logs, optionally grouped by model or UTC+8 day. */
+export function apiFusionRequestLogs(query: UsageLogsQuery) {
+  return invoke<UsageLogsPage>("api_fusion_request_logs", {
+    days: query.days,
+    groupBy: query.groupBy ?? null,
+    status: query.status ?? null,
+    model: query.model ?? null,
+    page: query.page ?? 1,
+  });
+}
+
+export function apiFusionModelPricesGet() {
+  return invoke<ModelPrice[]>("api_fusion_model_prices_get");
+}
+
+export function apiFusionModelPricesSave(prices: ModelPrice[]) {
+  return invoke<ModelPrice[]>("api_fusion_model_prices_save", { prices });
+}
+
+export function apiFusionUsageRetentionGet() {
+  return invoke<number>("api_fusion_usage_retention_get");
+}
+
+export function apiFusionUsageRetentionSave(days: number) {
+  return invoke<number>("api_fusion_usage_retention_save", { days });
+}
