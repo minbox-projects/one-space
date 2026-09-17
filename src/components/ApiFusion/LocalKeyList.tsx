@@ -45,7 +45,7 @@ export function LocalKeyList({
           <div className="flex items-center gap-2">
             <KeyRound className="h-4 w-4 text-indigo-600" />
             <h3 className="text-sm font-semibold text-foreground">
-              {t("apiFusionKeys", "Local keys")}
+              {t("apiFusionKeys", "Api Keys")}
             </h3>
             <span className="rounded-full bg-muted px-2 py-0.2 text-[10px] font-semibold text-muted-foreground">
               {keys.length}

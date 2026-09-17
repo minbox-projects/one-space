@@ -347,7 +347,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
     },
     {
       id: "keys",
-      label: t("apiFusionKeys", "Local keys"),
+      label: t("apiFusionKeys", "Api Keys"),
       icon: KeyRound,
       count: config?.keys?.length ?? 0,
     },
@@ -470,7 +470,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
         {/* Tab 2: 本地密钥 */}
         <div
           role="tabpanel"
-          aria-label={t("apiFusionKeys", "Local keys")}
+          aria-label={t("apiFusionKeys", "Api Keys")}
           className={activeTab === "keys" ? "block" : "hidden"}
         >
           <LocalKeyList

@@ -697,7 +697,7 @@ describe("ApiFusion", () => {
     const tabsList = screen.getByRole("tablist", { name: /API Gateway tabs/i });
     expect(tabsList).toBeInTheDocument();
 
-    const keysTab = screen.getByRole("tab", { name: /Local keys/i });
+    const keysTab = screen.getByRole("tab", { name: /Api Keys/i });
     const terminalsTab = screen.getByRole("tab", { name: /Terminal sync/i });
     const providersTab = screen.getByRole("tab", { name: /Upstream providers/i });
 
