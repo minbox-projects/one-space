@@ -530,7 +530,7 @@ describe("ApiFusion", () => {
     renderWithProviders(<ApiFusion />);
     await screen.findByText("Upstream A");
 
-    const tabsList = screen.getByRole("tablist", { name: /API Fusion tabs/i });
+    const tabsList = screen.getByRole("tablist", { name: /API Gateway tabs/i });
     expect(tabsList).toBeInTheDocument();
 
     const keysTab = screen.getByRole("tab", { name: /Local keys/i });

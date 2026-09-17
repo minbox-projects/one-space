@@ -25,7 +25,7 @@ vi.mock("./ProtocolRouterTool", () => ({
   ProtocolRouterTool: () => <div>Protocol Router detail</div>,
 }));
 vi.mock("./ApiFusion", () => ({
-  ApiFusion: () => <div>API Fusion detail</div>,
+  ApiFusion: () => <div>API Gateway detail</div>,
 }));
 vi.mock("./RandomPasswordTool", () => ({
   RandomPasswordTool: () => <div>Random Password detail</div>,
@@ -328,7 +328,7 @@ describe("MoreToolsHub", () => {
     expect(screen.getByText(/JT\/T Data Parser detail/)).toBeInTheDocument();
   });
 
-  it("不再把 API 融合作为更多工具卡片展示", () => {
+  it("不再把 API 网关作为更多工具卡片展示", () => {
     renderWithProviders(
       <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
     );

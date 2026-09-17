@@ -403,7 +403,7 @@ const resources = {
       protocolRouterCopyUpstreamApiBaseUrl: "Copy upstream API base URL",
       protocolRouterUpstreamModelMappings: "Upstream Model Mappings",
       protocolRouterNoUpstreamModelMappings: "No upstream model mappings",
-      apiFusion: "API Fusion",
+      apiFusion: "API Gateway",
       apiFusionToolDesc:
         "Relay requests across multiple upstream providers and push the local endpoint to OpenCode / Codex.",
       apiFusionLauncherDesc:
@@ -483,7 +483,7 @@ const resources = {
       apiFusionNoTerminalTargets: "No OpenCode or Codex terminal targets found.",
       apiFusionPendingSync: "Pending sync",
       apiFusionSynced: "Synced",
-      apiFusionLoadFailed: "Failed to load API Fusion configuration.",
+      apiFusionLoadFailed: "Failed to load API Gateway configuration.",
       apiFusionActionFailed: "Action failed",
       apiFusionSaved: "Saved.",
       apiFusionProviderSaved: "Provider saved.",
@@ -493,7 +493,7 @@ const resources = {
       apiFusionSyncSuccess: "Terminal targets synced.",
       apiFusionCopied: "Copied to clipboard",
       apiFusionCopyFailed: "Copy failed",
-      apiFusionWorkspaceTabs: "API Fusion tabs",
+      apiFusionWorkspaceTabs: "API Gateway tabs",
       apiFusionHasPendingItems: "Has items needing attention",
       apiFusionProvidersDesc:
         "Manage remote AI provider endpoints, protocols, and model route mappings.",
@@ -3759,7 +3759,7 @@ const resources = {
       protocolRouterCopyUpstreamApiBaseUrl: "复制上游 API 服务地址",
       protocolRouterUpstreamModelMappings: "上游模型映射",
       protocolRouterNoUpstreamModelMappings: "暂无上游模型映射",
-      apiFusion: "API 融合",
+      apiFusion: "API 网关",
       apiFusionToolDesc:
         "在多个上游服务商之间弹性转发请求，并把本地入口一键写入 OpenCode / Codex。",
       apiFusionLauncherDesc:
@@ -3838,7 +3838,7 @@ const resources = {
       apiFusionNoTerminalTargets: "未找到 OpenCode 或 Codex 终端记录。",
       apiFusionPendingSync: "待同步",
       apiFusionSynced: "已同步",
-      apiFusionLoadFailed: "加载 API 融合配置失败。",
+      apiFusionLoadFailed: "加载 API 网关配置失败。",
       apiFusionActionFailed: "操作失败",
       apiFusionSaved: "已保存。",
       apiFusionProviderSaved: "服务商已保存。",
@@ -3848,7 +3848,7 @@ const resources = {
       apiFusionSyncSuccess: "终端已同步。",
       apiFusionCopied: "已复制到剪贴板",
       apiFusionCopyFailed: "复制失败",
-      apiFusionWorkspaceTabs: "API 融合选项卡",
+      apiFusionWorkspaceTabs: "API 网关选项卡",
       apiFusionHasPendingItems: "有待处理项",
       apiFusionProvidersDesc: "管理远端 AI 服务商、通信协议与模型路由映射规则。",
       apiFusionNoProvidersGuide:

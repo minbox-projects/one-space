@@ -68,7 +68,7 @@ pub(in crate::api_fusion) async fn start_server() -> Result<FusionStatus, String
         .await
         .map_err(|e| {
             format!(
-                "failed to bind API Fusion port {} on 127.0.0.1: {e}",
+                "failed to bind API Gateway port {} on 127.0.0.1: {e}",
                 config.port
             )
         })?;

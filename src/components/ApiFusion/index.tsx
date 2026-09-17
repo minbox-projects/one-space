@@ -115,7 +115,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
       const msg = errorToMessage(err);
       setLoadError(msg);
       pushToast({
-        title: t("apiFusionLoadFailed", "Failed to load API Fusion configuration."),
+        title: t("apiFusionLoadFailed", "Failed to load API Gateway configuration."),
         description: msg,
         kind: "error",
       });
@@ -281,7 +281,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
                 <Network className="h-6 w-6" />
               </div>
               <h3 className="mt-3 text-base font-semibold text-foreground">
-                {t("apiFusionLoadFailed", "Failed to load API Fusion configuration.")}
+                {t("apiFusionLoadFailed", "Failed to load API Gateway configuration.")}
               </h3>
               <p className="mt-1 max-w-md text-xs text-muted-foreground">{loadError}</p>
               <button
@@ -346,7 +346,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           </div>
           <div className="space-y-0.5">
             <h1 className="text-xl font-bold tracking-tight text-foreground">
-              {t("apiFusion", "API Fusion")}
+              {t("apiFusion", "API Gateway")}
             </h1>
             <p className="max-w-3xl text-xs text-muted-foreground">
               {t(
@@ -371,7 +371,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
         {/* 工作区 Tabs 标签页导航（对齐 AiEnvironments 的紧凑导航规范） */}
         <div
           role="tablist"
-          aria-label={t("apiFusionWorkspaceTabs", "API Fusion tabs")}
+          aria-label={t("apiFusionWorkspaceTabs", "API Gateway tabs")}
           className="flex flex-wrap items-center gap-1 rounded-lg border bg-muted/40 p-1"
         >
           {tabs.map((tab) => {

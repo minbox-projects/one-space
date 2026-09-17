@@ -1208,7 +1208,7 @@ function App() {
           },
           {
             id: "api-fusion",
-            name: t("apiFusion", "API Fusion"),
+            name: t("apiFusion", "API Gateway"),
             icon: Network,
           },
           {
@@ -1555,7 +1555,7 @@ function App() {
         )}
         {shouldRenderTab("api-fusion") && (
           <div className={activeTab === "api-fusion" ? "h-full" : "hidden"}>
-            <AppErrorBoundary label="API 融合" resetKey={activeTab}>
+            <AppErrorBoundary label="API 网关" resetKey={activeTab}>
               <ApiFusion isVisible={activeTab === "api-fusion"} />
             </AppErrorBoundary>
           </div>
