@@ -107,8 +107,9 @@ export function useWorkspaceMcpTab(args: {
           pendingMcpTimersRef.current.add(timerId);
         });
       }
-      if (!isMountedRef.current) return;
-      setMcpLoading(false);
+      if (isMountedRef.current) {
+        setMcpLoading(false);
+      }
     }
   }, [isTauri, mcpServers.length]);
 
