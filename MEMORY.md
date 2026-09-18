@@ -9,9 +9,9 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 - 前端命令封装集中在 `src/lib/*`，通过 `@tauri-apps/api` 的 `invoke` 调用后端；UI 组件不直接拼装命令字符串。
 - 构建命令：`npm run dev`、`npm run build`（`tsc -b && vite build`）、`npm run tauri dev`、`npm run tauri build`。
 - 检查命令：`npm run lint`（eslint）、`npm test`（vitest run）、`npm run check:cli-matrix`；后端测试在 `src-tauri/` 下用 `cargo test`。
-- 后端测试构建采用 `[profile.test]`：`opt-level = 1`、`debug = 0`、`split-debuginfo = "off"`，`[profile.test.package.sha2] opt-level = 2`；优先改善运行时间，不承诺增量重编提速。保持生产密码学参数（PBKDF2 2,100,000 次迭代）、`[lib] crate-type` 和 vendored OpenSSL / bundled SQLite 不变；macOS 系统库候选暖重编收益 0.80%，未达 15% 采用门槛。
+- 后端测试构建采用 `[profile.test]`：`opt-level = 1`、`debug = 0`、`split-debuginfo = "off"`，`[profile.test.package.sha2] opt-level = 2`；优先改善运行时间，不承诺增量重编提速。保持生产密码学参数（PBKDF2 100,000 次迭代，对应 `src-tauri/src/crypto.rs` 的 `PBKDF2_ITERATIONS`）、`[lib] crate-type` 和 vendored OpenSSL / bundled SQLite 不变；macOS 系统库候选暖重编收益 0.80%，未达 15% 采用门槛。
 - 后端测试隔离：仅依赖 `get_app_dir()` 的测试可使用 `cfg(test)` 线程局部应用目录 guard；直接修改 HOME 或使用全局 server 状态的测试保留串行，不能假定线程局部覆盖会跨线程传播。内容哈希与 mtime 无关的测试用 `File::set_modified` 显式改变 mtime；重试/退避测试使用 paused 时间与到达间隔断言，真实 socket header / OS connect 行为保留真实时间。
-- 测试计时分别记录 harness 与原始 wall 时间，争用扣除估算不能当作实测 wall；stable 不支持 `--report-time` 时使用已授权的等价计时。当前 581 例为 579 通过、两个既有 ignored（新增一例并发隔离回归、按用户要求删除一例冗余 E2E）；原 AC-003 单例 <100ms、AC-004 增量改善 ≥10% 未达标。实测、保留覆盖与待集成审查状态见 [Cargo test speedup](.ai-workflow/notes/implemented/testing/2026-09-18-cargo-test-speedup.md)。
+- 测试计时分别记录 harness 与原始 wall 时间，争用扣除估算不能当作实测 wall；stable 不支持 `--report-time` 时使用已授权的等价计时。当前 581 例为 579 通过、两个既有 ignored（新增一例并发隔离回归、按用户后续明确范围修订删除一例冗余 E2E，删除不作为原指标达标手段）；原 AC-003 单例 <100ms（实测 0.18–0.37s）、AC-004 增量改善 ≥10%（5.94→6.54s，慢 0.60s）未达标，用户最终“同意”明确接受两项偏差并授权修复全部文档后合并。一次双轴审查已完成，不再审查；当前实施完成待集成，不表示已合并。完整授权、命令级实测与保留覆盖见 [Cargo test speedup](.ai-workflow/notes/implemented/testing/2026-09-18-cargo-test-speedup.md)。
 - 版本号三处保持一致：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`。
 
 ## 模块根与职责
