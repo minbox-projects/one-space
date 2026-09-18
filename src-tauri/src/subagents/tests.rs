@@ -50,8 +50,34 @@ fn hash_dir_ignores_file_mtime_when_content_is_unchanged() {
     fs::write(&subagent_md, "hello\nworld\n").expect("write initial content");
 
     let before = hash_dir(&root).expect("hash before");
-    std::thread::sleep(Duration::from_millis(1200));
-    fs::write(&subagent_md, "hello\nworld\n").expect("rewrite same content");
+    let baseline_mtime = fs::metadata(&subagent_md)
+        .expect("metadata before")
+        .modified()
+        .expect("mtime before");
+
+    // The previous version slept 1.2s and rewrote identical bytes so the file
+    // mtime would advance. Set a different mtime explicitly instead: the content
+    // stays byte-identical while the directory hash must remain unchanged.
+    let changed_mtime = baseline_mtime
+        .checked_add(Duration::from_secs(60))
+        .expect("changed mtime");
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(&subagent_md)
+        .expect("open subagent markdown");
+    file.set_modified(changed_mtime)
+        .expect("set changed mtime");
+    drop(file);
+
+    let observed_mtime = fs::metadata(&subagent_md)
+        .expect("metadata after")
+        .modified()
+        .expect("mtime after");
+    assert_ne!(
+        baseline_mtime, observed_mtime,
+        "the explicit mtime change must be observable on disk"
+    );
+
     let after = hash_dir(&root).expect("hash after");
 
     assert_eq!(before, after);
