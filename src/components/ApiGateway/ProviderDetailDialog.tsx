@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Eye, EyeOff, Plus, Trash2 } from "lucide-react";
+import { Eye, EyeOff, Info, Plus, Trash2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -157,7 +157,24 @@ export function ProviderDetailDialog({
             </div>
 
             <div className="field">
-              <label>{t("apiGatewayDefaultModel", "Default model")}</label>
+              <label className="inline-flex items-center gap-1.5">
+                <span>{t("apiGatewayDefaultModel", "Default model")}</span>
+                <span className="relative group inline-flex items-center">
+                  <Info
+                    className="h-3.5 w-3.5 cursor-help text-muted-foreground/70 transition hover:text-foreground"
+                    aria-label={t("apiGatewayDefaultModelHint", "Enter the real model name on the upstream provider. Used as a fallback when no mapping matches.")}
+                  />
+                  <span
+                    role="tooltip"
+                    className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-56 rounded-md border bg-popover p-2 text-left text-xs font-normal text-popover-foreground shadow-lg group-hover:block group-focus-within:block"
+                  >
+                    {t(
+                      "apiGatewayDefaultModelHint",
+                      "Enter the real model name on the upstream provider. Used as a fallback when no mapping matches.",
+                    )}
+                  </span>
+                </span>
+              </label>
               <input
                 type="text"
                 value={defaultModel}

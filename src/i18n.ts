@@ -450,6 +450,8 @@ const resources = {
       apiGatewayBaseUrl: "API base URL",
       apiGatewayApiKey: "API key",
       apiGatewayDefaultModel: "Default model",
+      apiGatewayDefaultModelHint:
+        "Enter the real model name on the upstream provider. Used as a fallback when no mapping matches.",
       apiGatewayProtocol: "API protocol",
       apiGatewayProtocolChat: "Chat Completions (/chat/completions)",
       apiGatewayProtocolResponses: "Responses (/responses)",
@@ -3962,6 +3964,8 @@ const resources = {
       apiGatewayBaseUrl: "Api 地址",
       apiGatewayApiKey: "ApiKey",
       apiGatewayDefaultModel: "默认模型",
+      apiGatewayDefaultModelHint:
+        "填写上游服务商的真实模型名，未命中任何映射时兜底使用。",
       apiGatewayProtocol: "接口协议",
       apiGatewayProtocolChat: "Chat Completions (/chat/completions)",
       apiGatewayProtocolResponses: "Responses (/responses)",
