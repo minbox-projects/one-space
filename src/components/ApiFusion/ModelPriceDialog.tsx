@@ -274,7 +274,7 @@ export function ModelPriceDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-h-[90vh] w-full overflow-y-auto p-5 sm:max-w-4xl sm:rounded-xl"
+        className="max-h-[90vh] w-full overflow-y-auto p-5 sm:max-w-6xl sm:rounded-xl"
         data-testid="api-fusion-model-price-dialog"
       >
         <DialogHeader className="space-y-1">
