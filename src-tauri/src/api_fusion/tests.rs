@@ -2048,7 +2048,7 @@ async fn server_starts_listens_and_stops() {
     let status = super::runtime_http::start_server().await.unwrap();
     assert!(status.running);
     assert_eq!(status.port, port);
-    assert_eq!(status.local_base_url, format!("http://127.0.0.1:{port}"));
+    assert_eq!(status.local_base_url, format!("http://127.0.0.1:{port}/v1"));
 
     let (code, _, _) = call_fusion(
         port,
@@ -2428,28 +2428,28 @@ fn terminal_sync_pending_uses_ledger_not_plaintext_key() {
         provider_id: "p1".to_string(),
         tool: "opencode".to_string(),
         synced_key_id: "k1".to_string(),
-        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_base_url: "http://127.0.0.1:17688/v1".to_string(),
         synced_at: 10,
     };
     assert!(!terminal_sync_pending(
         &record,
         Some("k1"),
-        "http://127.0.0.1:17688"
+        "http://127.0.0.1:17688/v1"
     ));
     assert!(terminal_sync_pending(
         &record,
         Some("k2"),
-        "http://127.0.0.1:17688"
+        "http://127.0.0.1:17688/v1"
     ));
     assert!(terminal_sync_pending(
         &record,
         Some("k1"),
-        "http://127.0.0.1:17777"
+        "http://127.0.0.1:17777/v1"
     ));
     assert!(terminal_sync_pending(
         &record,
         None,
-        "http://127.0.0.1:17688"
+        "http://127.0.0.1:17688/v1"
     ));
 }
 
@@ -4633,7 +4633,7 @@ fn terminal_targets_from_marks_synced_when_marker_and_ledger_match() {
         provider_id: "managed-oc".to_string(),
         tool: "opencode".to_string(),
         synced_key_id: "k1".to_string(),
-        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_base_url: "http://127.0.0.1:17688/v1".to_string(),
         synced_at: 10,
     });
     let providers_data =
@@ -4666,7 +4666,7 @@ fn terminal_targets_from_reports_unsynced_when_managed_provider_deleted() {
         provider_id: "managed-oc".to_string(),
         tool: "opencode".to_string(),
         synced_key_id: "k1".to_string(),
-        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_base_url: "http://127.0.0.1:17688/v1".to_string(),
         synced_at: 10,
     });
 
@@ -4690,7 +4690,7 @@ fn terminal_targets_from_marks_pending_when_ledger_key_or_base_url_drifted() {
         provider_id: "managed-oc".to_string(),
         tool: "opencode".to_string(),
         synced_key_id: "k-old".to_string(),
-        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_base_url: "http://127.0.0.1:17688/v1".to_string(),
         synced_at: 10,
     });
     let providers_data =

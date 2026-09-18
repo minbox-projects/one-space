@@ -112,9 +112,9 @@ export function resolveDefaultKeyId(
   return keys.find((key) => key.enabled)?.id ?? null;
 }
 
-/** Build the local OpenAI-compatible base address the listener binds to. */
+/** Build the local OpenAI-compatible base address (with `/v1` suffix) the listener binds to. */
 export function localBaseUrl(port: number): string {
-  return `http://127.0.0.1:${port}`;
+  return `http://127.0.0.1:${port}/v1`;
 }
 
 /** Resolved upstream model plus the endpoint family the request is sent to. */
