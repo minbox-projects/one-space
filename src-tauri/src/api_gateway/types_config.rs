@@ -2,11 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(in crate::api_gateway) const CONFIG_FILE: &str = "api_gateway.json";
-/// Legacy config file kept for one-time read-only migration: if
-/// `api_gateway.json` is absent but `api_fusion.json` exists, the stored
-/// payload is read through the same decrypt path and rewritten to the new
-/// file. Writes never touch the legacy file.
-pub(in crate::api_gateway) const LEGACY_CONFIG_FILE: &str = "api_fusion.json";
 pub(in crate::api_gateway) const DEFAULT_PORT: u16 = 17688;
 
 /// Default request-log retention in days for configs written before the field existed.
@@ -43,7 +38,7 @@ pub(in crate::api_gateway) fn now_ts() -> u64 {
 pub struct ModelMapping {
     pub local_model: String,
     pub upstream_model: String,
-    /// Whether this row may serve requests. Rows in legacy configs without the
+    /// Whether this row may serve requests. Rows in older configs without the
     /// field default to enabled; the value is always serialized so the user's
     /// per-mapping intent survives a round trip.
     #[serde(default = "default_true")]
@@ -217,7 +212,7 @@ impl ModelPrice {
     /// Return the active off-peak configurations.
     ///
     /// If `off_peaks` contains entries, returns a slice to them; otherwise, falls back
-    /// to `off_peak` for backwards compatibility with legacy configurations.
+    /// to `off_peak` for backwards compatibility with older single-value configurations.
     pub fn effective_off_peaks(&self) -> &[OffPeakPrice] {
         if !self.off_peaks.is_empty() {
             &self.off_peaks
@@ -260,8 +255,7 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub terminal_syncs: Vec<TerminalSyncRecord>,
     /// Request-log retention in days (1-365, default 90). `#[serde(default)]`
-    /// keeps older `api_gateway.json` files — and legacy `api_fusion.json`
-    /// payloads migrated through the read-only compat path — readable without migration.
+    /// keeps older `api_gateway.json` files readable without migration.
     #[serde(default = "default_usage_retention_days")]
     pub usage_retention_days: u32,
     /// User-maintained upstream-model price table; absent in older configs.

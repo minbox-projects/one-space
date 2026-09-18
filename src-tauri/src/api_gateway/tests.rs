@@ -140,7 +140,7 @@ fn gateway_config_round_trips_and_encrypts_secrets_on_disk() {
 }
 
 /// The gateway model mapping may carry a display name; it survives a config
-/// write/read and stays optional for legacy rows.
+/// write/read and stays optional for older rows.
 #[test]
 fn model_mapping_display_name_round_trips_and_stays_optional() {
     with_temp_home("mapping-display-name", |_home| {
@@ -164,10 +164,10 @@ fn model_mapping_display_name_round_trips_and_stays_optional() {
 
 #[test]
 fn model_mapping_display_name_is_skipped_when_absent() {
-    let legacy: ModelMapping =
+    let plain: ModelMapping =
         serde_json::from_value(json!({"local_model": "local-a", "upstream_model": "remote-a"}))
             .expect("a mapping without display_name must deserialize");
-    assert_eq!(legacy.display_name, None);
+    assert_eq!(plain.display_name, None);
 
     let named: ModelMapping = serde_json::from_value(json!({
         "local_model": "local-a",
@@ -177,7 +177,7 @@ fn model_mapping_display_name_is_skipped_when_absent() {
     .expect("a mapping with display_name must deserialize");
     assert_eq!(named.display_name.as_deref(), Some("GPT-4o"));
 
-    let encoded = serde_json::to_value(&legacy).expect("serialize mapping");
+    let encoded = serde_json::to_value(&plain).expect("serialize mapping");
     assert!(
         encoded.get("display_name").is_none(),
         "an absent display_name must not be serialized: {encoded}"
@@ -4117,7 +4117,7 @@ fn unmarked_user_provider(id: &str, tool: &str) -> Value {
 /// The current terminal service provider list: one already-synced gateway
 /// provider per tool (recognized through the marker, under `tool_config` for
 /// opencode and at the top level for codex), an unmarked user-owned opencode
-/// provider, plus an unrelated legacy provider.
+/// provider, plus an unrelated provider.
 fn terminal_providers_payload() -> Value {
     json!({
         "providers": [
@@ -4132,7 +4132,7 @@ fn terminal_providers_payload() -> Value {
             },
             unmarked_user_provider("user-oc", "opencode"),
             {
-                "id": "legacy-other",
+                "id": "unrelated-other",
                 "tool": "claude",
                 "name": "Unrelated Tool",
                 "base_url": "https://old.example.com",
@@ -4415,7 +4415,7 @@ async fn terminal_sync_with_seam_reuses_ledger_provider_marked_in_providers_data
     assert_eq!(by_tool("codex")["id"], "managed-cx");
     assert!(
         submitted.iter().all(|value| value["tool"] != "claude"),
-        "an unrelated legacy provider must not be touched: {submitted:?}"
+        "an unrelated provider must not be touched: {submitted:?}"
     );
     for record in &records {
         assert!(
@@ -4575,69 +4575,6 @@ async fn terminal_sync_with_seam_reuses_marker_provider_when_ledger_id_absent() 
         "an absent ledger id must fall back to the marked gateway: {submitted:?}"
     );
     assert_eq!(records[0].provider_id, "managed-oc");
-}
-
-/// Legacy-marker compat: a provider carrying only the pre-rename
-/// `api_fusion_gateway` marker (under `tool_config`) is still recognized as a
-/// synced gateway, so its id is reused and no duplicate provider is created.
-#[tokio::test]
-async fn terminal_sync_with_seam_reuses_legacy_marker_provider() {
-    let _home = isolated_temp_home("terminal-sync-seam-legacy-marker");
-    super::storage::write_config(&gateway_config(17688)).unwrap();
-    let providers_data = json!({
-        "providers": [{
-            "id": "legacy-oc",
-            "tool": "opencode",
-            "name": "API Gateway",
-            "base_url": "http://127.0.0.1:17688",
-            "api_key": "previous-local-key",
-            "tool_config": { "api_fusion_gateway": true }
-        }]
-    });
-
-    let (submitted, records) =
-        capture_terminal_sync(&providers_data, vec!["opencode".to_string()]).await;
-
-    assert_eq!(submitted.len(), 1);
-    assert_eq!(
-        submitted[0]["id"], "legacy-oc",
-        "the legacy-marked gateway must be reused: {submitted:?}"
-    );
-    assert_eq!(records[0].provider_id, "legacy-oc");
-    assert_eq!(
-        submitted[0]["tool_config"]["api_gateway_gateway"], true,
-        "new writes must carry the new marker: {submitted:?}"
-    );
-    let persisted = super::storage::read_config().unwrap().terminal_syncs;
-    assert_eq!(persisted.len(), 1, "no duplicate ledger entries: {persisted:?}");
-}
-
-/// Legacy-marker compat (top-level shape): a codex provider carrying only the
-/// pre-rename top-level `api_fusion_gateway` marker is still treated as synced.
-#[tokio::test]
-async fn terminal_targets_recognizes_top_level_legacy_marker_as_synced() {
-    let _home = isolated_temp_home("terminal-targets-legacy-marker");
-    super::storage::write_config(&gateway_config(17688)).unwrap();
-    let providers_data = json!({
-        "providers": [{
-            "id": "legacy-cx",
-            "tool": "codex",
-            "name": "API Gateway",
-            "base_url": "http://127.0.0.1:17688",
-            "api_key": "previous-local-key",
-            "api_fusion_gateway": true
-        }]
-    });
-
-    let (submitted, records) =
-        capture_terminal_sync(&providers_data, vec!["codex".to_string()]).await;
-
-    assert_eq!(submitted.len(), 1);
-    assert_eq!(
-        submitted[0]["id"], "legacy-cx",
-        "the top-level legacy-marked gateway must be reused: {submitted:?}"
-    );
-    assert_eq!(records[0].provider_id, "legacy-cx");
 }
 
 /// Atomicity: when the injected upsert fails, the pipeline returns the error and
@@ -5473,7 +5410,7 @@ async fn protocol_mismatch_error_names_the_required_endpoint() {
 /// `chat_completions`.
 #[tokio::test]
 async fn mapping_without_protocol_inherits_the_provider_protocol() {
-    let home = temp_home("per-model-legacy-inherit");
+    let home = temp_home("per-model-inherit");
     let port = free_port().await;
     let (upstream_url, log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
@@ -5482,8 +5419,8 @@ async fn mapping_without_protocol_inherits_the_provider_protocol() {
     let mut provider = upstream_provider("p1", "OpenCode Go", &upstream_url, "sk-upstream", None);
     provider.protocol = UpstreamProtocol::Responses;
     provider.mappings = vec![ModelMapping {
-        local_model: "legacy-local".to_string(),
-        upstream_model: "legacy-remote".to_string(),
+        local_model: "inherit-local".to_string(),
+        upstream_model: "inherit-remote".to_string(),
         protocol: None,
         display_name: None,
         enabled: true,
@@ -5497,7 +5434,7 @@ async fn mapping_without_protocol_inherits_the_provider_protocol() {
         "POST",
         "/v1/responses",
         &[("authorization", "Bearer local-key")],
-        Some(json!({"model": "legacy-local", "input": "hi"})),
+        Some(json!({"model": "inherit-local", "input": "hi"})),
     )
     .await;
 
@@ -5517,7 +5454,7 @@ async fn mapping_without_protocol_inherits_the_provider_protocol() {
     );
     let sent: Value = serde_json::from_slice(&captured[0].body).unwrap();
     assert_eq!(
-        sent["model"], "legacy-remote",
+        sent["model"], "inherit-remote",
         "the matched mapping's own remote model must be used: {summary}"
     );
 
@@ -7434,13 +7371,12 @@ fn rfc3339_millis(value: &str) -> i64 {
 }
 
 /// AC-007 / compatibility: an `api_gateway.json` written before this feature —
-/// or a legacy `api_fusion.json` payload migrated through the read-only compat
-/// path — has no usage fields, yet still deserializes with the documented
+/// has no usage fields, yet still deserializes with the documented
 /// defaults, and the new fields round-trip without disturbing existing ones.
-/// Writes always target the new `api_gateway.json` file.
+/// Writes always target the `api_gateway.json` file.
 #[test]
-fn gateway_config_accepts_legacy_json_and_round_trips_usage_fields() {
-    let legacy = serde_json::json!({
+fn gateway_config_accepts_older_json_and_round_trips_usage_fields() {
+    let older = serde_json::json!({
         "enabled": true,
         "port": 17688,
         "providers": [],
@@ -7448,7 +7384,7 @@ fn gateway_config_accepts_legacy_json_and_round_trips_usage_fields() {
         "default_key_id": null,
         "terminal_syncs": []
     });
-    let config: GatewayConfig = serde_json::from_value(legacy).expect("legacy config parses");
+    let config: GatewayConfig = serde_json::from_value(older).expect("older config parses");
     assert!(config.enabled);
     assert_eq!(config.usage_retention_days, DEFAULT_USAGE_RETENTION_DAYS);
     assert!(config.model_prices.is_empty());
@@ -7485,7 +7421,7 @@ fn gateway_config_accepts_legacy_json_and_round_trips_usage_fields() {
     assert_eq!(partial.off_peak, None);
     assert_eq!(partial.off_peaks.len(), 0);
 
-    // OffPeak round trip test (legacy single off_peak and new off_peaks)
+    // OffPeak round trip test (single off_peak and off_peaks)
     let with_off_peak = ModelPrice {
         provider_id: Some("prov-test".to_string()),
         upstream_model: "remote-c".to_string(),
@@ -7518,9 +7454,9 @@ fn gateway_config_accepts_legacy_json_and_round_trips_usage_fields() {
     assert_eq!(decoded_op.off_peaks, with_off_peak.off_peaks);
     assert_eq!(decoded_op.effective_off_peaks().len(), 2);
 
-    // Backward compatibility: JSON with legacy single `off_peak` deserializes and effective_off_peaks returns it
-    let legacy_json = serde_json::json!({
-        "upstream_model": "legacy-model",
+    // Backward compatibility: JSON with single `off_peak` deserializes and effective_off_peaks returns it
+    let single_json = serde_json::json!({
+        "upstream_model": "single-model",
         "input": 1.0,
         "cache_read": 0.5,
         "cache_write": 1.0,
@@ -7534,9 +7470,9 @@ fn gateway_config_accepts_legacy_json_and_round_trips_usage_fields() {
             "output": 1.0
         }
     });
-    let legacy_decoded: ModelPrice = serde_json::from_value(legacy_json).unwrap();
-    assert_eq!(legacy_decoded.effective_off_peaks().len(), 1);
-    assert_eq!(legacy_decoded.effective_off_peaks()[0].start_time, "00:00");
+    let single_decoded: ModelPrice = serde_json::from_value(single_json).unwrap();
+    assert_eq!(single_decoded.effective_off_peaks().len(), 1);
+    assert_eq!(single_decoded.effective_off_peaks()[0].start_time, "00:00");
 }
 
 /// AC-004 / AC-005 / REQ-004 / REQ-006: four-tier cost math and exact,
@@ -10615,14 +10551,14 @@ async fn mid_stream_failure_end_to_end_logs_one_failure_with_usage() {
 
 // ---------------------------------------------------------------------------
 // Plan 20260918-gateway-per-model-mapping-disable, Step 1 (RED)
-// Per-mapping `enabled`: legacy default, persistence, routing exclusion and
+// Per-mapping `enabled`: default, persistence, routing exclusion and
 // provider-toggle independence.
 // ---------------------------------------------------------------------------
 
 /// AC-001/REQ-001: a mapping without an `enabled` field loads as enabled, the
 /// field is always serialized, and a disabled value survives write/read.
 #[test]
-fn mapping_enabled_defaults_true_for_legacy_config_and_survives_round_trip() {
+fn mapping_enabled_defaults_true_for_older_config_and_survives_round_trip() {
     with_temp_home("mapping-enabled-persist", |_home| {
         let mut config: GatewayConfig = serde_json::from_value(json_config_with_key(
             17688,
@@ -10638,11 +10574,11 @@ fn mapping_enabled_defaults_true_for_legacy_config_and_survives_round_trip() {
                 ],
             )],
         ))
-        .expect("a legacy config without mapping.enabled must deserialize");
+        .expect("an older config without mapping.enabled must deserialize");
 
         assert!(
             config.providers[0].mappings.iter().all(|row| row.enabled),
-            "every legacy mapping without an enabled field must default to enabled"
+            "every older mapping without an enabled field must default to enabled"
         );
 
         let serialized = serde_json::to_value(&config).expect("serialize config");
@@ -10656,7 +10592,7 @@ fn mapping_enabled_defaults_true_for_legacy_config_and_survives_round_trip() {
             );
             assert_eq!(
                 row["enabled"], true,
-                "a legacy mapping must serialize as enabled: {serialized}"
+                "an older mapping must serialize as enabled: {serialized}"
             );
         }
 

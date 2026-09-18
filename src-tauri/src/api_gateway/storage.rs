@@ -1,16 +1,11 @@
 use super::{
     now_ts, GatewayConfig, GatewayKey, GatewayUpstreamProvider, CONFIG_FILE, DEFAULT_PORT,
-    LEGACY_CONFIG_FILE,
 };
 use std::fs;
 use std::path::PathBuf;
 
 pub(in crate::api_gateway) fn config_path() -> Result<PathBuf, String> {
     Ok(crate::config::get_app_dir()?.join(CONFIG_FILE))
-}
-
-pub(in crate::api_gateway) fn legacy_config_path() -> Result<PathBuf, String> {
-    Ok(crate::config::get_app_dir()?.join(LEGACY_CONFIG_FILE))
 }
 
 fn read_config_file(path: &PathBuf) -> Result<Option<GatewayConfig>, String> {
@@ -86,14 +81,6 @@ pub(in crate::api_gateway) fn normalize_config(config: &mut GatewayConfig) {
 pub(in crate::api_gateway) fn read_config() -> Result<GatewayConfig, String> {
     let path = config_path()?;
     if let Some(config) = read_config_file(&path)? {
-        return Ok(config);
-    }
-    // One-time read-only migration: a legacy `api_fusion.json` payload is read
-    // through the same decrypt path and rewritten to `api_gateway.json`.
-    // The legacy file is never deleted. Writes always target the new file.
-    let legacy = legacy_config_path()?;
-    if let Some(config) = read_config_file(&legacy)? {
-        let _ = write_config(&config);
         return Ok(config);
     }
     Ok(GatewayConfig::default())

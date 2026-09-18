@@ -19,10 +19,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// File name of the dedicated usage-log database under `get_app_dir()`.
 pub(in crate::api_gateway) const USAGE_DB_FILE: &str = "api_gateway_usage.db";
-/// Legacy usage-log database kept for one-time read-only migration: when the
-/// new file is absent but the legacy file exists, it is copied to the new
-/// path before opening. The legacy file is never deleted.
-pub(in crate::api_gateway) const LEGACY_USAGE_DB_FILE: &str = "api_fusion_usage.db";
 /// Fixed page size for the ungrouped request-log list.
 pub const USAGE_LOG_PAGE_SIZE: u32 = 50;
 /// Milliseconds in one UTC day.
@@ -228,7 +224,7 @@ pub fn compute_cost_at_time(
     compute_cost(price, tokens)
 }
 
-/// Match a price row, prioritizing provider-specific price over global/legacy price.
+/// Match a price row, prioritizing provider-specific price over global price.
 pub fn match_price_for_provider<'a>(
     provider_id: Option<&str>,
     upstream_model: &str,
@@ -554,25 +550,10 @@ impl UsageLogStore {
         Self { path: path.into() }
     }
 
-    /// Default store under `get_app_dir()/api_gateway_usage.db`, with a
-    /// one-time copy migration from legacy `api_fusion_usage.db` when the new
-    /// file is absent. The legacy file is never deleted; if the copy fails,
-    /// the legacy file itself is opened as a fallback.
+    /// Default store under `get_app_dir()/api_gateway_usage.db`.
     pub(in crate::api_gateway) fn default_store() -> Result<Self, String> {
         let dir = crate::config::get_app_dir()?;
         let path = dir.join(USAGE_DB_FILE);
-        if !path.exists() {
-            let legacy = dir.join(LEGACY_USAGE_DB_FILE);
-            if legacy.exists() {
-                if let Some(parent) = path.parent() {
-                    let _ = fs::create_dir_all(parent);
-                }
-                match fs::copy(&legacy, &path) {
-                    Ok(_) => {}
-                    Err(_) => return Ok(Self::at(legacy)),
-                }
-            }
-        }
         Ok(Self::at(path))
     }
 
