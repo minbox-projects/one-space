@@ -1,5 +1,5 @@
-import { fireEvent, screen, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { act, fireEvent, screen, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { ConfirmDialogProvider } from "@/components/ConfirmDialogProvider";
 import { ToastProvider } from "@/components/ToastProvider";
@@ -28,8 +28,16 @@ function makeProvider(
   };
 }
 
-function renderPanel(providers: GatewayUpstreamProvider[]) {
-  return renderWithProviders(<ModelListPanel providers={providers} />);
+function renderPanel(
+  providers: GatewayUpstreamProvider[],
+  onNavigateProviders?: () => void,
+) {
+  return renderWithProviders(
+    <ModelListPanel
+      providers={providers}
+      onNavigateProviders={onNavigateProviders}
+    />,
+  );
 }
 
 function rerenderPanel(
@@ -61,12 +69,12 @@ describe("ModelListPanel 本地模型列表", () => {
     await i18n.changeLanguage("en");
   });
 
-  it("渲染三列模型 ID、模型名称与上游来源，并只给默认来源加 Default 徽标", () => {
+  it("渲染三列模型 ID、模型名称与上游来源，且不再显示默认模型", () => {
     renderPanel([
       makeProvider({
         id: "p1",
         name: "Provider 1",
-        default_model: "gpt-4o",
+        default_model: "fallback-default",
         mappings: [{ local_model: "gpt-4o", upstream_model: "gpt-4o-2024" }],
       }),
     ]);
@@ -87,26 +95,9 @@ describe("ModelListPanel 本地模型列表", () => {
     const upstreams = within(row).getAllByTestId(
       "api-gateway-model-list-upstream",
     );
-    expect(upstreams).toHaveLength(2);
+    expect(upstreams).toHaveLength(1);
 
-    const defaultEntry = upstreams[0];
-    expect(defaultEntry).toHaveAttribute("data-default", "true");
-    expect(
-      within(defaultEntry).getByTestId(
-        "api-gateway-model-list-upstream-provider",
-      ).textContent,
-    ).toBe("Provider 1");
-    expect(
-      within(defaultEntry).getByTestId("api-gateway-model-list-upstream-model")
-        .textContent,
-    ).toBe("gpt-4o");
-    expect(
-      within(defaultEntry).getByTestId(
-        "api-gateway-model-list-upstream-default",
-      ).textContent,
-    ).toBe("Default");
-
-    const mappingEntry = upstreams[1];
+    const mappingEntry = upstreams[0];
     expect(mappingEntry).toHaveAttribute("data-default", "false");
     expect(
       within(mappingEntry).getByTestId(
@@ -168,7 +159,7 @@ describe("ModelListPanel 本地模型列表", () => {
     ).toEqual(["upstream-a", "upstream-b"]);
   });
 
-  it("模型名称优先取映射 display_name 并去除首尾空白，仅有默认模型时取 default_model", () => {
+  it("模型名称优先取映射 display_name 并去除首尾空白，不包含未映射的默认模型", () => {
     renderPanel([
       makeProvider({
         default_model: "default-only",
@@ -183,23 +174,14 @@ describe("ModelListPanel 本地模型列表", () => {
     ]);
 
     const rows = screen.getAllByTestId("api-gateway-model-list-row");
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(1);
 
-    const mapped = rows.find(
-      (row) => row.getAttribute("data-model") === "mapped-model",
-    );
-    expect(mapped).not.toBeUndefined();
+    const mapped = rows[0];
+    expect(mapped).toHaveAttribute("data-model", "mapped-model");
     expect(
-      within(mapped!).getByTestId("api-gateway-model-list-name").textContent,
+      within(mapped).getByTestId("api-gateway-model-list-name").textContent,
     ).toBe("Friendly");
-
-    const defaultOnly = rows.find(
-      (row) => row.getAttribute("data-model") === "default-only",
-    );
-    expect(defaultOnly).not.toBeUndefined();
-    expect(
-      within(defaultOnly!).getByTestId("api-gateway-model-list-name").textContent,
-    ).toBe("default-only");
+    expect(rowModels()).not.toContain("default-only");
   });
 
   it("禁用服务商、自动禁用服务商与禁用映射都不产生行", () => {
@@ -244,7 +226,8 @@ describe("ModelListPanel 本地模型列表", () => {
       id: "p-late",
       name: "Late provider",
       enabled: false,
-      default_model: "late-model",
+      default_model: "late-fallback",
+      mappings: [{ local_model: "late-model", upstream_model: "up-late" }],
     });
 
     const { rerender } = renderPanel([disabledProvider]);
@@ -337,8 +320,10 @@ describe("ModelListPanel 本地模型列表", () => {
   it("非空查询无匹配时展示无匹配态且不渲染数据行，全空白查询展示全部行", () => {
     renderPanel([
       makeProvider({
-        default_model: "alpha",
-        mappings: [{ local_model: "beta", upstream_model: "up-beta" }],
+        mappings: [
+          { local_model: "alpha", upstream_model: "up-alpha" },
+          { local_model: "beta", upstream_model: "up-beta" },
+        ],
       }),
     ]);
 
@@ -414,12 +399,130 @@ describe("ModelListPanel 本地模型列表", () => {
       screen.queryByTestId("api-gateway-model-list-table"),
     ).not.toBeInTheDocument();
   });
+
+  it("点击复制按钮调用剪贴板并复制对应的 Model ID", async () => {
+    const writeTextSpy = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: writeTextSpy,
+      },
+    });
+
+    renderPanel([
+      makeProvider({
+        mappings: [{ local_model: "test-copy-model", upstream_model: "upstream-1" }],
+      }),
+    ]);
+
+    const copyBtn = screen.getByTestId("api-gateway-model-list-copy-btn");
+    expect(copyBtn).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(copyBtn);
+    });
+
+    expect(writeTextSpy).toHaveBeenCalledWith("test-copy-model");
+  });
+
+  it("支持按服务商筛选模型", () => {
+    renderPanel([
+      makeProvider({
+        id: "p-openai",
+        name: "OpenAI",
+        mappings: [{ local_model: "gpt-model", upstream_model: "gpt-4o" }],
+      }),
+      makeProvider({
+        id: "p-anthropic",
+        name: "Anthropic",
+        mappings: [{ local_model: "claude-model", upstream_model: "claude-3" }],
+      }),
+    ]);
+
+    expect(rowModels()).toEqual(["claude-model", "gpt-model"]);
+
+    const filterTrigger = screen.getByTestId("api-gateway-model-list-provider-filter-trigger");
+    fireEvent.click(filterTrigger);
+
+    const openaiOption = screen.getByRole("option", { name: "OpenAI" });
+    fireEvent.click(openaiOption);
+
+    expect(rowModels()).toEqual(["gpt-model"]);
+  });
+
+  it("支持按协议筛选模型", () => {
+    renderPanel([
+      makeProvider({
+        id: "p1",
+        name: "Provider 1",
+        protocol: "chat_completions",
+        mappings: [
+          {
+            local_model: "chat-model",
+            upstream_model: "chat-up",
+            protocol: "chat_completions",
+          },
+          {
+            local_model: "resp-model",
+            upstream_model: "resp-up",
+            protocol: "responses",
+          },
+        ],
+      }),
+    ]);
+
+    expect(rowModels()).toEqual(["chat-model", "resp-model"]);
+
+    const protocolTrigger = screen.getByTestId("api-gateway-model-list-protocol-filter-trigger");
+    fireEvent.click(protocolTrigger);
+
+    const responsesOption = screen.getByRole("option", { name: "Responses" });
+    fireEvent.click(responsesOption);
+
+    expect(rowModels()).toEqual(["resp-model"]);
+  });
+
+  it("输入搜索词后支持点击清除按钮清空搜索", () => {
+    renderPanel([
+      makeProvider({
+        mappings: [
+          { local_model: "model-a", upstream_model: "up-a" },
+          { local_model: "model-b", upstream_model: "up-b" },
+        ],
+      }),
+    ]);
+
+    const input = searchBox();
+    fireEvent.change(input, { target: { value: "model-a" } });
+    expect(rowModels()).toEqual(["model-a"]);
+
+    const clearBtn = screen.getByLabelText("Clear search");
+    expect(clearBtn).toBeInTheDocument();
+    fireEvent.click(clearBtn);
+
+    expect(rowModels()).toEqual(["model-a", "model-b"]);
+  });
+
+  it("空态下提供前往配置上游服务商按钮并可点击触发回调", () => {
+    const onNavigateProviders = vi.fn();
+    renderPanel([], onNavigateProviders);
+
+    const goToBtn = screen.getByRole("button", {
+      name: /Configure upstream providers/i,
+    });
+    expect(goToBtn).toBeInTheDocument();
+    fireEvent.click(goToBtn);
+    expect(onNavigateProviders).toHaveBeenCalledTimes(1);
+  });
 });
 
 const MODEL_LIST_I18N_KEYS: ReadonlyArray<
   readonly [key: string, en: string, zh: string]
 > = [
   ["apiGatewayModelListTab", "Model list", "模型列表"],
+  [
+    "apiGatewayModelListDesc",
+    "View local models exposed by the gateway, calling protocols, and mapped upstream routing sources.",
+    "查看本地中继暴露的可用模型、调用协议及映射的上游路由来源。",
+  ],
   ["apiGatewayModelListSearch", "Search models", "搜索模型"],
   [
     "apiGatewayModelListSearchPlaceholder",
@@ -439,10 +542,27 @@ const MODEL_LIST_I18N_KEYS: ReadonlyArray<
     "No models match the current search.",
     "没有匹配当前搜索的模型。",
   ],
+  ["apiGatewayModelListAllProviders", "All providers", "全部服务商"],
+  ["apiGatewayModelListAllProtocols", "All protocols", "全部协议"],
+  ["apiGatewayModelListFilterProvider", "Filter by provider", "按服务商筛选"],
+  ["apiGatewayModelListFilterProtocol", "Filter by protocol", "按协议筛选"],
+  ["apiGatewayModelListClearSearch", "Clear search", "清空搜索"],
+  ["apiGatewayModelListClearFilters", "Clear filters", "清空筛选条件"],
+  [
+    "apiGatewayModelListCopySuccess",
+    "Model ID copied to clipboard",
+    "模型 ID 已复制到剪贴板",
+  ],
+  ["apiGatewayModelListCopyAria", "Copy model ID", "复制模型 ID"],
+  [
+    "apiGatewayModelListGoToProviders",
+    "Configure upstream providers",
+    "前往配置上游服务商",
+  ],
 ];
 
 describe("模型列表国际化键", () => {
-  it("en 与 zh 都定义了 8 个键且文案与契约精确一致", async () => {
+  it("en 与 zh 都定义了全部键且文案与契约精确一致", async () => {
     for (const [key, en, zh] of MODEL_LIST_I18N_KEYS) {
       await i18n.changeLanguage("en");
       expect(i18n.t(key), `en:${key}`).toBe(en);

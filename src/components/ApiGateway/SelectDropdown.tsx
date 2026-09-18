@@ -72,12 +72,12 @@ export function SelectDropdown<T extends string | number>({
         aria-expanded={open}
         aria-label={ariaLabel || displayLabel}
         onClick={() => setOpen((prev) => !prev)}
-        className={`inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-2.5 text-xs font-medium transition hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${buttonClassName}`}
+        className={`inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-2.5 text-xs font-medium whitespace-nowrap select-none transition hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${buttonClassName}`}
       >
-        {icon}
-        <span>{displayLabel}</span>
+        {icon ? <span className="shrink-0">{icon}</span> : null}
+        <span className="truncate whitespace-nowrap">{displayLabel}</span>
         <ChevronDown
-          className={`h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 ${
+          className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ${
             open ? "rotate-180" : ""
           }`}
         />
@@ -87,7 +87,7 @@ export function SelectDropdown<T extends string | number>({
         <div
           role="listbox"
           data-testid={testId ? `${testId}-menu` : undefined}
-          className={`absolute top-full z-30 mt-1 min-w-[120px] rounded-lg border bg-popover p-1 text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95 ${
+          className={`absolute top-full z-30 mt-1 min-w-full w-max max-w-xs rounded-lg border bg-popover p-1 text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95 ${
             align === "right" ? "right-0" : "left-0"
           } ${menuClassName}`}
         >
@@ -103,13 +103,13 @@ export function SelectDropdown<T extends string | number>({
                   onChange(option.value);
                   setOpen(false);
                 }}
-                className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-xs transition-colors ${
+                className={`flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-1.5 text-xs whitespace-nowrap text-left transition-colors ${
                   isSelected
                     ? "bg-accent font-medium text-accent-foreground"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 }`}
               >
-                <span>{option.label}</span>
+                <span className="whitespace-nowrap">{option.label}</span>
               </button>
             );
           })}

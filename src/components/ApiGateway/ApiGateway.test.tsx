@@ -1245,7 +1245,7 @@ describe("ApiGateway", () => {
       modelNodes.map((node) => node.getAttribute("data-model")).sort(),
     ).toEqual(["claude-3-7-sonnet", "gpt-4o"]);
 
-    // 「默认」徽标只出现在 isDefault 条目所在的模型节点内
+    // 聚合模型弹框不再包含默认模型条目，上游来源全部为实际映射
     const gptNode = modelNodes.find(
       (node) => node.getAttribute("data-model") === "gpt-4o",
     );
@@ -1254,14 +1254,16 @@ describe("ApiGateway", () => {
     );
     expect(gptNode).not.toBeUndefined();
     expect(claudeNode).not.toBeUndefined();
-    expect(within(gptNode!).getByText(/Default|默认/)).toBeInTheDocument();
+    expect(
+      within(gptNode!).queryByText(/Default|默认/),
+    ).not.toBeInTheDocument();
     expect(
       within(claudeNode!).queryByText(/Default|默认/),
     ).not.toBeInTheDocument();
 
     expect(
       within(dialog).getAllByTestId("api-gateway-aggregated-model-provider"),
-    ).toHaveLength(3);
+    ).toHaveLength(2);
 
     expect(within(dialog).getAllByText("Provider 1").length).toBeGreaterThan(0);
     expect(within(dialog).getAllByText("gpt-4o-2024").length).toBeGreaterThan(0);
@@ -1296,7 +1298,7 @@ describe("ApiGateway", () => {
     fireEvent.click(await screen.findByTestId("api-gateway-metric-models"));
 
     const dialog = await screen.findByTestId("api-gateway-aggregated-models");
-    expect(within(dialog).getAllByText("/chat/completions")).toHaveLength(3);
+    expect(within(dialog).getAllByText("/chat/completions")).toHaveLength(2);
     expect(within(dialog).queryAllByText("chat_completions")).toHaveLength(0);
   });
 
@@ -1458,14 +1460,8 @@ describe("ApiGateway", () => {
     );
     const modelNames = modelNodes.map((node) => node.getAttribute("data-model"));
     expect(modelNames, "聚合模型弹框应包含启用映射 a").toContain("a");
-    expect(modelNames, "聚合模型弹框应包含默认模型 d").toContain("d");
+    expect(modelNames, "聚合模型弹框应排除未映射的默认模型 d").not.toContain("d");
     expect(modelNames, "聚合模型弹框应排除禁用映射 b").not.toContain("b");
-
-    const defaultNode = modelNodes.find(
-      (node) => node.getAttribute("data-model") === "d",
-    );
-    expect(defaultNode).not.toBeUndefined();
-    expect(within(defaultNode!).getByText(/Default/)).toBeInTheDocument();
     expect(within(dialog).queryByText("rb")).not.toBeInTheDocument();
   });
 

@@ -196,9 +196,9 @@ export interface AggregatedModel {
 /**
  * Aggregate the local models served by enabled, non-auto-disabled providers.
  *
- * A provider contributes its default model (as `isDefault`) plus every non-blank
- * enabled local mapping. Results are grouped by local model and sorted
- * deterministically.
+ * A provider contributes every non-blank enabled local mapping. Results are
+ * grouped by local model and sorted deterministically. Default models are fallback
+ * targets for unmapped requests and are not listed here.
  */
 export function aggregateModels(
   providers: GatewayUpstreamProvider[],
@@ -207,19 +207,6 @@ export function aggregateModels(
 
   providers.forEach((provider) => {
     if (!provider.enabled || provider.auto_disabled) return;
-
-    const defaultModel = (provider.default_model ?? "").trim();
-    if (defaultModel) {
-      const entries = groups.get(defaultModel) ?? [];
-      entries.push({
-        providerId: provider.id,
-        providerName: provider.name,
-        upstreamModel: defaultModel,
-        endpoint: provider.protocol ?? "chat_completions",
-        isDefault: true,
-      });
-      groups.set(defaultModel, entries);
-    }
 
     provider.mappings.forEach((mapping) => {
       if (mapping.enabled === false) return;
@@ -256,16 +243,15 @@ export function aggregateModels(
  * Resolve the display name for an aggregated local model.
  *
  * The first mapping source declaring a non-empty `displayName` wins; otherwise
- * the name falls back to the first mapping source's `upstreamModel`, then to the
- * first source, and finally to the local model itself when there are no sources.
+ * the name falls back to the first mapping source's `upstreamModel`, and finally
+ * to the local model itself when there are no sources.
  */
 export function resolveAggregatedModelName(entry: AggregatedModel): string {
   for (const provider of entry.providers) {
     const displayName = provider.displayName?.trim();
     if (displayName) return displayName;
   }
-  const mapping = entry.providers.find((provider) => !provider.isDefault);
-  const source = mapping ?? entry.providers[0];
+  const source = entry.providers[0];
   return source ? source.upstreamModel.trim() : entry.model;
 }
 

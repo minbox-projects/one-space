@@ -734,7 +734,10 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
           aria-label={t("apiGatewayModelListTab", "Model list")}
           className={activeTab === "models" ? "block" : "hidden"}
         >
-          <ModelListPanel providers={config.providers} />
+          <ModelListPanel
+            providers={config.providers}
+            onNavigateProviders={() => setActiveTab("providers")}
+          />
         </div>
 
         {/* Tab 3: 本地密钥 */}

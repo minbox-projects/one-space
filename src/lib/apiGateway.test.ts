@@ -533,13 +533,13 @@ describe("用量与日志命令封装", () => {
 });
 
 describe("aggregateModels 聚合本地模型", () => {
-  it("仅统计启用且未自动禁用的服务商，去重模型并保留全部上游来源与解析协议", () => {
+  it("仅统计启用且未自动禁用的服务商，去重模型并保留全部映射上游来源与解析协议，不包含默认模型", () => {
     const providers: GatewayUpstreamProvider[] = [
       provider({
         id: "pa",
         name: "Alpha",
         protocol: "responses",
-        default_model: "gpt-4o",
+        default_model: "fallback-default",
         mappings: [
           { local_model: "gpt-4o", upstream_model: "gpt-4o-2024" },
           {
@@ -579,7 +579,7 @@ describe("aggregateModels 聚合本地模型", () => {
           },
         ],
       }),
-      provider({ id: "pe", name: "Epsilon", default_model: "   ", mappings: [] }),
+      provider({ id: "pe", name: "Epsilon", default_model: "only-default", mappings: [] }),
     ];
 
     expect(aggregateModels(providers)).toEqual([
@@ -601,23 +601,9 @@ describe("aggregateModels 聚合本地模型", () => {
           {
             providerId: "pa",
             providerName: "Alpha",
-            upstreamModel: "gpt-4o",
-            endpoint: "responses",
-            isDefault: true,
-          },
-          {
-            providerId: "pa",
-            providerName: "Alpha",
             upstreamModel: "gpt-4o-2024",
             endpoint: "responses",
             isDefault: false,
-          },
-          {
-            providerId: "pb",
-            providerName: "Beta",
-            upstreamModel: "gpt-4o",
-            endpoint: "chat_completions",
-            isDefault: true,
           },
           {
             providerId: "pb",
@@ -644,7 +630,7 @@ describe("aggregateModels 聚合本地模型", () => {
     expect(aggregateModels(providers)).toEqual([]);
   });
 
-  it("默认模型与同名空白远端映射共存时只保留默认条目一次", () => {
+  it("服务商仅有默认模型而无有效远端映射时不产生聚合模型", () => {
     const providers: GatewayUpstreamProvider[] = [
       provider({
         id: "p1",
@@ -655,17 +641,7 @@ describe("aggregateModels 聚合本地模型", () => {
     ];
 
     const aggregated = aggregateModels(providers);
-    const gpt = aggregated.filter((entry) => entry.model === "gpt-4o");
-    expect(gpt).toHaveLength(1);
-    expect(gpt[0].providers).toHaveLength(1);
-    expect(gpt[0].providers.filter((entry) => entry.isDefault)).toHaveLength(1);
-    expect(gpt[0].providers[0]).toMatchObject({
-      providerId: "p1",
-      providerName: "Provider",
-      upstreamModel: "gpt-4o",
-      endpoint: "chat_completions",
-      isDefault: true,
-    });
+    expect(aggregated).toEqual([]);
   });
 
   it("没有有效服务商时返回空数组", () => {
@@ -683,7 +659,7 @@ describe("aggregateModels 聚合本地模型", () => {
     ).toEqual([]);
   });
 
-  it("聚合视图排除禁用映射但保留默认模型", () => {
+  it("聚合视图仅保留启用/缺省启用的映射，排除禁用映射与未映射的默认模型", () => {
     const p = provider({
       default_model: "d",
       mappings: [
@@ -697,9 +673,10 @@ describe("aggregateModels 聚合本地模型", () => {
     const models = aggregateModels([p]).map((entry) => entry.model);
     expect(
       models,
-      "聚合视图应保留默认模型 d 与启用/缺省启用的映射 a、c",
-    ).toEqual(expect.arrayContaining(["d", "a", "c"]));
+      "聚合视图仅保留启用/缺省启用的映射 a、c",
+    ).toEqual(["a", "c"]);
     expect(models, "聚合视图不应包含禁用映射 b").not.toContain("b");
+    expect(models, "聚合视图不应包含未映射的默认模型 d").not.toContain("d");
   });
 
   it("映射声明 display_name 时仅声明条目携带 trim 后的 displayName", () => {
@@ -790,7 +767,7 @@ describe("aggregateModels 聚合本地模型", () => {
     ]);
   });
 
-  it("默认条目与其同名映射并存时默认条目不携带 displayName", () => {
+  it("服务商配置了默认模型时不影响映射条目的解析和展示", () => {
     const providers: GatewayUpstreamProvider[] = [
       provider({
         id: "p1",
@@ -810,13 +787,6 @@ describe("aggregateModels 聚合本地模型", () => {
       {
         model: "gpt-4o",
         providers: [
-          {
-            providerId: "p1",
-            providerName: "Provider",
-            upstreamModel: "gpt-4o",
-            endpoint: "chat_completions",
-            isDefault: true,
-          },
           {
             providerId: "p1",
             providerName: "Provider",
@@ -859,7 +829,7 @@ describe("resolveAggregatedModelName 聚合模型名称解析", () => {
     expect(resolveAggregatedModelName(entry!)).toBe("GPT-4o 旗舰");
   });
 
-  it("无 displayName 时跳过默认条目并返回首个非默认映射来源的 upstreamModel", () => {
+  it("无 displayName 时返回首个映射来源的 upstreamModel", () => {
     const providers: GatewayUpstreamProvider[] = [
       provider({
         id: "pa",
@@ -878,31 +848,10 @@ describe("resolveAggregatedModelName 聚合模型名称解析", () => {
       (item) => item.model === "gpt-4o",
     );
     expect(entry).toBeDefined();
-    expect(entry!.providers[0]).toMatchObject({
-      isDefault: true,
-      upstreamModel: "gpt-4o",
-    });
     expect(resolveAggregatedModelName(entry!)).toBe("gpt-4o-2024");
   });
 
-  it("仅作为 default_model 存在的模型返回该默认模型", () => {
-    const providers: GatewayUpstreamProvider[] = [
-      provider({
-        id: "p-only",
-        name: "OnlyDefault",
-        default_model: "  gpt-4o-default  ",
-        mappings: [],
-      }),
-    ];
-
-    const entry = aggregateModels(providers).find(
-      (item) => item.model === "gpt-4o-default",
-    );
-    expect(entry).toBeDefined();
-    expect(resolveAggregatedModelName(entry!)).toBe("gpt-4o-default");
-  });
-
-  it("display_name 全空白时回退首个非默认映射来源的 upstreamModel", () => {
+  it("display_name 全空白时回退首个映射来源的 upstreamModel", () => {
     const providers: GatewayUpstreamProvider[] = [
       provider({
         id: "pa",
@@ -923,30 +872,6 @@ describe("resolveAggregatedModelName 聚合模型名称解析", () => {
     expect(entry).toBeDefined();
     expect(entry!.providers[0]).not.toHaveProperty("displayName");
     expect(resolveAggregatedModelName(entry!)).toBe("gpt-4o-2024");
-  });
-
-  it("默认条目与携带 displayName 的映射条目并存时返回映射的 displayName", () => {
-    const providers: GatewayUpstreamProvider[] = [
-      provider({
-        id: "p1",
-        name: "Provider",
-        default_model: "gpt-4o",
-        mappings: [
-          {
-            local_model: "gpt-4o",
-            upstream_model: "gpt-4o-2024",
-            display_name: "旗舰版",
-          },
-        ],
-      }),
-    ];
-
-    const entry = aggregateModels(providers).find(
-      (item) => item.model === "gpt-4o",
-    );
-    expect(entry).toBeDefined();
-    expect(entry!.providers[0]).toMatchObject({ isDefault: true });
-    expect(resolveAggregatedModelName(entry!)).toBe("旗舰版");
   });
 
   it("providers 为空数组时返回 entry.model", () => {
