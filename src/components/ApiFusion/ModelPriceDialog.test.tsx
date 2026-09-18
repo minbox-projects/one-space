@@ -370,13 +370,196 @@ describe("ModelPriceDialog", () => {
             cache_read: 0.1,
             cache_write: 0.2,
             output: 4.0,
+            off_peaks: [
+              {
+                start_time: "01:00",
+                end_time: "07:30",
+                input: 1.0,
+                cache_read: 0.1, // fallback to standard cache_read
+                cache_write: 0.2, // fallback to standard cache_write
+                output: 2.0,
+              },
+            ],
             off_peak: {
               start_time: "01:00",
               end_time: "07:30",
               input: 1.0,
-              cache_read: 0.1, // fallback to standard cache_read
-              cache_write: 0.2, // fallback to standard cache_write
+              cache_read: 0.1,
+              cache_write: 0.2,
               output: 2.0,
+            },
+          },
+        ],
+      }),
+    );
+  });
+
+  it("支持为一个模型配置多个谷时时段并保存提交", async () => {
+    const user = userEvent.setup();
+    mockPrices([price({ upstream_model: "gpt-4o", input: 2.0, output: 4.0 })]);
+
+    renderWithProviders(<ModelPriceDialog open onOpenChange={() => {}} />);
+
+    await screen.findByLabelText("Upstream model");
+
+    // Click off-peak button
+    const offPeakBtn = screen.getByRole("button", { name: /Off-peak discount/i });
+    await user.click(offPeakBtn);
+
+    // Enable off-peak
+    const enableCheckbox = screen.getByRole("checkbox", { name: /Enable off-peak pricing/i });
+    await user.click(enableCheckbox);
+
+    // Configure 1st window
+    const startInputs = screen.getAllByLabelText("Start");
+    const endInputs = screen.getAllByLabelText("End");
+    await user.clear(startInputs[0]);
+    await user.type(startInputs[0], "00:00");
+    await user.clear(endInputs[0]);
+    await user.type(endInputs[0], "08:00");
+
+    const inputRates = screen.getAllByLabelText("Input (Off-peak)");
+    const outputRates = screen.getAllByLabelText("Output (Off-peak)");
+    await user.clear(inputRates[0]);
+    await user.type(inputRates[0], "1.0");
+    await user.clear(outputRates[0]);
+    await user.type(outputRates[0], "2.0");
+
+    // Click Add off-peak window
+    const addWindowBtn = screen.getByRole("button", { name: /Add off-peak window/i });
+    await user.click(addWindowBtn);
+
+    // Now 2 windows exist
+    const updatedStarts = screen.getAllByLabelText("Start");
+    const updatedEnds = screen.getAllByLabelText("End");
+    expect(updatedStarts).toHaveLength(2);
+
+    // Configure 2nd window
+    await user.clear(updatedStarts[1]);
+    await user.type(updatedStarts[1], "12:00");
+    await user.clear(updatedEnds[1]);
+    await user.type(updatedEnds[1], "14:00");
+
+    const updatedInputRates = screen.getAllByLabelText("Input (Off-peak)");
+    const updatedOutputRates = screen.getAllByLabelText("Output (Off-peak)");
+    await user.clear(updatedInputRates[1]);
+    await user.type(updatedInputRates[1], "1.5");
+    await user.clear(updatedOutputRates[1]);
+    await user.type(updatedOutputRates[1], "3.0");
+
+    // Save
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_save", {
+        prices: [
+          {
+            upstream_model: "gpt-4o",
+            input: 2.0,
+            cache_read: 0.1,
+            cache_write: 0.2,
+            output: 4.0,
+            off_peaks: [
+              {
+                start_time: "00:00",
+                end_time: "08:00",
+                input: 1.0,
+                cache_read: 0.1,
+                cache_write: 0.2,
+                output: 2.0,
+              },
+              {
+                start_time: "12:00",
+                end_time: "14:00",
+                input: 1.5,
+                cache_read: 0.1,
+                cache_write: 0.2,
+                output: 3.0,
+              },
+            ],
+            off_peak: {
+              start_time: "00:00",
+              end_time: "08:00",
+              input: 1.0,
+              cache_read: 0.1,
+              cache_write: 0.2,
+              output: 2.0,
+            },
+          },
+        ],
+      }),
+    );
+  });
+
+  it("已配置多个峰谷的模型正确展示徽章并在删除其中一个后正确保存", async () => {
+    const user = userEvent.setup();
+    mockPrices([
+      price({
+        upstream_model: "gpt-4o",
+        off_peaks: [
+          {
+            start_time: "00:00",
+            end_time: "08:00",
+            input: 0.5,
+            cache_read: 0.05,
+            cache_write: 0.1,
+            output: 1.0,
+          },
+          {
+            start_time: "12:00",
+            end_time: "14:00",
+            input: 0.8,
+            cache_read: 0.08,
+            cache_write: 0.15,
+            output: 1.5,
+          },
+        ],
+      }),
+    ]);
+
+    renderWithProviders(<ModelPriceDialog open onOpenChange={() => {}} />);
+
+    // Off-peak button displays active multi-window badge: 00:00-08:00 (+1)
+    const multiBadge = await screen.findByRole("button", { name: /00:00-08:00 \(\+1\)/i });
+    expect(multiBadge).toBeInTheDocument();
+
+    // Click to expand
+    await user.click(multiBadge);
+
+    // Delete the second window
+    const deleteBtns = screen.getAllByRole("button", { name: /Delete this off-peak window/i });
+    expect(deleteBtns).toHaveLength(2);
+    await user.click(deleteBtns[1]);
+
+    // Save
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_save", {
+        prices: [
+          {
+            upstream_model: "gpt-4o",
+            input: 1,
+            cache_read: 0.1,
+            cache_write: 0.2,
+            output: 2,
+            off_peaks: [
+              {
+                start_time: "00:00",
+                end_time: "08:00",
+                input: 0.5,
+                cache_read: 0.05,
+                cache_write: 0.1,
+                output: 1.0,
+              },
+            ],
+            off_peak: {
+              start_time: "00:00",
+              end_time: "08:00",
+              input: 0.5,
+              cache_read: 0.05,
+              cache_write: 0.1,
+              output: 1.0,
             },
           },
         ],

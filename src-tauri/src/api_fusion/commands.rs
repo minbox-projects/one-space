@@ -722,7 +722,16 @@ pub fn api_fusion_model_prices_get() -> Result<Vec<ModelPrice>, String> {
 
 /// Replace only the price table, preserving providers, keys and terminal_syncs.
 #[tauri::command]
-pub fn api_fusion_model_prices_save(prices: Vec<ModelPrice>) -> Result<Vec<ModelPrice>, String> {
+pub fn api_fusion_model_prices_save(mut prices: Vec<ModelPrice>) -> Result<Vec<ModelPrice>, String> {
+    for price in &mut prices {
+        if price.off_peaks.is_empty() {
+            if let Some(ref op) = price.off_peak {
+                price.off_peaks = vec![op.clone()];
+            }
+        } else if price.off_peak.is_none() {
+            price.off_peak = price.off_peaks.first().cloned();
+        }
+    }
     let mut config = read_config()?;
     config.model_prices = prices;
     write_config(&config)?;

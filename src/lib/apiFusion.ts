@@ -464,6 +464,7 @@ export interface ModelPrice {
   cache_read: number;
   cache_write: number;
   output: number;
+  off_peaks?: OffPeakPrice[];
   off_peak?: OffPeakPrice | null;
 }
 

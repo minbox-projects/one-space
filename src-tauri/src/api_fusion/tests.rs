@@ -7397,6 +7397,7 @@ fn fusion_config_accepts_legacy_json_and_round_trips_usage_fields() {
         cache_read: 2.0,
         cache_write: 3.0,
         output: 4.0,
+        off_peaks: Vec::new(),
         off_peak: None,
     });
     let encoded = serde_json::to_string(&updated).expect("encode config");
@@ -7406,6 +7407,7 @@ fn fusion_config_accepts_legacy_json_and_round_trips_usage_fields() {
     assert_eq!(decoded.model_prices[0].upstream_model, "remote-a");
     assert_eq!(decoded.model_prices[0].output, 4.0);
     assert_eq!(decoded.model_prices[0].off_peak, None);
+    assert_eq!(decoded.model_prices[0].off_peaks.len(), 0);
 
     // Missing per-tier prices default to zero, not a deserialize error.
     let partial: ModelPrice =
@@ -7416,8 +7418,9 @@ fn fusion_config_accepts_legacy_json_and_round_trips_usage_fields() {
     assert_eq!(partial.cache_write, 0.0);
     assert_eq!(partial.output, 0.0);
     assert_eq!(partial.off_peak, None);
+    assert_eq!(partial.off_peaks.len(), 0);
 
-    // OffPeak round trip test
+    // OffPeak round trip test (legacy single off_peak and new off_peaks)
     let with_off_peak = ModelPrice {
         provider_id: Some("prov-test".to_string()),
         upstream_model: "remote-c".to_string(),
@@ -7425,18 +7428,50 @@ fn fusion_config_accepts_legacy_json_and_round_trips_usage_fields() {
         cache_read: 1.0,
         cache_write: 2.0,
         output: 4.0,
-        off_peak: Some(OffPeakPrice {
-            start_time: "00:30".to_string(),
-            end_time: "08:30".to_string(),
-            input: 1.0,
-            cache_read: 0.5,
-            cache_write: 1.0,
-            output: 2.0,
-        }),
+        off_peaks: vec![
+            OffPeakPrice {
+                start_time: "00:30".to_string(),
+                end_time: "08:30".to_string(),
+                input: 1.0,
+                cache_read: 0.5,
+                cache_write: 1.0,
+                output: 2.0,
+            },
+            OffPeakPrice {
+                start_time: "12:00".to_string(),
+                end_time: "14:00".to_string(),
+                input: 1.5,
+                cache_read: 0.8,
+                cache_write: 1.5,
+                output: 3.0,
+            },
+        ],
+        off_peak: None,
     };
     let encoded_op = serde_json::to_string(&with_off_peak).unwrap();
     let decoded_op: ModelPrice = serde_json::from_str(&encoded_op).unwrap();
-    assert_eq!(decoded_op.off_peak, with_off_peak.off_peak);
+    assert_eq!(decoded_op.off_peaks, with_off_peak.off_peaks);
+    assert_eq!(decoded_op.effective_off_peaks().len(), 2);
+
+    // Backward compatibility: JSON with legacy single `off_peak` deserializes and effective_off_peaks returns it
+    let legacy_json = serde_json::json!({
+        "upstream_model": "legacy-model",
+        "input": 1.0,
+        "cache_read": 0.5,
+        "cache_write": 1.0,
+        "output": 2.0,
+        "off_peak": {
+            "start_time": "00:00",
+            "end_time": "08:00",
+            "input": 0.5,
+            "cache_read": 0.25,
+            "cache_write": 0.5,
+            "output": 1.0
+        }
+    });
+    let legacy_decoded: ModelPrice = serde_json::from_value(legacy_json).unwrap();
+    assert_eq!(legacy_decoded.effective_off_peaks().len(), 1);
+    assert_eq!(legacy_decoded.effective_off_peaks()[0].start_time, "00:00");
 }
 
 /// AC-004 / AC-005 / REQ-004 / REQ-006: four-tier cost math and exact,
@@ -7450,6 +7485,7 @@ fn usage_pricing_matches_exact_model_and_sums_four_tiers() {
         cache_read: 0.5,
         cache_write: 2.0,
         output: 4.0,
+        off_peaks: Vec::new(),
         off_peak: None,
     };
     let prices = vec![price.clone()];
@@ -7475,6 +7511,7 @@ fn usage_pricing_matches_provider_specific_price_and_falls_back() {
         cache_read: 1.25,
         cache_write: 2.5,
         output: 10.0,
+        off_peaks: Vec::new(),
         off_peak: None,
     };
     let provider_a_price = ModelPrice {
@@ -7484,6 +7521,7 @@ fn usage_pricing_matches_provider_specific_price_and_falls_back() {
         cache_read: 1.0,
         cache_write: 2.0,
         output: 8.0,
+        off_peaks: Vec::new(),
         off_peak: None,
     };
     let provider_b_price = ModelPrice {
@@ -7493,6 +7531,7 @@ fn usage_pricing_matches_provider_specific_price_and_falls_back() {
         cache_read: 1.5,
         cache_write: 3.0,
         output: 12.0,
+        off_peaks: Vec::new(),
         off_peak: None,
     };
 
@@ -7585,6 +7624,7 @@ fn compute_cost_at_time_applies_off_peak_pricing_when_active() {
         cache_read: 1.0,
         cache_write: 2.0,
         output: 4.0,
+        off_peaks: Vec::new(),
         off_peak: Some(OffPeakPrice {
             start_time: "00:30".to_string(),
             end_time: "08:30".to_string(),
@@ -7614,6 +7654,61 @@ fn compute_cost_at_time_applies_off_peak_pricing_when_active() {
     no_off_peak.off_peak = None;
     assert_eq!(compute_cost_at_time(&no_off_peak, &test_tokens, off_peak_ms), 9.0);
     assert_eq!(compute_cost_at_time(&no_off_peak, &test_tokens, peak_ms), 9.0);
+}
+
+#[test]
+fn compute_cost_at_time_applies_multiple_off_peak_pricing_windows() {
+    use chrono::TimeZone;
+    let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+    let make_utc8_ms = |h: u32, m: u32| {
+        tz.with_ymd_and_hms(2026, 9, 18, h, m, 0)
+            .unwrap()
+            .timestamp_millis()
+    };
+
+    let multi_off_peak_price = ModelPrice {
+        provider_id: None,
+        upstream_model: "qwen-max".to_string(),
+        input: 4.0,
+        cache_read: 2.0,
+        cache_write: 4.0,
+        output: 8.0,
+        off_peaks: vec![
+            // Window 1: Night valley 00:00 - 08:00
+            OffPeakPrice {
+                start_time: "00:00".to_string(),
+                end_time: "08:00".to_string(),
+                input: 1.0,
+                cache_read: 0.5,
+                cache_write: 1.0,
+                output: 2.0,
+            },
+            // Window 2: Lunch valley 12:00 - 14:00
+            OffPeakPrice {
+                start_time: "12:00".to_string(),
+                end_time: "14:00".to_string(),
+                input: 2.0,
+                cache_read: 1.0,
+                cache_write: 2.0,
+                output: 4.0,
+            },
+        ],
+        off_peak: None,
+    };
+
+    let test_tokens = tokens(1_000_000, 1_000_000, 1_000_000, 1_000_000);
+
+    // 03:00 UTC+8 (hits Window 1: 1.0 + 0.5 + 1.0 + 2.0 = 4.5)
+    let w1_cost = compute_cost_at_time(&multi_off_peak_price, &test_tokens, make_utc8_ms(3, 0));
+    assert!((w1_cost - 4.5).abs() < 1e-9, "expected $4.50, got {w1_cost}");
+
+    // 13:00 UTC+8 (hits Window 2: 2.0 + 1.0 + 2.0 + 4.0 = 9.0)
+    let w2_cost = compute_cost_at_time(&multi_off_peak_price, &test_tokens, make_utc8_ms(13, 0));
+    assert!((w2_cost - 9.0).abs() < 1e-9, "expected $9.00, got {w2_cost}");
+
+    // 10:00 UTC+8 (outside both windows -> standard price: 4.0 + 2.0 + 4.0 + 8.0 = 18.0)
+    let std_cost = compute_cost_at_time(&multi_off_peak_price, &test_tokens, make_utc8_ms(10, 0));
+    assert!((std_cost - 18.0).abs() < 1e-9, "expected $18.00, got {std_cost}");
 }
 
 /// AC-012 / REQ-010: only 1-365 is accepted; invalid values are rejected and
@@ -8056,6 +8151,7 @@ fn priced(upstream_model: &str, input: f64, cache_read: f64, cache_write: f64, o
         cache_read,
         cache_write,
         output,
+        off_peaks: Vec::new(),
         off_peak: None,
     }
 }
@@ -8076,6 +8172,7 @@ fn priced_with_provider(
         cache_read,
         cache_write,
         output,
+        off_peaks: Vec::new(),
         off_peak: None,
     }
 }

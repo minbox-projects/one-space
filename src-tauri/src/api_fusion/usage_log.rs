@@ -204,14 +204,14 @@ pub fn is_off_peak(timestamp_ms: i64, start_time: &str, end_time: &str) -> bool 
 
 /// Cost in US dollars for the four token tiers.
 ///
-/// If an off-peak price configuration is present and `timestamp_ms` falls within the off-peak
-/// window in UTC+8, the off-peak pricing tier is used; otherwise, the standard pricing tier is used.
+/// If off-peak pricing configurations are present and `timestamp_ms` falls within an off-peak
+/// window in UTC+8, the first matching off-peak pricing tier is used; otherwise, the standard pricing tier is used.
 pub fn compute_cost_at_time(
     price: &ModelPrice,
     tokens: &UsageTokens,
     timestamp_ms: i64,
 ) -> f64 {
-    if let Some(ref off_peak) = price.off_peak {
+    for off_peak in price.effective_off_peaks() {
         if is_off_peak(timestamp_ms, &off_peak.start_time, &off_peak.end_time) {
             return (off_peak.input * tokens.input_tokens as f64
                 + off_peak.cache_read * tokens.cache_read_tokens as f64

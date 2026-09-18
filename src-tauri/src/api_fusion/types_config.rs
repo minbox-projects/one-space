@@ -202,8 +202,41 @@ pub struct ModelPrice {
     pub cache_write: f64,
     #[serde(default)]
     pub output: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub off_peaks: Vec<OffPeakPrice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub off_peak: Option<OffPeakPrice>,
+}
+
+impl ModelPrice {
+    /// Return the active off-peak configurations.
+    ///
+    /// If `off_peaks` contains entries, returns a slice to them; otherwise, falls back
+    /// to `off_peak` for backwards compatibility with legacy configurations.
+    pub fn effective_off_peaks(&self) -> &[OffPeakPrice] {
+        if !self.off_peaks.is_empty() {
+            &self.off_peaks
+        } else if let Some(ref op) = self.off_peak {
+            std::slice::from_ref(op)
+        } else {
+            &[]
+        }
+    }
+}
+
+impl Default for ModelPrice {
+    fn default() -> Self {
+        Self {
+            provider_id: None,
+            upstream_model: String::new(),
+            input: 0.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            output: 0.0,
+            off_peaks: Vec::new(),
+            off_peak: None,
+        }
+    }
 }
 
 /// Persisted API Fusion configuration.

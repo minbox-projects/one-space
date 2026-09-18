@@ -19,6 +19,16 @@ import {
 } from "@/lib/apiFusion";
 import { errorToMessage } from "@/lib/messages";
 
+export type DraftOffPeakPrice = {
+  id: string;
+  start_time: string;
+  end_time: string;
+  input: string;
+  cache_read: string;
+  cache_write: string;
+  output: string;
+};
+
 export type DraftPrice = {
   id: string;
   provider_id: string | null;
@@ -28,12 +38,7 @@ export type DraftPrice = {
   cache_write: string;
   output: string;
   enable_off_peak: boolean;
-  off_peak_start: string;
-  off_peak_end: string;
-  off_peak_input: string;
-  off_peak_cache_read: string;
-  off_peak_cache_write: string;
-  off_peak_output: string;
+  off_peaks: DraftOffPeakPrice[];
   is_expanded: boolean;
 };
 
@@ -51,6 +56,28 @@ const modelSelectClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/40 min-w-[11rem] font-mono";
 
 function toDraft(price: ModelPrice, index: number): DraftPrice {
+  const rawOffPeaks =
+    price.off_peaks && price.off_peaks.length > 0
+      ? price.off_peaks
+      : price.off_peak
+        ? [price.off_peak]
+        : [];
+
+  const draftOffPeaks: DraftOffPeakPrice[] = rawOffPeaks.map((op, opIdx) => ({
+    id: `op-${index}-${opIdx}-${Date.now()}-${Math.random()}`,
+    start_time: op.start_time ?? "00:30",
+    end_time: op.end_time ?? "08:30",
+    input: op.input !== undefined && op.input !== null ? String(op.input) : "",
+    cache_read:
+      op.cache_read !== undefined && op.cache_read !== null ? String(op.cache_read) : "",
+    cache_write:
+      op.cache_write !== undefined && op.cache_write !== null ? String(op.cache_write) : "",
+    output:
+      op.output !== undefined && op.output !== null ? String(op.output) : "",
+  }));
+
+  const hasOffPeak = draftOffPeaks.length > 0;
+
   return {
     id: `price-${index}-${price.upstream_model}-${price.provider_id ?? "global"}`,
     provider_id: price.provider_id ?? null,
@@ -59,13 +86,20 @@ function toDraft(price: ModelPrice, index: number): DraftPrice {
     cache_read: String(price.cache_read),
     cache_write: String(price.cache_write),
     output: String(price.output),
-    enable_off_peak: Boolean(price.off_peak),
-    off_peak_start: price.off_peak?.start_time ?? "00:30",
-    off_peak_end: price.off_peak?.end_time ?? "08:30",
-    off_peak_input: price.off_peak ? String(price.off_peak.input) : "",
-    off_peak_cache_read: price.off_peak ? String(price.off_peak.cache_read) : "",
-    off_peak_cache_write: price.off_peak ? String(price.off_peak.cache_write) : "",
-    off_peak_output: price.off_peak ? String(price.off_peak.output) : "",
+    enable_off_peak: hasOffPeak,
+    off_peaks: hasOffPeak
+      ? draftOffPeaks
+      : [
+          {
+            id: `op-${index}-0-${Date.now()}-${Math.random()}`,
+            start_time: "00:30",
+            end_time: "08:30",
+            input: "",
+            cache_read: "",
+            cache_write: "",
+            output: "",
+          },
+        ],
     is_expanded: false,
   };
 }
@@ -73,6 +107,258 @@ function toDraft(price: ModelPrice, index: number): DraftPrice {
 function parsePriceNumber(value: string): number {
   const parsed = Number(value.trim());
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function OffPeakConfigPanel({
+  draft,
+  originalIndex,
+  updateDraft,
+}: {
+  draft: DraftPrice;
+  originalIndex: number;
+  updateDraft: (index: number, patch: Partial<DraftPrice>) => void;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <div className="rounded-lg border border-border/80 bg-background/80 p-3 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <label className="inline-flex items-center gap-2 cursor-pointer font-medium text-xs text-foreground select-none">
+          <input
+            type="checkbox"
+            checked={draft.enable_off_peak}
+            onChange={(event) => {
+              const checked = event.target.checked;
+              updateDraft(originalIndex, {
+                enable_off_peak: checked,
+                off_peaks:
+                  checked && draft.off_peaks.length === 0
+                    ? [
+                        {
+                          id: `op-${Date.now()}-${Math.random()}`,
+                          start_time: "00:30",
+                          end_time: "08:30",
+                          input: "",
+                          cache_read: "",
+                          cache_write: "",
+                          output: "",
+                        },
+                      ]
+                    : draft.off_peaks,
+              });
+            }}
+            className="h-3.5 w-3.5 rounded border-border text-primary focus:ring-primary"
+          />
+          <span>
+            {t("apiFusionOffPeakEnable", "Enable off-peak pricing")}
+          </span>
+        </label>
+
+        {draft.enable_off_peak ? (
+          <button
+            type="button"
+            onClick={() => {
+              const newOp: DraftOffPeakPrice = {
+                id: `op-${Date.now()}-${Math.random()}`,
+                start_time: "00:30",
+                end_time: "08:30",
+                input: "",
+                cache_read: "",
+                cache_write: "",
+                output: "",
+              };
+              updateDraft(originalIndex, {
+                off_peaks: [...draft.off_peaks, newOp],
+              });
+            }}
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium transition hover:bg-muted"
+          >
+            <Plus className="h-3 w-3" />
+            <span>{t("apiFusionOffPeakAdd", "Add off-peak window")}</span>
+          </button>
+        ) : null}
+      </div>
+
+      {draft.enable_off_peak ? (
+        <>
+          <p className="text-[11px] text-muted-foreground">
+            {t(
+              "apiFusionOffPeakHint",
+              "Calls during this window in UTC+8 use these discounted rates; standard rates apply otherwise.",
+            )}
+          </p>
+
+          <div className="space-y-3">
+            {draft.off_peaks.map((op, opIndex) => (
+              <div
+                key={op.id}
+                className="rounded-md border border-border/70 bg-card/60 p-2.5 space-y-2"
+              >
+                <div className="flex items-center justify-between gap-2 border-b border-border/40 pb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-semibold text-foreground">
+                      {t("apiFusionOffPeakWindowIndex", {
+                        index: opIndex + 1,
+                        defaultValue: `Off-peak window #${opIndex + 1}`,
+                      })}
+                    </span>
+                    <div className="flex items-center gap-1.5 text-xs">
+                      <span className="text-muted-foreground font-medium">
+                        {t(
+                          "apiFusionOffPeakTimeRange",
+                          "Off-peak window (UTC+8)",
+                        )}
+                        :
+                      </span>
+                      <input
+                        type="text"
+                        value={op.start_time}
+                        onChange={(event) => {
+                          const val = event.target.value;
+                          const newOps = draft.off_peaks.map((item, idx) =>
+                            idx === opIndex ? { ...item, start_time: val } : item,
+                          );
+                          updateDraft(originalIndex, { off_peaks: newOps });
+                        }}
+                        placeholder="00:30"
+                        aria-label={t("apiFusionOffPeakStartTime", "Start")}
+                        className="w-16 rounded border border-border bg-background px-2 py-1 text-center font-mono text-xs focus:border-primary focus:outline-none"
+                      />
+                      <span className="text-muted-foreground">-</span>
+                      <input
+                        type="text"
+                        value={op.end_time}
+                        onChange={(event) => {
+                          const val = event.target.value;
+                          const newOps = draft.off_peaks.map((item, idx) =>
+                            idx === opIndex ? { ...item, end_time: val } : item,
+                          );
+                          updateDraft(originalIndex, { off_peaks: newOps });
+                        }}
+                        placeholder="08:30"
+                        aria-label={t("apiFusionOffPeakEndTime", "End")}
+                        className="w-16 rounded border border-border bg-background px-2 py-1 text-center font-mono text-xs focus:border-primary focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  {draft.off_peaks.length > 1 ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newOps = draft.off_peaks.filter(
+                          (_, idx) => idx !== opIndex,
+                        );
+                        updateDraft(originalIndex, { off_peaks: newOps });
+                      }}
+                      aria-label={t(
+                        "apiFusionOffPeakDeleteAria",
+                        "Delete this off-peak window",
+                      )}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  ) : null}
+                </div>
+
+                <div>
+                  <div className="text-[11px] font-medium text-muted-foreground mb-1.5">
+                    {t(
+                      "apiFusionOffPeakRates",
+                      "Off-peak rates ($/1M tokens)",
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <div>
+                      <label className="mb-1 block text-[10px] text-muted-foreground">
+                        {t("apiFusionPriceInput", "Input")}
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={op.input}
+                        placeholder={draft.input || "0"}
+                        onChange={(event) => {
+                          const val = event.target.value;
+                          const newOps = draft.off_peaks.map((item, idx) =>
+                            idx === opIndex ? { ...item, input: val } : item,
+                          );
+                          updateDraft(originalIndex, { off_peaks: newOps });
+                        }}
+                        aria-label={`${t("apiFusionPriceInput", "Input")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
+                        className={`${priceInputClass} min-w-[5rem]`}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[10px] text-muted-foreground">
+                        {t("apiFusionPriceCacheRead", "Cache read")}
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={op.cache_read}
+                        placeholder={draft.cache_read || "0"}
+                        onChange={(event) => {
+                          const val = event.target.value;
+                          const newOps = draft.off_peaks.map((item, idx) =>
+                            idx === opIndex ? { ...item, cache_read: val } : item,
+                          );
+                          updateDraft(originalIndex, { off_peaks: newOps });
+                        }}
+                        aria-label={`${t("apiFusionPriceCacheRead", "Cache read")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
+                        className={`${priceInputClass} min-w-[5rem]`}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[10px] text-muted-foreground">
+                        {t("apiFusionPriceCacheWrite", "Cache write")}
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={op.cache_write}
+                        placeholder={draft.cache_write || "0"}
+                        onChange={(event) => {
+                          const val = event.target.value;
+                          const newOps = draft.off_peaks.map((item, idx) =>
+                            idx === opIndex ? { ...item, cache_write: val } : item,
+                          );
+                          updateDraft(originalIndex, { off_peaks: newOps });
+                        }}
+                        aria-label={`${t("apiFusionPriceCacheWrite", "Cache write")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
+                        className={`${priceInputClass} min-w-[5rem]`}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[10px] text-muted-foreground">
+                        {t("apiFusionPriceOutput", "Output")}
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={op.output}
+                        placeholder={draft.output || "0"}
+                        onChange={(event) => {
+                          const val = event.target.value;
+                          const newOps = draft.off_peaks.map((item, idx) =>
+                            idx === opIndex ? { ...item, output: val } : item,
+                          );
+                          updateDraft(originalIndex, { off_peaks: newOps });
+                        }}
+                        aria-label={`${t("apiFusionPriceOutput", "Output")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
+                        className={`${priceInputClass} min-w-[5rem]`}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
 }
 
 export function ModelPriceDialog({
@@ -175,12 +461,17 @@ export function ModelPriceDialog({
         cache_write: "0",
         output: "0",
         enable_off_peak: false,
-        off_peak_start: "00:30",
-        off_peak_end: "08:30",
-        off_peak_input: "",
-        off_peak_cache_read: "",
-        off_peak_cache_write: "",
-        off_peak_output: "",
+        off_peaks: [
+          {
+            id: `op-${Date.now()}-${Math.random()}`,
+            start_time: "00:30",
+            end_time: "08:30",
+            input: "",
+            cache_read: "",
+            cache_write: "",
+            output: "",
+          },
+        ],
         is_expanded: false,
       },
     ]);
@@ -197,26 +488,23 @@ export function ModelPriceDialog({
       const prices: ModelPrice[] = drafts
         .map((draft) => {
           const item: ModelPrice = {
-            provider_id: draft.provider_id || undefined,
+            ...(draft.provider_id ? { provider_id: draft.provider_id } : {}),
             upstream_model: draft.upstream_model.trim(),
             input: parsePriceNumber(draft.input),
             cache_read: parsePriceNumber(draft.cache_read),
             cache_write: parsePriceNumber(draft.cache_write),
             output: parsePriceNumber(draft.output),
           };
-          if (draft.enable_off_peak) {
-            item.off_peak = {
-              start_time: draft.off_peak_start.trim() || "00:30",
-              end_time: draft.off_peak_end.trim() || "08:30",
-              input: parsePriceNumber(draft.off_peak_input || draft.input),
-              cache_read: parsePriceNumber(
-                draft.off_peak_cache_read || draft.cache_read,
-              ),
-              cache_write: parsePriceNumber(
-                draft.off_peak_cache_write || draft.cache_write,
-              ),
-              output: parsePriceNumber(draft.off_peak_output || draft.output),
-            };
+          if (draft.enable_off_peak && draft.off_peaks.length > 0) {
+            item.off_peaks = draft.off_peaks.map((op) => ({
+              start_time: op.start_time.trim() || "00:30",
+              end_time: op.end_time.trim() || "08:30",
+              input: parsePriceNumber(op.input || draft.input),
+              cache_read: parsePriceNumber(op.cache_read || draft.cache_read),
+              cache_write: parsePriceNumber(op.cache_write || draft.cache_write),
+              output: parsePriceNumber(op.output || draft.output),
+            }));
+            item.off_peak = item.off_peaks[0] ?? null;
           }
           return item;
         })
@@ -473,31 +761,35 @@ export function ModelPriceDialog({
                                       })
                                     }
                                     title={
-                                      draft.enable_off_peak
-                                        ? t("apiFusionOffPeakActive", {
-                                            start: draft.off_peak_start,
-                                            end: draft.off_peak_end,
-                                            defaultValue: `Off-peak (${draft.off_peak_start} - ${draft.off_peak_end})`,
-                                          })
-                                        : t(
-                                            "apiFusionOffPeakConfigure",
-                                            "Off-peak discount",
-                                          )
+                                      !draft.enable_off_peak || draft.off_peaks.length === 0
+                                        ? t("apiFusionOffPeakConfigure", "Off-peak discount")
+                                        : draft.off_peaks
+                                            .map(
+                                              (op) =>
+                                                t("apiFusionOffPeakActive", {
+                                                  start: op.start_time,
+                                                  end: op.end_time,
+                                                  defaultValue: `Off-peak (${op.start_time} - ${op.end_time})`,
+                                                }),
+                                            )
+                                            .join(", ")
                                     }
                                     className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition ${
-                                      draft.enable_off_peak
+                                      draft.enable_off_peak && draft.off_peaks.length > 0
                                         ? "bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-500/25"
                                         : "border border-dashed border-border text-muted-foreground hover:bg-muted hover:text-foreground"
                                     }`}
                                   >
                                     <Moon className="h-3 w-3" />
                                     <span>
-                                      {draft.enable_off_peak
-                                        ? `${draft.off_peak_start}-${draft.off_peak_end}`
-                                        : t(
+                                      {!draft.enable_off_peak || draft.off_peaks.length === 0
+                                        ? t(
                                             "apiFusionOffPeakConfigure",
                                             "Off-peak discount",
-                                          )}
+                                          )
+                                        : draft.off_peaks.length === 1
+                                          ? `${draft.off_peaks[0].start_time}-${draft.off_peaks[0].end_time}`
+                                          : `${draft.off_peaks[0].start_time}-${draft.off_peaks[0].end_time} (+${draft.off_peaks.length - 1})`}
                                     </span>
                                     {draft.is_expanded ? (
                                       <ChevronUp className="h-3 w-3 opacity-70" />
@@ -524,176 +816,11 @@ export function ModelPriceDialog({
                               {draft.is_expanded ? (
                                 <tr className="bg-muted/15 border-b">
                                   <td colSpan={7} className="px-3 py-3">
-                                    <div className="rounded-lg border border-border/80 bg-background/80 p-3 space-y-3">
-                                      <div className="flex flex-wrap items-center justify-between gap-3">
-                                        <label className="inline-flex items-center gap-2 cursor-pointer font-medium text-xs text-foreground select-none">
-                                          <input
-                                            type="checkbox"
-                                            checked={draft.enable_off_peak}
-                                            onChange={(event) =>
-                                              updateDraft(originalIndex, {
-                                                enable_off_peak: event.target.checked,
-                                              })
-                                            }
-                                            className="h-3.5 w-3.5 rounded border-border text-primary focus:ring-primary"
-                                          />
-                                          <span>
-                                            {t(
-                                              "apiFusionOffPeakEnable",
-                                              "Enable off-peak pricing",
-                                            )}
-                                          </span>
-                                        </label>
-
-                                        {draft.enable_off_peak ? (
-                                          <div className="flex items-center gap-1.5 text-xs">
-                                            <span className="text-muted-foreground font-medium">
-                                              {t(
-                                                "apiFusionOffPeakTimeRange",
-                                                "Off-peak window (UTC+8)",
-                                              )}
-                                              :
-                                            </span>
-                                            <input
-                                              type="text"
-                                              value={draft.off_peak_start}
-                                              onChange={(event) =>
-                                                updateDraft(originalIndex, {
-                                                  off_peak_start: event.target.value,
-                                                })
-                                              }
-                                              placeholder="00:30"
-                                              aria-label={t(
-                                                "apiFusionOffPeakStartTime",
-                                                "Start",
-                                              )}
-                                              className="w-16 rounded border border-border bg-background px-2 py-1 text-center font-mono text-xs focus:border-primary focus:outline-none"
-                                            />
-                                            <span className="text-muted-foreground">-</span>
-                                            <input
-                                              type="text"
-                                              value={draft.off_peak_end}
-                                              onChange={(event) =>
-                                                updateDraft(originalIndex, {
-                                                  off_peak_end: event.target.value,
-                                                })
-                                              }
-                                              placeholder="08:30"
-                                              aria-label={t(
-                                                "apiFusionOffPeakEndTime",
-                                                "End",
-                                              )}
-                                              className="w-16 rounded border border-border bg-background px-2 py-1 text-center font-mono text-xs focus:border-primary focus:outline-none"
-                                            />
-                                          </div>
-                                        ) : null}
-                                      </div>
-
-                                      {draft.enable_off_peak ? (
-                                        <>
-                                          <p className="text-[11px] text-muted-foreground">
-                                            {t(
-                                              "apiFusionOffPeakHint",
-                                              "Calls during this window in UTC+8 use these discounted rates; standard rates apply otherwise.",
-                                            )}
-                                          </p>
-                                          <div>
-                                            <div className="text-[11px] font-medium text-muted-foreground mb-1.5">
-                                              {t(
-                                                "apiFusionOffPeakRates",
-                                                "Off-peak rates ($/1M tokens)",
-                                              )}
-                                            </div>
-                                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                                              <div>
-                                                <label className="mb-1 block text-[10px] text-muted-foreground">
-                                                  {t("apiFusionPriceInput", "Input")}
-                                                </label>
-                                                <input
-                                                  type="number"
-                                                  step="any"
-                                                  value={draft.off_peak_input}
-                                                  placeholder={draft.input || "0"}
-                                                  onChange={(event) =>
-                                                    updateDraft(originalIndex, {
-                                                      off_peak_input: event.target.value,
-                                                    })
-                                                  }
-                                                  aria-label={`${t("apiFusionPriceInput", "Input")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
-                                                  className={`${priceInputClass} min-w-[5rem]`}
-                                                />
-                                              </div>
-                                              <div>
-                                                <label className="mb-1 block text-[10px] text-muted-foreground">
-                                                  {t(
-                                                    "apiFusionPriceCacheRead",
-                                                    "Cache read",
-                                                  )}
-                                                </label>
-                                                <input
-                                                  type="number"
-                                                  step="any"
-                                                  value={draft.off_peak_cache_read}
-                                                  placeholder={draft.cache_read || "0"}
-                                                  onChange={(event) =>
-                                                    updateDraft(originalIndex, {
-                                                      off_peak_cache_read:
-                                                        event.target.value,
-                                                    })
-                                                  }
-                                                  aria-label={`${t("apiFusionPriceCacheRead", "Cache read")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
-                                                  className={`${priceInputClass} min-w-[5rem]`}
-                                                />
-                                              </div>
-                                              <div>
-                                                <label className="mb-1 block text-[10px] text-muted-foreground">
-                                                  {t(
-                                                    "apiFusionPriceCacheWrite",
-                                                    "Cache write",
-                                                  )}
-                                                </label>
-                                                <input
-                                                  type="number"
-                                                  step="any"
-                                                  value={draft.off_peak_cache_write}
-                                                  placeholder={draft.cache_write || "0"}
-                                                  onChange={(event) =>
-                                                    updateDraft(originalIndex, {
-                                                      off_peak_cache_write:
-                                                        event.target.value,
-                                                    })
-                                                  }
-                                                  aria-label={`${t("apiFusionPriceCacheWrite", "Cache write")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
-                                                  className={`${priceInputClass} min-w-[5rem]`}
-                                                />
-                                              </div>
-                                              <div>
-                                                <label className="mb-1 block text-[10px] text-muted-foreground">
-                                                  {t(
-                                                    "apiFusionPriceOutput",
-                                                    "Output",
-                                                  )}
-                                                </label>
-                                                <input
-                                                  type="number"
-                                                  step="any"
-                                                  value={draft.off_peak_output}
-                                                  placeholder={draft.output || "0"}
-                                                  onChange={(event) =>
-                                                    updateDraft(originalIndex, {
-                                                      off_peak_output:
-                                                        event.target.value,
-                                                    })
-                                                  }
-                                                  aria-label={`${t("apiFusionPriceOutput", "Output")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
-                                                  className={`${priceInputClass} min-w-[5rem]`}
-                                                />
-                                              </div>
-                                            </div>
-                                          </div>
-                                        </>
-                                      ) : null}
-                                    </div>
+                                    <OffPeakConfigPanel
+                                      draft={draft}
+                                      originalIndex={originalIndex}
+                                      updateDraft={updateDraft}
+                                    />
                                   </td>
                                 </tr>
                               ) : null}
@@ -799,31 +926,35 @@ export function ModelPriceDialog({
                                     })
                                   }
                                   title={
-                                    draft.enable_off_peak
-                                      ? t("apiFusionOffPeakActive", {
-                                          start: draft.off_peak_start,
-                                          end: draft.off_peak_end,
-                                          defaultValue: `Off-peak (${draft.off_peak_start} - ${draft.off_peak_end})`,
-                                        })
-                                      : t(
-                                          "apiFusionOffPeakConfigure",
-                                          "Off-peak discount",
-                                        )
+                                    !draft.enable_off_peak || draft.off_peaks.length === 0
+                                      ? t("apiFusionOffPeakConfigure", "Off-peak discount")
+                                      : draft.off_peaks
+                                          .map(
+                                            (op) =>
+                                              t("apiFusionOffPeakActive", {
+                                                start: op.start_time,
+                                                end: op.end_time,
+                                                defaultValue: `Off-peak (${op.start_time} - ${op.end_time})`,
+                                              }),
+                                          )
+                                          .join(", ")
                                   }
                                   className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition ${
-                                    draft.enable_off_peak
+                                    draft.enable_off_peak && draft.off_peaks.length > 0
                                       ? "bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-500/25"
                                       : "border border-dashed border-border text-muted-foreground hover:bg-muted hover:text-foreground"
                                   }`}
                                 >
                                   <Moon className="h-3 w-3" />
                                   <span>
-                                    {draft.enable_off_peak
-                                      ? `${draft.off_peak_start}-${draft.off_peak_end}`
-                                      : t(
+                                    {!draft.enable_off_peak || draft.off_peaks.length === 0
+                                      ? t(
                                           "apiFusionOffPeakConfigure",
                                           "Off-peak discount",
-                                        )}
+                                        )
+                                      : draft.off_peaks.length === 1
+                                        ? `${draft.off_peaks[0].start_time}-${draft.off_peaks[0].end_time}`
+                                        : `${draft.off_peaks[0].start_time}-${draft.off_peaks[0].end_time} (+${draft.off_peaks.length - 1})`}
                                   </span>
                                   {draft.is_expanded ? (
                                     <ChevronUp className="h-3 w-3 opacity-70" />
@@ -850,180 +981,11 @@ export function ModelPriceDialog({
                             {draft.is_expanded ? (
                               <tr className="bg-muted/15 border-b">
                                 <td colSpan={7} className="px-3 py-3">
-                                  <div className="rounded-lg border border-border/80 bg-background/80 p-3 space-y-3">
-                                    <div className="flex flex-wrap items-center justify-between gap-3">
-                                      <label className="inline-flex items-center gap-2 cursor-pointer font-medium text-xs text-foreground select-none">
-                                        <input
-                                          type="checkbox"
-                                          checked={draft.enable_off_peak}
-                                          onChange={(event) =>
-                                            updateDraft(originalIndex, {
-                                              enable_off_peak:
-                                                event.target.checked,
-                                            })
-                                          }
-                                          className="h-3.5 w-3.5 rounded border-border text-primary focus:ring-primary"
-                                        />
-                                        <span>
-                                          {t(
-                                            "apiFusionOffPeakEnable",
-                                            "Enable off-peak pricing",
-                                          )}
-                                        </span>
-                                      </label>
-
-                                      {draft.enable_off_peak ? (
-                                        <div className="flex items-center gap-1.5 text-xs">
-                                          <span className="text-muted-foreground font-medium">
-                                            {t(
-                                              "apiFusionOffPeakTimeRange",
-                                              "Off-peak window (UTC+8)",
-                                            )}
-                                            :
-                                          </span>
-                                          <input
-                                            type="text"
-                                            value={draft.off_peak_start}
-                                            onChange={(event) =>
-                                              updateDraft(originalIndex, {
-                                                off_peak_start:
-                                                  event.target.value,
-                                              })
-                                            }
-                                            placeholder="00:30"
-                                            aria-label={t(
-                                              "apiFusionOffPeakStartTime",
-                                              "Start",
-                                            )}
-                                            className="w-16 rounded border border-border bg-background px-2 py-1 text-center font-mono text-xs focus:border-primary focus:outline-none"
-                                          />
-                                          <span className="text-muted-foreground">-</span>
-                                          <input
-                                            type="text"
-                                            value={draft.off_peak_end}
-                                            onChange={(event) =>
-                                              updateDraft(originalIndex, {
-                                                off_peak_end:
-                                                  event.target.value,
-                                              })
-                                            }
-                                            placeholder="08:30"
-                                            aria-label={t(
-                                              "apiFusionOffPeakEndTime",
-                                              "End",
-                                            )}
-                                            className="w-16 rounded border border-border bg-background px-2 py-1 text-center font-mono text-xs focus:border-primary focus:outline-none"
-                                          />
-                                        </div>
-                                      ) : null}
-                                    </div>
-
-                                    {draft.enable_off_peak ? (
-                                      <>
-                                        <p className="text-[11px] text-muted-foreground">
-                                          {t(
-                                            "apiFusionOffPeakHint",
-                                            "Calls during this window in UTC+8 use these discounted rates; standard rates apply otherwise.",
-                                          )}
-                                        </p>
-                                        <div>
-                                          <div className="text-[11px] font-medium text-muted-foreground mb-1.5">
-                                            {t(
-                                              "apiFusionOffPeakRates",
-                                              "Off-peak rates ($/1M tokens)",
-                                            )}
-                                          </div>
-                                          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                                            <div>
-                                              <label className="mb-1 block text-[10px] text-muted-foreground">
-                                                {t("apiFusionPriceInput", "Input")}
-                                              </label>
-                                              <input
-                                                type="number"
-                                                step="any"
-                                                value={draft.off_peak_input}
-                                                placeholder={draft.input || "0"}
-                                                onChange={(event) =>
-                                                  updateDraft(originalIndex, {
-                                                    off_peak_input:
-                                                      event.target.value,
-                                                  })
-                                                }
-                                                aria-label={`${t("apiFusionPriceInput", "Input")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
-                                                className={`${priceInputClass} min-w-[5rem]`}
-                                              />
-                                            </div>
-                                            <div>
-                                              <label className="mb-1 block text-[10px] text-muted-foreground">
-                                                {t(
-                                                  "apiFusionPriceCacheRead",
-                                                  "Cache read",
-                                                )}
-                                              </label>
-                                              <input
-                                                type="number"
-                                                step="any"
-                                                value={draft.off_peak_cache_read}
-                                                placeholder={draft.cache_read || "0"}
-                                                onChange={(event) =>
-                                                  updateDraft(originalIndex, {
-                                                    off_peak_cache_read:
-                                                      event.target.value,
-                                                  })
-                                                }
-                                                aria-label={`${t("apiFusionPriceCacheRead", "Cache read")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
-                                                className={`${priceInputClass} min-w-[5rem]`}
-                                              />
-                                            </div>
-                                            <div>
-                                              <label className="mb-1 block text-[10px] text-muted-foreground">
-                                                {t(
-                                                  "apiFusionPriceCacheWrite",
-                                                  "Cache write",
-                                                )}
-                                              </label>
-                                              <input
-                                                type="number"
-                                                step="any"
-                                                value={draft.off_peak_cache_write}
-                                                placeholder={draft.cache_write || "0"}
-                                                onChange={(event) =>
-                                                  updateDraft(originalIndex, {
-                                                    off_peak_cache_write:
-                                                      event.target.value,
-                                                  })
-                                                }
-                                                aria-label={`${t("apiFusionPriceCacheWrite", "Cache write")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
-                                                className={`${priceInputClass} min-w-[5rem]`}
-                                              />
-                                            </div>
-                                            <div>
-                                              <label className="mb-1 block text-[10px] text-muted-foreground">
-                                                {t(
-                                                  "apiFusionPriceOutput",
-                                                  "Output",
-                                                )}
-                                              </label>
-                                              <input
-                                                type="number"
-                                                step="any"
-                                                value={draft.off_peak_output}
-                                                placeholder={draft.output || "0"}
-                                                onChange={(event) =>
-                                                  updateDraft(originalIndex, {
-                                                    off_peak_output:
-                                                      event.target.value,
-                                                  })
-                                                }
-                                                aria-label={`${t("apiFusionPriceOutput", "Output")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
-                                                className={`${priceInputClass} min-w-[5rem]`}
-                                              />
-                                            </div>
-                                          </div>
-                                        </div>
-                                      </>
-                                    ) : null}
-                                  </div>
+                                  <OffPeakConfigPanel
+                                    draft={draft}
+                                    originalIndex={originalIndex}
+                                    updateDraft={updateDraft}
+                                  />
                                 </td>
                               </tr>
                             ) : null}
