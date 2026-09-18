@@ -1477,6 +1477,232 @@ async fn unknown_path_and_method_return_404() {
     drop(home);
 }
 
+/// AC-010 / REQ-006: a malformed request line (no header terminator) is a
+/// gateway-generated 400 carrying the full standard envelope.
+#[tokio::test]
+async fn gateway_request_parse_failure_uses_standard_error_envelope() {
+    let home = temp_home("gateway-parse-error-envelope");
+    let port = free_port().await;
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let text = call_fusion_raw(port, "GARBAGE\r\n").await;
+    let (status_line, body) = raw_http_status_and_body(&text);
+    assert!(
+        status_line.starts_with("HTTP/1.1 400"),
+        "a malformed request must answer 400: {text}"
+    );
+    assert!(
+        text.to_ascii_lowercase()
+            .contains("content-type: application/json"),
+        "content-type must be application/json: {text}"
+    );
+    assert_standard_error_envelope(&body);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-006: when the encrypted config file cannot be read the gateway
+/// answers 500 with the full standard envelope.
+#[tokio::test]
+async fn gateway_config_read_failure_uses_standard_error_envelope() {
+    let home = temp_home("gateway-config-error-envelope");
+    let port = free_port().await;
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(upstream_provider(
+        "p1",
+        "Provider One",
+        "http://127.0.0.1:1",
+        "sk",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    let path = config_path().unwrap();
+    let valid = fs::read(&path).expect("read valid config");
+    super::runtime_http::start_server().await.unwrap();
+
+    fs::write(&path, b"not encrypted ciphertext").expect("corrupt config");
+
+    let (status, content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 500, "config read failure must answer 500: {text}");
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    assert_standard_error_envelope(&text);
+
+    // Restore a decryptable config so the shared server can stop cleanly.
+    fs::write(&path, valid).expect("restore config");
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-006: an unknown path is a gateway-generated 404 with the full
+/// standard envelope.
+#[tokio::test]
+async fn gateway_unknown_path_uses_standard_error_envelope() {
+    let home = temp_home("gateway-unknown-path-envelope");
+    let port = free_port().await;
+    let config = config_with_key(port);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/embeddings",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"input": "x"})),
+    )
+    .await;
+    assert_eq!(status, 404, "unknown path must answer 404: {text}");
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    assert_standard_error_envelope(&text);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-006: a missing or wrong local key is a gateway-generated 401
+/// with the full standard envelope.
+#[tokio::test]
+async fn gateway_unauthorized_uses_standard_error_envelope() {
+    let home = temp_home("gateway-unauthorized-envelope");
+    let port = free_port().await;
+    let config = config_with_key(port);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer wrong-key")],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 401, "unauthorized must answer 401: {text}");
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    assert_standard_error_envelope(&text);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-006: a non-GET method on `/v1/models` is a gateway-generated
+/// 404 with the full standard envelope.
+#[tokio::test]
+async fn gateway_wrong_method_on_models_uses_standard_error_envelope() {
+    let home = temp_home("gateway-models-method-envelope");
+    let port = free_port().await;
+    let config = config_with_key(port);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/models",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, 404, "a non-GET /v1/models must answer 404: {text}");
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    assert_standard_error_envelope(&text);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-006: a malformed JSON body on a supported path is a
+/// gateway-generated 400 with the full standard envelope.
+#[tokio::test]
+async fn gateway_invalid_request_body_uses_standard_error_envelope() {
+    let home = temp_home("gateway-invalid-body-envelope");
+    let port = free_port().await;
+    let config = config_with_key(port);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let body = "{not valid json";
+    let request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nhost: 127.0.0.1\r\nauthorization: Bearer local-key\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let text = call_fusion_raw(port, &request).await;
+    let (status_line, response_body) = raw_http_status_and_body(&text);
+    assert!(
+        status_line.starts_with("HTTP/1.1 400"),
+        "a malformed body must answer 400: {text}"
+    );
+    assert!(
+        text.to_ascii_lowercase()
+            .contains("content-type: application/json"),
+        "content-type must be application/json: {text}"
+    );
+    assert_standard_error_envelope(&response_body);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-006: the non-streaming no-candidate 502 carries the full
+/// standard envelope (the streaming variant is covered separately).
+#[tokio::test]
+async fn gateway_no_candidate_uses_standard_error_envelope() {
+    let home = temp_home("gateway-no-candidate-envelope");
+    let port = free_port().await;
+    let mut config = config_with_key(port);
+    let mut p = upstream_provider("p1", "Provider One", "http://127.0.0.1:1", "sk", None);
+    p.mappings = vec![mapping("known-local", "remote-a", None)];
+    config.providers.push(p);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "unknown-local"})),
+    )
+    .await;
+    assert_eq!(status, 502, "no candidate must answer 502: {text}");
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
 #[tokio::test]
 async fn retryable_failure_switches_to_next_candidate() {
     let home = temp_home("retryable-switch");
@@ -1561,7 +1787,7 @@ async fn all_candidates_fail_returns_502_all_providers_unavailable() {
     )
     .await;
     assert_eq!(status, 502, "unexpected response: {text}");
-    let body: Value = serde_json::from_str(&text).unwrap();
+    let body = assert_standard_error_envelope(&text);
     assert_eq!(body["error"]["code"], "all_providers_unavailable");
     let message = body["error"]["message"].as_str().unwrap();
     assert!(message.contains("Provider A"), "message: {message}");
@@ -1571,8 +1797,11 @@ async fn all_candidates_fail_returns_502_all_providers_unavailable() {
     drop(home);
 }
 
+/// AC-005 / REQ-003: every serviceable streaming candidate fails before any
+/// byte is written, so the gateway answers HTTP 502 + `application/json` with
+/// the standard envelope instead of HTTP 200 SSE.
 #[tokio::test]
-async fn streaming_all_fail_returns_200_sse_error_then_done() {
+async fn streaming_all_fail_returns_502_json_error_envelope() {
     let home = temp_home("stream-all-fail");
     let port = free_port().await;
     let (url_a, _) =
@@ -1608,10 +1837,68 @@ async fn streaming_all_fail_returns_200_sse_error_then_done() {
         Some(json!({"model": "local", "stream": true})),
     )
     .await;
-    assert_eq!(status, 200, "streaming stop response uses HTTP 200");
-    assert!(content_type.contains("text/event-stream"), "content-type: {content_type}");
-    assert!(text.contains("all_providers_unavailable"), "body: {text}");
-    assert!(text.contains("data: [DONE]"), "body: {text}");
+    assert_eq!(
+        status, 502,
+        "a pre-stream streaming failure must answer HTTP 502: {text}"
+    );
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    assert!(
+        !content_type.contains("text/event-stream"),
+        "a pre-stream failure must not be SSE: {content_type}"
+    );
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-004 / REQ-003: a streaming request with no serviceable candidate answers
+/// HTTP 502 + `application/json` (not HTTP 200 SSE) with the standard envelope,
+/// `error.code == "all_providers_unavailable"` and `error.param` present/null.
+#[tokio::test]
+async fn streaming_no_candidate_returns_502_json_error_envelope() {
+    let home = temp_home("stream-no-candidate");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-run"}))).await;
+
+    let mut config = config_with_key(port);
+    let mut p = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    p.mappings = vec![mapping("known-local", "remote-a", None)];
+    config.providers.push(p);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "unknown-local", "stream": true})),
+    )
+    .await;
+    assert_eq!(
+        status, 502,
+        "no serviceable candidate must answer HTTP 502: {text}"
+    );
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    assert!(
+        !content_type.contains("text/event-stream"),
+        "no-candidate must not answer SSE: {content_type}"
+    );
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "no upstream request may be issued when there is no candidate"
+    );
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
@@ -2400,7 +2687,7 @@ async fn no_candidate_model_returns_all_unavailable_without_upstream_request() {
     )
     .await;
     assert_eq!(status, 502, "unexpected response: {text}");
-    let body: Value = serde_json::from_str(&text).unwrap();
+    let body = assert_standard_error_envelope(&text);
     assert_eq!(body["error"]["code"], "all_providers_unavailable");
     assert!(
         log.lock().unwrap().is_empty(),
@@ -3026,7 +3313,7 @@ async fn end_to_end_all_unavailable_non_streaming_lists_each_provider_failure() 
     )
     .await;
     assert_eq!(status, 502, "unexpected response: {text}");
-    let body: Value = serde_json::from_str(&text).unwrap();
+    let body = assert_standard_error_envelope(&text);
     assert_eq!(body["error"]["code"], "all_providers_unavailable");
     let message = body["error"]["message"].as_str().unwrap();
     assert!(message.contains("Provider A"), "message: {message}");
@@ -3038,10 +3325,10 @@ async fn end_to_end_all_unavailable_non_streaming_lists_each_provider_failure() 
     drop(home);
 }
 
+/// AC-005 / REQ-003: end-to-end streaming all-unavailable is HTTP 502 JSON with
+/// the standard envelope; it is no longer HTTP 200 SSE and carries no `[DONE]`.
 #[tokio::test]
-async fn end_to_end_all_unavailable_streaming_error_event_precedes_done() {
-    // AC-015: streaming all-unavailable is HTTP 200 SSE whose error object event
-    // comes before the terminating `data: [DONE]`.
+async fn end_to_end_all_unavailable_streaming_returns_502_json_envelope() {
     let home = temp_home("e2e-all-unavailable-stream");
     let port = free_port().await;
     let (url_a, _) =
@@ -3075,27 +3362,23 @@ async fn end_to_end_all_unavailable_streaming_error_event_precedes_done() {
         Some(json!({"model": "local-model", "stream": true})),
     )
     .await;
-    assert_eq!(status, 200, "streaming stop response uses HTTP 200");
-    assert!(
-        content_type.contains("text/event-stream"),
-        "content-type: {content_type}"
+    assert_eq!(
+        status, 502,
+        "streaming all-unavailable must answer HTTP 502: {text}"
     );
-    let error_index = text
-        .find("all_providers_unavailable")
-        .unwrap_or_else(|| panic!("missing error payload: {text}"));
-    let done_index = text
-        .find("data: [DONE]")
-        .unwrap_or_else(|| panic!("missing [DONE]: {text}"));
     assert!(
-        error_index < done_index,
-        "error event must precede [DONE]: {text}"
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
     );
-
-    let first_event = text.split("\n\n").next().unwrap();
-    let payload = first_event
-        .strip_prefix("data: ")
-        .unwrap_or_else(|| panic!("first event must be a data event: {text}"));
-    let value: Value = serde_json::from_str(payload).expect("error event must be JSON");
+    assert!(
+        !content_type.contains("text/event-stream"),
+        "a pre-stream failure must not be SSE: {content_type}"
+    );
+    assert!(
+        !text.contains("data: [DONE]"),
+        "the JSON error body must not carry an SSE terminator: {text}"
+    );
+    let value = assert_standard_error_envelope(&text);
     assert_eq!(value["error"]["code"], "all_providers_unavailable");
     let message = value["error"]["message"].as_str().unwrap();
     assert!(message.contains("Provider A"), "message: {message}");
@@ -4479,14 +4762,56 @@ fn json_config_with_key(port: u16, providers: Vec<Value>) -> Value {
     })
 }
 
-/// Decode the first `data:` event of a relay SSE error stream as JSON.
-fn first_sse_event(text: &str) -> Value {
-    let line = text
-        .lines()
-        .find(|line| line.starts_with("data: ") && !line.contains("[DONE]"))
-        .unwrap_or_else(|| panic!("no SSE data event in: {text}"));
-    serde_json::from_str(line.trim_start_matches("data: "))
-        .unwrap_or_else(|error| panic!("SSE event is not JSON ({error}): {text}"))
+/// Assert the OpenAI standard error envelope (AC-010): `error.message`,
+/// `error.type` and `error.code` are non-empty strings and `error.param` exists
+/// as `null`. Returns the parsed body so a caller can assert a specific code or
+/// message.
+fn assert_standard_error_envelope(text: &str) -> Value {
+    let body: Value = serde_json::from_str(text)
+        .unwrap_or_else(|error| panic!("error body must be valid JSON ({error}): {text}"));
+    let error = body
+        .get("error")
+        .unwrap_or_else(|| panic!("response must carry an error object: {text}"));
+    for field in ["message", "type", "code"] {
+        let value = error.get(field).and_then(Value::as_str).unwrap_or("");
+        assert!(
+            !value.is_empty(),
+            "error.{field} must be a non-empty string: {text}"
+        );
+    }
+    match error.get("param") {
+        Some(param) => assert!(param.is_null(), "error.param must be null: {text}"),
+        None => panic!("error object must carry a param field: {text}"),
+    }
+    body
+}
+
+/// Send one raw HTTP/1.1 request to the gateway and return the full response.
+/// Used for malformed requests/bodies that `call_fusion`'s JSON encoder cannot
+/// produce, and for direct `attempt_streaming` transport assertions.
+async fn call_fusion_raw(port: u16, request: &str) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect gateway");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write raw request");
+    stream.shutdown().await.expect("half-close raw request");
+    let mut out = Vec::new();
+    stream.read_to_end(&mut out).await.expect("read raw response");
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Split a raw relay response (status line + headers + body) into its status
+/// line and body so a direct-call streaming test can assert the transport
+/// without a full HTTP client.
+fn raw_http_status_and_body(text: &str) -> (String, String) {
+    let (head, body) = text
+        .split_once("\r\n\r\n")
+        .unwrap_or_else(|| panic!("raw response is missing the header terminator: {text}"));
+    let status = head.lines().next().unwrap_or_default().to_string();
+    (status, body.to_string())
 }
 
 /// `Debug`-free rendering of the captured upstream calls for failure messages.
@@ -4660,22 +4985,29 @@ async fn mapping_protocol_mismatch_is_never_served_and_never_falls_back_to_defau
         "a protocol-mismatched mapping must not contact upstream and must not fall back to default_model: non_stream=(status={status}, body={text}) stream=(status={stream_status}, type={stream_content_type}, body={stream_text})"
     );
 
-    let body: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(status, 502, "non-streaming mismatch must be 502: {text}");
+    let body = assert_standard_error_envelope(&text);
     assert_eq!(
         body["error"]["code"], "all_providers_unavailable",
         "body={text}"
     );
 
-    assert_eq!(stream_status, 200, "streaming mismatch keeps HTTP 200: {stream_text}");
-    assert!(
-        stream_content_type.contains("text/event-stream"),
-        "content-type: {stream_content_type}"
-    );
-    assert!(stream_text.contains("data: [DONE]"), "body: {stream_text}");
     assert_eq!(
-        first_sse_event(&stream_text)["error"],
-        body["error"],
+        stream_status, 502,
+        "a pre-stream mismatch must answer HTTP 502: {stream_text}"
+    );
+    assert!(
+        stream_content_type.contains("application/json"),
+        "streaming mismatch content-type must be JSON: {stream_content_type}"
+    );
+    assert!(
+        !stream_content_type.contains("text/event-stream"),
+        "a pre-stream mismatch must not answer SSE: {stream_content_type}"
+    );
+    assert!(!stream_text.contains("data: [DONE]"), "body: {stream_text}");
+    let stream_body = assert_standard_error_envelope(&stream_text);
+    assert_eq!(
+        stream_body["error"], body["error"],
         "the streaming error object must equal the non-streaming one: {stream_text}"
     );
 
@@ -4745,7 +5077,7 @@ async fn default_model_fallback_requires_a_matching_provider_protocol() {
         "an unmapped model falls back to default_model: {summary}"
     );
     assert_eq!(chat_status, 502, "the provider cannot serve the chat protocol: {summary}");
-    let body: Value = serde_json::from_str(&chat_text).unwrap();
+    let body = assert_standard_error_envelope(&chat_text);
     assert_eq!(body["error"]["code"], "all_providers_unavailable", "{summary}");
 
     super::runtime_http::stop_server().await.unwrap();
@@ -4891,7 +5223,7 @@ async fn protocol_mismatch_error_names_the_required_endpoint() {
         "non_stream=(status={status}, body={text}) stream=(status={stream_status}, type={stream_content_type}, body={stream_text})"
     );
     assert_eq!(status, 502, "{summary}");
-    let body: Value = serde_json::from_str(&text).unwrap();
+    let body = assert_standard_error_envelope(&text);
     assert_eq!(
         body["error"]["code"], "all_providers_unavailable",
         "{summary}"
@@ -4902,16 +5234,21 @@ async fn protocol_mismatch_error_names_the_required_endpoint() {
         "the 502 must name the endpoint the requested model is configured for: {summary}"
     );
 
-    assert_eq!(stream_status, 200, "{summary}");
+    assert_eq!(stream_status, 502, "{summary}");
     assert!(
-        stream_content_type.contains("text/event-stream"),
+        stream_content_type.contains("application/json"),
         "{summary}"
     );
     assert!(
-        stream_text.contains("/chat/completions"),
+        !stream_content_type.contains("text/event-stream"),
+        "{summary}"
+    );
+    let stream_body = assert_standard_error_envelope(&stream_text);
+    let stream_message = stream_body["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        stream_message.contains("/chat/completions"),
         "the streaming error must carry the same endpoint hint: {summary}"
     );
-    assert!(stream_text.contains("data: [DONE]"), "{summary}");
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
@@ -5063,7 +5400,7 @@ async fn mapping_with_explicit_null_protocol_inherits_the_provider_protocol() {
         chat_status, 502,
         "the inherited responses protocol cannot serve a chat request: {summary}"
     );
-    let body: Value = serde_json::from_str(&chat_text).unwrap();
+    let body = assert_standard_error_envelope(&chat_text);
     assert_eq!(
         body["error"]["code"], "all_providers_unavailable",
         "body={chat_text}"
@@ -5233,11 +5570,11 @@ async fn protocol_mismatch_never_counts_as_failure_or_auto_disables() {
             Some(json!({"model": "mimo-v2.5", "input": "hi"})),
         )
         .await;
-        let body: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(
             status, 502,
             "mismatched attempt {attempt} must stay all-unavailable: {text}"
         );
+        let body = assert_standard_error_envelope(&text);
         assert_eq!(
             body["error"]["code"], "all_providers_unavailable",
             "attempt {attempt}: {text}"
@@ -6253,14 +6590,12 @@ async fn single_candidate_429_without_retry_header_non_streaming_fails_fast_with
     );
 }
 
-/// AC-011 / REQ-001 RED (Step 1 scope): a single serviceable streaming
-/// candidate whose upstream fails retryably before any byte must be contacted
-/// exactly once and must not enter the retry queue. The terminal pre-stream
-/// transport shape (502 + `application/json` + standard envelope) is owned by
-/// Step 2/REQ-003 and is deliberately not asserted here, nor is the presence or
-/// absence of `data: [DONE]`. `attempt_streaming_text` still drives the real
-/// streaming path and drains the response, proving the single attempt does not
-/// hang.
+/// AC-011 / REQ-001 + AC-005 / REQ-003: a single serviceable streaming
+/// candidate whose upstream fails retryably before any byte is contacted
+/// exactly once and the terminal transport is HTTP 502 + `application/json`
+/// with the standard envelope, never HTTP 200 SSE. `attempt_streaming_text`
+/// drives the real streaming path and drains the response, proving the single
+/// attempt does not hang.
 #[tokio::test]
 async fn single_candidate_streaming_retryable_failure_attempts_upstream_once() {
     let _home = temp_home("single-candidate-streaming-fast-fail");
@@ -6278,13 +6613,29 @@ async fn single_candidate_streaming_retryable_failure_attempts_upstream_once() {
     let mut config = FusionConfig::default();
     config.providers.push(provider.clone());
 
-    let _text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
 
     assert_eq!(
         upstream_requests.load(Ordering::SeqCst),
         1,
         "a single streaming candidate must be attempted exactly once with no backoff retry"
     );
+    let (status_line, body) = raw_http_status_and_body(&text);
+    assert!(
+        status_line.starts_with("HTTP/1.1 502"),
+        "a pre-stream failure must answer HTTP 502: {text}"
+    );
+    assert!(
+        text.to_ascii_lowercase()
+            .contains("content-type: application/json"),
+        "content-type must be application/json: {text}"
+    );
+    assert!(
+        !text.contains("text/event-stream"),
+        "a pre-stream failure must not answer SSE: {text}"
+    );
+    let envelope = assert_standard_error_envelope(&body);
+    assert_eq!(envelope["error"]["code"], "all_providers_unavailable");
 }
 
 // ---------------------------------------------------------------------------
@@ -7501,8 +7852,9 @@ async fn usage_log_records_failure_when_no_upstream_can_serve() {
     drop(home);
 }
 
-/// AC-002 / AC-009 / REQ-002 / REQ-008: streaming forwards the upstream bytes
-/// verbatim, captures usage, and a 200 SSE all-unavailable event is failure.
+/// AC-002 / AC-009 / REQ-002 / REQ-003 / REQ-008: streaming forwards the
+/// upstream bytes verbatim and captures usage; a no-candidate streaming failure
+/// is HTTP 502 JSON (not HTTP 200 SSE) and still records one failure row.
 #[tokio::test]
 async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavailable() {
     let home = temp_home("usage-forward-stream");
@@ -7546,8 +7898,8 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
     let expected = compute_cost(&priced("remote-a", 1.0, 0.5, 2.0, 4.0), &tokens(11, 3, 0, 7));
     assert!((record.amount.expect("priced") - expected).abs() < 1e-12);
 
-    // Streaming with no serving upstream: HTTP 200 SSE error event is failure.
-    let (empty_status, _ct, empty_text) = call_fusion(
+    // Streaming with no serving upstream: HTTP 502 JSON envelope is failure.
+    let (empty_status, empty_ct, empty_text) = call_fusion(
         port,
         "POST",
         "/v1/chat/completions",
@@ -7555,8 +7907,16 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
         Some(json!({"model": "unknown-local", "stream": true})),
     )
     .await;
-    assert_eq!(empty_status, 200);
-    assert!(empty_text.contains("all_providers_unavailable"));
+    assert_eq!(
+        empty_status, 502,
+        "a pre-stream streaming failure must answer HTTP 502: {empty_text}"
+    );
+    assert!(
+        empty_ct.contains("application/json"),
+        "content-type must be application/json: {empty_ct}"
+    );
+    let empty_body = assert_standard_error_envelope(&empty_text);
+    assert_eq!(empty_body["error"]["code"], "all_providers_unavailable");
 
     let records = wait_for_usage_logs(2).await;
     assert_eq!(records.len(), 2);
@@ -7566,7 +7926,7 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
         .expect("streaming all-unavailable row");
     assert_eq!(
         failure.status, 502,
-        "the log records the gateway failure status, not the SSE transport's 200"
+        "the log records the gateway failure status, not the transport status"
     );
     assert_eq!(failure.total_tokens, 0);
     assert_eq!(failure.amount.unwrap_or(0.0), 0.0);
@@ -7575,8 +7935,9 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
     drop(home);
 }
 
-/// AC-009 / REQ-008: a streaming all-unavailable failure records the real
-/// upstream HTTP status in the request log, never the caller-facing SSE 200.
+/// AC-009 / REQ-003 / REQ-008: a streaming all-unavailable failure answers HTTP
+/// 502 JSON but still records the real upstream HTTP status in the request log,
+/// never the transport status.
 #[tokio::test]
 async fn streaming_all_unavailable_logs_real_upstream_status() {
     let home = temp_home("usage-forward-stream-status");
@@ -7595,7 +7956,7 @@ async fn streaming_all_unavailable_logs_real_upstream_status() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, content_type, text) = call_fusion(
         port,
         "POST",
         "/v1/chat/completions",
@@ -7603,8 +7964,16 @@ async fn streaming_all_unavailable_logs_real_upstream_status() {
         Some(json!({"model": "local-a", "stream": true})),
     )
     .await;
-    assert_eq!(status, 200, "streaming all-unavailable still answers HTTP 200 SSE");
-    assert!(text.contains("all_providers_unavailable"), "body: {text}");
+    assert_eq!(
+        status, 502,
+        "streaming all-unavailable must answer HTTP 502: {text}"
+    );
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
 
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1);
@@ -7612,15 +7981,16 @@ async fn streaming_all_unavailable_logs_real_upstream_status() {
     assert_eq!(record.result, UsageResult::Failure);
     assert_eq!(
         record.status, 503,
-        "the log must show the real upstream failure status, not the SSE 200"
+        "the log must show the real upstream failure status, not the transport status"
     );
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
 }
 
-/// AC-009 / REQ-008: a streaming all-unavailable caused by upstream connection
-/// errors records status 0, never the SSE transport's 200.
+/// AC-009 / REQ-003 / REQ-008: a streaming all-unavailable caused by upstream
+/// connection errors answers HTTP 502 JSON but records status 0, never the
+/// transport status.
 #[tokio::test(start_paused = true)]
 async fn streaming_all_unavailable_network_error_logs_zero_status() {
     let _home = temp_home("usage-forward-stream-network");
@@ -7646,7 +8016,23 @@ async fn streaming_all_unavailable_network_error_logs_zero_status() {
     drop(server);
     let mut out = Vec::new();
     client.read_to_end(&mut out).await.expect("read relay stream");
-    assert!(String::from_utf8_lossy(&out).contains("all_providers_unavailable"));
+    let text = String::from_utf8_lossy(&out).into_owned();
+    let (status_line, body) = raw_http_status_and_body(&text);
+    assert!(
+        status_line.starts_with("HTTP/1.1 502"),
+        "a pre-stream failure must answer HTTP 502: {text}"
+    );
+    assert!(
+        text.to_ascii_lowercase()
+            .contains("content-type: application/json"),
+        "content-type must be application/json: {text}"
+    );
+    assert!(
+        !text.contains("text/event-stream"),
+        "a pre-stream failure must not answer SSE: {text}"
+    );
+    let envelope = assert_standard_error_envelope(&body);
+    assert_eq!(envelope["error"]["code"], "all_providers_unavailable");
     assert_eq!(
         capture.status, 0,
         "a network failure has no HTTP status and must not be logged as 200"

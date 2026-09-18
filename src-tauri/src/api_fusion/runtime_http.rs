@@ -360,14 +360,22 @@ pub(in crate::api_fusion) fn models_payload(config: &FusionConfig) -> Value {
     json!({ "object": "list", "data": data })
 }
 
-fn all_unavailable_payload(message: impl Into<String>) -> Value {
+/// The one gateway-generated error envelope (REQ-006/AC-010): `error.message`,
+/// `error.type` and `error.code` are always present and non-empty, and
+/// `error.param` always exists as `null`.
+fn error_envelope(message: impl Into<String>, error_type: &str, code: &str) -> Value {
     json!({
         "error": {
             "message": message.into(),
-            "type": "server_error",
-            "code": "all_providers_unavailable",
+            "type": error_type,
+            "code": code,
+            "param": null,
         }
     })
+}
+
+fn all_unavailable_payload(message: impl Into<String>) -> Value {
+    error_envelope(message, "server_error", "all_providers_unavailable")
 }
 
 fn no_candidate_message(
@@ -830,8 +838,8 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     let mut capture = ForwardCapture::default();
     // Real failure status to persist for a terminal all-unavailable outcome: the
     // last upstream HTTP status (0 for a network error). The caller-facing
-    // streaming failure is an SSE event over HTTP 200, which must never be the
-    // status recorded in the request log.
+    // pre-stream failure is a 502 JSON transport, which must never replace that
+    // real status in the request log.
     let mut last_failure_status: Option<u16> = None;
     loop {
         let (mut candidate, retry_index) = if let Some(provider) = initial.next() {
@@ -985,19 +993,13 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     }
 
     health.apply(config);
-    let payload = all_unavailable_payload(all_unavailable_message(&failures));
-    let sse = format!(
-        "data: {}\n\ndata: [DONE]\n\n",
-        serde_json::to_string(&payload).unwrap_or_default()
-    );
-    write_stream_headers(writer, 200).await?;
-    writer
-        .write_all(sse.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    // HTTP 200 with an SSE error event is still a failure: never a success, and
-    // the log records the real upstream failure status (502 when no upstream
-    // HTTP status was determinable) rather than the SSE transport's 200.
+    // Nothing was written downstream yet, so the failure is a plain HTTP 502
+    // JSON response rather than an SSE error event over HTTP 200 (REQ-003).
+    let response = json_response(502, all_unavailable_payload(all_unavailable_message(&failures)));
+    write_response(writer, response).await?;
+    // The transport is 502, but the log records the real upstream failure status
+    // (502 when no upstream HTTP status was determinable) rather than the
+    // transport's status.
     capture.status = last_failure_status.unwrap_or(502);
     capture.usage = None;
     capture.all_unavailable = true;
@@ -1035,7 +1037,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
         Err(error) => {
             let response = json_response(
                 400,
-                json!({ "error": { "message": error, "type": "invalid_request_error" } }),
+                error_envelope(error, "invalid_request_error", "invalid_request"),
             );
             let _ = stream.write_all(&http_response_bytes(response)).await;
             return Ok(());
@@ -1049,7 +1051,10 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
     let mut config = match read_config() {
         Ok(config) => config,
         Err(error) => {
-            let response = json_response(500, json!({ "error": { "message": error } }));
+            let response = json_response(
+                500,
+                error_envelope(error, "server_error", "config_error"),
+            );
             let _ = stream.write_all(&http_response_bytes(response)).await;
             return Ok(());
         }
@@ -1059,13 +1064,11 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
     let Some(path) = canonical_api_path(raw_path) else {
         let response = json_response(
             404,
-            json!({
-                "error": {
-                    "message": format!("unknown path: {raw_path}"),
-                    "type": "invalid_request_error",
-                    "code": "not_found",
-                }
-            }),
+            error_envelope(
+                format!("unknown path: {raw_path}"),
+                "invalid_request_error",
+                "not_found",
+            ),
         );
         stream
             .write_all(&http_response_bytes(response))
@@ -1078,13 +1081,11 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
     if !is_authorized(&request, &config) {
         let response = json_response(
             401,
-            json!({
-                "error": {
-                    "message": "invalid or missing local API key",
-                    "type": "invalid_request_error",
-                    "code": "invalid_api_key",
-                }
-            }),
+            error_envelope(
+                "invalid or missing local API key",
+                "invalid_request_error",
+                "invalid_api_key",
+            ),
         );
         stream
             .write_all(&http_response_bytes(response))
@@ -1097,7 +1098,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
         if request.method != "GET" {
             let response = json_response(
                 404,
-                json!({ "error": { "message": "not found", "type": "invalid_request_error" } }),
+                error_envelope("not found", "invalid_request_error", "not_found"),
             );
             stream
                 .write_all(&http_response_bytes(response))
@@ -1116,7 +1117,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
     if request.method != "POST" {
         let response = json_response(
             404,
-            json!({ "error": { "message": "not found", "type": "invalid_request_error" } }),
+            error_envelope("not found", "invalid_request_error", "not_found"),
         );
         stream
             .write_all(&http_response_bytes(response))
@@ -1130,7 +1131,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
         Err(error) => {
             let response = json_response(
                 400,
-                json!({ "error": { "message": error.to_string(), "type": "invalid_request_error" } }),
+                error_envelope(error.to_string(), "invalid_request_error", "invalid_request"),
             );
             stream
                 .write_all(&http_response_bytes(response))
@@ -1156,27 +1157,14 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
             .collect();
     if candidates.is_empty() {
         let message = no_candidate_message(&config, requested.as_deref(), protocol);
-        // Streaming answers HTTP 200 + an SSE error event, but the log always
-        // records the gateway failure status, never the transport's 200.
+        // Streaming and non-streaming alike answer HTTP 502 + JSON before any
+        // byte is written; the log always records the gateway failure status.
         let status = 502;
-        if wants_stream {
-            let payload = all_unavailable_payload(message);
-            let sse = format!(
-                "data: {}\n\ndata: [DONE]\n\n",
-                serde_json::to_string(&payload).unwrap_or_default()
-            );
-            write_stream_headers(&mut stream, 200).await?;
-            stream
-                .write_all(sse.as_bytes())
-                .await
-                .map_err(|e| e.to_string())?;
-        } else {
-            let response = json_response(502, all_unavailable_payload(message));
-            stream
-                .write_all(&http_response_bytes(response))
-                .await
-                .map_err(|e| e.to_string())?;
-        }
+        let response = json_response(502, all_unavailable_payload(message));
+        stream
+            .write_all(&http_response_bytes(response))
+            .await
+            .map_err(|e| e.to_string())?;
         // A request that entered the normalized flow but had no serving
         // upstream is a failure (REQ-007/REQ-008), never a silent no-log.
         record_usage_log(
