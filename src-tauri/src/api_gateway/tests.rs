@@ -7437,6 +7437,7 @@ fn gateway_config_accepts_older_json_and_round_trips_usage_fields() {
                 cache_read: 0.5,
                 cache_write: 1.0,
                 output: 2.0,
+                days: None,
             },
             OffPeakPrice {
                 start_time: "12:00".to_string(),
@@ -7445,6 +7446,7 @@ fn gateway_config_accepts_older_json_and_round_trips_usage_fields() {
                 cache_read: 0.8,
                 cache_write: 1.5,
                 output: 3.0,
+                days: None,
             },
         ],
         off_peak: None,
@@ -7633,6 +7635,7 @@ fn compute_cost_at_time_applies_off_peak_pricing_when_active() {
             cache_read: 0.5,
             cache_write: 1.0,
             output: 2.0,
+            days: None,
         }),
     };
 
@@ -7683,6 +7686,7 @@ fn compute_cost_at_time_applies_multiple_off_peak_pricing_windows() {
                 cache_read: 0.5,
                 cache_write: 1.0,
                 output: 2.0,
+                days: None,
             },
             // Window 2: Lunch valley 12:00 - 14:00
             OffPeakPrice {
@@ -7692,6 +7696,7 @@ fn compute_cost_at_time_applies_multiple_off_peak_pricing_windows() {
                 cache_read: 1.0,
                 cache_write: 2.0,
                 output: 4.0,
+                days: None,
             },
         ],
         off_peak: None,
@@ -7710,6 +7715,415 @@ fn compute_cost_at_time_applies_multiple_off_peak_pricing_windows() {
     // 10:00 UTC+8 (outside both windows -> standard price: 4.0 + 2.0 + 4.0 + 8.0 = 18.0)
     let std_cost = compute_cost_at_time(&multi_off_peak_price, &test_tokens, make_utc8_ms(10, 0));
     assert!((std_cost - 18.0).abs() < 1e-9, "expected $18.00, got {std_cost}");
+}
+
+// ---------------------------------------------------------------------------
+// 20260918-provider-templates Step 1: weekday-scoped off-peak windows
+//
+// These are the RED behavior tests for REQ-008 / AC-012. They exercise the
+// public pricing boundary (`ModelPrice` / `OffPeakPrice.days` and
+// `compute_cost_at_time`), never the matching internals.
+// ---------------------------------------------------------------------------
+
+/// Real UTC milliseconds for a wall-clock instant in UTC+8.
+fn utc8_timestamp_ms(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> i64 {
+    use chrono::TimeZone;
+    let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+    tz.with_ymd_and_hms(year, month, day, hour, minute, 0)
+        .unwrap()
+        .timestamp_millis()
+}
+
+/// Guard the fixtures against calendar drift: assert the timestamp really lands
+/// on the intended Sunday-based weekday (0 = Sunday .. 6 = Saturday).
+fn assert_utc8_weekday(timestamp_ms: i64, expected_sunday_based: u32) {
+    use chrono::Datelike;
+    let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+    let dt = chrono::DateTime::from_timestamp_millis(timestamp_ms)
+        .unwrap()
+        .with_timezone(&tz);
+    assert_eq!(dt.weekday().num_days_from_sunday(), expected_sunday_based);
+}
+
+/// One-mega-token in every tier: the amount equals the sum of the four prices.
+fn one_mega_each() -> UsageTokens {
+    tokens(1_000_000, 1_000_000, 1_000_000, 1_000_000)
+}
+
+/// AC-012 fixture: a workday window [09:00,12:00) days Mon-Fri and a weekend
+/// window [09:00,12:00) days Sat/Sun, with distinct off-peak tiers and a
+/// standard (peak) tier. The identical clock range makes the weekday the only
+/// discriminator. Hand-computed sums for one mega token each:
+/// standard = 4.0+2.0+4.0+8.0 = 18.0; workday = 1.0+0.5+1.0+2.0 = 4.5;
+/// weekend = 1.5+0.75+1.5+3.0 = 6.75.
+fn weekday_and_weekend_off_peak_price() -> ModelPrice {
+    ModelPrice {
+        provider_id: None,
+        upstream_model: "deepseek-chat".to_string(),
+        input: 4.0,
+        cache_read: 2.0,
+        cache_write: 4.0,
+        output: 8.0,
+        off_peaks: vec![
+            OffPeakPrice {
+                start_time: "09:00".to_string(),
+                end_time: "12:00".to_string(),
+                input: 1.0,
+                cache_read: 0.5,
+                cache_write: 1.0,
+                output: 2.0,
+                days: Some(vec![1, 2, 3, 4, 5]),
+            },
+            OffPeakPrice {
+                start_time: "09:00".to_string(),
+                end_time: "12:00".to_string(),
+                input: 1.5,
+                cache_read: 0.75,
+                cache_write: 1.5,
+                output: 3.0,
+                days: Some(vec![0, 6]),
+            },
+        ],
+        off_peak: None,
+    }
+}
+
+/// AC-012: Saturday 10:00 must hit the weekend window even though the earlier
+/// workday window covers the same clock range; without weekday matching the
+/// workday window would win and price the weekdays' cheaper tier.
+#[test]
+fn compute_cost_at_time_off_peak_days_saturday_hits_weekend_window() {
+    let price = weekday_and_weekend_off_peak_price();
+    let saturday_10 = utc8_timestamp_ms(2026, 9, 19, 10, 0);
+    assert_utc8_weekday(saturday_10, 6);
+
+    let cost = compute_cost_at_time(&price, &one_mega_each(), saturday_10);
+    assert!(
+        (cost - 6.75).abs() < 1e-9,
+        "Saturday 10:00 should use the weekend off-peak tier ($6.75), got {cost}"
+    );
+}
+
+/// AC-012: Wednesday 10:00 must hit the workday window, not the weekend one.
+#[test]
+fn compute_cost_at_time_off_peak_days_wednesday_hits_weekday_window() {
+    let price = weekday_and_weekend_off_peak_price();
+    let wednesday_10 = utc8_timestamp_ms(2026, 9, 16, 10, 0);
+    assert_utc8_weekday(wednesday_10, 3);
+
+    let cost = compute_cost_at_time(&price, &one_mega_each(), wednesday_10);
+    assert!(
+        (cost - 4.5).abs() < 1e-9,
+        "Wednesday 10:00 should use the workday off-peak tier ($4.50), got {cost}"
+    );
+}
+
+/// AC-012: Wednesday 13:00 is outside both windows and must use the standard tier.
+#[test]
+fn compute_cost_at_time_off_peak_days_wednesday_afternoon_uses_standard_price() {
+    let price = weekday_and_weekend_off_peak_price();
+    let wednesday_13 = utc8_timestamp_ms(2026, 9, 16, 13, 0);
+    assert_utc8_weekday(wednesday_13, 3);
+
+    let cost = compute_cost_at_time(&price, &one_mega_each(), wednesday_13);
+    assert!(
+        (cost - 18.0).abs() < 1e-9,
+        "Wednesday 13:00 should use the standard tier ($18.00), got {cost}"
+    );
+}
+
+/// REQ-008 regression: `days: None` and `days: Some(vec![])` keep the exact
+/// pre-extension [start,end) result and both mean every day; the empty set
+/// serializes like an absent field.
+fn legacy_off_peak_price(days: Option<Vec<u8>>) -> ModelPrice {
+    ModelPrice {
+        provider_id: None,
+        upstream_model: "legacy-model".to_string(),
+        input: 4.0,
+        cache_read: 2.0,
+        cache_write: 4.0,
+        output: 8.0,
+        off_peaks: vec![OffPeakPrice {
+            start_time: "00:30".to_string(),
+            end_time: "08:30".to_string(),
+            input: 1.0,
+            cache_read: 0.5,
+            cache_write: 1.0,
+            output: 2.0,
+            days,
+        }],
+        off_peak: None,
+    }
+}
+
+#[test]
+fn compute_cost_at_time_off_peak_days_absent_reproduces_legacy_result() {
+    let with_none = legacy_off_peak_price(None);
+    let with_empty = legacy_off_peak_price(Some(Vec::new()));
+    let test_tokens = one_mega_each();
+
+    let off_peak_ms = utc8_timestamp_ms(2026, 9, 18, 4, 0);
+    let peak_ms = utc8_timestamp_ms(2026, 9, 18, 14, 0);
+
+    let none_off_peak = compute_cost_at_time(&with_none, &test_tokens, off_peak_ms);
+    assert!(
+        (none_off_peak - 4.5).abs() < 1e-9,
+        "legacy window at 04:00 should stay $4.50, got {none_off_peak}"
+    );
+    let none_peak = compute_cost_at_time(&with_none, &test_tokens, peak_ms);
+    assert!(
+        (none_peak - 18.0).abs() < 1e-9,
+        "legacy window at 14:00 should stay $18.00, got {none_peak}"
+    );
+
+    assert_eq!(
+        compute_cost_at_time(&with_empty, &test_tokens, off_peak_ms),
+        none_off_peak,
+        "an empty weekday set must behave exactly like an absent one"
+    );
+    assert_eq!(
+        compute_cost_at_time(&with_empty, &test_tokens, peak_ms),
+        none_peak,
+        "an empty weekday set must behave exactly like an absent one"
+    );
+
+    let value = serde_json::to_value(&with_empty).unwrap();
+    assert!(
+        value["off_peaks"][0].get("days").is_none(),
+        "an empty weekday set must serialize as an absent field, got {value}"
+    );
+}
+
+/// REQ-008: with identical windows, the first `effective_off_peaks()` entry that
+/// matches wins. Window 1 is Sunday-only, window 2 is every day.
+#[test]
+fn compute_cost_at_time_off_peak_days_first_matching_window_wins() {
+    let price = ModelPrice {
+        provider_id: None,
+        upstream_model: "precedence-model".to_string(),
+        input: 4.0,
+        cache_read: 2.0,
+        cache_write: 4.0,
+        output: 8.0,
+        off_peaks: vec![
+            OffPeakPrice {
+                start_time: "09:00".to_string(),
+                end_time: "12:00".to_string(),
+                input: 1.0,
+                cache_read: 0.5,
+                cache_write: 1.0,
+                output: 2.0,
+                days: Some(vec![0]),
+            },
+            OffPeakPrice {
+                start_time: "09:00".to_string(),
+                end_time: "12:00".to_string(),
+                input: 1.5,
+                cache_read: 0.75,
+                cache_write: 1.5,
+                output: 3.0,
+                days: Some(vec![]),
+            },
+        ],
+        off_peak: None,
+    };
+    let test_tokens = one_mega_each();
+
+    let sunday_10 = utc8_timestamp_ms(2026, 9, 20, 10, 0);
+    assert_utc8_weekday(sunday_10, 0);
+    let monday_10 = utc8_timestamp_ms(2026, 9, 21, 10, 0);
+    assert_utc8_weekday(monday_10, 1);
+
+    let sunday_cost = compute_cost_at_time(&price, &test_tokens, sunday_10);
+    assert!(
+        (sunday_cost - 4.5).abs() < 1e-9,
+        "Sunday should take the first (Sunday-only) window, got {sunday_cost}"
+    );
+    let monday_cost = compute_cost_at_time(&price, &test_tokens, monday_10);
+    assert!(
+        (monday_cost - 6.75).abs() < 1e-9,
+        "Monday should fall through to the every-day window, got {monday_cost}"
+    );
+}
+
+/// REQ-008 time boundary: an overnight window scoped to `days=[5]` (Friday)
+/// matches the request's own UTC+8 weekday, so Friday 23:00 hits but the
+/// Saturday 01:00 continuation does not.
+fn overnight_off_peak_price(days: Option<Vec<u8>>) -> ModelPrice {
+    ModelPrice {
+        provider_id: None,
+        upstream_model: "overnight-model".to_string(),
+        input: 4.0,
+        cache_read: 2.0,
+        cache_write: 4.0,
+        output: 8.0,
+        off_peaks: vec![OffPeakPrice {
+            start_time: "22:00".to_string(),
+            end_time: "02:00".to_string(),
+            input: 1.0,
+            cache_read: 0.5,
+            cache_write: 1.0,
+            output: 2.0,
+            days,
+        }],
+        off_peak: None,
+    }
+}
+
+#[test]
+fn compute_cost_at_time_off_peak_days_overnight_matches_request_weekday() {
+    let price = overnight_off_peak_price(Some(vec![5]));
+    let test_tokens = one_mega_each();
+
+    let friday_23 = utc8_timestamp_ms(2026, 9, 18, 23, 0);
+    assert_utc8_weekday(friday_23, 5);
+    let saturday_01 = utc8_timestamp_ms(2026, 9, 19, 1, 0);
+    assert_utc8_weekday(saturday_01, 6);
+    let friday_noon = utc8_timestamp_ms(2026, 9, 18, 12, 0);
+    assert_utc8_weekday(friday_noon, 5);
+
+    let friday_night = compute_cost_at_time(&price, &test_tokens, friday_23);
+    assert!(
+        (friday_night - 4.5).abs() < 1e-9,
+        "Friday 23:00 should hit the Friday overnight window, got {friday_night}"
+    );
+    let saturday_early = compute_cost_at_time(&price, &test_tokens, saturday_01);
+    assert!(
+        (saturday_early - 18.0).abs() < 1e-9,
+        "Saturday 01:00 is the request's own Saturday and must not hit a Friday window, got {saturday_early}"
+    );
+    let friday_day = compute_cost_at_time(&price, &test_tokens, friday_noon);
+    assert!(
+        (friday_day - 18.0).abs() < 1e-9,
+        "Friday noon is outside 22:00-02:00, got {friday_day}"
+    );
+}
+
+#[test]
+fn compute_cost_at_time_off_peak_days_zero_duration_never_matches() {
+    let price = ModelPrice {
+        provider_id: None,
+        upstream_model: "zero-duration-model".to_string(),
+        input: 4.0,
+        cache_read: 2.0,
+        cache_write: 4.0,
+        output: 8.0,
+        off_peaks: vec![OffPeakPrice {
+            start_time: "08:00".to_string(),
+            end_time: "08:00".to_string(),
+            input: 1.0,
+            cache_read: 0.5,
+            cache_write: 1.0,
+            output: 2.0,
+            days: Some(vec![6]),
+        }],
+        off_peak: None,
+    };
+
+    let saturday_08 = utc8_timestamp_ms(2026, 9, 19, 8, 0);
+    assert_utc8_weekday(saturday_08, 6);
+
+    let cost = compute_cost_at_time(&price, &one_mega_each(), saturday_08);
+    assert!(
+        (cost - 18.0).abs() < 1e-9,
+        "start == end must stay a never-matching zero-duration window, got {cost}"
+    );
+}
+
+/// REQ-008 numeric boundary: writing `[5,1,1,9]` round-trips as `[1,5]`
+/// (deduplicated, sorted, out-of-range dropped).
+#[test]
+fn off_peak_days_round_trip_normalizes_sorts_and_drops_out_of_range() {
+    let price = ModelPrice {
+        provider_id: None,
+        upstream_model: "normalized-model".to_string(),
+        input: 4.0,
+        cache_read: 2.0,
+        cache_write: 4.0,
+        output: 8.0,
+        off_peaks: vec![OffPeakPrice {
+            start_time: "09:00".to_string(),
+            end_time: "12:00".to_string(),
+            input: 1.0,
+            cache_read: 0.5,
+            cache_write: 1.0,
+            output: 2.0,
+            days: Some(vec![5, 1, 1, 9]),
+        }],
+        off_peak: None,
+    };
+
+    let value = serde_json::to_value(&price).unwrap();
+    assert_eq!(
+        value["off_peaks"][0]["days"].to_string(),
+        "[1,5]",
+        "serialized weekday set must be deduplicated, sorted and in range"
+    );
+
+    let decoded: ModelPrice = serde_json::from_value(value).unwrap();
+    assert_eq!(decoded.off_peaks[0].days, Some(vec![1u8, 5u8]));
+
+    // The normalized set still matches Monday and excludes Saturday.
+    let test_tokens = one_mega_each();
+    let monday_10 = utc8_timestamp_ms(2026, 9, 21, 10, 0);
+    assert_utc8_weekday(monday_10, 1);
+    let saturday_10 = utc8_timestamp_ms(2026, 9, 19, 10, 0);
+    assert_utc8_weekday(saturday_10, 6);
+
+    let monday_cost = compute_cost_at_time(&decoded, &test_tokens, monday_10);
+    assert!((monday_cost - 4.5).abs() < 1e-9, "Monday should match [1,5], got {monday_cost}");
+    let saturday_cost = compute_cost_at_time(&decoded, &test_tokens, saturday_10);
+    assert!((saturday_cost - 18.0).abs() < 1e-9, "Saturday is outside [1,5], got {saturday_cost}");
+}
+
+/// REQ-008 numeric boundary: an all-invalid weekday set becomes `None`, omits
+/// the serialized field and applies the window every day.
+#[test]
+fn off_peak_days_all_invalid_become_none_and_apply_every_day() {
+    let price = ModelPrice {
+        provider_id: None,
+        upstream_model: "invalid-days-model".to_string(),
+        input: 4.0,
+        cache_read: 2.0,
+        cache_write: 4.0,
+        output: 8.0,
+        off_peaks: vec![OffPeakPrice {
+            start_time: "00:00".to_string(),
+            end_time: "08:00".to_string(),
+            input: 1.0,
+            cache_read: 0.5,
+            cache_write: 1.0,
+            output: 2.0,
+            days: Some(vec![7, 9]),
+        }],
+        off_peak: None,
+    };
+
+    let value = serde_json::to_value(&price).unwrap();
+    assert!(
+        value["off_peaks"][0].get("days").is_none(),
+        "an all-invalid weekday set must serialize as an absent field, got {value}"
+    );
+
+    let decoded: ModelPrice = serde_json::from_value(value).unwrap();
+    assert_eq!(decoded.off_peaks[0].days, None);
+
+    let test_tokens = one_mega_each();
+    let saturday_03 = utc8_timestamp_ms(2026, 9, 19, 3, 0);
+    assert_utc8_weekday(saturday_03, 6);
+    let monday_03 = utc8_timestamp_ms(2026, 9, 21, 3, 0);
+    assert_utc8_weekday(monday_03, 1);
+
+    let saturday_cost = compute_cost_at_time(&decoded, &test_tokens, saturday_03);
+    assert!(
+        (saturday_cost - 4.5).abs() < 1e-9,
+        "a None weekday set applies every day (Saturday), got {saturday_cost}"
+    );
+    let monday_cost = compute_cost_at_time(&decoded, &test_tokens, monday_03);
+    assert!(
+        (monday_cost - 4.5).abs() < 1e-9,
+        "a None weekday set applies every day (Monday), got {monday_cost}"
+    );
 }
 
 /// AC-012 / REQ-010: only 1-365 is accepted; invalid values are rejected and
