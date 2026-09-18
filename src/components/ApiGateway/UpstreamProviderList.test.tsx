@@ -224,4 +224,49 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
     expect(screen.getByTestId("api-gateway-status-badge-p1")).toHaveTextContent("已启用");
     expect(screen.getByTestId("api-gateway-status-badge-p2")).toHaveTextContent("已禁用");
   });
+
+  it("提供 templateSection 时渲染在服务商列表上方，不提供时行为不变", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({ id: "p1", name: "Provider 1", enabled: true }),
+    ];
+
+    const { unmount } = renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onReenable={vi.fn()}
+        onAdd={vi.fn()}
+        templateSection={<div data-testid="api-gateway-template-slot">Templates</div>}
+      />,
+    );
+
+    const slot = screen.getByTestId("api-gateway-template-slot");
+    const providerCard = screen.getByTestId("api-gateway-provider-p1");
+    expect(slot).toBeInTheDocument();
+    expect(slot).toHaveTextContent("Templates");
+    // 插槽必须出现在服务商卡片之前（列表上方）
+    expect(
+      slot.compareDocumentPosition(providerCard) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // 不传 templateSection 时既有渲染不受影响，也不出现插槽
+    unmount();
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onReenable={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId("api-gateway-template-slot")).not.toBeInTheDocument();
+    expect(screen.getByText("Provider 1")).toBeInTheDocument();
+  });
 });

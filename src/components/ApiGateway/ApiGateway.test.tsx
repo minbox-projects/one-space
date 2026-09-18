@@ -7,6 +7,9 @@ import {
   formatGatewayTimestamp,
   maskSecret,
   type GatewayConfig,
+  type GatewayProviderTemplate,
+  type GatewayProviderTemplateModel,
+  type GatewayProviderTemplateView,
   type GatewayStatus,
   type GatewayTerminalTarget,
   type GatewayUpstreamProvider,
@@ -1429,5 +1432,196 @@ describe("ApiGateway", () => {
     expect(defaultNode).not.toBeUndefined();
     expect(within(defaultNode!).getByText(/Default/)).toBeInTheDocument();
     expect(within(dialog).queryByText("rb")).not.toBeInTheDocument();
+  });
+
+  function makeTemplateModel(
+    overrides: Partial<GatewayProviderTemplateModel> = {},
+  ): GatewayProviderTemplateModel {
+    return {
+      upstream_model: "deepseek-chat",
+      display_name: "DeepSeek Chat",
+      protocol: "chat_completions",
+      input: 1.11,
+      cache_read: 2.22,
+      cache_write: 3.33,
+      output: 4.44,
+      off_peaks: [],
+      reasoning_efforts: [],
+      ...overrides,
+    };
+  }
+
+  function makeTemplate(
+    overrides: Partial<GatewayProviderTemplate> = {},
+  ): GatewayProviderTemplate {
+    return {
+      id: "t1",
+      name: "OpenCode Zen",
+      description: "Curated OpenCode models",
+      base_url: "https://opencode.ai/zen/v1",
+      protocol: "responses",
+      source: "snapshot:models.dev",
+      snapshot_version: "2026.09.18",
+      models: [makeTemplateModel()],
+      ...overrides,
+    };
+  }
+
+  function makeTemplateView(
+    overrides: Partial<GatewayProviderTemplateView> = {},
+  ): GatewayProviderTemplateView {
+    return {
+      template: makeTemplate(),
+      synced_at: null,
+      source: "snapshot:models.dev",
+      from_snapshot: true,
+      ...overrides,
+    };
+  }
+
+  function mockStoreWithTemplates(
+    store: Store,
+    templates: GatewayProviderTemplateView[],
+    options: { syncedAt?: number } = {},
+  ) {
+    mockStore(store);
+    const read = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "api_gateway_provider_templates") {
+        return templates;
+      }
+      if (command === "api_gateway_sync_provider_template") {
+        const index = templates.findIndex(
+          (entry) => entry.template.id === args?.templateId,
+        );
+        const current = index >= 0 ? templates[index] : templates[0];
+        const updated: GatewayProviderTemplateView = {
+          ...current,
+          synced_at: options.syncedAt ?? 1_800_000_000,
+          from_snapshot: false,
+          source: "live:refreshed",
+        };
+        if (index >= 0) templates[index] = updated;
+        return updated;
+      }
+      if (command === "api_gateway_create_provider_from_template") {
+        const provider = makeProvider({
+          id: "p-new",
+          name: args?.name,
+          base_url: args?.baseUrl,
+          protocol: args?.protocol,
+          template_id: args?.templateId,
+          default_model: null,
+          mappings: [],
+        });
+        store.config = {
+          ...store.config,
+          providers: [...store.config.providers, provider],
+        };
+        return store.config;
+      }
+      return read(command, args);
+    });
+  }
+
+  it("loadsProviderTemplatesAndRendersTemplateArea", async () => {
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus(),
+      targets: [],
+    };
+    const templates = [
+      makeTemplateView({
+        template: makeTemplate({ id: "t1", name: "OpenCode Zen" }),
+      }),
+      makeTemplateView({
+        template: makeTemplate({
+          id: "t2",
+          name: "CommandCode",
+          description: "Official CommandCode models",
+        }),
+        synced_at: 1_700_000_000,
+        from_snapshot: false,
+        source: "snapshot:commandcode",
+      }),
+    ];
+    mockStoreWithTemplates(store, templates);
+
+    renderWithProviders(<ApiGateway />);
+
+    const region = await screen.findByTestId("api-gateway-provider-templates");
+    expect(region).toBeInTheDocument();
+    expect(screen.getByTestId("api-gateway-template-t1")).toBeInTheDocument();
+    expect(screen.getByTestId("api-gateway-template-t2")).toBeInTheDocument();
+  });
+
+  it("syncTemplateCallsCommandAndShowsSuccess", async () => {
+    const syncedAt = 1_800_000_000;
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus(),
+      targets: [],
+    };
+    const templates = [
+      makeTemplateView({ template: makeTemplate({ id: "t1" }), synced_at: null }),
+    ];
+    mockStoreWithTemplates(store, templates, { syncedAt });
+
+    renderWithProviders(<ApiGateway />);
+
+    const syncButton = await screen.findByTestId("api-gateway-template-sync-t1");
+    fireEvent.click(syncButton);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_sync_provider_template", {
+        templateId: "t1",
+      }),
+    );
+
+    // 同步成功后刷新出本次同步时间，且按钮恢复可用
+    expect(await screen.findByText(formatGatewayTimestamp(syncedAt)!)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId("api-gateway-template-sync-t1")).toBeEnabled(),
+    );
+  });
+
+  it("createFromTemplateOpensNewProviderDetail", async () => {
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus(),
+      targets: [],
+    };
+    const template = makeTemplate({
+      id: "t1",
+      name: "OpenCode Zen",
+      base_url: "https://opencode.ai/zen/v1",
+      protocol: "responses",
+    });
+    mockStoreWithTemplates(store, [makeTemplateView({ template })]);
+
+    renderWithProviders(<ApiGateway />);
+
+    fireEvent.click(await screen.findByTestId("api-gateway-template-add-t1"));
+    await screen.findByTestId("api-gateway-template-api-key");
+    fireEvent.change(screen.getByTestId("api-gateway-template-api-key"), {
+      target: { value: "sk-live-key" },
+    });
+    fireEvent.click(screen.getByTestId("api-gateway-template-create-submit"));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "api_gateway_create_provider_from_template",
+        {
+          templateId: "t1",
+          name: "OpenCode Zen",
+          baseUrl: "https://opencode.ai/zen/v1",
+          protocol: "responses",
+          apiKey: "sk-live-key",
+        },
+      ),
+    );
+
+    const detail = await screen.findByTestId("api-gateway-provider-detail");
+    expect(within(detail).getByLabelText("Name")).toHaveValue("OpenCode Zen");
   });
 });

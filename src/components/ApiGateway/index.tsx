@@ -14,23 +14,28 @@ import { errorToMessage } from "@/lib/messages";
 import {
   API_GATEWAY_STATUS_UPDATED_EVENT,
   apiGatewayConfigureTerminal,
+  apiGatewayCreateProviderFromTemplate,
   apiGatewayDeleteKey,
   apiGatewayDeleteProvider,
   apiGatewayGetConfig,
+  apiGatewayProviderTemplates,
   apiGatewayReenableProvider,
   apiGatewaySetDefaultKey,
   apiGatewaySetProviderEnabled,
   apiGatewayStart,
   apiGatewayStatus,
   apiGatewayStop,
+  apiGatewaySyncProviderTemplate,
   apiGatewaySyncTerminal,
   apiGatewayTerminalTargets,
   apiGatewayUpsertKey,
   apiGatewayUpsertProvider,
   localBaseUrl,
   resolveDefaultKeyId,
+  type CreateProviderFromTemplateRequest,
   type GatewayConfig,
   type GatewayKey,
+  type GatewayProviderTemplateView,
   type GatewayStatus,
   type GatewayTerminalTarget,
   type GatewayUpstreamProvider,
@@ -38,6 +43,7 @@ import {
 import { RuntimeStatusCard } from "./RuntimeStatusCard";
 import { UpstreamProviderList } from "./UpstreamProviderList";
 import { ProviderDetailDialog } from "./ProviderDetailDialog";
+import { ProviderTemplateSection } from "./ProviderTemplateSection";
 import { AggregatedModelsDialog } from "./AggregatedModelsDialog";
 import { LocalKeyDialog } from "./LocalKeyDialog";
 import { LocalKeyList } from "./LocalKeyList";
@@ -86,6 +92,11 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const [addressCopied, setAddressCopied] = useState(false);
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<GatewayProviderTemplateView[]>([]);
+  const [templatesLoadError, setTemplatesLoadError] = useState<string | null>(null);
+  const [syncingTemplates, setSyncingTemplates] = useState<Record<string, boolean>>(
+    {},
+  );
 
   const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -111,20 +122,35 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
         default_key_id: null,
       });
       setTargets([]);
+      setTemplates([]);
+      setTemplatesLoadError(null);
       setLoadError(null);
       return;
     }
 
     setLoadError(null);
+    setTemplatesLoadError(null);
+    const templatesPromise = apiGatewayProviderTemplates()
+      .then((value) => ({ ok: true as const, value: value ?? [] }))
+      .catch((err: unknown) => ({ ok: false as const, error: err }));
     try {
-      const [nextConfig, nextStatus, nextTargets] = await Promise.all([
-        apiGatewayGetConfig(),
-        apiGatewayStatus(),
-        apiGatewayTerminalTargets(),
-      ]);
+      const [nextConfig, nextStatus, nextTargets, templatesResult] =
+        await Promise.all([
+          apiGatewayGetConfig(),
+          apiGatewayStatus(),
+          apiGatewayTerminalTargets(),
+          templatesPromise,
+        ]);
       setConfig(nextConfig);
       setStatus(nextStatus);
       setTargets(nextTargets ?? []);
+      if (templatesResult.ok) {
+        setTemplates(templatesResult.value);
+      } else {
+        // 模板数据获取失败不得阻塞上游服务商页签；仅内联提示，不弹 toast。
+        setTemplates([]);
+        setTemplatesLoadError(errorToMessage(templatesResult.error));
+      }
     } catch (err) {
       const msg = errorToMessage(err);
       setLoadError(msg);
@@ -281,6 +307,77 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
       },
       t("apiGatewaySyncSuccess", "Terminal targets synced."),
     );
+
+  const handleSyncTemplate = useCallback(
+    (templateId: string) => {
+      setSyncingTemplates((prev) => ({ ...prev, [templateId]: true }));
+      void (async () => {
+        try {
+          const updated = await apiGatewaySyncProviderTemplate(templateId);
+          setTemplates((prev) =>
+            prev.map((view) =>
+              view.template.id === templateId ? updated : view,
+            ),
+          );
+          pushToast({
+            title: t("apiGatewayTemplateSyncSuccess", "Provider template synced."),
+            kind: "success",
+          });
+        } catch (err) {
+          pushToast({
+            title: t("apiGatewayActionFailed", "Action failed"),
+            description: errorToMessage(err),
+            kind: "error",
+          });
+        } finally {
+          setSyncingTemplates((prev) => {
+            const next = { ...prev };
+            delete next[templateId];
+            return next;
+          });
+        }
+      })();
+    },
+    [pushToast, t],
+  );
+
+  const handleCreateProviderFromTemplate = useCallback(
+    async (request: CreateProviderFromTemplateRequest): Promise<boolean> => {
+      try {
+        const created = await apiGatewayCreateProviderFromTemplate(request);
+        const existingIds = new Set(
+          (config?.providers ?? []).map((provider) => provider.id),
+        );
+        const newProvider =
+          created.providers.find((provider) => !existingIds.has(provider.id)) ?? null;
+        await applyConfig(await apiGatewayGetConfig());
+        if (newProvider) {
+          setSelectedProviderId(newProvider.id);
+          setEditingProvider(newProvider);
+          setIsDialogOpen(true);
+        }
+        pushToast({
+          title: t(
+            "apiGatewayTemplateProviderCreated",
+            "Provider created from template.",
+          ),
+          kind: "success",
+        });
+        return true;
+      } catch (err) {
+        pushToast({
+          title: t(
+            "apiGatewayTemplateCreateFailed",
+            "Failed to create provider from template.",
+          ),
+          description: errorToMessage(err),
+          kind: "error",
+        });
+        return false;
+      }
+    },
+    [applyConfig, config, pushToast, t],
+  );
 
   const handleCopyAddress = async () => {
     if (!config) return;
@@ -507,6 +604,29 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
               setIsDialogOpen(true);
             }}
             onDelete={(providerId) => void handleDeleteProvider(providerId)}
+            templateSection={
+              <>
+                {templatesLoadError ? (
+                  <div
+                    data-testid="api-gateway-templates-load-error"
+                    title={templatesLoadError}
+                    className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+                  >
+                    {t(
+                      "apiGatewayTemplatesLoadFailed",
+                      "Failed to load provider templates.",
+                    )}
+                  </div>
+                ) : null}
+                <ProviderTemplateSection
+                  templates={templates}
+                  busy={busy}
+                  syncingTemplateIds={syncingTemplates}
+                  onSync={handleSyncTemplate}
+                  onCreateProvider={handleCreateProviderFromTemplate}
+                />
+              </>
+            }
           />
         </div>
 
