@@ -77,3 +77,13 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
+
+# Test-only profile tuning (REQ-004). Not a production profile.
+[profile.test]
+debug = 0
+split-debuginfo = "off"
+opt-level = 1
+
+# Keep the PBKDF2/SHA-2 hot path optimized even in test builds.
+[profile.test.package.sha2]
+opt-level = 2
