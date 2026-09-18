@@ -343,6 +343,7 @@ pub(in crate::api_fusion) fn local_model_names(config: &FusionConfig) -> Vec<Str
             provider
                 .mappings
                 .iter()
+                .filter(|mapping| mapping.enabled)
                 .map(|mapping| mapping.local_model.trim().to_string())
         })
         .filter(|name| !name.is_empty())

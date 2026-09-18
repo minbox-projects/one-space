@@ -176,4 +176,165 @@ describe("ProviderDetailDialog 模型映射", () => {
       screen.queryByRole("combobox", { name: /price/i }),
     ).not.toBeInTheDocument();
   });
+
+  it("映射行开关反映存储状态、关闭后保存并重开仍为禁用", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const provider = makeProvider({
+      mappings: [
+        { local_model: "local-a", upstream_model: "remote-a", enabled: true },
+        { local_model: "local-b", upstream_model: "remote-b", enabled: false },
+      ],
+    });
+
+    const { unmount } = renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const enabledSwitch = screen.getByRole("switch", {
+      name: "Enable mapping 1",
+    });
+    const disabledSwitch = screen.getByRole("switch", {
+      name: "Enable mapping 2",
+    });
+    expect(enabledSwitch, "第 1 行启用映射开关应为开启").toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(disabledSwitch, "第 2 行禁用映射开关应为关闭").toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+
+    await user.click(enabledSwitch);
+    expect(enabledSwitch, "点击后第 1 行开关应变为关闭").toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as FusionUpstreamProvider;
+    expect(saved.mappings[0].enabled, "保存载荷第 1 条映射应为禁用").toBe(false);
+    expect(saved.mappings[1].enabled, "保存载荷第 2 条映射应为禁用").toBe(false);
+
+    unmount();
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={saved}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("switch", { name: "Enable mapping 1" }),
+      "重开后第 1 行开关应保持关闭",
+    ).toHaveAttribute("aria-checked", "false");
+    expect(
+      screen.getByRole("switch", { name: "Enable mapping 2" }),
+      "重开后第 2 行开关应保持关闭",
+    ).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("禁用映射行带 data-disabled 与弱化样式", () => {
+    const provider = makeProvider({
+      mappings: [
+        { local_model: "local-a", upstream_model: "remote-a", enabled: true },
+        { local_model: "local-b", upstream_model: "remote-b", enabled: false },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const disabledSwitch = screen.getByRole("switch", {
+      name: "Enable mapping 2",
+    });
+    const disabledRow = disabledSwitch.closest("li");
+    expect(disabledRow).not.toBeNull();
+    expect(
+      disabledRow!.getAttribute("data-disabled"),
+      "禁用映射行应带 data-disabled=true",
+    ).toBe("true");
+    expect(
+      disabledRow!.className,
+      "禁用映射行应带弱化样式 opacity-60",
+    ).toContain("opacity-60");
+
+    const enabledSwitch = screen.getByRole("switch", {
+      name: "Enable mapping 1",
+    });
+    const enabledRow = enabledSwitch.closest("li");
+    expect(enabledRow).not.toBeNull();
+    expect(
+      enabledRow!.getAttribute("data-disabled"),
+      "启用映射行不应带 data-disabled",
+    ).toBeNull();
+  });
+
+  it("新增映射行默认启用", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const provider = makeProvider({ mappings: [] });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /Add mapping/ }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as FusionUpstreamProvider;
+    expect(saved.mappings).toHaveLength(1);
+    expect(saved.mappings[0].enabled, "新增映射行应默认启用").toBe(true);
+  });
+
+  it("缺省 enabled 的既有映射行开关为启用", () => {
+    const provider = makeProvider({
+      mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("switch", { name: "Enable mapping 1" }),
+      "缺省 enabled 的既有映射行开关应视为启用",
+    ).toHaveAttribute("aria-checked", "true");
+  });
 });

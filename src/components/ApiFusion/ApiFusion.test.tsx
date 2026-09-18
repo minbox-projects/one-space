@@ -1343,4 +1343,91 @@ describe("ApiFusion", () => {
       within(dialog).queryAllByTestId("api-fusion-aggregated-model"),
     ).toHaveLength(0);
   });
+
+  it("保存服务商时将映射行启用状态写入载荷", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [
+          makeProvider({
+            mappings: [
+              { local_model: "local-a", upstream_model: "remote-a" },
+              { local_model: "local-b", upstream_model: "remote-b" },
+            ],
+          }),
+        ],
+      }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [openCodeTarget()],
+    };
+    mockStoreWithUpsert(store);
+
+    renderWithProviders(<ApiFusion />);
+    fireEvent.click(await screen.findByText("Upstream A"));
+
+    fireEvent.click(screen.getByRole("switch", { name: "Enable mapping 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "api_fusion_upsert_provider",
+        expect.objectContaining({
+          provider: expect.objectContaining({ id: "p1" }),
+        }),
+      ),
+    );
+
+    const call = invokeMock.mock.calls.find(
+      ([command]) => command === "api_fusion_upsert_provider",
+    );
+    const payload = call?.[1] as { provider: FusionUpstreamProvider };
+    expect(
+      payload.provider.mappings[0].enabled,
+      "未切换的第 1 条映射应写入启用",
+    ).toBe(true);
+    expect(
+      payload.provider.mappings[1].enabled,
+      "被关闭的第 2 条映射应写入禁用",
+    ).toBe(false);
+  });
+
+  it("聚合模型弹框排除禁用映射", async () => {
+    const provider1 = makeProvider({
+      id: "p1",
+      name: "Provider 1",
+      enabled: true,
+      auto_disabled: false,
+      default_model: "d",
+      mappings: [
+        { local_model: "a", upstream_model: "ra", enabled: true },
+        { local_model: "b", upstream_model: "rb", enabled: false },
+      ],
+    });
+
+    const store: Store = {
+      config: makeConfig({ providers: [provider1] }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiFusion />);
+
+    fireEvent.click(await screen.findByTestId("api-fusion-metric-models"));
+
+    const dialog = await screen.findByTestId("api-fusion-aggregated-models");
+    const modelNodes = within(dialog).getAllByTestId(
+      "api-fusion-aggregated-model",
+    );
+    const modelNames = modelNodes.map((node) => node.getAttribute("data-model"));
+    expect(modelNames, "聚合模型弹框应包含启用映射 a").toContain("a");
+    expect(modelNames, "聚合模型弹框应包含默认模型 d").toContain("d");
+    expect(modelNames, "聚合模型弹框应排除禁用映射 b").not.toContain("b");
+
+    const defaultNode = modelNodes.find(
+      (node) => node.getAttribute("data-model") === "d",
+    );
+    expect(defaultNode).not.toBeUndefined();
+    expect(within(defaultNode!).getByText(/Default/)).toBeInTheDocument();
+    expect(within(dialog).queryByText("rb")).not.toBeInTheDocument();
+  });
 });
