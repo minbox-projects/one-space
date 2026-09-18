@@ -290,6 +290,32 @@ describe("resolveMappingPreview 模型解析预览", () => {
     });
     expect(resolveMappingPreview(noDefault, "local-a")).toBeNull();
   });
+
+  it("禁用映射行既不成命中也不回退默认模型", () => {
+    const p = provider({
+      mappings: [
+        { local_model: "local-a", upstream_model: "remote-a", enabled: false },
+      ],
+      default_model: "remote-default",
+    });
+    expect(
+      resolveMappingPreview(p, "local-a"),
+      "禁用映射不应命中，也不应回退到默认模型",
+    ).toBeNull();
+  });
+
+  it("显式启用映射行正常命中", () => {
+    const p = provider({
+      mappings: [
+        { local_model: "local-a", upstream_model: "remote-a", enabled: true },
+      ],
+      default_model: "remote-default",
+    });
+    expect(resolveMappingPreview(p, "local-a")).toEqual({
+      upstreamModel: "remote-a",
+      endpoint: "chat_completions",
+    });
+  });
 });
 
 describe("maskSecret 掩码", () => {
@@ -654,5 +680,24 @@ describe("aggregateModels 聚合本地模型", () => {
         }),
       ]),
     ).toEqual([]);
+  });
+
+  it("聚合视图排除禁用映射但保留默认模型", () => {
+    const p = provider({
+      default_model: "d",
+      mappings: [
+        { local_model: "a", upstream_model: "ra", enabled: true },
+        { local_model: "b", upstream_model: "rb", enabled: false },
+        // 缺省 enabled 的映射仍应视为启用（回归）
+        { local_model: "c", upstream_model: "rc" },
+      ],
+    });
+
+    const models = aggregateModels([p]).map((entry) => entry.model);
+    expect(
+      models,
+      "聚合视图应保留默认模型 d 与启用/缺省启用的映射 a、c",
+    ).toEqual(expect.arrayContaining(["d", "a", "c"]));
+    expect(models, "聚合视图不应包含禁用映射 b").not.toContain("b");
   });
 });
