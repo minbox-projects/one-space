@@ -374,6 +374,30 @@ fn error_envelope(message: impl Into<String>, error_type: &str, code: &str) -> V
     })
 }
 
+/// Whether an upstream error body already uses the OpenAI standard shape: valid
+/// JSON containing an `error` object. Such a body is passed through unchanged;
+/// anything else is wrapped by the gateway (REQ-004/AC-007).
+fn is_standard_error_body(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| value.get("error").map(Value::is_object))
+        .unwrap_or(false)
+}
+
+/// The standard envelope for a non-standard upstream 4xx body (REQ-004/AC-006).
+/// The message names the upstream status and carries only the readable body
+/// text, never credentials or request headers.
+fn upstream_error_payload(status: u16, body: &[u8]) -> Value {
+    let readable = String::from_utf8_lossy(body);
+    let trimmed = readable.trim();
+    let message = if trimmed.is_empty() {
+        format!("upstream returned HTTP {status} with an empty body")
+    } else {
+        format!("upstream returned HTTP {status}: {trimmed}")
+    };
+    error_envelope(message, "upstream_error", "upstream_error")
+}
+
 fn all_unavailable_payload(message: impl Into<String>) -> Value {
     error_envelope(message, "server_error", "all_providers_unavailable")
 }
@@ -635,10 +659,20 @@ async fn attempt_candidate(
             }
             let class = classify_failure(response.status, false, response.parsed);
             if class == FailureClass::ReturnToClient {
+                // A standard upstream error body stays byte-for-byte; a
+                // non-standard one keeps the status but is wrapped so clients
+                // can read `error.message` (REQ-004/AC-006/AC-007).
+                let standard = is_standard_error_body(&response.body);
+                let body = if standard {
+                    response.body
+                } else {
+                    serde_json::to_vec(&upstream_error_payload(response.status, &response.body))
+                        .unwrap_or_else(|_| b"{}".to_vec())
+                };
                 return AttemptResult::ReturnToClient(HttpResponse {
                     status: response.status,
                     content_type: "application/json",
-                    body: response.body,
+                    body,
                     capture: Some(capture),
                 });
             }
@@ -888,12 +922,22 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 if class == FailureClass::ReturnToClient {
                     health.apply(config);
                     capture.status = status;
+                    // Byte-for-byte only when the upstream body is already a
+                    // standard error; otherwise keep the status and wrap it
+                    // (REQ-004/AC-006/AC-007).
+                    let standard = is_standard_error_body(&bytes);
+                    let body = if standard {
+                        bytes.to_vec()
+                    } else {
+                        serde_json::to_vec(&upstream_error_payload(status, &bytes))
+                            .unwrap_or_else(|_| b"{}".to_vec())
+                    };
                     write_response(
                         writer,
                         HttpResponse {
                             status,
                             content_type: "application/json",
-                            body: bytes.to_vec(),
+                            body,
                             capture: None,
                         },
                     )
@@ -932,6 +976,10 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         health.apply(config);
                         return Err(error.to_string());
                     }
+                    // Last byte forwarded to the caller, used to complete the
+                    // SSE event boundary before a mid-stream error fragment
+                    // (REQ-005/AC-008).
+                    let mut last_forwarded = first.last().copied();
                     if writer.flush().await.is_err() {
                         health.apply(config);
                         capture.downstream_cancelled = true;
@@ -946,14 +994,34 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     capture.downstream_cancelled = true;
                                     return Ok(capture);
                                 }
+                                last_forwarded = chunk.last().copied();
                             }
                             // Bytes already sent: terminate the stream, never switch.
                             Some(Err(error)) => {
+                                let reason = format!("stream failed after first byte: {error}");
                                 health.record_failure(
                                     config, provider, FailureClass::Retryable,
-                                    &format!("stream failed after first byte: {error}"),
+                                    &reason,
                                 );
                                 health.apply(config);
+                                // Complete the SSE event boundary so the error
+                                // fragment parses standalone even when the last
+                                // forwarded byte is not a newline, then append one
+                                // `data:` error event. No `[DONE]`, no retry, no
+                                // candidate switch; downstream write failures stay
+                                // best-effort (REQ-005/AC-008).
+                                if last_forwarded != Some(b'\n') {
+                                    let _ = writer.write_all(b"\n").await;
+                                }
+                                let _ = writer.write_all(b"\n").await;
+                                let envelope = error_envelope(
+                                    reason,
+                                    "server_error",
+                                    "upstream_stream_error",
+                                );
+                                let fragment = format!("data: {envelope}\n\n");
+                                let _ = writer.write_all(fragment.as_bytes()).await;
+                                let _ = writer.flush().await;
                                 capture.status = 502;
                                 capture.usage = usage.usage();
                                 capture.upstream_error = true;

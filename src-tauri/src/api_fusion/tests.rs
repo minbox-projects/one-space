@@ -1982,6 +1982,21 @@ async fn streaming_terminates_after_first_byte_without_switching() {
         !text.contains("from-b"),
         "must not retry after bytes were written: {text}"
     );
+    assert!(
+        !text.contains("data: [DONE]"),
+        "an abnormal stream must not send [DONE]: {text}"
+    );
+    let (_, body) = raw_http_status_and_body(&text);
+    let errors = sse_error_events(&body);
+    assert_eq!(
+        errors.len(),
+        1,
+        "exactly one standalone error fragment must close the stream: {text}"
+    );
+    assert!(
+        !errors[0]["error"]["message"].as_str().unwrap_or("").is_empty(),
+        "the error fragment must carry a readable message: {text}"
+    );
     assert_eq!(partial_log.lock().unwrap().len(), 1);
     assert!(
         stream_log.lock().unwrap().is_empty(),
@@ -6867,8 +6882,9 @@ async fn retry_stream_404_traverses_each_candidate_once_without_health_failure()
     }
 }
 
-/// REQ-004: a 413 HTML response is a caller error, so the streaming boundary
-/// returns the original status and bytes without trying a fallback provider.
+/// REQ-004/AC-006: a 413 HTML response is a caller error, so the streaming
+/// boundary keeps the original status but wraps the non-standard body in the
+/// standard gateway envelope, without trying a fallback provider.
 #[tokio::test]
 async fn retry_stream_html_413_returns_unchanged_without_fallback() {
     let _home = temp_home("retry-stream-html-413");
@@ -6892,7 +6908,13 @@ async fn retry_stream_html_413_returns_unchanged_without_fallback() {
     let text = attempt_streaming_text(&[rejected, fallback], &mut config).await;
 
     assert!(text.starts_with("HTTP/1.1 413"), "response: {text}");
-    assert!(text.ends_with(std::str::from_utf8(&body).unwrap()), "response: {text}");
+    let (_, response_body) = raw_http_status_and_body(&text);
+    let envelope = assert_standard_error_envelope(&response_body);
+    let message = envelope["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("413"),
+        "the wrapped message must name the upstream status: {message}"
+    );
     assert_eq!(rejected_attempts.load(Ordering::SeqCst), 1);
     assert_eq!(fallback_attempts.load(Ordering::SeqCst), 0, "413 must not switch");
     assert_eq!(config.providers[0].consecutive_failures, 0, "413 must not count");
@@ -9640,4 +9662,391 @@ async fn save_config_generates_secret_for_new_keys_with_blank_or_masked_value() 
         !masked.value.trim().is_empty(),
         "a generated secret must not be empty"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 20260918-gateway-retry-and-openai-errors Step 3: upstream 4xx normalization
+// and the mid-stream error fragment (REQ-004/REQ-005, AC-006..AC-009)
+// ---------------------------------------------------------------------------
+
+/// Parse every `\n\n`-delimited SSE event in a relay body and return the JSON
+/// payload of its `data:` line(s). Empty keep-alives and `[DONE]` are skipped.
+/// An event boundary is required, so a fragment appended without a blank-line
+/// separator stays invisible to this parser.
+fn parse_sse_events(body: &str) -> Vec<Value> {
+    let mut events = Vec::new();
+    for segment in body.split("\n\n") {
+        let payload = segment
+            .lines()
+            .filter_map(|line| line.trim_end_matches('\r').strip_prefix("data:"))
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(&payload) {
+            events.push(value);
+        }
+    }
+    events
+}
+
+/// The independently parseable SSE error fragments (AC-008). A conforming
+/// mid-stream failure emits exactly one, carrying a non-empty `error.message`.
+fn sse_error_events(body: &str) -> Vec<Value> {
+    parse_sse_events(body)
+        .into_iter()
+        .filter(|event| event.get("error").map(|value| value.is_object()).unwrap_or(false))
+        .collect()
+}
+
+/// AC-006/REQ-004: a non-streaming upstream 4xx whose body is not valid JSON
+/// keeps the upstream status but is wrapped in the standard gateway envelope
+/// whose message names the status and readable upstream text, and never a
+/// credential or request header.
+#[tokio::test]
+async fn non_streaming_upstream_html_400_is_wrapped_in_standard_envelope() {
+    let _home = temp_home("step3-non-stream-html-400");
+    let html = b"<html><body>upstream rejected the payload</body></html>".to_vec();
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(move |_| MockReply::Raw(400, "text/html", html.clone())).await;
+    let provider = upstream_provider(
+        "a",
+        "Provider A",
+        &upstream_url,
+        "sk-upstream-secret",
+        Some("remote-default"),
+    );
+    let mut config = FusionConfig::default();
+    config.providers.push(provider.clone());
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+    let headers = HashMap::from([
+        ("authorization".to_string(), "Bearer local-secret".to_string()),
+        ("x-request-marker".to_string(), "header-secret".to_string()),
+    ]);
+
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &headers,
+    )
+    .await;
+
+    assert_eq!(response.status, 400, "the upstream status must be kept");
+    assert_eq!(
+        upstream_log.lock().unwrap().len(),
+        1,
+        "a single candidate is attempted exactly once"
+    );
+    let text = String::from_utf8_lossy(&response.body).into_owned();
+    let envelope = assert_standard_error_envelope(&text);
+    let message = envelope["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("400"),
+        "the envelope message must name the upstream status: {message}"
+    );
+    assert!(
+        message.contains("upstream rejected the payload"),
+        "the envelope message must carry readable upstream information: {message}"
+    );
+    for secret in ["sk-upstream-secret", "local-secret", "header-secret"] {
+        assert!(
+            !message.contains(secret),
+            "the envelope message must not leak {secret}: {message}"
+        );
+    }
+}
+
+/// AC-006/REQ-004: the streaming branch wraps a non-standard upstream 4xx body
+/// the same way while keeping the upstream status line.
+#[tokio::test]
+async fn streaming_upstream_html_400_is_wrapped_in_standard_envelope() {
+    let _home = temp_home("step3-stream-html-400");
+    let html = b"<html><body>upstream rejected the payload</body></html>".to_vec();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Raw(400, "text/html", html.clone())).await;
+    let provider = upstream_provider(
+        "a",
+        "Provider A",
+        &upstream_url,
+        "sk-upstream-secret",
+        Some("remote-default"),
+    );
+    let mut config = FusionConfig::default();
+    config.providers.push(provider.clone());
+
+    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+    let (status_line, body) = raw_http_status_and_body(&text);
+    assert_eq!(status_line, "HTTP/1.1 400 Bad Request", "response: {text}");
+    let envelope = assert_standard_error_envelope(&body);
+    let message = envelope["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("400"),
+        "the envelope message must name the upstream status: {message}"
+    );
+    assert!(
+        message.contains("upstream rejected the payload"),
+        "the envelope message must carry readable upstream information: {message}"
+    );
+    assert!(
+        !message.contains("sk-upstream-secret"),
+        "the envelope message must not leak the upstream key: {message}"
+    );
+}
+
+/// AC-007/REQ-004: a non-streaming upstream 4xx whose body is valid JSON with an
+/// `error` object must be passed through byte-for-byte, never re-wrapped.
+#[tokio::test]
+async fn non_streaming_upstream_json_400_is_passed_through_byte_for_byte() {
+    let _home = temp_home("step3-non-stream-json-400");
+    let upstream_body = json!({
+        "error": {
+            "message": "bad request",
+            "type": "invalid_request_error",
+            "code": "bad_request",
+            "param": "model",
+        }
+    });
+    let expected = serde_json::to_vec(&upstream_body).unwrap();
+    let for_mock = upstream_body.clone();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Json(400, for_mock.clone())).await;
+    let provider = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers.push(provider.clone());
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+    )
+    .await;
+
+    assert_eq!(response.status, 400, "the upstream status must be kept");
+    assert_eq!(
+        response.body, expected,
+        "a standard upstream error body must pass through byte-for-byte"
+    );
+}
+
+/// AC-007/REQ-004: the streaming branch passes a standard upstream 4xx JSON body
+/// through byte-for-byte after the header block.
+#[tokio::test]
+async fn streaming_upstream_json_400_is_passed_through_byte_for_byte() {
+    let _home = temp_home("step3-stream-json-400");
+    let upstream_body = json!({
+        "error": {
+            "message": "bad request",
+            "type": "invalid_request_error",
+            "code": "bad_request",
+            "param": "model",
+        }
+    });
+    let expected = serde_json::to_vec(&upstream_body).unwrap();
+    let for_mock = upstream_body.clone();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Json(400, for_mock.clone())).await;
+    let provider = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers.push(provider.clone());
+
+    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+    let (status_line, body) = raw_http_status_and_body(&text);
+    assert_eq!(status_line, "HTTP/1.1 400 Bad Request", "response: {text}");
+    assert_eq!(
+        body.as_bytes(),
+        expected.as_slice(),
+        "a standard upstream error body must pass through byte-for-byte"
+    );
+}
+
+/// AC-008/REQ-005: after the first byte has been forwarded, a mid-stream upstream
+/// read failure must complete the event boundary and append exactly one
+/// standalone parseable error fragment, and must never send `[DONE]`.
+#[tokio::test]
+async fn mid_stream_failure_appends_standalone_error_fragment_without_done() {
+    let _home = temp_home("step3-mid-stream-fragment");
+    // Deliberately no trailing newline: the last forwarded byte is not a newline.
+    let partial = "data: {\"choices\":[{\"delta\":{\"content\":\"partial-a\"}}]}".to_string();
+    let declared = partial.len() + 500;
+    let (partial_url, partial_log) =
+        spawn_mock_upstream(move |_| MockReply::PartialStream(partial.clone(), declared)).await;
+    let provider = upstream_provider("a", "Provider A", &partial_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers.push(provider.clone());
+
+    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+    let (status_line, body) = raw_http_status_and_body(&text);
+    assert!(status_line.starts_with("HTTP/1.1 200"), "response: {text}");
+    assert!(
+        body.contains("partial-a"),
+        "the forwarded bytes must reach the caller: {text}"
+    );
+    assert!(
+        !body.contains("[DONE]"),
+        "an abnormal stream must not send [DONE]: {text}"
+    );
+    let errors = sse_error_events(&body);
+    assert_eq!(
+        errors.len(),
+        1,
+        "exactly one standalone parseable error fragment is required: {text}"
+    );
+    let message = errors[0]["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        !message.is_empty(),
+        "the error fragment must carry a non-empty message: {text}"
+    );
+    assert_eq!(partial_log.lock().unwrap().len(), 1);
+}
+
+/// AC-009/REQ-005: a mid-stream failure returns a 502 `ForwardCapture` flagged
+/// as an upstream error, keeps the accumulated usage, and never contacts another
+/// candidate; the bytes on the wire still close with one error fragment and no
+/// `[DONE]`.
+#[tokio::test]
+async fn mid_stream_failure_capture_is_failure_keeps_usage_and_skips_other_candidates() {
+    let _home = temp_home("step3-mid-stream-capture");
+    // A usage-bearing event followed by an unterminated partial event.
+    let partial = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial-a\"}}],",
+        "\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,",
+        "\"prompt_tokens_details\":{\"cached_tokens\":2}}}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"tail\"}}]}",
+    )
+    .to_string();
+    let declared = partial.len() + 500;
+    let (partial_url, partial_log) =
+        spawn_mock_upstream(move |_| MockReply::PartialStream(partial.clone(), declared)).await;
+    let (fallback_url, fallback_log) = spawn_mock_upstream(|_| {
+        MockReply::Stream(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"from-b\"}}]}\n\ndata: [DONE]\n\n"
+                .to_string(),
+        )
+    })
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &partial_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &fallback_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone(), b.clone()];
+    let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
+
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        &[a, b],
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+    )
+    .await
+    .expect("streaming attempt");
+    drop(server);
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    let text = String::from_utf8_lossy(&out).into_owned();
+
+    assert_eq!(capture.status, 502, "a mid-stream failure is recorded as 502");
+    assert!(
+        capture.upstream_error,
+        "the capture must flag the upstream stream error"
+    );
+    assert_eq!(
+        capture.usage,
+        Some(tokens(7, 2, 0, 3)),
+        "the accumulated usage must survive the mid-stream failure"
+    );
+    let (_, body_text) = raw_http_status_and_body(&text);
+    assert_eq!(
+        sse_error_events(&body_text).len(),
+        1,
+        "the stream must close with one error fragment: {text}"
+    );
+    assert!(
+        !body_text.contains("[DONE]"),
+        "an abnormal stream must not send [DONE]: {text}"
+    );
+    assert_eq!(partial_log.lock().unwrap().len(), 1);
+    assert!(
+        fallback_log.lock().unwrap().is_empty(),
+        "must not switch candidates after the first byte"
+    );
+}
+
+/// AC-009/REQ-005 end-to-end: through the real listener a mid-stream failure
+/// yields one error fragment on the wire and exactly one `failure` log row with
+/// status 502 that keeps the accumulated usage.
+#[tokio::test]
+async fn mid_stream_failure_end_to_end_logs_one_failure_with_usage() {
+    let home = temp_home("step3-mid-stream-e2e");
+    let port = free_port().await;
+    let partial = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial-a\"}}],",
+        "\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,",
+        "\"prompt_tokens_details\":{\"cached_tokens\":2}}}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"tail\"}}]}",
+    )
+    .to_string();
+    let declared = partial.len() + 500;
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::PartialStream(partial.clone(), declared)).await;
+
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut a = upstream_provider("a", "Provider A", &upstream_url, "sk", None);
+    a.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(a);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a", "stream": true})),
+    )
+    .await;
+    assert_eq!(status, 200, "the SSE status is committed before the failure: {text}");
+    assert!(
+        text.contains("partial-a"),
+        "the partial bytes must reach the caller: {text}"
+    );
+    assert!(
+        !text.contains("[DONE]"),
+        "an abnormal stream must not send [DONE]: {text}"
+    );
+    assert_eq!(
+        sse_error_events(&text).len(),
+        1,
+        "exactly one parseable error fragment is required: {text}"
+    );
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1, "exactly one failure row for the request");
+    assert_eq!(records[0].result, UsageResult::Failure);
+    assert_eq!(records[0].status, 502);
+    assert_eq!(records[0].input_tokens, 7, "accumulated input tokens must be kept");
+    assert_eq!(
+        records[0].cache_read_tokens, 2,
+        "accumulated cache-read tokens must be kept"
+    );
+    assert_eq!(records[0].output_tokens, 3, "accumulated output tokens must be kept");
+    // The row sums all four usage tiers (7 + 2 + 0 + 3).
+    assert_eq!(records[0].total_tokens, 12, "all four usage tiers are summed");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
 }
