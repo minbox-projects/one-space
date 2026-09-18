@@ -580,7 +580,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
         </p>
       ) : (
         <div className="mt-4 space-y-2">
-          <div className="overflow-x-auto rounded-lg border">
+          <div className="overflow-x-auto rounded-lg border min-h-[220px]">
             <table
               className="w-full text-left text-xs"
               data-testid="api-gateway-logs-ungrouped"
@@ -683,8 +683,8 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                     <td className="px-3 py-2 text-right" data-testid="api-gateway-logs-tokens-cell">
                       {(() => {
                         const cacheTokens = item.cache_read_tokens + item.cache_write_tokens;
-                        const tooltipClass = index === 0 ? "top-full mt-1.5" : "bottom-full mb-1.5";
-                        const nativeTooltip = `${t("apiGatewayLogsTokensInput", "Input")}: ${new Intl.NumberFormat().format(item.input_tokens)}\n${t("apiGatewayLogsTokensOutput", "Output")}: ${new Intl.NumberFormat().format(item.output_tokens)}\n${t("apiGatewayLogsTokensCache", "Cache")}: ${new Intl.NumberFormat().format(cacheTokens)}\n${t("apiGatewayLogsTokensTotal", "Total")}: ${new Intl.NumberFormat().format(item.total_tokens)}`;
+                        const showAbove = index >= 4 && index >= records.length - 3;
+                        const tooltipClass = showAbove ? "bottom-full mb-1.5" : "top-full mt-1.5";
                         return (
                           <div className="inline-flex items-center justify-end gap-1.5 font-mono text-xs">
                             <div
@@ -734,19 +734,18 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                               </span>
                             </div>
 
-                            <div className="relative group inline-flex items-center shrink-0">
+                            <div className="relative group inline-flex items-center shrink-0 group-hover:z-50 focus-within:z-50">
                               <button
                                 type="button"
                                 className="text-muted-foreground/60 hover:text-foreground transition-colors p-0.5 rounded focus:outline-none"
                                 aria-label={t("apiGatewayLogsTokensDetail", "Tokens breakdown")}
-                                title={nativeTooltip}
                                 data-testid="api-gateway-logs-tokens-info-btn"
                               >
                                 <Info className="h-3.5 w-3.5" />
                               </button>
                               <div
                                 role="tooltip"
-                                className={`pointer-events-none absolute right-0 ${tooltipClass} hidden group-hover:flex group-focus-within:flex flex-col gap-1 rounded-md border bg-popover p-2 text-left text-xs text-popover-foreground shadow-lg z-30 min-w-[170px]`}
+                                className={`pointer-events-none absolute right-0 ${tooltipClass} hidden group-hover:flex group-focus-within:flex flex-col gap-1 rounded-md border bg-popover p-2 text-left text-xs text-popover-foreground shadow-lg z-50 min-w-[170px]`}
                                 data-testid="api-gateway-logs-tokens-tooltip"
                               >
                                 <div className="font-semibold text-[11px] border-b pb-1 text-muted-foreground">

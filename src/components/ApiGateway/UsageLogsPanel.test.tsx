@@ -561,26 +561,12 @@ describe("UsageLogsPanel", () => {
       "api-gateway-logs-tokens-info-btn",
     );
     expect(infoBtn).toBeInTheDocument();
-    expect(infoBtn).toHaveAttribute(
-      "title",
-      expect.stringContaining("Input: 1,250"),
-    );
-    expect(infoBtn).toHaveAttribute(
-      "title",
-      expect.stringContaining("Output: 340"),
-    );
-    expect(infoBtn).toHaveAttribute(
-      "title",
-      expect.stringContaining("Cache: 100"),
-    );
-    expect(infoBtn).toHaveAttribute(
-      "title",
-      expect.stringContaining("Total: 1,690"),
-    );
+    expect(infoBtn).not.toHaveAttribute("title");
 
     const tooltip = within(tokensCell).getByTestId(
       "api-gateway-logs-tokens-tooltip",
     );
+    expect(tooltip).toHaveClass("top-full");
     expect(tooltip).toHaveTextContent("Tokens breakdown");
     expect(tooltip).toHaveTextContent("Input:");
     expect(tooltip).toHaveTextContent("1,250");
@@ -594,6 +580,45 @@ describe("UsageLogsPanel", () => {
     expect(tooltip).toHaveTextContent("20");
     expect(tooltip).toHaveTextContent("Total:");
     expect(tooltip).toHaveTextContent("1,690");
+  });
+
+  it("Tokens 提示框在前几行向下弹出以避免被列头遮挡，在底部且上方空间充足时向上弹出", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          record({ timestamp_ms: 1000 }),
+          record({ timestamp_ms: 2000 }),
+          record({ timestamp_ms: 3000 }),
+          record({ timestamp_ms: 4000 }),
+          record({ timestamp_ms: 5000 }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-gateway-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("api-gateway-logs-row");
+    expect(rows).toHaveLength(5);
+
+    // 第 0~3 行（前 4 行）上方空间不足，必须向下弹出避免被 table 列头遮挡
+    for (let i = 0; i < 4; i++) {
+      const tooltip = within(rows[i]).getByTestId(
+        "api-gateway-logs-tokens-tooltip",
+      );
+      expect(tooltip).toHaveClass("top-full");
+      expect(tooltip).not.toHaveClass("bottom-full");
+    }
+
+    // 第 4 行（即第 5 行记录，index=4，同时满足 index >= 4 与 index >= 5 - 3）上方有 4 行空间，向上弹出
+    const lastTooltip = within(rows[4]).getByTestId(
+      "api-gateway-logs-tokens-tooltip",
+    );
+    expect(lastTooltip).toHaveClass("bottom-full");
+    expect(lastTooltip).not.toHaveClass("top-full");
   });
 
   it("模型列展示本地模型，并在同一行展示上游服务商名称与上游模型", async () => {
