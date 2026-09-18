@@ -1,6 +1,6 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Workspaces } from "@/components/Workspaces";
 import { renderWithProviders } from "@/test/mocks/render";
 import { emitMock, invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
@@ -103,6 +103,44 @@ describe("Workspaces", () => {
       expect(invokeMock).toHaveBeenCalledWith("workspace_mcp_binding_upsert", expect.anything());
       expect(emitMock).toHaveBeenCalledWith("refresh-counts");
     });
+  });
+
+  it("cancels the pending MCP loading update when unmounted", async () => {
+    const rejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      rejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    const { unmount } = renderWithProviders(<Workspaces isVisible />);
+    await screen.findByText("Workspace A");
+    fireEvent.click(screen.getByText("Workspace A"));
+    await screen.findByRole("heading", { name: /Terminal Sessions|终端会话/i });
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByRole("button", { name: /MCP/i }));
+      // Let the invoke() promise chain settle so the artificial loading delay timer is armed.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      unmount();
+
+      // The MCP loader holds a pending delay timer when a workspace is unmounted mid-load.
+      // Leaving it armed makes the component touch state after the test environment is
+      // gone, which surfaces as an unhandled rejection during suite teardown.
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.runAllTimersAsync();
+      await Promise.resolve();
+    } finally {
+      vi.useRealTimers();
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+
+    expect(rejections).toEqual([]);
   });
 
   it("shows Antigravity with a default-disabled MCP switch and Antigravity load rule", async () => {
