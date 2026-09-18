@@ -4,6 +4,11 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
+/// Retains the global `HOME` lock on purpose: the subagent source scan resolves
+/// tool directories such as `~/.claude/agents` through `dirs::home_dir()`,
+/// which the thread-local `get_app_dir()` override does not cover. A
+/// process-wide `HOME` change plus the shared mutex is required to keep these
+/// directory-based cases isolated and serialized.
 fn with_temp_home<T>(label: &str, f: impl FnOnce(&Path) -> T) -> T {
     let _guard = crate::lock_test_home_env();
     let temp_home_raw = std::env::temp_dir().join(format!(

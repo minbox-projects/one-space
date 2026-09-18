@@ -15,6 +15,12 @@ pub(super) fn write_test_file(path: &Path, content: &str) {
     fs::write(path, content).expect("write file");
 }
 
+/// Retains the global `HOME` lock on purpose. This helper is shared by app_store
+/// test modules whose callers include tool projection (Claude / Codex /
+/// Antigravity configs written under the real home via `dirs::home_dir()`),
+/// which the thread-local `get_app_dir()` override does not cover. Migrating the
+/// shared helper would require changing those caller test modules, which are
+/// outside this task's write scope, so the group stays serialized.
 pub(super) fn with_temp_dir<T>(name: &str, f: impl FnOnce(&Path) -> T) -> T {
     let _guard = crate::lock_test_home_env();
     let temp_home = make_temp_dir(name);

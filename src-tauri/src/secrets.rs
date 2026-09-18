@@ -208,30 +208,34 @@ mod tests {
 
     const TEST_TOKEN: &str = "tinyurl-test-sensitive-token";
 
+    /// Isolate a test through the thread-local HOME override instead of the
+    /// process `HOME` environment variable. These cases only resolve
+    /// `get_data_dir()` (which routes through `get_app_dir()`), so they never
+    /// touch the global `crate::lock_test_home_env` mutex and can run in
+    /// parallel. The seeded device config keeps the first-run local mirror from
+    /// falling back to the real home through `dirs::home_dir()`.
     fn with_temp_home<T>(name: &str, test: impl FnOnce(&Path) -> T) -> T {
-        let _guard = crate::lock_test_home_env();
         let temp_home = std::env::temp_dir().join(format!(
             "onespace-secrets-{}-{}",
             name,
             uuid::Uuid::new_v4()
         ));
         fs::create_dir_all(&temp_home).expect("create temporary home");
-        let original_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", &temp_home);
+        let isolated_app_dir = temp_home.join(".config").join("onespace");
+        fs::create_dir_all(&isolated_app_dir).expect("create temporary app dir");
+        let seeded_config = format!(
+            r#"{{"storage_type":"local","local_storage_path":{}}}"#,
+            serde_json::to_string(&temp_home.join("data")).expect("encode temp data path")
+        );
+        fs::write(isolated_app_dir.join("config.json"), seeded_config)
+            .expect("seed temporary config");
+
+        let _guard = crate::config::test_home::TestHomeGuard::set(&temp_home);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test(&temp_home)));
-        restore_home(original_home);
         let _ = fs::remove_dir_all(&temp_home);
         match result {
             Ok(value) => value,
             Err(payload) => std::panic::resume_unwind(payload),
-        }
-    }
-
-    fn restore_home(original_home: Option<std::ffi::OsString>) {
-        if let Some(home) = original_home {
-            std::env::set_var("HOME", home);
-        } else {
-            std::env::remove_var("HOME");
         }
     }
 

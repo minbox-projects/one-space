@@ -565,6 +565,11 @@ mod tests {
 
     #[test]
     fn test_materialize_claude_settings_uses_protocol_router() {
+        // Retains the global HOME lock on purpose: `materialize` starts the
+        // process-wide protocol router (`RUNNING_SERVER`) and its worker threads
+        // read `protocol_router.json` through `get_app_dir()` on other threads,
+        // where the thread-local HOME override is not visible. The singleton
+        // server also has to stay serialized with the other router tests.
         let _guard = crate::lock_test_home_env();
         let original_home = std::env::var("HOME").ok();
         let home = temp_dir();

@@ -1294,52 +1294,52 @@ fn build_resume_command_unknown_tool_returns_none() {
 
 #[test]
 fn antigravity_managed_launch_env_injects_gemini_api_key_and_base_url() {
-    let _guard = crate::lock_test_home_env();
     let temp_home = make_temp_dir("antigravity-launch-env");
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", &temp_home);
+    // This case only resolves `get_data_dir()` (through `get_app_dir()`), so a
+    // thread-local HOME override replaces the process `HOME` mutation and the
+    // global `crate::lock_test_home_env` mutex. Seed an isolated device config
+    // so the first-run local mirror never falls back to the real home through
+    // `dirs::home_dir()`.
+    let app_dir = temp_home.join(".config").join("onespace");
+    fs::create_dir_all(&app_dir).expect("create app dir");
+    let seeded_config = format!(
+        r#"{{"storage_type":"local","local_storage_path":{}}}"#,
+        serde_json::to_string(&temp_home.join("data")).expect("encode temp data path")
+    );
+    fs::write(app_dir.join("config.json"), seeded_config).expect("seed config");
+    let _guard = crate::config::test_home::TestHomeGuard::set(&temp_home);
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let provider_id = uuid::Uuid::new_v4().to_string();
-        let providers_path = crate::get_data_dir()
-            .expect("data dir")
-            .join("data")
-            .join("providers")
-            .join("state.json");
-        if let Some(parent) = providers_path.parent() {
-            fs::create_dir_all(parent).expect("create providers dir");
-        }
-        let payload = serde_json::json!({
-            "active": { "antigravity": provider_id },
-            "providers": [{
-                "id": provider_id,
-                "name": "Antigravity",
-                "tool": "antigravity",
-                "api_key": "sk-antigravity",
-                "base_url": "https://antigravity.example.com"
-            }]
-        });
-        fs::write(&providers_path, serde_json::to_string(&payload).unwrap())
-            .expect("write providers state");
-
-        let env = antigravity_managed_launch_env();
-        assert_eq!(
-            env.get("GEMINI_API_KEY").map(String::as_str),
-            Some("sk-antigravity")
-        );
-        assert_eq!(
-            env.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
-            Some("https://antigravity.example.com")
-        );
-    }));
-
-    if let Some(home) = original_home {
-        std::env::set_var("HOME", home);
-    } else {
-        std::env::remove_var("HOME");
+    let provider_id = uuid::Uuid::new_v4().to_string();
+    let providers_path = crate::get_data_dir()
+        .expect("data dir")
+        .join("data")
+        .join("providers")
+        .join("state.json");
+    if let Some(parent) = providers_path.parent() {
+        fs::create_dir_all(parent).expect("create providers dir");
     }
+    let payload = serde_json::json!({
+        "active": { "antigravity": provider_id },
+        "providers": [{
+            "id": provider_id,
+            "name": "Antigravity",
+            "tool": "antigravity",
+            "api_key": "sk-antigravity",
+            "base_url": "https://antigravity.example.com"
+        }]
+    });
+    fs::write(&providers_path, serde_json::to_string(&payload).unwrap())
+        .expect("write providers state");
+
+    let env = antigravity_managed_launch_env();
+    assert_eq!(
+        env.get("GEMINI_API_KEY").map(String::as_str),
+        Some("sk-antigravity")
+    );
+    assert_eq!(
+        env.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
+        Some("https://antigravity.example.com")
+    );
+
     let _ = fs::remove_dir_all(&temp_home);
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
 }

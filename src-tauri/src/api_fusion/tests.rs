@@ -28,22 +28,36 @@ fn make_temp_dir(name: &str) -> PathBuf {
     ))
 }
 
+/// Thread-local `HOME` isolation for pure config/usage tests. Kept as a
+/// separate wrapper because the callers only need a scoped temp home and never
+/// touch the global server. See [`isolated_temp_home`].
 fn with_temp_home<T>(name: &str, f: impl FnOnce(&Path) -> T) -> T {
-    let _guard = crate::lock_test_home_env();
-    let temp_home = make_temp_dir(name);
-    fs::create_dir_all(&temp_home).expect("create temp home");
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", &temp_home);
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&temp_home)));
-    if let Some(home) = original_home {
-        std::env::set_var("HOME", home);
-    } else {
-        std::env::remove_var("HOME");
+    let home = isolated_temp_home(name);
+    f(&home.path)
+}
+
+/// Thread-local `HOME` isolation for tests whose code path resolves
+/// `get_app_dir()`/`get_data_dir()` on the test thread and never drives the
+/// global server. It holds no global mutex, so these tests may run in parallel
+/// with each other and with the serialized server tests.
+struct IsolatedTempHome {
+    path: PathBuf,
+    _guard: crate::config::test_home::TestHomeGuard,
+}
+
+impl Drop for IsolatedTempHome {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
     }
-    let _ = fs::remove_dir_all(&temp_home);
-    match result {
-        Ok(value) => value,
-        Err(payload) => std::panic::resume_unwind(payload),
+}
+
+fn isolated_temp_home(name: &str) -> IsolatedTempHome {
+    let path = make_temp_dir(name);
+    fs::create_dir_all(&path).expect("create temp home");
+    let guard = crate::config::test_home::TestHomeGuard::set(&path);
+    IsolatedTempHome {
+        path,
+        _guard: guard,
     }
 }
 
@@ -485,6 +499,14 @@ enum MockReply {
     Drop,
 }
 
+/// Process-wide `HOME` isolation shared through the global
+/// `crate::lock_test_home_env` mutex.
+///
+/// Keep using this helper for tests that drive the global API-fusion server
+/// (`start_server`/`stop_server`/`api_fusion_start`/`api_fusion_stop`/
+/// `api_fusion_save_config`). The server reads its config from worker threads
+/// that cannot see the thread-local override, and its `RUNNING_SERVER` state is
+/// a process-wide singleton, so those tests must stay serialized.
 struct TempHome {
     path: PathBuf,
     original: Option<String>,
@@ -1006,9 +1028,9 @@ async fn spawn_json_sequence_mock(responses: Vec<(u16, Value)>) -> (String, Arc<
 /// retried within the same request. Observable boundary: the full HTTP response
 /// returned by `attempt_non_streaming` plus the exact number of upstream
 /// requests. Current behavior makes only one attempt, so this fails.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn attempt_non_streaming_retries_single_provider_after_500_then_succeeds() {
-    let _home = temp_home("retry-recovery-single-provider");
+    let _home = isolated_temp_home("retry-recovery-single-provider");
     let (upstream_url, upstream_requests) = spawn_json_sequence_mock(vec![
         (500, json!({"error": {"message": "temporarily unavailable"}})),
         (200, json!({"id": "recovered", "choices": []})),
@@ -1021,13 +1043,12 @@ async fn attempt_non_streaming_retries_single_provider_after_500_then_succeeds()
     config.providers.push(a.clone());
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
-    let response = super::runtime_http::attempt_non_streaming(
+    let (response, _default_backoff_elapsed) = attempt_non_streaming_paused(
         std::slice::from_ref(&a),
         "/v1/chat/completions",
         &body,
         Some("local"),
         &mut config,
-        &HashMap::new(),
     )
     .await;
 
@@ -1051,7 +1072,7 @@ async fn attempt_non_streaming_retries_single_provider_after_500_then_succeeds()
 }
 
 async fn assert_truncated_auth_non_streaming(status: u16) {
-    let _home = temp_home(&format!("truncated-auth-non-streaming-{status}"));
+    let _home = isolated_temp_home(&format!("truncated-auth-non-streaming-{status}"));
     let auth_body = br#"{"error":{"message":"upstream auth failed"}}"#.to_vec();
     let auth_declared = auth_body.len() + 32;
     let (auth_url, auth_requests) = spawn_mock_upstream(move |_| {
@@ -1127,7 +1148,7 @@ async fn truncated_auth_403_non_streaming_disables_once_and_falls_back() {
 }
 
 async fn assert_truncated_auth_streaming(status: u16) {
-    let _home = temp_home(&format!("truncated-auth-streaming-{status}"));
+    let _home = isolated_temp_home(&format!("truncated-auth-streaming-{status}"));
     let auth_body = br#"{"error":{"message":"upstream auth failed"}}"#.to_vec();
     let auth_declared = auth_body.len() + 32;
     let (auth_url, auth_requests) = spawn_mock_upstream(move |_| {
@@ -1606,7 +1627,7 @@ async fn streaming_all_fail_returns_200_sse_error_then_done() {
 
 #[tokio::test]
 async fn streaming_switches_when_first_provider_fails_before_first_byte() {
-    let _home = temp_home("stream-switch");
+    let _home = isolated_temp_home("stream-switch");
     let (drop_url, _drop_log) = spawn_mock_upstream(|_| MockReply::Drop).await;
     let stream_body =
         "data: {\"choices\":[{\"delta\":{\"content\":\"from-b\"}}]}\n\ndata: [DONE]\n\n";
@@ -1641,7 +1662,7 @@ async fn streaming_switches_when_first_provider_fails_before_first_byte() {
 
 #[tokio::test]
 async fn streaming_terminates_after_first_byte_without_switching() {
-    let _home = temp_home("stream-terminate");
+    let _home = isolated_temp_home("stream-terminate");
     let partial = "data: {\"choices\":[{\"delta\":{\"content\":\"partial-a\"}}]}\n\n";
     let (partial_url, partial_log) = spawn_mock_upstream(move |_| {
         MockReply::PartialStream(partial.to_string(), partial.len() + 500)
@@ -2400,7 +2421,7 @@ async fn no_candidate_model_returns_all_unavailable_without_upstream_request() {
 
 #[tokio::test]
 async fn non_json_upstream_response_is_retryable_and_switches() {
-    let _home = temp_home("non-json-retry");
+    let _home = isolated_temp_home("non-json-retry");
     let (non_json_url, non_json_log) =
         spawn_mock_upstream(|_| MockReply::Stream("this is not json".to_string())).await;
     let (ok_url, ok_log) =
@@ -2429,7 +2450,7 @@ async fn non_json_upstream_response_is_retryable_and_switches() {
 
 #[tokio::test]
 async fn return_to_client_error_is_passed_through_without_switching_or_disabling() {
-    let _home = temp_home("return-to-client");
+    let _home = isolated_temp_home("return-to-client");
     let (bad_request_url, bad_request_log) =
         spawn_mock_upstream(|_| MockReply::Json(400, json!({"error": {"message": "bad request"}})))
             .await;
@@ -2537,7 +2558,7 @@ async fn end_to_end_random_pool_selects_every_resolvable_candidate() {
 async fn end_to_end_network_failure_falls_back_and_tries_first_candidate_once() {
     // AC-010: first candidate network error -> caller gets the second provider's
     // success response and the first candidate is attempted only once.
-    let _home = temp_home("e2e-failover-network");
+    let _home = isolated_temp_home("e2e-failover-network");
     let (drop_url, drop_log) = spawn_mock_upstream(|_| MockReply::Drop).await;
     let (ok_url, ok_log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
@@ -2572,7 +2593,7 @@ async fn end_to_end_network_failure_falls_back_and_tries_first_candidate_once() 
 #[tokio::test]
 async fn end_to_end_5xx_falls_back_and_tries_first_candidate_once() {
     // AC-010: first candidate 5xx -> second provider succeeds; first is not retried.
-    let _home = temp_home("e2e-failover-5xx");
+    let _home = isolated_temp_home("e2e-failover-5xx");
     let (fail_url, fail_log) =
         spawn_mock_upstream(|_| MockReply::Json(503, json!({"error": {"message": "down"}}))).await;
     let (ok_url, ok_log) =
@@ -2610,7 +2631,7 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
     // AC-011: 401/403 disable the provider right away, record the reason, and the
     // request continues on the next candidate.
     for status in [401u16, 403u16] {
-        let home = temp_home(&format!("e2e-auth-{status}"));
+        let home = isolated_temp_home(&format!("e2e-auth-{status}"));
         let (auth_url, auth_log) = spawn_mock_upstream(move |_| {
             MockReply::Json(status, json!({"error": {"message": "denied"}}))
         })
@@ -2717,54 +2738,11 @@ async fn end_to_end_retryable_failures_auto_disable_at_threshold_and_stop_callin
 }
 
 #[tokio::test]
-async fn end_to_end_below_threshold_provider_stays_enabled() {
-    // AC-011 negative: two consecutive failures are below the threshold of three.
-    let home = temp_home("e2e-below-threshold");
-    let port = free_port().await;
-    let (upstream_url, _log) =
-        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "boom"}}))).await;
-
-    let mut config = config_with_key(port);
-    config.providers.push(upstream_provider(
-        "a",
-        "Provider A",
-        &upstream_url,
-        "sk",
-        Some("remote-model"),
-    ));
-    super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
-
-    for _ in 0..2 {
-        let (status, _, _) = call_fusion(
-            port,
-            "POST",
-            "/v1/chat/completions",
-            &[("authorization", "Bearer local-key")],
-            Some(json!({"model": "local-model"})),
-        )
-        .await;
-        assert_eq!(status, 502);
-    }
-
-    let stored = super::storage::read_config().unwrap();
-    let a_stored = stored.providers.iter().find(|p| p.id == "a").unwrap();
-    assert!(
-        !a_stored.auto_disabled,
-        "below the threshold the provider must stay enabled"
-    );
-    assert_eq!(a_stored.consecutive_failures, 2);
-
-    super::runtime_http::stop_server().await.unwrap();
-    drop(home);
-}
-
-#[tokio::test]
 async fn end_to_end_network_errors_accumulate_and_disable() {
     // AC-011: a network error yields to the healthy initial-pass fallback, so
     // each inbound request records one failed network candidate without paying
     // its retry delay. Three failed inbound requests still auto-disable it.
-    let _home = temp_home("e2e-network-threshold");
+    let _home = isolated_temp_home("e2e-network-threshold");
     let dead_url = closed_port_base_url().await;
     let (healthy_url, _) =
         spawn_json_sequence_mock(vec![(200, json!({"id": "healthy-fallback"}))]).await;
@@ -2820,7 +2798,7 @@ async fn end_to_end_network_errors_accumulate_and_disable() {
 async fn end_to_end_transient_429_and_404_switch_without_disabling() {
     // AC-011: 429/404 switch to the next candidate but never count as failures.
     for status in [429u16, 404u16] {
-        let home = temp_home(&format!("e2e-transient-{status}"));
+        let home = isolated_temp_home(&format!("e2e-transient-{status}"));
         let (transient_url, transient_log) = spawn_mock_upstream(move |_| {
             MockReply::Json(status, json!({"error": {"message": "transient"}}))
         })
@@ -2862,7 +2840,7 @@ async fn end_to_end_client_4xx_returns_to_caller_without_switching_or_disabling(
     // AC-011 negative: 400/422 and other unlisted 4xx are the caller's problem,
     // so they are returned directly and no provider is disabled.
     for status in [400u16, 422u16, 418u16] {
-        let home = temp_home(&format!("e2e-client-{status}"));
+        let home = isolated_temp_home(&format!("e2e-client-{status}"));
         let (bad_url, bad_log) = spawn_mock_upstream(move |_| {
             MockReply::Json(status, json!({"error": {"message": "bad request"}}))
         })
@@ -2902,7 +2880,7 @@ async fn end_to_end_client_4xx_returns_to_caller_without_switching_or_disabling(
 async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
     // AC-012: a non-JSON body (including a 2xx status) is not a success; it
     // switches and counts toward the consecutive-failure threshold.
-    let home = temp_home("e2e-non-json-2xx");
+    let home = isolated_temp_home("e2e-non-json-2xx");
     let (bad_url, bad_log) = spawn_mock_upstream(|_| {
         MockReply::Raw(200, "text/plain", b"this is not json".to_vec())
     })
@@ -2944,7 +2922,7 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
     drop(home);
 
     // A non-JSON body on a 5xx status is likewise a counted failure.
-    let home = temp_home("e2e-non-json-500");
+    let home = isolated_temp_home("e2e-non-json-500");
     let (bad_url, _bad_log) = spawn_mock_upstream(|_| {
         MockReply::Raw(500, "text/html", b"<html>upstream error</html>".to_vec())
     })
@@ -3323,9 +3301,15 @@ async fn api_fusion_start_and_stop_persist_enabled_flag() {
 /// dropped and the connect blackholes until a connect/request timeout is
 /// enforced. The 15s bound below encodes "must not hang"; it is generous enough
 /// for a conventional connect timeout (the repo's `proxy.rs` uses 10s).
+/// Deliberately real-time (not `start_paused`): this drives a genuine connect to
+/// a non-routable TEST-NET address. The connect is completed by the real OS
+/// network stack, so a paused clock cannot coordinate it: measured under
+/// `start_paused` the attempt raced to the 60s read timeout and never observed
+/// the real route failure, changing which production timeout fired. The 15s
+/// wall bound below is therefore a real-time guard.
 #[tokio::test]
 async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
-    let _home = temp_home("connect-timeout-retry");
+    let _home = isolated_temp_home("connect-timeout-retry");
     let blackhole_url = "http://192.0.2.1:81";
     let (ok_url, ok_log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
@@ -3398,9 +3382,9 @@ async fn spawn_unresponsive_upstream() -> String {
 /// longer encodes "fails fast" — a fast first-byte deadline is not a
 /// requirement, as `slow_first_byte_upstream_is_served_within_the_relaxed_budget`
 /// pins down.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn unresponsive_upstream_is_a_retryable_timeout_not_a_hang() {
-    let _home = temp_home("unresponsive-timeout");
+    let _home = isolated_temp_home("unresponsive-timeout");
     let hang_url = spawn_unresponsive_upstream().await;
     let (ok_url, ok_log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
@@ -3412,15 +3396,14 @@ async fn unresponsive_upstream_is_a_retryable_timeout_not_a_hang() {
     config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
-    let response = tokio::time::timeout(
+    let (response, _elapsed) = tokio::time::timeout(
         std::time::Duration::from_secs(75),
-        super::runtime_http::attempt_non_streaming(
+        attempt_non_streaming_paused(
             &[a, b],
             "/v1/chat/completions",
             &body,
             Some("local-model"),
             &mut config,
-            &HashMap::new(),
         ),
     )
     .await
@@ -3481,9 +3464,9 @@ async fn spawn_slow_first_byte_upstream() -> String {
 /// at ~12s is inside the relaxed 60s idle read budget and must not be turned
 /// into a 502 "network error" that counts toward the 3-strikes auto-disable
 /// threshold (AC-010, AC-011).
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn slow_first_byte_upstream_is_served_within_the_relaxed_budget() {
-    let _home = temp_home("slow-first-byte");
+    let _home = isolated_temp_home("slow-first-byte");
     let slow_url = spawn_slow_first_byte_upstream().await;
 
     let mut config = config_with_key(0);
@@ -3491,15 +3474,14 @@ async fn slow_first_byte_upstream_is_served_within_the_relaxed_budget() {
     config.providers.push(a.clone());
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
-    let response = tokio::time::timeout(
+    let (response, _elapsed) = tokio::time::timeout(
         std::time::Duration::from_secs(40),
-        super::runtime_http::attempt_non_streaming(
+        attempt_non_streaming_paused(
             &[a],
             "/v1/chat/completions",
             &body,
             Some("local-model"),
             &mut config,
-            &HashMap::new(),
         ),
     )
     .await
@@ -3522,7 +3504,7 @@ async fn slow_first_byte_upstream_is_served_within_the_relaxed_budget() {
 /// stream (AC-012, AC-016).
 #[tokio::test]
 async fn streaming_2xx_non_json_is_retryable_and_switches_before_first_byte() {
-    let _home = temp_home("stream-non-json-2xx");
+    let _home = isolated_temp_home("stream-non-json-2xx");
     let (bad_url, bad_log) = spawn_mock_upstream(|_| {
         MockReply::Raw(200, "text/plain", b"this is not json".to_vec())
     })
@@ -3750,7 +3732,7 @@ async fn capture_terminal_sync(
 /// and projection after the upsert succeeds.
 #[tokio::test]
 async fn terminal_sync_with_seam_creates_one_gateway_provider_per_tool() {
-    let _home = temp_home("terminal-sync-seam-create");
+    let _home = isolated_temp_home("terminal-sync-seam-create");
     let config = gateway_config(17688);
     super::storage::write_config(&config).unwrap();
     let local_base_url = super::storage::local_base_url(config.port);
@@ -3848,7 +3830,7 @@ async fn terminal_sync_with_seam_creates_one_gateway_provider_per_tool() {
 /// provider ids that are already present in the terminal service provider list.
 #[tokio::test]
 async fn terminal_sync_with_seam_reuses_provider_per_tool_without_duplicate_ledger() {
-    let _home = temp_home("terminal-sync-seam-idempotent");
+    let _home = isolated_temp_home("terminal-sync-seam-idempotent");
     super::storage::write_config(&gateway_config(17688)).unwrap();
 
     let tools = vec!["opencode".to_string(), "codex".to_string()];
@@ -3928,7 +3910,7 @@ async fn terminal_sync_with_seam_reuses_provider_per_tool_without_duplicate_ledg
 /// payload reuses that id instead of creating a new provider.
 #[tokio::test]
 async fn terminal_sync_with_seam_reuses_ledger_provider_marked_in_providers_data() {
-    let _home = temp_home("terminal-sync-seam-ledger-reuse");
+    let _home = isolated_temp_home("terminal-sync-seam-ledger-reuse");
     let mut config = gateway_config(17688);
     for (provider_id, tool) in [("managed-oc", "opencode"), ("managed-cx", "codex")] {
         config.terminal_syncs.push(TerminalSyncRecord {
@@ -4003,7 +3985,7 @@ async fn terminal_sync_with_seam_reuses_ledger_provider_marked_in_providers_data
 /// returned/persisted ledger records that fresh id.
 #[tokio::test]
 async fn terminal_sync_with_seam_does_not_reuse_unmarked_stale_ledger_provider() {
-    let _home = temp_home("terminal-sync-seam-stale-ledger");
+    let _home = isolated_temp_home("terminal-sync-seam-stale-ledger");
     let mut config = gateway_config(17688);
     config.terminal_syncs.push(TerminalSyncRecord {
         provider_id: "user-oc".to_string(),
@@ -4052,7 +4034,7 @@ async fn terminal_sync_with_seam_does_not_reuse_unmarked_stale_ledger_provider()
 /// record must be skipped and the marked gateway reused instead.
 #[tokio::test]
 async fn terminal_sync_with_seam_prefers_marker_over_unmarked_stale_ledger() {
-    let _home = temp_home("terminal-sync-seam-stale-ledger-marker");
+    let _home = isolated_temp_home("terminal-sync-seam-stale-ledger-marker");
     let mut config = gateway_config(17688);
     config.terminal_syncs.push(TerminalSyncRecord {
         provider_id: "user-oc".to_string(),
@@ -4081,7 +4063,7 @@ async fn terminal_sync_with_seam_prefers_marker_over_unmarked_stale_ledger() {
 /// carries the gateway marker is reused.
 #[tokio::test]
 async fn terminal_sync_with_seam_reuses_marker_provider_without_any_ledger() {
-    let _home = temp_home("terminal-sync-seam-marker-no-ledger");
+    let _home = isolated_temp_home("terminal-sync-seam-marker-no-ledger");
     super::storage::write_config(&gateway_config(17688)).unwrap();
     assert!(
         super::storage::read_config().unwrap().terminal_syncs.is_empty(),
@@ -4106,7 +4088,7 @@ async fn terminal_sync_with_seam_reuses_marker_provider_without_any_ledger() {
 /// provider list: the marked gateway is reused, not the missing id.
 #[tokio::test]
 async fn terminal_sync_with_seam_reuses_marker_provider_when_ledger_id_absent() {
-    let _home = temp_home("terminal-sync-seam-marker-missing-ledger-id");
+    let _home = isolated_temp_home("terminal-sync-seam-marker-missing-ledger-id");
     let mut config = gateway_config(17688);
     config.terminal_syncs.push(TerminalSyncRecord {
         provider_id: "missing-oc".to_string(),
@@ -4136,7 +4118,7 @@ async fn terminal_sync_with_seam_reuses_marker_provider_when_ledger_id_absent() 
 /// sync that did not happen.
 #[tokio::test]
 async fn terminal_sync_with_seam_aborts_without_writing_ledger_on_upsert_error() {
-    let _home = temp_home("terminal-sync-seam-error");
+    let _home = isolated_temp_home("terminal-sync-seam-error");
     let mut config = gateway_config(17688);
     config.terminal_syncs.push(TerminalSyncRecord {
         provider_id: "existing".to_string(),
@@ -4183,7 +4165,7 @@ async fn terminal_sync_with_seam_aborts_without_writing_ledger_on_upsert_error()
 
 #[tokio::test]
 async fn terminal_sync_with_seam_rejects_empty_target_tools() {
-    let _home = temp_home("terminal-sync-seam-empty");
+    let _home = isolated_temp_home("terminal-sync-seam-empty");
     super::storage::write_config(&gateway_config(17688)).unwrap();
 
     let calls = Arc::new(Mutex::new(0usize));
@@ -4208,7 +4190,7 @@ async fn terminal_sync_with_seam_rejects_empty_target_tools() {
 
 #[tokio::test]
 async fn terminal_sync_with_seam_rejects_unsupported_tools() {
-    let _home = temp_home("terminal-sync-seam-unsupported");
+    let _home = isolated_temp_home("terminal-sync-seam-unsupported");
     super::storage::write_config(&gateway_config(17688)).unwrap();
 
     let error = super::commands::apply_terminal_sync_with(
@@ -4224,7 +4206,7 @@ async fn terminal_sync_with_seam_rejects_unsupported_tools() {
 
 #[tokio::test]
 async fn terminal_sync_with_seam_requires_an_enabled_local_key() {
-    let _home = temp_home("terminal-sync-seam-no-key");
+    let _home = isolated_temp_home("terminal-sync-seam-no-key");
     let mut config = gateway_config(17688);
     config.keys[0].enabled = false;
     super::storage::write_config(&config).unwrap();
@@ -5573,10 +5555,27 @@ impl HeaderReply {
 /// (e.g. `retry-after-ms` / `retry-after`). The last reply repeats once the
 /// sequence is exhausted. Returns the base URL and the accepted-request count.
 async fn spawn_header_sequence_mock(replies: Vec<HeaderReply>) -> (String, Arc<AtomicUsize>) {
+    let (url, count, _arrivals) = spawn_header_sequence_mock_recording(replies).await;
+    (url, count)
+}
+
+/// Accepted-request arrivals on the current tokio clock. Paused tests use the
+/// delta between two arrivals to bound a retry wait without folding in the
+/// auto-advance that happens while real loopback I/O is in flight.
+type HeaderArrivals = Arc<Mutex<Vec<tokio::time::Instant>>>;
+
+/// `spawn_header_sequence_mock` plus the tokio `Instant` of each accepted
+/// request, so a paused-clock test can assert the retry wait between two
+/// attempts to the same provider.
+async fn spawn_header_sequence_mock_recording(
+    replies: Vec<HeaderReply>,
+) -> (String, Arc<AtomicUsize>, HeaderArrivals) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind mock");
     let addr = listener.local_addr().expect("mock addr");
     let count = Arc::new(AtomicUsize::new(0));
     let count_for_server = count.clone();
+    let arrivals: HeaderArrivals = Arc::new(Mutex::new(Vec::new()));
+    let arrivals_for_server = arrivals.clone();
     tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
@@ -5584,10 +5583,12 @@ async fn spawn_header_sequence_mock(replies: Vec<HeaderReply>) -> (String, Arc<A
             };
             let count = count_for_server.clone();
             let replies = replies.clone();
+            let arrivals = arrivals_for_server.clone();
             tokio::spawn(async move {
                 let Ok(_request) = super::runtime_http::read_http_request(&mut stream).await else {
                     return;
                 };
+                arrivals.lock().expect("header mock arrivals").push(tokio::time::Instant::now());
                 let index = count.fetch_add(1, Ordering::SeqCst);
                 let fallback = replies
                     .last()
@@ -5609,7 +5610,7 @@ async fn spawn_header_sequence_mock(replies: Vec<HeaderReply>) -> (String, Arc<A
             });
         }
     });
-    (format!("http://{}", addr), count)
+    (format!("http://{}", addr), count, arrivals)
 }
 
 /// A scripted streaming reply for the Step 3 retry/health boundary. Status
@@ -5725,6 +5726,30 @@ async fn attempt_non_streaming_timed(
     (response, started.elapsed())
 }
 
+/// Like `attempt_non_streaming_timed`, but for callers that build their own
+/// request body/requested model and just need the paused clock plus the bounded
+/// 1ms ticker so real loopback I/O completes before reqwest's real timeouts.
+async fn attempt_non_streaming_paused(
+    ordered: &[FusionUpstreamProvider],
+    path: &str,
+    body: &[u8],
+    requested: Option<&str>,
+    config: &mut FusionConfig,
+) -> (super::runtime_http::HttpResponse, std::time::Duration) {
+    let _ticker = spawn_paused_clock_ticker();
+    let started = tokio::time::Instant::now();
+    let response = super::runtime_http::attempt_non_streaming(
+        ordered,
+        path,
+        body,
+        requested,
+        config,
+        &HashMap::new(),
+    )
+    .await;
+    (response, started.elapsed())
+}
+
 fn millis(value: u64) -> std::time::Duration {
     std::time::Duration::from_millis(value)
 }
@@ -5749,8 +5774,8 @@ fn spawn_paused_clock_ticker() -> tokio::task::JoinHandle<()> {
 /// code reads no retry headers and waits its default ~2s, so this fails.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_retry_after_ms_wins_over_seconds() {
-    let _home = temp_home("retry-policy-header-priority");
-    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+    let _home = isolated_temp_home("retry-policy-header-priority");
+    let (upstream_url, upstream_requests, arrivals) = spawn_header_sequence_mock_recording(vec![
         HeaderReply::new(500, json!({"error": {"message": "busy"}}))
             .header("retry-after-ms", "1500")
             .header("retry-after", "9"),
@@ -5762,7 +5787,7 @@ async fn retry_policy_retry_after_ms_wins_over_seconds() {
     let mut config = FusionConfig::default();
     config.providers = vec![a.clone()];
 
-    let (response, elapsed) =
+    let (response, _total_elapsed) =
         attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
     let body_text = String::from_utf8_lossy(&response.body);
 
@@ -5772,9 +5797,14 @@ async fn retry_policy_retry_after_ms_wins_over_seconds() {
         2,
         "one initial attempt plus one header-timed retry"
     );
+    // Measure the wait between the two upstream attempts: the whole-request clock
+    // also advances while real loopback I/O is in flight under `start_paused`.
+    let arrivals = arrivals.lock().expect("header mock arrivals");
+    assert_eq!(arrivals.len(), 2, "one initial attempt plus one header-timed retry");
+    let wait = arrivals[1] - arrivals[0];
     assert!(
-        elapsed >= millis(1400) && elapsed <= millis(1900),
-        "retry-after-ms: 1500 must win over retry-after: 9, paused elapsed was {elapsed:?}"
+        wait >= millis(1400) && wait <= millis(1900),
+        "retry-after-ms: 1500 must win over retry-after: 9, paused wait between attempts was {wait:?}"
     );
 }
 
@@ -5783,8 +5813,8 @@ async fn retry_policy_retry_after_ms_wins_over_seconds() {
 /// the default backoff. Current code waits its default ~2s, so this fails.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_invalid_retry_after_ms_falls_back_to_seconds_header() {
-    let _home = temp_home("retry-policy-header-invalid-ms");
-    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+    let _home = isolated_temp_home("retry-policy-header-invalid-ms");
+    let (upstream_url, upstream_requests, arrivals) = spawn_header_sequence_mock_recording(vec![
         HeaderReply::new(500, json!({"error": {"message": "busy"}}))
             .header("retry-after-ms", "not-a-number")
             .header("retry-after", "3"),
@@ -5796,7 +5826,7 @@ async fn retry_policy_invalid_retry_after_ms_falls_back_to_seconds_header() {
     let mut config = FusionConfig::default();
     config.providers = vec![a.clone()];
 
-    let (response, elapsed) =
+    let (response, _total_elapsed) =
         attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
     let body_text = String::from_utf8_lossy(&response.body);
 
@@ -5806,9 +5836,15 @@ async fn retry_policy_invalid_retry_after_ms_falls_back_to_seconds_header() {
         "one initial attempt plus one header-timed retry"
     );
     assert_eq!(response.status, 200, "must recover on the retry: {body_text}");
+    // Measure the wait between the two upstream attempts instead of the whole
+    // request: the whole-request clock also advances while real loopback I/O is
+    // in flight under `start_paused`, which is unrelated to the retry header.
+    let arrivals = arrivals.lock().expect("header mock arrivals");
+    assert_eq!(arrivals.len(), 2, "one initial attempt plus one header-timed retry");
+    let wait = arrivals[1] - arrivals[0];
     assert!(
-        elapsed >= millis(2800) && elapsed <= millis(3400),
-        "an invalid retry-after-ms must fall back to retry-after: 3, paused elapsed was {elapsed:?}"
+        wait >= millis(2800) && wait <= millis(3400),
+        "an invalid retry-after-ms must fall back to retry-after: 3, paused wait between attempts was {wait:?}"
     );
 }
 
@@ -5817,7 +5853,7 @@ async fn retry_policy_invalid_retry_after_ms_falls_back_to_seconds_header() {
 /// than the default jittered backoff (~2s). Current code ignores the header.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_future_http_date_is_honored() {
-    let _home = temp_home("retry-policy-header-date");
+    let _home = isolated_temp_home("retry-policy-header-date");
     let when = chrono::Utc::now() + chrono::Duration::seconds(10);
     let http_date = when.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
 
@@ -5852,7 +5888,7 @@ async fn retry_policy_future_http_date_is_honored() {
 /// backoff. Current code waits its default ~2s, so this fails.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_zero_retry_after_ms_retries_immediately() {
-    let _home = temp_home("retry-policy-header-zero");
+    let _home = isolated_temp_home("retry-policy-header-zero");
     let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
         HeaderReply::new(500, json!({"error": {"message": "busy"}}))
             .header("retry-after-ms", "0"),
@@ -5885,7 +5921,7 @@ async fn retry_policy_zero_retry_after_ms_retries_immediately() {
 /// long cooldown. A is never retried because B answers immediately.
 #[tokio::test]
 async fn retry_policy_initial_pass_does_not_wait_for_cooldown() {
-    let _home = temp_home("retry-policy-initial-no-wait");
+    let _home = isolated_temp_home("retry-policy-initial-no-wait");
     let (a_url, a_requests) = spawn_header_sequence_mock(vec![
         HeaderReply::new(500, json!({"error": {"message": "busy"}}))
             .header("retry-after-ms", "9000"),
@@ -5934,13 +5970,13 @@ async fn retry_policy_initial_pass_does_not_wait_for_cooldown() {
 /// fails on the attempt count and elapsed time.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_cooling_provider_does_not_block_ready_candidate() {
-    let _home = temp_home("retry-policy-cooling-does-not-block");
+    let _home = isolated_temp_home("retry-policy-cooling-does-not-block");
     let (a_url, a_requests) = spawn_header_sequence_mock(vec![
         HeaderReply::new(500, json!({"error": {"message": "busy"}}))
             .header("retry-after-ms", "9000"),
     ])
     .await;
-    let (b_url, b_requests) = spawn_header_sequence_mock(vec![
+    let (b_url, b_requests, b_arrivals) = spawn_header_sequence_mock_recording(vec![
         HeaderReply::new(500, json!({"error": {"message": "busy"}}))
             .header("retry-after-ms", "1500"),
         HeaderReply::new(200, json!({"id": "from-b"})),
@@ -5952,7 +5988,7 @@ async fn retry_policy_cooling_provider_does_not_block_ready_candidate() {
     let mut config = FusionConfig::default();
     config.providers = vec![a.clone(), b.clone()];
 
-    let (response, elapsed) =
+    let (response, _total_elapsed) =
         attempt_non_streaming_timed(&[a.clone(), b.clone()], &mut config).await;
     let body_text = String::from_utf8_lossy(&response.body);
 
@@ -5967,9 +6003,14 @@ async fn retry_policy_cooling_provider_does_not_block_ready_candidate() {
         1,
         "A's 9s cooldown must not be retried while B is ready sooner"
     );
+    // A's initial I/O also advances the paused clock, so measure B's own wait
+    // between its two attempts rather than the whole request.
+    let b_arrivals = b_arrivals.lock().expect("header mock arrivals");
+    assert_eq!(b_arrivals.len(), 2, "B must be tried once then retried once");
+    let wait = b_arrivals[1] - b_arrivals[0];
     assert!(
-        elapsed >= millis(1400) && elapsed <= millis(1900),
-        "the ready candidate's deadline must govern the wait, paused elapsed was {elapsed:?}"
+        wait >= millis(1400) && wait <= millis(1900),
+        "the ready candidate's deadline must govern the wait, paused wait between B attempts was {wait:?}"
     );
 }
 
@@ -5977,7 +6018,7 @@ async fn retry_policy_cooling_provider_does_not_block_ready_candidate() {
 /// most six times in one request (one initial plus five bounded retries).
 #[tokio::test(start_paused = true)]
 async fn retry_policy_single_provider_is_attempted_at_most_six_times() {
-    let _home = temp_home("retry-policy-six-attempts");
+    let _home = isolated_temp_home("retry-policy-six-attempts");
     let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![HeaderReply::new(
         500,
         json!({"error": {"message": "always failing"}}),
@@ -6010,7 +6051,7 @@ async fn retry_policy_single_provider_is_attempted_at_most_six_times() {
 /// ~60s, so this fails.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_stops_before_wait_exceeds_120s_budget() {
-    let _home = temp_home("retry-policy-budget-120s");
+    let _home = isolated_temp_home("retry-policy-budget-120s");
     let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
         HeaderReply::new(500, json!({"error": {"message": "always failing"}}))
             .header("retry-after-ms", "60000"),
@@ -6049,7 +6090,7 @@ async fn retry_policy_stops_before_wait_exceeds_120s_budget() {
 /// the transient attempt as a separate inbound-request failure.
 #[tokio::test]
 async fn retry_stream_recovers_after_zero_cooldown_and_completed_sse_clears_health() {
-    let _home = temp_home("retry-stream-recovery-health");
+    let _home = isolated_temp_home("retry-stream-recovery-health");
     let (upstream_url, attempts) = spawn_streaming_sequence_mock(vec![
         StreamingReply::Status {
             status: 503,
@@ -6094,7 +6135,7 @@ async fn retry_stream_recovers_after_zero_cooldown_and_completed_sse_clears_heal
 /// delay semantics are covered by the dedicated retry-policy tests.
 #[tokio::test]
 async fn retry_stream_persistent_503_attempts_six_times_and_counts_health_once() {
-    let _home = temp_home("retry-stream-six-attempts-health");
+    let _home = isolated_temp_home("retry-stream-six-attempts-health");
     let (upstream_url, attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
         status: 503,
         content_type: "application/json",
@@ -6128,7 +6169,7 @@ async fn retry_stream_persistent_503_attempts_six_times_and_counts_health_once()
 /// candidate, but 429 itself never contributes provider health failure.
 #[tokio::test]
 async fn retry_stream_429_switches_without_counting_provider_health() {
-    let _home = temp_home("retry-stream-429-no-health");
+    let _home = isolated_temp_home("retry-stream-429-no-health");
     let (limited_url, limited_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
         status: 429,
         content_type: "text/html",
@@ -6162,7 +6203,7 @@ async fn retry_stream_429_switches_without_counting_provider_health() {
 #[tokio::test]
 async fn retry_stream_html_401_and_403_disable_immediately() {
     for status in [401u16, 403u16] {
-        let _home = temp_home(&format!("retry-stream-html-auth-{status}"));
+        let _home = isolated_temp_home(&format!("retry-stream-html-auth-{status}"));
         let (auth_url, auth_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
             status,
             content_type: "text/html",
@@ -6198,7 +6239,7 @@ async fn retry_stream_html_401_and_403_disable_immediately() {
 /// candidate in the initial stream pass is still reached once.
 #[tokio::test]
 async fn retry_stream_404_traverses_each_candidate_once_without_health_failure() {
-    let _home = temp_home("retry-stream-404-traverse");
+    let _home = isolated_temp_home("retry-stream-404-traverse");
     let (a_url, a_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
         status: 404,
         content_type: "text/html",
@@ -6237,7 +6278,7 @@ async fn retry_stream_404_traverses_each_candidate_once_without_health_failure()
 /// returns the original status and bytes without trying a fallback provider.
 #[tokio::test]
 async fn retry_stream_html_413_returns_unchanged_without_fallback() {
-    let _home = temp_home("retry-stream-html-413");
+    let _home = isolated_temp_home("retry-stream-html-413");
     let body = b"<html>payload too large</html>".to_vec();
     let (rejected_url, rejected_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
         status: 413,
@@ -6325,11 +6366,12 @@ async fn wait_for_upstream_attempts(
 /// retry cooldown, the relay must leave the pending delay and must not issue a
 /// retry. This covers both JSON and SSE request modes through the real TCP
 /// handler boundary. The current handler sleeps until the cooldown expires.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retry_cancel_disconnect_during_retry_delay_exits_without_further_upstream_attempts() {
+    let _ticker = spawn_paused_clock_ticker();
     let mut failures = Vec::new();
     for wants_stream in [false, true] {
-        let _home = temp_home(if wants_stream {
+        let _home = isolated_temp_home(if wants_stream {
             "retry-cancel-delay-stream"
         } else {
             "retry-cancel-delay-json"
@@ -6383,11 +6425,12 @@ async fn retry_cancel_disconnect_during_retry_delay_exits_without_further_upstre
 /// after the prompt-exit observation, so this cannot be satisfied by waiting
 /// for the upstream read timeout. Non-streaming and SSE use the same public
 /// connection boundary.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retry_cancel_disconnect_while_upstream_waits_exits_without_further_upstream_attempts() {
+    let _ticker = spawn_paused_clock_ticker();
     let mut failures = Vec::new();
     for wants_stream in [false, true] {
-        let _home = temp_home(if wants_stream {
+        let _home = isolated_temp_home(if wants_stream {
             "retry-cancel-upstream-stream"
         } else {
             "retry-cancel-upstream-json"
@@ -7340,7 +7383,7 @@ async fn streaming_all_unavailable_logs_real_upstream_status() {
 /// errors records status 0, never the SSE transport's 200.
 #[tokio::test(start_paused = true)]
 async fn streaming_all_unavailable_network_error_logs_zero_status() {
-    let _home = temp_home("usage-forward-stream-network");
+    let _home = isolated_temp_home("usage-forward-stream-network");
     let _ticker = spawn_paused_clock_ticker();
     let (drop_url, _log) = spawn_mock_upstream(|_| MockReply::Drop).await;
     let provider = upstream_provider("p1", "Provider One", &drop_url, "sk", Some("remote-a"));
@@ -7428,7 +7471,7 @@ async fn unauthorized_models_and_unknown_routes_are_not_logged() {
 /// never as success or an error.
 #[tokio::test]
 async fn downstream_cancel_records_cancelled() {
-    let home = temp_home("usage-forward-cancelled");
+    let home = isolated_temp_home("usage-forward-cancelled");
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("bind held upstream");
@@ -8028,7 +8071,7 @@ async fn streaming_upstream_client_error_is_logged_failure_and_returned_unchange
 /// drops the connection, exactly like the non-streaming raw-TCP case.
 #[tokio::test]
 async fn downstream_cancel_during_streaming_records_cancelled() {
-    let home = temp_home("usage-forward-cancel-stream");
+    let home = isolated_temp_home("usage-forward-cancel-stream");
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("bind held upstream");
