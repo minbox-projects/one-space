@@ -1,7 +1,7 @@
 //! Usage metering and request logs for the API gateway.
 //!
 //! Records live in a dedicated SQLite file (never the encrypted
-//! `api_fusion.json`) and deliberately contain no request/response bodies,
+//! `api_gateway.json`) and deliberately contain no request/response bodies,
 //! headers or credentials. The store base path is injectable so tests point at
 //! a temp directory and never touch real application data.
 
@@ -18,7 +18,11 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// File name of the dedicated usage-log database under `get_app_dir()`.
-pub(in crate::api_fusion) const USAGE_DB_FILE: &str = "api_fusion_usage.db";
+pub(in crate::api_gateway) const USAGE_DB_FILE: &str = "api_gateway_usage.db";
+/// Legacy usage-log database kept for one-time read-only migration: when the
+/// new file is absent but the legacy file exists, it is copied to the new
+/// path before opening. The legacy file is never deleted.
+pub(in crate::api_gateway) const LEGACY_USAGE_DB_FILE: &str = "api_fusion_usage.db";
 /// Fixed page size for the ungrouped request-log list.
 pub const USAGE_LOG_PAGE_SIZE: u32 = 50;
 /// Milliseconds in one UTC day.
@@ -48,7 +52,7 @@ CREATE INDEX IF NOT EXISTS idx_usage_logs_timestamp ON usage_logs(timestamp_ms);
 CREATE INDEX IF NOT EXISTS idx_usage_logs_local_model ON usage_logs(local_model);
 ";
 
-pub(in crate::api_fusion) fn now_millis() -> i64 {
+pub(in crate::api_gateway) fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
@@ -104,7 +108,7 @@ impl UsageResult {
         }
     }
 
-    pub(in crate::api_fusion) fn parse(value: &str) -> Option<Self> {
+    pub(in crate::api_gateway) fn parse(value: &str) -> Option<Self> {
         match value {
             "success" => Some(Self::Success),
             "failure" => Some(Self::Failure),
@@ -147,7 +151,7 @@ pub fn validate_retention_days(days: i64) -> Result<u32, String> {
 
 /// Clamp a persisted retention value, falling back to the default for
 /// out-of-range values written by older or corrupted configs.
-pub(in crate::api_fusion) fn normalize_retention_days(days: u32) -> u32 {
+pub(in crate::api_gateway) fn normalize_retention_days(days: u32) -> u32 {
     if (MIN_USAGE_RETENTION_DAYS..=MAX_USAGE_RETENTION_DAYS).contains(&days) {
         days
     } else {
@@ -273,7 +277,7 @@ fn nested_number(usage: &Value, object: &str, key: &str) -> Option<Value> {
 /// Map an upstream `usage` object to the four token tiers (REQ-003).
 ///
 /// Missing fields become 0; the caller decides whether usage was present at all.
-pub(in crate::api_fusion) fn usage_tokens_from_value(usage: &Value) -> UsageTokens {
+pub(in crate::api_gateway) fn usage_tokens_from_value(usage: &Value) -> UsageTokens {
     let input_tokens = usage
         .get("input_tokens")
         .or_else(|| usage.get("prompt_tokens"))
@@ -299,7 +303,7 @@ pub(in crate::api_fusion) fn usage_tokens_from_value(usage: &Value) -> UsageToke
 }
 
 /// Parse `usage` out of a complete (buffered) upstream JSON response.
-pub(in crate::api_fusion) fn parse_usage_from_response(body: &[u8]) -> Option<UsageTokens> {
+pub(in crate::api_gateway) fn parse_usage_from_response(body: &[u8]) -> Option<UsageTokens> {
     let value: Value = serde_json::from_slice(body).ok()?;
     let usage = value.get("usage")?;
     if usage.is_object() {
@@ -312,13 +316,13 @@ pub(in crate::api_fusion) fn parse_usage_from_response(body: &[u8]) -> Option<Us
 /// Read-only SSE accumulator that extracts the last `usage` object from a
 /// forwarded stream without touching the bytes written to the caller.
 #[derive(Default)]
-pub(in crate::api_fusion) struct SseUsageAccumulator {
+pub(in crate::api_gateway) struct SseUsageAccumulator {
     buffer: String,
     usage: Option<UsageTokens>,
 }
 
 impl SseUsageAccumulator {
-    pub(in crate::api_fusion) fn feed(&mut self, chunk: &[u8]) {
+    pub(in crate::api_gateway) fn feed(&mut self, chunk: &[u8]) {
         self.buffer.push_str(&String::from_utf8_lossy(chunk));
         while let Some(position) = self.buffer.find('\n') {
             let line: String = self.buffer.drain(..=position).collect();
@@ -349,7 +353,7 @@ impl SseUsageAccumulator {
         }
     }
 
-    pub(in crate::api_fusion) fn usage(&self) -> Option<UsageTokens> {
+    pub(in crate::api_gateway) fn usage(&self) -> Option<UsageTokens> {
         self.usage
     }
 }
@@ -360,7 +364,7 @@ impl SseUsageAccumulator {
 
 /// Half-open millisecond range `[start, end)`; `None` means unbounded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(in crate::api_fusion) struct TimeRange {
+pub(in crate::api_gateway) struct TimeRange {
     pub start_ms: Option<i64>,
     pub end_ms: Option<i64>,
 }
@@ -369,7 +373,7 @@ pub(in crate::api_fusion) struct TimeRange {
 ///
 /// `None` means "all"; `Some(1)` means today; `Some(n)` covers today plus the
 /// previous `n - 1` natural days, with the day boundary fixed at UTC+8 midnight.
-pub(in crate::api_fusion) fn resolve_range(days: Option<i64>, now_ms: i64) -> TimeRange {
+pub(in crate::api_gateway) fn resolve_range(days: Option<i64>, now_ms: i64) -> TimeRange {
     let Some(days) = days.filter(|days| *days >= 1) else {
         return TimeRange::default();
     };
@@ -471,7 +475,7 @@ pub struct UsageLogsPage {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(in crate::api_fusion) struct LogFilter {
+pub(in crate::api_gateway) struct LogFilter {
     pub status: Option<UsageResult>,
     pub model: Option<String>,
 }
@@ -540,19 +544,36 @@ fn bind(range: &TimeRange, filter: &LogFilter) -> (String, Vec<rusqlite::types::
 
 /// SQLite-backed usage-log storage bound to one explicit database path.
 #[derive(Debug, Clone)]
-pub(in crate::api_fusion) struct UsageLogStore {
+pub(in crate::api_gateway) struct UsageLogStore {
     path: PathBuf,
 }
 
 impl UsageLogStore {
     /// Injected base path, used by tests to point at a temp directory.
-    pub(in crate::api_fusion) fn at(path: impl Into<PathBuf>) -> Self {
+    pub(in crate::api_gateway) fn at(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
 
-    /// Default store under `get_app_dir()/api_fusion_usage.db`.
-    pub(in crate::api_fusion) fn default_store() -> Result<Self, String> {
-        Ok(Self::at(crate::config::get_app_dir()?.join(USAGE_DB_FILE)))
+    /// Default store under `get_app_dir()/api_gateway_usage.db`, with a
+    /// one-time copy migration from legacy `api_fusion_usage.db` when the new
+    /// file is absent. The legacy file is never deleted; if the copy fails,
+    /// the legacy file itself is opened as a fallback.
+    pub(in crate::api_gateway) fn default_store() -> Result<Self, String> {
+        let dir = crate::config::get_app_dir()?;
+        let path = dir.join(USAGE_DB_FILE);
+        if !path.exists() {
+            let legacy = dir.join(LEGACY_USAGE_DB_FILE);
+            if legacy.exists() {
+                if let Some(parent) = path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                match fs::copy(&legacy, &path) {
+                    Ok(_) => {}
+                    Err(_) => return Ok(Self::at(legacy)),
+                }
+            }
+        }
+        Ok(Self::at(path))
     }
 
     fn open(&self) -> Result<Connection, String> {
@@ -571,7 +592,7 @@ impl UsageLogStore {
 
     /// Insert one record, then permanently delete records older than the
     /// retention window (REQ-009).
-    pub(in crate::api_fusion) fn append(
+    pub(in crate::api_gateway) fn append(
         &self,
         record: &UsageLogRecord,
         retention_days: u32,
@@ -609,7 +630,7 @@ impl UsageLogStore {
 
     /// Test-only inspection helper: total row count.
     #[cfg(test)]
-    pub(in crate::api_fusion) fn count(&self) -> Result<u32, String> {
+    pub(in crate::api_gateway) fn count(&self) -> Result<u32, String> {
         let connection = self.open()?;
         let count: i64 = connection
             .query_row("SELECT COUNT(*) FROM usage_logs", [], |row| row.get(0))
@@ -619,7 +640,7 @@ impl UsageLogStore {
 
     /// Test-only inspection helper: every row, newest first.
     #[cfg(test)]
-    pub(in crate::api_fusion) fn all_records(&self) -> Result<Vec<UsageLogRecord>, String> {
+    pub(in crate::api_gateway) fn all_records(&self) -> Result<Vec<UsageLogRecord>, String> {
         let connection = self.open()?;
         let mut statement = connection
             .prepare(
@@ -638,7 +659,7 @@ impl UsageLogStore {
 
     /// Ungrouped page of records, newest first, 50 per page. `page` is clamped
     /// to the valid range so switching ranges never lands on a blank page.
-    pub(in crate::api_fusion) fn query_logs(
+    pub(in crate::api_gateway) fn query_logs(
         &self,
         range: &TimeRange,
         filter: &LogFilter,
@@ -713,7 +734,7 @@ impl UsageLogStore {
 
     /// Grouped rows by `"model"` or `"day"` (UTC+8). `error_count` counts only
     /// `failure` rows; `cancelled` is never an error.
-    pub(in crate::api_fusion) fn group_logs(
+    pub(in crate::api_gateway) fn group_logs(
         &self,
         range: &TimeRange,
         filter: &LogFilter,
@@ -786,7 +807,7 @@ impl UsageLogStore {
         Ok(groups)
     }
 
-    pub(in crate::api_fusion) fn usage_stats(
+    pub(in crate::api_gateway) fn usage_stats(
         &self,
         range: &TimeRange,
         hour_buckets: bool,

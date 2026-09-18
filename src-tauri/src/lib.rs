@@ -2,7 +2,7 @@ mod ai_assistant;
 mod ai_env;
 mod ai_news;
 mod ai_sessions;
-mod api_fusion;
+mod api_gateway;
 mod app_store;
 mod assistant_mcp;
 mod backup;
@@ -44,7 +44,7 @@ pub(crate) use app_runtime::{
 };
 // Usage statistics, request logs, model prices and retention commands. Each one
 // is also registered in `app_runtime::run_app`'s `generate_handler!`.
-pub use api_fusion::{
-    api_fusion_model_prices_get, api_fusion_model_prices_save, api_fusion_request_logs,
-    api_fusion_usage_retention_get, api_fusion_usage_retention_save, api_fusion_usage_stats,
+pub use api_gateway::{
+    api_gateway_model_prices_get, api_gateway_model_prices_save, api_gateway_request_logs,
+    api_gateway_usage_retention_get, api_gateway_usage_retention_save, api_gateway_usage_stats,
 };

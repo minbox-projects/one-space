@@ -2,21 +2,21 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
-import { ProviderDetailDialog } from "@/components/ApiFusion/ProviderDetailDialog";
+import { ProviderDetailDialog } from "@/components/ApiGateway/ProviderDetailDialog";
 import {
-  API_FUSION_KEY_MASK,
-  type FusionUpstreamProvider,
-} from "@/lib/apiFusion";
+  API_GATEWAY_KEY_MASK,
+  type GatewayUpstreamProvider,
+} from "@/lib/apiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 
 function makeProvider(
-  overrides: Partial<FusionUpstreamProvider> = {},
-): FusionUpstreamProvider {
+  overrides: Partial<GatewayUpstreamProvider> = {},
+): GatewayUpstreamProvider {
   return {
     id: "p1",
     name: "Upstream A",
     base_url: "https://api.a.example",
-    api_key: API_FUSION_KEY_MASK,
+    api_key: API_GATEWAY_KEY_MASK,
     default_model: null,
     protocol: "chat_completions",
     mappings: [],
@@ -71,7 +71,7 @@ describe("ProviderDetailDialog 模型映射", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(onSave).toHaveBeenCalledTimes(1);
-    const saved = onSave.mock.calls[0][0] as FusionUpstreamProvider;
+    const saved = onSave.mock.calls[0][0] as GatewayUpstreamProvider;
     expect(saved.mappings[0]).toMatchObject({
       local_model: "gpt-4o",
       upstream_model: "gpt-4o-2024",
@@ -113,7 +113,7 @@ describe("ProviderDetailDialog 模型映射", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(onSave).toHaveBeenCalledTimes(1);
-    const saved = onSave.mock.calls[0][0] as FusionUpstreamProvider;
+    const saved = onSave.mock.calls[0][0] as GatewayUpstreamProvider;
     expect(saved.mappings[0].local_model).toBe("gpt-4o");
     expect(saved.mappings[0].upstream_model).toBe("gpt-4o-2024");
     expect(saved.mappings[0].display_name).toBeUndefined();
@@ -222,7 +222,7 @@ describe("ProviderDetailDialog 模型映射", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(onSave).toHaveBeenCalledTimes(1);
-    const saved = onSave.mock.calls[0][0] as FusionUpstreamProvider;
+    const saved = onSave.mock.calls[0][0] as GatewayUpstreamProvider;
     expect(saved.mappings[0].enabled, "保存载荷第 1 条映射应为禁用").toBe(false);
     expect(saved.mappings[1].enabled, "保存载荷第 2 条映射应为禁用").toBe(false);
 
@@ -311,7 +311,7 @@ describe("ProviderDetailDialog 模型映射", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(onSave).toHaveBeenCalledTimes(1);
-    const saved = onSave.mock.calls[0][0] as FusionUpstreamProvider;
+    const saved = onSave.mock.calls[0][0] as GatewayUpstreamProvider;
     expect(saved.mappings).toHaveLength(1);
     expect(saved.mappings[0].enabled, "新增映射行应默认启用").toBe(true);
   });

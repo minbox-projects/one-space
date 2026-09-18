@@ -1,29 +1,29 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
-import { ApiFusion } from "@/components/ApiFusion";
+import { ApiGateway } from "@/components/ApiGateway";
 import {
-  API_FUSION_KEY_MASK,
-  formatFusionTimestamp,
+  API_GATEWAY_KEY_MASK,
+  formatGatewayTimestamp,
   maskSecret,
-  type FusionConfig,
-  type FusionStatus,
-  type FusionTerminalTarget,
-  type FusionUpstreamProvider,
+  type GatewayConfig,
+  type GatewayStatus,
+  type GatewayTerminalTarget,
+  type GatewayUpstreamProvider,
   type UsageLogRecord,
   type UsageLogsPage,
   type UsageStats,
-} from "@/lib/apiFusion";
+} from "@/lib/apiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 import { emitMock, invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
 type Store = {
-  config: FusionConfig;
-  status: FusionStatus;
-  targets: FusionTerminalTarget[];
+  config: GatewayConfig;
+  status: GatewayStatus;
+  targets: GatewayTerminalTarget[];
 };
 
-function makeConfig(overrides: Partial<FusionConfig> = {}): FusionConfig {
+function makeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
   return {
     enabled: true,
     port: 17688,
@@ -35,7 +35,7 @@ function makeConfig(overrides: Partial<FusionConfig> = {}): FusionConfig {
   };
 }
 
-function makeStatus(overrides: Partial<FusionStatus> = {}): FusionStatus {
+function makeStatus(overrides: Partial<GatewayStatus> = {}): GatewayStatus {
   return {
     running: true,
     enabled: true,
@@ -50,8 +50,8 @@ function makeStatus(overrides: Partial<FusionStatus> = {}): FusionStatus {
 }
 
 function openCodeTarget(
-  overrides: Partial<FusionTerminalTarget> = {},
-): FusionTerminalTarget {
+  overrides: Partial<GatewayTerminalTarget> = {},
+): GatewayTerminalTarget {
   return {
     provider_id: "t-open",
     tool: "opencode",
@@ -120,25 +120,25 @@ function usageLogsPage(overrides: Partial<UsageLogsPage> = {}): UsageLogsPage {
 function mockStore(store: Store) {
   invokeMock.mockImplementation(async (command: string, args?: any) => {
     switch (command) {
-      case "api_fusion_get_config":
+      case "api_gateway_get_config":
         return store.config;
-      case "api_fusion_status":
+      case "api_gateway_status":
         return store.status;
-      case "api_fusion_terminal_targets":
+      case "api_gateway_terminal_targets":
         return store.targets;
-      case "api_fusion_start":
+      case "api_gateway_start":
         store.status = { ...store.status, running: true };
         return store.status;
-      case "api_fusion_stop":
+      case "api_gateway_stop":
         store.status = { ...store.status, running: false };
         return store.status;
-      case "api_fusion_configure_terminal":
+      case "api_gateway_configure_terminal":
         return store.config.terminal_syncs;
-      case "api_fusion_sync_terminal":
+      case "api_gateway_sync_terminal":
         return store.config.terminal_syncs;
-      case "api_fusion_usage_stats":
+      case "api_gateway_usage_stats":
         return emptyUsageStats({ request_count: 1, total_tokens: 2 });
-      case "api_fusion_request_logs":
+      case "api_gateway_request_logs":
         if (args?.groupBy === "day") {
           return usageLogsPage({
             group_by: "day",
@@ -154,7 +154,7 @@ function mockStore(store: Store) {
           });
         }
         return usageLogsPage({ page: (args?.page as number) ?? 1 });
-      case "api_fusion_model_prices_get":
+      case "api_gateway_model_prices_get":
         return [];
       default:
         throw new Error(`Unhandled command: ${command}`);
@@ -166,8 +166,8 @@ function mockStoreWithUpsert(store: Store) {
   mockStore(store);
   const read = invokeMock.getMockImplementation()!;
   invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
-    if (command === "api_fusion_upsert_provider") {
-      const { provider } = args as { provider: FusionUpstreamProvider };
+    if (command === "api_gateway_upsert_provider") {
+      const { provider } = args as { provider: GatewayUpstreamProvider };
       store.config = {
         ...store.config,
         providers: [
@@ -182,13 +182,13 @@ function mockStoreWithUpsert(store: Store) {
 }
 
 function makeProvider(
-  overrides: Partial<FusionUpstreamProvider> = {},
-): FusionUpstreamProvider {
+  overrides: Partial<GatewayUpstreamProvider> = {},
+): GatewayUpstreamProvider {
   return {
     id: "p1",
     name: "Upstream A",
     base_url: "https://api.a.example",
-    api_key: API_FUSION_KEY_MASK,
+    api_key: API_GATEWAY_KEY_MASK,
     default_model: null,
     mappings: [],
     enabled: true,
@@ -201,7 +201,7 @@ function makeProvider(
   };
 }
 
-describe("ApiFusion", () => {
+describe("ApiGateway", () => {
   let writeText: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
@@ -217,7 +217,7 @@ describe("ApiFusion", () => {
   it("只渲染受支持工具，且顶部不再渲染全局操作按钮", async () => {
     const store: Store = {
       config: makeConfig({
-        keys: [{ id: "k1", label: "Main", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
+        keys: [{ id: "k1", label: "Main", value: API_GATEWAY_KEY_MASK, enabled: true, created_at: 1 }],
         default_key_id: "k1",
       }),
       status: makeStatus({ key_count: 1, default_key_id: "k1" }),
@@ -240,19 +240,19 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
     await screen.findByText("OpenCode");
 
     expect(screen.queryByText("Claude Code")).not.toBeInTheDocument();
     expect(screen.queryByText("Antigravity")).not.toBeInTheDocument();
 
-    const panel = within(screen.getByTestId("api-fusion-terminals"));
+    const panel = within(screen.getByTestId("api-gateway-terminals"));
     // The header-level "Add provider / Sync again" actions must be gone:
     // every button inside the panel belongs to a terminal target row.
     const buttons = panel.getAllByRole("button");
     expect(buttons.length).toBeGreaterThan(0);
     for (const button of buttons) {
-      expect(button.closest('[data-testid^="api-fusion-target-"]')).not.toBeNull();
+      expect(button.closest('[data-testid^="api-gateway-target-"]')).not.toBeNull();
     }
     expect(
       panel.queryByRole("button", { name: /sync again/i }),
@@ -262,7 +262,7 @@ describe("ApiFusion", () => {
   it("待同步的行内显示添加，点击仅以该工具调用配置", async () => {
     const store: Store = {
       config: makeConfig({
-        keys: [{ id: "k1", label: "Main", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
+        keys: [{ id: "k1", label: "Main", value: API_GATEWAY_KEY_MASK, enabled: true, created_at: 1 }],
         default_key_id: "k1",
       }),
       status: makeStatus({ key_count: 1, default_key_id: "k1" }),
@@ -273,24 +273,24 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
     await screen.findByText("OpenCode");
 
-    const openRow = within(screen.getByTestId("api-fusion-target-opencode"));
+    const openRow = within(screen.getByTestId("api-gateway-target-opencode"));
     const addButton = openRow.getByRole("button", { name: /add/i });
     expect(addButton).toBeEnabled();
     fireEvent.click(addButton);
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_configure_terminal", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_configure_terminal", {
         targetTools: ["opencode"],
       }),
     );
     const configureCalls = invokeMock.mock.calls.filter(
-      ([command]) => command === "api_fusion_configure_terminal",
+      ([command]) => command === "api_gateway_configure_terminal",
     );
     expect(configureCalls).toHaveLength(1);
-    expect(invokeMock).not.toHaveBeenCalledWith("api_fusion_configure_terminal", {
+    expect(invokeMock).not.toHaveBeenCalledWith("api_gateway_configure_terminal", {
       targetTools: ["opencode", "codex"],
     });
   });
@@ -298,7 +298,7 @@ describe("ApiFusion", () => {
   it("已添加的行内显示同步，点击仅以该工具调用同步", async () => {
     const store: Store = {
       config: makeConfig({
-        keys: [{ id: "k1", label: "Main", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
+        keys: [{ id: "k1", label: "Main", value: API_GATEWAY_KEY_MASK, enabled: true, created_at: 1 }],
         default_key_id: "k1",
       }),
       status: makeStatus({ key_count: 1, default_key_id: "k1" }),
@@ -323,24 +323,24 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
     await screen.findByText("OpenCode");
 
-    const openRow = within(screen.getByTestId("api-fusion-target-opencode"));
+    const openRow = within(screen.getByTestId("api-gateway-target-opencode"));
     const syncButton = openRow.getByRole("button", { name: /sync/i });
     expect(syncButton).toBeEnabled();
     fireEvent.click(syncButton);
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_sync_terminal", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_sync_terminal", {
         targetTools: ["opencode"],
       }),
     );
     const syncCalls = invokeMock.mock.calls.filter(
-      ([command]) => command === "api_fusion_sync_terminal",
+      ([command]) => command === "api_gateway_sync_terminal",
     );
     expect(syncCalls).toHaveLength(1);
-    expect(invokeMock).not.toHaveBeenCalledWith("api_fusion_sync_terminal", {
+    expect(invokeMock).not.toHaveBeenCalledWith("api_gateway_sync_terminal", {
       targetTools: ["opencode", "codex"],
     });
   });
@@ -348,7 +348,7 @@ describe("ApiFusion", () => {
   it("已添加但 Key 或地址漂移（synced 为真且待同步）时行内显示同步并仅走同步通道", async () => {
     const store: Store = {
       config: makeConfig({
-        keys: [{ id: "k1", label: "Main", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
+        keys: [{ id: "k1", label: "Main", value: API_GATEWAY_KEY_MASK, enabled: true, created_at: 1 }],
         default_key_id: "k1",
       }),
       status: makeStatus({ key_count: 1, default_key_id: "k1" }),
@@ -366,10 +366,10 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
     await screen.findByText("OpenCode");
 
-    const openRow = within(screen.getByTestId("api-fusion-target-opencode"));
+    const openRow = within(screen.getByTestId("api-gateway-target-opencode"));
     const action = openRow.getByRole("button", { name: /sync/i });
     expect(action).toBeEnabled();
     expect(action).toHaveAccessibleName(/sync/i);
@@ -377,16 +377,16 @@ describe("ApiFusion", () => {
     fireEvent.click(action);
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_sync_terminal", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_sync_terminal", {
         targetTools: ["opencode"],
       }),
     );
     const syncCalls = invokeMock.mock.calls.filter(
-      ([command]) => command === "api_fusion_sync_terminal",
+      ([command]) => command === "api_gateway_sync_terminal",
     );
     expect(syncCalls).toHaveLength(1);
     expect(invokeMock).not.toHaveBeenCalledWith(
-      "api_fusion_configure_terminal",
+      "api_gateway_configure_terminal",
       expect.anything(),
     );
   });
@@ -394,7 +394,7 @@ describe("ApiFusion", () => {
   it("网关服务商被删除但同步台账仍在（synced 为假且 synced_key_id/synced_at 非空）时行内显示同步并仅走同步通道", async () => {
     const store: Store = {
       config: makeConfig({
-        keys: [{ id: "k1", label: "Main", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
+        keys: [{ id: "k1", label: "Main", value: API_GATEWAY_KEY_MASK, enabled: true, created_at: 1 }],
         default_key_id: "k1",
       }),
       status: makeStatus({ key_count: 1, default_key_id: "k1" }),
@@ -413,10 +413,10 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
     await screen.findByText("OpenCode");
 
-    const openRow = within(screen.getByTestId("api-fusion-target-opencode"));
+    const openRow = within(screen.getByTestId("api-gateway-target-opencode"));
     const action = openRow.getByRole("button", { name: /sync/i });
     expect(action).toBeEnabled();
     expect(action).toHaveAccessibleName(/sync/i);
@@ -424,16 +424,16 @@ describe("ApiFusion", () => {
     fireEvent.click(action);
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_sync_terminal", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_sync_terminal", {
         targetTools: ["opencode"],
       }),
     );
     const syncCalls = invokeMock.mock.calls.filter(
-      ([command]) => command === "api_fusion_sync_terminal",
+      ([command]) => command === "api_gateway_sync_terminal",
     );
     expect(syncCalls).toHaveLength(1);
     expect(invokeMock).not.toHaveBeenCalledWith(
-      "api_fusion_configure_terminal",
+      "api_gateway_configure_terminal",
       expect.anything(),
     );
   });
@@ -446,23 +446,23 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
     await screen.findByText("OpenCode");
 
-    expect(screen.getByTestId("api-fusion-default-key-required")).toHaveTextContent(
+    expect(screen.getByTestId("api-gateway-default-key-required")).toHaveTextContent(
       /Add and enable a local key/,
     );
-    const openRow = within(screen.getByTestId("api-fusion-target-opencode"));
+    const openRow = within(screen.getByTestId("api-gateway-target-opencode"));
     const action = openRow.getByRole("button", { name: /add/i });
     expect(action).toBeDisabled();
 
     fireEvent.click(action);
     expect(invokeMock).not.toHaveBeenCalledWith(
-      "api_fusion_configure_terminal",
+      "api_gateway_configure_terminal",
       expect.anything(),
     );
     expect(invokeMock).not.toHaveBeenCalledWith(
-      "api_fusion_sync_terminal",
+      "api_gateway_sync_terminal",
       expect.anything(),
     );
   });
@@ -471,7 +471,7 @@ describe("ApiFusion", () => {
     const store: Store = {
       config: makeConfig({
         keys: [
-          { id: "k1", label: "Main", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 },
+          { id: "k1", label: "Main", value: API_GATEWAY_KEY_MASK, enabled: true, created_at: 1 },
         ],
         default_key_id: "k1",
       }),
@@ -487,13 +487,13 @@ describe("ApiFusion", () => {
 
     invokeMock.mockImplementation(async (command: string) => {
       switch (command) {
-        case "api_fusion_get_config":
+        case "api_gateway_get_config":
           return store.config;
-        case "api_fusion_status":
+        case "api_gateway_status":
           return store.status;
-        case "api_fusion_terminal_targets":
+        case "api_gateway_terminal_targets":
           return store.targets;
-        case "api_fusion_configure_terminal": {
+        case "api_gateway_configure_terminal": {
           store.targets = [
             openCodeTarget({
               provider_id: "gw-open",
@@ -510,17 +510,17 @@ describe("ApiFusion", () => {
       }
     });
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
     await screen.findByText("OpenCode");
 
     // Pending status comes from the backend target payload, not local re-derivation.
     expect(screen.getByText("Pending sync")).toBeInTheDocument();
 
-    const openRow = within(screen.getByTestId("api-fusion-target-opencode"));
+    const openRow = within(screen.getByTestId("api-gateway-target-opencode"));
     fireEvent.click(openRow.getByRole("button", { name: /add/i }));
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_configure_terminal", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_configure_terminal", {
         targetTools: ["opencode"],
       }),
     );
@@ -549,10 +549,10 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
     await screen.findByText("OpenCode");
 
-    const panel = within(screen.getByTestId("api-fusion-terminals"));
+    const panel = within(screen.getByTestId("api-gateway-terminals"));
     expect(panel.getByText("Synced")).toBeInTheDocument();
     expect(panel.queryByText("Pending sync")).not.toBeInTheDocument();
   });
@@ -567,7 +567,7 @@ describe("ApiFusion", () => {
             id: "p1",
             name: "Upstream Broken",
             base_url: "https://api.broken.example",
-            api_key: API_FUSION_KEY_MASK,
+            api_key: API_GATEWAY_KEY_MASK,
             default_model: null,
             mappings: [],
             enabled: true,
@@ -591,28 +591,28 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
 
-    expect(await screen.findByTestId("api-fusion-runtime-state")).toHaveTextContent(
+    expect(await screen.findByTestId("api-gateway-runtime-state")).toHaveTextContent(
       "Running",
     );
-    expect(screen.getByTestId("api-fusion-local-address")).toHaveTextContent(
+    expect(screen.getByTestId("api-gateway-local-address")).toHaveTextContent(
       "http://127.0.0.1:17688/v1",
     );
     expect(screen.getByText(/Reason: HTTP 401/)).toBeInTheDocument();
     expect(
       screen.getByText(
-        new RegExp(`Disabled at ${formatFusionTimestamp(disabledAt)!}`),
+        new RegExp(`Disabled at ${formatGatewayTimestamp(disabledAt)!}`),
       ),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("api-fusion-auto-disabled-count")).toHaveTextContent("1");
+    expect(screen.getByTestId("api-gateway-auto-disabled-count")).toHaveTextContent("1");
 
     fireEvent.click(screen.getByRole("button", { name: /Copy local API address/ }));
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith("http://127.0.0.1:17688/v1"),
     );
 
-    const masked = screen.getByTestId("api-fusion-key-value-k1");
+    const masked = screen.getByTestId("api-gateway-key-value-k1");
     expect(masked).toHaveTextContent(maskSecret(rawKey));
     expect(masked).not.toHaveTextContent(rawKey);
 
@@ -634,7 +634,7 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
     fireEvent.click(await screen.findByText("Upstream A"));
 
     const firstMappingProtocol = screen.getByLabelText("Mapping protocol 1");
@@ -664,13 +664,13 @@ describe("ApiFusion", () => {
     };
     mockStoreWithUpsert(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
     fireEvent.click(await screen.findByText("Upstream A"));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith(
-        "api_fusion_upsert_provider",
+        "api_gateway_upsert_provider",
         expect.objectContaining({
           provider: expect.objectContaining({ id: "p1" }),
         }),
@@ -678,9 +678,9 @@ describe("ApiFusion", () => {
     );
 
     const call = invokeMock.mock.calls.find(
-      ([command]) => command === "api_fusion_upsert_provider",
+      ([command]) => command === "api_gateway_upsert_provider",
     );
-    const payload = call?.[1] as { provider: FusionUpstreamProvider };
+    const payload = call?.[1] as { provider: GatewayUpstreamProvider };
     expect(payload.provider.mappings[0].protocol ?? null).toBeNull();
     expect(payload.provider.mappings[0].protocol).not.toBe("");
   });
@@ -699,7 +699,7 @@ describe("ApiFusion", () => {
     };
     mockStoreWithUpsert(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
     fireEvent.click(await screen.findByText("Upstream A"));
     fireEvent.change(screen.getByLabelText("Mapping protocol 1"), {
       target: { value: "responses" },
@@ -708,7 +708,7 @@ describe("ApiFusion", () => {
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith(
-        "api_fusion_upsert_provider",
+        "api_gateway_upsert_provider",
         expect.objectContaining({
           provider: expect.objectContaining({ id: "p1" }),
         }),
@@ -716,9 +716,9 @@ describe("ApiFusion", () => {
     );
 
     const call = invokeMock.mock.calls.find(
-      ([command]) => command === "api_fusion_upsert_provider",
+      ([command]) => command === "api_gateway_upsert_provider",
     );
-    const payload = call?.[1] as { provider: FusionUpstreamProvider };
+    const payload = call?.[1] as { provider: GatewayUpstreamProvider };
     expect(payload.provider.mappings[0].protocol).toBe("responses");
   });
 
@@ -730,20 +730,20 @@ describe("ApiFusion", () => {
     };
     invokeMock.mockImplementation(async (command: string) => {
       switch (command) {
-        case "api_fusion_get_config":
-        case "api_fusion_upsert_key":
+        case "api_gateway_get_config":
+        case "api_gateway_upsert_key":
           return store.config;
-        case "api_fusion_status":
+        case "api_gateway_status":
           return store.status;
-        case "api_fusion_terminal_targets":
+        case "api_gateway_terminal_targets":
           return store.targets;
         default:
           throw new Error(`Unhandled command: ${command}`);
       }
     });
 
-    renderWithProviders(<ApiFusion />);
-    await screen.findByTestId("api-fusion-keys");
+    renderWithProviders(<ApiGateway />);
+    await screen.findByTestId("api-gateway-keys");
 
     // 页头不再有内联名称输入框，"新增 Key" 按钮始终可用
     expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
@@ -752,7 +752,7 @@ describe("ApiFusion", () => {
 
     // 点击按钮弹出对话框
     fireEvent.click(addButton);
-    const dialog = await screen.findByTestId("api-fusion-key-dialog");
+    const dialog = await screen.findByTestId("api-gateway-key-dialog");
     expect(dialog).toBeInTheDocument();
 
     // 对话框中只有名称输入，没有 Key 值输入
@@ -768,14 +768,14 @@ describe("ApiFusion", () => {
     fireEvent.click(saveButton);
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_upsert_key", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_upsert_key", {
         key: expect.objectContaining({ label: "CI", value: "" }),
       }),
     );
 
     // 值留空交由后端随机生成，其余字段按约定初始化
     const call = invokeMock.mock.calls.find(
-      ([command]) => command === "api_fusion_upsert_key",
+      ([command]) => command === "api_gateway_upsert_key",
     );
     expect(call?.[1]).toEqual({
       key: {
@@ -796,11 +796,11 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
-    await screen.findByTestId("api-fusion-keys");
+    renderWithProviders(<ApiGateway />);
+    await screen.findByTestId("api-gateway-keys");
 
     fireEvent.click(screen.getByRole("button", { name: /Add key/ }));
-    const dialog = await screen.findByTestId("api-fusion-key-dialog");
+    const dialog = await screen.findByTestId("api-gateway-key-dialog");
     fireEvent.change(within(dialog).getByLabelText("Name"), {
       target: { value: "CI" },
     });
@@ -809,12 +809,12 @@ describe("ApiFusion", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() =>
       expect(
-        screen.queryByTestId("api-fusion-key-dialog"),
+        screen.queryByTestId("api-gateway-key-dialog"),
       ).not.toBeInTheDocument(),
     );
 
     fireEvent.click(screen.getByRole("button", { name: /Add key/ }));
-    const reopened = await screen.findByTestId("api-fusion-key-dialog");
+    const reopened = await screen.findByTestId("api-gateway-key-dialog");
     expect(within(reopened).getByLabelText("Name")).toHaveValue("");
   });
 
@@ -826,29 +826,29 @@ describe("ApiFusion", () => {
     };
     invokeMock.mockImplementation(async (command: string) => {
       switch (command) {
-        case "api_fusion_get_config":
-        case "api_fusion_upsert_key":
+        case "api_gateway_get_config":
+        case "api_gateway_upsert_key":
           return store.config;
-        case "api_fusion_status":
+        case "api_gateway_status":
           return store.status;
-        case "api_fusion_terminal_targets":
+        case "api_gateway_terminal_targets":
           return store.targets;
         default:
           throw new Error(`Unhandled command: ${command}`);
       }
     });
 
-    renderWithProviders(<ApiFusion />);
-    await screen.findByTestId("api-fusion-keys");
+    renderWithProviders(<ApiGateway />);
+    await screen.findByTestId("api-gateway-keys");
 
     fireEvent.click(screen.getByRole("button", { name: /Add key/ }));
-    const dialog = await screen.findByTestId("api-fusion-key-dialog");
+    const dialog = await screen.findByTestId("api-gateway-key-dialog");
     const nameInput = within(dialog).getByLabelText("Name");
     fireEvent.change(nameInput, { target: { value: "CI" } });
     fireEvent.keyDown(nameInput, { key: "Enter" });
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_upsert_key", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_upsert_key", {
         key: {
           id: "",
           label: "CI",
@@ -868,34 +868,34 @@ describe("ApiFusion", () => {
     };
     invokeMock.mockImplementation(async (command: string) => {
       switch (command) {
-        case "api_fusion_get_config":
+        case "api_gateway_get_config":
           return store.config;
-        case "api_fusion_upsert_key":
+        case "api_gateway_upsert_key":
           throw new Error("boom");
-        case "api_fusion_status":
+        case "api_gateway_status":
           return store.status;
-        case "api_fusion_terminal_targets":
+        case "api_gateway_terminal_targets":
           return store.targets;
         default:
           throw new Error(`Unhandled command: ${command}`);
       }
     });
 
-    renderWithProviders(<ApiFusion />);
-    await screen.findByTestId("api-fusion-keys");
+    renderWithProviders(<ApiGateway />);
+    await screen.findByTestId("api-gateway-keys");
 
     fireEvent.click(screen.getByRole("button", { name: /Add key/ }));
-    const dialog = await screen.findByTestId("api-fusion-key-dialog");
+    const dialog = await screen.findByTestId("api-gateway-key-dialog");
     fireEvent.change(within(dialog).getByLabelText("Name"), {
       target: { value: "CI" },
     });
     fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
-      expect(screen.getByTestId("api-fusion-key-dialog")).toBeInTheDocument(),
+      expect(screen.getByTestId("api-gateway-key-dialog")).toBeInTheDocument(),
     );
     expect(
-      within(screen.getByTestId("api-fusion-key-dialog")).getByLabelText("Name"),
+      within(screen.getByTestId("api-gateway-key-dialog")).getByLabelText("Name"),
     ).toHaveValue("CI");
   });
 
@@ -903,14 +903,14 @@ describe("ApiFusion", () => {
     const store: Store = {
       config: makeConfig({
         providers: [makeProvider()],
-        keys: [{ id: "k1", label: "Dev Key", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
+        keys: [{ id: "k1", label: "Dev Key", value: API_GATEWAY_KEY_MASK, enabled: true, created_at: 1 }],
       }),
       status: makeStatus({ provider_count: 1, key_count: 1 }),
       targets: [openCodeTarget()],
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
     await screen.findByText("Upstream A");
 
     const tabsList = screen.getByRole("tablist", { name: /API Gateway tabs/i });
@@ -935,14 +935,14 @@ describe("ApiFusion", () => {
     const store: Store = {
       config: makeConfig({
         providers: [makeProvider()],
-        keys: [{ id: "k1", label: "Dev Key", value: API_FUSION_KEY_MASK, enabled: true, created_at: 1 }],
+        keys: [{ id: "k1", label: "Dev Key", value: API_GATEWAY_KEY_MASK, enabled: true, created_at: 1 }],
       }),
       status: makeStatus({ provider_count: 1, key_count: 1 }),
       targets: [openCodeTarget()],
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
     await screen.findByText("Upstream A");
 
     const tabsList = screen.getByRole("tablist", { name: /API Gateway tabs/i });
@@ -954,11 +954,11 @@ describe("ApiFusion", () => {
 
     fireEvent.click(usageTab);
     expect(usageTab).toHaveAttribute("aria-selected", "true");
-    const usagePanel = await screen.findByTestId("api-fusion-usage-stats");
-    await within(usagePanel).findByTestId("api-fusion-usage-card-requests");
-    fireEvent.click(within(usagePanel).getByTestId("api-fusion-usage-range-trigger"));
+    const usagePanel = await screen.findByTestId("api-gateway-usage-stats");
+    await within(usagePanel).findByTestId("api-gateway-usage-card-requests");
+    fireEvent.click(within(usagePanel).getByTestId("api-gateway-usage-range-trigger"));
     fireEvent.click(screen.getByRole("option", { name: "7d" }));
-    await within(usagePanel).findByTestId("api-fusion-usage-card-requests");
+    await within(usagePanel).findByTestId("api-gateway-usage-card-requests");
 
     // The model-price entry must live only inside the usage-stats panel.
     expect(
@@ -966,8 +966,8 @@ describe("ApiFusion", () => {
     ).toBeInTheDocument();
 
     fireEvent.click(logsTab);
-    await screen.findByTestId("api-fusion-logs-ungrouped");
-    const logsPanel = screen.getByTestId("api-fusion-usage-logs");
+    await screen.findByTestId("api-gateway-logs-ungrouped");
+    const logsPanel = screen.getByTestId("api-gateway-usage-logs");
     expect(
       within(logsPanel).queryByRole("button", { name: "Model prices" }),
     ).not.toBeInTheDocument();
@@ -978,7 +978,7 @@ describe("ApiFusion", () => {
     fireEvent.click(providersTab);
     fireEvent.click(usageTab);
     expect(
-      within(usagePanel).getByTestId("api-fusion-usage-range-trigger"),
+      within(usagePanel).getByTestId("api-gateway-usage-range-trigger"),
     ).toHaveTextContent("7d");
 
     fireEvent.click(logsTab);
@@ -986,14 +986,14 @@ describe("ApiFusion", () => {
 
     // Grouping selection also survives a tab round-trip.
     fireEvent.click(
-      within(logsPanel).getByTestId("api-fusion-logs-group-trigger"),
+      within(logsPanel).getByTestId("api-gateway-logs-group-trigger"),
     );
     fireEvent.click(screen.getByRole("option", { name: "Day (UTC+8)" }));
-    await screen.findByTestId("api-fusion-logs-grouped");
+    await screen.findByTestId("api-gateway-logs-grouped");
     fireEvent.click(providersTab);
     fireEvent.click(logsTab);
     expect(
-      within(logsPanel).getByTestId("api-fusion-logs-group-trigger"),
+      within(logsPanel).getByTestId("api-gateway-logs-group-trigger"),
     ).toHaveTextContent("Day (UTC+8)");
     // Flush the re-activation reloads before the test unmounts.
     await act(async () => {});
@@ -1007,13 +1007,13 @@ describe("ApiFusion", () => {
     };
     invokeMock.mockImplementation(async (command: string, args: any) => {
       switch (command) {
-        case "api_fusion_get_config":
+        case "api_gateway_get_config":
           return store.config;
-        case "api_fusion_status":
+        case "api_gateway_status":
           return store.status;
-        case "api_fusion_terminal_targets":
+        case "api_gateway_terminal_targets":
           return store.targets;
-        case "api_fusion_upsert_provider":
+        case "api_gateway_upsert_provider":
           store.config = {
             ...store.config,
             providers: [...store.config.providers, { ...args.provider, id: "p-new" }],
@@ -1024,13 +1024,13 @@ describe("ApiFusion", () => {
       }
     });
 
-    renderWithProviders(<ApiFusion />);
-    await screen.findByTestId("api-fusion-providers");
+    renderWithProviders(<ApiGateway />);
+    await screen.findByTestId("api-gateway-providers");
 
     const addButtons = screen.getAllByRole("button", { name: /Add provider/i });
     fireEvent.click(addButtons[0]);
 
-    const dialog = await screen.findByTestId("api-fusion-provider-detail");
+    const dialog = await screen.findByTestId("api-gateway-provider-detail");
     expect(dialog).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "New Remote" } });
@@ -1041,7 +1041,7 @@ describe("ApiFusion", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_upsert_provider", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_upsert_provider", {
         provider: expect.objectContaining({
           name: "New Remote",
           base_url: "https://new.example.com",
@@ -1058,8 +1058,8 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
-    const runningToggleBtn = await screen.findByTestId("api-fusion-toggle-service");
+    renderWithProviders(<ApiGateway />);
+    const runningToggleBtn = await screen.findByTestId("api-gateway-toggle-service");
     expect(runningToggleBtn).toHaveAttribute("title", "Stop service");
     expect(runningToggleBtn).toHaveClass("text-destructive");
   });
@@ -1072,13 +1072,13 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
-    const stoppedToggleBtn = await screen.findByTestId("api-fusion-toggle-service");
+    renderWithProviders(<ApiGateway />);
+    const stoppedToggleBtn = await screen.findByTestId("api-gateway-toggle-service");
     expect(stoppedToggleBtn).toHaveAttribute("title", "Start service");
     expect(stoppedToggleBtn).toHaveClass("text-emerald-600");
   });
 
-  it("启停服务成功后广播 api-fusion-status-update 事件", async () => {
+  it("启停服务成功后广播 api-gateway-status-update 事件", async () => {
     const store: Store = {
       config: makeConfig(),
       status: makeStatus({ running: false }),
@@ -1086,12 +1086,12 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
-    const toggleBtn = await screen.findByTestId("api-fusion-toggle-service");
+    renderWithProviders(<ApiGateway />);
+    const toggleBtn = await screen.findByTestId("api-gateway-toggle-service");
     fireEvent.click(toggleBtn);
 
     await waitFor(() => {
-      expect(emitMock).toHaveBeenCalledWith("api-fusion-status-update");
+      expect(emitMock).toHaveBeenCalledWith("api-gateway-status-update");
     });
   });
 
@@ -1137,25 +1137,25 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
 
     // 1. 服务商健康率展示：1/2 在线 (因为 provider2 是 disabled)
-    const healthCard = await screen.findByTestId("api-fusion-metric-health");
+    const healthCard = await screen.findByTestId("api-gateway-metric-health");
     expect(within(healthCard).getByText("1/2")).toBeInTheDocument();
     expect(within(healthCard).getByText(/Provider health/i)).toBeInTheDocument();
 
     // 2. 聚合模型数：provider1 贡献了 gpt-4o 和 claude-3-7-sonnet（去重后 2 个，provider2 被禁用不计入）
-    const modelsCard = screen.getByTestId("api-fusion-metric-models");
+    const modelsCard = screen.getByTestId("api-gateway-metric-models");
     expect(within(modelsCard).getByText("2")).toBeInTheDocument();
     expect(within(modelsCard).getByText(/Aggregated models/i)).toBeInTheDocument();
 
     // 3. 本地有效密钥：1 个有效 (共 2 个)
-    const keysCard = screen.getByTestId("api-fusion-metric-keys");
+    const keysCard = screen.getByTestId("api-gateway-metric-keys");
     expect(within(keysCard).getByText("1")).toBeInTheDocument();
     expect(within(keysCard).getByText("/ 2")).toBeInTheDocument();
 
     // 4. 终端同步：1/2 已同步，且有 1 个待同步提示
-    const terminalsCard = screen.getByTestId("api-fusion-metric-terminals");
+    const terminalsCard = screen.getByTestId("api-gateway-metric-terminals");
     expect(within(terminalsCard).getByText("1/2")).toBeInTheDocument();
     expect(within(terminalsCard).getByText(/1.*pending sync/i)).toBeInTheDocument();
 
@@ -1196,15 +1196,15 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
 
-    const modelsCard = await screen.findByTestId("api-fusion-metric-models");
+    const modelsCard = await screen.findByTestId("api-gateway-metric-models");
     const cardModelCount = Number(within(modelsCard).getByText("2").textContent);
     fireEvent.click(modelsCard);
 
-    const dialog = await screen.findByTestId("api-fusion-aggregated-models");
+    const dialog = await screen.findByTestId("api-gateway-aggregated-models");
 
-    const modelNodes = within(dialog).getAllByTestId("api-fusion-aggregated-model");
+    const modelNodes = within(dialog).getAllByTestId("api-gateway-aggregated-model");
     expect(modelNodes).toHaveLength(2);
     expect(modelNodes).toHaveLength(cardModelCount);
     expect(
@@ -1226,7 +1226,7 @@ describe("ApiFusion", () => {
     ).not.toBeInTheDocument();
 
     expect(
-      within(dialog).getAllByTestId("api-fusion-aggregated-model-provider"),
+      within(dialog).getAllByTestId("api-gateway-aggregated-model-provider"),
     ).toHaveLength(3);
 
     expect(within(dialog).getAllByText("Provider 1").length).toBeGreaterThan(0);
@@ -1257,11 +1257,11 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
 
-    fireEvent.click(await screen.findByTestId("api-fusion-metric-models"));
+    fireEvent.click(await screen.findByTestId("api-gateway-metric-models"));
 
-    const dialog = await screen.findByTestId("api-fusion-aggregated-models");
+    const dialog = await screen.findByTestId("api-gateway-aggregated-models");
     expect(within(dialog).getAllByText("/chat/completions")).toHaveLength(3);
     expect(within(dialog).queryAllByText("chat_completions")).toHaveLength(0);
   });
@@ -1274,18 +1274,18 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
 
     const keysTab = await screen.findByRole("tab", { name: /Api Keys/i });
     fireEvent.click(keysTab);
     expect(keysTab).toHaveAttribute("aria-selected", "true");
 
-    fireEvent.keyDown(screen.getByTestId("api-fusion-metric-models"), {
+    fireEvent.keyDown(screen.getByTestId("api-gateway-metric-models"), {
       key: "Enter",
     });
 
     expect(
-      await screen.findByTestId("api-fusion-aggregated-models"),
+      await screen.findByTestId("api-gateway-aggregated-models"),
     ).toBeInTheDocument();
     expect(keysTab).toHaveAttribute("aria-selected", "true");
   });
@@ -1298,18 +1298,18 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
 
     const keysTab = await screen.findByRole("tab", { name: /Api Keys/i });
     fireEvent.click(keysTab);
     expect(keysTab).toHaveAttribute("aria-selected", "true");
 
-    fireEvent.keyDown(screen.getByTestId("api-fusion-metric-models"), {
+    fireEvent.keyDown(screen.getByTestId("api-gateway-metric-models"), {
       key: " ",
     });
 
     expect(
-      await screen.findByTestId("api-fusion-aggregated-models"),
+      await screen.findByTestId("api-gateway-aggregated-models"),
     ).toBeInTheDocument();
     expect(keysTab).toHaveAttribute("aria-selected", "true");
   });
@@ -1331,16 +1331,16 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
 
-    fireEvent.click(await screen.findByTestId("api-fusion-metric-models"));
+    fireEvent.click(await screen.findByTestId("api-gateway-metric-models"));
 
-    const dialog = await screen.findByTestId("api-fusion-aggregated-models");
+    const dialog = await screen.findByTestId("api-gateway-aggregated-models");
     expect(
-      within(dialog).getByTestId("api-fusion-aggregated-models-empty"),
+      within(dialog).getByTestId("api-gateway-aggregated-models-empty"),
     ).toBeInTheDocument();
     expect(
-      within(dialog).queryAllByTestId("api-fusion-aggregated-model"),
+      within(dialog).queryAllByTestId("api-gateway-aggregated-model"),
     ).toHaveLength(0);
   });
 
@@ -1361,7 +1361,7 @@ describe("ApiFusion", () => {
     };
     mockStoreWithUpsert(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
     fireEvent.click(await screen.findByText("Upstream A"));
 
     fireEvent.click(screen.getByRole("switch", { name: "Enable mapping 2" }));
@@ -1369,7 +1369,7 @@ describe("ApiFusion", () => {
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith(
-        "api_fusion_upsert_provider",
+        "api_gateway_upsert_provider",
         expect.objectContaining({
           provider: expect.objectContaining({ id: "p1" }),
         }),
@@ -1377,9 +1377,9 @@ describe("ApiFusion", () => {
     );
 
     const call = invokeMock.mock.calls.find(
-      ([command]) => command === "api_fusion_upsert_provider",
+      ([command]) => command === "api_gateway_upsert_provider",
     );
-    const payload = call?.[1] as { provider: FusionUpstreamProvider };
+    const payload = call?.[1] as { provider: GatewayUpstreamProvider };
     expect(
       payload.provider.mappings[0].enabled,
       "未切换的第 1 条映射应写入启用",
@@ -1410,13 +1410,13 @@ describe("ApiFusion", () => {
     };
     mockStore(store);
 
-    renderWithProviders(<ApiFusion />);
+    renderWithProviders(<ApiGateway />);
 
-    fireEvent.click(await screen.findByTestId("api-fusion-metric-models"));
+    fireEvent.click(await screen.findByTestId("api-gateway-metric-models"));
 
-    const dialog = await screen.findByTestId("api-fusion-aggregated-models");
+    const dialog = await screen.findByTestId("api-gateway-aggregated-models");
     const modelNodes = within(dialog).getAllByTestId(
-      "api-fusion-aggregated-model",
+      "api-gateway-aggregated-model",
     );
     const modelNames = modelNodes.map((node) => node.getAttribute("data-model"));
     expect(modelNames, "聚合模型弹框应包含启用映射 a").toContain("a");

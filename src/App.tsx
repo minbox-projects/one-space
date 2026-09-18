@@ -43,7 +43,7 @@ import { AiSessions } from "./components/AiSessions";
 import { Workspaces } from "./components/Workspaces";
 import { AiEnvironments } from "./components/AiEnvironments";
 import { AiUsageStats } from "./components/AiUsageStats";
-import { ApiFusion } from "./components/ApiFusion";
+import { ApiGateway } from "./components/ApiGateway";
 import { Skills } from "./components/Skills";
 import { Subagents } from "./components/Subagents";
 import { MCPServers } from "./components/MCPServers";
@@ -64,10 +64,10 @@ import { OnboardingWizard } from "./components/OnboardingWizard";
 import { FishPond } from "./components/FishPond";
 import { protocolRouterStatus, type ProtocolRouterStatus } from "./lib/protocolRouter";
 import {
-  apiFusionStatus,
-  API_FUSION_STATUS_UPDATED_EVENT,
-  type FusionStatus,
-} from "./lib/apiFusion";
+  apiGatewayStatus,
+  API_GATEWAY_STATUS_UPDATED_EVENT,
+  type GatewayStatus,
+} from "./lib/apiGateway";
 import { UpdateUpgradeModal } from "./components/UpdateUpgradeModal";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { MessageCenter } from "./components/MessageCenter";
@@ -186,7 +186,7 @@ const TRAY_NAV_TABS = new Set([
   "ssh",
   "ssh-tunnels",
   "protocol-router",
-  "api-fusion",
+  "api-gateway",
   "file-sharing",
   "random-password",
   "json-parser",
@@ -286,8 +286,8 @@ function App() {
   } | null>(null);
   const [protocolRouterHeaderStatus, setProtocolRouterHeaderStatus] =
     useState<ProtocolRouterStatus | null>(null);
-  const [apiFusionHeaderStatus, setApiFusionHeaderStatus] =
-    useState<FusionStatus | null>(null);
+  const [apiGatewayHeaderStatus, setApiGatewayHeaderStatus] =
+    useState<GatewayStatus | null>(null);
   const sshTunnelSummaryRef = useRef<{
     connectedCount: number;
     hasErrors: boolean;
@@ -764,13 +764,13 @@ function App() {
       addListener("protocol-router-status-update", refreshProtocolRouterStatus);
       refreshProtocolRouterStatus();
 
-      const refreshApiFusionStatus = () => {
-        void apiFusionStatus()
-          .then(setApiFusionHeaderStatus)
-          .catch(() => setApiFusionHeaderStatus(null));
+      const refreshApiGatewayStatus = () => {
+        void apiGatewayStatus()
+          .then(setApiGatewayHeaderStatus)
+          .catch(() => setApiGatewayHeaderStatus(null));
       };
-      addListener(API_FUSION_STATUS_UPDATED_EVENT, refreshApiFusionStatus);
-      refreshApiFusionStatus();
+      addListener(API_GATEWAY_STATUS_UPDATED_EVENT, refreshApiGatewayStatus);
+      refreshApiGatewayStatus();
 
       addListener("ssh-tunnel-window-reconnect-start", (event) => {
         const payload = (event.payload ?? {}) as { total?: number };
@@ -1222,8 +1222,8 @@ function App() {
             count: counts.environments,
           },
           {
-            id: "api-fusion",
-            name: t("apiFusion", "API Gateway"),
+            id: "api-gateway",
+            name: t("apiGateway", "API Gateway"),
             icon: Network,
           },
           {
@@ -1568,10 +1568,10 @@ function App() {
             <AiEnvironments isVisible={activeTab === "ai-environments"} />
           </div>
         )}
-        {shouldRenderTab("api-fusion") && (
-          <div className={activeTab === "api-fusion" ? "h-full" : "hidden"}>
+        {shouldRenderTab("api-gateway") && (
+          <div className={activeTab === "api-gateway" ? "h-full" : "hidden"}>
             <AppErrorBoundary label="API 网关" resetKey={activeTab}>
-              <ApiFusion isVisible={activeTab === "api-fusion"} />
+              <ApiGateway isVisible={activeTab === "api-gateway"} />
             </AppErrorBoundary>
           </div>
         )}
@@ -1915,19 +1915,19 @@ function App() {
             </div>
 
             <div className="hidden items-center gap-1 sm:flex">
-              {apiFusionHeaderStatus?.running && (
+              {apiGatewayHeaderStatus?.running && (
                 <button
-                  onClick={() => navigateToTab("api-fusion")}
+                  onClick={() => navigateToTab("api-gateway")}
                   className="relative p-2.5 rounded-md transition-colors text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
-                  title={t("launcherApiFusionRunningAria", {
-                    port: apiFusionHeaderStatus.port,
-                    defaultValue: `API Gateway running on port ${apiFusionHeaderStatus.port}`,
+                  title={t("launcherApiGatewayRunningAria", {
+                    port: apiGatewayHeaderStatus.port,
+                    defaultValue: `API Gateway running on port ${apiGatewayHeaderStatus.port}`,
                   })}
-                  aria-label={t("launcherApiFusionRunningAria", {
-                    port: apiFusionHeaderStatus.port,
-                    defaultValue: `API Gateway running on port ${apiFusionHeaderStatus.port}`,
+                  aria-label={t("launcherApiGatewayRunningAria", {
+                    port: apiGatewayHeaderStatus.port,
+                    defaultValue: `API Gateway running on port ${apiGatewayHeaderStatus.port}`,
                   })}
-                  data-testid="header-api-fusion-status"
+                  data-testid="header-api-gateway-status"
                 >
                   <Network className="w-5 h-5" />
                   <span className="absolute right-1 top-1 flex h-2 w-2">

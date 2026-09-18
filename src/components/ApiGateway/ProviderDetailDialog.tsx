@@ -11,17 +11,17 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import {
-  type FusionModelMapping,
-  type FusionUpstreamProtocol,
-  type FusionUpstreamProvider,
-} from "@/lib/apiFusion";
+  type GatewayModelMapping,
+  type GatewayUpstreamProtocol,
+  type GatewayUpstreamProvider,
+} from "@/lib/apiGateway";
 
 type ProviderDetailDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  provider: FusionUpstreamProvider | null;
+  provider: GatewayUpstreamProvider | null;
   busy: boolean;
-  onSave: (provider: FusionUpstreamProvider) => void;
+  onSave: (provider: GatewayUpstreamProvider) => void;
   onDelete?: (providerId: string) => void;
 };
 
@@ -42,8 +42,8 @@ export function ProviderDetailDialog({
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [defaultModel, setDefaultModel] = useState("");
-  const [protocol, setProtocol] = useState<FusionUpstreamProtocol>("chat_completions");
-  const [mappings, setMappings] = useState<FusionModelMapping[]>([]);
+  const [protocol, setProtocol] = useState<GatewayUpstreamProtocol>("chat_completions");
+  const [mappings, setMappings] = useState<GatewayModelMapping[]>([]);
   const [revealApiKey, setRevealApiKey] = useState(false);
 
   useEffect(() => {
@@ -70,7 +70,7 @@ export function ProviderDetailDialog({
 
   const isEditing = Boolean(provider.id);
 
-  const updateMapping = (index: number, patch: Partial<FusionModelMapping>) => {
+  const updateMapping = (index: number, patch: Partial<GatewayModelMapping>) => {
     setMappings((prev) =>
       prev.map((entry, entryIndex) =>
         entryIndex === index ? { ...entry, ...patch } : entry,
@@ -106,17 +106,17 @@ export function ProviderDetailDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="max-h-[90vh] w-full sm:max-w-6xl overflow-y-auto sm:rounded-xl p-5"
-        data-testid="api-fusion-provider-detail"
+        data-testid="api-gateway-provider-detail"
       >
         <DialogHeader className="space-y-1">
           <DialogTitle className="text-base font-semibold">
             {isEditing
-              ? t("apiFusionEditProvider", "Edit provider")
-              : t("apiFusionNewProvider", "New provider")}
+              ? t("apiGatewayEditProvider", "Edit provider")
+              : t("apiGatewayNewProvider", "New provider")}
           </DialogTitle>
           <DialogDescription className="text-xs text-muted-foreground">
             {t(
-              "apiFusionProviderDialogDesc",
+              "apiGatewayProviderDialogDesc",
               "Configure upstream provider credentials, endpoint protocol, and model routing mappings.",
             )}
           </DialogDescription>
@@ -127,70 +127,70 @@ export function ProviderDetailDialog({
           <div className="field-grid col-2 mb-0">
             {/* 第 1 行：名称独占一行 */}
             <div className="field full-span">
-              <label className="required">{t("apiFusionName", "Name")}</label>
+              <label className="required">{t("apiGatewayName", "Name")}</label>
               <input
                 type="text"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 placeholder="e.g. DeepSeek / OpenAI"
-                aria-label={t("apiFusionName", "Name")}
+                aria-label={t("apiGatewayName", "Name")}
               />
             </div>
 
             {/* 第 2 行：接口协议与默认模型并排 */}
             <div className="field">
-              <label className="required">{t("apiFusionProtocol", "API protocol")}</label>
+              <label className="required">{t("apiGatewayProtocol", "API protocol")}</label>
               <select
                 value={protocol}
                 onChange={(event) =>
-                  setProtocol(event.target.value as FusionUpstreamProtocol)
+                  setProtocol(event.target.value as GatewayUpstreamProtocol)
                 }
-                aria-label={t("apiFusionProtocol", "API protocol")}
+                aria-label={t("apiGatewayProtocol", "API protocol")}
               >
                 <option value="chat_completions">
-                  {t("apiFusionProtocolChat", "Chat Completions (/chat/completions)")}
+                  {t("apiGatewayProtocolChat", "Chat Completions (/chat/completions)")}
                 </option>
                 <option value="responses">
-                  {t("apiFusionProtocolResponses", "Responses (/responses)")}
+                  {t("apiGatewayProtocolResponses", "Responses (/responses)")}
                 </option>
               </select>
             </div>
 
             <div className="field">
-              <label>{t("apiFusionDefaultModel", "Default model")}</label>
+              <label>{t("apiGatewayDefaultModel", "Default model")}</label>
               <input
                 type="text"
                 value={defaultModel}
                 onChange={(event) => setDefaultModel(event.target.value)}
                 placeholder="e.g. gpt-4o / deepseek-chat"
-                aria-label={t("apiFusionDefaultModel", "Default model")}
+                aria-label={t("apiGatewayDefaultModel", "Default model")}
                 className="font-mono"
               />
             </div>
 
             {/* 第 3 行：API Base URL 独占一行 */}
             <div className="field full-span">
-              <label className="required">{t("apiFusionBaseUrl", "API base URL")}</label>
+              <label className="required">{t("apiGatewayBaseUrl", "API base URL")}</label>
               <input
                 type="text"
                 value={baseUrl}
                 onChange={(event) => setBaseUrl(event.target.value)}
                 placeholder="https://api.openai.com"
-                aria-label={t("apiFusionBaseUrl", "API base URL")}
+                aria-label={t("apiGatewayBaseUrl", "API base URL")}
                 className="font-mono"
               />
             </div>
 
             {/* 第 4 行：API Key 独占一行 */}
             <div className="field full-span">
-              <label>{t("apiFusionApiKey", "API key")}</label>
+              <label>{t("apiGatewayApiKey", "API key")}</label>
               <div className="relative">
                 <input
                   type={revealApiKey ? "text" : "password"}
                   value={apiKey}
                   onChange={(event) => setApiKey(event.target.value)}
                   placeholder="sk-..."
-                  aria-label={t("apiFusionApiKey", "API key")}
+                  aria-label={t("apiGatewayApiKey", "API key")}
                   className="pr-10 font-mono"
                 />
                 <button
@@ -198,8 +198,8 @@ export function ProviderDetailDialog({
                   onClick={() => setRevealApiKey((prev) => !prev)}
                   aria-label={
                     revealApiKey
-                      ? t("apiFusionHideSecret", "Hide secret")
-                      : t("apiFusionShowSecret", "Show secret")
+                      ? t("apiGatewayHideSecret", "Hide secret")
+                      : t("apiGatewayShowSecret", "Show secret")
                   }
                   className="absolute right-1 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
                 >
@@ -214,11 +214,11 @@ export function ProviderDetailDialog({
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-xs font-semibold text-foreground">
-                  {t("apiFusionModelMappings", "Model mappings")}
+                  {t("apiGatewayModelMappings", "Model mappings")}
                 </div>
                 <p className="text-[11px] text-muted-foreground">
                   {t(
-                    "apiFusionModelMappingsDesc",
+                    "apiGatewayModelMappingsDesc",
                     "Map local request model names to upstream models. Optionally set a display name shown in the gateway for each model.",
                   )}
                 </p>
@@ -240,13 +240,13 @@ export function ProviderDetailDialog({
                 className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs font-medium shadow-sm transition hover:bg-muted"
               >
                 <Plus className="h-3 w-3" />
-                {t("apiFusionAddMapping", "Add mapping")}
+                {t("apiGatewayAddMapping", "Add mapping")}
               </button>
             </div>
 
             {mappings.length === 0 ? (
               <p className="rounded-lg border border-dashed bg-background/50 px-3 py-3 text-center text-xs text-muted-foreground">
-                {t("apiFusionNoMappings", "No model mappings configured.")}
+                {t("apiGatewayNoMappings", "No model mappings configured.")}
               </p>
             ) : (
               <div className="overflow-x-auto">
@@ -258,7 +258,7 @@ export function ProviderDetailDialog({
                     className={`flex items-center gap-2 ${mapping.enabled === false ? "opacity-60" : ""}`}
                   >
                     <Switch
-                      aria-label={t("apiFusionToggleMappingAria", {
+                      aria-label={t("apiGatewayToggleMappingAria", {
                         index: index + 1,
                         defaultValue: `Enable mapping ${index + 1}`,
                       })}
@@ -273,8 +273,8 @@ export function ProviderDetailDialog({
                       onChange={(event) =>
                         updateMapping(index, { local_model: event.target.value })
                       }
-                      placeholder={t("apiFusionLocalModelPlaceholder", "local model")}
-                      aria-label={t("apiFusionLocalModelAria", {
+                      placeholder={t("apiGatewayLocalModelPlaceholder", "local model")}
+                      aria-label={t("apiGatewayLocalModelAria", {
                         index: index + 1,
                         defaultValue: `Local model ${index + 1}`,
                       })}
@@ -289,8 +289,8 @@ export function ProviderDetailDialog({
                       onChange={(event) =>
                         updateMapping(index, { upstream_model: event.target.value })
                       }
-                      placeholder={t("apiFusionUpstreamModelPlaceholder", "upstream model")}
-                      aria-label={t("apiFusionUpstreamModelAria", {
+                      placeholder={t("apiGatewayUpstreamModelPlaceholder", "upstream model")}
+                      aria-label={t("apiGatewayUpstreamModelAria", {
                         index: index + 1,
                         defaultValue: `Upstream model ${index + 1}`,
                       })}
@@ -302,8 +302,8 @@ export function ProviderDetailDialog({
                       onChange={(event) =>
                         updateMapping(index, { display_name: event.target.value })
                       }
-                      placeholder={t("apiFusionLocalModelNamePlaceholder", "display name")}
-                      aria-label={t("apiFusionLocalModelNameAria", {
+                      placeholder={t("apiGatewayLocalModelNamePlaceholder", "display name")}
+                      aria-label={t("apiGatewayLocalModelNameAria", {
                         index: index + 1,
                         defaultValue: `Local model name ${index + 1}`,
                       })}
@@ -316,23 +316,23 @@ export function ProviderDetailDialog({
                           protocol:
                             event.target.value === ""
                               ? null
-                              : (event.target.value as FusionUpstreamProtocol),
+                              : (event.target.value as GatewayUpstreamProtocol),
                         })
                       }
-                      aria-label={t("apiFusionMappingProtocolAria", {
+                      aria-label={t("apiGatewayMappingProtocolAria", {
                         index: index + 1,
                         defaultValue: `Mapping protocol ${index + 1}`,
                       })}
                       className={`${mappingInputClass} min-w-[180px] shrink-0`}
                     >
                       <option value="">
-                        {t("apiFusionProtocolInherit", "Inherit from provider")}
+                        {t("apiGatewayProtocolInherit", "Inherit from provider")}
                       </option>
                       <option value="chat_completions">
-                        {t("apiFusionProtocolChat", "Chat Completions (/chat/completions)")}
+                        {t("apiGatewayProtocolChat", "Chat Completions (/chat/completions)")}
                       </option>
                       <option value="responses">
-                        {t("apiFusionProtocolResponses", "Responses (/responses)")}
+                        {t("apiGatewayProtocolResponses", "Responses (/responses)")}
                       </option>
                     </select>
                     <button
@@ -340,7 +340,7 @@ export function ProviderDetailDialog({
                       onClick={() =>
                         setMappings((prev) => prev.filter((_, entryIndex) => entryIndex !== index))
                       }
-                      aria-label={t("apiFusionRemoveMappingAria", {
+                      aria-label={t("apiGatewayRemoveMappingAria", {
                         index: index + 1,
                         defaultValue: `Remove mapping ${index + 1}`,
                       })}
@@ -366,7 +366,7 @@ export function ProviderDetailDialog({
                 className="acc-panel-btn danger"
               >
                 <Trash2 />
-                {t("apiFusionDelete", "Delete")}
+                {t("apiGatewayDelete", "Delete")}
               </button>
             ) : null}
           </div>
@@ -385,7 +385,7 @@ export function ProviderDetailDialog({
               disabled={busy || !name.trim() || !baseUrl.trim()}
               className="acc-panel-btn primary"
             >
-              {t("apiFusionSave", "Save")}
+              {t("apiGatewaySave", "Save")}
             </button>
           </div>
         </DialogFooter>

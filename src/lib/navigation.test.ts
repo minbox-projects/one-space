@@ -12,9 +12,9 @@ describe("snippets and notes navigation", () => {
 });
 
 describe("API Gateway navigation", () => {
-  it("resolves api-fusion to a standalone tab instead of a More Tools section", () => {
-    expect(resolveNavigationTarget("api-fusion")).toEqual({ tab: "api-fusion" });
-    expect(isMoreToolsTab("api-fusion")).toBe(false);
+  it("resolves api-gateway to a standalone tab instead of a More Tools section", () => {
+    expect(resolveNavigationTarget("api-gateway")).toEqual({ tab: "api-gateway" });
+    expect(isMoreToolsTab("api-gateway")).toBe(false);
   });
 });
 

@@ -1,10 +1,10 @@
-use super::{FusionUpstreamProvider, UpstreamProtocol, FAILURE_THRESHOLD};
+use super::{GatewayUpstreamProvider, UpstreamProtocol, FAILURE_THRESHOLD};
 use rand::seq::SliceRandom;
 use std::time::Duration;
 
 /// Outcome class for an upstream attempt, driving switching and auto-disable decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::api_fusion) enum FailureClass {
+pub(in crate::api_gateway) enum FailureClass {
     /// Auth failures (401/403) disable the provider immediately and switch.
     DisableImmediately,
     /// Counts toward consecutive failures; switches and auto-disables at the threshold.
@@ -17,7 +17,7 @@ pub(in crate::api_fusion) enum FailureClass {
 
 /// Outcome of resolving a request model against one provider for an inbound protocol.
 #[derive(Debug)]
-pub(in crate::api_fusion) enum ModelResolution {
+pub(in crate::api_gateway) enum ModelResolution {
     /// Forward using this upstream model.
     Serve(String),
     /// A valid mapping row matches the requested model but declares another
@@ -40,8 +40,8 @@ pub(in crate::api_fusion) enum ModelResolution {
 /// none matches, the request is a `ProtocolMismatch` and the default model is
 /// not used as a fallback. The default model serves an unmapped model only when
 /// the provider protocol itself matches.
-pub(in crate::api_fusion) fn resolve_model_for_protocol(
-    provider: &FusionUpstreamProvider,
+pub(in crate::api_gateway) fn resolve_model_for_protocol(
+    provider: &GatewayUpstreamProvider,
     requested: Option<&str>,
     protocol: UpstreamProtocol,
 ) -> ModelResolution {
@@ -85,11 +85,11 @@ pub(in crate::api_fusion) fn resolve_model_for_protocol(
 /// Candidate set: enabled, not auto-disabled, and able to serve the request
 /// model under the inbound protocol. A provider is not filtered by its own
 /// protocol alone, because a mapping row may declare the inbound protocol.
-pub(in crate::api_fusion) fn candidate_providers<'a>(
-    providers: &'a [FusionUpstreamProvider],
+pub(in crate::api_gateway) fn candidate_providers<'a>(
+    providers: &'a [GatewayUpstreamProvider],
     requested: Option<&str>,
     protocol: UpstreamProtocol,
-) -> Vec<&'a FusionUpstreamProvider> {
+) -> Vec<&'a GatewayUpstreamProvider> {
     providers
         .iter()
         .filter(|provider| {
@@ -104,9 +104,9 @@ pub(in crate::api_fusion) fn candidate_providers<'a>(
 }
 
 /// Uniformly shuffle a copy of the candidate list for one request attempt pass.
-pub(in crate::api_fusion) fn shuffled_candidates(
-    candidates: &[FusionUpstreamProvider],
-) -> Vec<FusionUpstreamProvider> {
+pub(in crate::api_gateway) fn shuffled_candidates(
+    candidates: &[GatewayUpstreamProvider],
+) -> Vec<GatewayUpstreamProvider> {
     let mut ordered = candidates.to_vec();
     ordered.shuffle(&mut rand::thread_rng());
     ordered
@@ -114,9 +114,9 @@ pub(in crate::api_fusion) fn shuffled_candidates(
 
 /// Choose a single candidate uniformly at random (used by coverage-sensitive tests).
 #[cfg(test)]
-pub(in crate::api_fusion) fn pick_candidate(
-    candidates: &[FusionUpstreamProvider],
-) -> Option<FusionUpstreamProvider> {
+pub(in crate::api_gateway) fn pick_candidate(
+    candidates: &[GatewayUpstreamProvider],
+) -> Option<GatewayUpstreamProvider> {
     shuffled_candidates(candidates).into_iter().next()
 }
 
@@ -127,7 +127,7 @@ pub(in crate::api_fusion) fn pick_candidate(
 /// caller treats a parsed `< 400` response as success before classifying, so a
 /// non-JSON success body falls through to retryable; network errors are always
 /// retryable.
-pub(in crate::api_fusion) fn classify_failure(
+pub(in crate::api_gateway) fn classify_failure(
     status: u16,
     network_error: bool,
     _body_parsed: bool,
@@ -153,7 +153,7 @@ pub(in crate::api_fusion) fn classify_failure(
 
 /// Maximum bounded retries after a provider's first attempt in one request
 /// (so a provider is contacted at most `1 + MAX_RETRIES_PER_PROVIDER` times).
-pub(in crate::api_fusion) const MAX_RETRIES_PER_PROVIDER: u32 = 5;
+pub(in crate::api_gateway) const MAX_RETRIES_PER_PROVIDER: u32 = 5;
 
 const RETRY_BASE_DELAY_MILLIS: u128 = 2_000;
 const RETRY_MAX_DELAY_MILLIS: u128 = 30_000;
@@ -162,7 +162,7 @@ const RETRY_JITTER_RATIO: f64 = 0.25;
 /// Default delay before the `retry`-th retry (1-based): the spec's
 /// `min(2000ms * 2^(retry-1) * (1 + random[0,1]*0.25), 30000ms)`. Header-driven
 /// overrides take priority over this.
-pub(in crate::api_fusion) fn default_retry_delay(retry: u32) -> Duration {
+pub(in crate::api_gateway) fn default_retry_delay(retry: u32) -> Duration {
     let exponent = retry.saturating_sub(1).min(20);
     let base = RETRY_BASE_DELAY_MILLIS.saturating_mul(1u128 << exponent);
     let jitter = 1.0 + rand::random::<f64>() * RETRY_JITTER_RATIO;
@@ -171,7 +171,7 @@ pub(in crate::api_fusion) fn default_retry_delay(retry: u32) -> Duration {
 }
 
 /// Read the first value of each header, falling through invalid values.
-pub(in crate::api_fusion) fn retry_header_delay(
+pub(in crate::api_gateway) fn retry_header_delay(
     headers: &reqwest::header::HeaderMap,
 ) -> Option<Duration> {
     fn numeric_delay(value: &str, divisor: f64) -> Option<Duration> {
@@ -206,7 +206,7 @@ pub(in crate::api_fusion) fn retry_header_delay(
 /// Whether a classified failure is worth another bounded attempt. `404` is a
 /// permanent per-request skip and `ReturnToClient`/`DisableImmediately` never
 /// retry; `429` (classified `Transient` so it skips health) is still retried.
-pub(in crate::api_fusion) fn is_retryable_failure(class: FailureClass, status: u16) -> bool {
+pub(in crate::api_gateway) fn is_retryable_failure(class: FailureClass, status: u16) -> bool {
     match class {
         FailureClass::Retryable => true,
         FailureClass::Transient => status == 429,
@@ -216,8 +216,8 @@ pub(in crate::api_fusion) fn is_retryable_failure(class: FailureClass, status: u
 
 /// Record a failure on a provider. Returns `true` when the provider is (or becomes)
 /// auto-disabled. `Transient` and `ReturnToClient` never count as failures.
-pub(in crate::api_fusion) fn register_failure(
-    provider: &mut FusionUpstreamProvider,
+pub(in crate::api_gateway) fn register_failure(
+    provider: &mut GatewayUpstreamProvider,
     class: FailureClass,
     reason: &str,
     at: u64,
@@ -242,13 +242,13 @@ pub(in crate::api_fusion) fn register_failure(
 }
 
 /// A successful attempt resets the consecutive failure counter.
-pub(in crate::api_fusion) fn register_success(provider: &mut FusionUpstreamProvider) {
+pub(in crate::api_gateway) fn register_success(provider: &mut GatewayUpstreamProvider) {
     provider.consecutive_failures = 0;
     provider.last_error_at = None;
 }
 
 /// Manual re-enable clears only the auto-disabled runtime state; user intent is untouched.
-pub(in crate::api_fusion) fn manual_reenable(provider: &mut FusionUpstreamProvider) {
+pub(in crate::api_gateway) fn manual_reenable(provider: &mut GatewayUpstreamProvider) {
     provider.auto_disabled = false;
     provider.disabled_reason = None;
     provider.disabled_at = None;
@@ -257,8 +257,8 @@ pub(in crate::api_fusion) fn manual_reenable(provider: &mut FusionUpstreamProvid
 }
 
 /// User toggle touches only the `enabled` intent flag.
-pub(in crate::api_fusion) fn set_user_enabled(
-    provider: &mut FusionUpstreamProvider,
+pub(in crate::api_gateway) fn set_user_enabled(
+    provider: &mut GatewayUpstreamProvider,
     enabled: bool,
 ) {
     provider.enabled = enabled;

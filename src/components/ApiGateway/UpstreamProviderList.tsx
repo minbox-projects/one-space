@@ -13,18 +13,18 @@ import {
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
-  formatFusionTimestamp,
-  type FusionUpstreamProvider,
-} from "@/lib/apiFusion";
+  formatGatewayTimestamp,
+  type GatewayUpstreamProvider,
+} from "@/lib/apiGateway";
 
 export type ProviderStatusFilter = "all" | "enabled" | "disabled";
 
 type UpstreamProviderListProps = {
-  providers: FusionUpstreamProvider[];
+  providers: GatewayUpstreamProvider[];
   selectedProviderId: string | null;
   busy: boolean;
   onSelect: (providerId: string) => void;
-  onToggleEnabled: (provider: FusionUpstreamProvider, enabled: boolean) => void;
+  onToggleEnabled: (provider: GatewayUpstreamProvider, enabled: boolean) => void;
   onReenable: (providerId: string) => void;
   onAdd: () => void;
   onDelete?: (providerId: string) => void;
@@ -71,13 +71,13 @@ export function UpstreamProviderList({
   }, [providers, statusFilter]);
 
   return (
-    <section className="space-y-3.5" data-testid="api-fusion-providers">
+    <section className="space-y-3.5" data-testid="api-gateway-providers">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-0.5">
           <div className="flex items-center gap-2">
             <Server className="h-4 w-4 text-primary" />
             <h3 className="text-sm font-semibold text-foreground">
-              {t("apiFusionProviders", "Upstream providers")}
+              {t("apiGatewayProviders", "Upstream providers")}
             </h3>
             <span className="rounded-full bg-muted px-2 py-0.2 text-[10px] font-semibold text-muted-foreground">
               {providers.length}
@@ -85,7 +85,7 @@ export function UpstreamProviderList({
           </div>
           <p className="text-xs text-muted-foreground">
             {t(
-              "apiFusionProvidersDesc",
+              "apiGatewayProvidersDesc",
               "Manage remote AI provider endpoints, protocols, and model route mappings.",
             )}
           </p>
@@ -95,8 +95,8 @@ export function UpstreamProviderList({
           {providers.length > 0 ? (
             <div
               role="group"
-              aria-label={t("apiFusionFilterAria", "Filter providers by status")}
-              data-testid="api-fusion-provider-status-filter"
+              aria-label={t("apiGatewayFilterAria", "Filter providers by status")}
+              data-testid="api-gateway-provider-status-filter"
               className="inline-flex items-center rounded-lg border border-border/50 bg-muted/60 p-0.5 text-xs shadow-inner"
             >
               <button
@@ -110,7 +110,7 @@ export function UpstreamProviderList({
                     : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
                 }`}
               >
-                <span>{t("apiFusionFilterAll", "All")}</span>
+                <span>{t("apiGatewayFilterAll", "All")}</span>
                 <span
                   className={`rounded-full px-1.5 py-0.2 text-[10px] ${
                     statusFilter === "all"
@@ -134,7 +134,7 @@ export function UpstreamProviderList({
                 }`}
               >
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                <span>{t("apiFusionFilterEnabled", "Enabled")}</span>
+                <span>{t("apiGatewayFilterEnabled", "Enabled")}</span>
                 <span
                   className={`rounded-full px-1.5 py-0.2 text-[10px] ${
                     statusFilter === "enabled"
@@ -158,7 +158,7 @@ export function UpstreamProviderList({
                 }`}
               >
                 <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
-                <span>{t("apiFusionFilterDisabled", "Disabled")}</span>
+                <span>{t("apiGatewayFilterDisabled", "Disabled")}</span>
                 <span
                   className={`rounded-full px-1.5 py-0.2 text-[10px] ${
                     statusFilter === "disabled"
@@ -179,7 +179,7 @@ export function UpstreamProviderList({
             className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
           >
             <Plus className="h-3.5 w-3.5" />
-            {t("apiFusionAddProvider", "Add provider")}
+            {t("apiGatewayAddProvider", "Add provider")}
           </button>
         </div>
       </div>
@@ -190,11 +190,11 @@ export function UpstreamProviderList({
             <Server className="h-5 w-5" />
           </div>
           <h4 className="mt-2.5 text-xs font-medium text-foreground">
-            {t("apiFusionNoProviders", "No upstream providers yet.")}
+            {t("apiGatewayNoProviders", "No upstream providers yet.")}
           </h4>
           <p className="mt-1 max-w-sm text-xs text-muted-foreground">
             {t(
-              "apiFusionNoProvidersGuide",
+              "apiGatewayNoProvidersGuide",
               "Add upstream providers like OpenAI, DeepSeek, or any OpenAI-compatible API to start proxying requests.",
             )}
           </p>
@@ -205,23 +205,23 @@ export function UpstreamProviderList({
             className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
           >
             <Plus className="h-3 w-3" />
-            {t("apiFusionAddProvider", "Add provider")}
+            {t("apiGatewayAddProvider", "Add provider")}
           </button>
         </div>
       ) : filteredProviders.length === 0 ? (
         <div
-          data-testid="api-fusion-providers-filter-empty"
+          data-testid="api-gateway-providers-filter-empty"
           className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/40 px-6 py-10 text-center"
         >
           <div className="rounded-full bg-muted/60 p-2.5 text-muted-foreground">
             <Filter className="h-5 w-5 opacity-70" />
           </div>
           <h4 className="mt-2.5 text-xs font-medium text-foreground">
-            {t("apiFusionNoMatchingProviders", "No matching upstream providers")}
+            {t("apiGatewayNoMatchingProviders", "No matching upstream providers")}
           </h4>
           <p className="mt-1 max-w-sm text-xs text-muted-foreground">
             {t(
-              "apiFusionNoMatchingProvidersGuide",
+              "apiGatewayNoMatchingProvidersGuide",
               "No upstream providers match the selected status filter.",
             )}
           </p>
@@ -231,7 +231,7 @@ export function UpstreamProviderList({
             className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
           >
             <RotateCcw className="h-3 w-3" />
-            {t("apiFusionClearFilter", "Show all providers")}
+            {t("apiGatewayClearFilter", "Show all providers")}
           </button>
         </div>
       ) : (
@@ -240,14 +240,14 @@ export function UpstreamProviderList({
             const isSelected = provider.id === selectedProviderId;
             const isAutoDisabled = Boolean(provider.auto_disabled);
             const isEnabled = provider.enabled;
-            const disabledAt = formatFusionTimestamp(provider.disabled_at);
+            const disabledAt = formatGatewayTimestamp(provider.disabled_at);
             const mappingCount = provider.mappings?.length ?? 0;
             const isChatProtocol = provider.protocol !== "responses";
 
             return (
               <div
                 key={provider.id}
-                data-testid={`api-fusion-provider-${provider.id}`}
+                data-testid={`api-gateway-provider-${provider.id}`}
                 className={`group relative flex flex-col justify-between rounded-xl border bg-card p-3.5 shadow-sm transition-all hover:border-primary/40 hover:shadow-md ${
                   isSelected ? "ring-2 ring-primary/20 border-primary" : ""
                 } ${!isEnabled ? "opacity-85 hover:opacity-100" : ""}`}
@@ -287,7 +287,7 @@ export function UpstreamProviderList({
 
                     <div className="flex items-center gap-1.5 shrink-0">
                       <Switch
-                        aria-label={t("apiFusionToggleProviderAria", {
+                        aria-label={t("apiGatewayToggleProviderAria", {
                           name: provider.name,
                           defaultValue: `Enable provider ${provider.name}`,
                         })}
@@ -311,11 +311,11 @@ export function UpstreamProviderList({
                       <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 opacity-70" />
                       <span>
                         {mappingCount > 0
-                          ? t("apiFusionMappingCount", {
+                          ? t("apiGatewayMappingCount", {
                               count: mappingCount,
                               defaultValue: `${mappingCount} mappings configured`,
                             })
-                          : t("apiFusionNoMappingsShort", "No mappings (default routing)")}
+                          : t("apiGatewayNoMappingsShort", "No mappings (default routing)")}
                       </span>
                     </div>
                   </div>
@@ -324,16 +324,16 @@ export function UpstreamProviderList({
                   {provider.auto_disabled ? (
                     <div
                       className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400"
-                      data-testid={`api-fusion-auto-disabled-${provider.id}`}
+                      data-testid={`api-gateway-auto-disabled-${provider.id}`}
                     >
                       <div className="min-w-0 space-y-0.5">
                         <div className="flex items-center gap-1 font-medium">
                           <AlertTriangle className="h-3 w-3 shrink-0" />
-                          <span>{t("apiFusionAutoDisabled", "Auto-disabled")}</span>
+                          <span>{t("apiGatewayAutoDisabled", "Auto-disabled")}</span>
                         </div>
                         {provider.disabled_reason ? (
                           <div className="truncate text-[10px]">
-                            {t("apiFusionDisabledReason", {
+                            {t("apiGatewayDisabledReason", {
                               reason: provider.disabled_reason,
                               defaultValue: `Reason: ${provider.disabled_reason}`,
                             })}
@@ -341,7 +341,7 @@ export function UpstreamProviderList({
                         ) : null}
                         {disabledAt ? (
                           <div className="text-[10px] opacity-80">
-                            {t("apiFusionDisabledAt", {
+                            {t("apiGatewayDisabledAt", {
                               time: disabledAt,
                               defaultValue: `Disabled at ${disabledAt}`,
                             })}
@@ -355,7 +355,7 @@ export function UpstreamProviderList({
                         className="inline-flex h-6 items-center gap-1 rounded-md border border-amber-500/40 bg-background px-2 text-[10px] font-medium shadow-sm transition hover:bg-amber-500/20 disabled:opacity-50"
                       >
                         <RotateCcw className="h-2.5 w-2.5" />
-                        {t("apiFusionReenable", "Re-enable")}
+                        {t("apiGatewayReenable", "Re-enable")}
                       </button>
                     </div>
                   ) : null}
@@ -365,30 +365,30 @@ export function UpstreamProviderList({
                 <div className="mt-3 flex items-center justify-between border-t pt-2.5">
                   {isAutoDisabled ? (
                     <span
-                      data-testid={`api-fusion-status-badge-${provider.id}`}
+                      data-testid={`api-gateway-status-badge-${provider.id}`}
                       className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
                     >
                       <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                      <span>{t("apiFusionAutoDisabled", "Auto-disabled")}</span>
+                      <span>{t("apiGatewayAutoDisabled", "Auto-disabled")}</span>
                     </span>
                   ) : isEnabled ? (
                     <span
-                      data-testid={`api-fusion-status-badge-${provider.id}`}
+                      data-testid={`api-gateway-status-badge-${provider.id}`}
                       className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300"
                     >
                       <span className="relative flex h-1.5 w-1.5">
                         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75 duration-1000" />
                         <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
                       </span>
-                      <span>{t("apiFusionEnabled", "Enabled")}</span>
+                      <span>{t("apiGatewayEnabled", "Enabled")}</span>
                     </span>
                   ) : (
                     <span
-                      data-testid={`api-fusion-status-badge-${provider.id}`}
+                      data-testid={`api-gateway-status-badge-${provider.id}`}
                       className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/25 bg-rose-500/10 px-2 py-0.5 text-[11px] font-medium text-rose-700 dark:text-rose-400"
                     >
                       <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
-                      <span>{t("apiFusionDisabled", "Disabled")}</span>
+                      <span>{t("apiGatewayDisabled", "Disabled")}</span>
                     </span>
                   )}
                   <div className="flex items-center gap-1">
@@ -397,11 +397,11 @@ export function UpstreamProviderList({
                         type="button"
                         onClick={() => onDelete(provider.id)}
                         disabled={busy}
-                        aria-label={t("apiFusionDeleteProviderAria", {
+                        aria-label={t("apiGatewayDeleteProviderAria", {
                           name: provider.name,
                           defaultValue: `Delete provider ${provider.name}`,
                         })}
-                        title={t("apiFusionDelete", "Delete")}
+                        title={t("apiGatewayDelete", "Delete")}
                         className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -413,7 +413,7 @@ export function UpstreamProviderList({
                       className="inline-flex h-7 items-center gap-1 rounded-md border bg-background px-2.5 text-xs font-medium shadow-sm transition hover:bg-muted"
                     >
                       <Pencil className="h-3 w-3" />
-                      {t("apiFusionEdit", "Edit")}
+                      {t("apiGatewayEdit", "Edit")}
                     </button>
                   </div>
                 </div>

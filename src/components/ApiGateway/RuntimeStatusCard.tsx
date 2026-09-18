@@ -15,17 +15,17 @@ import {
 import {
   aggregateModels,
   localBaseUrl,
-  type FusionConfig,
-  type FusionStatus,
-  type FusionTerminalTarget,
-} from "@/lib/apiFusion";
+  type GatewayConfig,
+  type GatewayStatus,
+  type GatewayTerminalTarget,
+} from "@/lib/apiGateway";
 
 type RuntimeStatusCardProps = {
-  status: FusionStatus | null;
-  config: FusionConfig;
+  status: GatewayStatus | null;
+  config: GatewayConfig;
   busy: boolean;
   addressCopied: boolean;
-  targets?: FusionTerminalTarget[];
+  targets?: GatewayTerminalTarget[];
   onSelectTab?: (tab: "providers" | "keys" | "terminals") => void;
   onShowModels?: () => void;
   onStart: () => void;
@@ -80,7 +80,7 @@ export function RuntimeStatusCard({
   return (
     <section
       className="space-y-3 rounded-xl border bg-card p-4 shadow-sm"
-      data-testid="api-fusion-runtime"
+      data-testid="api-gateway-runtime"
     >
       {/* 顶部主状态栏与启停按钮 */}
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -101,9 +101,9 @@ export function RuntimeStatusCard({
                 className={`font-semibold leading-none ${
                   running ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"
                 }`}
-                data-testid="api-fusion-runtime-state"
+                data-testid="api-gateway-runtime-state"
               >
-                {running ? t("apiFusionRunning", "Running") : t("apiFusionStopped", "Stopped")}
+                {running ? t("apiGatewayRunning", "Running") : t("apiGatewayStopped", "Stopped")}
               </span>
               <span className="text-muted-foreground/40">·</span>
               <div className="flex items-center gap-1">
@@ -112,18 +112,18 @@ export function RuntimeStatusCard({
                     running ? "text-foreground" : "text-muted-foreground/70"
                   }`}
                   title={address}
-                  data-testid="api-fusion-local-address"
+                  data-testid="api-gateway-local-address"
                 >
                   {address}
                 </code>
                 <button
                   type="button"
                   onClick={onCopyAddress}
-                  aria-label={t("apiFusionCopyAddress", "Copy local API address")}
+                  aria-label={t("apiGatewayCopyAddress", "Copy local API address")}
                   title={
                     addressCopied
-                      ? t("apiFusionCopied", "Copied")
-                      : t("apiFusionCopyAddress", "Copy local API address")
+                      ? t("apiGatewayCopied", "Copied")
+                      : t("apiGatewayCopyAddress", "Copy local API address")
                   }
                   className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
                 >
@@ -147,9 +147,9 @@ export function RuntimeStatusCard({
             type="button"
             onClick={running ? onStop : onStart}
             disabled={busy}
-            title={running ? t("apiFusionStop", "Stop service") : t("apiFusionStart", "Start service")}
-            aria-label={running ? t("apiFusionStop", "Stop service") : t("apiFusionStart", "Start service")}
-            data-testid="api-fusion-toggle-service"
+            title={running ? t("apiGatewayStop", "Stop service") : t("apiGatewayStart", "Start service")}
+            aria-label={running ? t("apiGatewayStop", "Stop service") : t("apiGatewayStart", "Start service")}
+            data-testid="api-gateway-toggle-service"
             className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium shadow-sm transition disabled:opacity-50 ${
               running
                 ? "border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20 active:bg-destructive/30"
@@ -163,7 +163,7 @@ export function RuntimeStatusCard({
             ) : (
               <Play className="h-3.5 w-3.5 fill-current translate-x-0.5" />
             )}
-            <span>{running ? t("apiFusionStop", "Stop service") : t("apiFusionStart", "Start service")}</span>
+            <span>{running ? t("apiGatewayStop", "Stop service") : t("apiGatewayStart", "Start service")}</span>
           </button>
         </div>
       </div>
@@ -172,7 +172,7 @@ export function RuntimeStatusCard({
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
         {/* 指标卡 1：服务商健康度 */}
         <div
-          data-testid="api-fusion-metric-health"
+          data-testid="api-gateway-metric-health"
           onClick={() => onSelectTab?.("providers")}
           role={onSelectTab ? "button" : undefined}
           tabIndex={onSelectTab ? 0 : undefined}
@@ -189,7 +189,7 @@ export function RuntimeStatusCard({
         >
           <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-[11px] font-medium">
-              {t("apiFusionUpstreamHealth", "Provider health")}
+              {t("apiGatewayUpstreamHealth", "Provider health")}
             </span>
             <Server className="h-3.5 w-3.5 text-muted-foreground/70 group-hover:text-foreground" />
           </div>
@@ -198,28 +198,28 @@ export function RuntimeStatusCard({
               {totalProviders > 0 ? `${activeProviders}/${totalProviders}` : "0"}
             </span>
             <span className="text-xs text-muted-foreground">
-              {t("apiFusionRunning", "Online")}
+              {t("apiGatewayRunning", "Online")}
             </span>
           </div>
           <div className="mt-1 flex items-center justify-between gap-1 text-[11px]">
             {autoDisabledCount > 0 ? (
               <span className="inline-flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400">
                 <AlertTriangle className="h-3 w-3 shrink-0" />
-                <span data-testid="api-fusion-auto-disabled-count">{autoDisabledCount}</span>
-                <span>{t("apiFusionAutoDisabledCount", "Auto-disabled")}</span>
+                <span data-testid="api-gateway-auto-disabled-count">{autoDisabledCount}</span>
+                <span>{t("apiGatewayAutoDisabledCount", "Auto-disabled")}</span>
               </span>
             ) : (
               <div className="flex items-center gap-1 text-muted-foreground">
                 <span
-                  data-testid="api-fusion-auto-disabled-count"
+                  data-testid="api-gateway-auto-disabled-count"
                   className="hidden"
                 >
                   {autoDisabledCount}
                 </span>
                 <span>
                   {totalProviders > 0
-                    ? t("apiFusionAllHealthy", "All online")
-                    : t("apiFusionNoProviders", "No upstream providers yet.")}
+                    ? t("apiGatewayAllHealthy", "All online")
+                    : t("apiGatewayNoProviders", "No upstream providers yet.")}
                 </span>
               </div>
             )}
@@ -228,7 +228,7 @@ export function RuntimeStatusCard({
 
         {/* 指标卡 2：聚合模型数 */}
         <div
-          data-testid="api-fusion-metric-models"
+          data-testid="api-gateway-metric-models"
           onClick={() => onShowModels?.()}
           role={onShowModels ? "button" : undefined}
           tabIndex={onShowModels ? 0 : undefined}
@@ -243,7 +243,7 @@ export function RuntimeStatusCard({
         >
           <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-[11px] font-medium">
-              {t("apiFusionAggregatedModels", "Aggregated models")}
+              {t("apiGatewayAggregatedModels", "Aggregated models")}
             </span>
             <Boxes className="h-3.5 w-3.5 text-muted-foreground/70 group-hover:text-foreground" />
           </div>
@@ -252,17 +252,17 @@ export function RuntimeStatusCard({
               {aggregatedModelsCount}
             </span>
             <span className="text-xs text-muted-foreground">
-              {t("apiFusionAggregatedModelsCount", { count: aggregatedModelsCount, defaultValue: `${aggregatedModelsCount} models` }).replace(String(aggregatedModelsCount), "").trim()}
+              {t("apiGatewayAggregatedModelsCount", { count: aggregatedModelsCount, defaultValue: `${aggregatedModelsCount} models` }).replace(String(aggregatedModelsCount), "").trim()}
             </span>
           </div>
           <div className="mt-1 text-[11px] text-muted-foreground truncate">
-            {t("apiFusionAggregatedModelsDesc", "Unified local mappings")}
+            {t("apiGatewayAggregatedModelsDesc", "Unified local mappings")}
           </div>
         </div>
 
         {/* 指标卡 3：本地有效密钥 */}
         <div
-          data-testid="api-fusion-metric-keys"
+          data-testid="api-gateway-metric-keys"
           onClick={() => onSelectTab?.("keys")}
           role={onSelectTab ? "button" : undefined}
           tabIndex={onSelectTab ? 0 : undefined}
@@ -277,7 +277,7 @@ export function RuntimeStatusCard({
         >
           <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-[11px] font-medium">
-              {t("apiFusionActiveKeys", "Active keys")}
+              {t("apiGatewayActiveKeys", "Active keys")}
             </span>
             <KeyRound className="h-3.5 w-3.5 text-muted-foreground/70 group-hover:text-foreground" />
           </div>
@@ -290,13 +290,13 @@ export function RuntimeStatusCard({
             </span>
           </div>
           <div className="mt-1 text-[11px] text-muted-foreground truncate">
-            {t("apiFusionKeyCount", "Local keys")}
+            {t("apiGatewayKeyCount", "Local keys")}
           </div>
         </div>
 
         {/* 指标卡 4：AI 终端联动 */}
         <div
-          data-testid="api-fusion-metric-terminals"
+          data-testid="api-gateway-metric-terminals"
           onClick={() => onSelectTab?.("terminals")}
           role={onSelectTab ? "button" : undefined}
           tabIndex={onSelectTab ? 0 : undefined}
@@ -313,7 +313,7 @@ export function RuntimeStatusCard({
         >
           <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-[11px] font-medium">
-              {t("apiFusionTerminalIntegrationTitle", "AI terminals")}
+              {t("apiGatewayTerminalIntegrationTitle", "AI terminals")}
             </span>
             <TerminalSquare className="h-3.5 w-3.5 text-muted-foreground/70 group-hover:text-foreground" />
           </div>
@@ -322,7 +322,7 @@ export function RuntimeStatusCard({
               {totalTargets > 0 ? `${syncedTargets}/${totalTargets}` : "0"}
             </span>
             <span className="text-xs text-muted-foreground">
-              {t("apiFusionTerminalsSynced", { synced: syncedTargets, total: totalTargets, defaultValue: `${syncedTargets}/${totalTargets} synced` }).replace(`${syncedTargets}/${totalTargets}`, "").trim()}
+              {t("apiGatewayTerminalsSynced", { synced: syncedTargets, total: totalTargets, defaultValue: `${syncedTargets}/${totalTargets} synced` }).replace(`${syncedTargets}/${totalTargets}`, "").trim()}
             </span>
           </div>
           <div className="mt-1 text-[11px] truncate">
@@ -330,7 +330,7 @@ export function RuntimeStatusCard({
               <span className="inline-flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400">
                 <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
                 <span>
-                  {t("apiFusionTerminalPendingNotice", { count: pendingTargets, defaultValue: `${pendingTargets} pending sync` })}
+                  {t("apiGatewayTerminalPendingNotice", { count: pendingTargets, defaultValue: `${pendingTargets} pending sync` })}
                 </span>
               </span>
             ) : (
@@ -338,8 +338,8 @@ export function RuntimeStatusCard({
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                 <span>
                   {totalTargets > 0
-                    ? t("apiFusionTerminalAllSyncedNotice", "All synced")
-                    : t("apiFusionTerminalSync", "AI terminal integration")}
+                    ? t("apiGatewayTerminalAllSyncedNotice", "All synced")
+                    : t("apiGatewayTerminalSync", "AI terminal integration")}
                 </span>
               </span>
             )}

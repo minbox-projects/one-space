@@ -6,7 +6,7 @@ use super::selection::{
 use super::storage::{config_path, resolve_default_key_id};
 use super::{
     compute_cost, compute_cost_at_time, is_off_peak, match_price, match_price_for_provider, normalize_retention_days, resolve_range, usage_tokens_from_value,
-    validate_retention_days, FusionConfig, FusionKey, FusionUpstreamProvider, LogFilter,
+    validate_retention_days, GatewayConfig, GatewayKey, GatewayUpstreamProvider, LogFilter,
     ModelMapping, ModelPrice, OffPeakPrice, SseUsageAccumulator, TerminalSyncRecord, TimeRange, UpstreamProtocol,
     UsageLogRecord, UsageLogStore, UsageResult, UsageTokens, DEFAULT_USAGE_RETENTION_DAYS,
     USAGE_LOG_PAGE_SIZE,
@@ -22,7 +22,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "onespace-api-fusion-{}-{}",
+        "onespace-api-gateway-{}-{}",
         name,
         uuid::Uuid::new_v4()
     ))
@@ -61,8 +61,8 @@ fn isolated_temp_home(name: &str) -> IsolatedTempHome {
     }
 }
 
-fn key(id: &str, enabled: bool) -> FusionKey {
-    FusionKey {
+fn key(id: &str, enabled: bool) -> GatewayKey {
+    GatewayKey {
         id: id.to_string(),
         label: id.to_string(),
         value: format!("value-{id}"),
@@ -71,8 +71,8 @@ fn key(id: &str, enabled: bool) -> FusionKey {
     }
 }
 
-fn provider(id: &str) -> FusionUpstreamProvider {
-    FusionUpstreamProvider {
+fn provider(id: &str) -> GatewayUpstreamProvider {
+    GatewayUpstreamProvider {
         id: id.to_string(),
         name: format!("Provider {id}"),
         base_url: "https://api.example.com/v1".to_string(),
@@ -90,9 +90,9 @@ fn provider(id: &str) -> FusionUpstreamProvider {
 }
 
 #[test]
-fn fusion_config_round_trips_and_encrypts_secrets_on_disk() {
+fn gateway_config_round_trips_and_encrypts_secrets_on_disk() {
     with_temp_home("roundtrip", |_home| {
-        let mut config = FusionConfig::default();
+        let mut config = GatewayConfig::default();
         let mut first = provider("p1");
         first.api_key = "sk-super-secret-123".to_string();
         first.default_model = Some("remote-default".to_string());
@@ -104,7 +104,7 @@ fn fusion_config_round_trips_and_encrypts_secrets_on_disk() {
             enabled: true,
         }];
         config.providers.push(first);
-        config.keys.push(FusionKey {
+        config.keys.push(GatewayKey {
             id: "k1".to_string(),
             label: "Key 1".to_string(),
             value: "local-key-abc".to_string(),
@@ -144,7 +144,7 @@ fn fusion_config_round_trips_and_encrypts_secrets_on_disk() {
 #[test]
 fn model_mapping_display_name_round_trips_and_stays_optional() {
     with_temp_home("mapping-display-name", |_home| {
-        let mut config = FusionConfig::default();
+        let mut config = GatewayConfig::default();
         let mut p = provider("p1");
         p.mappings = vec![
             mapping("local-named", "remote-named", Some("GPT-4o")),
@@ -217,7 +217,7 @@ fn default_key_prefers_first_enabled_and_advances_on_disable() {
 #[test]
 fn default_key_choice_persists_across_reload() {
     with_temp_home("default-key-persist", |_home| {
-        let mut config = FusionConfig::default();
+        let mut config = GatewayConfig::default();
         config.keys = vec![key("k1", true), key("k2", true), key("k3", true)];
         super::storage::write_config(&config).expect("write config");
         let mut loaded = super::storage::read_config().expect("read config");
@@ -235,20 +235,20 @@ fn default_key_choice_persists_across_reload() {
 /// the next enabled key instead of failing.
 #[test]
 fn default_key_for_sync_falls_through_to_next_enabled_key() {
-    let mut stale = FusionConfig::default();
+    let mut stale = GatewayConfig::default();
     stale.keys = vec![key("k1", false), key("k2", true), key("k3", true)];
     stale.default_key_id = Some("k1".to_string());
     let (id, value) = default_key_for_sync(&stale).expect("stale default must fall through");
     assert_eq!(id, "k2");
     assert_eq!(value, "value-k2");
 
-    let mut unset = FusionConfig::default();
+    let mut unset = GatewayConfig::default();
     unset.keys = vec![key("k1", true), key("k2", true)];
     unset.default_key_id = None;
     let (id, _) = default_key_for_sync(&unset).expect("absent default must resolve");
     assert_eq!(id, "k1");
 
-    let mut none_enabled = FusionConfig::default();
+    let mut none_enabled = GatewayConfig::default();
     none_enabled.keys = vec![key("k1", false)];
     none_enabled.default_key_id = Some("k1".to_string());
     assert!(
@@ -440,7 +440,7 @@ fn auto_disable_threshold_immediate_disable_and_success_reset() {
 #[test]
 fn auto_disabled_state_persists_and_separates_from_user_enabled() {
     with_temp_home("auto-disable-persist", |_home| {
-        let mut config = FusionConfig::default();
+        let mut config = GatewayConfig::default();
         let mut p = provider("p1");
         p.enabled = true;
         register_failure(&mut p, FailureClass::DisableImmediately, "auth failed", 123);
@@ -506,9 +506,9 @@ enum MockReply {
 /// Process-wide `HOME` isolation shared through the global
 /// `crate::lock_test_home_env` mutex.
 ///
-/// Keep using this helper for tests that drive the global API-fusion server
-/// (`start_server`/`stop_server`/`api_fusion_start`/`api_fusion_stop`/
-/// `api_fusion_save_config`). The server reads its config from worker threads
+/// Keep using this helper for tests that drive the global API-gateway server
+/// (`start_server`/`stop_server`/`api_gateway_start`/`api_gateway_stop`/
+/// `api_gateway_save_config`). The server reads its config from worker threads
 /// that cannot see the thread-local override, and its `RUNNING_SERVER` state is
 /// a process-wide singleton, so those tests must stay serialized.
 struct TempHome {
@@ -634,7 +634,7 @@ where
     (format!("http://{}", addr), log)
 }
 
-async fn call_fusion(
+async fn call_gateway(
     port: u16,
     method: &str,
     path: &str,
@@ -656,7 +656,7 @@ async fn call_fusion(
             .header("content-type", "application/json")
             .body(serde_json::to_vec(&body).expect("encode body"));
     }
-    let response = request.send().await.expect("fusion request");
+    let response = request.send().await.expect("gateway request");
     let status = response.status().as_u16();
     let content_type = response
         .headers()
@@ -664,12 +664,12 @@ async fn call_fusion(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let text = response.text().await.expect("fusion body");
+    let text = response.text().await.expect("gateway body");
     (status, content_type, text)
 }
 
-fn key_named(id: &str, value: &str) -> FusionKey {
-    FusionKey {
+fn key_named(id: &str, value: &str) -> GatewayKey {
+    GatewayKey {
         id: id.to_string(),
         label: id.to_string(),
         value: value.to_string(),
@@ -684,8 +684,8 @@ fn upstream_provider(
     base_url: &str,
     api_key: &str,
     default_model: Option<&str>,
-) -> FusionUpstreamProvider {
-    FusionUpstreamProvider {
+) -> GatewayUpstreamProvider {
+    GatewayUpstreamProvider {
         id: id.to_string(),
         name: name.to_string(),
         base_url: base_url.to_string(),
@@ -724,7 +724,7 @@ async fn forwards_chat_completions_path_body_and_provider_auth() {
     })
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "upstream-secret", None);
@@ -745,7 +745,7 @@ async fn forwards_chat_completions_path_body_and_provider_auth() {
         "temperature": 0.25,
         "max_tokens": 16
     });
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -780,7 +780,7 @@ async fn unversioned_openai_paths_are_normalized_before_forwarding() {
     let (upstream_url, log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id":"chatcmpl","choices":[]}))).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     config.providers.push(upstream_provider(
@@ -793,7 +793,7 @@ async fn unversioned_openai_paths_are_normalized_before_forwarding() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _, text) = call_fusion(
+    let (status, _, text) = call_gateway(
         port,
         "POST",
         "/chat/completions",
@@ -807,7 +807,7 @@ async fn unversioned_openai_paths_are_normalized_before_forwarding() {
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].path, "/v1/chat/completions");
 
-    let (models_status, _, _) = call_fusion(
+    let (models_status, _, _) = call_gateway(
         port,
         "GET",
         "/models",
@@ -827,7 +827,7 @@ async fn forwards_responses_path() {
     let port = free_port().await;
     let (upstream_url, log) = spawn_mock_upstream(|_| MockReply::Json(200, json!({"id":"resp"}))).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider(
@@ -842,7 +842,7 @@ async fn forwards_responses_path() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -906,7 +906,7 @@ async fn provider_base_url_with_v1_does_not_double_the_version_segment() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -953,7 +953,7 @@ async fn client_headers_are_forwarded_except_relay_credentials() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -990,7 +990,7 @@ async fn client_headers_are_forwarded_except_relay_credentials() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 1 (20260916-api-fusion-upstream-retry): bounded retry / recovery
+// Step 1 (20260916-api-gateway-upstream-retry): bounded retry / recovery
 // ---------------------------------------------------------------------------
 
 /// Scripted JSON mock upstream running on the CURRENT tokio runtime (via
@@ -1052,7 +1052,7 @@ async fn attempt_non_streaming_retries_provider_after_500_then_succeeds() {
     .header("retry-after-ms", "60000")])
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.keys.push(key_named("k1", "local-key"));
     let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
@@ -1109,7 +1109,7 @@ async fn assert_truncated_auth_non_streaming(status: u16) {
     })
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     let auth = upstream_provider(
         "auth",
         "Auth Provider",
@@ -1188,7 +1188,7 @@ async fn assert_truncated_auth_streaming(status: u16) {
     })
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     let auth = upstream_provider(
         "auth",
         "Auth Provider",
@@ -1259,7 +1259,7 @@ async fn providers_are_only_offered_the_protocol_they_are_configured_for() {
     let (upstream_url, log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut responses_only = upstream_provider(
@@ -1274,7 +1274,7 @@ async fn providers_are_only_offered_the_protocol_they_are_configured_for() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _, text) = call_fusion(
+    let (status, _, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -1292,7 +1292,7 @@ async fn providers_are_only_offered_the_protocol_they_are_configured_for() {
         "a protocol mismatch must not contact upstream"
     );
 
-    let (status, _, text) = call_fusion(
+    let (status, _, text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -1313,7 +1313,7 @@ async fn models_endpoint_returns_local_union_without_upstream() {
     let (upstream_url, log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"data": []}))).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -1337,7 +1337,7 @@ async fn models_endpoint_returns_local_union_without_upstream() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "GET",
         "/v1/models",
@@ -1382,7 +1382,7 @@ async fn models_endpoint_excludes_disabled_mappings() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "GET",
         "/v1/models",
@@ -1422,7 +1422,7 @@ async fn auth_accepts_bearer_and_x_api_key_and_rejects_invalid_credentials() {
     let (upstream_url, _log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut disabled = key_named("k2", "disabled-key");
@@ -1439,7 +1439,7 @@ async fn auth_accepts_bearer_and_x_api_key_and_rejects_invalid_credentials() {
     super::runtime_http::start_server().await.unwrap();
 
     let body = Some(json!({"model": "local"}));
-    let (bearer, _, _) = call_fusion(
+    let (bearer, _, _) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -1448,7 +1448,7 @@ async fn auth_accepts_bearer_and_x_api_key_and_rejects_invalid_credentials() {
     )
     .await;
     assert_eq!(bearer, 200);
-    let (x_api_key, _, _) = call_fusion(
+    let (x_api_key, _, _) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -1457,7 +1457,7 @@ async fn auth_accepts_bearer_and_x_api_key_and_rejects_invalid_credentials() {
     )
     .await;
     assert_eq!(x_api_key, 200);
-    let (wrong, _, _) = call_fusion(
+    let (wrong, _, _) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -1466,7 +1466,7 @@ async fn auth_accepts_bearer_and_x_api_key_and_rejects_invalid_credentials() {
     )
     .await;
     assert_eq!(wrong, 401);
-    let (disabled_key, _, _) = call_fusion(
+    let (disabled_key, _, _) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -1475,7 +1475,7 @@ async fn auth_accepts_bearer_and_x_api_key_and_rejects_invalid_credentials() {
     )
     .await;
     assert_eq!(disabled_key, 401);
-    let (missing, _, _) = call_fusion(port, "POST", "/v1/chat/completions", &[], body).await;
+    let (missing, _, _) = call_gateway(port, "POST", "/v1/chat/completions", &[], body).await;
     assert_eq!(missing, 401);
 
     super::runtime_http::stop_server().await.unwrap();
@@ -1488,7 +1488,7 @@ async fn unauthorized_when_no_enabled_keys() {
     let port = free_port().await;
     let (upstream_url, log) = spawn_mock_upstream(|_| MockReply::Json(200, json!({}))).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     let mut disabled = key_named("k1", "disabled-key");
     disabled.enabled = false;
@@ -1503,7 +1503,7 @@ async fn unauthorized_when_no_enabled_keys() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _, _) = call_fusion(
+    let (status, _, _) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -1522,7 +1522,7 @@ async fn unauthorized_when_no_enabled_keys() {
 async fn unknown_path_and_method_return_404() {
     let home = temp_home("unknown-path");
     let port = free_port().await;
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     config.providers.push(upstream_provider(
@@ -1535,7 +1535,7 @@ async fn unknown_path_and_method_return_404() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (unknown, _, _) = call_fusion(
+    let (unknown, _, _) = call_gateway(
         port,
         "POST",
         "/v1/embeddings",
@@ -1544,7 +1544,7 @@ async fn unknown_path_and_method_return_404() {
     )
     .await;
     assert_eq!(unknown, 404);
-    let (wrong_method, _, _) = call_fusion(
+    let (wrong_method, _, _) = call_gateway(
         port,
         "GET",
         "/v1/chat/completions",
@@ -1564,13 +1564,13 @@ async fn unknown_path_and_method_return_404() {
 async fn gateway_request_parse_failure_uses_standard_error_envelope() {
     let home = temp_home("gateway-parse-error-envelope");
     let port = free_port().await;
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let text = call_fusion_raw(port, "GARBAGE\r\n").await;
+    let text = call_gateway_raw(port, "GARBAGE\r\n").await;
     let (status_line, body) = raw_http_status_and_body(&text);
     assert!(
         status_line.starts_with("HTTP/1.1 400"),
@@ -1593,7 +1593,7 @@ async fn gateway_request_parse_failure_uses_standard_error_envelope() {
 async fn gateway_config_read_failure_uses_standard_error_envelope() {
     let home = temp_home("gateway-config-error-envelope");
     let port = free_port().await;
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     config.providers.push(upstream_provider(
@@ -1610,7 +1610,7 @@ async fn gateway_config_read_failure_uses_standard_error_envelope() {
 
     fs::write(&path, b"not encrypted ciphertext").expect("corrupt config");
 
-    let (status, content_type, text) = call_fusion(
+    let (status, content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -1641,7 +1641,7 @@ async fn gateway_unknown_path_uses_standard_error_envelope() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, content_type, text) = call_fusion(
+    let (status, content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/embeddings",
@@ -1670,7 +1670,7 @@ async fn gateway_unauthorized_uses_standard_error_envelope() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, content_type, text) = call_fusion(
+    let (status, content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -1699,7 +1699,7 @@ async fn gateway_wrong_method_on_models_uses_standard_error_envelope() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, content_type, text) = call_fusion(
+    let (status, content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/models",
@@ -1734,7 +1734,7 @@ async fn gateway_invalid_request_body_uses_standard_error_envelope() {
         body.len(),
         body
     );
-    let text = call_fusion_raw(port, &request).await;
+    let text = call_gateway_raw(port, &request).await;
     let (status_line, response_body) = raw_http_status_and_body(&text);
     assert!(
         status_line.starts_with("HTTP/1.1 400"),
@@ -1764,7 +1764,7 @@ async fn gateway_no_candidate_uses_standard_error_envelope() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, content_type, text) = call_fusion(
+    let (status, content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -1793,7 +1793,7 @@ async fn retryable_failure_switches_to_next_candidate() {
     let (working_url, working_log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-working"}))).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     config.providers.push(upstream_provider(
@@ -1813,7 +1813,7 @@ async fn retryable_failure_switches_to_next_candidate() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -1839,7 +1839,7 @@ async fn all_candidates_fail_returns_502_all_providers_unavailable() {
     let (url_b, _) =
         spawn_mock_upstream(|_| MockReply::Json(503, json!({"error": {"message": "down"}}))).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     config.providers.push(upstream_provider(
@@ -1859,7 +1859,7 @@ async fn all_candidates_fail_returns_502_all_providers_unavailable() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -1890,7 +1890,7 @@ async fn streaming_all_fail_returns_502_json_error_envelope() {
     let (url_b, _) =
         spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "boom"}}))).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     config.providers.push(upstream_provider(
@@ -1910,7 +1910,7 @@ async fn streaming_all_fail_returns_502_json_error_envelope() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, content_type, text) = call_fusion(
+    let (status, content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -1954,7 +1954,7 @@ async fn streaming_no_candidate_returns_502_json_error_envelope() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, content_type, text) = call_fusion(
+    let (status, content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -1994,7 +1994,7 @@ async fn streaming_switches_when_first_provider_fails_before_first_byte() {
     let (stream_url, stream_log) =
         spawn_mock_upstream(move |_| MockReply::Stream(stream_body.to_string())).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.keys.push(key_named("k1", "local-key"));
     let a = upstream_provider("a", "Provider A", &drop_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "Provider B", &stream_url, "sk", Some("remote-default"));
@@ -2036,7 +2036,7 @@ async fn streaming_terminates_after_first_byte_without_switching() {
     })
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.keys.push(key_named("k1", "local-key"));
     let a = upstream_provider("a", "Provider A", &partial_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "Provider B", &stream_url, "sk", Some("remote-default"));
@@ -2091,7 +2091,7 @@ async fn bind_failure_returns_actionable_error_and_keeps_configured_port() {
     let occupied = TcpListener::bind(("127.0.0.1", 0)).await.expect("occupy port");
     let port = occupied.local_addr().unwrap().port();
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     super::storage::write_config(&config).unwrap();
 
@@ -2114,7 +2114,7 @@ async fn server_starts_listens_and_stops() {
     let (upstream_url, _) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     config.providers.push(upstream_provider(
@@ -2131,7 +2131,7 @@ async fn server_starts_listens_and_stops() {
     assert_eq!(status.port, port);
     assert_eq!(status.local_base_url, format!("http://127.0.0.1:{port}/v1"));
 
-    let (code, _, _) = call_fusion(
+    let (code, _, _) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -2163,7 +2163,7 @@ async fn server_starts_listens_and_stops() {
 #[test]
 fn config_defaults_to_port_17688() {
     with_temp_home("defaults", |_home| {
-        let config = super::commands::api_fusion_get_config().unwrap();
+        let config = super::commands::api_gateway_get_config().unwrap();
         assert_eq!(config.port, 17688);
         assert!(!config.enabled);
     });
@@ -2387,7 +2387,7 @@ fn build_gateway_provider_opencode_carries_gateway_models_and_marker() {
     assert_eq!(value["tool"], "opencode");
     assert_eq!(value["base_url"], "http://127.0.0.1:17688");
     assert_eq!(value["api_key"], "local-key-123");
-    assert_eq!(value["tool_config"]["api_fusion_gateway"], true);
+    assert_eq!(value["tool_config"]["api_gateway_gateway"], true);
     assert!(value.get("active").is_none(), "must never auto-activate: {value}");
     assert!(value.get("is_active").is_none(), "must never auto-activate: {value}");
 
@@ -2462,7 +2462,7 @@ fn build_gateway_provider_codex_shape_is_wire_api_chat_without_options() {
     assert_eq!(value["tool"], "codex");
     assert_eq!(value["base_url"], "http://127.0.0.1:17688");
     assert_eq!(value["api_key"], "local-key-123");
-    assert_eq!(value["tool_config"]["api_fusion_gateway"], true);
+    assert_eq!(value["tool_config"]["api_gateway_gateway"], true);
     assert_eq!(value["tool_config"]["wire_api"], "chat");
     assert_eq!(
         value["model"], "local-a",
@@ -2575,7 +2575,7 @@ fn build_gateway_provider_codex_omits_model_without_any_mapping() {
 #[test]
 fn terminal_sync_requires_an_enabled_default_key() {
     with_temp_home("default-key-required", |_home| {
-        let mut config = FusionConfig::default();
+        let mut config = GatewayConfig::default();
         config.keys.push(key_named("k1", "local-key"));
         super::storage::write_config(&config).unwrap();
         let loaded = super::storage::read_config().unwrap();
@@ -2624,14 +2624,14 @@ fn terminal_sync_pending_uses_ledger_not_plaintext_key() {
 #[test]
 fn reenable_clears_auto_disabled_and_preserves_user_enabled() {
     with_temp_home("reenable-command", |_home| {
-        let mut config = FusionConfig::default();
+        let mut config = GatewayConfig::default();
         let mut p = provider("p1");
         p.enabled = true;
         register_failure(&mut p, FailureClass::DisableImmediately, "auth", 1);
         config.providers.push(p);
         super::storage::write_config(&config).unwrap();
 
-        let after = super::commands::api_fusion_reenable_provider("p1".to_string()).unwrap();
+        let after = super::commands::api_gateway_reenable_provider("p1".to_string()).unwrap();
         assert!(after.providers[0].enabled);
         assert!(!after.providers[0].auto_disabled);
         assert_eq!(after.providers[0].disabled_reason, None);
@@ -2643,7 +2643,7 @@ fn reenable_clears_auto_disabled_and_preserves_user_enabled() {
         reloaded.providers[0].disabled_reason = Some("boom".to_string());
         super::storage::write_config(&reloaded).unwrap();
 
-        let after = super::commands::api_fusion_reenable_provider("p1".to_string()).unwrap();
+        let after = super::commands::api_gateway_reenable_provider("p1".to_string()).unwrap();
         assert!(!after.providers[0].enabled, "user intent must be preserved");
         assert!(!after.providers[0].auto_disabled);
     });
@@ -2652,7 +2652,7 @@ fn reenable_clears_auto_disabled_and_preserves_user_enabled() {
 #[test]
 fn provider_enable_command_only_changes_user_intent() {
     with_temp_home("provider-enable", |_home| {
-        let mut config = FusionConfig::default();
+        let mut config = GatewayConfig::default();
         let mut p = provider("p1");
         p.auto_disabled = true;
         p.disabled_reason = Some("auth".to_string());
@@ -2660,17 +2660,17 @@ fn provider_enable_command_only_changes_user_intent() {
         super::storage::write_config(&config).unwrap();
 
         let after =
-            super::commands::api_fusion_set_provider_enabled("p1".to_string(), false).unwrap();
+            super::commands::api_gateway_set_provider_enabled("p1".to_string(), false).unwrap();
         assert!(!after.providers[0].enabled);
         assert!(after.providers[0].auto_disabled, "auto state independent");
-        assert!(super::commands::api_fusion_set_provider_enabled("ghost".to_string(), true).is_err());
+        assert!(super::commands::api_gateway_set_provider_enabled("ghost".to_string(), true).is_err());
     });
 }
 
 #[test]
 fn key_commands_persist_and_advance_default_key() {
     with_temp_home("key-commands", |_home| {
-        let config = super::commands::api_fusion_upsert_key(FusionKey {
+        let config = super::commands::api_gateway_upsert_key(GatewayKey {
             id: "k1".to_string(),
             label: "K1".to_string(),
             value: "v1".to_string(),
@@ -2680,7 +2680,7 @@ fn key_commands_persist_and_advance_default_key() {
         .unwrap();
         assert_eq!(config.default_key_id.as_deref(), Some("k1"));
 
-        super::commands::api_fusion_upsert_key(FusionKey {
+        super::commands::api_gateway_upsert_key(GatewayKey {
             id: "k2".to_string(),
             label: "K2".to_string(),
             value: "v2".to_string(),
@@ -2688,11 +2688,11 @@ fn key_commands_persist_and_advance_default_key() {
             created_at: 0,
         })
         .unwrap();
-        let switched = super::commands::api_fusion_set_default_key("k2".to_string()).unwrap();
+        let switched = super::commands::api_gateway_set_default_key("k2".to_string()).unwrap();
         assert_eq!(switched.default_key_id.as_deref(), Some("k2"));
 
         // Disabling the current default advances to the next enabled key.
-        let advanced = super::commands::api_fusion_upsert_key(FusionKey {
+        let advanced = super::commands::api_gateway_upsert_key(GatewayKey {
             id: "k2".to_string(),
             label: "K2".to_string(),
             value: String::new(),
@@ -2704,7 +2704,7 @@ fn key_commands_persist_and_advance_default_key() {
         assert_eq!(advanced.keys[1].value, "v2", "empty value preserves the stored secret");
 
         // No enabled key remains -> default clears.
-        let cleared = super::commands::api_fusion_delete_key("k1".to_string()).unwrap();
+        let cleared = super::commands::api_gateway_delete_key("k1".to_string()).unwrap();
         assert_eq!(cleared.default_key_id, None);
     });
 }
@@ -2712,7 +2712,7 @@ fn key_commands_persist_and_advance_default_key() {
 #[test]
 fn new_keys_without_a_value_get_a_random_secret() {
     with_temp_home("key-autogen", |_home| {
-        let first = super::commands::api_fusion_upsert_key(FusionKey {
+        let first = super::commands::api_gateway_upsert_key(GatewayKey {
             id: String::new(),
             label: "CI".to_string(),
             value: String::new(),
@@ -2721,10 +2721,10 @@ fn new_keys_without_a_value_get_a_random_secret() {
         })
         .unwrap();
         let first_value = first.keys[0].value.clone();
-        assert!(first_value.starts_with("sk-fusion-"), "unexpected key: {first_value}");
-        assert!(first_value.len() > "sk-fusion-".len());
+        assert!(first_value.starts_with("sk-gateway-"), "unexpected key: {first_value}");
+        assert!(first_value.len() > "sk-gateway-".len());
 
-        let second = super::commands::api_fusion_upsert_key(FusionKey {
+        let second = super::commands::api_gateway_upsert_key(GatewayKey {
             id: String::new(),
             label: "CI 2".to_string(),
             value: String::new(),
@@ -2742,7 +2742,7 @@ fn new_keys_without_a_value_get_a_random_secret() {
 #[test]
 fn new_keys_with_mask_placeholder_get_a_random_secret() {
     with_temp_home("key-mask-autogen", |_home| {
-        let created = super::commands::api_fusion_upsert_key(FusionKey {
+        let created = super::commands::api_gateway_upsert_key(GatewayKey {
             id: String::new(),
             label: "Masked".to_string(),
             value: "********".to_string(),
@@ -2756,11 +2756,11 @@ fn new_keys_with_mask_placeholder_get_a_random_secret() {
             "the mask placeholder must never be stored as a key value"
         );
         assert!(
-            created_value.starts_with("sk-fusion-"),
+            created_value.starts_with("sk-gateway-"),
             "a masked new key must receive a generated secret: {created_value}"
         );
         assert!(
-            created_value.len() > "sk-fusion-".len(),
+            created_value.len() > "sk-gateway-".len(),
             "a generated secret must carry entropy after the prefix: {created_value}"
         );
     });
@@ -2769,7 +2769,7 @@ fn new_keys_with_mask_placeholder_get_a_random_secret() {
 #[test]
 fn provider_delete_removes_ledger_entry() {
     with_temp_home("provider-delete", |_home| {
-        let mut config = FusionConfig::default();
+        let mut config = GatewayConfig::default();
         config.providers.push(provider("p1"));
         config.terminal_syncs.push(TerminalSyncRecord {
             provider_id: "p1".to_string(),
@@ -2780,7 +2780,7 @@ fn provider_delete_removes_ledger_entry() {
         });
         super::storage::write_config(&config).unwrap();
 
-        let after = super::commands::api_fusion_delete_provider("p1".to_string()).unwrap();
+        let after = super::commands::api_gateway_delete_provider("p1".to_string()).unwrap();
         assert!(after.providers.is_empty());
         assert!(after.terminal_syncs.is_empty());
     });
@@ -2791,33 +2791,33 @@ fn every_command_is_registered_in_the_invoke_handler() {
     const RUN_APP_SOURCE: &str = include_str!("../app_runtime/run_app.rs");
     const LIB_SOURCE: &str = include_str!("../lib.rs");
 
-    assert!(LIB_SOURCE.contains("mod api_fusion;"));
+    assert!(LIB_SOURCE.contains("mod api_gateway;"));
     let commands = [
-        "api_fusion_get_config",
-        "api_fusion_save_config",
-        "api_fusion_upsert_provider",
-        "api_fusion_delete_provider",
-        "api_fusion_set_provider_enabled",
-        "api_fusion_reenable_provider",
-        "api_fusion_upsert_key",
-        "api_fusion_delete_key",
-        "api_fusion_set_default_key",
-        "api_fusion_start",
-        "api_fusion_stop",
-        "api_fusion_status",
-        "api_fusion_terminal_targets",
-        "api_fusion_configure_terminal",
-        "api_fusion_sync_terminal",
+        "api_gateway_get_config",
+        "api_gateway_save_config",
+        "api_gateway_upsert_provider",
+        "api_gateway_delete_provider",
+        "api_gateway_set_provider_enabled",
+        "api_gateway_reenable_provider",
+        "api_gateway_upsert_key",
+        "api_gateway_delete_key",
+        "api_gateway_set_default_key",
+        "api_gateway_start",
+        "api_gateway_stop",
+        "api_gateway_status",
+        "api_gateway_terminal_targets",
+        "api_gateway_configure_terminal",
+        "api_gateway_sync_terminal",
         // 20260917-ai-gateway-usage-logs commands.
-        "api_fusion_usage_stats",
-        "api_fusion_request_logs",
-        "api_fusion_model_prices_get",
-        "api_fusion_model_prices_save",
-        "api_fusion_usage_retention_get",
-        "api_fusion_usage_retention_save",
+        "api_gateway_usage_stats",
+        "api_gateway_request_logs",
+        "api_gateway_model_prices_get",
+        "api_gateway_model_prices_save",
+        "api_gateway_usage_retention_get",
+        "api_gateway_usage_retention_save",
     ];
     for command in commands {
-        let registration = format!("api_fusion::{command},");
+        let registration = format!("api_gateway::{command},");
         assert_eq!(
             RUN_APP_SOURCE.matches(&registration).count(),
             1,
@@ -2826,12 +2826,12 @@ fn every_command_is_registered_in_the_invoke_handler() {
     }
     // The usage-log commands must also be exported through `lib.rs`.
     for command in [
-        "api_fusion_usage_stats",
-        "api_fusion_request_logs",
-        "api_fusion_model_prices_get",
-        "api_fusion_model_prices_save",
-        "api_fusion_usage_retention_get",
-        "api_fusion_usage_retention_save",
+        "api_gateway_usage_stats",
+        "api_gateway_request_logs",
+        "api_gateway_model_prices_get",
+        "api_gateway_model_prices_save",
+        "api_gateway_usage_retention_get",
+        "api_gateway_usage_retention_save",
     ] {
         assert!(
             LIB_SOURCE.contains(command),
@@ -2847,7 +2847,7 @@ async fn no_candidate_model_returns_all_unavailable_without_upstream_request() {
     let (upstream_url, log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-run"}))).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut p = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -2862,7 +2862,7 @@ async fn no_candidate_model_returns_all_unavailable_without_upstream_request() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -2890,7 +2890,7 @@ async fn non_json_upstream_response_is_retryable_and_switches() {
     let (ok_url, ok_log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.keys.push(key_named("k1", "local-key"));
     let a = upstream_provider("a", "Provider A", &non_json_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "Provider B", &ok_url, "sk", Some("remote-default"));
@@ -2920,7 +2920,7 @@ async fn return_to_client_error_is_passed_through_without_switching_or_disabling
     let (ok_url, ok_log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.keys.push(key_named("k1", "local-key"));
     let a = upstream_provider("a", "Provider A", &bad_request_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "Provider B", &ok_url, "sk", Some("remote-default"));
@@ -2961,8 +2961,8 @@ async fn closed_port_base_url() -> String {
     format!("http://127.0.0.1:{port}")
 }
 
-fn config_with_key(port: u16) -> FusionConfig {
-    let mut config = FusionConfig::default();
+fn config_with_key(port: u16) -> GatewayConfig {
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     config
@@ -2982,7 +2982,7 @@ async fn end_to_end_random_pool_selects_every_resolvable_candidate() {
         upstream_provider("a", "Provider A", &url_a, "sk-a", Some("remote-model")),
         upstream_provider("b", "Provider B", &url_b, "sk-b", Some("remote-model")),
     ];
-    let candidates: Vec<FusionUpstreamProvider> =
+    let candidates: Vec<GatewayUpstreamProvider> =
         candidate_providers(&providers, Some("local-model"), UpstreamProtocol::ChatCompletions)
             .into_iter()
             .cloned()
@@ -3163,7 +3163,7 @@ async fn end_to_end_retryable_failures_auto_disable_at_threshold_and_stop_callin
     super::runtime_http::start_server().await.unwrap();
 
     for attempt in 1..=3 {
-        let (status, _, text) = call_fusion(
+        let (status, _, text) = call_gateway(
             port,
             "POST",
             "/v1/chat/completions",
@@ -3179,7 +3179,7 @@ async fn end_to_end_retryable_failures_auto_disable_at_threshold_and_stop_callin
     assert!(a_stored.auto_disabled, "third consecutive failure must auto-disable");
     assert_eq!(a_stored.consecutive_failures, 3);
 
-    let (status, _, text) = call_fusion(
+    let (status, _, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -3210,7 +3210,7 @@ async fn end_to_end_network_errors_accumulate_and_disable() {
     let (healthy_url, _) =
         spawn_json_sequence_mock(vec![(200, json!({"id": "healthy-fallback"}))]).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     let failed = upstream_provider(
         "a",
         "Provider A",
@@ -3445,7 +3445,7 @@ async fn end_to_end_all_unavailable_non_streaming_lists_each_provider_failure() 
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -3495,7 +3495,7 @@ async fn end_to_end_all_unavailable_streaming_returns_502_json_envelope() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, content_type, text) = call_fusion(
+    let (status, content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -3567,7 +3567,7 @@ async fn end_to_end_path_prefix_and_body_equivalence_for_chat_and_responses() {
         "temperature": 0.5,
         "stream": false
     });
-    let (status, _, text) = call_fusion(
+    let (status, _, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -3577,7 +3577,7 @@ async fn end_to_end_path_prefix_and_body_equivalence_for_chat_and_responses() {
     .await;
     assert_eq!(status, 200, "unexpected response: {text}");
 
-    let (status, _, text) = call_fusion(
+    let (status, _, text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -3668,7 +3668,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _, text) = call_fusion(
+    let (status, _, text) = call_gateway(
         port,
         "GET",
         "/v1/models",
@@ -3691,7 +3691,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         "GET /v1/models must not contact upstream"
     );
 
-    let (status, _, text) = call_fusion(
+    let (status, _, text) = call_gateway(
         port,
         "POST",
         "/v1/embeddings",
@@ -3706,7 +3706,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         "404 must carry a standard OpenAI error body: {text}"
     );
 
-    let (status, _, _) = call_fusion(
+    let (status, _, _) = call_gateway(
         port,
         "GET",
         "/v1/chat/completions",
@@ -3728,32 +3728,32 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
 // and free-port helpers defined above.
 // ---------------------------------------------------------------------------
 
-/// Finding A (error): `api_fusion_start` / `api_fusion_stop` must persist
-/// `FusionConfig.enabled` so the enable intent survives a reload (AC-003,
+/// Finding A (error): `api_gateway_start` / `api_gateway_stop` must persist
+/// `GatewayConfig.enabled` so the enable intent survives a reload (AC-003,
 /// AC-019). The test reads the flag back from disk after each command.
 #[tokio::test]
-async fn api_fusion_start_and_stop_persist_enabled_flag() {
+async fn api_gateway_start_and_stop_persist_enabled_flag() {
     let _home = temp_home("enabled-persist");
     let port = free_port().await;
     let mut config = config_with_key(port);
     config.enabled = false;
     super::storage::write_config(&config).unwrap();
 
-    let started = super::commands::api_fusion_start().await.unwrap();
+    let started = super::commands::api_gateway_start().await.unwrap();
     assert!(started.running, "start must report a running server");
     let enabled_after_start = super::storage::read_config().unwrap().enabled;
 
-    let stopped = super::commands::api_fusion_stop().await.unwrap();
+    let stopped = super::commands::api_gateway_stop().await.unwrap();
     assert!(!stopped.running, "stop must report a stopped server");
     let enabled_after_stop = super::storage::read_config().unwrap().enabled;
 
     assert!(
         enabled_after_start,
-        "api_fusion_start must persist enabled=true (reloaded {enabled_after_start})"
+        "api_gateway_start must persist enabled=true (reloaded {enabled_after_start})"
     );
     assert!(
         !enabled_after_stop,
-        "api_fusion_stop must persist enabled=false (reloaded {enabled_after_stop})"
+        "api_gateway_stop must persist enabled=false (reloaded {enabled_after_stop})"
     );
 }
 
@@ -4036,7 +4036,7 @@ async fn loopback_listener_rejects_non_loopback_address_on_same_port() {
     let port = free_port().await;
     let config = config_with_key(port);
     super::storage::write_config(&config).unwrap();
-    super::commands::api_fusion_start().await.unwrap();
+    super::commands::api_gateway_start().await.unwrap();
 
     let loopback_ok = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
@@ -4056,7 +4056,7 @@ async fn loopback_listener_rejects_non_loopback_address_on_same_port() {
         None => true,
     };
 
-    super::commands::api_fusion_stop().await.unwrap();
+    super::commands::api_gateway_stop().await.unwrap();
 
     assert!(loopback_ok, "loopback listener must accept connections");
     if let Some(ip) = primary_ip {
@@ -4083,7 +4083,7 @@ async fn loopback_listener_rejects_non_loopback_address_on_same_port() {
 // ---------------------------------------------------------------------------
 
 /// A previously synced API Gateway provider as it appears in the terminal
-/// service provider list. `tool_config.api_fusion_gateway == true` is the stable
+/// service provider list. `tool_config.api_gateway_gateway == true` is the stable
 /// marker emitted by `build_gateway_provider`.
 fn managed_gateway_provider(id: &str, tool: &str) -> Value {
     json!({
@@ -4093,13 +4093,13 @@ fn managed_gateway_provider(id: &str, tool: &str) -> Value {
         "base_url": "http://127.0.0.1:17688",
         "api_key": "previous-local-key",
         "tool_config": {
-            "api_fusion_gateway": true,
+            "api_gateway_gateway": true,
             "wire_api": "chat",
         }
     })
 }
 
-/// A user-owned provider record without the API Fusion gateway marker. The
+/// A user-owned provider record without the API Gateway gateway marker. The
 /// stale-ledger protection must never claim or overwrite it.
 fn unmarked_user_provider(id: &str, tool: &str) -> Value {
     json!({
@@ -4128,7 +4128,7 @@ fn terminal_providers_payload() -> Value {
                 "name": "API Gateway",
                 "base_url": "http://127.0.0.1:17688",
                 "api_key": "previous-local-key",
-                "api_fusion_gateway": true
+                "api_gateway_gateway": true
             },
             unmarked_user_provider("user-oc", "opencode"),
             {
@@ -4144,8 +4144,8 @@ fn terminal_providers_payload() -> Value {
 
 /// A config with one enabled local key and a gateway provider carrying a model
 /// mapping with and without a display name.
-fn gateway_config(port: u16) -> FusionConfig {
-    let mut config = FusionConfig::default();
+fn gateway_config(port: u16) -> GatewayConfig {
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key-123"));
     let mut gateway = upstream_provider(
@@ -4232,7 +4232,7 @@ async fn terminal_sync_with_seam_creates_one_gateway_provider_per_tool() {
     assert_eq!(opencode["name"], "API Gateway");
     assert_eq!(opencode["base_url"], local_base_url.as_str());
     assert_eq!(opencode["api_key"], "local-key-123");
-    assert_eq!(opencode["tool_config"]["api_fusion_gateway"], true);
+    assert_eq!(opencode["tool_config"]["api_gateway_gateway"], true);
     assert_eq!(opencode["provider_key"], "apigateway");
     assert_eq!(
         opencode["tool_config"]["options"]["baseURL"],
@@ -4254,7 +4254,7 @@ async fn terminal_sync_with_seam_creates_one_gateway_provider_per_tool() {
     assert_eq!(codex["name"], "API Gateway");
     assert_eq!(codex["base_url"], local_base_url.as_str());
     assert_eq!(codex["api_key"], "local-key-123");
-    assert_eq!(codex["tool_config"]["api_fusion_gateway"], true);
+    assert_eq!(codex["tool_config"]["api_gateway_gateway"], true);
     assert_eq!(codex["tool_config"]["wire_api"], "chat");
     assert!(codex.get("provider_key").is_none(), "codex has no provider_key");
     assert!(
@@ -4577,6 +4577,69 @@ async fn terminal_sync_with_seam_reuses_marker_provider_when_ledger_id_absent() 
     assert_eq!(records[0].provider_id, "managed-oc");
 }
 
+/// Legacy-marker compat: a provider carrying only the pre-rename
+/// `api_fusion_gateway` marker (under `tool_config`) is still recognized as a
+/// synced gateway, so its id is reused and no duplicate provider is created.
+#[tokio::test]
+async fn terminal_sync_with_seam_reuses_legacy_marker_provider() {
+    let _home = isolated_temp_home("terminal-sync-seam-legacy-marker");
+    super::storage::write_config(&gateway_config(17688)).unwrap();
+    let providers_data = json!({
+        "providers": [{
+            "id": "legacy-oc",
+            "tool": "opencode",
+            "name": "API Gateway",
+            "base_url": "http://127.0.0.1:17688",
+            "api_key": "previous-local-key",
+            "tool_config": { "api_fusion_gateway": true }
+        }]
+    });
+
+    let (submitted, records) =
+        capture_terminal_sync(&providers_data, vec!["opencode".to_string()]).await;
+
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(
+        submitted[0]["id"], "legacy-oc",
+        "the legacy-marked gateway must be reused: {submitted:?}"
+    );
+    assert_eq!(records[0].provider_id, "legacy-oc");
+    assert_eq!(
+        submitted[0]["tool_config"]["api_gateway_gateway"], true,
+        "new writes must carry the new marker: {submitted:?}"
+    );
+    let persisted = super::storage::read_config().unwrap().terminal_syncs;
+    assert_eq!(persisted.len(), 1, "no duplicate ledger entries: {persisted:?}");
+}
+
+/// Legacy-marker compat (top-level shape): a codex provider carrying only the
+/// pre-rename top-level `api_fusion_gateway` marker is still treated as synced.
+#[tokio::test]
+async fn terminal_targets_recognizes_top_level_legacy_marker_as_synced() {
+    let _home = isolated_temp_home("terminal-targets-legacy-marker");
+    super::storage::write_config(&gateway_config(17688)).unwrap();
+    let providers_data = json!({
+        "providers": [{
+            "id": "legacy-cx",
+            "tool": "codex",
+            "name": "API Gateway",
+            "base_url": "http://127.0.0.1:17688",
+            "api_key": "previous-local-key",
+            "api_fusion_gateway": true
+        }]
+    });
+
+    let (submitted, records) =
+        capture_terminal_sync(&providers_data, vec!["codex".to_string()]).await;
+
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(
+        submitted[0]["id"], "legacy-cx",
+        "the top-level legacy-marked gateway must be reused: {submitted:?}"
+    );
+    assert_eq!(records[0].provider_id, "legacy-cx");
+}
+
 /// Atomicity: when the injected upsert fails, the pipeline returns the error and
 /// the persisted ledger keeps its previous value, so the ledger never claims a
 /// sync that did not happen.
@@ -4688,7 +4751,7 @@ async fn terminal_sync_with_seam_requires_an_enabled_local_key() {
 
 // ---------------------------------------------------------------------------
 // Terminal targets projection: `terminal_targets_from` is the pure function the
-// `api_fusion_terminal_targets` command delegates to. It must recognize a
+// `api_gateway_terminal_targets` command delegates to. It must recognize a
 // managed gateway only through the marker, never through a stale ledger that
 // points at a user-owned provider.
 // ---------------------------------------------------------------------------
@@ -4707,7 +4770,7 @@ fn target_for<'a>(
 /// names the UI expects.
 #[test]
 fn terminal_targets_from_lists_supported_tools_in_order() {
-    let config = FusionConfig::default();
+    let config = GatewayConfig::default();
     let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }));
 
     assert_eq!(targets.len(), 2, "one target per supported tool: {targets:?}");
@@ -4720,7 +4783,7 @@ fn terminal_targets_from_lists_supported_tools_in_order() {
 /// No ledger and no marker provider: every target is unsynced and pending.
 #[test]
 fn terminal_targets_from_reports_unsynced_without_ledger_or_marker() {
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.keys.push(key_named("k1", "local-key-123"));
 
     let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }));
@@ -4851,7 +4914,7 @@ fn terminal_targets_from_marks_pending_when_ledger_key_or_base_url_drifted() {
 }
 
 // ---------------------------------------------------------------------------
-// Plan 20260916-api-fusion-per-model-endpoint, Step 1 (RED)
+// Plan 20260916-api-gateway-per-model-endpoint, Step 1 (RED)
 //
 // A mapping row may declare the endpoint protocol it belongs to
 // (`chat_completions` / `responses`); an absent or null declaration inherits the
@@ -4937,9 +5000,9 @@ fn assert_standard_error_envelope(text: &str) -> Value {
 }
 
 /// Send one raw HTTP/1.1 request to the gateway and return the full response.
-/// Used for malformed requests/bodies that `call_fusion`'s JSON encoder cannot
+/// Used for malformed requests/bodies that `call_gateway`'s JSON encoder cannot
 /// produce, and for direct `attempt_streaming` transport assertions.
-async fn call_fusion_raw(port: u16, request: &str) -> String {
+async fn call_gateway_raw(port: u16, request: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port))
         .await
         .expect("connect gateway");
@@ -4985,7 +5048,7 @@ fn captured_summary(captured: &[Captured]) -> String {
 #[test]
 fn mapping_protocol_survives_config_write_and_read() {
     with_temp_home("per-model-protocol-persist", |_home| {
-        let config: FusionConfig = serde_json::from_value(json_config_with_key(
+        let config: GatewayConfig = serde_json::from_value(json_config_with_key(
             17688,
             vec![json_provider(
                 "p1",
@@ -5026,7 +5089,7 @@ async fn mapping_protocol_routes_each_model_to_its_declared_endpoint() {
     let (upstream_url, log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
 
-    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+    let config: GatewayConfig = serde_json::from_value(json_config_with_key(
         port,
         vec![json_provider(
             "p1",
@@ -5044,7 +5107,7 @@ async fn mapping_protocol_routes_each_model_to_its_declared_endpoint() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (responses_status, _, responses_text) = call_fusion(
+    let (responses_status, _, responses_text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -5052,7 +5115,7 @@ async fn mapping_protocol_routes_each_model_to_its_declared_endpoint() {
         Some(json!({"model": "deepseek-v4.1-flash", "input": "hi"})),
     )
     .await;
-    let (chat_status, _, chat_text) = call_fusion(
+    let (chat_status, _, chat_text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -5097,7 +5160,7 @@ async fn mapping_protocol_mismatch_is_never_served_and_never_falls_back_to_defau
     let (upstream_url, log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-run"}))).await;
 
-    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+    let config: GatewayConfig = serde_json::from_value(json_config_with_key(
         port,
         vec![json_provider(
             "p1",
@@ -5112,7 +5175,7 @@ async fn mapping_protocol_mismatch_is_never_served_and_never_falls_back_to_defau
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -5120,7 +5183,7 @@ async fn mapping_protocol_mismatch_is_never_served_and_never_falls_back_to_defau
         Some(json!({"model": "mimo-v2.5", "input": "hi"})),
     )
     .await;
-    let (stream_status, stream_content_type, stream_text) = call_fusion(
+    let (stream_status, stream_content_type, stream_text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -5194,7 +5257,7 @@ async fn default_model_fallback_requires_a_matching_provider_protocol() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (responses_status, _, responses_text) = call_fusion(
+    let (responses_status, _, responses_text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -5202,7 +5265,7 @@ async fn default_model_fallback_requires_a_matching_provider_protocol() {
         Some(json!({"model": "unknown-local", "input": "hi"})),
     )
     .await;
-    let (chat_status, _, chat_text) = call_fusion(
+    let (chat_status, _, chat_text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -5244,7 +5307,7 @@ async fn same_local_model_serves_both_protocols_from_its_own_row() {
     let (upstream_url, log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
 
-    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+    let config: GatewayConfig = serde_json::from_value(json_config_with_key(
         port,
         vec![json_provider(
             "p1",
@@ -5262,7 +5325,7 @@ async fn same_local_model_serves_both_protocols_from_its_own_row() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (chat_status, _, chat_text) = call_fusion(
+    let (chat_status, _, chat_text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -5270,7 +5333,7 @@ async fn same_local_model_serves_both_protocols_from_its_own_row() {
         Some(json!({"model": "shared-model", "messages": []})),
     )
     .await;
-    let (responses_status, _, responses_text) = call_fusion(
+    let (responses_status, _, responses_text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -5278,7 +5341,7 @@ async fn same_local_model_serves_both_protocols_from_its_own_row() {
         Some(json!({"model": "shared-model", "input": "hi"})),
     )
     .await;
-    let (models_status, _, models_text) = call_fusion(
+    let (models_status, _, models_text) = call_gateway(
         port,
         "GET",
         "/v1/models",
@@ -5338,7 +5401,7 @@ async fn protocol_mismatch_error_names_the_required_endpoint() {
     let (upstream_url, _log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-run"}))).await;
 
-    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+    let config: GatewayConfig = serde_json::from_value(json_config_with_key(
         port,
         vec![json_provider(
             "p1",
@@ -5353,7 +5416,7 @@ async fn protocol_mismatch_error_names_the_required_endpoint() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _, text) = call_fusion(
+    let (status, _, text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -5361,7 +5424,7 @@ async fn protocol_mismatch_error_names_the_required_endpoint() {
         Some(json!({"model": "mimo-v2.5", "input": "hi"})),
     )
     .await;
-    let (stream_status, stream_content_type, stream_text) = call_fusion(
+    let (stream_status, stream_content_type, stream_text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -5429,7 +5492,7 @@ async fn mapping_without_protocol_inherits_the_provider_protocol() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _, text) = call_fusion(
+    let (status, _, text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -5480,7 +5543,7 @@ async fn mapping_with_explicit_null_protocol_inherits_the_provider_protocol() {
         "upstream_model": "inherit-remote",
         "protocol": null,
     });
-    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+    let config: GatewayConfig = serde_json::from_value(json_config_with_key(
         port,
         vec![json_provider(
             "p1",
@@ -5507,7 +5570,7 @@ async fn mapping_with_explicit_null_protocol_inherits_the_provider_protocol() {
 
     super::runtime_http::start_server().await.unwrap();
 
-    let (responses_status, _, responses_text) = call_fusion(
+    let (responses_status, _, responses_text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -5515,7 +5578,7 @@ async fn mapping_with_explicit_null_protocol_inherits_the_provider_protocol() {
         Some(json!({"model": "inherit-local", "input": "hi"})),
     )
     .await;
-    let (chat_status, _, chat_text) = call_fusion(
+    let (chat_status, _, chat_text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -5563,9 +5626,9 @@ async fn mapping_with_explicit_null_protocol_inherits_the_provider_protocol() {
 }
 
 // ---------------------------------------------------------------------------
-// Plan 20260916-api-fusion-per-model-endpoint, Step 3 (cross-module E2E)
+// Plan 20260916-api-gateway-per-model-endpoint, Step 3 (cross-module E2E)
 //
-// Each case drives the real local relay listener (`call_fusion` -> loopback
+// Each case drives the real local relay listener (`call_gateway` -> loopback
 // HTTP) against an in-process mock upstream and asserts on the upstream
 // capture log. Only the relay's observable HTTP surface and the persisted
 // config round trip are asserted; no private collaborator is touched.
@@ -5591,7 +5654,7 @@ async fn streaming_forwarding_reaches_each_models_own_endpoint_in_one_record() {
     })
     .await;
 
-    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+    let config: GatewayConfig = serde_json::from_value(json_config_with_key(
         port,
         vec![json_provider(
             "p1",
@@ -5609,7 +5672,7 @@ async fn streaming_forwarding_reaches_each_models_own_endpoint_in_one_record() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (responses_status, responses_type, responses_text) = call_fusion(
+    let (responses_status, responses_type, responses_text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -5617,7 +5680,7 @@ async fn streaming_forwarding_reaches_each_models_own_endpoint_in_one_record() {
         Some(json!({"model": "deepseek-v4.1-flash", "input": "hi", "stream": true})),
     )
     .await;
-    let (chat_status, chat_type, chat_text) = call_fusion(
+    let (chat_status, chat_type, chat_text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -5698,7 +5761,7 @@ async fn protocol_mismatch_never_counts_as_failure_or_auto_disables() {
     let (upstream_url, log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-run"}))).await;
 
-    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+    let config: GatewayConfig = serde_json::from_value(json_config_with_key(
         port,
         vec![json_provider(
             "p1",
@@ -5714,7 +5777,7 @@ async fn protocol_mismatch_never_counts_as_failure_or_auto_disables() {
     super::runtime_http::start_server().await.unwrap();
 
     for attempt in 1..=4u32 {
-        let (status, _content_type, text) = call_fusion(
+        let (status, _content_type, text) = call_gateway(
             port,
             "POST",
             "/v1/responses",
@@ -5796,7 +5859,7 @@ async fn cross_record_candidates_are_selected_by_each_records_protocol() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (chat_status, _, chat_text) = call_fusion(
+    let (chat_status, _, chat_text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -5804,7 +5867,7 @@ async fn cross_record_candidates_are_selected_by_each_records_protocol() {
         Some(json!({"model": "shared-model", "messages": []})),
     )
     .await;
-    let (responses_status, _, responses_text) = call_fusion(
+    let (responses_status, _, responses_text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -5858,7 +5921,7 @@ async fn request_body_is_equivalent_except_model_for_chat_and_responses() {
     let (upstream_url, log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
 
-    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+    let config: GatewayConfig = serde_json::from_value(json_config_with_key(
         port,
         vec![json_provider(
             "p1",
@@ -5893,7 +5956,7 @@ async fn request_body_is_equivalent_except_model_for_chat_and_responses() {
         "custom_object": {"a": 1, "b": "two"}
     });
 
-    let (responses_status, _, responses_text) = call_fusion(
+    let (responses_status, _, responses_text) = call_gateway(
         port,
         "POST",
         "/v1/responses",
@@ -5901,7 +5964,7 @@ async fn request_body_is_equivalent_except_model_for_chat_and_responses() {
         Some(responses_body.clone()),
     )
     .await;
-    let (chat_status, _, chat_text) = call_fusion(
+    let (chat_status, _, chat_text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -5955,7 +6018,7 @@ async fn models_endpoint_deduplicates_the_same_local_model_across_records() {
     let (upstream_url, log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"data": []}))).await;
 
-    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+    let config: GatewayConfig = serde_json::from_value(json_config_with_key(
         port,
         vec![
             json_provider(
@@ -5986,7 +6049,7 @@ async fn models_endpoint_deduplicates_the_same_local_model_across_records() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "GET",
         "/v1/models",
@@ -6040,7 +6103,7 @@ async fn models_endpoint_deduplicates_the_same_local_model_across_records() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 2 (20260916-api-fusion-upstream-retry): cooldown, retry headers, budget
+// Step 2 (20260916-api-gateway-upstream-retry): cooldown, retry headers, budget
 // ---------------------------------------------------------------------------
 //
 // These tests exercise the observable HTTP boundary of `attempt_non_streaming`
@@ -6205,8 +6268,8 @@ async fn spawn_streaming_sequence_mock(
 }
 
 async fn attempt_streaming_text(
-    ordered: &[FusionUpstreamProvider],
-    config: &mut FusionConfig,
+    ordered: &[GatewayUpstreamProvider],
+    config: &mut GatewayConfig,
 ) -> String {
     let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
     let (mut client, mut server) = tokio::io::duplex(64 * 1024);
@@ -6230,8 +6293,8 @@ async fn attempt_streaming_text(
 /// Run one non-streaming attempt on the paused clock and report the paused
 /// elapsed time, so header-driven waits are observable without real waiting.
 async fn attempt_non_streaming_timed(
-    ordered: &[FusionUpstreamProvider],
-    config: &mut FusionConfig,
+    ordered: &[GatewayUpstreamProvider],
+    config: &mut GatewayConfig,
 ) -> (super::runtime_http::HttpResponse, std::time::Duration) {
     let _ticker = spawn_paused_clock_ticker();
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
@@ -6252,11 +6315,11 @@ async fn attempt_non_streaming_timed(
 /// request body/requested model and just need the paused clock plus the bounded
 /// 1ms ticker so real loopback I/O completes before reqwest's real timeouts.
 async fn attempt_non_streaming_paused(
-    ordered: &[FusionUpstreamProvider],
+    ordered: &[GatewayUpstreamProvider],
     path: &str,
     body: &[u8],
     requested: Option<&str>,
-    config: &mut FusionConfig,
+    config: &mut GatewayConfig,
 ) -> (super::runtime_http::HttpResponse, std::time::Duration) {
     let _ticker = spawn_paused_clock_ticker();
     let started = tokio::time::Instant::now();
@@ -6312,7 +6375,7 @@ async fn retry_policy_retry_after_ms_wins_over_seconds() {
 
     let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![a.clone(), b.clone()];
 
     let (response, _total_elapsed) =
@@ -6362,7 +6425,7 @@ async fn retry_policy_invalid_retry_after_ms_falls_back_to_seconds_header() {
 
     let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![a.clone(), b.clone()];
 
     let (response, _total_elapsed) =
@@ -6415,7 +6478,7 @@ async fn retry_policy_future_http_date_is_honored() {
 
     let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![a.clone(), b.clone()];
 
     let (response, elapsed) =
@@ -6458,7 +6521,7 @@ async fn retry_policy_zero_retry_after_ms_retries_immediately() {
 
     let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![a.clone(), b.clone()];
 
     let (response, elapsed) =
@@ -6498,7 +6561,7 @@ async fn retry_policy_initial_pass_does_not_wait_for_cooldown() {
 
     let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![a.clone(), b.clone()];
 
     let response = tokio::time::timeout(
@@ -6551,7 +6614,7 @@ async fn retry_policy_cooling_provider_does_not_block_ready_candidate() {
 
     let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![a.clone(), b.clone()];
 
     let (response, _total_elapsed) =
@@ -6599,7 +6662,7 @@ async fn retry_policy_provider_is_attempted_at_most_six_times() {
 
     let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![a.clone(), b.clone()];
 
     let (response, _elapsed) =
@@ -6641,7 +6704,7 @@ async fn retry_policy_stops_before_wait_exceeds_120s_budget() {
 
     let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![a.clone(), b.clone()];
 
     let (response, elapsed) =
@@ -6686,7 +6749,7 @@ async fn single_candidate_500_non_streaming_fails_fast_without_retry() {
     .await;
 
     let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![a.clone()];
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
@@ -6729,7 +6792,7 @@ async fn single_candidate_429_with_retry_header_non_streaming_fails_fast_without
     .await;
 
     let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![a.clone()];
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
@@ -6773,7 +6836,7 @@ async fn single_candidate_429_without_retry_header_non_streaming_fails_fast_with
     .await;
 
     let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![a.clone()];
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
@@ -6823,7 +6886,7 @@ async fn single_candidate_streaming_retryable_failure_attempts_upstream_once() {
 
     let provider =
         upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers.push(provider.clone());
 
     let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
@@ -6852,7 +6915,7 @@ async fn single_candidate_streaming_retryable_failure_attempts_upstream_once() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 (20260916-api-fusion-upstream-retry): streaming retry and health RED
+// Step 3 (20260916-api-gateway-upstream-retry): streaming retry and health RED
 // ---------------------------------------------------------------------------
 
 /// REQ-002/REQ-005 regression (migrated to two candidates): before a stream
@@ -6888,7 +6951,7 @@ async fn retry_stream_recovers_after_zero_cooldown_and_completed_sse_clears_heal
     provider.consecutive_failures = 2;
     provider.last_error_at = Some(1);
     let other = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers.push(provider.clone());
     config.providers.push(other.clone());
 
@@ -6944,7 +7007,7 @@ async fn retry_stream_persistent_503_attempts_six_times_and_counts_health_once()
     let provider =
         upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
     let other = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers.push(provider.clone());
     config.providers.push(other.clone());
     let text = attempt_streaming_text(&[provider.clone(), other.clone()], &mut config).await;
@@ -6990,7 +7053,7 @@ async fn retry_stream_429_switches_without_counting_provider_health() {
 
     let limited = upstream_provider("a", "Limited", &limited_url, "sk", Some("remote-default"));
     let healthy = upstream_provider("b", "Healthy", &healthy_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![limited.clone(), healthy.clone()];
 
     let text = attempt_streaming_text(&[limited, healthy], &mut config).await;
@@ -7023,7 +7086,7 @@ async fn retry_stream_html_401_and_403_disable_immediately() {
         .await;
         let auth = upstream_provider("a", "Auth", &auth_url, "sk", Some("remote-default"));
         let healthy = upstream_provider("b", "Healthy", &healthy_url, "sk", Some("remote-default"));
-        let mut config = FusionConfig::default();
+        let mut config = GatewayConfig::default();
         config.providers = vec![auth.clone(), healthy.clone()];
 
         let text = attempt_streaming_text(&[auth, healthy], &mut config).await;
@@ -7062,7 +7125,7 @@ async fn retry_stream_404_traverses_each_candidate_once_without_health_failure()
     .await;
     let a = upstream_provider("a", "A", &a_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "B", &b_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![a.clone(), b.clone()];
 
     let text = attempt_streaming_text(&[a, b], &mut config).await;
@@ -7100,7 +7163,7 @@ async fn retry_stream_html_413_returns_unchanged_without_fallback() {
     .await;
     let rejected = upstream_provider("a", "Rejected", &rejected_url, "sk", Some("remote-default"));
     let fallback = upstream_provider("b", "Fallback", &fallback_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![rejected.clone(), fallback.clone()];
 
     let text = attempt_streaming_text(&[rejected, fallback], &mut config).await;
@@ -7119,7 +7182,7 @@ async fn retry_stream_html_413_returns_unchanged_without_fallback() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 (20260916-api-fusion-upstream-retry): downstream cancellation RED
+// Step 3 (20260916-api-gateway-upstream-retry): downstream cancellation RED
 // ---------------------------------------------------------------------------
 
 /// Send a complete request over a real loopback connection. The caller closes
@@ -7194,7 +7257,7 @@ async fn retry_cancel_disconnect_during_retry_delay_exits_without_further_upstre
                 .header("retry-after-ms", "250"),
         ])
         .await;
-        let mut config = FusionConfig::default();
+        let mut config = GatewayConfig::default();
         config.keys.push(key_named("k1", "local-key"));
         config.providers.push(upstream_provider(
             "a",
@@ -7277,7 +7340,7 @@ async fn retry_cancel_disconnect_while_upstream_waits_exits_without_further_upst
             let _ = stream.write_all(body).await;
         });
 
-        let mut config = FusionConfig::default();
+        let mut config = GatewayConfig::default();
         config.keys.push(key_named("k1", "local-key"));
         config.providers.push(upstream_provider(
             "a",
@@ -7370,11 +7433,13 @@ fn rfc3339_millis(value: &str) -> i64 {
         .timestamp_millis()
 }
 
-/// AC-007 / compatibility: an `api_fusion.json` written before this feature has
-/// no usage fields, yet still deserializes with the documented defaults, and
-/// the new fields round-trip without disturbing existing ones.
+/// AC-007 / compatibility: an `api_gateway.json` written before this feature —
+/// or a legacy `api_fusion.json` payload migrated through the read-only compat
+/// path — has no usage fields, yet still deserializes with the documented
+/// defaults, and the new fields round-trip without disturbing existing ones.
+/// Writes always target the new `api_gateway.json` file.
 #[test]
-fn fusion_config_accepts_legacy_json_and_round_trips_usage_fields() {
+fn gateway_config_accepts_legacy_json_and_round_trips_usage_fields() {
     let legacy = serde_json::json!({
         "enabled": true,
         "port": 17688,
@@ -7383,7 +7448,7 @@ fn fusion_config_accepts_legacy_json_and_round_trips_usage_fields() {
         "default_key_id": null,
         "terminal_syncs": []
     });
-    let config: FusionConfig = serde_json::from_value(legacy).expect("legacy config parses");
+    let config: GatewayConfig = serde_json::from_value(legacy).expect("legacy config parses");
     assert!(config.enabled);
     assert_eq!(config.usage_retention_days, DEFAULT_USAGE_RETENTION_DAYS);
     assert!(config.model_prices.is_empty());
@@ -7401,7 +7466,7 @@ fn fusion_config_accepts_legacy_json_and_round_trips_usage_fields() {
         off_peak: None,
     });
     let encoded = serde_json::to_string(&updated).expect("encode config");
-    let decoded: FusionConfig = serde_json::from_str(&encoded).expect("round trip config");
+    let decoded: GatewayConfig = serde_json::from_str(&encoded).expect("round trip config");
     assert_eq!(decoded.usage_retention_days, 30);
     assert_eq!(decoded.model_prices.len(), 1);
     assert_eq!(decoded.model_prices[0].upstream_model, "remote-a");
@@ -7816,7 +7881,7 @@ fn sse_usage_accumulator_parses_usage_across_chunk_boundaries() {
 
 fn usage_store(name: &str) -> (PathBuf, UsageLogStore) {
     let dir = make_temp_dir(name);
-    let store = UsageLogStore::at(dir.join("api_fusion_usage.db"));
+    let store = UsageLogStore::at(dir.join("api_gateway_usage.db"));
     (dir, store)
 }
 
@@ -7857,7 +7922,7 @@ fn usage_store_survives_reopen_and_returns_ordered_records() {
         )
         .unwrap();
 
-    let reopened = UsageLogStore::at(dir.join("api_fusion_usage.db"));
+    let reopened = UsageLogStore::at(dir.join("api_gateway_usage.db"));
     let records = reopened.all_records().unwrap();
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].timestamp_ms, now, "newest first");
@@ -8108,7 +8173,7 @@ fn usage_store_never_contains_credentials_headers_or_bodies() {
         )
         .unwrap();
 
-    let raw = fs::read(dir.join("api_fusion_usage.db")).expect("read usage db");
+    let raw = fs::read(dir.join("api_gateway_usage.db")).expect("read usage db");
     let raw_text = String::from_utf8_lossy(&raw);
     assert!(!raw_text.contains(secret));
     assert!(!raw_text.contains("authorization"));
@@ -8200,7 +8265,7 @@ async fn usage_log_records_successful_non_streaming_forward_and_privacy() {
     })
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "upstream-secret", None);
@@ -8211,7 +8276,7 @@ async fn usage_log_records_successful_non_streaming_forward_and_privacy() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, _text) = call_fusion(
+    let (status, _content_type, _text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -8259,7 +8324,7 @@ async fn usage_log_records_zero_tokens_when_upstream_omits_usage() {
     let (upstream_url, _log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "x", "choices": []}))).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -8269,7 +8334,7 @@ async fn usage_log_records_zero_tokens_when_upstream_omits_usage() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, _text) = call_fusion(
+    let (status, _content_type, _text) = call_gateway(
         port,
         "POST",
         "/chat/completions",
@@ -8301,7 +8366,7 @@ async fn usage_log_records_failure_for_upstream_error_response() {
     })
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -8311,7 +8376,7 @@ async fn usage_log_records_failure_for_upstream_error_response() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -8340,7 +8405,7 @@ async fn usage_log_records_failure_when_no_upstream_can_serve() {
     let home = temp_home("usage-forward-unavailable");
     let port = free_port().await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", "http://127.0.0.1:1", "sk", None);
@@ -8349,7 +8414,7 @@ async fn usage_log_records_failure_when_no_upstream_can_serve() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, _text) = call_fusion(
+    let (status, _content_type, _text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -8386,7 +8451,7 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
     let (upstream_url, _log) =
         spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -8396,7 +8461,7 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -8418,7 +8483,7 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
     assert!((record.amount.expect("priced") - expected).abs() < 1e-12);
 
     // Streaming with no serving upstream: HTTP 502 JSON envelope is failure.
-    let (empty_status, empty_ct, empty_text) = call_fusion(
+    let (empty_status, empty_ct, empty_text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -8466,7 +8531,7 @@ async fn streaming_all_unavailable_logs_real_upstream_status() {
     })
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -8475,7 +8540,7 @@ async fn streaming_all_unavailable_logs_real_upstream_status() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, content_type, text) = call_fusion(
+    let (status, content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -8516,7 +8581,7 @@ async fn streaming_all_unavailable_network_error_logs_zero_status() {
     let _ticker = spawn_paused_clock_ticker();
     let (drop_url, _log) = spawn_mock_upstream(|_| MockReply::Drop).await;
     let provider = upstream_provider("p1", "Provider One", &drop_url, "sk", Some("remote-a"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![provider.clone()];
     let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
 
@@ -8564,13 +8629,13 @@ async fn unauthorized_models_and_unknown_routes_are_not_logged() {
     let home = temp_home("usage-forward-not-logged");
     let port = free_port().await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (unauthorized, _ct, _body) = call_fusion(
+    let (unauthorized, _ct, _body) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -8581,10 +8646,10 @@ async fn unauthorized_models_and_unknown_routes_are_not_logged() {
     assert_eq!(unauthorized, 401);
 
     let (models, _ct, _body) =
-        call_fusion(port, "GET", "/v1/models", &[("authorization", "Bearer local-key")], None).await;
+        call_gateway(port, "GET", "/v1/models", &[("authorization", "Bearer local-key")], None).await;
     assert_eq!(models, 200);
 
-    let (unknown_path, _ct, _body) = call_fusion(
+    let (unknown_path, _ct, _body) = call_gateway(
         port,
         "POST",
         "/v1/embeddings",
@@ -8594,7 +8659,7 @@ async fn unauthorized_models_and_unknown_routes_are_not_logged() {
     .await;
     assert_eq!(unknown_path, 404);
 
-    let (unknown_method, _ct, _body) = call_fusion(
+    let (unknown_method, _ct, _body) = call_gateway(
         port,
         "GET",
         "/v1/chat/completions",
@@ -8639,7 +8704,7 @@ async fn downstream_cancel_records_cancelled() {
         let _ = stream.write_all(body).await;
     });
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.keys.push(key_named("k1", "local-key"));
     config
         .providers
@@ -8688,7 +8753,7 @@ async fn unpriced_model_records_none_amount_and_excludes_it_from_totals() {
     })
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -8698,7 +8763,7 @@ async fn unpriced_model_records_none_amount_and_excludes_it_from_totals() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _ct, _text) = call_fusion(
+    let (status, _ct, _text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -8730,9 +8795,9 @@ async fn unpriced_model_records_none_amount_and_excludes_it_from_totals() {
 /// AC-007 / REQ-006: saving prices replaces only the price table and preserves
 /// providers, keys, default key, terminal_syncs and retention.
 #[test]
-fn api_fusion_model_prices_save_preserves_existing_config_fields() {
+fn api_gateway_model_prices_save_preserves_existing_config_fields() {
     with_temp_home("prices-preserve", |_home| {
-        let mut config = FusionConfig::default();
+        let mut config = GatewayConfig::default();
         config.providers.push(provider("p1"));
         config.keys.push(key("k1", true));
         config.default_key_id = Some("k1".to_string());
@@ -8747,7 +8812,7 @@ fn api_fusion_model_prices_save_preserves_existing_config_fields() {
         config.model_prices = vec![priced("old-model", 1.0, 1.0, 1.0, 1.0)];
         super::storage::write_config(&config).expect("seed config");
 
-        let saved = super::commands::api_fusion_model_prices_save(vec![priced(
+        let saved = super::commands::api_gateway_model_prices_save(vec![priced(
             "new-model",
             2.0,
             0.0,
@@ -8768,7 +8833,7 @@ fn api_fusion_model_prices_save_preserves_existing_config_fields() {
         assert_eq!(reloaded.usage_retention_days, 30, "retention untouched");
         assert_eq!(reloaded.model_prices[0].upstream_model, "new-model");
         assert_eq!(
-            super::commands::api_fusion_model_prices_get().unwrap()[0].output,
+            super::commands::api_gateway_model_prices_get().unwrap()[0].output,
             3.0
         );
     });
@@ -8777,20 +8842,20 @@ fn api_fusion_model_prices_save_preserves_existing_config_fields() {
 /// AC-012 / REQ-010: invalid retention is rejected with an actionable error and
 /// the stored value plus the rest of the config are untouched; 1 and 365 work.
 #[test]
-fn api_fusion_usage_retention_save_rejects_invalid_and_keeps_stored_value() {
+fn api_gateway_usage_retention_save_rejects_invalid_and_keeps_stored_value() {
     with_temp_home("retention-save", |_home| {
-        let mut config = FusionConfig::default();
+        let mut config = GatewayConfig::default();
         config.usage_retention_days = 30;
         config.providers.push(provider("p1"));
         config.keys.push(key("k1", true));
         super::storage::write_config(&config).expect("seed config");
 
-        let zero = super::commands::api_fusion_usage_retention_save(0).unwrap_err();
+        let zero = super::commands::api_gateway_usage_retention_save(0).unwrap_err();
         assert!(zero.contains("1") && zero.contains("365"), "actionable error: {zero}");
-        assert!(super::commands::api_fusion_usage_retention_save(400).is_err());
+        assert!(super::commands::api_gateway_usage_retention_save(400).is_err());
 
         assert_eq!(
-            super::commands::api_fusion_usage_retention_get().unwrap(),
+            super::commands::api_gateway_usage_retention_get().unwrap(),
             30,
             "stored value unchanged after rejection"
         );
@@ -8799,15 +8864,15 @@ fn api_fusion_usage_retention_save_rejects_invalid_and_keeps_stored_value() {
         assert_eq!(reloaded.providers.len(), 1, "rejection must not rewrite config");
 
         assert_eq!(
-            super::commands::api_fusion_usage_retention_save(1).unwrap(),
+            super::commands::api_gateway_usage_retention_save(1).unwrap(),
             1
         );
         assert_eq!(
-            super::commands::api_fusion_usage_retention_save(365).unwrap(),
+            super::commands::api_gateway_usage_retention_save(365).unwrap(),
             365
         );
         assert_eq!(
-            super::commands::api_fusion_usage_retention_get().unwrap(),
+            super::commands::api_gateway_usage_retention_get().unwrap(),
             365
         );
         assert_eq!(
@@ -8821,7 +8886,7 @@ fn api_fusion_usage_retention_save_rejects_invalid_and_keeps_stored_value() {
 /// AC-015 / AC-016 / AC-020 / AC-021 / AC-022: the stats/logs commands resolve
 /// the range, aggregate, group, filter and paginate entirely in the backend.
 #[test]
-fn api_fusion_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
+fn api_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
     with_temp_home("usage-commands", |_home| {
         let store = UsageLogStore::default_store().expect("usage store");
         let now = super::now_millis();
@@ -8856,7 +8921,7 @@ fn api_fusion_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
             )
             .unwrap();
 
-        let stats = super::commands::api_fusion_usage_stats(None).unwrap();
+        let stats = super::commands::api_gateway_usage_stats(None).unwrap();
         assert_eq!(stats.granularity, "day");
         assert_eq!(stats.totals.request_count, 2);
         assert_eq!(stats.totals.total_tokens, 45);
@@ -8865,10 +8930,10 @@ fn api_fusion_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert_eq!(stats.models[0].providers.len(), 2, "per-provider detail");
         assert_eq!(stats.buckets.len(), 1, "one day bucket");
 
-        let today = super::commands::api_fusion_usage_stats(Some(1)).unwrap();
+        let today = super::commands::api_gateway_usage_stats(Some(1)).unwrap();
         assert_eq!(today.granularity, "hour", "today buckets by hour");
 
-        let page = super::commands::api_fusion_request_logs(None, None, None, None, None).unwrap();
+        let page = super::commands::api_gateway_request_logs(None, None, None, None, None).unwrap();
         assert_eq!(page.total, 2);
         assert_eq!(page.page, 1);
         assert_eq!(page.page_size, 50);
@@ -8878,7 +8943,7 @@ fn api_fusion_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
             "newest first"
         );
 
-        let failed = super::commands::api_fusion_request_logs(
+        let failed = super::commands::api_gateway_request_logs(
             None,
             None,
             Some("failure".to_string()),
@@ -8889,7 +8954,7 @@ fn api_fusion_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert_eq!(failed.total, 1);
         assert_eq!(failed.records[0].result, UsageResult::Failure);
 
-        let by_model = super::commands::api_fusion_request_logs(
+        let by_model = super::commands::api_gateway_request_logs(
             None,
             Some("model".to_string()),
             None,
@@ -8901,7 +8966,7 @@ fn api_fusion_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert_eq!(by_model.groups.len(), 1);
         assert_eq!(by_model.groups[0].error_count, 1, "failure counted as error");
 
-        let by_day = super::commands::api_fusion_request_logs(
+        let by_day = super::commands::api_gateway_request_logs(
             None,
             Some("day".to_string()),
             None,
@@ -8913,7 +8978,7 @@ fn api_fusion_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert_eq!(by_day.groups[0].request_count, 2);
         assert_eq!(by_day.groups[0].error_count, 1);
 
-        let clamped = super::commands::api_fusion_request_logs(
+        let clamped = super::commands::api_gateway_request_logs(
             None,
             None,
             None,
@@ -8924,7 +8989,7 @@ fn api_fusion_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert_eq!(clamped.page, 1, "page clamps to the only page");
 
         // AC-021: a filter with no matches returns an empty, error-free page.
-        let empty = super::commands::api_fusion_request_logs(
+        let empty = super::commands::api_gateway_request_logs(
             None,
             None,
             Some("failure".to_string()),
@@ -8936,7 +9001,7 @@ fn api_fusion_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert!(empty.records.is_empty());
         assert_eq!(empty.total_pages, 1);
 
-        assert!(super::commands::api_fusion_request_logs(
+        assert!(super::commands::api_gateway_request_logs(
             None,
             Some("bogus".to_string()),
             None,
@@ -8969,7 +9034,7 @@ async fn usage_log_records_unversioned_responses_path() {
     })
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -8980,7 +9045,7 @@ async fn usage_log_records_unversioned_responses_path() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/responses",
@@ -9034,7 +9099,7 @@ async fn forwarding_records_cache_read_and_write_tiers_non_streaming() {
     })
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -9044,7 +9109,7 @@ async fn forwarding_records_cache_read_and_write_tiers_non_streaming() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, _text) = call_fusion(
+    let (status, _content_type, _text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -9087,7 +9152,7 @@ async fn streaming_forward_records_cache_read_and_write_tiers_and_preserves_byte
     let (upstream_url, _log) =
         spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -9097,7 +9162,7 @@ async fn streaming_forward_records_cache_read_and_write_tiers_and_preserves_byte
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -9137,7 +9202,7 @@ async fn streaming_success_without_usage_records_zero_tokens() {
     let (upstream_url, _log) =
         spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -9147,7 +9212,7 @@ async fn streaming_success_without_usage_records_zero_tokens() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -9180,7 +9245,7 @@ async fn streaming_upstream_client_error_is_logged_failure_and_returned_unchange
     })
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -9190,7 +9255,7 @@ async fn streaming_upstream_client_error_is_logged_failure_and_returned_unchange
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -9233,7 +9298,7 @@ async fn downstream_cancel_during_streaming_records_cancelled() {
         // Never start the stream; the client disconnects while the upstream waits.
     });
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.keys.push(key_named("k1", "local-key"));
     config.providers.push(upstream_provider(
         "p1",
@@ -9276,7 +9341,7 @@ async fn downstream_cancel_during_streaming_records_cancelled() {
 async fn forwarded_logs_never_contain_keys_headers_or_bodies() {
     let home = temp_home("usage-forward-privacy-strong");
     let port = free_port().await;
-    let local_key = "sk-fusion-local-PRIVACY-9a1b";
+    let local_key = "sk-gateway-local-PRIVACY-9a1b";
     let upstream_key = "sk-upstream-PRIVACY-4c2d";
     let header_marker = "marker-header-PRIVACY-7e3f";
     let body_marker = "body-PRIVACY-1c8a";
@@ -9293,7 +9358,7 @@ async fn forwarded_logs_never_contain_keys_headers_or_bodies() {
     })
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", local_key));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, upstream_key, None);
@@ -9307,7 +9372,7 @@ async fn forwarded_logs_never_contain_keys_headers_or_bodies() {
         ("authorization", authorization.as_str()),
         ("x-privacy-marker", header_marker),
     ];
-    let (status, _content_type, _text) = call_fusion(
+    let (status, _content_type, _text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -9322,7 +9387,7 @@ async fn forwarded_logs_never_contain_keys_headers_or_bodies() {
     let raw = fs::read(
         crate::config::get_app_dir()
             .expect("app dir")
-            .join("api_fusion_usage.db"),
+            .join("api_gateway_usage.db"),
     )
     .expect("read usage db");
     let raw_text = String::from_utf8_lossy(&raw);
@@ -9365,7 +9430,7 @@ async fn price_change_does_not_alter_historical_amounts() {
     })
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -9377,7 +9442,7 @@ async fn price_change_does_not_alter_historical_amounts() {
 
     let auth: &[(&str, &str)] = &[("authorization", "Bearer local-key")];
 
-    let (status, _ct, _text) = call_fusion(
+    let (status, _ct, _text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -9392,9 +9457,9 @@ async fn price_change_does_not_alter_historical_amounts() {
 
     // Adding a price later must not retroactively price the existing row, but
     // must price the next request.
-    super::commands::api_fusion_model_prices_save(vec![priced("remote-a", 1.0, 0.0, 0.0, 2.0)])
+    super::commands::api_gateway_model_prices_save(vec![priced("remote-a", 1.0, 0.0, 0.0, 2.0)])
         .unwrap();
-    let (status, _ct, _text) = call_fusion(
+    let (status, _ct, _text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -9413,7 +9478,7 @@ async fn price_change_does_not_alter_historical_amounts() {
     assert!((priced_record.amount.unwrap() - expected_a).abs() < 1e-12);
 
     // Changing the price again must not rewrite any history.
-    super::commands::api_fusion_model_prices_save(vec![priced("remote-a", 9.0, 9.0, 9.0, 9.0)])
+    super::commands::api_gateway_model_prices_save(vec![priced("remote-a", 9.0, 9.0, 9.0, 9.0)])
         .unwrap();
     let history = default_usage_store().all_records().unwrap();
     assert_eq!(history.len(), 2);
@@ -9825,7 +9890,7 @@ async fn usage_log_zeroes_usage_for_error_response_with_usage_body() {
     })
     .await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -9835,7 +9900,7 @@ async fn usage_log_zeroes_usage_for_error_response_with_usage_body() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -10056,7 +10121,7 @@ fn request_logs_page_exposes_in_range_model_facet() {
 #[test]
 fn deleting_the_default_key_advances_to_the_next_enabled_key() {
     with_temp_home("delete-default-key-advance", |_home| {
-        super::commands::api_fusion_upsert_key(FusionKey {
+        super::commands::api_gateway_upsert_key(GatewayKey {
             id: "k1".to_string(),
             label: "K1".to_string(),
             value: "v1".to_string(),
@@ -10064,7 +10129,7 @@ fn deleting_the_default_key_advances_to_the_next_enabled_key() {
             created_at: 0,
         })
         .unwrap();
-        super::commands::api_fusion_upsert_key(FusionKey {
+        super::commands::api_gateway_upsert_key(GatewayKey {
             id: "k2".to_string(),
             label: "K2".to_string(),
             value: "v2".to_string(),
@@ -10072,10 +10137,10 @@ fn deleting_the_default_key_advances_to_the_next_enabled_key() {
             created_at: 0,
         })
         .unwrap();
-        let defaulted = super::commands::api_fusion_set_default_key("k2".to_string()).unwrap();
+        let defaulted = super::commands::api_gateway_set_default_key("k2".to_string()).unwrap();
         assert_eq!(defaulted.default_key_id.as_deref(), Some("k2"));
 
-        let after_delete = super::commands::api_fusion_delete_key("k2".to_string()).unwrap();
+        let after_delete = super::commands::api_gateway_delete_key("k2".to_string()).unwrap();
         assert_eq!(
             after_delete.default_key_id.as_deref(),
             Some("k1"),
@@ -10092,25 +10157,25 @@ fn deleting_the_default_key_advances_to_the_next_enabled_key() {
     });
 }
 
-/// Standards S2: `api_fusion_save_config` must normalize brand-new keys whose
+/// Standards S2: `api_gateway_save_config` must normalize brand-new keys whose
 /// submitted value is blank or the UI mask placeholder, generating a real
-/// `sk-fusion-` secret instead of persisting `""` or `"********"`.
+/// `sk-gateway-` secret instead of persisting `""` or `"********"`.
 #[tokio::test]
 async fn save_config_generates_secret_for_new_keys_with_blank_or_masked_value() {
     let _home = temp_home("save-config-key-normalize");
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     // Keep the listener off so the test never binds a real port.
     config.enabled = false;
     // Providers intentionally empty: only key normalization is under test.
-    config.keys.push(FusionKey {
+    config.keys.push(GatewayKey {
         id: "brand-new-blank".to_string(),
         label: "Brand New Blank".to_string(),
         value: String::new(),
         enabled: true,
         created_at: 1,
     });
-    config.keys.push(FusionKey {
+    config.keys.push(GatewayKey {
         id: "brand-new-masked".to_string(),
         label: "Brand New Masked".to_string(),
         value: "********".to_string(),
@@ -10118,7 +10183,7 @@ async fn save_config_generates_secret_for_new_keys_with_blank_or_masked_value() 
         created_at: 2,
     });
 
-    let saved = super::commands::api_fusion_save_config(config)
+    let saved = super::commands::api_gateway_save_config(config)
         .await
         .expect("save config");
 
@@ -10128,7 +10193,7 @@ async fn save_config_generates_secret_for_new_keys_with_blank_or_masked_value() 
         .find(|key| key.id == "brand-new-blank")
         .expect("blank-valued key must be persisted");
     assert!(
-        blank.value.starts_with("sk-fusion-"),
+        blank.value.starts_with("sk-gateway-"),
         "a brand-new blank-valued key must receive a generated secret, got {:?}",
         blank.value
     );
@@ -10147,7 +10212,7 @@ async fn save_config_generates_secret_for_new_keys_with_blank_or_masked_value() 
         .find(|key| key.id == "brand-new-masked")
         .expect("masked-valued key must be persisted");
     assert!(
-        masked.value.starts_with("sk-fusion-"),
+        masked.value.starts_with("sk-gateway-"),
         "a brand-new masked key must receive a generated secret, got {:?}",
         masked.value
     );
@@ -10215,7 +10280,7 @@ async fn non_streaming_upstream_html_400_is_wrapped_in_standard_envelope() {
         "sk-upstream-secret",
         Some("remote-default"),
     );
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers.push(provider.clone());
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
     let headers = HashMap::from([
@@ -10273,7 +10338,7 @@ async fn streaming_upstream_html_400_is_wrapped_in_standard_envelope() {
         "sk-upstream-secret",
         Some("remote-default"),
     );
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers.push(provider.clone());
 
     let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
@@ -10313,7 +10378,7 @@ async fn non_streaming_upstream_json_400_is_passed_through_byte_for_byte() {
     let (upstream_url, _log) =
         spawn_mock_upstream(move |_| MockReply::Json(400, for_mock.clone())).await;
     let provider = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers.push(provider.clone());
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
@@ -10352,7 +10417,7 @@ async fn streaming_upstream_json_400_is_passed_through_byte_for_byte() {
     let (upstream_url, _log) =
         spawn_mock_upstream(move |_| MockReply::Json(400, for_mock.clone())).await;
     let provider = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers.push(provider.clone());
 
     let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
@@ -10377,7 +10442,7 @@ async fn mid_stream_failure_appends_standalone_error_fragment_without_done() {
     let (partial_url, partial_log) =
         spawn_mock_upstream(move |_| MockReply::PartialStream(partial.clone(), declared)).await;
     let provider = upstream_provider("a", "Provider A", &partial_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers.push(provider.clone());
 
     let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
@@ -10433,7 +10498,7 @@ async fn mid_stream_failure_capture_is_failure_keeps_usage_and_skips_other_candi
 
     let a = upstream_provider("a", "Provider A", &partial_url, "sk", Some("remote-default"));
     let b = upstream_provider("b", "Provider B", &fallback_url, "sk", Some("remote-default"));
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.providers = vec![a.clone(), b.clone()];
     let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
 
@@ -10499,7 +10564,7 @@ async fn mid_stream_failure_end_to_end_logs_one_failure_with_usage() {
     let (upstream_url, _log) =
         spawn_mock_upstream(move |_| MockReply::PartialStream(partial.clone(), declared)).await;
 
-    let mut config = FusionConfig::default();
+    let mut config = GatewayConfig::default();
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     let mut a = upstream_provider("a", "Provider A", &upstream_url, "sk", None);
@@ -10508,7 +10573,7 @@ async fn mid_stream_failure_end_to_end_logs_one_failure_with_usage() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -10559,7 +10624,7 @@ async fn mid_stream_failure_end_to_end_logs_one_failure_with_usage() {
 #[test]
 fn mapping_enabled_defaults_true_for_legacy_config_and_survives_round_trip() {
     with_temp_home("mapping-enabled-persist", |_home| {
-        let mut config: FusionConfig = serde_json::from_value(json_config_with_key(
+        let mut config: GatewayConfig = serde_json::from_value(json_config_with_key(
             17688,
             vec![json_provider(
                 "p1",
@@ -10663,7 +10728,7 @@ async fn disabled_mapping_request_returns_all_providers_unavailable() {
     let (upstream_url, log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
 
-    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+    let config: GatewayConfig = serde_json::from_value(json_config_with_key(
         port,
         vec![json_provider(
             "p1",
@@ -10681,7 +10746,7 @@ async fn disabled_mapping_request_returns_all_providers_unavailable() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -10705,7 +10770,7 @@ async fn disabled_mapping_request_returns_all_providers_unavailable() {
         captured_summary(&captured)
     );
 
-    let (m1_status, _content_type, m1_text) = call_fusion(
+    let (m1_status, _content_type, m1_text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -10718,7 +10783,7 @@ async fn disabled_mapping_request_returns_all_providers_unavailable() {
         "the enabled mapping must still be served: {m1_text}"
     );
 
-    let (fallback_status, _content_type, fallback_text) = call_fusion(
+    let (fallback_status, _content_type, fallback_text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -10793,7 +10858,7 @@ async fn disabled_mapping_on_one_provider_is_still_served_by_another_provider() 
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, _content_type, text) = call_gateway(
         port,
         "POST",
         "/v1/chat/completions",
@@ -10881,7 +10946,7 @@ fn provider_disable_and_reenable_preserves_mapping_enabled_state() {
             "manual re-enable must not touch mapping B"
         );
 
-        let mut config = FusionConfig::default();
+        let mut config = GatewayConfig::default();
         config.providers.push(p);
         super::storage::write_config(&config).expect("write config");
         let reloaded = super::storage::read_config().expect("read config");

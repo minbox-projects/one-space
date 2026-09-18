@@ -8,13 +8,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { FusionKey } from "@/lib/apiFusion";
+import type { GatewayKey } from "@/lib/apiGateway";
 
 type LocalKeyDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   busy: boolean;
-  onSave: (key: FusionKey) => Promise<boolean>;
+  onSave: (key: GatewayKey) => Promise<boolean>;
 };
 
 export function LocalKeyDialog({
@@ -60,15 +60,15 @@ export function LocalKeyDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className="w-full p-5 sm:max-w-md sm:rounded-xl"
-        data-testid="api-fusion-key-dialog"
+        data-testid="api-gateway-key-dialog"
       >
         <DialogHeader className="space-y-1">
           <DialogTitle className="text-base font-semibold">
-            {t("apiFusionAddKey", "Add key")}
+            {t("apiGatewayAddKey", "Add key")}
           </DialogTitle>
           <DialogDescription className="text-xs text-muted-foreground">
             {t(
-              "apiFusionKeyDialogDesc",
+              "apiGatewayKeyDialogDesc",
               "Only the name is required; the key value is generated automatically.",
             )}
           </DialogDescription>
@@ -76,14 +76,14 @@ export function LocalKeyDialog({
 
         <div className="space-y-4 py-2">
           <div className="field full-span">
-            <label className="required">{t("apiFusionKeyLabel", "Name")}</label>
+            <label className="required">{t("apiGatewayKeyLabel", "Name")}</label>
             <input
               type="text"
               value={name}
               onChange={(event) => setName(event.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={t("apiFusionKeyLabelPlaceholder", "Key name")}
-              aria-label={t("apiFusionKeyLabel", "Name")}
+              placeholder={t("apiGatewayKeyLabelPlaceholder", "Key name")}
+              aria-label={t("apiGatewayKeyLabel", "Name")}
               disabled={busy || saving}
             />
           </div>
@@ -104,7 +104,7 @@ export function LocalKeyDialog({
             disabled={busy || saving || !name.trim()}
             className="acc-panel-btn primary"
           >
-            {t("apiFusionSave", "Save")}
+            {t("apiGatewaySave", "Save")}
           </button>
         </DialogFooter>
       </DialogContent>

@@ -1,8 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(in crate::api_fusion) const CONFIG_FILE: &str = "api_fusion.json";
-pub(in crate::api_fusion) const DEFAULT_PORT: u16 = 17688;
+pub(in crate::api_gateway) const CONFIG_FILE: &str = "api_gateway.json";
+/// Legacy config file kept for one-time read-only migration: if
+/// `api_gateway.json` is absent but `api_fusion.json` exists, the stored
+/// payload is read through the same decrypt path and rewritten to the new
+/// file. Writes never touch the legacy file.
+pub(in crate::api_gateway) const LEGACY_CONFIG_FILE: &str = "api_fusion.json";
+pub(in crate::api_gateway) const DEFAULT_PORT: u16 = 17688;
 
 /// Default request-log retention in days for configs written before the field existed.
 pub const DEFAULT_USAGE_RETENTION_DAYS: u32 = 90;
@@ -10,19 +15,19 @@ pub const DEFAULT_USAGE_RETENTION_DAYS: u32 = 90;
 pub const MIN_USAGE_RETENTION_DAYS: u32 = 1;
 pub const MAX_USAGE_RETENTION_DAYS: u32 = 365;
 
-pub(in crate::api_fusion) fn default_port() -> u16 {
+pub(in crate::api_gateway) fn default_port() -> u16 {
     DEFAULT_PORT
 }
 
-pub(in crate::api_fusion) fn default_usage_retention_days() -> u32 {
+pub(in crate::api_gateway) fn default_usage_retention_days() -> u32 {
     DEFAULT_USAGE_RETENTION_DAYS
 }
 
-pub(in crate::api_fusion) fn default_true() -> bool {
+pub(in crate::api_gateway) fn default_true() -> bool {
     true
 }
 
-pub(in crate::api_fusion) fn now_ts() -> u64 {
+pub(in crate::api_gateway) fn now_ts() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -88,7 +93,7 @@ impl UpstreamProtocol {
 /// `enabled` carries the user's intent while `auto_disabled` carries runtime health.
 /// They are persisted independently and must never overwrite one another.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FusionUpstreamProvider {
+pub struct GatewayUpstreamProvider {
     pub id: String,
     pub name: String,
     pub base_url: String,
@@ -114,7 +119,7 @@ pub struct FusionUpstreamProvider {
     pub last_error_at: Option<u64>,
 }
 
-impl Default for FusionUpstreamProvider {
+impl Default for GatewayUpstreamProvider {
     fn default() -> Self {
         Self {
             id: String::new(),
@@ -134,9 +139,9 @@ impl Default for FusionUpstreamProvider {
     }
 }
 
-/// A local API key accepted by the API Fusion listener.
+/// A local API key accepted by the API Gateway listener.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FusionKey {
+pub struct GatewayKey {
     pub id: String,
     pub label: String,
     #[serde(default)]
@@ -147,7 +152,7 @@ pub struct FusionKey {
     pub created_at: u64,
 }
 
-impl Default for FusionKey {
+impl Default for GatewayKey {
     fn default() -> Self {
         Self {
             id: String::new(),
@@ -239,23 +244,24 @@ impl Default for ModelPrice {
     }
 }
 
-/// Persisted API Fusion configuration.
+/// Persisted API Gateway configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FusionConfig {
+pub struct GatewayConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_port")]
     pub port: u16,
     #[serde(default)]
-    pub providers: Vec<FusionUpstreamProvider>,
+    pub providers: Vec<GatewayUpstreamProvider>,
     #[serde(default)]
-    pub keys: Vec<FusionKey>,
+    pub keys: Vec<GatewayKey>,
     #[serde(default)]
     pub default_key_id: Option<String>,
     #[serde(default)]
     pub terminal_syncs: Vec<TerminalSyncRecord>,
     /// Request-log retention in days (1-365, default 90). `#[serde(default)]`
-    /// keeps older `api_fusion.json` files readable without migration.
+    /// keeps older `api_gateway.json` files — and legacy `api_fusion.json`
+    /// payloads migrated through the read-only compat path — readable without migration.
     #[serde(default = "default_usage_retention_days")]
     pub usage_retention_days: u32,
     /// User-maintained upstream-model price table; absent in older configs.
@@ -263,7 +269,7 @@ pub struct FusionConfig {
     pub model_prices: Vec<ModelPrice>,
 }
 
-impl Default for FusionConfig {
+impl Default for GatewayConfig {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -280,7 +286,7 @@ impl Default for FusionConfig {
 
 /// Runtime status summary exposed to the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FusionStatus {
+pub struct GatewayStatus {
     pub running: bool,
     pub enabled: bool,
     pub port: u16,

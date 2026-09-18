@@ -87,10 +87,10 @@ describe("SettingsView", () => {
       if (command === "get_storage_config") {
         return structuredClone(currentConfig);
       }
-      if (command === "api_fusion_usage_retention_get") {
+      if (command === "api_gateway_usage_retention_get") {
         return currentRetention;
       }
-      if (command === "api_fusion_usage_retention_save") {
+      if (command === "api_gateway_usage_retention_save") {
         const days = args.days as number;
         if (!Number.isInteger(days) || days < 1 || days > 365) {
           throw new Error("Retention days must be between 1 and 365");
@@ -237,7 +237,7 @@ describe("SettingsView", () => {
     );
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_retention_save", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_retention_save", {
         days: 30,
       }),
     );
@@ -264,7 +264,7 @@ describe("SettingsView", () => {
       ),
     ).toBeInTheDocument();
     expect(invokeMock).not.toHaveBeenCalledWith(
-      "api_fusion_usage_retention_save",
+      "api_gateway_usage_retention_save",
       expect.anything(),
     );
 
@@ -279,7 +279,7 @@ describe("SettingsView", () => {
       ),
     ).toBeInTheDocument();
     expect(invokeMock).not.toHaveBeenCalledWith(
-      "api_fusion_usage_retention_save",
+      "api_gateway_usage_retention_save",
       expect.anything(),
     );
 
@@ -289,7 +289,7 @@ describe("SettingsView", () => {
       screen.getByRole("button", { name: /Save Settings|保存设置/ }),
     );
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_retention_save", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_retention_save", {
         days: 1,
       }),
     );
@@ -300,7 +300,7 @@ describe("SettingsView", () => {
       screen.getByRole("button", { name: /Save Settings|保存设置/ }),
     );
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_retention_save", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_retention_save", {
         days: 365,
       }),
     );
@@ -317,7 +317,7 @@ describe("SettingsView", () => {
       screen.getByRole("button", { name: /Save Settings|保存设置/ }),
     );
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_retention_save", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_retention_save", {
         days: 30,
       }),
     );

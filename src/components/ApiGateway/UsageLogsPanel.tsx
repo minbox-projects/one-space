@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { SelectDropdown } from "./SelectDropdown";
 import {
-  apiFusionRequestLogs,
+  apiGatewayRequestLogs,
   clampUsagePage,
   formatUsageAmount,
   formatUsageGroupLabel,
@@ -24,15 +24,15 @@ import {
   type UsageLogResult,
   type UsageLogsPage,
   type UsageRangeKey,
-} from "@/lib/apiFusion";
+} from "@/lib/apiGateway";
 import { errorToMessage } from "@/lib/messages";
 
 const RANGE_LABEL_KEYS: Record<UsageRangeKey, string> = {
-  today: "apiFusionRangeToday",
-  "7d": "apiFusionRange7d",
-  "15d": "apiFusionRange15d",
-  "30d": "apiFusionRange30d",
-  all: "apiFusionRangeAll",
+  today: "apiGatewayRangeToday",
+  "7d": "apiGatewayRange7d",
+  "15d": "apiGatewayRange15d",
+  "30d": "apiGatewayRange30d",
+  all: "apiGatewayRangeAll",
 };
 
 const RANGE_LABEL_FALLBACKS: Record<UsageRangeKey, string> = {
@@ -54,9 +54,9 @@ const GROUP_OPTIONS: Array<{
   labelKey: string;
   fallback: string;
 }> = [
-  { key: "none", labelKey: "apiFusionGroupNone", fallback: "No grouping" },
-  { key: "model", labelKey: "apiFusionGroupModel", fallback: "Model" },
-  { key: "day", labelKey: "apiFusionGroupDay", fallback: "Day (UTC+8)" },
+  { key: "none", labelKey: "apiGatewayGroupNone", fallback: "No grouping" },
+  { key: "model", labelKey: "apiGatewayGroupModel", fallback: "Model" },
+  { key: "day", labelKey: "apiGatewayGroupDay", fallback: "Day (UTC+8)" },
 ];
 
 const STATUS_OPTIONS: UsageLogResult[] = ["success", "failure", "cancelled"];
@@ -96,85 +96,85 @@ function getHttpStatusReason(
   switch (status) {
     case 400:
       return {
-        label: t("apiFusionError400", "Bad request"),
-        title: `HTTP 400: ${t("apiFusionError400", "Bad request")}`,
+        label: t("apiGatewayError400", "Bad request"),
+        title: `HTTP 400: ${t("apiGatewayError400", "Bad request")}`,
       };
     case 401:
       return {
-        label: t("apiFusionError401", "Unauthorized / Invalid API key"),
-        title: `HTTP 401: ${t("apiFusionError401", "Unauthorized / Invalid API key")}`,
+        label: t("apiGatewayError401", "Unauthorized / Invalid API key"),
+        title: `HTTP 401: ${t("apiGatewayError401", "Unauthorized / Invalid API key")}`,
       };
     case 403:
       return {
-        label: t("apiFusionError403", "Forbidden / Access denied"),
-        title: `HTTP 403: ${t("apiFusionError403", "Forbidden / Access denied")}`,
+        label: t("apiGatewayError403", "Forbidden / Access denied"),
+        title: `HTTP 403: ${t("apiGatewayError403", "Forbidden / Access denied")}`,
       };
     case 404:
       return {
-        label: t("apiFusionError404", "Model or endpoint not found"),
-        title: `HTTP 404: ${t("apiFusionError404", "Model or endpoint not found")}`,
+        label: t("apiGatewayError404", "Model or endpoint not found"),
+        title: `HTTP 404: ${t("apiGatewayError404", "Model or endpoint not found")}`,
       };
     case 408:
       return {
-        label: t("apiFusionError408", "Request timeout"),
-        title: `HTTP 408: ${t("apiFusionError408", "Request timeout")}`,
+        label: t("apiGatewayError408", "Request timeout"),
+        title: `HTTP 408: ${t("apiGatewayError408", "Request timeout")}`,
       };
     case 413:
       return {
-        label: t("apiFusionError413", "Payload too large"),
-        title: `HTTP 413: ${t("apiFusionError413", "Payload too large")}`,
+        label: t("apiGatewayError413", "Payload too large"),
+        title: `HTTP 413: ${t("apiGatewayError413", "Payload too large")}`,
       };
     case 422:
       return {
-        label: t("apiFusionError422", "Unprocessable entity"),
-        title: `HTTP 422: ${t("apiFusionError422", "Unprocessable entity")}`,
+        label: t("apiGatewayError422", "Unprocessable entity"),
+        title: `HTTP 422: ${t("apiGatewayError422", "Unprocessable entity")}`,
       };
     case 429:
       return {
-        label: t("apiFusionError429", "Rate limit exceeded"),
-        title: `HTTP 429: ${t("apiFusionError429", "Rate limit exceeded")}`,
+        label: t("apiGatewayError429", "Rate limit exceeded"),
+        title: `HTTP 429: ${t("apiGatewayError429", "Rate limit exceeded")}`,
       };
     case 500:
       return {
-        label: t("apiFusionError500", "Internal server error"),
-        title: `HTTP 500: ${t("apiFusionError500", "Internal server error")}`,
+        label: t("apiGatewayError500", "Internal server error"),
+        title: `HTTP 500: ${t("apiGatewayError500", "Internal server error")}`,
       };
     case 502:
       return {
-        label: t("apiFusionError502", "Bad gateway / Upstream unavailable"),
-        title: `HTTP 502: ${t("apiFusionError502", "Bad gateway / Upstream unavailable")}`,
+        label: t("apiGatewayError502", "Bad gateway / Upstream unavailable"),
+        title: `HTTP 502: ${t("apiGatewayError502", "Bad gateway / Upstream unavailable")}`,
       };
     case 503:
       return {
-        label: t("apiFusionError503", "Service unavailable"),
-        title: `HTTP 503: ${t("apiFusionError503", "Service unavailable")}`,
+        label: t("apiGatewayError503", "Service unavailable"),
+        title: `HTTP 503: ${t("apiGatewayError503", "Service unavailable")}`,
       };
     case 504:
       return {
-        label: t("apiFusionError504", "Gateway timeout"),
-        title: `HTTP 504: ${t("apiFusionError504", "Gateway timeout")}`,
+        label: t("apiGatewayError504", "Gateway timeout"),
+        title: `HTTP 504: ${t("apiGatewayError504", "Gateway timeout")}`,
       };
     case 0:
       return {
-        label: t("apiFusionErrorNetwork", "Network error / Connection failed"),
-        title: t("apiFusionErrorNetwork", "Network error / Connection failed"),
+        label: t("apiGatewayErrorNetwork", "Network error / Connection failed"),
+        title: t("apiGatewayErrorNetwork", "Network error / Connection failed"),
       };
     default:
       if (status >= 400 && status < 500) {
         return {
           label: `HTTP ${status}`,
-          title: `HTTP ${status}: ${t("apiFusionErrorUnknown", "Client error")}`,
+          title: `HTTP ${status}: ${t("apiGatewayErrorUnknown", "Client error")}`,
         };
       }
       if (status >= 500) {
         return {
           label: `HTTP ${status}`,
-          title: `HTTP ${status}: ${t("apiFusionErrorUnknown", "Server error")}`,
+          title: `HTTP ${status}: ${t("apiGatewayErrorUnknown", "Server error")}`,
         };
       }
       return {
-        label: t("apiFusionErrorUnknown", "Request failed"),
-        title: t("apiFusionErrorUnknown", "Request failed"),
+        label: t("apiGatewayErrorUnknown", "Request failed"),
+        title: t("apiGatewayErrorUnknown", "Request failed"),
       };
   }
 }
@@ -227,7 +227,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
       if (options?.refresh) setRefreshing(true);
       else setLoading(true);
       try {
-        const next = await apiFusionRequestLogs({
+        const next = await apiGatewayRequestLogs({
           days: usageRangeToDays(range),
           groupBy,
           status,
@@ -319,15 +319,15 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
     if (activeModel) {
       parts.push(activeModel);
     }
-    return parts.length > 0 ? parts.join(" · ") : t("apiFusionFilter", "Filter");
+    return parts.length > 0 ? parts.join(" · ") : t("apiGatewayFilter", "Filter");
   })();
 
   return (
-    <div className="rounded-2xl border bg-card p-5" data-testid="api-fusion-usage-logs">
+    <div className="rounded-2xl border bg-card p-5" data-testid="api-gateway-usage-logs">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-0.5">
           <h2 className="text-base font-semibold text-foreground">
-            {t("apiFusionLogsTab", "Request logs")}
+            {t("apiGatewayLogsTab", "Request logs")}
           </h2>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -341,8 +341,8 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
               setRange(nextRange);
               setPage(1);
             }}
-            testId="api-fusion-logs-range"
-            ariaLabel={t("apiFusionRangeToday", "Time range")}
+            testId="api-gateway-logs-range"
+            ariaLabel={t("apiGatewayRangeToday", "Time range")}
           />
           <SelectDropdown
             value={groupBy}
@@ -354,13 +354,13 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
               setGroupBy(nextGroup);
               setPage(1);
             }}
-            testId="api-fusion-logs-group"
-            ariaLabel={t("apiFusionGroupNone", "Grouping")}
+            testId="api-gateway-logs-group"
+            ariaLabel={t("apiGatewayGroupNone", "Grouping")}
           />
           <div className="relative inline-block text-left" ref={filterRef}>
             <button
               type="button"
-              data-testid="api-fusion-logs-filter-trigger"
+              data-testid="api-gateway-logs-filter-trigger"
               onClick={openFilter}
               aria-expanded={filterOpen}
               className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition hover:bg-muted ${
@@ -380,12 +380,12 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
 
             {filterOpen ? (
               <div
-                data-testid="api-fusion-logs-filter-panel"
+                data-testid="api-gateway-logs-filter-panel"
                 className="absolute right-0 top-full z-30 mt-1.5 w-80 space-y-3 rounded-xl border bg-card p-4 shadow-lg animate-in fade-in-0 zoom-in-95"
               >
                 <div className="space-y-1.5">
                   <div className="text-xs font-semibold text-muted-foreground">
-                    {t("apiFusionFilterStatus", "Status")}
+                    {t("apiGatewayFilterStatus", "Status")}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     <button
@@ -398,7 +398,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                           : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
                       }`}
                     >
-                      {t("apiFusionFilterAnyStatus", "Any status")}
+                      {t("apiGatewayFilterAnyStatus", "Any status")}
                     </button>
                     {STATUS_OPTIONS.map((option) => {
                       const style = statusBadgeStyle(option);
@@ -434,7 +434,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
 
                 <div className="space-y-1.5">
                   <div className="text-xs font-semibold text-muted-foreground">
-                    {t("apiFusionFilterModel", "Model")}
+                    {t("apiGatewayFilterModel", "Model")}
                   </div>
                   <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
                     <button
@@ -447,7 +447,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                           : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
                       }`}
                     >
-                      {t("apiFusionFilterAnyModel", "Any model")}
+                      {t("apiGatewayFilterAnyModel", "Any model")}
                     </button>
                     {modelOptions.map((option) => (
                       <button
@@ -474,7 +474,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                       onClick={clearFilters}
                       className="rounded-md border bg-background px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
                     >
-                      {t("apiFusionFilterClear", "Clear")}
+                      {t("apiGatewayFilterClear", "Clear")}
                     </button>
                   ) : null}
                   <button
@@ -482,7 +482,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                     onClick={applyFilters}
                     className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90"
                   >
-                    {t("apiFusionFilterApply", "Apply")}
+                    {t("apiGatewayFilterApply", "Apply")}
                   </button>
                 </div>
               </div>
@@ -492,8 +492,8 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
             type="button"
             onClick={() => void load({ refresh: true })}
             disabled={refreshing}
-            aria-label={t("apiFusionRefresh", "Refresh")}
-            title={t("apiFusionRefresh", "Refresh")}
+            aria-label={t("apiGatewayRefresh", "Refresh")}
+            title={t("apiGatewayRefresh", "Refresh")}
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border bg-background transition hover:bg-muted disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
@@ -503,7 +503,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
 
       {refreshing ? (
         <div role="status" className="mt-3 text-xs text-muted-foreground">
-          {t("apiFusionRefreshing", "Refreshing...")}
+          {t("apiGatewayRefreshing", "Refreshing...")}
         </div>
       ) : null}
 
@@ -525,27 +525,27 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
       ) : isGrouped ? (
         groups.length === 0 ? (
           <p className="mt-4 rounded-xl border border-dashed bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
-            {t("apiFusionLogsEmpty", "No matching requests.")}
+            {t("apiGatewayLogsEmpty", "No matching requests.")}
           </p>
         ) : (
           <div className="mt-4 overflow-x-auto rounded-lg border">
             <table
               className="w-full text-left text-xs"
-              data-testid="api-fusion-logs-grouped"
+              data-testid="api-gateway-logs-grouped"
             >
               <thead className="bg-muted/50 text-muted-foreground">
                 <tr>
                   <th className="px-3 py-2 font-medium">
-                    {t("apiFusionLogsGroupColumn", "Group")}
+                    {t("apiGatewayLogsGroupColumn", "Group")}
                   </th>
                   <th className="px-3 py-2 text-right font-medium">
-                    {t("apiFusionLogsRequestsColumn", "Requests")}
+                    {t("apiGatewayLogsRequestsColumn", "Requests")}
                   </th>
                   <th className="px-3 py-2 text-right font-medium">
-                    {t("apiFusionLogsErrorsColumn", "Errors")}
+                    {t("apiGatewayLogsErrorsColumn", "Errors")}
                   </th>
                   <th className="px-3 py-2 text-right font-medium">
-                    {t("apiFusionLogsLastRequestColumn", "Last request")}
+                    {t("apiGatewayLogsLastRequestColumn", "Last request")}
                   </th>
                 </tr>
               </thead>
@@ -554,7 +554,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                   <tr
                     key={group.group}
                     className="border-t"
-                    data-testid="api-fusion-logs-group-row"
+                    data-testid="api-gateway-logs-group-row"
                   >
                     <td className="px-3 py-2 font-medium">
                       {formatUsageGroupLabel(groupBy, group.group)}
@@ -576,31 +576,31 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
         )
       ) : records.length === 0 ? (
         <p className="mt-4 rounded-xl border border-dashed bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
-          {t("apiFusionLogsEmpty", "No matching requests.")}
+          {t("apiGatewayLogsEmpty", "No matching requests.")}
         </p>
       ) : (
         <div className="mt-4 space-y-2">
           <div className="overflow-x-auto rounded-lg border">
             <table
               className="w-full text-left text-xs"
-              data-testid="api-fusion-logs-ungrouped"
+              data-testid="api-gateway-logs-ungrouped"
             >
               <thead className="bg-muted/50 text-muted-foreground">
                 <tr>
                   <th className="px-3 py-2 font-medium">
-                    {t("apiFusionLogsTimeColumn", "Time")}
+                    {t("apiGatewayLogsTimeColumn", "Time")}
                   </th>
                   <th className="px-3 py-2 font-medium">
-                    {t("apiFusionLogsStatusColumn", "Status")}
+                    {t("apiGatewayLogsStatusColumn", "Status")}
                   </th>
                   <th className="px-3 py-2 font-medium">
-                    {t("apiFusionLogsModelColumn", "Model")}
+                    {t("apiGatewayLogsModelColumn", "Model")}
                   </th>
                   <th className="px-3 py-2 text-right font-medium">
-                    {t("apiFusionLogsTokensColumn", "Tokens")}
+                    {t("apiGatewayLogsTokensColumn", "Tokens")}
                   </th>
                   <th className="px-3 py-2 text-right font-medium">
-                    {t("apiFusionLogsCostColumn", "Cost ($)")}
+                    {t("apiGatewayLogsCostColumn", "Cost ($)")}
                   </th>
                 </tr>
               </thead>
@@ -609,7 +609,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                   <tr
                     key={`${item.timestamp_ms}-${item.local_model}-${index}`}
                     className="border-t"
-                    data-testid="api-fusion-logs-row"
+                    data-testid="api-gateway-logs-row"
                   >
                     <td className="px-3 py-2 font-mono">
                       {formatUtc8DateTime(item.timestamp_ms) ?? "—"}
@@ -623,7 +623,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                           <div className="flex flex-col gap-0.5">
                             <span
                               className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium w-fit ${style.badge}`}
-                              data-testid="api-fusion-logs-status-badge"
+                              data-testid="api-gateway-logs-status-badge"
                               title={reason ? reason.title : undefined}
                             >
                               <span
@@ -645,7 +645,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                               <div
                                 className="text-[10px] text-muted-foreground truncate max-w-[200px]"
                                 title={reason.title}
-                                data-testid="api-fusion-logs-status-reason"
+                                data-testid="api-gateway-logs-status-reason"
                               >
                                 {reason.label}
                               </div>
@@ -661,7 +661,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                           {item.provider_name ? (
                             <span
                               className="font-medium"
-                              data-testid="api-fusion-logs-provider-name"
+                              data-testid="api-gateway-logs-provider-name"
                             >
                               {item.provider_name}
                             </span>
@@ -672,7 +672,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                           {item.upstream_model ? (
                             <span
                               title={item.upstream_model}
-                              data-testid="api-fusion-logs-upstream-model"
+                              data-testid="api-gateway-logs-upstream-model"
                             >
                               {item.upstream_model}
                             </span>
@@ -680,25 +680,25 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                         </div>
                       ) : null}
                     </td>
-                    <td className="px-3 py-2 text-right" data-testid="api-fusion-logs-tokens-cell">
+                    <td className="px-3 py-2 text-right" data-testid="api-gateway-logs-tokens-cell">
                       {(() => {
                         const cacheTokens = item.cache_read_tokens + item.cache_write_tokens;
                         const tooltipClass = index === 0 ? "top-full mt-1.5" : "bottom-full mb-1.5";
-                        const nativeTooltip = `${t("apiFusionLogsTokensInput", "Input")}: ${new Intl.NumberFormat().format(item.input_tokens)}\n${t("apiFusionLogsTokensOutput", "Output")}: ${new Intl.NumberFormat().format(item.output_tokens)}\n${t("apiFusionLogsTokensCache", "Cache")}: ${new Intl.NumberFormat().format(cacheTokens)}\n${t("apiFusionLogsTokensTotal", "Total")}: ${new Intl.NumberFormat().format(item.total_tokens)}`;
+                        const nativeTooltip = `${t("apiGatewayLogsTokensInput", "Input")}: ${new Intl.NumberFormat().format(item.input_tokens)}\n${t("apiGatewayLogsTokensOutput", "Output")}: ${new Intl.NumberFormat().format(item.output_tokens)}\n${t("apiGatewayLogsTokensCache", "Cache")}: ${new Intl.NumberFormat().format(cacheTokens)}\n${t("apiGatewayLogsTokensTotal", "Total")}: ${new Intl.NumberFormat().format(item.total_tokens)}`;
                         return (
                           <div className="inline-flex items-center justify-end gap-1.5 font-mono text-xs">
                             <div
                               className="flex items-center gap-1.5 text-[11px] text-muted-foreground whitespace-nowrap"
-                              data-testid="api-fusion-logs-tokens-breakdown"
+                              data-testid="api-gateway-logs-tokens-breakdown"
                             >
                               <span
                                 className="inline-flex items-center gap-0.5"
-                                title={`${t("apiFusionLogsTokensInput", "Input")}: ${new Intl.NumberFormat().format(item.input_tokens)}`}
+                                title={`${t("apiGatewayLogsTokensInput", "Input")}: ${new Intl.NumberFormat().format(item.input_tokens)}`}
                               >
                                 <ArrowDown
                                   className="h-3 w-3 text-muted-foreground/80 shrink-0"
-                                  aria-label={t("apiFusionLogsTokensInput", "Input")}
-                                  data-testid="api-fusion-logs-tokens-input-icon"
+                                  aria-label={t("apiGatewayLogsTokensInput", "Input")}
+                                  data-testid="api-gateway-logs-tokens-input-icon"
                                 />
                                 <span className="text-foreground font-medium">
                                   {new Intl.NumberFormat().format(item.input_tokens)}
@@ -707,12 +707,12 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                               <span className="text-muted-foreground/40 font-sans">·</span>
                               <span
                                 className="inline-flex items-center gap-0.5"
-                                title={`${t("apiFusionLogsTokensOutput", "Output")}: ${new Intl.NumberFormat().format(item.output_tokens)}`}
+                                title={`${t("apiGatewayLogsTokensOutput", "Output")}: ${new Intl.NumberFormat().format(item.output_tokens)}`}
                               >
                                 <ArrowUp
                                   className="h-3 w-3 text-muted-foreground/80 shrink-0"
-                                  aria-label={t("apiFusionLogsTokensOutput", "Output")}
-                                  data-testid="api-fusion-logs-tokens-output-icon"
+                                  aria-label={t("apiGatewayLogsTokensOutput", "Output")}
+                                  data-testid="api-gateway-logs-tokens-output-icon"
                                 />
                                 <span className="text-foreground font-medium">
                                   {new Intl.NumberFormat().format(item.output_tokens)}
@@ -721,12 +721,12 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                               <span className="text-muted-foreground/40 font-sans">·</span>
                               <span
                                 className="inline-flex items-center gap-0.5"
-                                title={`${t("apiFusionLogsTokensCache", "Cache")}: ${new Intl.NumberFormat().format(cacheTokens)}`}
+                                title={`${t("apiGatewayLogsTokensCache", "Cache")}: ${new Intl.NumberFormat().format(cacheTokens)}`}
                               >
                                 <Database
                                   className="h-3 w-3 text-muted-foreground/80 shrink-0"
-                                  aria-label={t("apiFusionLogsTokensCache", "Cache")}
-                                  data-testid="api-fusion-logs-tokens-cache-icon"
+                                  aria-label={t("apiGatewayLogsTokensCache", "Cache")}
+                                  data-testid="api-gateway-logs-tokens-cache-icon"
                                 />
                                 <span className="text-foreground font-medium">
                                   {new Intl.NumberFormat().format(cacheTokens)}
@@ -738,25 +738,25 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                               <button
                                 type="button"
                                 className="text-muted-foreground/60 hover:text-foreground transition-colors p-0.5 rounded focus:outline-none"
-                                aria-label={t("apiFusionLogsTokensDetail", "Tokens breakdown")}
+                                aria-label={t("apiGatewayLogsTokensDetail", "Tokens breakdown")}
                                 title={nativeTooltip}
-                                data-testid="api-fusion-logs-tokens-info-btn"
+                                data-testid="api-gateway-logs-tokens-info-btn"
                               >
                                 <Info className="h-3.5 w-3.5" />
                               </button>
                               <div
                                 role="tooltip"
                                 className={`pointer-events-none absolute right-0 ${tooltipClass} hidden group-hover:flex group-focus-within:flex flex-col gap-1 rounded-md border bg-popover p-2 text-left text-xs text-popover-foreground shadow-lg z-30 min-w-[170px]`}
-                                data-testid="api-fusion-logs-tokens-tooltip"
+                                data-testid="api-gateway-logs-tokens-tooltip"
                               >
                                 <div className="font-semibold text-[11px] border-b pb-1 text-muted-foreground">
-                                  {t("apiFusionLogsTokensDetail", "Tokens breakdown")}
+                                  {t("apiGatewayLogsTokensDetail", "Tokens breakdown")}
                                 </div>
                                 <div className="space-y-0.5 pt-0.5 text-[11px]">
                                   <div className="flex items-center justify-between gap-3">
                                     <span className="inline-flex items-center gap-1 text-muted-foreground">
                                       <ArrowDown className="h-3 w-3 shrink-0" />
-                                      {t("apiFusionLogsTokensInput", "Input")}:
+                                      {t("apiGatewayLogsTokensInput", "Input")}:
                                     </span>
                                     <span className="font-mono font-medium">
                                       {new Intl.NumberFormat().format(item.input_tokens)}
@@ -765,7 +765,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                                   <div className="flex items-center justify-between gap-3">
                                     <span className="inline-flex items-center gap-1 text-muted-foreground">
                                       <ArrowUp className="h-3 w-3 shrink-0" />
-                                      {t("apiFusionLogsTokensOutput", "Output")}:
+                                      {t("apiGatewayLogsTokensOutput", "Output")}:
                                     </span>
                                     <span className="font-mono font-medium">
                                       {new Intl.NumberFormat().format(item.output_tokens)}
@@ -774,7 +774,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                                   <div className="flex items-center justify-between gap-3">
                                     <span className="inline-flex items-center gap-1 text-muted-foreground">
                                       <Database className="h-3 w-3 shrink-0" />
-                                      {t("apiFusionLogsTokensCache", "Cache")}:
+                                      {t("apiGatewayLogsTokensCache", "Cache")}:
                                     </span>
                                     <span className="font-mono font-medium">
                                       {new Intl.NumberFormat().format(cacheTokens)}
@@ -784,7 +784,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                                     <div className="text-[10px] text-muted-foreground/70 pl-2 space-y-0.5">
                                       <div className="flex items-center justify-between gap-3">
                                         <span>
-                                          {t("apiFusionLogsTokensCacheRead", "Cache read")}:
+                                          {t("apiGatewayLogsTokensCacheRead", "Cache read")}:
                                         </span>
                                         <span className="font-mono">
                                           {new Intl.NumberFormat().format(item.cache_read_tokens)}
@@ -792,7 +792,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                                       </div>
                                       <div className="flex items-center justify-between gap-3">
                                         <span>
-                                          {t("apiFusionLogsTokensCacheWrite", "Cache write")}:
+                                          {t("apiGatewayLogsTokensCacheWrite", "Cache write")}:
                                         </span>
                                         <span className="font-mono">
                                           {new Intl.NumberFormat().format(item.cache_write_tokens)}
@@ -803,7 +803,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                                   <div className="border-t my-1 border-border"></div>
                                   <div className="flex items-center justify-between gap-3 font-semibold">
                                     <span>
-                                      {t("apiFusionLogsTokensTotal", "Total")}:
+                                      {t("apiGatewayLogsTokensTotal", "Total")}:
                                     </span>
                                     <span className="font-mono">
                                       {new Intl.NumberFormat().format(item.total_tokens)}
@@ -832,11 +832,11 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
               disabled={page <= 1}
               className="rounded-md border bg-background px-2.5 py-1 font-medium transition hover:bg-muted disabled:opacity-50"
             >
-              {t("apiFusionLogsPagePrev", "Previous")}
+              {t("apiGatewayLogsPagePrev", "Previous")}
             </button>
             <span>
               {t(
-                "apiFusionLogsPageSummary",
+                "apiGatewayLogsPageSummary",
                 "Page {{page}} / {{total}}",
                 { page: pageData.page, total: Math.max(1, totalPages) },
               )}
@@ -847,7 +847,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
               disabled={totalPages < 1 || page >= totalPages}
               className="rounded-md border bg-background px-2.5 py-1 font-medium transition hover:bg-muted disabled:opacity-50"
             >
-              {t("apiFusionLogsPageNext", "Next")}
+              {t("apiGatewayLogsPageNext", "Next")}
             </button>
           </div>
         </div>

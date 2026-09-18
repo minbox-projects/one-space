@@ -24,8 +24,8 @@ vi.mock("./SshTunnels", () => ({
 vi.mock("./ProtocolRouterTool", () => ({
   ProtocolRouterTool: () => <div>Protocol Router detail</div>,
 }));
-vi.mock("./ApiFusion", () => ({
-  ApiFusion: () => <div>API Gateway detail</div>,
+vi.mock("./ApiGateway", () => ({
+  ApiGateway: () => <div>API Gateway detail</div>,
 }));
 vi.mock("./RandomPasswordTool", () => ({
   RandomPasswordTool: () => <div>Random Password detail</div>,
@@ -334,7 +334,7 @@ describe("MoreToolsHub", () => {
     );
 
     expect(
-      screen.queryByTestId("more-tool-card-api-fusion"),
+      screen.queryByTestId("more-tool-card-api-gateway"),
     ).not.toBeInTheDocument();
   });
 

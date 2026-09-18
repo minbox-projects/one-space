@@ -64,9 +64,9 @@ import {
   type ProtocolRouterStatus,
 } from "@/lib/protocolRouter";
 import {
-  apiFusionUsageRetentionGet,
-  apiFusionUsageRetentionSave,
-} from "@/lib/apiFusion";
+  apiGatewayUsageRetentionGet,
+  apiGatewayUsageRetentionSave,
+} from "@/lib/apiGateway";
 
 interface SyncPolicy {
   providers: boolean;
@@ -936,7 +936,7 @@ export function SettingsView({
 
   const loadAiGateway = async () => {
     try {
-      const days = await apiFusionUsageRetentionGet();
+      const days = await apiGatewayUsageRetentionGet();
       const normalized = Number.isFinite(days) ? Number(days) : 90;
       setSavedUsageRetentionDays(normalized);
       setUsageRetentionInput(String(normalized));
@@ -1812,7 +1812,7 @@ export function SettingsView({
           });
           return;
         }
-        const saved = await apiFusionUsageRetentionSave(parsed);
+        const saved = await apiGatewayUsageRetentionSave(parsed);
         const normalized = Number.isFinite(saved) ? Number(saved) : parsed;
         setSavedUsageRetentionDays(normalized);
         setUsageRetentionInput(String(normalized));

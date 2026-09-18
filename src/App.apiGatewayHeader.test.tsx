@@ -5,7 +5,7 @@ import App from "@/App";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
-import type { FusionStatus } from "@/lib/apiFusion";
+import type { GatewayStatus } from "@/lib/apiGateway";
 
 // 轻量 mock 核心重型组件，专注于测试 App 顶部栏与导航联动
 vi.mock("@/components/Launcher", () => ({
@@ -20,8 +20,8 @@ vi.mock("@/components/AiSessions", () => ({
 vi.mock("@/components/Workspaces", () => ({
   Workspaces: () => <div data-testid="mock-workspaces" />,
 }));
-vi.mock("@/components/ApiFusion", () => ({
-  ApiFusion: () => <div data-testid="mock-api-fusion-page">API Fusion Content</div>,
+vi.mock("@/components/ApiGateway", () => ({
+  ApiGateway: () => <div data-testid="mock-api-gateway-page">API Gateway Content</div>,
 }));
 
 describe("App 顶部 API 网关启动状态图标", () => {
@@ -56,8 +56,8 @@ describe("App 顶部 API 网关启动状态图标", () => {
     }
   }
 
-  function mockApiFusionStatus(status: Partial<FusionStatus>) {
-    const fullStatus: FusionStatus = {
+  function mockApiGatewayStatus(status: Partial<GatewayStatus>) {
+    const fullStatus: GatewayStatus = {
       running: false,
       enabled: false,
       port: 17688,
@@ -70,7 +70,7 @@ describe("App 顶部 API 网关启动状态图标", () => {
     };
 
     invokeMock.mockImplementation(async (command: string) => {
-      if (command === "api_fusion_status") {
+      if (command === "api_gateway_status") {
         return fullStatus;
       }
       if (command === "protocol_router_status") {
@@ -113,7 +113,7 @@ describe("App 顶部 API 网关启动状态图标", () => {
   }
 
   it("当 API 网关未启动（running: false）时，顶部栏不显示 API 网关图标", async () => {
-    mockApiFusionStatus({ running: false });
+    mockApiGatewayStatus({ running: false });
 
     renderWithProviders(
       <ThemeProvider>
@@ -123,14 +123,14 @@ describe("App 顶部 API 网关启动状态图标", () => {
 
     // 等待状态拉取完成
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_status");
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_status");
     });
 
-    expect(screen.queryByTestId("header-api-fusion-status")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("header-api-gateway-status")).not.toBeInTheDocument();
   });
 
   it("当 API 网关已启动（running: true）时，顶部栏显示绿色已启动图标且包含端口信息", async () => {
-    mockApiFusionStatus({ running: true, port: 17688 });
+    mockApiGatewayStatus({ running: true, port: 17688 });
 
     renderWithProviders(
       <ThemeProvider>
@@ -138,7 +138,7 @@ describe("App 顶部 API 网关启动状态图标", () => {
       </ThemeProvider>,
     );
 
-    const gatewayIconBtn = await screen.findByTestId("header-api-fusion-status");
+    const gatewayIconBtn = await screen.findByTestId("header-api-gateway-status");
     expect(gatewayIconBtn).toBeInTheDocument();
     expect(gatewayIconBtn).toHaveClass("text-emerald-600");
     expect(gatewayIconBtn.getAttribute("title")).toContain("17688");
@@ -147,7 +147,7 @@ describe("App 顶部 API 网关启动状态图标", () => {
 
   it("点击顶部 API 网关状态图标可跳转到 API 网关页面", async () => {
     const user = userEvent.setup();
-    mockApiFusionStatus({ running: true, port: 17688 });
+    mockApiGatewayStatus({ running: true, port: 17688 });
 
     renderWithProviders(
       <ThemeProvider>
@@ -155,18 +155,18 @@ describe("App 顶部 API 网关启动状态图标", () => {
       </ThemeProvider>,
     );
 
-    const gatewayIconBtn = await screen.findByTestId("header-api-fusion-status");
+    const gatewayIconBtn = await screen.findByTestId("header-api-gateway-status");
     await user.click(gatewayIconBtn);
 
-    // 页面跳转至 API Fusion 页面
-    expect(await screen.findByTestId("mock-api-fusion-page")).toBeInTheDocument();
+    // 页面跳转至 API Gateway 页面
+    expect(await screen.findByTestId("mock-api-gateway-page")).toBeInTheDocument();
   });
 
-  it("当收到 api-fusion-status-update 事件时能够刷新状态并展示图标", async () => {
+  it("当收到 api-gateway-status-update 事件时能够刷新状态并展示图标", async () => {
     let currentRunning = false;
 
     invokeMock.mockImplementation(async (command: string) => {
-      if (command === "api_fusion_status") {
+      if (command === "api_gateway_status") {
         return {
           running: currentRunning,
           enabled: true,
@@ -191,16 +191,16 @@ describe("App 顶部 API 网关启动状态图标", () => {
     );
 
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_status");
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_status");
     });
-    expect(screen.queryByTestId("header-api-fusion-status")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("header-api-gateway-status")).not.toBeInTheDocument();
 
     // 模拟网关启动并广播事件
     currentRunning = true;
-    triggerEvent("api-fusion-status-update");
+    triggerEvent("api-gateway-status-update");
 
     await waitFor(() => {
-      expect(screen.getByTestId("header-api-fusion-status")).toBeInTheDocument();
+      expect(screen.getByTestId("header-api-gateway-status")).toBeInTheDocument();
     });
   });
 });
