@@ -32,12 +32,14 @@ pub(in crate::api_fusion) enum ModelResolution {
 /// Resolve the upstream model for a provider under the inbound `protocol`.
 ///
 /// Rows with an empty `upstream_model` are discarded and count as no match.
-/// A matching row is served with its own remote model only when the row's
-/// effective protocol (its own declaration, else the provider protocol) equals
-/// `protocol`; when matching rows exist but none matches, the request is a
-/// `ProtocolMismatch` and the default model is not used as a fallback. The
-/// default model serves an unmapped model only when the provider protocol
-/// itself matches.
+/// Disabled rows never serve and never cause a protocol mismatch, but a request
+/// that matches only disabled rows is a `NoMatch` and cannot fall back to the
+/// default model. An enabled matching row is served with its own remote model
+/// only when the row's effective protocol (its own declaration, else the
+/// provider protocol) equals `protocol`; when enabled matching rows exist but
+/// none matches, the request is a `ProtocolMismatch` and the default model is
+/// not used as a fallback. The default model serves an unmapped model only when
+/// the provider protocol itself matches.
 pub(in crate::api_fusion) fn resolve_model_for_protocol(
     provider: &FusionUpstreamProvider,
     requested: Option<&str>,
@@ -45,10 +47,18 @@ pub(in crate::api_fusion) fn resolve_model_for_protocol(
 ) -> ModelResolution {
     let requested = requested.map(str::trim).filter(|value| !value.is_empty());
     let mut configured: Option<UpstreamProtocol> = None;
+    let mut disabled_match = false;
     if let Some(requested) = requested {
         for mapping in provider.mappings.iter().filter(|mapping| {
             mapping.local_model.trim() == requested && !mapping.upstream_model.trim().is_empty()
         }) {
+            // A disabled row never serves and never produces a protocol
+            // mismatch; it only records that the requested model is mapped but
+            // switched off, which later blocks the default-model fallback.
+            if !mapping.enabled {
+                disabled_match = true;
+                continue;
+            }
             let effective = mapping.effective_protocol(provider.protocol);
             if effective == protocol {
                 return ModelResolution::Serve(mapping.upstream_model.trim().to_string());
@@ -58,6 +68,9 @@ pub(in crate::api_fusion) fn resolve_model_for_protocol(
     }
     if let Some(configured) = configured {
         return ModelResolution::ProtocolMismatch(configured);
+    }
+    if disabled_match {
+        return ModelResolution::NoMatch;
     }
     provider
         .default_model

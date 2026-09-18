@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
 import {
   type FusionModelMapping,
   type FusionUpstreamProtocol,
@@ -87,6 +88,7 @@ export function ProviderDetailDialog({
       protocol,
       mappings: mappings.map((mapping) => ({
         ...mapping,
+        enabled: mapping.enabled !== false,
         display_name: mapping.display_name?.trim() ? mapping.display_name.trim() : undefined,
         protocol: mapping.protocol ? mapping.protocol : undefined,
       })),
@@ -231,6 +233,7 @@ export function ProviderDetailDialog({
                       upstream_model: "",
                       display_name: "",
                       protocol: null,
+                      enabled: true,
                     },
                   ])
                 }
@@ -249,7 +252,21 @@ export function ProviderDetailDialog({
               <div className="overflow-x-auto">
                 <ul className="space-y-2">
                 {mappings.map((mapping, index) => (
-                  <li key={index} className="flex items-center gap-2">
+                  <li
+                    key={index}
+                    data-disabled={mapping.enabled === false ? "true" : undefined}
+                    className={`flex items-center gap-2 ${mapping.enabled === false ? "opacity-60" : ""}`}
+                  >
+                    <Switch
+                      aria-label={t("apiFusionToggleMappingAria", {
+                        index: index + 1,
+                        defaultValue: `Enable mapping ${index + 1}`,
+                      })}
+                      checked={mapping.enabled !== false}
+                      onCheckedChange={(checked) =>
+                        updateMapping(index, { enabled: checked })
+                      }
+                    />
                     <input
                       type="text"
                       value={mapping.local_model}

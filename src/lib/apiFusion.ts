@@ -16,6 +16,12 @@ export interface FusionModelMapping {
   display_name?: string | null;
   /** `null`/absent means this row inherits the provider protocol. */
   protocol?: FusionUpstreamProtocol | null;
+  /**
+   * Whether this mapping participates in routing. Absent/`undefined` is treated
+   * as enabled for backwards compatibility with configs written before the flag
+   * existed; only an explicit `false` disables the row.
+   */
+  enabled?: boolean;
 }
 
 /** Upstream endpoint family a provider exposes; request bodies are not translated. */
@@ -127,7 +133,9 @@ export interface FusionMappingPreview {
  * Resolve the upstream model and target endpoint for a requested local model.
  *
  * An exact, non-blank mapping match wins and may override the protocol per row;
- * otherwise the provider default model is used with the provider protocol.
+ * disabled rows are skipped. When every matching row is disabled the request is
+ * not served (no default-model fallback); otherwise the provider default model
+ * is used with the provider protocol.
  * `null` means the provider cannot serve the requested model.
  */
 export function resolveMappingPreview(
@@ -138,15 +146,19 @@ export function resolveMappingPreview(
   },
   localModel: string,
 ): FusionMappingPreview | null {
-  const mapping = provider.mappings.find(
+  const candidates = provider.mappings.filter(
     (entry) =>
       entry.local_model === localModel && entry.upstream_model.trim() !== "",
   );
-  if (mapping) {
-    return {
-      upstreamModel: mapping.upstream_model,
-      endpoint: mapping.protocol ?? provider.protocol ?? "chat_completions",
-    };
+  if (candidates.length > 0) {
+    const mapping = candidates.find((entry) => entry.enabled !== false);
+    if (mapping) {
+      return {
+        upstreamModel: mapping.upstream_model,
+        endpoint: mapping.protocol ?? provider.protocol ?? "chat_completions",
+      };
+    }
+    return null;
   }
   if (provider.default_model) {
     return {
@@ -176,7 +188,8 @@ export interface AggregatedModel {
  * Aggregate the local models served by enabled, non-auto-disabled providers.
  *
  * A provider contributes its default model (as `isDefault`) plus every non-blank
- * local mapping. Results are grouped by local model and sorted deterministically.
+ * enabled local mapping. Results are grouped by local model and sorted
+ * deterministically.
  */
 export function aggregateModels(
   providers: FusionUpstreamProvider[],
@@ -200,6 +213,7 @@ export function aggregateModels(
     }
 
     provider.mappings.forEach((mapping) => {
+      if (mapping.enabled === false) return;
       const localModel = mapping.local_model.trim();
       if (!localModel) return;
       const upstreamModel = mapping.upstream_model.trim();
