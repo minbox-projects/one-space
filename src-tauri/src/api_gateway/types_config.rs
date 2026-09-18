@@ -51,6 +51,10 @@ pub struct ModelMapping {
     pub protocol: Option<UpstreamProtocol>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Ordered reasoning-effort levels this mapping advertises, populated from
+    /// the bound template at creation and merged on later template syncs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_efforts: Vec<String>,
 }
 
 impl ModelMapping {
@@ -116,6 +120,13 @@ pub struct GatewayUpstreamProvider {
     pub consecutive_failures: u32,
     #[serde(default)]
     pub last_error_at: Option<u64>,
+    /// Template this provider was created from; `None` for manual providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    /// Upstream model names the user explicitly removed so a template sync
+    /// must not resurrect them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignored_models: Vec<String>,
 }
 
 impl Default for GatewayUpstreamProvider {
@@ -134,8 +145,69 @@ impl Default for GatewayUpstreamProvider {
             disabled_at: None,
             consecutive_failures: 0,
             last_error_at: None,
+            template_id: None,
+            ignored_models: Vec::new(),
         }
     }
+}
+
+/// One model entry of a provider template.
+///
+/// `protocol` is optional and inherits the template protocol when absent.
+/// `display_name` is the official model name shown by the gateway; prices are
+/// US dollars per million tokens and `off_peaks` reuse the weekday-aware
+/// [`OffPeakPrice`] windows.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderTemplateModel {
+    pub upstream_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<UpstreamProtocol>,
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub cache_read: f64,
+    #[serde(default)]
+    pub cache_write: f64,
+    #[serde(default)]
+    pub output: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub off_peaks: Vec<OffPeakPrice>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_efforts: Vec<String>,
+}
+
+/// A built-in provider template shipped with the app.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderTemplate {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub protocol: UpstreamProtocol,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub snapshot_version: String,
+    #[serde(default)]
+    pub models: Vec<ProviderTemplateModel>,
+}
+
+/// Persisted template state: the last parsed snapshot plus sync metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderTemplateState {
+    pub template_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<ProviderTemplate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// A local API key accepted by the API Gateway listener.
@@ -327,6 +399,9 @@ pub struct GatewayConfig {
     /// User-maintained upstream-model price table; absent in older configs.
     #[serde(default)]
     pub model_prices: Vec<ModelPrice>,
+    /// Persisted provider-template state (last snapshot plus sync metadata).
+    #[serde(default)]
+    pub provider_templates: Vec<ProviderTemplateState>,
 }
 
 impl Default for GatewayConfig {
@@ -340,6 +415,7 @@ impl Default for GatewayConfig {
             terminal_syncs: Vec::new(),
             usage_retention_days: DEFAULT_USAGE_RETENTION_DAYS,
             model_prices: Vec::new(),
+            provider_templates: Vec::new(),
         }
     }
 }

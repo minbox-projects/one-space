@@ -20,6 +20,8 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+mod templates;
+
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "onespace-api-gateway-{}-{}",
@@ -86,6 +88,8 @@ fn provider(id: &str) -> GatewayUpstreamProvider {
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        template_id: None,
+        ignored_models: Vec::new(),
     }
 }
 
@@ -102,6 +106,7 @@ fn gateway_config_round_trips_and_encrypts_secrets_on_disk() {
             protocol: None,
             display_name: None,
             enabled: true,
+            reasoning_efforts: Vec::new(),
         }];
         config.providers.push(first);
         config.keys.push(GatewayKey {
@@ -269,6 +274,7 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         protocol: None,
         display_name: None,
         enabled: true,
+        reasoning_efforts: Vec::new(),
     }];
 
     // 1. A matching row whose effective protocol equals the inbound protocol is served,
@@ -306,6 +312,7 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         protocol: Some(UpstreamProtocol::Responses),
         display_name: None,
         enabled: true,
+        reasoning_efforts: Vec::new(),
     }];
     assert!(matches!(
         resolve_model_for_protocol(&per_model, Some("local-r"), UpstreamProtocol::Responses),
@@ -326,6 +333,7 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         protocol: Some(UpstreamProtocol::Responses),
         display_name: None,
         enabled: true,
+        reasoning_efforts: Vec::new(),
     }];
     assert!(matches!(
         resolve_model_for_protocol(&blank_row, Some("local-blank"), UpstreamProtocol::ChatCompletions),
@@ -699,6 +707,8 @@ fn upstream_provider(
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        template_id: None,
+        ignored_models: Vec::new(),
     }
 }
 
@@ -709,6 +719,7 @@ fn mapping(local_model: &str, upstream_model: &str, display_name: Option<&str>) 
         protocol: None,
         display_name: display_name.map(str::to_string),
         enabled: true,
+        reasoning_efforts: Vec::new(),
     }
 }
 
@@ -734,6 +745,7 @@ async fn forwards_chat_completions_path_body_and_provider_auth() {
         protocol: None,
         display_name: None,
         enabled: true,
+        reasoning_efforts: Vec::new(),
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -901,6 +913,7 @@ async fn provider_base_url_with_v1_does_not_double_the_version_segment() {
         protocol: None,
         display_name: None,
         enabled: true,
+        reasoning_efforts: Vec::new(),
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -1324,6 +1337,7 @@ async fn models_endpoint_returns_local_union_without_upstream() {
             protocol: None,
             display_name: None,
             enabled: true,
+            reasoning_efforts: Vec::new(),
         },
         ModelMapping {
             local_model: "local-b".to_string(),
@@ -1331,6 +1345,7 @@ async fn models_endpoint_returns_local_union_without_upstream() {
             protocol: None,
             display_name: None,
             enabled: true,
+            reasoning_efforts: Vec::new(),
         },
     ];
     config.providers.push(provider);
@@ -2857,6 +2872,7 @@ async fn no_candidate_model_returns_all_unavailable_without_upstream_request() {
         protocol: None,
         display_name: None,
         enabled: true,
+        reasoning_efforts: Vec::new(),
     }];
     config.providers.push(p);
     super::storage::write_config(&config).unwrap();
@@ -3548,6 +3564,7 @@ async fn end_to_end_path_prefix_and_body_equivalence_for_chat_and_responses() {
         protocol: None,
         display_name: None,
         enabled: true,
+        reasoning_efforts: Vec::new(),
     };
     let mut chat_provider =
         upstream_provider("p1", "Provider One", &base_url, "upstream-secret", None);
@@ -3634,6 +3651,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
             protocol: None,
             display_name: None,
             enabled: true,
+            reasoning_efforts: Vec::new(),
         },
         ModelMapping {
             local_model: "local-a".to_string(),
@@ -3641,6 +3659,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
             protocol: None,
             display_name: None,
             enabled: true,
+            reasoning_efforts: Vec::new(),
         },
     ];
     let mut disabled = upstream_provider("p2", "Provider Two", &upstream_url, "sk", None);
@@ -3651,6 +3670,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         protocol: None,
         display_name: None,
         enabled: true,
+        reasoning_efforts: Vec::new(),
     }];
     let mut auto_disabled = upstream_provider("p3", "Provider Three", &upstream_url, "sk", None);
     auto_disabled.auto_disabled = true;
@@ -3660,6 +3680,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         protocol: None,
         display_name: None,
         enabled: true,
+        reasoning_efforts: Vec::new(),
     }];
     let no_model = upstream_provider("p4", "Provider Four", &upstream_url, "sk", None);
     config
@@ -5189,6 +5210,7 @@ async fn default_model_fallback_requires_a_matching_provider_protocol() {
         protocol: None,
         display_name: None,
         enabled: true,
+        reasoning_efforts: Vec::new(),
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -5424,6 +5446,7 @@ async fn mapping_without_protocol_inherits_the_provider_protocol() {
         protocol: None,
         display_name: None,
         enabled: true,
+        reasoning_efforts: Vec::new(),
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -5775,6 +5798,7 @@ async fn cross_record_candidates_are_selected_by_each_records_protocol() {
         protocol: None,
         display_name: None,
         enabled: true,
+        reasoning_efforts: Vec::new(),
     }];
     let mut responses_record = upstream_provider(
         "responses-record",
@@ -5790,6 +5814,7 @@ async fn cross_record_candidates_are_selected_by_each_records_protocol() {
         protocol: None,
         display_name: None,
         enabled: true,
+        reasoning_efforts: Vec::new(),
     }];
     config.providers.push(chat_record);
     config.providers.push(responses_record);
