@@ -129,7 +129,7 @@ pub(in crate::api_fusion) fn build_gateway_provider(
 
         let mut models = Map::new();
         for gateway in gateways.iter().filter(|gateway| gateway_is_active(gateway)) {
-            for mapping in &gateway.mappings {
+            for mapping in gateway.mappings.iter().filter(|mapping| mapping.enabled) {
                 let Some(local_model) = non_empty(Some(mapping.local_model.as_str())) else {
                     continue;
                 };
@@ -154,6 +154,7 @@ pub(in crate::api_fusion) fn build_gateway_provider(
                 gateway
                     .mappings
                     .iter()
+                    .filter(|mapping| mapping.enabled)
                     .find_map(|mapping| non_empty(Some(mapping.local_model.as_str())))
             })
             .or_else(|| {

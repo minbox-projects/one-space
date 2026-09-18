@@ -1343,6 +1343,57 @@ async fn models_endpoint_returns_local_union_without_upstream() {
     drop(home);
 }
 
+/// AC-004 / REQ-004: `GET /v1/models` lists an enabled mapping and omits a
+/// disabled mapping of the same active provider, and never contacts upstream.
+#[tokio::test]
+async fn models_endpoint_excludes_disabled_mappings() {
+    let home = temp_home("models-excludes-disabled");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-be-called"}))).await;
+
+    let mut config = config_with_key(port);
+    let mut p = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    let mut disabled = mapping("local-b", "remote-b", None);
+    disabled.enabled = false;
+    p.mappings = vec![mapping("local-a", "remote-a", None), disabled];
+    config.providers.push(p);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_fusion(
+        port,
+        "GET",
+        "/v1/models",
+        &[("authorization", "Bearer local-key")],
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "unexpected response: {text}");
+    let body: Value = serde_json::from_str(&text).unwrap();
+    let ids: HashSet<String> = body["data"]
+        .as_array()
+        .unwrap_or_else(|| panic!("models payload must carry a data array: {text}"))
+        .iter()
+        .map(|item| item["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        ids.contains("local-a"),
+        "an enabled mapping must be listed: {text}"
+    );
+    assert!(
+        !ids.contains("local-b"),
+        "a disabled mapping must be excluded: {text}"
+    );
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "GET /v1/models must not contact upstream"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
 #[tokio::test]
 async fn auth_accepts_bearer_and_x_api_key_and_rejects_invalid_credentials() {
     let home = temp_home("auth");
@@ -2202,6 +2253,93 @@ fn build_gateway_provider_ignores_disabled_and_auto_disabled_gateways() {
     assert_eq!(
         codex["model"], "enabled-local",
         "a disabled gateway must not win the model selection: {codex}"
+    );
+}
+
+/// AC-005 / REQ-005: terminal sync only consumes enabled mappings. The opencode
+/// model map is exactly the enabled row and the codex `model` is that row's
+/// `local_model`, not the disabled row and not the provider `default_model`.
+#[test]
+fn build_gateway_provider_excludes_disabled_mappings() {
+    let mut gateway = upstream_provider(
+        "g1",
+        "Gateway A",
+        "https://upstream.example/v1",
+        "sk",
+        Some("d"),
+    );
+    let mut disabled = mapping("local-b", "remote-b", Some("B"));
+    disabled.enabled = false;
+    gateway.mappings = vec![mapping("local-a", "remote-a", Some("A")), disabled];
+
+    let opencode = build_gateway_provider(
+        "fus-oc",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[gateway.clone()],
+    )
+    .expect("opencode provider must build");
+    assert_eq!(
+        opencode["tool_config"]["models"],
+        json!({ "local-a": { "name": "A" } }),
+        "opencode must offer exactly the enabled mappings: {opencode}"
+    );
+
+    let codex = build_gateway_provider(
+        "fus-cx",
+        "codex",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[gateway],
+    )
+    .expect("codex provider must build");
+    assert_eq!(
+        codex["model"], "local-a",
+        "an enabled mapping must win over default_model and the disabled row: {codex}"
+    );
+}
+
+/// AC-005 / REQ-005: with no enabled mapping left, codex falls back to the
+/// provider `default_model` and opencode offers an empty model map.
+#[test]
+fn build_gateway_provider_codex_falls_back_to_default_when_all_mappings_disabled() {
+    let mut gateway = upstream_provider(
+        "g1",
+        "Gateway A",
+        "https://upstream.example/v1",
+        "sk",
+        Some("d"),
+    );
+    let mut disabled = mapping("local-b", "remote-b", Some("B"));
+    disabled.enabled = false;
+    gateway.mappings = vec![disabled];
+
+    let codex = build_gateway_provider(
+        "fus-cx",
+        "codex",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[gateway.clone()],
+    )
+    .expect("codex provider must build");
+    assert_eq!(
+        codex["model"], "d",
+        "codex must fall back to default_model only when no enabled mapping exists: {codex}"
+    );
+
+    let opencode = build_gateway_provider(
+        "fus-oc",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[gateway],
+    )
+    .expect("opencode provider must build");
+    assert_eq!(
+        opencode["tool_config"]["models"],
+        json!({}),
+        "an all-disabled gateway must offer no models: {opencode}"
     );
 }
 
