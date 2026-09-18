@@ -6,7 +6,7 @@ use super::selection::{
 };
 use super::storage::{local_base_url, read_config, write_config};
 use super::usage_log::{
-    compute_cost, match_price, normalize_retention_days, now_millis, parse_usage_from_response,
+    compute_cost_at_time, match_price_for_provider, normalize_retention_days, now_millis, parse_usage_from_response,
     SseUsageAccumulator, UsageLogRecord, UsageLogStore, UsageResult, UsageTokens,
 };
 use super::{now_ts, FusionConfig, FusionKey, FusionStatus, FusionUpstreamProvider, UpstreamProtocol};
@@ -1340,12 +1340,17 @@ fn record_usage_log(
     status: u16,
     capture: ForwardCapture,
 ) {
+    let timestamp_ms = now_millis();
     let tokens = capture.usage.unwrap_or_default();
-    let amount = match_price(&capture.upstream_model, &config.model_prices)
-        .map(|price| compute_cost(price, &tokens));
+    let amount = match_price_for_provider(
+        Some(&capture.provider_id),
+        &capture.upstream_model,
+        &config.model_prices,
+    )
+    .map(|price| compute_cost_at_time(price, &tokens, timestamp_ms));
     let duration_ms = started.elapsed().as_millis().max(1) as u64;
     let record = UsageLogRecord {
-        timestamp_ms: now_millis(),
+        timestamp_ms,
         local_model: local_model.unwrap_or_default().to_string(),
         upstream_model: capture.upstream_model,
         provider_id: capture.provider_id,

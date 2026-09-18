@@ -9,6 +9,7 @@ use super::{
     ModelPrice, MAX_USAGE_RETENTION_DAYS, MIN_USAGE_RETENTION_DAYS,
     DEFAULT_USAGE_RETENTION_DAYS,
 };
+use chrono::Timelike;
 use rusqlite::{params_from_iter, Connection, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -163,11 +164,94 @@ pub fn compute_cost(price: &ModelPrice, tokens: &UsageTokens) -> f64 {
         / 1_000_000.0
 }
 
-/// Exact (case-sensitive) lookup of the upstream model in the price table.
-pub fn match_price<'a>(upstream_model: &str, prices: &'a [ModelPrice]) -> Option<&'a ModelPrice> {
+/// Check whether a timestamp_ms falls into the off-peak time window [start_time, end_time) in UTC+8.
+///
+/// `start_time` and `end_time` are strings in "HH:mm" 24-hour format (e.g. "00:30", "08:30").
+/// - When start_time < end_time: [start_time, end_time) within the same UTC+8 day.
+/// - When start_time > end_time: overnight window, [start_time, 24:00) or [00:00, end_time).
+/// - When start_time == end_time: zero duration window (evaluates to false).
+pub fn is_off_peak(timestamp_ms: i64, start_time: &str, end_time: &str) -> bool {
+    let dt = match chrono::DateTime::from_timestamp_millis(timestamp_ms) {
+        Some(dt) => dt.with_timezone(&utc8_offset()),
+        None => return false,
+    };
+    let current_minute = dt.hour() * 60 + dt.minute();
+
+    let parse_minute = |s: &str| -> Option<u32> {
+        let mut parts = s.trim().split(':');
+        let h: u32 = parts.next()?.parse().ok()?;
+        let m: u32 = parts.next()?.parse().ok()?;
+        if h < 24 && m < 60 {
+            Some(h * 60 + m)
+        } else {
+            None
+        }
+    };
+
+    let (start_min, end_min) = match (parse_minute(start_time), parse_minute(end_time)) {
+        (Some(s), Some(e)) => (s, e),
+        _ => return false,
+    };
+
+    if start_min == end_min {
+        false
+    } else if start_min < end_min {
+        current_minute >= start_min && current_minute < end_min
+    } else {
+        current_minute >= start_min || current_minute < end_min
+    }
+}
+
+/// Cost in US dollars for the four token tiers.
+///
+/// If an off-peak price configuration is present and `timestamp_ms` falls within the off-peak
+/// window in UTC+8, the off-peak pricing tier is used; otherwise, the standard pricing tier is used.
+pub fn compute_cost_at_time(
+    price: &ModelPrice,
+    tokens: &UsageTokens,
+    timestamp_ms: i64,
+) -> f64 {
+    if let Some(ref off_peak) = price.off_peak {
+        if is_off_peak(timestamp_ms, &off_peak.start_time, &off_peak.end_time) {
+            return (off_peak.input * tokens.input_tokens as f64
+                + off_peak.cache_read * tokens.cache_read_tokens as f64
+                + off_peak.cache_write * tokens.cache_write_tokens as f64
+                + off_peak.output * tokens.output_tokens as f64)
+                / 1_000_000.0;
+        }
+    }
+
+    compute_cost(price, tokens)
+}
+
+/// Match a price row, prioritizing provider-specific price over global/legacy price.
+pub fn match_price_for_provider<'a>(
+    provider_id: Option<&str>,
+    upstream_model: &str,
+    prices: &'a [ModelPrice],
+) -> Option<&'a ModelPrice> {
+    if let Some(pid) = provider_id {
+        if let Some(found) = prices
+            .iter()
+            .find(|price| price.provider_id.as_deref() == Some(pid) && price.upstream_model == upstream_model)
+        {
+            return Some(found);
+        }
+    }
     prices
         .iter()
-        .find(|price| price.upstream_model == upstream_model)
+        .find(|price| price.provider_id.is_none() && price.upstream_model == upstream_model)
+        .or_else(|| {
+            prices
+                .iter()
+                .find(|price| price.upstream_model == upstream_model)
+        })
+}
+
+/// Exact (case-sensitive) lookup of the upstream model in the price table.
+#[allow(dead_code)]
+pub fn match_price<'a>(upstream_model: &str, prices: &'a [ModelPrice]) -> Option<&'a ModelPrice> {
+    match_price_for_provider(None, upstream_model, prices)
 }
 
 fn token_number(value: Option<&Value>) -> u64 {

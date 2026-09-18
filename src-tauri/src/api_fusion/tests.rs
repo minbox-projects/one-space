@@ -5,9 +5,9 @@ use super::selection::{
 };
 use super::storage::{config_path, resolve_default_key_id};
 use super::{
-    compute_cost, match_price, normalize_retention_days, resolve_range, usage_tokens_from_value,
+    compute_cost, compute_cost_at_time, is_off_peak, match_price, match_price_for_provider, normalize_retention_days, resolve_range, usage_tokens_from_value,
     validate_retention_days, FusionConfig, FusionKey, FusionUpstreamProvider, LogFilter,
-    ModelMapping, ModelPrice, SseUsageAccumulator, TerminalSyncRecord, TimeRange, UpstreamProtocol,
+    ModelMapping, ModelPrice, OffPeakPrice, SseUsageAccumulator, TerminalSyncRecord, TimeRange, UpstreamProtocol,
     UsageLogRecord, UsageLogStore, UsageResult, UsageTokens, DEFAULT_USAGE_RETENTION_DAYS,
     USAGE_LOG_PAGE_SIZE,
 };
@@ -7191,11 +7191,13 @@ fn fusion_config_accepts_legacy_json_and_round_trips_usage_fields() {
     let mut updated = config;
     updated.usage_retention_days = 30;
     updated.model_prices.push(ModelPrice {
+        provider_id: None,
         upstream_model: "remote-a".to_string(),
         input: 1.0,
         cache_read: 2.0,
         cache_write: 3.0,
         output: 4.0,
+        off_peak: None,
     });
     let encoded = serde_json::to_string(&updated).expect("encode config");
     let decoded: FusionConfig = serde_json::from_str(&encoded).expect("round trip config");
@@ -7203,14 +7205,38 @@ fn fusion_config_accepts_legacy_json_and_round_trips_usage_fields() {
     assert_eq!(decoded.model_prices.len(), 1);
     assert_eq!(decoded.model_prices[0].upstream_model, "remote-a");
     assert_eq!(decoded.model_prices[0].output, 4.0);
+    assert_eq!(decoded.model_prices[0].off_peak, None);
 
     // Missing per-tier prices default to zero, not a deserialize error.
     let partial: ModelPrice =
         serde_json::from_value(serde_json::json!({ "upstream_model": "remote-b" })).unwrap();
+    assert_eq!(partial.provider_id, None);
     assert_eq!(partial.input, 0.0);
     assert_eq!(partial.cache_read, 0.0);
     assert_eq!(partial.cache_write, 0.0);
     assert_eq!(partial.output, 0.0);
+    assert_eq!(partial.off_peak, None);
+
+    // OffPeak round trip test
+    let with_off_peak = ModelPrice {
+        provider_id: Some("prov-test".to_string()),
+        upstream_model: "remote-c".to_string(),
+        input: 2.0,
+        cache_read: 1.0,
+        cache_write: 2.0,
+        output: 4.0,
+        off_peak: Some(OffPeakPrice {
+            start_time: "00:30".to_string(),
+            end_time: "08:30".to_string(),
+            input: 1.0,
+            cache_read: 0.5,
+            cache_write: 1.0,
+            output: 2.0,
+        }),
+    };
+    let encoded_op = serde_json::to_string(&with_off_peak).unwrap();
+    let decoded_op: ModelPrice = serde_json::from_str(&encoded_op).unwrap();
+    assert_eq!(decoded_op.off_peak, with_off_peak.off_peak);
 }
 
 /// AC-004 / AC-005 / REQ-004 / REQ-006: four-tier cost math and exact,
@@ -7218,11 +7244,13 @@ fn fusion_config_accepts_legacy_json_and_round_trips_usage_fields() {
 #[test]
 fn usage_pricing_matches_exact_model_and_sums_four_tiers() {
     let price = ModelPrice {
+        provider_id: None,
         upstream_model: "gpt-x".to_string(),
         input: 1.0,
         cache_read: 0.5,
         cache_write: 2.0,
         output: 4.0,
+        off_peak: None,
     };
     let prices = vec![price.clone()];
     assert_eq!(match_price("gpt-x", &prices), Some(&price));
@@ -7236,6 +7264,156 @@ fn usage_pricing_matches_exact_model_and_sums_four_tiers() {
     // Missing fields are zero and never affect the other tiers.
     let only_input = compute_cost(&price, &tokens(2_000_000, 0, 0, 0));
     assert!((only_input - 2.0).abs() < 1e-9);
+}
+
+#[test]
+fn usage_pricing_matches_provider_specific_price_and_falls_back() {
+    let global_price = ModelPrice {
+        provider_id: None,
+        upstream_model: "gpt-4o".to_string(),
+        input: 2.5,
+        cache_read: 1.25,
+        cache_write: 2.5,
+        output: 10.0,
+        off_peak: None,
+    };
+    let provider_a_price = ModelPrice {
+        provider_id: Some("prov-a".to_string()),
+        upstream_model: "gpt-4o".to_string(),
+        input: 2.0,
+        cache_read: 1.0,
+        cache_write: 2.0,
+        output: 8.0,
+        off_peak: None,
+    };
+    let provider_b_price = ModelPrice {
+        provider_id: Some("prov-b".to_string()),
+        upstream_model: "gpt-4o".to_string(),
+        input: 3.0,
+        cache_read: 1.5,
+        cache_write: 3.0,
+        output: 12.0,
+        off_peak: None,
+    };
+
+    let prices = vec![
+        global_price.clone(),
+        provider_a_price.clone(),
+        provider_b_price.clone(),
+    ];
+
+    // Matches provider-specific price when provider_id is provided
+    assert_eq!(
+        match_price_for_provider(Some("prov-a"), "gpt-4o", &prices),
+        Some(&provider_a_price)
+    );
+    assert_eq!(
+        match_price_for_provider(Some("prov-b"), "gpt-4o", &prices),
+        Some(&provider_b_price)
+    );
+
+    // Falls back to global price when provider_id does not match any provider-specific price
+    assert_eq!(
+        match_price_for_provider(Some("prov-unknown"), "gpt-4o", &prices),
+        Some(&global_price)
+    );
+
+    // When provider_id is None, prefers the global price without provider_id
+    assert_eq!(
+        match_price_for_provider(None, "gpt-4o", &prices),
+        Some(&global_price)
+    );
+    assert_eq!(
+        match_price("gpt-4o", &prices),
+        Some(&global_price)
+    );
+
+    // Non-existent model returns None
+    assert_eq!(
+        match_price_for_provider(Some("prov-a"), "unknown-model", &prices),
+        None
+    );
+}
+
+#[test]
+fn is_off_peak_window_and_midnight_crossing() {
+    use chrono::TimeZone;
+    let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+    let make_utc8_ms = |h: u32, m: u32| {
+        tz.with_ymd_and_hms(2026, 9, 18, h, m, 0)
+            .unwrap()
+            .timestamp_millis()
+    };
+
+    let ms_0400 = make_utc8_ms(4, 0);
+    let ms_0800 = make_utc8_ms(8, 0);
+    let ms_0830 = make_utc8_ms(8, 30);
+    let ms_0900 = make_utc8_ms(9, 0);
+
+    // Normal daytime/morning window: 00:30 to 08:30
+    assert!(is_off_peak(ms_0400, "00:30", "08:30"), "04:00 UTC+8 is in 00:30-08:30");
+    assert!(is_off_peak(ms_0800, "00:30", "08:30"), "08:00 UTC+8 is in 00:30-08:30");
+    assert!(!is_off_peak(ms_0830, "00:30", "08:30"), "08:30 UTC+8 is at boundary end (exclusive)");
+    assert!(!is_off_peak(ms_0900, "00:30", "08:30"), "09:00 UTC+8 is outside 00:30-08:30");
+
+    // Overnight window: 22:00 to 06:00
+    // 04:00 UTC+8 is in 22:00-06:00
+    assert!(is_off_peak(ms_0400, "22:00", "06:00"));
+    // 08:00 UTC+8 is outside 22:00-06:00
+    assert!(!is_off_peak(ms_0800, "22:00", "06:00"));
+
+    // Equal times: zero duration window -> false
+    assert!(!is_off_peak(ms_0800, "08:00", "08:00"));
+    // Invalid time strings -> false
+    assert!(!is_off_peak(ms_0800, "invalid", "08:00"));
+}
+
+#[test]
+fn compute_cost_at_time_applies_off_peak_pricing_when_active() {
+    use chrono::TimeZone;
+    let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+    let make_utc8_ms = |h: u32, m: u32| {
+        tz.with_ymd_and_hms(2026, 9, 18, h, m, 0)
+            .unwrap()
+            .timestamp_millis()
+    };
+
+    let standard_price = ModelPrice {
+        provider_id: None,
+        upstream_model: "deepseek-chat".to_string(),
+        input: 2.0,
+        cache_read: 1.0,
+        cache_write: 2.0,
+        output: 4.0,
+        off_peak: Some(OffPeakPrice {
+            start_time: "00:30".to_string(),
+            end_time: "08:30".to_string(),
+            input: 1.0, // 50% discount
+            cache_read: 0.5,
+            cache_write: 1.0,
+            output: 2.0,
+        }),
+    };
+
+    let test_tokens = tokens(1_000_000, 1_000_000, 1_000_000, 1_000_000);
+
+    // 04:00 UTC+8 (off-peak)
+    let off_peak_ms = make_utc8_ms(4, 0);
+    let off_peak_cost = compute_cost_at_time(&standard_price, &test_tokens, off_peak_ms);
+    // (1.0 + 0.5 + 1.0 + 2.0) = 4.5
+    assert!((off_peak_cost - 4.5).abs() < 1e-9, "expected $4.50, got {off_peak_cost}");
+
+    // 14:00 UTC+8 (peak / standard)
+    let peak_ms = make_utc8_ms(14, 0);
+    let peak_cost = compute_cost_at_time(&standard_price, &test_tokens, peak_ms);
+    // (2.0 + 1.0 + 2.0 + 4.0) = 9.0
+    assert!((peak_cost - 9.0).abs() < 1e-9, "expected $9.00, got {peak_cost}");
+
+    // Price without off-peak always returns standard cost regardless of time
+    let mut no_off_peak = standard_price.clone();
+    no_off_peak.off_peak = None;
+    assert_eq!(compute_cost_at_time(&no_off_peak, &test_tokens, off_peak_ms), 9.0);
+    assert_eq!(compute_cost_at_time(&no_off_peak, &test_tokens, peak_ms), 9.0);
 }
 
 /// AC-012 / REQ-010: only 1-365 is accepted; invalid values are rejected and
@@ -7672,11 +7850,33 @@ async fn wait_for_usage_logs(expected: u32) -> Vec<UsageLogRecord> {
 
 fn priced(upstream_model: &str, input: f64, cache_read: f64, cache_write: f64, output: f64) -> ModelPrice {
     ModelPrice {
+        provider_id: None,
         upstream_model: upstream_model.to_string(),
         input,
         cache_read,
         cache_write,
         output,
+        off_peak: None,
+    }
+}
+
+#[allow(dead_code)]
+fn priced_with_provider(
+    provider_id: &str,
+    upstream_model: &str,
+    input: f64,
+    cache_read: f64,
+    cache_write: f64,
+    output: f64,
+) -> ModelPrice {
+    ModelPrice {
+        provider_id: Some(provider_id.to_string()),
+        upstream_model: upstream_model.to_string(),
+        input,
+        cache_read,
+        cache_write,
+        output,
+        off_peak: None,
     }
 }
 
