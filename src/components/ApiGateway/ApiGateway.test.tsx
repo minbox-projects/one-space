@@ -638,7 +638,11 @@ describe("ApiGateway", () => {
     mockStore(store);
 
     renderWithProviders(<ApiGateway />);
-    fireEvent.click(await screen.findByText("Upstream A"));
+    fireEvent.click(
+      await within(
+        await screen.findByTestId("api-gateway-providers"),
+      ).findByText("Upstream A"),
+    );
 
     const firstMappingProtocol = screen.getByLabelText("Mapping protocol 1");
     expect(firstMappingProtocol).toHaveValue("");
@@ -668,7 +672,11 @@ describe("ApiGateway", () => {
     mockStoreWithUpsert(store);
 
     renderWithProviders(<ApiGateway />);
-    fireEvent.click(await screen.findByText("Upstream A"));
+    fireEvent.click(
+      await within(
+        await screen.findByTestId("api-gateway-providers"),
+      ).findByText("Upstream A"),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
@@ -703,7 +711,11 @@ describe("ApiGateway", () => {
     mockStoreWithUpsert(store);
 
     renderWithProviders(<ApiGateway />);
-    fireEvent.click(await screen.findByText("Upstream A"));
+    fireEvent.click(
+      await within(
+        await screen.findByTestId("api-gateway-providers"),
+      ).findByText("Upstream A"),
+    );
     fireEvent.change(screen.getByLabelText("Mapping protocol 1"), {
       target: { value: "responses" },
     });
@@ -914,7 +926,9 @@ describe("ApiGateway", () => {
     mockStore(store);
 
     renderWithProviders(<ApiGateway />);
-    await screen.findByText("Upstream A");
+    await within(
+      await screen.findByTestId("api-gateway-providers"),
+    ).findByText("Upstream A");
 
     const tabsList = screen.getByRole("tablist", { name: /API Gateway tabs/i });
     expect(tabsList).toBeInTheDocument();
@@ -946,7 +960,9 @@ describe("ApiGateway", () => {
     mockStore(store);
 
     renderWithProviders(<ApiGateway />);
-    await screen.findByText("Upstream A");
+    await within(
+      await screen.findByTestId("api-gateway-providers"),
+    ).findByText("Upstream A");
 
     const tabsList = screen.getByRole("tablist", { name: /API Gateway tabs/i });
     const usageTab = within(tabsList).getByRole("tab", { name: "Usage" });
@@ -1365,7 +1381,11 @@ describe("ApiGateway", () => {
     mockStoreWithUpsert(store);
 
     renderWithProviders(<ApiGateway />);
-    fireEvent.click(await screen.findByText("Upstream A"));
+    fireEvent.click(
+      await within(
+        await screen.findByTestId("api-gateway-providers"),
+      ).findByText("Upstream A"),
+    );
 
     fireEvent.click(screen.getByRole("switch", { name: "Enable mapping 2" }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -1432,6 +1452,92 @@ describe("ApiGateway", () => {
     expect(defaultNode).not.toBeUndefined();
     expect(within(defaultNode!).getByText(/Default/)).toBeInTheDocument();
     expect(within(dialog).queryByText("rb")).not.toBeInTheDocument();
+  });
+
+  it("模型列表页签紧随上游服务商、徽标数与指标卡一致，且搜索状态在页签往返后保留", async () => {
+    const provider1 = makeProvider({
+      id: "p1",
+      name: "Provider 1",
+      enabled: true,
+      auto_disabled: false,
+      default_model: "gpt-4o",
+      mappings: [
+        { local_model: "gpt-4o", upstream_model: "gpt-4o-2024" },
+        { local_model: "claude-3-7-sonnet", upstream_model: "claude-3-7" },
+      ],
+    });
+    const provider2 = makeProvider({
+      id: "p2",
+      name: "Provider 2",
+      enabled: true,
+      auto_disabled: false,
+      mappings: [
+        { local_model: "deepseek-v3", upstream_model: "deepseek-chat" },
+      ],
+    });
+
+    const store: Store = {
+      config: makeConfig({ providers: [provider1, provider2] }),
+      status: makeStatus({ provider_count: 2 }),
+      targets: [openCodeTarget()],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiGateway />);
+
+    const modelsCard = await screen.findByTestId("api-gateway-metric-models");
+    const metricCount = Number(within(modelsCard).getByText("3").textContent);
+    expect(metricCount).toBe(3);
+
+    const tabsList = screen.getByRole("tablist", {
+      name: /API Gateway tabs/i,
+    });
+    const tabNodes = within(tabsList).getAllByRole("tab");
+    const providersIndex = tabNodes.findIndex((node) =>
+      (node.textContent ?? "").includes("Upstream providers"),
+    );
+    const modelsIndex = tabNodes.findIndex((node) =>
+      (node.textContent ?? "").includes("Model list"),
+    );
+    expect(providersIndex).toBeGreaterThanOrEqual(0);
+    expect(modelsIndex).toBe(providersIndex + 1);
+
+    const modelsTab = tabNodes[modelsIndex];
+    const modelsTabBadge = within(modelsTab).getByText("3");
+    expect(modelsTabBadge.textContent).toBe(String(metricCount));
+
+    fireEvent.click(modelsTab);
+    expect(modelsTab).toHaveAttribute("aria-selected", "true");
+
+    const panel = screen.getByRole("tabpanel", { name: "Model list" });
+    const rows = within(panel).getAllByTestId("api-gateway-model-list-row");
+    expect(rows).toHaveLength(metricCount);
+
+    const search = within(panel).getByTestId("api-gateway-model-list-search");
+    fireEvent.change(search, { target: { value: "gpt" } });
+    const filteredRows = within(panel).getAllByTestId(
+      "api-gateway-model-list-row",
+    );
+    expect(filteredRows).toHaveLength(1);
+    expect(filteredRows[0]).toHaveAttribute("data-model", "gpt-4o");
+
+    const providersTab = within(tabsList).getByRole("tab", {
+      name: /Upstream providers/,
+    });
+    fireEvent.click(providersTab);
+    fireEvent.click(modelsTab);
+
+    const panelAfterRoundTrip = screen.getByRole("tabpanel", {
+      name: "Model list",
+    });
+    expect(
+      within(panelAfterRoundTrip).getByTestId("api-gateway-model-list-search"),
+    ).toHaveValue("gpt");
+    const rowsAfterRoundTrip = within(panelAfterRoundTrip).getAllByTestId(
+      "api-gateway-model-list-row",
+    );
+    expect(rowsAfterRoundTrip).toHaveLength(1);
+    expect(rowsAfterRoundTrip[0]).toHaveAttribute("data-model", "gpt-4o");
   });
 
   function makeTemplateModel(
@@ -1651,7 +1757,11 @@ describe("ApiGateway", () => {
     // 同步后必须重新拉取配置，派生服务商的传播结果才能进入详情。
     await waitFor(() => expect(getConfigCalls).toBeGreaterThan(callsBeforeSync));
 
-    fireEvent.click(screen.getByText("Template Bound"));
+    fireEvent.click(
+      within(screen.getByTestId("api-gateway-providers")).getByText(
+        "Template Bound",
+      ),
+    );
     await waitFor(() =>
       expect(
         within(screen.getByTestId("api-gateway-provider-detail")).getByLabelText(
@@ -1777,7 +1887,11 @@ describe("ApiGateway 模板服务商模型维护", () => {
     );
 
     renderWithProviders(<ApiGateway />);
-    fireEvent.click(await screen.findByText("Upstream A"));
+    fireEvent.click(
+      await within(
+        await screen.findByTestId("api-gateway-providers"),
+      ).findByText("Upstream A"),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Remove mapping 1" }));
 
@@ -1801,7 +1915,11 @@ describe("ApiGateway 模板服务商模型维护", () => {
     );
 
     renderWithProviders(<ApiGateway />);
-    fireEvent.click(await screen.findByText("Upstream A"));
+    fireEvent.click(
+      await within(
+        await screen.findByTestId("api-gateway-providers"),
+      ).findByText("Upstream A"),
+    );
 
     fireEvent.click(
       await screen.findByTestId("api-gateway-restore-model-retired-model"),

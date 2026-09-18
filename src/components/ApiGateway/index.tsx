@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { emit } from "@tauri-apps/api/event";
 import {
   BarChart3,
+  Boxes,
   KeyRound,
   Network,
   ScrollText,
@@ -13,6 +14,7 @@ import { useToast } from "@/components/ToastProvider";
 import { errorToMessage } from "@/lib/messages";
 import {
   API_GATEWAY_STATUS_UPDATED_EVENT,
+  aggregateModels,
   apiGatewayConfigureTerminal,
   apiGatewayCreateProviderFromTemplate,
   apiGatewayDeleteKey,
@@ -43,6 +45,7 @@ import {
   type GatewayUpstreamProvider,
 } from "@/lib/apiGateway";
 import { RuntimeStatusCard } from "./RuntimeStatusCard";
+import { ModelListPanel } from "./ModelListPanel";
 import { UpstreamProviderList } from "./UpstreamProviderList";
 import { ProviderDetailDialog } from "./ProviderDetailDialog";
 import { ProviderTemplateSection } from "./ProviderTemplateSection";
@@ -53,7 +56,13 @@ import { TerminalSyncPanel } from "./TerminalSyncPanel";
 import { UsageStatsPanel } from "./UsageStatsPanel";
 import { UsageLogsPanel } from "./UsageLogsPanel";
 
-type ApiGatewayTab = "providers" | "keys" | "terminals" | "usage" | "logs";
+type ApiGatewayTab =
+  | "providers"
+  | "models"
+  | "keys"
+  | "terminals"
+  | "usage"
+  | "logs";
 
 function emptyProvider(): GatewayUpstreamProvider {
   return {
@@ -492,6 +501,12 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
       hasAlert: autoDisabledCount > 0,
     },
     {
+      id: "models",
+      label: t("apiGatewayModelListTab", "Model list"),
+      icon: Boxes,
+      count: aggregateModels(config.providers).length,
+    },
+    {
       id: "keys",
       label: t("apiGatewayKeys", "Api Keys"),
       icon: KeyRound,
@@ -656,6 +671,15 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
               </>
             }
           />
+        </div>
+
+        {/* Tab: 模型列表（面板常驻以保留搜索状态） */}
+        <div
+          role="tabpanel"
+          aria-label={t("apiGatewayModelListTab", "Model list")}
+          className={activeTab === "models" ? "block" : "hidden"}
+        >
+          <ModelListPanel providers={config.providers} />
         </div>
 
         {/* Tab 2: 本地密钥 */}
