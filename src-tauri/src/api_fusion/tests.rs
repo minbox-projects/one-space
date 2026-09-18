@@ -10415,6 +10415,86 @@ async fn disabled_mapping_request_returns_all_providers_unavailable() {
     drop(home);
 }
 
+/// AC-002/REQ-002 (HTTP): a disabled mapping on provider A must not shadow the
+/// same local model on another provider. When A's only match is disabled but B
+/// has an enabled mapping for that local model, the request must be served by B:
+/// A is never contacted and never falls back to its `default_model`, while B's
+/// key and mapped upstream model are used.
+#[tokio::test]
+async fn disabled_mapping_on_one_provider_is_still_served_by_another_provider() {
+    let home = temp_home("mapping-disabled-on-one-provider");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
+
+    let mut disabled = mapping("local-x", "a-remote", None);
+    disabled.enabled = false;
+    let mut provider_a = upstream_provider(
+        "a",
+        "Provider A",
+        &upstream_url,
+        "sk-a",
+        Some("a-default"),
+    );
+    provider_a.mappings = vec![disabled];
+
+    let mut provider_b = upstream_provider(
+        "b",
+        "Provider B",
+        &upstream_url,
+        "sk-b",
+        None,
+    );
+    provider_b.mappings = vec![mapping("local-x", "b-remote", None)];
+
+    let mut config = config_with_key(port);
+    config.providers.push(provider_a);
+    config.providers.push(provider_b);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-x", "messages": []})),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "provider B's enabled mapping must still serve the local model: {text}"
+    );
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        1,
+        "exactly provider B may be contacted; A's disabled mapping must not be: {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(
+        captured[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer sk-b"),
+        "the request must be served by provider B, not A: {}",
+        captured_summary(&captured)
+    );
+    let sent: Value = serde_json::from_slice(&captured[0].body).unwrap_or_else(|error| {
+        panic!(
+            "upstream body must be JSON ({error}): {}",
+            captured_summary(&captured)
+        )
+    });
+    assert_eq!(
+        sent["model"], "b-remote",
+        "provider B's mapping must set the upstream model, never A's default: {}",
+        captured_summary(&captured)
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
 /// AC-003/REQ-003: toggling the provider (user disable/re-enable) and clearing
 /// an auto-disable never rewrite any mapping's `enabled`, including across a
 /// config round trip.
