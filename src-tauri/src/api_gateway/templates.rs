@@ -6,9 +6,10 @@
 //! failing the whole document. Only structural problems (invalid JSON, an empty
 //! or duplicate template id) are fatal.
 
+use super::storage::new_provider_id;
 use super::types_config::{
-    now_ts, GatewayConfig, ModelMapping, ModelPrice, OffPeakPrice, ProviderTemplate,
-    ProviderTemplateModel, ProviderTemplateState, UpstreamProtocol,
+    now_ts, GatewayConfig, GatewayUpstreamProvider, ModelMapping, ModelPrice, OffPeakPrice,
+    ProviderTemplate, ProviderTemplateModel, ProviderTemplateState, UpstreamProtocol,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -793,4 +794,227 @@ pub(in crate::api_gateway) async fn fetch_template_source(
         .text()
         .await
         .map_err(|error| format!("failed to read {url}: {error}"))
+}
+
+// ---------------------------------------------------------------------------
+// Step 4: create-from-template and model maintenance
+// ---------------------------------------------------------------------------
+
+/// Build the mapping a template model is created with: `local_model` equals
+/// `upstream_model`, enabled, carrying the official display name, the model's
+/// effective protocol and its reasoning efforts.
+fn mapping_from_template(
+    template: &ProviderTemplate,
+    model: &ProviderTemplateModel,
+) -> ModelMapping {
+    ModelMapping {
+        local_model: model.upstream_model.clone(),
+        upstream_model: model.upstream_model.clone(),
+        enabled: true,
+        protocol: Some(model.protocol.unwrap_or(template.protocol)),
+        display_name: model.display_name.clone(),
+        reasoning_efforts: model.reasoning_efforts.clone(),
+    }
+}
+
+/// Build the provider-scoped price row a template model is created with,
+/// carrying the four tiers and the weekday-aware off-peak windows.
+fn price_row_from_template(provider_id: &str, model: &ProviderTemplateModel) -> ModelPrice {
+    ModelPrice {
+        provider_id: Some(provider_id.to_string()),
+        upstream_model: model.upstream_model.clone(),
+        input: model.input,
+        cache_read: model.cache_read,
+        cache_write: model.cache_write,
+        output: model.output,
+        off_peaks: model.off_peaks.clone(),
+        off_peak: None,
+    }
+}
+
+/// Create an upstream provider from a template with an injectable persistence
+/// seam.
+///
+/// A blank API key is rejected before anything is staged, so the config and the
+/// persist seam stay untouched. A blank `name`/`base_url` falls back to the
+/// template's value; the protocol argument always wins. The new provider binds
+/// the template, leaves `default_model` empty, and receives one enabled mapping
+/// per template model (`local_model` = `upstream_model`, official display name,
+/// effective protocol, reasoning efforts) plus one provider-scoped price row per
+/// model (four tiers and off-peak windows). The staged clone is handed to
+/// `persist` and only committed to `config` once persistence succeeds.
+pub fn apply_create_provider_from_template(
+    config: &mut GatewayConfig,
+    template_id: &str,
+    name: &str,
+    base_url: &str,
+    protocol: UpstreamProtocol,
+    api_key: &str,
+    persist: impl FnOnce(&GatewayConfig) -> Result<(), String>,
+) -> Result<GatewayUpstreamProvider, String> {
+    if api_key.trim().is_empty() {
+        return Err("an API key is required to create a provider from a template".to_string());
+    }
+    let template = effective_template(config, template_id)?;
+
+    let provider_id = new_provider_id();
+    let provider = GatewayUpstreamProvider {
+        id: provider_id.clone(),
+        name: if name.trim().is_empty() {
+            template.name.clone()
+        } else {
+            name.to_string()
+        },
+        base_url: if base_url.trim().is_empty() {
+            template.base_url.clone()
+        } else {
+            base_url.to_string()
+        },
+        api_key: api_key.to_string(),
+        template_id: Some(template_id.to_string()),
+        protocol,
+        mappings: template
+            .models
+            .iter()
+            .map(|model| mapping_from_template(&template, model))
+            .collect(),
+        ignored_models: Vec::new(),
+        ..GatewayUpstreamProvider::default()
+    };
+
+    let mut next = config.clone();
+    next.providers.push(provider.clone());
+    next.model_prices.extend(
+        template
+            .models
+            .iter()
+            .map(|model| price_row_from_template(&provider_id, model)),
+    );
+
+    persist(&next)?;
+    *config = next;
+    Ok(provider)
+}
+
+/// Delete one upstream model from a provider with an injectable persistence
+/// seam.
+///
+/// An unknown provider is an actionable error that writes nothing. On a
+/// template-bound provider the mapping is removed, the model is recorded in the
+/// ignored set exactly once (so a later sync cannot resurrect it) and the
+/// provider-scoped price row is removed. On a manual provider only the mapping
+/// is removed: no ignored record is written and the price row is kept.
+pub fn apply_delete_provider_model(
+    config: &mut GatewayConfig,
+    provider_id: &str,
+    upstream_model: &str,
+    persist: impl FnOnce(&GatewayConfig) -> Result<(), String>,
+) -> Result<(), String> {
+    if !config.providers.iter().any(|provider| provider.id == provider_id) {
+        return Err(format!("provider not found: {provider_id}"));
+    }
+
+    let mut next = config.clone();
+    let is_bound = {
+        let provider = next
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == provider_id)
+            .expect("the provider was checked above");
+        provider
+            .mappings
+            .retain(|mapping| mapping.upstream_model != upstream_model);
+        let is_bound = provider.template_id.is_some();
+        if is_bound
+            && !provider
+                .ignored_models
+                .iter()
+                .any(|ignored| ignored == upstream_model)
+        {
+            provider.ignored_models.push(upstream_model.to_string());
+        }
+        is_bound
+    };
+    if is_bound {
+        next.model_prices.retain(|row| {
+            !(row.provider_id.as_deref() == Some(provider_id)
+                && row.upstream_model == upstream_model)
+        });
+    }
+
+    persist(&next)?;
+    *config = next;
+    Ok(())
+}
+
+/// Restore one previously ignored model from the template's current data with
+/// an injectable persistence seam.
+///
+/// Only a model present in the provider's `ignored_models` can be restored;
+/// anything else is an actionable error that writes nothing. The mapping and
+/// provider-scoped price row are rebuilt from the persisted template state when
+/// one exists, else from the built-in snapshot, and the model leaves the ignored
+/// set. A model the template no longer carries reports an error naming it and
+/// creates no mapping.
+pub fn apply_restore_provider_model(
+    config: &mut GatewayConfig,
+    provider_id: &str,
+    upstream_model: &str,
+    persist: impl FnOnce(&GatewayConfig) -> Result<(), String>,
+) -> Result<(), String> {
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .ok_or_else(|| format!("provider not found: {provider_id}"))?;
+    if !provider
+        .ignored_models
+        .iter()
+        .any(|ignored| ignored == upstream_model)
+    {
+        return Err(format!(
+            "model '{upstream_model}' is not ignored and cannot be restored"
+        ));
+    }
+    let template_id = provider.template_id.clone().ok_or_else(|| {
+        format!("provider {provider_id} is not bound to a provider template")
+    })?;
+
+    let template = effective_template(config, &template_id)?;
+    let model = template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == upstream_model)
+        .cloned()
+        .ok_or_else(|| {
+            format!("model '{upstream_model}' is not present in template '{template_id}'")
+        })?;
+
+    let mut next = config.clone();
+    {
+        let provider = next
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == provider_id)
+            .expect("the provider was checked above");
+        provider
+            .ignored_models
+            .retain(|ignored| ignored != upstream_model);
+        provider
+            .mappings
+            .retain(|mapping| mapping.upstream_model != upstream_model);
+        provider
+            .mappings
+            .push(mapping_from_template(&template, &model));
+    }
+    next.model_prices.retain(|row| {
+        !(row.provider_id.as_deref() == Some(provider_id)
+            && row.upstream_model == upstream_model)
+    });
+    next.model_prices
+        .push(price_row_from_template(provider_id, &model));
+
+    persist(&next)?;
+    *config = next;
+    Ok(())
 }

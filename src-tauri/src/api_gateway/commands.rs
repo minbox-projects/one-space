@@ -6,8 +6,9 @@ use super::storage::{
     write_config,
 };
 use super::templates::{
-    apply_template_sync_with, effective_template, fetch_template_source, provider_template_views,
-    ProviderTemplateView,
+    apply_create_provider_from_template, apply_delete_provider_model,
+    apply_restore_provider_model, apply_template_sync_with, effective_template,
+    fetch_template_source, provider_template_views, ProviderTemplateView,
 };
 use super::usage_log::{
     normalize_retention_days, now_millis, resolve_range, validate_retention_days, LogFilter,
@@ -15,7 +16,7 @@ use super::usage_log::{
 };
 use super::{
     now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, ModelPrice,
-    TerminalSyncRecord, UsageResult,
+    TerminalSyncRecord, UpstreamProtocol, UsageResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -787,4 +788,50 @@ pub async fn api_gateway_sync_provider_template(
     apply_template_sync_with(&mut config, &template_id, move |_| Ok(raw), |next| {
         write_config(next)
     })
+}
+
+/// Create an upstream provider from a template, carrying every mapping plus its
+/// provider-scoped price row. A blank API key is rejected and writes nothing.
+#[tauri::command]
+pub fn api_gateway_create_provider_from_template(
+    template_id: String,
+    name: String,
+    base_url: String,
+    protocol: UpstreamProtocol,
+    api_key: String,
+) -> Result<GatewayUpstreamProvider, String> {
+    let mut config = read_config()?;
+    apply_create_provider_from_template(
+        &mut config,
+        &template_id,
+        &name,
+        &base_url,
+        protocol,
+        &api_key,
+        write_config,
+    )
+}
+
+/// Delete one model from a provider: a template-bound provider records it in the
+/// ignored set and drops its price row, a manual provider only drops the mapping.
+#[tauri::command]
+pub fn api_gateway_delete_provider_model(
+    provider_id: String,
+    upstream_model: String,
+) -> Result<GatewayConfig, String> {
+    let mut config = read_config()?;
+    apply_delete_provider_model(&mut config, &provider_id, &upstream_model, write_config)?;
+    read_config()
+}
+
+/// Restore one ignored model from the template's current data and return the
+/// refreshed configuration.
+#[tauri::command]
+pub fn api_gateway_restore_provider_model(
+    provider_id: String,
+    upstream_model: String,
+) -> Result<GatewayConfig, String> {
+    let mut config = read_config()?;
+    apply_restore_provider_model(&mut config, &provider_id, &upstream_model, write_config)?;
+    read_config()
 }

@@ -2833,6 +2833,9 @@ fn every_command_is_registered_in_the_invoke_handler() {
         // 20260918-provider-templates commands.
         "api_gateway_provider_templates",
         "api_gateway_sync_provider_template",
+        "api_gateway_create_provider_from_template",
+        "api_gateway_delete_provider_model",
+        "api_gateway_restore_provider_model",
     ];
     for command in commands {
         let registration = format!("api_gateway::{command},");
@@ -2852,6 +2855,9 @@ fn every_command_is_registered_in_the_invoke_handler() {
         "api_gateway_usage_retention_save",
         "api_gateway_provider_templates",
         "api_gateway_sync_provider_template",
+        "api_gateway_create_provider_from_template",
+        "api_gateway_delete_provider_model",
+        "api_gateway_restore_provider_model",
     ] {
         assert!(
             LIB_SOURCE.contains(command),

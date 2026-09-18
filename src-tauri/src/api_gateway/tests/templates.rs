@@ -1114,3 +1114,587 @@ fn sync_commandcode_keeps_curated_fields_for_existing_models() {
     assert!(new_model.reasoning_efforts.is_empty());
     assert_eq!(new_model.protocol, Some(UpstreamProtocol::Responses));
 }
+
+// ---------------------------------------------------------------------------
+// Step 4: create-from-template and model maintenance commands
+// ---------------------------------------------------------------------------
+//
+// These tests pin the Step 4 public boundary
+// (`apply_create_provider_from_template`, `apply_delete_provider_model`,
+// `apply_restore_provider_model`) and their persist seams. They are expected to
+// fail (unresolved import / missing function) until Step 4 lands.
+
+use crate::api_gateway::templates::{
+    apply_create_provider_from_template, apply_delete_provider_model,
+    apply_restore_provider_model,
+};
+use std::cell::{Cell, RefCell};
+
+/// REQ-003 / REQ-004 / AC-005 / AC-007: creating from a template appends one
+/// provider carrying every template mapping (local == upstream, official
+/// display name, effective protocol, reasoning efforts) plus one
+/// provider-scoped price row per model (four tiers and off-peak windows), with
+/// the template binding, no default model and the persisted config already
+/// containing the new provider.
+#[test]
+fn create_from_template_carries_mappings_prices_and_reasoning_efforts() {
+    let template = find_builtin_template("opencode-zen").expect("the snapshot must parse");
+    let mut config = GatewayConfig::default();
+    let captured: RefCell<Option<GatewayConfig>> = RefCell::new(None);
+
+    let provider = apply_create_provider_from_template(
+        &mut config,
+        "opencode-zen",
+        "My OpenCode",
+        "https://my-zen.example.com/v1",
+        UpstreamProtocol::Responses,
+        "sk-secret",
+        |next: &GatewayConfig| {
+            *captured.borrow_mut() = Some(next.clone());
+            Ok(())
+        },
+    )
+    .expect("a non-blank API key must create the provider");
+
+    assert_eq!(provider.template_id.as_deref(), Some("opencode-zen"));
+    assert_eq!(provider.default_model, None);
+    assert!(provider.ignored_models.is_empty());
+    assert!(provider.enabled, "a created provider is enabled");
+    assert!(
+        !provider.auto_disabled,
+        "a created provider is not auto-disabled"
+    );
+    assert_eq!(provider.name, "My OpenCode");
+    assert_eq!(provider.base_url, "https://my-zen.example.com/v1");
+    assert_eq!(provider.protocol, UpstreamProtocol::Responses);
+    assert_eq!(provider.api_key, "sk-secret");
+    assert!(!provider.id.trim().is_empty(), "a real provider id is assigned");
+
+    assert_eq!(
+        provider.mappings.len(),
+        template.models.len(),
+        "creation must generate one mapping per template model"
+    );
+    for model in &template.models {
+        let mapping = find_mapping(&provider, &model.upstream_model)
+            .unwrap_or_else(|| panic!("the mapping for {} must exist", model.upstream_model));
+        assert_eq!(mapping.local_model, model.upstream_model);
+        assert_eq!(mapping.upstream_model, model.upstream_model);
+        assert!(mapping.enabled, "a created mapping is enabled");
+        assert_eq!(mapping.display_name, model.display_name);
+        assert_eq!(
+            mapping.protocol,
+            Some(model.protocol.unwrap_or(template.protocol)),
+            "a mapping carries the model's effective protocol"
+        );
+        assert_eq!(mapping.reasoning_efforts, model.reasoning_efforts);
+    }
+
+    let provider_rows = config
+        .model_prices
+        .iter()
+        .filter(|row| row.provider_id.as_deref() == Some(provider.id.as_str()))
+        .count();
+    assert_eq!(
+        provider_rows,
+        template.models.len(),
+        "creation must generate one provider-scoped price row per model"
+    );
+    for model in &template.models {
+        let row = find_price_row(&config, &provider.id, &model.upstream_model)
+            .unwrap_or_else(|| panic!("the price row for {} must exist", model.upstream_model));
+        assert_eq!(row.input, model.input);
+        assert_eq!(row.cache_read, model.cache_read);
+        assert_eq!(row.cache_write, model.cache_write);
+        assert_eq!(row.output, model.output);
+        assert_eq!(row.off_peaks, model.off_peaks);
+        assert_eq!(
+            row.off_peak, None,
+            "creation writes the weekday-aware list only"
+        );
+    }
+
+    let persisted = captured
+        .into_inner()
+        .expect("creation must call persist with the next config");
+    assert!(
+        persisted
+            .providers
+            .iter()
+            .any(|candidate| candidate.id == provider.id),
+        "the persisted config must already contain the new provider"
+    );
+    assert_eq!(
+        persisted
+            .model_prices
+            .iter()
+            .filter(|row| row.provider_id.as_deref() == Some(provider.id.as_str()))
+            .count(),
+        template.models.len(),
+        "the persisted config must already carry every provider-scoped price row"
+    );
+    assert!(
+        config
+            .providers
+            .iter()
+            .any(|candidate| candidate.id == provider.id),
+        "a successful creation commits the provider to the config"
+    );
+}
+
+/// REQ-003 / AC-006: an empty or whitespace-only API key rejects the creation
+/// with a readable error, leaves the config field-for-field unchanged and never
+/// calls the persistence seam.
+#[test]
+fn create_from_template_requires_api_key_and_writes_nothing() {
+    for api_key in ["", "   "] {
+        let mut config = GatewayConfig::default();
+        let before = serde_json::to_value(&config).expect("encode config before");
+        let calls = Cell::new(0usize);
+
+        let error = apply_create_provider_from_template(
+            &mut config,
+            "opencode-zen",
+            "My OpenCode",
+            "https://my-zen.example.com/v1",
+            UpstreamProtocol::ChatCompletions,
+            api_key,
+            |_next| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        )
+        .expect_err("a blank API key must be rejected");
+
+        assert!(
+            !error.trim().is_empty(),
+            "rejecting a blank key must report a readable message"
+        );
+        assert_eq!(calls.get(), 0, "the persist seam must not run when the key is blank");
+        assert_eq!(
+            before,
+            serde_json::to_value(&config).expect("encode config after"),
+            "a rejected creation must write nothing"
+        );
+    }
+}
+
+/// REQ-003 / AC-005: a blank name or base_url falls back to the template value
+/// while the protocol argument still wins.
+#[test]
+fn create_from_template_blank_name_and_base_url_fall_back_to_template() {
+    let template = find_builtin_template("opencode-zen").expect("the snapshot must parse");
+    let mut config = GatewayConfig::default();
+
+    let provider = apply_create_provider_from_template(
+        &mut config,
+        "opencode-zen",
+        "",
+        "   ",
+        UpstreamProtocol::ChatCompletions,
+        "sk-secret",
+        |_next| Ok(()),
+    )
+    .expect("blank name and base_url must fall back to the template");
+
+    assert_eq!(provider.name, template.name);
+    assert_eq!(provider.base_url, template.base_url);
+    assert_eq!(provider.protocol, UpstreamProtocol::ChatCompletions);
+}
+
+/// REQ-005 / AC-008: deleting a model from a template-bound provider removes its
+/// mapping and provider-scoped price row and records it in the ignored set
+/// exactly once; an unknown provider is an error that writes nothing.
+#[test]
+fn delete_model_records_ignored_and_removes_mapping_and_price_row() {
+    let snapshot = opencode_snapshot();
+    let model = snapshot_model(&snapshot, "deepseek-v4-flash");
+
+    let mut config = GatewayConfig::default();
+    let mut provider = bound_provider("bound", "opencode-zen");
+    provider.mappings = vec![mapping_from_snapshot(&snapshot, model)];
+    config.providers.push(provider);
+    config.model_prices.push(price_from_snapshot("bound", model));
+
+    apply_delete_provider_model(&mut config, "bound", &model.upstream_model, |_next| Ok(()))
+        .expect("deleting a mapped model must succeed");
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|candidate| candidate.id == "bound")
+        .expect("the bound provider must exist");
+    assert!(
+        find_mapping(provider, &model.upstream_model).is_none(),
+        "the deleted mapping must be removed"
+    );
+    assert_eq!(
+        provider
+            .ignored_models
+            .iter()
+            .filter(|id| id.as_str() == model.upstream_model.as_str())
+            .count(),
+        1,
+        "the deleted model must be recorded exactly once in the ignored set"
+    );
+    assert!(
+        find_price_row(&config, "bound", &model.upstream_model).is_none(),
+        "the provider-scoped price row must be removed"
+    );
+
+    let before = serde_json::to_value(&config).expect("encode config");
+    let error = apply_delete_provider_model(
+        &mut config,
+        "no-such-provider",
+        &model.upstream_model,
+        |_next| Ok(()),
+    )
+    .expect_err("an unknown provider must be an error");
+    assert!(
+        !error.trim().is_empty(),
+        "rejecting an unknown provider must report a readable message"
+    );
+    assert_eq!(
+        before,
+        serde_json::to_value(&config).expect("encode config"),
+        "an unknown provider must write nothing"
+    );
+}
+
+/// REQ-005 / AC-008 counterexample: after deleting a model, a later template
+/// sync whose source still lists that model must not resurrect it, and the sync
+/// must actually propagate other models.
+#[test]
+fn delete_model_survives_later_template_sync() {
+    let snapshot = opencode_snapshot();
+    let model = snapshot_model(&snapshot, "deepseek-v4-flash");
+
+    let mut config = GatewayConfig::default();
+    let mut provider = bound_provider("bound", "opencode-zen");
+    provider.mappings = vec![mapping_from_snapshot(&snapshot, model)];
+    config.providers.push(provider);
+    config.model_prices.push(price_from_snapshot("bound", model));
+
+    apply_delete_provider_model(&mut config, "bound", &model.upstream_model, |_next| Ok(()))
+        .expect("deleting a mapped model must succeed");
+
+    let body = models_dev_body(json!({
+        "deepseek-v4-flash": {
+            "name": "DeepSeek V4 Flash",
+            "cost": {"input": 1.0, "cache_read": 0.1, "cache_write": 0.0, "output": 2.0}
+        },
+        "another-model": {
+            "name": "Another Model",
+            "cost": {"input": 1.0, "cache_read": 0.1, "cache_write": 0.0, "output": 2.0}
+        }
+    }));
+
+    apply_template_sync_with(
+        &mut config,
+        "opencode-zen",
+        |_current| Ok(body.clone()),
+        |_next| Ok(()),
+    )
+    .expect("the sync must succeed");
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|candidate| candidate.id == "bound")
+        .expect("the bound provider must exist");
+    assert!(
+        find_mapping(provider, "another-model").is_some(),
+        "the sync must actually propagate the source's models"
+    );
+    assert!(
+        find_mapping(provider, &model.upstream_model).is_none(),
+        "a template sync must not resurrect a deleted model"
+    );
+    assert!(
+        provider
+            .ignored_models
+            .iter()
+            .any(|id| id == &model.upstream_model),
+        "the ignored record must survive the sync"
+    );
+}
+
+/// REQ-005: deleting from a manual (unbound) provider only removes the mapping;
+/// it must not write an ignored record and must keep the price row.
+#[test]
+fn delete_model_on_manual_provider_does_not_write_ignored() {
+    let snapshot = opencode_snapshot();
+    let model = snapshot_model(&snapshot, "deepseek-v4-flash");
+
+    let mut config = GatewayConfig::default();
+    let mut provider = GatewayUpstreamProvider {
+        id: "manual".to_string(),
+        name: "Manual".to_string(),
+        base_url: "https://manual.example.com/v1".to_string(),
+        api_key: "sk-manual".to_string(),
+        mappings: vec![mapping_from_snapshot(&snapshot, model)],
+        ..GatewayUpstreamProvider::default()
+    };
+    provider.template_id = None;
+    config.providers.push(provider);
+    config.model_prices.push(price_from_snapshot("manual", model));
+
+    apply_delete_provider_model(&mut config, "manual", &model.upstream_model, |_next| Ok(()))
+        .expect("deleting from a manual provider must succeed");
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|candidate| candidate.id == "manual")
+        .expect("the manual provider must exist");
+    assert!(
+        find_mapping(provider, &model.upstream_model).is_none(),
+        "the manual mapping must be removed"
+    );
+    assert!(
+        provider.ignored_models.is_empty(),
+        "a manual provider must not record an ignored model"
+    );
+    assert!(
+        find_price_row(&config, "manual", &model.upstream_model).is_some(),
+        "a manual provider keeps its price row; only the mapping is removed"
+    );
+}
+
+/// REQ-005 / AC-008: restoring an ignored model rebuilds it from the template's
+/// current data (the persisted state, not the snapshot) as an enabled mapping
+/// with the official fields and a provider-scoped price row, and clears the
+/// ignored record.
+#[test]
+fn restore_model_rebuilds_from_template_current_data() {
+    let snapshot = opencode_snapshot();
+    let source_model = snapshot_model(&snapshot, "deepseek-v4-flash");
+
+    // Persisted template state wins over the snapshot: the restore must use the
+    // template's current data, not the built-in snapshot.
+    let mut stored = snapshot.clone();
+    let template_protocol = stored.protocol;
+    let effective_protocol = {
+        let stored_model = stored
+            .models
+            .iter_mut()
+            .find(|candidate| candidate.upstream_model == source_model.upstream_model)
+            .expect("the stored template must contain the model");
+        stored_model.display_name = Some("Current Official Name".to_string());
+        stored_model.input = 4.25;
+        stored_model.cache_read = 0.425;
+        stored_model.cache_write = 0.5;
+        stored_model.output = 8.5;
+        stored_model.reasoning_efforts = vec!["low".to_string(), "high".to_string()];
+        stored_model.protocol.unwrap_or(template_protocol)
+    };
+
+    let mut config = GatewayConfig::default();
+    config.provider_templates.push(ProviderTemplateState {
+        template_id: "opencode-zen".to_string(),
+        template: Some(stored.clone()),
+        synced_at: Some(7),
+        source: Some("test".to_string()),
+    });
+    let mut provider = bound_provider("bound", "opencode-zen");
+    provider.ignored_models = vec![source_model.upstream_model.clone()];
+    config.providers.push(provider);
+
+    apply_restore_provider_model(
+        &mut config,
+        "bound",
+        &source_model.upstream_model,
+        |_next| Ok(()),
+    )
+    .expect("an ignored model must be restorable");
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|candidate| candidate.id == "bound")
+        .expect("the bound provider must exist");
+    assert!(
+        !provider
+            .ignored_models
+            .iter()
+            .any(|id| id == &source_model.upstream_model),
+        "the restored model must leave the ignored set"
+    );
+    let mapping = find_mapping(provider, &source_model.upstream_model)
+        .expect("the restored mapping must exist");
+    assert!(mapping.enabled, "a restored mapping is enabled");
+    assert_eq!(mapping.local_model, source_model.upstream_model);
+    assert_eq!(mapping.upstream_model, source_model.upstream_model);
+    assert_eq!(
+        mapping.display_name.as_deref(),
+        Some("Current Official Name")
+    );
+    assert_eq!(mapping.protocol, Some(effective_protocol));
+    assert_eq!(
+        mapping.reasoning_efforts,
+        vec!["low".to_string(), "high".to_string()]
+    );
+
+    let row = find_price_row(&config, "bound", &source_model.upstream_model)
+        .expect("the restored provider-scoped price row must exist");
+    assert_eq!(row.input, 4.25);
+    assert_eq!(row.cache_read, 0.425);
+    assert_eq!(row.cache_write, 0.5);
+    assert_eq!(row.output, 8.5);
+    assert_eq!(row.off_peaks, source_model.off_peaks);
+    assert_eq!(row.off_peak, None);
+}
+
+/// Restore boundary / REQ-005: an ignored model the template no longer carries
+/// reports an actionable error and writes nothing; no empty mapping is created.
+#[test]
+fn restore_model_missing_from_template_reports_error_and_writes_nothing() {
+    let mut config = GatewayConfig::default();
+    let mut provider = bound_provider("bound", "opencode-zen");
+    provider.ignored_models = vec!["ghost-model".to_string()];
+    config.providers.push(provider);
+
+    let before = serde_json::to_value(&config).expect("encode config before");
+    let error = apply_restore_provider_model(&mut config, "bound", "ghost-model", |_next| Ok(()))
+        .expect_err("an ignored model the template no longer has must fail");
+    assert!(
+        error.contains("ghost-model"),
+        "the error must name the missing model: {error}"
+    );
+
+    assert_eq!(
+        before,
+        serde_json::to_value(&config).expect("encode config after"),
+        "a failed restore must write nothing"
+    );
+    let provider = config
+        .providers
+        .iter()
+        .find(|candidate| candidate.id == "bound")
+        .expect("the bound provider must exist");
+    assert!(
+        provider.mappings.iter().all(|mapping| !mapping.local_model.is_empty()
+            && !mapping.upstream_model.is_empty()),
+        "a failed restore must not synthesize an empty mapping"
+    );
+    assert!(
+        provider.mappings.is_empty(),
+        "no mapping may be created for a model the template does not have"
+    );
+}
+
+/// REQ-005 / AC-008: only an ignored model may be restored; asking to restore a
+/// model that is still present is an error that writes nothing.
+#[test]
+fn restore_model_not_ignored_reports_error() {
+    let snapshot = opencode_snapshot();
+    let model = snapshot_model(&snapshot, "deepseek-v4-flash");
+
+    let mut config = GatewayConfig::default();
+    let mut provider = bound_provider("bound", "opencode-zen");
+    provider.mappings = vec![mapping_from_snapshot(&snapshot, model)];
+    config.providers.push(provider);
+    config.model_prices.push(price_from_snapshot("bound", model));
+
+    let before = serde_json::to_value(&config).expect("encode config before");
+    let error =
+        apply_restore_provider_model(&mut config, "bound", &model.upstream_model, |_next| Ok(()))
+            .expect_err("a model that was never deleted must not be restorable");
+    assert!(
+        !error.trim().is_empty(),
+        "the rejection must report a readable message"
+    );
+    assert_eq!(
+        before,
+        serde_json::to_value(&config).expect("encode config after"),
+        "a rejected restore must write nothing"
+    );
+}
+
+/// REQ-007 / AC-011: a persistence failure in any maintenance operation returns
+/// an error and leaves the whole configuration field-for-field identical,
+/// including providers, ignored records, price rows and template state.
+#[test]
+fn maintenance_persist_failure_leaves_config_unchanged() {
+    // create
+    {
+        let mut config = GatewayConfig::default();
+        let before = serde_json::to_value(&config).expect("encode config before");
+        let error = apply_create_provider_from_template(
+            &mut config,
+            "opencode-zen",
+            "My OpenCode",
+            "https://my-zen.example.com/v1",
+            UpstreamProtocol::ChatCompletions,
+            "sk-secret",
+            |_next| Err("disk full".to_string()),
+        )
+        .expect_err("a failed persist must fail the creation");
+        assert!(
+            error.contains("disk full"),
+            "the persistence reason must surface: {error}"
+        );
+        assert_eq!(
+            before,
+            serde_json::to_value(&config).expect("encode config after"),
+            "a failed creation must leave the config untouched"
+        );
+    }
+
+    // delete
+    {
+        let snapshot = opencode_snapshot();
+        let model = snapshot_model(&snapshot, "deepseek-v4-flash");
+        let mut config = GatewayConfig::default();
+        let mut provider = bound_provider("bound", "opencode-zen");
+        provider.mappings = vec![mapping_from_snapshot(&snapshot, model)];
+        config.providers.push(provider);
+        config.model_prices.push(price_from_snapshot("bound", model));
+
+        let before = serde_json::to_value(&config).expect("encode config before");
+        let error = apply_delete_provider_model(
+            &mut config,
+            "bound",
+            &model.upstream_model,
+            |_next| Err("disk full".to_string()),
+        )
+        .expect_err("a failed persist must fail the deletion");
+        assert!(
+            error.contains("disk full"),
+            "the persistence reason must surface: {error}"
+        );
+        assert_eq!(
+            before,
+            serde_json::to_value(&config).expect("encode config after"),
+            "a failed deletion must leave the config untouched"
+        );
+    }
+
+    // restore
+    {
+        let snapshot = opencode_snapshot();
+        let model = snapshot_model(&snapshot, "deepseek-v4-flash");
+        let mut config = GatewayConfig::default();
+        let mut provider = bound_provider("bound", "opencode-zen");
+        provider.ignored_models = vec![model.upstream_model.clone()];
+        config.providers.push(provider);
+
+        let before = serde_json::to_value(&config).expect("encode config before");
+        let error = apply_restore_provider_model(
+            &mut config,
+            "bound",
+            &model.upstream_model,
+            |_next| Err("disk full".to_string()),
+        )
+        .expect_err("a failed persist must fail the restore");
+        assert!(
+            error.contains("disk full"),
+            "the persistence reason must surface: {error}"
+        );
+        assert_eq!(
+            before,
+            serde_json::to_value(&config).expect("encode config after"),
+            "a failed restore must leave the config untouched"
+        );
+    }
+}
