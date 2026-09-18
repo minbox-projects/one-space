@@ -22,10 +22,7 @@ pub(in crate::api_gateway) const SUPPORTED_TERMINAL_TOOLS: [&str; 2] = ["opencod
 const GATEWAY_PROVIDER_NAME: &str = "API Gateway";
 const GATEWAY_PROVIDER_KEY: &str = "apigateway";
 /// Stable marker identifying a provider record written by API Gateway.
-/// New records always carry the new key; the legacy `api_fusion_gateway` key
-/// is accepted read-only so previously synced records keep being recognized.
 const GATEWAY_MARKER_KEY: &str = "api_gateway_gateway";
-const LEGACY_GATEWAY_MARKER_KEY: &str = "api_fusion_gateway";
 
 /// A terminal service provider record that API Gateway can configure or sync.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,18 +55,14 @@ fn provider_tool(provider: &Value) -> &str {
 }
 
 /// A provider carries the gateway marker either at the top level or under
-/// `tool_config`; both shapes are recognized. The legacy `api_fusion_gateway`
-/// marker is accepted read-only; new writes use `GATEWAY_MARKER_KEY` only.
+/// `tool_config`; both shapes are recognized.
 fn provider_has_gateway_marker(provider: &Value) -> bool {
-    fn marked(provider: &Value, key: &str) -> bool {
-        provider.get(key).and_then(Value::as_bool) == Some(true)
-            || provider
-                .get("tool_config")
-                .and_then(|tool_config| tool_config.get(key))
-                .and_then(Value::as_bool)
-                == Some(true)
-    }
-    marked(provider, GATEWAY_MARKER_KEY) || marked(provider, LEGACY_GATEWAY_MARKER_KEY)
+    provider.get(GATEWAY_MARKER_KEY).and_then(Value::as_bool) == Some(true)
+        || provider
+            .get("tool_config")
+            .and_then(|tool_config| tool_config.get(GATEWAY_MARKER_KEY))
+            .and_then(Value::as_bool)
+            == Some(true)
 }
 
 fn non_empty(value: Option<&str>) -> Option<String> {
