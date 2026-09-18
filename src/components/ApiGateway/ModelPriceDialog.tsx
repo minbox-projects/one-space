@@ -13,6 +13,9 @@ import {
   apiGatewayGetConfig,
   apiGatewayModelPricesGet,
   apiGatewayModelPricesSave,
+  formatOffPeakDays,
+  GATEWAY_WEEKDAY_ORDER,
+  gatewayWeekdayTranslationKey,
   getProviderAvailableModels,
   type GatewayUpstreamProvider,
   type ModelPrice,
@@ -27,6 +30,8 @@ export type DraftOffPeakPrice = {
   cache_read: string;
   cache_write: string;
   output: string;
+  /** UTC+8 weekday set (`0` Sunday–`6` Saturday); empty means every day. */
+  days: number[];
 };
 
 export type DraftPrice = {
@@ -74,6 +79,7 @@ function toDraft(price: ModelPrice, index: number): DraftPrice {
       op.cache_write !== undefined && op.cache_write !== null ? String(op.cache_write) : "",
     output:
       op.output !== undefined && op.output !== null ? String(op.output) : "",
+    days: op.days ?? [],
   }));
 
   const hasOffPeak = draftOffPeaks.length > 0;
@@ -98,6 +104,7 @@ function toDraft(price: ModelPrice, index: number): DraftPrice {
             cache_read: "",
             cache_write: "",
             output: "",
+            days: [],
           },
         ],
     is_expanded: false,
@@ -107,6 +114,13 @@ function toDraft(price: ModelPrice, index: number): DraftPrice {
 function parsePriceNumber(value: string): number {
   const parsed = Number(value.trim());
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/** Keep only valid UTC+8 weekdays (0–6), deduplicated and ascending. */
+function normalizeDraftDays(days: number[] | null | undefined): number[] {
+  return Array.from(
+    new Set((days ?? []).filter((day) => day >= 0 && day <= 6)),
+  ).sort((a, b) => a - b);
 }
 
 function OffPeakConfigPanel({
@@ -142,6 +156,7 @@ function OffPeakConfigPanel({
                           cache_read: "",
                           cache_write: "",
                           output: "",
+                          days: [],
                         },
                       ]
                     : draft.off_peaks,
@@ -166,6 +181,7 @@ function OffPeakConfigPanel({
                 cache_read: "",
                 cache_write: "",
                 output: "",
+                days: [],
               };
               updateDraft(originalIndex, {
                 off_peaks: [...draft.off_peaks, newOp],
@@ -352,6 +368,65 @@ function OffPeakConfigPanel({
                     </div>
                   </div>
                 </div>
+
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-medium text-muted-foreground">
+                      {t("apiGatewayWeekdaySelect", "Apply to weekdays")}
+                    </span>
+                    <span
+                      data-testid={`api-gateway-offpeak-days-summary-${opIndex}`}
+                      className="text-[11px] font-semibold text-foreground"
+                    >
+                      {formatOffPeakDays(op.days, t)}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1">
+                    {GATEWAY_WEEKDAY_ORDER.map((day) => {
+                      const selected = op.days.includes(day);
+                      return (
+                        <button
+                          key={day}
+                          type="button"
+                          data-testid={`api-gateway-offpeak-day-${opIndex}-${day}`}
+                          aria-pressed={selected}
+                          aria-label={t(gatewayWeekdayTranslationKey(day))}
+                          onClick={() => {
+                            const next = selected
+                              ? op.days.filter((value) => value !== day)
+                              : [...op.days, day];
+                            const newOps = draft.off_peaks.map((item, idx) =>
+                              idx === opIndex
+                                ? { ...item, days: normalizeDraftDays(next) }
+                                : item,
+                            );
+                            updateDraft(originalIndex, { off_peaks: newOps });
+                          }}
+                          className={`inline-flex h-6 min-w-[2rem] items-center justify-center rounded-full border px-1.5 text-[11px] font-medium transition ${
+                            selected
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                          }`}
+                        >
+                          {t(gatewayWeekdayTranslationKey(day))}
+                        </button>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      data-testid={`api-gateway-offpeak-days-daily-${opIndex}`}
+                      onClick={() => {
+                        const newOps = draft.off_peaks.map((item, idx) =>
+                          idx === opIndex ? { ...item, days: [] } : item,
+                        );
+                        updateDraft(originalIndex, { off_peaks: newOps });
+                      }}
+                      className="inline-flex h-6 items-center rounded-full border border-dashed border-border px-2 text-[11px] font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                    >
+                      {t("apiGatewayEveryDay", "Every day")}
+                    </button>
+                  </div>
+                </div>
               </div>
             ))}
           </div>
@@ -470,6 +545,7 @@ export function ModelPriceDialog({
             cache_read: "",
             cache_write: "",
             output: "",
+            days: [],
           },
         ],
         is_expanded: false,
@@ -496,14 +572,19 @@ export function ModelPriceDialog({
             output: parsePriceNumber(draft.output),
           };
           if (draft.enable_off_peak && draft.off_peaks.length > 0) {
-            item.off_peaks = draft.off_peaks.map((op) => ({
-              start_time: op.start_time.trim() || "00:30",
-              end_time: op.end_time.trim() || "08:30",
-              input: parsePriceNumber(op.input || draft.input),
-              cache_read: parsePriceNumber(op.cache_read || draft.cache_read),
-              cache_write: parsePriceNumber(op.cache_write || draft.cache_write),
-              output: parsePriceNumber(op.output || draft.output),
-            }));
+            item.off_peaks = draft.off_peaks.map((op) => {
+              const days = normalizeDraftDays(op.days);
+              return {
+                start_time: op.start_time.trim() || "00:30",
+                end_time: op.end_time.trim() || "08:30",
+                input: parsePriceNumber(op.input || draft.input),
+                cache_read: parsePriceNumber(op.cache_read || draft.cache_read),
+                cache_write: parsePriceNumber(op.cache_write || draft.cache_write),
+                output: parsePriceNumber(op.output || draft.output),
+                // Absent/empty means every day; omit the field to keep the old shape.
+                ...(days.length > 0 ? { days } : {}),
+              };
+            });
             item.off_peak = item.off_peaks[0] ?? null;
           }
           return item;

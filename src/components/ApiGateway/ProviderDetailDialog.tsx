@@ -1,6 +1,17 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Eye, EyeOff, Info, Plus, Trash2 } from "lucide-react";
+import {
+  ArchiveRestore,
+  ChevronDown,
+  ChevronUp,
+  Eye,
+  EyeOff,
+  Info,
+  Plus,
+  RotateCcw,
+  Trash2,
+  X,
+} from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -11,7 +22,10 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import {
+  isMappingDeprecated,
+  normalizeReasoningEfforts,
   type GatewayModelMapping,
+  type GatewayProviderTemplateView,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
 } from "@/lib/apiGateway";
@@ -23,6 +37,9 @@ type ProviderDetailDialogProps = {
   busy: boolean;
   onSave: (provider: GatewayUpstreamProvider) => void;
   onDelete?: (providerId: string) => void;
+  templates?: GatewayProviderTemplateView[];
+  onDeleteModel?: (providerId: string, upstreamModel: string) => void;
+  onRestoreModel?: (providerId: string, upstreamModel: string) => void;
 };
 
 const mappingInputClass =
@@ -35,6 +52,9 @@ export function ProviderDetailDialog({
   busy,
   onSave,
   onDelete,
+  templates,
+  onDeleteModel,
+  onRestoreModel,
 }: ProviderDetailDialogProps) {
   const { t } = useTranslation();
 
@@ -45,6 +65,10 @@ export function ProviderDetailDialog({
   const [protocol, setProtocol] = useState<GatewayUpstreamProtocol>("chat_completions");
   const [mappings, setMappings] = useState<GatewayModelMapping[]>([]);
   const [revealApiKey, setRevealApiKey] = useState(false);
+  const [expandedMappings, setExpandedMappings] = useState<Record<number, boolean>>(
+    {},
+  );
+  const [effortInputs, setEffortInputs] = useState<Record<number, string>>({});
 
   useEffect(() => {
     if (!provider) {
@@ -55,6 +79,8 @@ export function ProviderDetailDialog({
       setProtocol("chat_completions");
       setMappings([]);
       setRevealApiKey(false);
+      setExpandedMappings({});
+      setEffortInputs({});
       return;
     }
     setName(provider.name);
@@ -64,11 +90,18 @@ export function ProviderDetailDialog({
     setProtocol(provider.protocol ?? "chat_completions");
     setMappings(provider.mappings ?? []);
     setRevealApiKey(false);
+    setExpandedMappings({});
+    setEffortInputs({});
   }, [provider, open]);
 
   if (!provider) return null;
 
   const isEditing = Boolean(provider.id);
+  const isTemplateBound = Boolean(provider.template_id);
+  const boundTemplate = provider.template_id
+    ? templates?.find((view) => view.template.id === provider.template_id)?.template
+    : undefined;
+  const ignoredModels = isTemplateBound ? provider.ignored_models ?? [] : [];
 
   const updateMapping = (index: number, patch: Partial<GatewayModelMapping>) => {
     setMappings((prev) =>
@@ -76,6 +109,51 @@ export function ProviderDetailDialog({
         entryIndex === index ? { ...entry, ...patch } : entry,
       ),
     );
+  };
+
+  const addEffort = (index: number) => {
+    const raw = effortInputs[index] ?? "";
+    setMappings((prev) =>
+      prev.map((entry, entryIndex) =>
+        entryIndex === index
+          ? {
+              ...entry,
+              reasoning_efforts: normalizeReasoningEfforts([
+                ...(entry.reasoning_efforts ?? []),
+                raw,
+              ]),
+            }
+          : entry,
+      ),
+    );
+    setEffortInputs((prev) => ({ ...prev, [index]: "" }));
+  };
+
+  const removeEffort = (index: number, effort: string) => {
+    setMappings((prev) =>
+      prev.map((entry, entryIndex) =>
+        entryIndex === index
+          ? {
+              ...entry,
+              reasoning_efforts: normalizeReasoningEfforts(
+                (entry.reasoning_efforts ?? []).filter((item) => item !== effort),
+              ),
+            }
+          : entry,
+      ),
+    );
+  };
+
+  const handleRemoveMapping = (index: number) => {
+    const mapping = mappings[index];
+    if (
+      isTemplateBound &&
+      onDeleteModel &&
+      mapping?.upstream_model.trim()
+    ) {
+      onDeleteModel(provider.id, mapping.upstream_model);
+    }
+    setMappings((prev) => prev.filter((_, entryIndex) => entryIndex !== index));
   };
 
   const handleSave = () => {
@@ -86,12 +164,18 @@ export function ProviderDetailDialog({
       api_key: apiKey,
       default_model: defaultModel.trim() ? defaultModel.trim() : null,
       protocol,
-      mappings: mappings.map((mapping) => ({
-        ...mapping,
-        enabled: mapping.enabled !== false,
-        display_name: mapping.display_name?.trim() ? mapping.display_name.trim() : undefined,
-        protocol: mapping.protocol ? mapping.protocol : undefined,
-      })),
+      mappings: mappings.map((mapping) => {
+        const reasoningEfforts = normalizeReasoningEfforts(mapping.reasoning_efforts);
+        return {
+          ...mapping,
+          enabled: mapping.enabled !== false,
+          display_name: mapping.display_name?.trim()
+            ? mapping.display_name.trim()
+            : undefined,
+          protocol: mapping.protocol ? mapping.protocol : undefined,
+          reasoning_efforts: reasoningEfforts.length > 0 ? reasoningEfforts : undefined,
+        };
+      }),
     });
     onOpenChange(false);
   };
@@ -268,108 +352,258 @@ export function ProviderDetailDialog({
             ) : (
               <div className="overflow-x-auto">
                 <ul className="space-y-2">
-                {mappings.map((mapping, index) => (
+                {mappings.map((mapping, index) => {
+                  const deprecated = Boolean(
+                    boundTemplate && isMappingDeprecated(mapping, boundTemplate),
+                  );
+                  const isExpanded = expandedMappings[index] === true;
+                  const efforts = mapping.reasoning_efforts ?? [];
+                  return (
                   <li
                     key={index}
                     data-disabled={mapping.enabled === false ? "true" : undefined}
-                    className={`flex items-center gap-2 ${mapping.enabled === false ? "opacity-60" : ""}`}
+                    data-deprecated={deprecated ? "true" : undefined}
+                    className={`space-y-2 ${mapping.enabled === false ? "opacity-60" : ""}`}
                   >
-                    <Switch
-                      aria-label={t("apiGatewayToggleMappingAria", {
-                        index: index + 1,
-                        defaultValue: `Enable mapping ${index + 1}`,
-                      })}
-                      checked={mapping.enabled !== false}
-                      onCheckedChange={(checked) =>
-                        updateMapping(index, { enabled: checked })
-                      }
-                    />
-                    <input
-                      type="text"
-                      value={mapping.local_model}
-                      onChange={(event) =>
-                        updateMapping(index, { local_model: event.target.value })
-                      }
-                      placeholder={t("apiGatewayLocalModelPlaceholder", "local model")}
-                      aria-label={t("apiGatewayLocalModelAria", {
-                        index: index + 1,
-                        defaultValue: `Local model ${index + 1}`,
-                      })}
-                      className={`${mappingInputClass} min-w-[120px] flex-1 font-mono`}
-                    />
-                    <span aria-hidden="true" className="shrink-0 text-muted-foreground font-semibold text-sm">
-                      →
-                    </span>
-                    <input
-                      type="text"
-                      value={mapping.upstream_model}
-                      onChange={(event) =>
-                        updateMapping(index, { upstream_model: event.target.value })
-                      }
-                      placeholder={t("apiGatewayUpstreamModelPlaceholder", "upstream model")}
-                      aria-label={t("apiGatewayUpstreamModelAria", {
-                        index: index + 1,
-                        defaultValue: `Upstream model ${index + 1}`,
-                      })}
-                      className={`${mappingInputClass} min-w-[120px] flex-1 font-mono`}
-                    />
-                    <input
-                      type="text"
-                      value={mapping.display_name ?? ""}
-                      onChange={(event) =>
-                        updateMapping(index, { display_name: event.target.value })
-                      }
-                      placeholder={t("apiGatewayLocalModelNamePlaceholder", "display name")}
-                      aria-label={t("apiGatewayLocalModelNameAria", {
-                        index: index + 1,
-                        defaultValue: `Local model name ${index + 1}`,
-                      })}
-                      className={`${mappingInputClass} min-w-[120px] flex-1`}
-                    />
-                    <select
-                      value={mapping.protocol ?? ""}
-                      onChange={(event) =>
-                        updateMapping(index, {
-                          protocol:
-                            event.target.value === ""
-                              ? null
-                              : (event.target.value as GatewayUpstreamProtocol),
-                        })
-                      }
-                      aria-label={t("apiGatewayMappingProtocolAria", {
-                        index: index + 1,
-                        defaultValue: `Mapping protocol ${index + 1}`,
-                      })}
-                      className={`${mappingInputClass} min-w-[180px] shrink-0`}
-                    >
-                      <option value="">
-                        {t("apiGatewayProtocolInherit", "Inherit from provider")}
-                      </option>
-                      <option value="chat_completions">
-                        {t("apiGatewayProtocolChat", "Chat Completions (/chat/completions)")}
-                      </option>
-                      <option value="responses">
-                        {t("apiGatewayProtocolResponses", "Responses (/responses)")}
-                      </option>
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setMappings((prev) => prev.filter((_, entryIndex) => entryIndex !== index))
-                      }
-                      aria-label={t("apiGatewayRemoveMappingAria", {
-                        index: index + 1,
-                        defaultValue: `Remove mapping ${index + 1}`,
-                      })}
-                      className="inline-flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        data-testid={`api-gateway-mapping-expand-${index}`}
+                        aria-expanded={isExpanded}
+                        aria-label={t("apiGatewayReasoningEfforts", "Reasoning efforts")}
+                        onClick={() =>
+                          setExpandedMappings((prev) => ({
+                            ...prev,
+                            [index]: !prev[index],
+                          }))
+                        }
+                        className="inline-flex h-[38px] w-[30px] shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                      >
+                        {isExpanded ? (
+                          <ChevronUp className="h-4 w-4" />
+                        ) : (
+                          <ChevronDown className="h-4 w-4" />
+                        )}
+                      </button>
+                      <Switch
+                        aria-label={t("apiGatewayToggleMappingAria", {
+                          index: index + 1,
+                          defaultValue: `Enable mapping ${index + 1}`,
+                        })}
+                        checked={mapping.enabled !== false}
+                        onCheckedChange={(checked) =>
+                          updateMapping(index, { enabled: checked })
+                        }
+                      />
+                      <input
+                        type="text"
+                        value={mapping.local_model}
+                        onChange={(event) =>
+                          updateMapping(index, { local_model: event.target.value })
+                        }
+                        placeholder={t("apiGatewayLocalModelPlaceholder", "local model")}
+                        aria-label={t("apiGatewayLocalModelAria", {
+                          index: index + 1,
+                          defaultValue: `Local model ${index + 1}`,
+                        })}
+                        className={`${mappingInputClass} min-w-[120px] flex-1 font-mono`}
+                      />
+                      <span aria-hidden="true" className="shrink-0 text-muted-foreground font-semibold text-sm">
+                        →
+                      </span>
+                      <input
+                        type="text"
+                        value={mapping.upstream_model}
+                        onChange={(event) =>
+                          updateMapping(index, { upstream_model: event.target.value })
+                        }
+                        placeholder={t("apiGatewayUpstreamModelPlaceholder", "upstream model")}
+                        aria-label={t("apiGatewayUpstreamModelAria", {
+                          index: index + 1,
+                          defaultValue: `Upstream model ${index + 1}`,
+                        })}
+                        className={`${mappingInputClass} min-w-[120px] flex-1 font-mono`}
+                      />
+                      {deprecated ? (
+                        <span className="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                          {t("apiGatewayTemplateDeprecated")}
+                        </span>
+                      ) : null}
+                      <input
+                        type="text"
+                        value={mapping.display_name ?? ""}
+                        onChange={(event) =>
+                          updateMapping(index, { display_name: event.target.value })
+                        }
+                        placeholder={t("apiGatewayLocalModelNamePlaceholder", "display name")}
+                        aria-label={t("apiGatewayLocalModelNameAria", {
+                          index: index + 1,
+                          defaultValue: `Local model name ${index + 1}`,
+                        })}
+                        className={`${mappingInputClass} min-w-[120px] flex-1`}
+                      />
+                      <select
+                        value={mapping.protocol ?? ""}
+                        onChange={(event) =>
+                          updateMapping(index, {
+                            protocol:
+                              event.target.value === ""
+                                ? null
+                                : (event.target.value as GatewayUpstreamProtocol),
+                          })
+                        }
+                        aria-label={t("apiGatewayMappingProtocolAria", {
+                          index: index + 1,
+                          defaultValue: `Mapping protocol ${index + 1}`,
+                        })}
+                        className={`${mappingInputClass} min-w-[180px] shrink-0`}
+                      >
+                        <option value="">
+                          {t("apiGatewayProtocolInherit", "Inherit from provider")}
+                        </option>
+                        <option value="chat_completions">
+                          {t("apiGatewayProtocolChat", "Chat Completions (/chat/completions)")}
+                        </option>
+                        <option value="responses">
+                          {t("apiGatewayProtocolResponses", "Responses (/responses)")}
+                        </option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveMapping(index)}
+                        aria-label={t("apiGatewayRemoveMappingAria", {
+                          index: index + 1,
+                          defaultValue: `Remove mapping ${index + 1}`,
+                        })}
+                        className="inline-flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    {isExpanded ? (
+                      <div
+                        data-testid={`api-gateway-mapping-efforts-${index}`}
+                        className="space-y-2 rounded-lg border-t border-border/60 bg-muted/10 px-3 py-2.5"
+                      >
+                        <div className="text-[11px] font-semibold text-foreground">
+                          {t("apiGatewayReasoningEfforts", "Reasoning efforts")}
+                        </div>
+                        <p className="text-[11px] text-muted-foreground">
+                          {t(
+                            "apiGatewayReasoningEffortsDesc",
+                            "Add or remove the reasoning-effort identifiers this model advertises.",
+                          )}
+                        </p>
+                        {efforts.length > 0 ? (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {efforts.map((effort) => (
+                              <span
+                                key={effort}
+                                data-testid={`api-gateway-mapping-effort-${index}-${effort}`}
+                                className="inline-flex items-center gap-1 rounded-full border border-border bg-secondary px-2 py-0.5 text-[11px] font-medium text-secondary-foreground"
+                              >
+                                <span className="font-mono">{effort}</span>
+                                <button
+                                  type="button"
+                                  data-testid={`api-gateway-mapping-effort-remove-${index}-${effort}`}
+                                  aria-label={t("apiGatewayReasoningEffortRemove", {
+                                    effort,
+                                    defaultValue: `Remove ${effort}`,
+                                  })}
+                                  onClick={() => removeEffort(index, effort)}
+                                  className="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                                >
+                                  <X className="h-3 w-3" />
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            data-testid={`api-gateway-mapping-effort-input-${index}`}
+                            value={effortInputs[index] ?? ""}
+                            onChange={(event) =>
+                              setEffortInputs((prev) => ({
+                                ...prev,
+                                [index]: event.target.value,
+                              }))
+                            }
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                addEffort(index);
+                              }
+                            }}
+                            placeholder={t(
+                              "apiGatewayReasoningEffortPlaceholder",
+                              "e.g. high",
+                            )}
+                            aria-label={t("apiGatewayReasoningEfforts", "Reasoning efforts")}
+                            className={`${mappingInputClass} h-8 min-w-[140px] flex-1 font-mono`}
+                          />
+                          <button
+                            type="button"
+                            data-testid={`api-gateway-mapping-effort-add-${index}`}
+                            onClick={() => addEffort(index)}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium shadow-sm transition hover:bg-muted"
+                          >
+                            <Plus className="h-3 w-3" />
+                            {t("apiGatewayReasoningEffortAdd", "Add")}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </li>
-                ))}
+                  );
+                })}
                 </ul>
               </div>
             )}
+
+            {ignoredModels.length > 0 ? (
+              <div
+                data-testid="api-gateway-ignored-models"
+                className="rounded-lg border border-border/70 bg-background/60 p-2.5"
+              >
+                <div className="flex items-center gap-1.5">
+                  <ArchiveRestore className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="text-[11px] font-semibold text-foreground">
+                    {t("apiGatewayIgnoredModels", "Ignored models")}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  {t(
+                    "apiGatewayIgnoredModelsDesc",
+                    "Models you removed from this template. Restore one to rebuild it from the template's current data.",
+                  )}
+                </p>
+                <ul className="mt-1.5 space-y-1">
+                  {ignoredModels.map((model) => (
+                    <li
+                      key={model}
+                      data-testid={`api-gateway-ignored-model-${model}`}
+                      className="flex items-center justify-between gap-2 rounded-md bg-muted/40 px-2 py-1"
+                    >
+                      <span className="truncate font-mono text-[11px] text-foreground">
+                        {model}
+                      </span>
+                      <button
+                        type="button"
+                        data-testid={`api-gateway-restore-model-${model}`}
+                        onClick={() => onRestoreModel?.(provider.id, model)}
+                        className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border bg-background px-2 text-[11px] font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        {t("apiGatewayRestoreModel", "Restore")}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </div>
         </div>
 

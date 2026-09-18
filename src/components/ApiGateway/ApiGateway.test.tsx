@@ -1625,3 +1625,117 @@ describe("ApiGateway", () => {
     expect(within(detail).getByLabelText("Name")).toHaveValue("OpenCode Zen");
   });
 });
+
+describe("ApiGateway 模板服务商模型维护", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  function templateView(
+    models: string[],
+  ): GatewayProviderTemplateView {
+    return {
+      template: {
+        id: "t1",
+        name: "OpenCode Zen",
+        description: "Curated OpenCode models",
+        base_url: "https://opencode.ai/zen/v1",
+        protocol: "chat_completions",
+        source: "snapshot:models.dev",
+        snapshot_version: "2026.09.18",
+        models: models.map((upstream_model) => ({
+          upstream_model,
+          display_name: upstream_model,
+          protocol: "chat_completions" as const,
+          input: 1,
+          cache_read: 0,
+          cache_write: 0,
+          output: 1,
+          off_peaks: [],
+          reasoning_efforts: [],
+        })),
+      },
+      synced_at: null,
+      source: "snapshot:models.dev",
+      from_snapshot: true,
+    };
+  }
+
+  function mockStoreForTemplateProvider(provider: GatewayUpstreamProvider) {
+    const store: Store = {
+      config: makeConfig({ providers: [provider] }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [],
+    };
+    invokeMock.mockImplementation(async (command: string, _args?: any) => {
+      switch (command) {
+        case "api_gateway_get_config":
+          return store.config;
+        case "api_gateway_status":
+          return store.status;
+        case "api_gateway_terminal_targets":
+          return store.targets;
+        case "api_gateway_provider_templates":
+          return [templateView(["remote-a", "retired-model"])];
+        case "api_gateway_model_prices_get":
+          return [];
+        case "api_gateway_delete_provider_model":
+        case "api_gateway_restore_provider_model":
+          return store.config;
+        default:
+          throw new Error(`Unhandled command: ${command}`);
+      }
+    });
+    return store;
+  }
+
+  it("deleteMappingOnTemplateProviderCallsCommand", async () => {
+    mockStoreForTemplateProvider(
+      makeProvider({
+        id: "p1",
+        name: "Upstream A",
+        template_id: "t1",
+        mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
+      }),
+    );
+
+    renderWithProviders(<ApiGateway />);
+    fireEvent.click(await screen.findByText("Upstream A"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove mapping 1" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "api_gateway_delete_provider_model",
+        { providerId: "p1", upstreamModel: "remote-a" },
+      ),
+    );
+  });
+
+  it("restoreIgnoredModelCallsCommand", async () => {
+    mockStoreForTemplateProvider(
+      makeProvider({
+        id: "p1",
+        name: "Upstream A",
+        template_id: "t1",
+        ignored_models: ["retired-model"],
+        mappings: [],
+      }),
+    );
+
+    renderWithProviders(<ApiGateway />);
+    fireEvent.click(await screen.findByText("Upstream A"));
+
+    fireEvent.click(
+      await screen.findByTestId("api-gateway-restore-model-retired-model"),
+    );
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "api_gateway_restore_provider_model",
+        { providerId: "p1", upstreamModel: "retired-model" },
+      ),
+    );
+  });
+});

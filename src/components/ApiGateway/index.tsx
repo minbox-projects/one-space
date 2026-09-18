@@ -17,9 +17,11 @@ import {
   apiGatewayCreateProviderFromTemplate,
   apiGatewayDeleteKey,
   apiGatewayDeleteProvider,
+  apiGatewayDeleteProviderModel,
   apiGatewayGetConfig,
   apiGatewayProviderTemplates,
   apiGatewayReenableProvider,
+  apiGatewayRestoreProviderModel,
   apiGatewaySetDefaultKey,
   apiGatewaySetProviderEnabled,
   apiGatewayStart,
@@ -244,6 +246,31 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
       setSelectedProviderId(null);
       setIsDialogOpen(false);
     }, t("apiGatewayDeleted", "Deleted."));
+
+  const syncEditingProvider = (
+    next: GatewayConfig,
+    providerId: string,
+  ) => {
+    const updated =
+      next.providers.find((provider) => provider.id === providerId) ?? null;
+    setEditingProvider((prev) =>
+      prev && prev.id === providerId ? updated : prev,
+    );
+  };
+
+  const handleDeleteProviderModel = (providerId: string, upstreamModel: string) =>
+    runAction(async () => {
+      const next = await apiGatewayDeleteProviderModel(providerId, upstreamModel);
+      await applyConfig(next);
+      syncEditingProvider(next, providerId);
+    }, t("apiGatewayMappingDeleted", "Model deleted."));
+
+  const handleRestoreProviderModel = (providerId: string, upstreamModel: string) =>
+    runAction(async () => {
+      const next = await apiGatewayRestoreProviderModel(providerId, upstreamModel);
+      await applyConfig(next);
+      syncEditingProvider(next, providerId);
+    }, t("apiGatewayModelRestored", "Model restored."));
 
   const handleSaveKey = (key: GatewayKey): Promise<boolean> =>
     runAction(async () => {
@@ -696,6 +723,13 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
           busy={busy}
           onSave={(draft) => void handleSaveProvider(draft)}
           onDelete={(providerId) => void handleDeleteProvider(providerId)}
+          templates={templates}
+          onDeleteModel={(providerId, upstreamModel) =>
+            void handleDeleteProviderModel(providerId, upstreamModel)
+          }
+          onRestoreModel={(providerId, upstreamModel) =>
+            void handleRestoreProviderModel(providerId, upstreamModel)
+          }
         />
 
         {/* 本地密钥新增模态弹窗 */}
