@@ -359,6 +359,61 @@ describe("ModelListPanel 本地模型列表", () => {
     ).not.toBeInTheDocument();
     expect(rowModels()).toHaveLength(2);
   });
+
+  it("搜索分别命中模型名称与模型 ID：名称独有与 ID 独有的子串都保留行，仅上游独有的子串不命中", () => {
+    renderPanel([
+      makeProvider({
+        id: "p1",
+        name: "Provider 1",
+        mappings: [
+          {
+            local_model: "local-only-model",
+            upstream_model: "remote-only-model",
+            display_name: "Friendly Label",
+          },
+        ],
+      }),
+    ]);
+
+    expect(rowModels()).toEqual(["local-only-model"]);
+    expect(
+      within(
+        screen.getByTestId("api-gateway-model-list-row"),
+      ).getByTestId("api-gateway-model-list-name").textContent,
+    ).toBe("Friendly Label");
+
+    fireEvent.change(searchBox(), { target: { value: "friendly" } });
+    expect(rowModels()).toEqual(["local-only-model"]);
+    expect(
+      screen.queryByTestId("api-gateway-model-list-no-match"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(searchBox(), { target: { value: "label" } });
+    expect(rowModels()).toEqual(["local-only-model"]);
+
+    fireEvent.change(searchBox(), { target: { value: "local-only" } });
+    expect(rowModels()).toEqual(["local-only-model"]);
+
+    fireEvent.change(searchBox(), { target: { value: "remote-only-model" } });
+    expect(rowModels()).toEqual([]);
+    expect(
+      screen.getByTestId("api-gateway-model-list-no-match"),
+    ).toBeInTheDocument();
+  });
+
+  it("providers 为空数组时展示空态，不渲染表格且没有任何数据行", () => {
+    renderPanel([]);
+
+    expect(
+      screen.getByTestId("api-gateway-model-list-empty"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryAllByTestId("api-gateway-model-list-row"),
+    ).toHaveLength(0);
+    expect(
+      screen.queryByTestId("api-gateway-model-list-table"),
+    ).not.toBeInTheDocument();
+  });
 });
 
 const MODEL_LIST_I18N_KEYS: ReadonlyArray<
