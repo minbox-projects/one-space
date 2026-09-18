@@ -576,7 +576,11 @@ fn config_path() -> Result<PathBuf, String> {
 }
 
 pub fn get_app_dir() -> Result<PathBuf, String> {
-    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    #[cfg(test)]
+    let home_dir = test_home::test_home_override().or_else(dirs::home_dir);
+    #[cfg(not(test))]
+    let home_dir = dirs::home_dir();
+    let home_dir = home_dir.ok_or("Could not find home directory")?;
     let app_dir = home_dir.join(".config").join("onespace");
     if !app_dir.exists() {
         fs::create_dir_all(&app_dir).map_err(|e| e.to_string())?;
@@ -1024,13 +1028,75 @@ pub async fn save_storage_config(
     Ok(())
 }
 
+/// Test-only thread-local HOME override. It never mutates the process `HOME`
+/// environment variable, so tests that only resolve application paths can run
+/// in parallel without the global `crate::lock_test_home_env` mutex.
+#[cfg(test)]
+pub(crate) mod test_home {
+    use std::cell::RefCell;
+    use std::marker::PhantomData;
+    use std::path::PathBuf;
+
+    thread_local! {
+        static TEST_HOME_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    /// Returns the current thread's HOME override, if a [`TestHomeGuard`] is
+    /// active. Production path resolution is expected to fall back to
+    /// `dirs::home_dir()` when this is `None`.
+    pub(crate) fn test_home_override() -> Option<PathBuf> {
+        TEST_HOME_OVERRIDE.with(|slot| slot.borrow().clone())
+    }
+
+    /// Scopes a thread-local HOME override to the creating thread. Dropping the
+    /// guard restores the previous value, so nested guards unwind in order.
+    ///
+    /// The guard is intentionally `!Send`: the override lives in thread-local
+    /// storage and must be created and dropped on the same thread.
+    pub(crate) struct TestHomeGuard {
+        previous: Option<PathBuf>,
+        _not_send: PhantomData<*const ()>,
+    }
+
+    impl TestHomeGuard {
+        pub(crate) fn set(home: impl Into<PathBuf>) -> Self {
+            let previous = TEST_HOME_OVERRIDE.with(|slot| slot.replace(Some(home.into())));
+            Self {
+                previous,
+                _not_send: PhantomData,
+            }
+        }
+    }
+
+    impl Drop for TestHomeGuard {
+        fn drop(&mut self) {
+            let previous = self.previous.take();
+            TEST_HOME_OVERRIDE.with(|slot| {
+                *slot.borrow_mut() = previous;
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_home::{test_home_override, TestHomeGuard};
     use super::{
-        apply_shared_profile, normalize_ai_model_launch_commands, normalize_ai_news_keywords,
-        AiNewsRssSource, SharedProfile, StorageConfig, SyncPolicy,
+        apply_shared_profile, get_app_dir, get_local_data_dir, normalize_ai_model_launch_commands,
+        normalize_ai_news_keywords, AiNewsRssSource, SharedProfile, StorageConfig, SyncPolicy,
     };
     use std::collections::HashMap;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Barrier};
+
+    struct TempTestHome(PathBuf);
+
+    impl Drop for TempTestHome {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn sync_policy_default_disables_skills_repository() {
@@ -1214,5 +1280,67 @@ mod tests {
         let out = normalize_ai_model_launch_commands(Some(input));
 
         assert_eq!(out.get("opencode").map(String::as_str), Some("opencode"));
+    }
+
+    #[test]
+    fn test_home_fixture_isolates_app_dir_and_local_data_across_threads() {
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+
+        for label in ["home-a", "home-b"] {
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let temp_home = std::env::temp_dir().join(format!(
+                    "onespace-config-test-home-{}-{}",
+                    label,
+                    uuid::Uuid::new_v4()
+                ));
+                let _cleanup = TempTestHome(temp_home.clone());
+                fs::create_dir_all(&temp_home).expect("create temp home");
+
+                // Seed local storage so an isolated local-data resolution never
+                // falls back to the real iCloud/legacy location.
+                let isolated_app_dir = temp_home.join(".config").join("onespace");
+                fs::create_dir_all(&isolated_app_dir).expect("create temp app dir");
+                let seeded_config = format!(
+                    r#"{{"storage_type":"local","local_storage_path":{}}}"#,
+                    serde_json::to_string(&temp_home.join("data")).expect("encode temp data path")
+                );
+                fs::write(isolated_app_dir.join("config.json"), seeded_config)
+                    .expect("seed temp config");
+
+                let _guard = TestHomeGuard::set(&temp_home);
+
+                // A nested guard must restore the previous thread-local HOME.
+                {
+                    let nested_home = temp_home.join("nested-home");
+                    let _nested_guard = TestHomeGuard::set(&nested_home);
+                    assert_eq!(test_home_override(), Some(nested_home));
+                }
+                assert_eq!(test_home_override(), Some(temp_home.clone()));
+
+                // Reaching the barrier proves both threads hold distinct
+                // thread-local HOME scopes at the same time.
+                barrier.wait();
+
+                let resolved_app_dir = get_app_dir().expect("resolve app dir");
+                assert_eq!(
+                    resolved_app_dir, isolated_app_dir,
+                    "get_app_dir must resolve under the thread-local HOME override"
+                );
+
+                let resolved_local_dir =
+                    get_local_data_dir().expect("resolve local data dir");
+                assert_eq!(
+                    resolved_local_dir,
+                    isolated_app_dir.join("local_data"),
+                    "get_local_data_dir must resolve under the thread-local HOME override"
+                );
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("test home thread must not panic");
+        }
     }
 }
