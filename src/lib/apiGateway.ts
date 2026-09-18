@@ -683,6 +683,7 @@ export interface GatewayProviderTemplate {
   protocol: GatewayUpstreamProtocol;
   source: string;
   snapshot_version: string;
+  models_url?: string | null;
   models: GatewayProviderTemplateModel[];
 }
 
@@ -768,6 +769,35 @@ export function apiGatewayProviderTemplates() {
 export function apiGatewaySyncProviderTemplate(templateId: string) {
   return invoke<GatewayProviderTemplateView>("api_gateway_sync_provider_template", {
     templateId,
+  });
+}
+
+export function apiGatewayUpsertProviderTemplate(
+  template: GatewayProviderTemplate,
+) {
+  return invoke<GatewayProviderTemplateView[]>(
+    "api_gateway_upsert_provider_template",
+    { template },
+  );
+}
+
+export function apiGatewayDeleteProviderTemplate(templateId: string) {
+  return invoke<GatewayProviderTemplateView[]>(
+    "api_gateway_delete_provider_template",
+    { templateId },
+  );
+}
+
+export function apiGatewayResetProviderTemplates() {
+  return invoke<GatewayProviderTemplateView[]>(
+    "api_gateway_reset_provider_templates",
+  );
+}
+
+export function apiGatewayFetchModels(url: string, apiKey?: string) {
+  return invoke<string[]>("api_gateway_fetch_models", {
+    url,
+    apiKey: apiKey && apiKey.trim() ? apiKey.trim() : null,
   });
 }
 

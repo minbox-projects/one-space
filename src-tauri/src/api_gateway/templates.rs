@@ -30,11 +30,13 @@ struct RawTemplate {
     #[serde(default)]
     protocol: Option<String>,
     #[serde(default)]
-    source: String,
+    pub source: String,
     #[serde(default)]
-    snapshot_version: String,
+    pub snapshot_version: String,
     #[serde(default)]
-    models: Vec<RawTemplateModel>,
+    pub models_url: Option<String>,
+    #[serde(default)]
+    pub models: Vec<RawTemplateModel>,
 }
 
 #[derive(Deserialize)]
@@ -204,6 +206,11 @@ pub fn parse_template_snapshot(json: &str) -> Result<Vec<ProviderTemplate>, Stri
             None => UpstreamProtocol::ChatCompletions,
         };
 
+        let models_url = item
+            .models_url
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         templates.push(ProviderTemplate {
             id,
             name: item.name,
@@ -212,6 +219,7 @@ pub fn parse_template_snapshot(json: &str) -> Result<Vec<ProviderTemplate>, Stri
             protocol,
             source: item.source,
             snapshot_version: item.snapshot_version,
+            models_url,
             models,
         });
     }
@@ -257,6 +265,13 @@ pub(in crate::api_gateway) fn effective_template(
     config: &GatewayConfig,
     template_id: &str,
 ) -> Result<ProviderTemplate, String> {
+    if config
+        .deleted_template_ids
+        .iter()
+        .any(|id| id == template_id)
+    {
+        return Err(format!("Template '{template_id}' has been deleted"));
+    }
     if let Some(template) = config
         .provider_templates
         .iter()
@@ -268,14 +283,21 @@ pub(in crate::api_gateway) fn effective_template(
     find_builtin_template(template_id)
 }
 
-/// Build the ordered view of both built-in templates: persisted sync results
-/// win, otherwise the built-in snapshot is reported with `from_snapshot`.
-/// States whose id does not match a built-in template are ignored.
+/// Build the ordered view of provider templates: persisted sync/custom results
+/// win, deleted built-in templates are skipped, and user custom templates are appended.
 pub fn provider_template_views(
     config: &GatewayConfig,
 ) -> Result<Vec<ProviderTemplateView>, String> {
     let mut views = Vec::new();
-    for snapshot in builtin_templates()? {
+    let builtins = builtin_templates()?;
+    for snapshot in &builtins {
+        if config
+            .deleted_template_ids
+            .iter()
+            .any(|id| id == &snapshot.id)
+        {
+            continue;
+        }
         match config
             .provider_templates
             .iter()
@@ -304,6 +326,32 @@ pub fn provider_template_views(
             }),
         }
     }
+
+    for state in &config.provider_templates {
+        if builtins.iter().any(|b| b.id == state.template_id) {
+            continue;
+        }
+        if config
+            .deleted_template_ids
+            .iter()
+            .any(|id| id == &state.template_id)
+        {
+            continue;
+        }
+        if let Some(template) = &state.template {
+            views.push(ProviderTemplateView {
+                template: template.clone(),
+                synced_at: state.synced_at,
+                source: state
+                    .source
+                    .clone()
+                    .filter(|source| !source.trim().is_empty())
+                    .unwrap_or_else(|| template.source.clone()),
+                from_snapshot: false,
+            });
+        }
+    }
+
     Ok(views)
 }
 
@@ -1049,3 +1097,205 @@ pub fn apply_restore_provider_model(
     *config = next;
     Ok(())
 }
+
+/// Save an updated or new provider template into persisted state.
+pub fn apply_upsert_provider_template<W>(
+    config: &mut GatewayConfig,
+    mut template: ProviderTemplate,
+    write: W,
+) -> Result<Vec<ProviderTemplateView>, String>
+where
+    W: FnOnce(&GatewayConfig) -> Result<(), String>,
+{
+    template.id = template.id.trim().to_string();
+    if template.id.is_empty() {
+        template.id = format!("tpl-{}", new_provider_id());
+    }
+    template.name = template.name.trim().to_string();
+    if template.name.is_empty() {
+        return Err("Template name is required".to_string());
+    }
+    template.base_url = template.base_url.trim().to_string();
+    if template.base_url.is_empty() {
+        return Err("Template base URL is required".to_string());
+    }
+
+    config.deleted_template_ids.retain(|id| id != &template.id);
+
+    let template_id = template.id.clone();
+    let source = if template.source.trim().is_empty() {
+        None
+    } else {
+        Some(template.source.clone())
+    };
+
+    if let Some(state) = config
+        .provider_templates
+        .iter_mut()
+        .find(|s| s.template_id == template_id)
+    {
+        state.template = Some(template);
+        if source.is_some() {
+            state.source = source;
+        }
+    } else {
+        config.provider_templates.push(ProviderTemplateState {
+            template_id,
+            template: Some(template),
+            synced_at: None,
+            source,
+        });
+    }
+
+    write(config)?;
+    provider_template_views(config)
+}
+
+/// Delete a provider template. Fails if the template is currently in use by any upstream provider.
+pub fn apply_delete_provider_template<W>(
+    config: &mut GatewayConfig,
+    template_id: &str,
+    write: W,
+) -> Result<Vec<ProviderTemplateView>, String>
+where
+    W: FnOnce(&GatewayConfig) -> Result<(), String>,
+{
+    let tid = template_id.trim();
+    if tid.is_empty() {
+        return Err("Template ID is required".to_string());
+    }
+
+    let used_by = config
+        .providers
+        .iter()
+        .find(|p| p.template_id.as_deref() == Some(tid));
+    if let Some(provider) = used_by {
+        return Err(format!(
+            "Cannot delete template '{tid}': it is currently used by upstream provider '{}'",
+            provider.name
+        ));
+    }
+
+    config.provider_templates.retain(|s| s.template_id != tid);
+    if !config.deleted_template_ids.iter().any(|id| id == tid) {
+        config.deleted_template_ids.push(tid.to_string());
+    }
+
+    write(config)?;
+    provider_template_views(config)
+}
+
+/// Reset built-in provider templates back to snapshot defaults.
+pub fn apply_reset_provider_templates<W>(
+    config: &mut GatewayConfig,
+    write: W,
+) -> Result<Vec<ProviderTemplateView>, String>
+where
+    W: FnOnce(&GatewayConfig) -> Result<(), String>,
+{
+    config.deleted_template_ids.clear();
+    let builtins = builtin_templates()?;
+    for state in &mut config.provider_templates {
+        if builtins.iter().any(|b| b.id == state.template_id) {
+            state.template = None;
+        }
+    }
+    write(config)?;
+    provider_template_views(config)
+}
+
+/// Fetch available model identifiers from a given models URL (or derived endpoint).
+///
+/// Supports standard OpenAI-compatible `GET /models` returning `{ "data": [ { "id": "..." } ] }`
+/// or arrays of strings / objects. If `api_key` is provided and non-empty, sends
+/// `Authorization: Bearer <api_key>`.
+pub async fn fetch_models_from_url(
+    url: &str,
+    api_key: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let trimmed_url = url.trim();
+    if trimmed_url.is_empty() {
+        return Err("models URL cannot be empty".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {e}"))?;
+
+    let mut req = client.get(trimmed_url);
+    if let Some(key) = api_key {
+        let trimmed_key = key.trim();
+        if !trimmed_key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {trimmed_key}"));
+        }
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("failed to read response: {e}"))?;
+
+    if !status.is_success() {
+        return Err(format!("upstream API error {}: {}", status.as_u16(), body));
+    }
+
+    let json: Value = serde_json::from_str(&body)
+        .map_err(|e| format!("failed to parse JSON response: {e}"))?;
+
+    let mut model_ids: Vec<String> = Vec::new();
+
+    // Case 1: Standard OpenAI format { "data": [ { "id": "..." } ] } or { "data": [ "..." ] }
+    if let Some(data) = json.get("data").and_then(|v| v.as_array()) {
+        for item in data {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                if !id.trim().is_empty() {
+                    model_ids.push(id.trim().to_string());
+                }
+            } else if let Some(s) = item.as_str() {
+                if !s.trim().is_empty() {
+                    model_ids.push(s.trim().to_string());
+                }
+            }
+        }
+    } else if let Some(models) = json.get("models").and_then(|v| v.as_array()) {
+        // Case 2: { "models": [...] }
+        for item in models {
+            if let Some(id) = item.get("id").or_else(|| item.get("name")).and_then(|v| v.as_str()) {
+                if !id.trim().is_empty() {
+                    model_ids.push(id.trim().to_string());
+                }
+            } else if let Some(s) = item.as_str() {
+                if !s.trim().is_empty() {
+                    model_ids.push(s.trim().to_string());
+                }
+            }
+        }
+    } else if let Some(arr) = json.as_array() {
+        // Case 3: Root array [ { "id": "..." } ] or [ "..." ]
+        for item in arr {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                if !id.trim().is_empty() {
+                    model_ids.push(id.trim().to_string());
+                }
+            } else if let Some(s) = item.as_str() {
+                if !s.trim().is_empty() {
+                    model_ids.push(s.trim().to_string());
+                }
+            }
+        }
+    }
+
+    model_ids.sort();
+    model_ids.dedup();
+
+    Ok(model_ids)
+}
+
+

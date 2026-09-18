@@ -8,6 +8,7 @@ import {
   Network,
   ScrollText,
   Server,
+  Sparkles,
   TerminalSquare,
 } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
@@ -20,9 +21,11 @@ import {
   apiGatewayDeleteKey,
   apiGatewayDeleteProvider,
   apiGatewayDeleteProviderModel,
+  apiGatewayDeleteProviderTemplate,
   apiGatewayGetConfig,
   apiGatewayProviderTemplates,
   apiGatewayReenableProvider,
+  apiGatewayResetProviderTemplates,
   apiGatewayRestoreProviderModel,
   apiGatewaySetDefaultKey,
   apiGatewaySetProviderEnabled,
@@ -34,11 +37,13 @@ import {
   apiGatewayTerminalTargets,
   apiGatewayUpsertKey,
   apiGatewayUpsertProvider,
+  apiGatewayUpsertProviderTemplate,
   localBaseUrl,
   resolveDefaultKeyId,
   type CreateProviderFromTemplateRequest,
   type GatewayConfig,
   type GatewayKey,
+  type GatewayProviderTemplate,
   type GatewayProviderTemplateView,
   type GatewayStatus,
   type GatewayTerminalTarget,
@@ -49,6 +54,9 @@ import { ModelListPanel } from "./ModelListPanel";
 import { UpstreamProviderList } from "./UpstreamProviderList";
 import { ProviderDetailDialog } from "./ProviderDetailDialog";
 import { ProviderTemplateSection } from "./ProviderTemplateSection";
+import { ProviderTemplatePickerDialog } from "./ProviderTemplatePickerDialog";
+import { ProviderTemplateEditDialog } from "./ProviderTemplateEditDialog";
+import { TemplateCreateDialog } from "./TemplateCreateDialog";
 import { AggregatedModelsDialog } from "./AggregatedModelsDialog";
 import { LocalKeyDialog } from "./LocalKeyDialog";
 import { LocalKeyList } from "./LocalKeyList";
@@ -59,6 +67,7 @@ import { UsageLogsPanel } from "./UsageLogsPanel";
 type ApiGatewayTab =
   | "providers"
   | "models"
+  | "templates"
   | "keys"
   | "terminals"
   | "usage"
@@ -108,6 +117,12 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const [syncingTemplates, setSyncingTemplates] = useState<Record<string, boolean>>(
     {},
   );
+  const [isTemplatePickerOpen, setIsTemplatePickerOpen] = useState(false);
+  const [isTemplateEditOpen, setIsTemplateEditOpen] = useState(false);
+  const [editingTemplate, setEditingTemplate] =
+    useState<GatewayProviderTemplate | null>(null);
+  const [creatingTemplate, setCreatingTemplate] =
+    useState<GatewayProviderTemplate | null>(null);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -416,6 +431,68 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
     [applyConfig, config, pushToast, t],
   );
 
+  const handleUpsertTemplate = async (
+    template: GatewayProviderTemplate,
+  ): Promise<boolean> => {
+    try {
+      const nextViews = await apiGatewayUpsertProviderTemplate(template);
+      setTemplates(nextViews);
+      pushToast({
+        title: t("apiGatewayTemplateSaved", "Template saved."),
+        kind: "success",
+      });
+      return true;
+    } catch (err) {
+      pushToast({
+        title: t("apiGatewayActionFailed", "Action failed"),
+        description: errorToMessage(err),
+        kind: "error",
+      });
+      return false;
+    }
+  };
+
+  const handleDeleteTemplate = async (templateId: string): Promise<boolean> => {
+    try {
+      const nextViews = await apiGatewayDeleteProviderTemplate(templateId);
+      setTemplates(nextViews);
+      pushToast({
+        title: t("apiGatewayTemplateDeleted", "Template deleted."),
+        kind: "success",
+      });
+      return true;
+    } catch (err) {
+      pushToast({
+        title: t("apiGatewayActionFailed", "Action failed"),
+        description: errorToMessage(err),
+        kind: "error",
+      });
+      return false;
+    }
+  };
+
+  const handleResetBuiltinTemplates = async (): Promise<boolean> => {
+    try {
+      const nextViews = await apiGatewayResetProviderTemplates();
+      setTemplates(nextViews);
+      pushToast({
+        title: t(
+          "apiGatewayTemplateResetSuccess",
+          "Built-in templates restored.",
+        ),
+        kind: "success",
+      });
+      return true;
+    } catch (err) {
+      pushToast({
+        title: t("apiGatewayActionFailed", "Action failed"),
+        description: errorToMessage(err),
+        kind: "error",
+      });
+      return false;
+    }
+  };
+
   const handleCopyAddress = async () => {
     if (!config) return;
     try {
@@ -505,6 +582,12 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
       label: t("apiGatewayModelListTab", "Model list"),
       icon: Boxes,
       count: aggregateModels(config.providers).length,
+    },
+    {
+      id: "templates",
+      label: t("apiGatewayTemplateTab", "Provider Templates"),
+      icon: Sparkles,
+      count: templates?.length ?? 0,
     },
     {
       id: "keys",
@@ -641,35 +724,44 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
               void handleToggleProviderEnabled(provider, enabled)
             }
             onReenable={(providerId) => void handleReenableProvider(providerId)}
-            onAdd={() => {
-              setSelectedProviderId(null);
-              setEditingProvider(emptyProvider());
-              setIsDialogOpen(true);
-            }}
+            onAdd={() => setIsTemplatePickerOpen(true)}
             onDelete={(providerId) => void handleDeleteProvider(providerId)}
-            templateSection={
-              <>
-                {templatesLoadError ? (
-                  <div
-                    data-testid="api-gateway-templates-load-error"
-                    title={templatesLoadError}
-                    className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
-                  >
-                    {t(
-                      "apiGatewayTemplatesLoadFailed",
-                      "Failed to load provider templates.",
-                    )}
-                  </div>
-                ) : null}
-                <ProviderTemplateSection
-                  templates={templates}
-                  busy={busy}
-                  syncingTemplateIds={syncingTemplates}
-                  onSync={handleSyncTemplate}
-                  onCreateProvider={handleCreateProviderFromTemplate}
-                />
-              </>
-            }
+          />
+        </div>
+
+        {/* Tab 2: 服务商模板 */}
+        <div
+          role="tabpanel"
+          aria-label={t("apiGatewayTemplateTab", "Provider Templates")}
+          className={activeTab === "templates" ? "block" : "hidden"}
+        >
+          {templatesLoadError ? (
+            <div
+              data-testid="api-gateway-templates-load-error"
+              title={templatesLoadError}
+              className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+            >
+              {t(
+                "apiGatewayTemplatesLoadFailed",
+                "Failed to load provider templates.",
+              )}
+            </div>
+          ) : null}
+          <ProviderTemplateSection
+            templates={templates}
+            busy={busy}
+            syncingTemplateIds={syncingTemplates}
+            onSync={handleSyncTemplate}
+            onCreateProvider={handleCreateProviderFromTemplate}
+            onEditTemplate={(tpl) => {
+              setEditingTemplate(tpl);
+              setIsTemplateEditOpen(true);
+            }}
+            onNewTemplate={() => {
+              setEditingTemplate(null);
+              setIsTemplateEditOpen(true);
+            }}
+            onResetBuiltin={() => void handleResetBuiltinTemplates()}
           />
         </div>
 
@@ -770,6 +862,59 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
           open={isModelsDialogOpen}
           onOpenChange={setIsModelsDialogOpen}
           providers={config.providers}
+        />
+
+        {/* 预设服务商模板选择器 */}
+        <ProviderTemplatePickerDialog
+          open={isTemplatePickerOpen}
+          onOpenChange={setIsTemplatePickerOpen}
+          templates={templates}
+          providers={config.providers}
+          busy={busy}
+          onSelectBlank={() => {
+            setIsTemplatePickerOpen(false);
+            setSelectedProviderId(null);
+            setEditingProvider(emptyProvider());
+            setIsDialogOpen(true);
+          }}
+          onSelectTemplate={(tpl) => {
+            setIsTemplatePickerOpen(false);
+            setCreatingTemplate(tpl);
+          }}
+          onEditTemplate={(tpl) => {
+            setEditingTemplate(tpl);
+            setIsTemplateEditOpen(true);
+          }}
+          onNewTemplate={() => {
+            setEditingTemplate(null);
+            setIsTemplateEditOpen(true);
+          }}
+        />
+
+        {/* 服务商模板维护与编辑模态弹窗 */}
+        <ProviderTemplateEditDialog
+          open={isTemplateEditOpen}
+          onOpenChange={setIsTemplateEditOpen}
+          template={editingTemplate}
+          providers={config.providers}
+          busy={busy}
+          onSave={handleUpsertTemplate}
+          onDelete={handleDeleteTemplate}
+        />
+
+        {/* 从模板创建上游服务商模态弹窗 */}
+        <TemplateCreateDialog
+          open={Boolean(creatingTemplate)}
+          onOpenChange={(open) => {
+            if (!open) setCreatingTemplate(null);
+          }}
+          template={creatingTemplate}
+          busy={busy}
+          onConfirm={async (req) => {
+            const ok = await handleCreateProviderFromTemplate(req);
+            if (ok) setCreatingTemplate(null);
+            return ok;
+          }}
         />
       </div>
     </div>

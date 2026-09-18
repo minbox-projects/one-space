@@ -583,6 +583,47 @@ const resources = {
       apiGatewayTemplateApiKeyRequired: "API key is required.",
       apiGatewayTemplateCreateSubmit: "Create provider",
       apiGatewayTemplateDeprecated: "Deprecated",
+      apiGatewaySelectProviderTemplate: "Select provider preset",
+      apiGatewaySelectProviderTemplateDesc:
+        "Create an upstream provider quickly from an official catalog preset, or configure from a blank form.",
+      apiGatewayBlankProviderPreset: "Create manually",
+      apiGatewayBlankProviderPresetDesc:
+        "Skip presets and configure provider endpoint, protocol, and model mappings manually.",
+      apiGatewayEditTemplate: "Edit template",
+      apiGatewayNewTemplate: "New template",
+      apiGatewayEditTemplateDesc:
+        "Configure the template name, API base URL, protocol, description, and models.",
+      apiGatewayDeleteTemplate: "Delete template",
+      apiGatewayDeleteTemplateConfirm:
+        "Are you sure you want to delete template \"{{name}}\"? This action cannot be undone.",
+      apiGatewayTemplateInUseCannotDelete:
+        "This template is currently used by {{count}} upstream provider(s) and cannot be deleted.",
+      apiGatewayTemplateInUseBy:
+        "Used by upstream provider \"{{name}}\", cannot be deleted.",
+      apiGatewayTemplateResetBuiltin: "Restore built-in presets",
+      apiGatewayTemplateResetConfirm:
+        "Reset built-in templates back to official snapshots? Your custom templates will be preserved.",
+      apiGatewayTemplateSaved: "Template saved.",
+      apiGatewayTemplateDeleted: "Template deleted.",
+      apiGatewayTemplateResetSuccess: "Built-in templates restored.",
+      apiGatewayTemplateTab: "Templates",
+      apiGatewayTemplateModelsUrl: "Models URL",
+      apiGatewayTemplateModelsUrlPlaceholder:
+        "e.g. https://api.openai.com/v1/models (optional)",
+      apiGatewayTemplateModelsUrlDesc:
+        "Endpoint URL used to fetch available models. Can be left empty to use standard /models endpoint.",
+      apiGatewayTemplateFetchModels: "Fetch models",
+      apiGatewayTemplateFetchingModels: "Fetching...",
+      apiGatewayTemplateFetchModelsApiKey:
+        "API Key (optional, leave empty if public)",
+      apiGatewayTemplateFetchModelsSuccess:
+        "Fetched {{count}} model(s) from upstream.",
+      apiGatewayTemplateImportSelected: "Import selected ({{count}})",
+      apiGatewayTemplateSearchModels: "Search models...",
+      apiGatewayTemplateInputPrice: "Input ($/1M)",
+      apiGatewayTemplateOutputPrice: "Output ($/1M)",
+      apiGatewayTemplateSelectAll: "Select all",
+      apiGatewayTemplateDeselectAll: "Deselect all",
       apiGatewayIgnoredModels: "Ignored models",
       apiGatewayIgnoredModelsDesc:
         "Models you removed from this template. Restore one to rebuild it from the template's current data.",
@@ -4160,6 +4201,47 @@ const resources = {
       apiGatewayTemplateApiKeyRequired: "请填写 API Key。",
       apiGatewayTemplateCreateSubmit: "创建服务商",
       apiGatewayTemplateDeprecated: "已弃用",
+      apiGatewaySelectProviderTemplate: "选择预设服务商模板",
+      apiGatewaySelectProviderTemplateDesc:
+        "从预设官方目录快速创建上游服务商，或从空白表单自定义配置。",
+      apiGatewayBlankProviderPreset: "从空白表单创建",
+      apiGatewayBlankProviderPresetDesc:
+        "跳过预设模板，手动配置服务商地址、通信协议与模型路由映射。",
+      apiGatewayEditTemplate: "编辑服务商模板",
+      apiGatewayNewTemplate: "新建服务商模板",
+      apiGatewayEditTemplateDesc:
+        "配置模板名称、API 基础地址、通信协议、描述及模型清单。",
+      apiGatewayDeleteTemplate: "删除模板",
+      apiGatewayDeleteTemplateConfirm:
+        "确定要删除服务商模板 \"{{name}}\" 吗？此操作不可撤销。",
+      apiGatewayTemplateInUseCannotDelete:
+        "该模板当前已被 {{count}} 个上游服务商使用，无法删除。",
+      apiGatewayTemplateInUseBy:
+        "已被上游服务商 \"{{name}}\" 使用，无法删除。",
+      apiGatewayTemplateResetBuiltin: "恢复内置预设",
+      apiGatewayTemplateResetConfirm:
+        "确定要将内置模板恢复为官方快照吗？自定义模板将被保留。",
+      apiGatewayTemplateSaved: "服务商模板已保存。",
+      apiGatewayTemplateDeleted: "服务商模板已删除。",
+      apiGatewayTemplateResetSuccess: "已恢复内置官方模板。",
+      apiGatewayTemplateTab: "服务商模板",
+      apiGatewayTemplateModelsUrl: "获取模型列表 URL",
+      apiGatewayTemplateModelsUrlPlaceholder:
+        "例如 https://api.openai.com/v1/models（选填）",
+      apiGatewayTemplateModelsUrlDesc:
+        "用于拉取可用模型列表的接口地址，选填。为空时默认请求服务商基础地址下的 /models 端点。",
+      apiGatewayTemplateFetchModels: "获取远端模型",
+      apiGatewayTemplateFetchingModels: "获取中...",
+      apiGatewayTemplateFetchModelsApiKey:
+        "API Key（选填，免密服务可直接留空）",
+      apiGatewayTemplateFetchModelsSuccess:
+        "已成功从远端获取 {{count}} 个模型。",
+      apiGatewayTemplateImportSelected: "导入勾选模型 ({{count}})",
+      apiGatewayTemplateSearchModels: "搜索模型...",
+      apiGatewayTemplateInputPrice: "输入 ($/1M)",
+      apiGatewayTemplateOutputPrice: "输出 ($/1M)",
+      apiGatewayTemplateSelectAll: "全选",
+      apiGatewayTemplateDeselectAll: "取消全选",
       apiGatewayIgnoredModels: "已忽略的模型",
       apiGatewayIgnoredModelsDesc:
         "你从此模板中移除的模型。恢复后会按模板当前数据重建。",

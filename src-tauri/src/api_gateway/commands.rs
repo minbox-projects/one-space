@@ -7,7 +7,8 @@ use super::storage::{
 };
 use super::templates::{
     apply_create_provider_from_template, apply_delete_provider_model,
-    apply_restore_provider_model, apply_template_sync_with, effective_template,
+    apply_delete_provider_template, apply_reset_provider_templates, apply_restore_provider_model,
+    apply_template_sync_with, apply_upsert_provider_template, effective_template,
     fetch_template_source, provider_template_views, ProviderTemplateView,
 };
 use super::usage_log::{
@@ -16,7 +17,7 @@ use super::usage_log::{
 };
 use super::{
     now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, ModelPrice,
-    TerminalSyncRecord, UpstreamProtocol, UsageResult,
+    ProviderTemplate, TerminalSyncRecord, UpstreamProtocol, UsageResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -836,3 +837,39 @@ pub fn api_gateway_restore_provider_model(
     apply_restore_provider_model(&mut config, &provider_id, &upstream_model, write_config)?;
     read_config()
 }
+
+/// Upsert a provider template: update an existing template or add a new custom template.
+#[tauri::command]
+pub fn api_gateway_upsert_provider_template(
+    template: ProviderTemplate,
+) -> Result<Vec<ProviderTemplateView>, String> {
+    let mut config = read_config()?;
+    apply_upsert_provider_template(&mut config, template, write_config)
+}
+
+/// Delete a provider template. Fails if the template is currently in use by any upstream provider.
+#[tauri::command]
+pub fn api_gateway_delete_provider_template(
+    template_id: String,
+) -> Result<Vec<ProviderTemplateView>, String> {
+    let mut config = read_config()?;
+    apply_delete_provider_template(&mut config, &template_id, write_config)
+}
+
+/// Reset built-in provider templates back to snapshot defaults.
+#[tauri::command]
+pub fn api_gateway_reset_provider_templates() -> Result<Vec<ProviderTemplateView>, String> {
+    let mut config = read_config()?;
+    apply_reset_provider_templates(&mut config, write_config)
+}
+
+/// Fetch available models from an upstream URL (models endpoint).
+#[tauri::command]
+pub async fn api_gateway_fetch_models(
+    url: String,
+    api_key: Option<String>,
+) -> Result<Vec<String>, String> {
+    crate::api_gateway::templates::fetch_models_from_url(&url, api_key.as_deref()).await
+}
+
+
