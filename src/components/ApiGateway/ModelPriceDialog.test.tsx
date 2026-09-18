@@ -3,7 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { ModelPriceDialog } from "@/components/ApiGateway/ModelPriceDialog";
-import type { GatewayUpstreamProvider, ModelPrice } from "@/lib/apiGateway";
+import type {
+  GatewayUpstreamProvider,
+  ModelPrice,
+  OffPeakPrice,
+} from "@/lib/apiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
@@ -616,5 +620,168 @@ describe("ModelPriceDialog", () => {
         ],
       }),
     );
+  });
+});
+
+function legacyOffPeak(overrides: Partial<OffPeakPrice> = {}): OffPeakPrice {
+  return {
+    start_time: "00:30",
+    end_time: "08:30",
+    input: 0.5,
+    cache_read: 0.05,
+    cache_write: 0.1,
+    output: 1.0,
+    ...overrides,
+  };
+}
+
+describe("ModelPriceDialog 峰谷星期选择", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("offPeakWindowEchoesMissingDaysAsEveryDay", async () => {
+    const user = userEvent.setup();
+    mockPrices([
+      price({ upstream_model: "gpt-4o", off_peak: legacyOffPeak() }),
+    ]);
+
+    renderWithProviders(<ModelPriceDialog open onOpenChange={() => {}} />);
+    await screen.findByLabelText("Upstream model");
+
+    await user.click(screen.getByRole("button", { name: /00:30-08:30/i }));
+
+    expect(
+      screen.getByTestId("api-gateway-offpeak-days-summary-0"),
+    ).toHaveTextContent("Every day");
+    for (let day = 0; day <= 6; day += 1) {
+      expect(
+        screen.getByTestId(`api-gateway-offpeak-day-0-${day}`),
+        `第 ${day} 天按钮在旧数据下不应选中`,
+      ).toHaveAttribute("aria-pressed", "false");
+    }
+  });
+
+  it("offPeakDayTogglesUpdateSelectionAndSummary", async () => {
+    const user = userEvent.setup();
+    mockPrices([
+      price({ upstream_model: "gpt-4o", off_peak: legacyOffPeak() }),
+    ]);
+
+    renderWithProviders(<ModelPriceDialog open onOpenChange={() => {}} />);
+    await screen.findByLabelText("Upstream model");
+    await user.click(screen.getByRole("button", { name: /00:30-08:30/i }));
+
+    const mon = screen.getByTestId("api-gateway-offpeak-day-0-1");
+    const wed = screen.getByTestId("api-gateway-offpeak-day-0-3");
+
+    await user.click(mon);
+    await user.click(wed);
+
+    expect(mon).toHaveAttribute("aria-pressed", "true");
+    expect(wed).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByTestId("api-gateway-offpeak-days-summary-0"),
+    ).toHaveTextContent("Mon, Wed");
+
+    await user.click(mon);
+
+    expect(mon).toHaveAttribute("aria-pressed", "false");
+    expect(wed).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByTestId("api-gateway-offpeak-days-summary-0"),
+    ).toHaveTextContent("Wed");
+  });
+
+  it("savingPersistsSelectedDaysAndOmitsEmptySelection", async () => {
+    const user = userEvent.setup();
+    mockPrices([
+      price({ upstream_model: "gpt-4o", off_peak: legacyOffPeak() }),
+    ]);
+
+    renderWithProviders(<ModelPriceDialog open onOpenChange={() => {}} />);
+    await screen.findByLabelText("Upstream model");
+    await user.click(screen.getByRole("button", { name: /00:30-08:30/i }));
+
+    await user.click(screen.getByTestId("api-gateway-offpeak-day-0-1"));
+    await user.click(screen.getByTestId("api-gateway-offpeak-day-0-3"));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find(
+        ([command]) => command === "api_gateway_model_prices_save",
+      );
+      expect(call).toBeTruthy();
+      const saved = (call![1] as { prices: ModelPrice[] }).prices[0];
+      expect(saved.off_peaks?.[0].days).toEqual([1, 3]);
+    });
+
+    // 全清后再次保存：窗口重新表示每天，序列化时省略 days 字段
+    await user.click(screen.getByTestId("api-gateway-offpeak-days-daily-0"));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const saveCalls = invokeMock.mock.calls.filter(
+        ([command]) => command === "api_gateway_model_prices_save",
+      );
+      expect(saveCalls.length).toBeGreaterThanOrEqual(2);
+      const last = (saveCalls[saveCalls.length - 1][1] as {
+        prices: ModelPrice[];
+      }).prices[0];
+      expect(last.off_peaks?.[0].days).toBeUndefined();
+    });
+  });
+
+  it("savingLegacyOffPeakWithoutDaysKeepsShape", async () => {
+    const user = userEvent.setup();
+    mockPrices([
+      price({
+        upstream_model: "gpt-4o",
+        input: 2,
+        output: 4,
+        off_peak: legacyOffPeak({ input: 1, output: 2 }),
+      }),
+    ]);
+
+    renderWithProviders(<ModelPriceDialog open onOpenChange={() => {}} />);
+    await screen.findByLabelText("Upstream model");
+    await user.click(screen.getByRole("button", { name: /00:30-08:30/i }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find(
+        ([command]) => command === "api_gateway_model_prices_save",
+      );
+      expect(call).toBeTruthy();
+      const saved = (call![1] as { prices: ModelPrice[] }).prices[0];
+      expect(saved).toEqual({
+        upstream_model: "gpt-4o",
+        input: 2,
+        cache_read: 0.1,
+        cache_write: 0.2,
+        output: 4,
+        off_peaks: [
+          {
+            start_time: "00:30",
+            end_time: "08:30",
+            input: 1,
+            cache_read: 0.05,
+            cache_write: 0.1,
+            output: 2,
+          },
+        ],
+        off_peak: {
+          start_time: "00:30",
+          end_time: "08:30",
+          input: 1,
+          cache_read: 0.05,
+          cache_write: 0.1,
+          output: 2,
+        },
+      });
+      expect(saved.off_peaks?.[0].days).toBeUndefined();
+      expect(saved.off_peak?.days).toBeUndefined();
+    });
   });
 });

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
@@ -28,6 +28,8 @@ type UpstreamProviderListProps = {
   onReenable: (providerId: string) => void;
   onAdd: () => void;
   onDelete?: (providerId: string) => void;
+  /** Optional content rendered above the provider list (e.g. the template area). */
+  templateSection?: ReactNode;
 };
 
 export function UpstreamProviderList({
@@ -39,6 +41,7 @@ export function UpstreamProviderList({
   onReenable,
   onAdd,
   onDelete,
+  templateSection,
 }: UpstreamProviderListProps) {
   const { t } = useTranslation();
   const [statusFilter, setStatusFilter] = useState<ProviderStatusFilter>("all");
@@ -72,6 +75,7 @@ export function UpstreamProviderList({
 
   return (
     <section className="space-y-3.5" data-testid="api-gateway-providers">
+      {templateSection}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-0.5">
           <div className="flex items-center gap-2">

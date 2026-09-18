@@ -78,3 +78,91 @@ describe("Antigravity 终端工具国际化键名", () => {
     ).toEqual({ onlyEn: [], onlyZh: [] });
   });
 });
+
+const PROVIDER_TEMPLATE_KEYS = [
+  "apiGatewayProviderTemplates",
+  "apiGatewayProviderTemplatesDesc",
+  "apiGatewayTemplateModelsCount",
+  "apiGatewayTemplateSource",
+  "apiGatewayTemplateLastSync",
+  "apiGatewayTemplateNotSynced",
+  "apiGatewayTemplateSnapshot",
+  "apiGatewayTemplateSnapshotVersion",
+  "apiGatewayTemplateSync",
+  "apiGatewayTemplateSyncing",
+  "apiGatewayTemplateAddProvider",
+  "apiGatewayTemplateExpand",
+  "apiGatewayTemplateCollapse",
+  "apiGatewayNoTemplates",
+  "apiGatewayTemplatesLoadFailed",
+  "apiGatewayTemplatePriceInput",
+  "apiGatewayTemplatePriceCacheRead",
+  "apiGatewayTemplatePriceCacheWrite",
+  "apiGatewayTemplatePriceOutput",
+  "apiGatewayTemplateOffPeak",
+  "apiGatewayTemplateNoOffPeak",
+  "apiGatewayTemplateNoModels",
+  "apiGatewayTemplateReasoningEfforts",
+  "apiGatewayTemplateSyncSuccess",
+  "apiGatewayTemplateProviderCreated",
+  "apiGatewayTemplateCreateFailed",
+  "apiGatewayTemplateCreateTitle",
+  "apiGatewayTemplateCreateDesc",
+  "apiGatewayTemplateNameLabel",
+  "apiGatewayTemplateBaseUrlLabel",
+  "apiGatewayTemplateProtocolLabel",
+  "apiGatewayTemplateApiKeyLabel",
+  "apiGatewayTemplateApiKeyRequired",
+  "apiGatewayTemplateCreateSubmit",
+  "apiGatewayEveryDay",
+  "apiGatewayWeekdaySun",
+  "apiGatewayWeekdayMon",
+  "apiGatewayWeekdayTue",
+  "apiGatewayWeekdayWed",
+  "apiGatewayWeekdayThu",
+  "apiGatewayWeekdayFri",
+  "apiGatewayWeekdaySat",
+  "apiGatewayTemplateDeprecated",
+  "apiGatewayIgnoredModels",
+  "apiGatewayIgnoredModelsDesc",
+  "apiGatewayRestoreModel",
+  "apiGatewayReasoningEfforts",
+  "apiGatewayReasoningEffortsDesc",
+  "apiGatewayReasoningEffortPlaceholder",
+  "apiGatewayReasoningEffortAdd",
+  "apiGatewayReasoningEffortRemove",
+  "apiGatewayMappingDeleted",
+  "apiGatewayModelRestored",
+  "apiGatewayWeekdaySelect",
+] as const;
+
+describe("服务商模板国际化键", () => {
+  it.each(["en", "zh"] as const)("为 %s 提供全部服务商模板键的真实文案", async (language) => {
+    await i18n.changeLanguage(language);
+    const fallbacks = PROVIDER_TEMPLATE_KEYS.filter((key) => i18n.t(key) === key);
+    expect(fallbacks, `${language} 中回退为键名的服务商模板键`).toEqual([]);
+  });
+
+  it.each([
+    ["en", "Provider Templates", "Upstream providers"],
+    ["zh", "服务商模板", "上游服务商"],
+  ] as const)("为 %s 保留模板与上游服务商命名", async (language, templates, providers) => {
+    await i18n.changeLanguage(language);
+    expect(i18n.t("apiGatewayProviderTemplates")).toBe(templates);
+    expect(i18n.t("apiGatewayProviders")).toBe(providers);
+  });
+
+  it("zh 提供每天与同步中文案", async () => {
+    await i18n.changeLanguage("zh");
+    expect(i18n.t("apiGatewayEveryDay")).toBe("每天");
+    expect(i18n.t("apiGatewayTemplateSyncing")).toBe("同步中...");
+  });
+
+  it.each(["en", "zh"] as const)("为 %s 的模型数量文案保留 {{count}} 并正常插值", async (language) => {
+    await i18n.changeLanguage(language);
+    const raw = resourceBundle(language).apiGatewayTemplateModelsCount;
+    expect(typeof raw).toBe("string");
+    expect(raw as string).toContain("{{count}}");
+    expect(i18n.t("apiGatewayTemplateModelsCount", { count: 3 })).not.toContain("{{count}}");
+  });
+});

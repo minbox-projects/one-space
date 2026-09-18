@@ -51,6 +51,10 @@ pub struct ModelMapping {
     pub protocol: Option<UpstreamProtocol>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Ordered reasoning-effort levels this mapping advertises, populated from
+    /// the bound template at creation and merged on later template syncs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_efforts: Vec<String>,
 }
 
 impl ModelMapping {
@@ -116,6 +120,13 @@ pub struct GatewayUpstreamProvider {
     pub consecutive_failures: u32,
     #[serde(default)]
     pub last_error_at: Option<u64>,
+    /// Template this provider was created from; `None` for manual providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    /// Upstream model names the user explicitly removed so a template sync
+    /// must not resurrect them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignored_models: Vec<String>,
 }
 
 impl Default for GatewayUpstreamProvider {
@@ -134,8 +145,69 @@ impl Default for GatewayUpstreamProvider {
             disabled_at: None,
             consecutive_failures: 0,
             last_error_at: None,
+            template_id: None,
+            ignored_models: Vec::new(),
         }
     }
+}
+
+/// One model entry of a provider template.
+///
+/// `protocol` is optional and inherits the template protocol when absent.
+/// `display_name` is the official model name shown by the gateway; prices are
+/// US dollars per million tokens and `off_peaks` reuse the weekday-aware
+/// [`OffPeakPrice`] windows.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderTemplateModel {
+    pub upstream_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<UpstreamProtocol>,
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub cache_read: f64,
+    #[serde(default)]
+    pub cache_write: f64,
+    #[serde(default)]
+    pub output: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub off_peaks: Vec<OffPeakPrice>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_efforts: Vec<String>,
+}
+
+/// A built-in provider template shipped with the app.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderTemplate {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub protocol: UpstreamProtocol,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub snapshot_version: String,
+    #[serde(default)]
+    pub models: Vec<ProviderTemplateModel>,
+}
+
+/// Persisted template state: the last parsed snapshot plus sync metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderTemplateState {
+    pub template_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<ProviderTemplate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// A local API key accepted by the API Gateway listener.
@@ -173,7 +245,62 @@ pub struct TerminalSyncRecord {
     pub synced_at: u64,
 }
 
+/// Normalize an off-peak weekday set: drop values above `6`, deduplicate and
+/// sort ascending; an empty result collapses to `None` (meaning every day).
+fn normalize_days(days: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    let mut days: Vec<u8> = days
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|day| *day <= 6)
+        .collect();
+    days.sort_unstable();
+    days.dedup();
+    if days.is_empty() {
+        None
+    } else {
+        Some(days)
+    }
+}
+
+fn days_are_absent(days: &Option<Vec<u8>>) -> bool {
+    normalize_days(days.clone()).is_none()
+}
+
+fn serialize_days<S>(days: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    normalize_days(days.clone())
+        .unwrap_or_default()
+        .serialize(serializer)
+}
+
+fn deserialize_days<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<Vec<i64>>::deserialize(deserializer)?;
+    let days = raw.map(|values| {
+        values
+            .into_iter()
+            .filter_map(|value| {
+                if (0..=6).contains(&value) {
+                    Some(value as u8)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<u8>>()
+    });
+    Ok(normalize_days(days))
+}
+
 /// Pricing tier configuration during off-peak hours.
+///
+/// `days` optionally scopes the window to UTC+8 weekdays (`0` Sunday .. `6`
+/// Saturday). Absent, empty or all-invalid means every day; the set is
+/// normalized (deduplicated, sorted ascending, out-of-range dropped) on both
+/// read and write so an old configuration without the field keeps its behavior.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OffPeakPrice {
     pub start_time: String,
@@ -186,6 +313,13 @@ pub struct OffPeakPrice {
     pub cache_write: f64,
     #[serde(default)]
     pub output: f64,
+    #[serde(
+        default,
+        skip_serializing_if = "days_are_absent",
+        serialize_with = "serialize_days",
+        deserialize_with = "deserialize_days"
+    )]
+    pub days: Option<Vec<u8>>,
 }
 
 /// Unit prices for one upstream model, in US dollars per million tokens.
@@ -265,6 +399,9 @@ pub struct GatewayConfig {
     /// User-maintained upstream-model price table; absent in older configs.
     #[serde(default)]
     pub model_prices: Vec<ModelPrice>,
+    /// Persisted provider-template state (last snapshot plus sync metadata).
+    #[serde(default)]
+    pub provider_templates: Vec<ProviderTemplateState>,
 }
 
 impl Default for GatewayConfig {
@@ -278,6 +415,7 @@ impl Default for GatewayConfig {
             terminal_syncs: Vec::new(),
             usage_retention_days: DEFAULT_USAGE_RETENTION_DAYS,
             model_prices: Vec::new(),
+            provider_templates: Vec::new(),
         }
     }
 }

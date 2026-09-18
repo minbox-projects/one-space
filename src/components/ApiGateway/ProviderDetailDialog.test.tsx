@@ -1,10 +1,11 @@
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { ProviderDetailDialog } from "@/components/ApiGateway/ProviderDetailDialog";
 import {
   API_GATEWAY_KEY_MASK,
+  type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
 } from "@/lib/apiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
@@ -336,5 +337,297 @@ describe("ProviderDetailDialog 模型映射", () => {
       screen.getByRole("switch", { name: "Enable mapping 1" }),
       "缺省 enabled 的既有映射行开关应视为启用",
     ).toHaveAttribute("aria-checked", "true");
+  });
+});
+
+function makeTemplateView(
+  models: string[],
+  id = "t1",
+): GatewayProviderTemplateView {
+  return {
+    template: {
+      id,
+      name: "OpenCode Zen",
+      description: "Curated OpenCode models",
+      base_url: "https://opencode.ai/zen/v1",
+      protocol: "chat_completions",
+      source: "snapshot:models.dev",
+      snapshot_version: "2026.09.18",
+      models: models.map((upstream_model) => ({
+        upstream_model,
+        display_name: upstream_model,
+        protocol: "chat_completions" as const,
+        input: 1,
+        cache_read: 0,
+        cache_write: 0,
+        output: 1,
+        off_peaks: [],
+        reasoning_efforts: [],
+      })),
+    },
+    synced_at: null,
+    source: "snapshot:models.dev",
+    from_snapshot: true,
+  };
+}
+
+describe("ProviderDetailDialog 模板维护与推理档位", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("mappingRowExpandsToEditReasoningEffortsAndSaves", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const provider = makeProvider({
+      mappings: [
+        {
+          local_model: "local-a",
+          upstream_model: "remote-a",
+          reasoning_efforts: ["low", "medium"],
+        },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const expand = screen.getByTestId("api-gateway-mapping-expand-0");
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    await user.click(expand);
+    expect(expand).toHaveAttribute("aria-expanded", "true");
+
+    const panel = screen.getByTestId("api-gateway-mapping-efforts-0");
+    expect(
+      within(panel).getByTestId("api-gateway-mapping-effort-0-low"),
+    ).toBeInTheDocument();
+    expect(
+      within(panel).getByTestId("api-gateway-mapping-effort-0-medium"),
+    ).toBeInTheDocument();
+
+    const effortInput = screen.getByTestId("api-gateway-mapping-effort-input-0");
+    await user.type(effortInput, "high");
+    await user.keyboard("{Enter}");
+    await user.click(
+      screen.getByTestId("api-gateway-mapping-effort-remove-0-medium"),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as GatewayUpstreamProvider;
+    expect(saved.mappings[0].reasoning_efforts).toEqual(["low", "high"]);
+  });
+
+  it("reasoningEffortsNormalizeTrimDuplicatesAndEmpty", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const provider = makeProvider({
+      mappings: [
+        {
+          local_model: "local-a",
+          upstream_model: "remote-a",
+          reasoning_efforts: [],
+        },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-0"));
+    const effortInput = screen.getByTestId("api-gateway-mapping-effort-input-0");
+
+    await user.type(effortInput, " high ");
+    await user.keyboard("{Enter}");
+    await user.clear(effortInput);
+
+    await user.type(effortInput, "high");
+    await user.click(screen.getByTestId("api-gateway-mapping-effort-add-0"));
+    await user.clear(effortInput);
+
+    await user.type(effortInput, " ");
+    await user.keyboard("{Enter}");
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as GatewayUpstreamProvider;
+    expect(saved.mappings[0].reasoning_efforts).toEqual(["high"]);
+  });
+
+  it("templateBoundProviderMarksRetiredMappingsDeprecated", () => {
+    const provider = makeProvider({
+      id: "p1",
+      template_id: "t1",
+      mappings: [
+        { local_model: "local-a", upstream_model: "remote-a" },
+        { local_model: "local-b", upstream_model: "remote-b" },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+        templates={[makeTemplateView(["remote-a"])]}
+      />,
+    );
+
+    const deprecatedText = i18n.t("apiGatewayTemplateDeprecated");
+    const rowA = screen
+      .getByRole("switch", { name: "Enable mapping 1" })
+      .closest("li");
+    const rowB = screen
+      .getByRole("switch", { name: "Enable mapping 2" })
+      .closest("li");
+    expect(rowA).not.toBeNull();
+    expect(rowB).not.toBeNull();
+
+    expect(
+      rowA!.getAttribute("data-deprecated"),
+      "模板中仍存在的映射行不应标记弃用",
+    ).toBeNull();
+    expect(
+      rowB!.getAttribute("data-deprecated"),
+      "模板已移除的映射行应标记弃用",
+    ).toBe("true");
+    expect(within(rowB!).getByText(deprecatedText)).toBeInTheDocument();
+    expect(within(rowA!).queryByText(deprecatedText)).not.toBeInTheDocument();
+
+    // 弃用行仍可启用与编辑
+    expect(
+      screen.getByRole("switch", { name: "Enable mapping 2" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("textbox", { name: "Upstream model 2" }),
+    ).toBeEnabled();
+  });
+
+  it("templateBoundProviderShowsIgnoredModelsAndRestores", async () => {
+    const user = userEvent.setup();
+    const onRestoreModel = vi.fn();
+    const provider = makeProvider({
+      id: "p1",
+      template_id: "t1",
+      ignored_models: ["remote-b"],
+      mappings: [],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+        templates={[makeTemplateView(["remote-a"])]}
+        onRestoreModel={onRestoreModel}
+      />,
+    );
+
+    const region = screen.getByTestId("api-gateway-ignored-models");
+    expect(
+      within(region).getByTestId("api-gateway-ignored-model-remote-b"),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("api-gateway-restore-model-remote-b"));
+
+    expect(onRestoreModel).toHaveBeenCalledWith("p1", "remote-b");
+  });
+
+  it("manualProviderHasNoIgnoredSectionAndKeepsLocalRemove", async () => {
+    const user = userEvent.setup();
+    const onDeleteModel = vi.fn();
+    const onSave = vi.fn();
+    const provider = makeProvider({
+      id: "p1",
+      ignored_models: ["remote-b"],
+      mappings: [
+        { local_model: "local-a", upstream_model: "remote-a" },
+        { local_model: "local-b", upstream_model: "remote-b" },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+        onDeleteModel={onDeleteModel}
+      />,
+    );
+
+    expect(
+      screen.queryByTestId("api-gateway-ignored-models"),
+      "手动服务商不应展示忽略模型区域",
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Remove mapping 2" }));
+
+    expect(onDeleteModel).not.toHaveBeenCalled();
+    expect(onSave).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("switch", { name: "Enable mapping 2" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("templateBoundMappingDeleteCallsDeleteModelCallback", async () => {
+    const user = userEvent.setup();
+    const onDeleteModel = vi.fn();
+    const onSave = vi.fn();
+    const provider = makeProvider({
+      id: "p1",
+      template_id: "t1",
+      mappings: [
+        { local_model: "local-a", upstream_model: "remote-a" },
+        { local_model: "local-b", upstream_model: "remote-b" },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+        templates={[makeTemplateView(["remote-a", "remote-b"])]}
+        onDeleteModel={onDeleteModel}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Remove mapping 2" }));
+
+    expect(onDeleteModel).toHaveBeenCalledWith("p1", "remote-b");
+    expect(onSave).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("switch", { name: "Enable mapping 2" }),
+    ).not.toBeInTheDocument();
   });
 });

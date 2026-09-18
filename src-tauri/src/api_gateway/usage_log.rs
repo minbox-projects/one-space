@@ -9,7 +9,7 @@ use super::{
     ModelPrice, MAX_USAGE_RETENTION_DAYS, MIN_USAGE_RETENTION_DAYS,
     DEFAULT_USAGE_RETENTION_DAYS,
 };
-use chrono::Timelike;
+use chrono::{Datelike, Timelike};
 use rusqlite::{params_from_iter, Connection, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -170,11 +170,30 @@ pub fn compute_cost(price: &ModelPrice, tokens: &UsageTokens) -> f64 {
 /// - When start_time < end_time: [start_time, end_time) within the same UTC+8 day.
 /// - When start_time > end_time: overnight window, [start_time, 24:00) or [00:00, end_time).
 /// - When start_time == end_time: zero duration window (evaluates to false).
+///
+/// Retained as the weekday-less compatibility entry point; production pricing
+/// goes through [`is_off_peak_with_days`].
+#[allow(dead_code)]
 pub fn is_off_peak(timestamp_ms: i64, start_time: &str, end_time: &str) -> bool {
+    is_off_peak_with_days(timestamp_ms, start_time, end_time, None)
+}
+
+/// Days-aware variant of [`is_off_peak`]. `days` is the optional UTC+8 weekday
+/// set (`0` Sunday .. `6` Saturday) the window applies to; `None`, an empty set
+/// or a set with no value in `0..=6` means every day.
+fn is_off_peak_with_days(
+    timestamp_ms: i64,
+    start_time: &str,
+    end_time: &str,
+    days: Option<&[u8]>,
+) -> bool {
     let dt = match chrono::DateTime::from_timestamp_millis(timestamp_ms) {
         Some(dt) => dt.with_timezone(&utc8_offset()),
         None => return false,
     };
+    if !matches_off_peak_days(days, dt.weekday().num_days_from_sunday()) {
+        return false;
+    }
     let current_minute = dt.hour() * 60 + dt.minute();
 
     let parse_minute = |s: &str| -> Option<u32> {
@@ -202,6 +221,25 @@ pub fn is_off_peak(timestamp_ms: i64, start_time: &str, end_time: &str) -> bool 
     }
 }
 
+/// Whether the request's UTC+8 weekday is included by an optional weekday set.
+/// Out-of-range values are ignored; an empty/all-invalid set means every day.
+fn matches_off_peak_days(days: Option<&[u8]>, weekday: u32) -> bool {
+    let Some(days) = days else {
+        return true;
+    };
+    let mut has_valid = false;
+    for day in days {
+        if *day > 6 {
+            continue;
+        }
+        has_valid = true;
+        if *day as u32 == weekday {
+            return true;
+        }
+    }
+    !has_valid
+}
+
 /// Cost in US dollars for the four token tiers.
 ///
 /// If off-peak pricing configurations are present and `timestamp_ms` falls within an off-peak
@@ -212,7 +250,12 @@ pub fn compute_cost_at_time(
     timestamp_ms: i64,
 ) -> f64 {
     for off_peak in price.effective_off_peaks() {
-        if is_off_peak(timestamp_ms, &off_peak.start_time, &off_peak.end_time) {
+        if is_off_peak_with_days(
+            timestamp_ms,
+            &off_peak.start_time,
+            &off_peak.end_time,
+            off_peak.days.as_deref(),
+        ) {
             return (off_peak.input * tokens.input_tokens as f64
                 + off_peak.cache_read * tokens.cache_read_tokens as f64
                 + off_peak.cache_write * tokens.cache_write_tokens as f64

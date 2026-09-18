@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   deriveWorkspaceAvailableMcpEntries,
@@ -45,6 +45,17 @@ export function useWorkspaceMcpTab(args: {
   const [mcpDialogModels, setMcpDialogModels] = useState<ModelId[]>([]);
   const [mcpDialogSubmitting, setMcpDialogSubmitting] = useState(false);
   const [mcpDialogError, setMcpDialogError] = useState("");
+  const isMountedRef = useRef(true);
+  const pendingMcpTimersRef = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      pendingMcpTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+      pendingMcpTimersRef.current.clear();
+    };
+  }, []);
 
   const loadMcpServers = useCallback(async (force = false) => {
     if (!isTauri) return;
@@ -88,9 +99,17 @@ export function useWorkspaceMcpTab(args: {
     } finally {
       const elapsed = Date.now() - startedAt;
       if (elapsed < 200) {
-        await new Promise((resolve) => window.setTimeout(resolve, 200 - elapsed));
+        await new Promise<void>((resolve) => {
+          const timerId = window.setTimeout(() => {
+            pendingMcpTimersRef.current.delete(timerId);
+            resolve();
+          }, 200 - elapsed);
+          pendingMcpTimersRef.current.add(timerId);
+        });
       }
-      setMcpLoading(false);
+      if (isMountedRef.current) {
+        setMcpLoading(false);
+      }
     }
   }, [isTauri, mcpServers.length]);
 
