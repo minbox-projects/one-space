@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(in crate::api_gateway) const CONFIG_FILE: &str = "api_gateway.json";
+/// Legacy file names from the `api_fusion` era, kept ONLY for deletion.
+/// These files are never read, copied or opened — see `cleanup_legacy_files`.
+pub(in crate::api_gateway) const LEGACY_CONFIG_FILE_NAME: &str = "api_fusion.json";
+pub(in crate::api_gateway) const LEGACY_USAGE_DB_FILE_NAME: &str = "api_fusion_usage.db";
 pub(in crate::api_gateway) const DEFAULT_PORT: u16 = 17688;
 
 /// Default request-log retention in days for configs written before the field existed.

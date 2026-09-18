@@ -554,6 +554,7 @@ impl UsageLogStore {
     pub(in crate::api_gateway) fn default_store() -> Result<Self, String> {
         let dir = crate::config::get_app_dir()?;
         let path = dir.join(USAGE_DB_FILE);
+        super::storage::cleanup_legacy_files();
         Ok(Self::at(path))
     }
 

@@ -1,8 +1,9 @@
 use super::runtime_http::{autostart, server_status, start_server, stop_server};
 use super::selection::{manual_reenable, set_user_enabled};
 use super::storage::{
-    effective_default_key, find_provider_mut, local_base_url, new_key_id, new_key_value,
-    new_provider_id, read_config, resolve_default_key_id, touch_key_created_at, write_config,
+    cleanup_legacy_files, effective_default_key, find_provider_mut, local_base_url, new_key_id,
+    new_key_value, new_provider_id, read_config, resolve_default_key_id, touch_key_created_at,
+    write_config,
 };
 use super::usage_log::{
     normalize_retention_days, now_millis, resolve_range, validate_retention_days, LogFilter,
@@ -388,6 +389,7 @@ pub fn api_gateway_status() -> Result<GatewayStatus, String> {
 }
 
 pub async fn api_gateway_autostart() -> Result<GatewayStatus, String> {
+    cleanup_legacy_files();
     autostart().await
 }
 
