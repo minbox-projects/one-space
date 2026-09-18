@@ -670,6 +670,13 @@ const resources = {
       apiGatewayNoTerminalTargetsGuide:
         "OpenCode and Codex are always listed; install the CLI if a tool is missing.",
       apiGatewayUsageTab: "Usage",
+      apiGatewayUsageAndLogsTab: "Usage & Logs",
+      apiGatewayUsageStatsSubTab: "Usage stats",
+      apiGatewayUsageLogsSubTab: "Request logs",
+      apiGatewayUsageSubTabs: "Usage and logs subtabs",
+      apiGatewayProviderTemplatesButton: "Provider templates",
+      apiGatewayTemplatesDialogDesc:
+        "Browse built-in provider templates, sync official model lists, or create custom provider configurations.",
       apiGatewayLogsTab: "Request logs",
       apiGatewayRangeToday: "Today",
       apiGatewayRange7d: "7d",
@@ -4296,6 +4303,13 @@ const resources = {
       apiGatewayNoTerminalTargetsGuide:
         "OpenCode 与 Codex 始终会列出；如缺少某个工具，请先安装对应的 CLI。",
       apiGatewayUsageTab: "用量统计",
+      apiGatewayUsageAndLogsTab: "用量与日志",
+      apiGatewayUsageStatsSubTab: "用量统计",
+      apiGatewayUsageLogsSubTab: "请求日志",
+      apiGatewayUsageSubTabs: "用量与日志子标签",
+      apiGatewayProviderTemplatesButton: "服务商模板",
+      apiGatewayTemplatesDialogDesc:
+        "浏览内置服务商模板、同步官方模型清单，或创建自定义服务商模板。",
       apiGatewayLogsTab: "请求日志",
       apiGatewayRangeToday: "今日",
       apiGatewayRange7d: "近 7 天",

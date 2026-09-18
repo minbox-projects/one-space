@@ -9,6 +9,7 @@ import {
   Plus,
   RotateCcw,
   Server,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
@@ -28,6 +29,7 @@ type UpstreamProviderListProps = {
   onReenable: (providerId: string) => void;
   onAdd: () => void;
   onDelete?: (providerId: string) => void;
+  onManageTemplates?: () => void;
   /** Optional content rendered above the provider list (e.g. the template area). */
   templateSection?: ReactNode;
 };
@@ -41,6 +43,7 @@ export function UpstreamProviderList({
   onReenable,
   onAdd,
   onDelete,
+  onManageTemplates,
   templateSection,
 }: UpstreamProviderListProps) {
   const { t } = useTranslation();
@@ -176,6 +179,18 @@ export function UpstreamProviderList({
             </div>
           ) : null}
 
+          {onManageTemplates ? (
+            <button
+              type="button"
+              onClick={onManageTemplates}
+              data-testid="api-gateway-manage-templates"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/70 bg-background px-3 text-xs font-medium text-foreground shadow-xs transition hover:bg-muted active:bg-muted/80"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-primary" />
+              <span>{t("apiGatewayProviderTemplatesButton", "Provider templates")}</span>
+            </button>
+          ) : null}
+
           <button
             type="button"
             onClick={onAdd}
@@ -202,15 +217,28 @@ export function UpstreamProviderList({
               "Add upstream providers like OpenAI, DeepSeek, or any OpenAI-compatible API to start proxying requests.",
             )}
           </p>
-          <button
-            type="button"
-            onClick={onAdd}
-            disabled={busy}
-            className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
-          >
-            <Plus className="h-3 w-3" />
-            {t("apiGatewayAddProvider", "Add provider")}
-          </button>
+          <div className="mt-3.5 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onAdd}
+              disabled={busy}
+              className="inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
+            >
+              <Plus className="h-3 w-3" />
+              {t("apiGatewayAddProvider", "Add provider")}
+            </button>
+            {onManageTemplates ? (
+              <button
+                type="button"
+                onClick={onManageTemplates}
+                data-testid="api-gateway-manage-templates-empty"
+                className="inline-flex h-7.5 items-center gap-1.5 rounded-lg border border-border/70 bg-background px-3 text-xs font-medium text-muted-foreground shadow-sm transition hover:bg-muted hover:text-foreground"
+              >
+                <Sparkles className="h-3 w-3 text-primary" />
+                {t("apiGatewayProviderTemplatesButton", "Provider templates")}
+              </button>
+            ) : null}
+          </div>
         </div>
       ) : filteredProviders.length === 0 ? (
         <div

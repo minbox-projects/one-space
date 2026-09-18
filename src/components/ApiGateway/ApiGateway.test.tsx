@@ -948,7 +948,7 @@ describe("ApiGateway", () => {
     expect(terminalsTab).toHaveAttribute("aria-selected", "true");
   });
 
-  it("两个新页签可达且各自范围/分组/页码在切换后保留，价格入口仅在用量页签", async () => {
+  it("用量与日志页签可达且用量统计与请求日志二级切换后保留各自状态，价格入口仅在用量统计", async () => {
     const store: Store = {
       config: makeConfig({
         providers: [makeProvider()],
@@ -965,14 +965,20 @@ describe("ApiGateway", () => {
     ).findByText("Upstream A");
 
     const tabsList = screen.getByRole("tablist", { name: /API Gateway tabs/i });
-    const usageTab = within(tabsList).getByRole("tab", { name: "Usage" });
-    const logsTab = within(tabsList).getByRole("tab", { name: "Request logs" });
+    const usageTab = within(tabsList).getByRole("tab", { name: /Usage & Logs/i });
     const providersTab = within(tabsList).getByRole("tab", {
       name: /Upstream providers/,
     });
 
     fireEvent.click(usageTab);
     expect(usageTab).toHaveAttribute("aria-selected", "true");
+
+    // 默认展示用量统计二级子页
+    const statsSubTab = screen.getByTestId("api-gateway-subtab-usage-stats");
+    const logsSubTab = screen.getByTestId("api-gateway-subtab-usage-logs");
+    expect(statsSubTab).toHaveAttribute("aria-selected", "true");
+    expect(logsSubTab).toHaveAttribute("aria-selected", "false");
+
     const usagePanel = await screen.findByTestId("api-gateway-usage-stats");
     await within(usagePanel).findByTestId("api-gateway-usage-card-requests");
     fireEvent.click(within(usagePanel).getByTestId("api-gateway-usage-range-trigger"));
@@ -984,7 +990,11 @@ describe("ApiGateway", () => {
       within(usagePanel).getByRole("button", { name: "Model prices" }),
     ).toBeInTheDocument();
 
-    fireEvent.click(logsTab);
+    // 切换到请求日志二级子页
+    fireEvent.click(logsSubTab);
+    expect(logsSubTab).toHaveAttribute("aria-selected", "true");
+    expect(statsSubTab).toHaveAttribute("aria-selected", "false");
+
     await screen.findByTestId("api-gateway-logs-ungrouped");
     const logsPanel = screen.getByTestId("api-gateway-usage-logs");
     expect(
@@ -996,11 +1006,12 @@ describe("ApiGateway", () => {
     // Switch away and back: usage range and logs page must survive.
     fireEvent.click(providersTab);
     fireEvent.click(usageTab);
+    fireEvent.click(statsSubTab);
     expect(
       within(usagePanel).getByTestId("api-gateway-usage-range-trigger"),
     ).toHaveTextContent("7d");
 
-    fireEvent.click(logsTab);
+    fireEvent.click(logsSubTab);
     await screen.findByText("Page 2 / 3");
 
     // Grouping selection also survives a tab round-trip.
@@ -1010,7 +1021,8 @@ describe("ApiGateway", () => {
     fireEvent.click(screen.getByRole("option", { name: "Day (UTC+8)" }));
     await screen.findByTestId("api-gateway-logs-grouped");
     fireEvent.click(providersTab);
-    fireEvent.click(logsTab);
+    fireEvent.click(usageTab);
+    fireEvent.click(logsSubTab);
     expect(
       within(logsPanel).getByTestId("api-gateway-logs-group-trigger"),
     ).toHaveTextContent("Day (UTC+8)");
@@ -1658,6 +1670,8 @@ describe("ApiGateway", () => {
 
     renderWithProviders(<ApiGateway />);
 
+    const manageBtn1 = (await screen.findAllByRole("button", { name: /Provider templates|服务商模板/i }))[0];
+    fireEvent.click(manageBtn1);
     const region = await screen.findByTestId("api-gateway-provider-templates");
     expect(region).toBeInTheDocument();
     expect(screen.getByTestId("api-gateway-template-t1")).toBeInTheDocument();
@@ -1678,6 +1692,8 @@ describe("ApiGateway", () => {
 
     renderWithProviders(<ApiGateway />);
 
+    const manageBtn2 = (await screen.findAllByRole("button", { name: /Provider templates|服务商模板/i }))[0];
+    fireEvent.click(manageBtn2);
     const syncButton = await screen.findByTestId("api-gateway-template-sync-t1");
     fireEvent.click(syncButton);
 
@@ -1747,6 +1763,8 @@ describe("ApiGateway", () => {
 
     renderWithProviders(<ApiGateway />);
 
+    const manageBtn3 = (await screen.findAllByRole("button", { name: /Provider templates|服务商模板/i }))[0];
+    fireEvent.click(manageBtn3);
     const syncButton = await screen.findByTestId("api-gateway-template-sync-t1");
     const callsBeforeSync = getConfigCalls;
     fireEvent.click(syncButton);
@@ -1790,6 +1808,8 @@ describe("ApiGateway", () => {
 
     renderWithProviders(<ApiGateway />);
 
+    const manageBtn4 = (await screen.findAllByRole("button", { name: /Provider templates|服务商模板/i }))[0];
+    fireEvent.click(manageBtn4);
     fireEvent.click(await screen.findByTestId("api-gateway-template-add-t1"));
     await screen.findByTestId("api-gateway-template-api-key");
     fireEvent.change(screen.getByTestId("api-gateway-template-api-key"), {
@@ -1814,7 +1834,7 @@ describe("ApiGateway", () => {
     expect(within(detail).getByLabelText("Name")).toHaveValue("OpenCode Zen");
   });
 
-  it("切换到服务商模板Tab，以及点击添加服务商弹出预设选择器并可就地打开编辑弹窗", async () => {
+  it("点击服务商模板管理按钮弹出模板管理弹窗，以及点击添加服务商弹出预设选择器并可就地打开编辑弹窗", async () => {
     const store: Store = {
       config: makeConfig(),
       status: makeStatus(),
@@ -1832,21 +1852,21 @@ describe("ApiGateway", () => {
 
     renderWithProviders(<ApiGateway />);
 
-    // 1. 切换到独立的服务商模板 Tab
-    const templateTab = await screen.findByRole("tab", { name: /Templates|服务商模板/i });
-    fireEvent.click(templateTab);
+    // 1. 点击服务商模板管理按钮
+    const manageTemplatesBtn = (await screen.findAllByRole("button", { name: /Provider templates|服务商模板/i }))[0];
+    fireEvent.click(manageTemplatesBtn);
 
-    // 可以在服务商模板 Tab 查看到模板卡片和管理按钮
+    // 可以在弹出的服务商模板管理中查看到模板卡片和管理按钮
     expect(await screen.findByText("Test Presets Vendor")).toBeInTheDocument();
     expect(screen.getByTestId("template-section-reset-btn")).toBeInTheDocument();
     expect(screen.getByTestId("template-section-new-btn")).toBeInTheDocument();
-    expect(screen.getByTestId("api-gateway-template-edit-tpl-test")).toBeInTheDocument();
+    // 关闭模板管理弹窗
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() =>
+      expect(screen.queryByTestId("api-gateway-templates-dialog")).not.toBeInTheDocument(),
+    );
 
-    // 2. 切回上游服务商 Tab
-    const providersTab = screen.getByRole("tab", { name: /Upstream providers|上游服务商/i });
-    fireEvent.click(providersTab);
-
-    // 点击添加服务商
+    // 2. 点击添加服务商
     const addBtn = screen.getAllByRole("button", { name: /Add provider/i })[0];
     fireEvent.click(addBtn);
 

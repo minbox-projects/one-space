@@ -49,6 +49,13 @@ import {
   type GatewayTerminalTarget,
   type GatewayUpstreamProvider,
 } from "@/lib/apiGateway";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { RuntimeStatusCard } from "./RuntimeStatusCard";
 import { ModelListPanel } from "./ModelListPanel";
 import { UpstreamProviderList } from "./UpstreamProviderList";
@@ -67,11 +74,11 @@ import { UsageLogsPanel } from "./UsageLogsPanel";
 type ApiGatewayTab =
   | "providers"
   | "models"
-  | "templates"
   | "keys"
   | "terminals"
-  | "usage"
-  | "logs";
+  | "usage";
+
+type UsageSubTab = "stats" | "logs";
 
 function emptyProvider(): GatewayUpstreamProvider {
   return {
@@ -123,6 +130,8 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
     useState<GatewayProviderTemplate | null>(null);
   const [creatingTemplate, setCreatingTemplate] =
     useState<GatewayProviderTemplate | null>(null);
+  const [isTemplateManageOpen, setIsTemplateManageOpen] = useState(false);
+  const [usageSubTab, setUsageSubTab] = useState<UsageSubTab>("stats");
 
   const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -584,12 +593,6 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
       count: aggregateModels(config.providers).length,
     },
     {
-      id: "templates",
-      label: t("apiGatewayTemplateTab", "Provider Templates"),
-      icon: Sparkles,
-      count: templates?.length ?? 0,
-    },
-    {
       id: "keys",
       label: t("apiGatewayKeys", "Api Keys"),
       icon: KeyRound,
@@ -603,13 +606,8 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
     },
     {
       id: "usage",
-      label: t("apiGatewayUsageTab", "Usage"),
+      label: t("apiGatewayUsageAndLogsTab", "Usage & Logs"),
       icon: BarChart3,
-    },
-    {
-      id: "logs",
-      label: t("apiGatewayLogsTab", "Request logs"),
-      icon: ScrollText,
     },
   ];
 
@@ -726,46 +724,11 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
             onReenable={(providerId) => void handleReenableProvider(providerId)}
             onAdd={() => setIsTemplatePickerOpen(true)}
             onDelete={(providerId) => void handleDeleteProvider(providerId)}
+            onManageTemplates={() => setIsTemplateManageOpen(true)}
           />
         </div>
 
-        {/* Tab 2: 服务商模板 */}
-        <div
-          role="tabpanel"
-          aria-label={t("apiGatewayTemplateTab", "Provider Templates")}
-          className={activeTab === "templates" ? "block" : "hidden"}
-        >
-          {templatesLoadError ? (
-            <div
-              data-testid="api-gateway-templates-load-error"
-              title={templatesLoadError}
-              className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
-            >
-              {t(
-                "apiGatewayTemplatesLoadFailed",
-                "Failed to load provider templates.",
-              )}
-            </div>
-          ) : null}
-          <ProviderTemplateSection
-            templates={templates}
-            busy={busy}
-            syncingTemplateIds={syncingTemplates}
-            onSync={handleSyncTemplate}
-            onCreateProvider={handleCreateProviderFromTemplate}
-            onEditTemplate={(tpl) => {
-              setEditingTemplate(tpl);
-              setIsTemplateEditOpen(true);
-            }}
-            onNewTemplate={() => {
-              setEditingTemplate(null);
-              setIsTemplateEditOpen(true);
-            }}
-            onResetBuiltin={() => void handleResetBuiltinTemplates()}
-          />
-        </div>
-
-        {/* Tab: 模型列表（面板常驻以保留搜索状态） */}
+        {/* Tab 2: 模型列表（面板常驻以保留搜索状态） */}
         <div
           role="tabpanel"
           aria-label={t("apiGatewayModelListTab", "Model list")}
@@ -774,7 +737,7 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
           <ModelListPanel providers={config.providers} />
         </div>
 
-        {/* Tab 2: 本地密钥 */}
+        {/* Tab 3: 本地密钥 */}
         <div
           role="tabpanel"
           aria-label={t("apiGatewayKeys", "Api Keys")}
@@ -793,7 +756,7 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
           />
         </div>
 
-        {/* Tab 3: AI 终端集成 */}
+        {/* Tab 4: AI 终端集成 */}
         <div
           role="tabpanel"
           aria-label={t("apiGatewayTerminalSync", "AI terminal integration")}
@@ -808,22 +771,59 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
           />
         </div>
 
-        {/* Tab 4: 用量统计（面板常驻以保留范围等状态） */}
+        {/* Tab 5: 用量与日志 */}
         <div
           role="tabpanel"
-          aria-label={t("apiGatewayUsageTab", "Usage")}
-          className={activeTab === "usage" ? "block" : "hidden"}
+          aria-label={t("apiGatewayUsageAndLogsTab", "Usage & Logs")}
+          className={activeTab === "usage" ? "space-y-4 block" : "hidden"}
         >
-          <UsageStatsPanel isActive={activeTab === "usage"} />
-        </div>
+          {/* 二级子标签切换（用量统计 / 请求日志） */}
+          <div className="flex items-center justify-between border-b pb-3">
+            <div
+              role="tablist"
+              aria-label={t("apiGatewayUsageSubTabs", "Usage and logs subtabs")}
+              className="inline-flex items-center rounded-lg border bg-muted/40 p-1 text-xs"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={usageSubTab === "stats"}
+                onClick={() => setUsageSubTab("stats")}
+                data-testid="api-gateway-subtab-usage-stats"
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition-all ${
+                  usageSubTab === "stats"
+                    ? "bg-background text-foreground font-semibold shadow-xs"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <BarChart3 className="h-3.5 w-3.5" />
+                <span>{t("apiGatewayUsageStatsSubTab", "Usage stats")}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={usageSubTab === "logs"}
+                onClick={() => setUsageSubTab("logs")}
+                data-testid="api-gateway-subtab-usage-logs"
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition-all ${
+                  usageSubTab === "logs"
+                    ? "bg-background text-foreground font-semibold shadow-xs"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <ScrollText className="h-3.5 w-3.5" />
+                <span>{t("apiGatewayUsageLogsSubTab", "Request logs")}</span>
+              </button>
+            </div>
+          </div>
 
-        {/* Tab 5: 请求日志（面板常驻以保留分组/页码等状态） */}
-        <div
-          role="tabpanel"
-          aria-label={t("apiGatewayLogsTab", "Request logs")}
-          className={activeTab === "logs" ? "block" : "hidden"}
-        >
-          <UsageLogsPanel isActive={activeTab === "logs"} />
+          <div className={usageSubTab === "stats" ? "block" : "hidden"}>
+            <UsageStatsPanel isActive={activeTab === "usage" && usageSubTab === "stats"} />
+          </div>
+
+          <div className={usageSubTab === "logs" ? "block" : "hidden"}>
+            <UsageLogsPanel isActive={activeTab === "usage" && usageSubTab === "logs"} />
+          </div>
         </div>
 
         {/* 服务商新增与编辑模态弹窗 */}
@@ -916,6 +916,63 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
             return ok;
           }}
         />
+
+        {/* 服务商模板管理模态弹窗 */}
+        <Dialog open={isTemplateManageOpen} onOpenChange={setIsTemplateManageOpen}>
+          <DialogContent
+            className="max-h-[90vh] w-full sm:max-w-4xl overflow-y-auto sm:rounded-2xl p-6"
+            data-testid="api-gateway-templates-dialog"
+          >
+            <DialogHeader className="space-y-1">
+              <DialogTitle className="flex items-center gap-2 text-base font-semibold">
+                <Sparkles className="h-4 w-4 text-primary" />
+                <span>{t("apiGatewayTemplateTab", "Provider Templates")}</span>
+              </DialogTitle>
+              <DialogDescription className="text-xs text-muted-foreground">
+                {t(
+                  "apiGatewayTemplatesDialogDesc",
+                  "Browse built-in provider templates, sync official model lists, or create custom provider configurations.",
+                )}
+              </DialogDescription>
+            </DialogHeader>
+            {templatesLoadError ? (
+              <div
+                data-testid="api-gateway-templates-load-error"
+                title={templatesLoadError}
+                className="my-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+              >
+                {t(
+                  "apiGatewayTemplatesLoadFailed",
+                  "Failed to load provider templates.",
+                )}
+              </div>
+            ) : null}
+            <div className="mt-2">
+              <ProviderTemplateSection
+                templates={templates}
+                busy={busy}
+                syncingTemplateIds={syncingTemplates}
+                onSync={handleSyncTemplate}
+                onCreateProvider={async (req) => {
+                  const ok = await handleCreateProviderFromTemplate(req);
+                  if (ok) {
+                    setIsTemplateManageOpen(false);
+                  }
+                  return ok;
+                }}
+                onEditTemplate={(tpl) => {
+                  setEditingTemplate(tpl);
+                  setIsTemplateEditOpen(true);
+                }}
+                onNewTemplate={() => {
+                  setEditingTemplate(null);
+                  setIsTemplateEditOpen(true);
+                }}
+                onResetBuiltin={() => void handleResetBuiltinTemplates()}
+              />
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );
