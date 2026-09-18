@@ -397,17 +397,32 @@ fn reasoning_efforts_from_options(options: &[Value]) -> Vec<String> {
     efforts
 }
 
-/// Parse the single-provider models.dev payload (`{"id","name","api","models"}`)
-/// and merge each source model over the template's current data. Structural
-/// problems (invalid JSON, a missing model array, an entry without an
-/// identifier) and an empty effective model set are fatal.
+/// Parse a models.dev payload and merge each source model over the template's
+/// current data. Both the single-provider shape (`{"id","name","api","models"}`)
+/// and the full catalog (`{"opencode": {...,"models":{...}}, ...}`) are
+/// accepted; the latter uses the `opencode` provider entry. Structural problems
+/// (invalid JSON, a missing model array, an entry without an identifier) and an
+/// empty effective model set are fatal.
 fn parse_models_dev_source(
     raw: &str,
     current: &ProviderTemplate,
 ) -> Result<ModelsDevSource, String> {
     let value =
         parse_source_value(raw).map_err(|error| format!("response is not valid JSON: {error}"))?;
-    let models = value
+
+    // A single-provider payload carries its `models` map at the top level,
+    // while `https://models.dev/api.json` is a provider-id-keyed full catalog
+    // (`{"opencode": {...}, ...}`). Normalize both to the provider object whose
+    // `models` map is the source of truth.
+    let provider: &Value = if value.get("models").and_then(Value::as_object).is_some() {
+        &value
+    } else {
+        value
+            .get("opencode")
+            .filter(|entry| entry.get("models").and_then(Value::as_object).is_some())
+            .ok_or_else(|| "response is missing the opencode provider entry".to_string())?
+    };
+    let models = provider
         .get("models")
         .and_then(Value::as_object)
         .ok_or_else(|| "response is missing the model list".to_string())?;
@@ -472,8 +487,8 @@ fn parse_models_dev_source(
     }
 
     Ok(ModelsDevSource {
-        name: non_empty_string(&value, "name"),
-        base_url: non_empty_string(&value, "api"),
+        name: non_empty_string(provider, "name"),
+        base_url: non_empty_string(provider, "api"),
         models: merged,
     })
 }

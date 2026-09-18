@@ -1698,3 +1698,220 @@ fn maintenance_persist_failure_leaves_config_unchanged() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Regression: OpenCode Zen syncs from the real models.dev full catalog
+// ---------------------------------------------------------------------------
+//
+// `https://models.dev/api.json` is a mapping of provider id -> provider object,
+// not a single provider. These tests pin that real payload shape: the sync must
+// select the `opencode` entry from the full catalog. They are expected to be RED
+// against the current single-provider parser, which only looks for a top-level
+// `models` object and therefore reports "response is missing the model list".
+
+/// Full models.dev catalog body: provider id -> provider object, each carrying
+/// its own `models` map. The `other` provider deliberately repeats a model id
+/// from the `opencode` entry so a parser that picks the wrong provider cannot
+/// pass by accident.
+fn models_dev_full_catalog_body() -> String {
+    json!({
+        "opencode": {
+            "id": "opencode",
+            "name": "OpenCode Zen",
+            "api": "https://opencode.ai/zen/v1",
+            "models": {
+                "catalog-model-a": {
+                    "name": "Catalog Model A",
+                    "cost": {
+                        "input": 1.25,
+                        "cache_read": 0.125,
+                        "cache_write": 0.5,
+                        "output": 5.0
+                    },
+                    "reasoning_options": [
+                        {"type": "effort", "values": ["low", "high"]}
+                    ]
+                },
+                "catalog-model-b": {
+                    "name": "Catalog Model B",
+                    "cost": {
+                        "input": 2.0,
+                        "cache_read": 0.2,
+                        "cache_write": 0.0,
+                        "output": 8.0
+                    },
+                    "reasoning_options": [
+                        {"type": "effort", "values": ["medium"]}
+                    ]
+                }
+            }
+        },
+        "other": {
+            "id": "other",
+            "name": "Other Provider",
+            "api": "https://other.example.com/v1",
+            "models": {
+                "other-model": {
+                    "name": "Other Model",
+                    "cost": {
+                        "input": 99.0,
+                        "cache_read": 9.9,
+                        "cache_write": 0.0,
+                        "output": 999.0
+                    }
+                },
+                "catalog-model-a": {
+                    "name": "Shadow Model",
+                    "cost": {
+                        "input": 42.0,
+                        "cache_read": 4.2,
+                        "cache_write": 0.0,
+                        "output": 420.0
+                    }
+                }
+            }
+        }
+    })
+    .to_string()
+}
+
+/// Bug regression: the real models.dev `api.json` is a provider-id-keyed full
+/// catalog, so the OpenCode Zen sync must select the `opencode` provider entry
+/// and ignore every other provider. A successful sync replaces the template
+/// models with exactly the `opencode` entry's models (display names, prices and
+/// reasoning efforts included), leaves no `other`-provider model behind, and
+/// takes the provider-level name/base_url from the `opencode` entry.
+#[test]
+fn sync_accepts_models_dev_full_catalog_payload() {
+    let mut config = GatewayConfig::default();
+    let body = models_dev_full_catalog_body();
+
+    let view = apply_template_sync_with(
+        &mut config,
+        "opencode-zen",
+        |_current| Ok(body.clone()),
+        |_next| Ok(()),
+    )
+    .expect("the real full-catalog models.dev payload must sync OpenCode Zen");
+
+    assert_eq!(view.template.id, "opencode-zen");
+    assert_eq!(
+        view.template.name, "OpenCode Zen",
+        "the provider name must come from the catalog's opencode entry"
+    );
+    assert_eq!(
+        view.template.base_url, "https://opencode.ai/zen/v1",
+        "the provider base_url must come from the catalog's opencode entry"
+    );
+
+    let mut ids: Vec<&str> = view
+        .template
+        .models
+        .iter()
+        .map(|model| model.upstream_model.as_str())
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        vec!["catalog-model-a", "catalog-model-b"],
+        "only the opencode entry's models may remain; other providers must be ignored"
+    );
+    assert!(
+        view.template
+            .models
+            .iter()
+            .all(|model| model.upstream_model != "other-model"),
+        "a model from another catalog provider must not enter the template"
+    );
+
+    let model_a = view
+        .template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "catalog-model-a")
+        .expect("catalog-model-a must be present");
+    assert_eq!(model_a.display_name.as_deref(), Some("Catalog Model A"));
+    assert_eq!(model_a.input, 1.25);
+    assert_eq!(model_a.cache_read, 0.125);
+    assert_eq!(model_a.cache_write, 0.5);
+    assert_eq!(model_a.output, 5.0);
+    assert_eq!(model_a.reasoning_efforts, vec!["low", "high"]);
+
+    let model_b = view
+        .template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "catalog-model-b")
+        .expect("catalog-model-b must be present");
+    assert_eq!(model_b.display_name.as_deref(), Some("Catalog Model B"));
+    assert_eq!(model_b.input, 2.0);
+    assert_eq!(model_b.cache_read, 0.2);
+    assert_eq!(model_b.cache_write, 0.0);
+    assert_eq!(model_b.output, 8.0);
+    assert_eq!(model_b.reasoning_efforts, vec!["medium"]);
+
+    let state = config
+        .provider_templates
+        .iter()
+        .find(|state| state.template_id == "opencode-zen")
+        .expect("a successful sync must persist the opencode-zen template state");
+    let persisted = state
+        .template
+        .as_ref()
+        .expect("the persisted template must be present");
+    assert_eq!(
+        persisted, &view.template,
+        "the persisted template must carry exactly the opencode entry's data"
+    );
+    assert_eq!(persisted.name, "OpenCode Zen");
+    assert_eq!(persisted.base_url, "https://opencode.ai/zen/v1");
+}
+
+/// Bug regression: when the models.dev full catalog has no `opencode` provider
+/// entry there is nothing to synchronize, so the sync must fail with an error
+/// that names the missing entry so the failure is actionable, and it must write
+/// nothing.
+#[test]
+fn sync_reports_missing_opencode_entry_in_models_dev_catalog() {
+    let body = json!({
+        "other": {
+            "id": "other",
+            "name": "Other Provider",
+            "api": "https://other.example.com/v1",
+            "models": {
+                "other-model": {
+                    "name": "Other Model",
+                    "cost": {
+                        "input": 1.0,
+                        "cache_read": 0.1,
+                        "cache_write": 0.0,
+                        "output": 2.0
+                    }
+                }
+            }
+        }
+    })
+    .to_string();
+
+    let mut config = GatewayConfig::default();
+    let before = serde_json::to_value(&config).expect("encode config before");
+
+    let error = apply_template_sync_with(
+        &mut config,
+        "opencode-zen",
+        |_current| Ok(body.clone()),
+        |_next| Ok(()),
+    )
+    .expect_err("a full catalog without an opencode entry must fail the sync");
+
+    assert!(
+        error.contains("opencode"),
+        "the error must name the missing opencode entry so it is actionable: {error}"
+    );
+
+    assert_eq!(
+        before,
+        serde_json::to_value(&config).expect("encode config after"),
+        "a failed sync must write nothing"
+    );
+}
