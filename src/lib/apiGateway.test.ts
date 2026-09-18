@@ -1,31 +1,31 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  API_FUSION_DEFAULT_PORT,
-  API_FUSION_KEY_MASK,
+  API_GATEWAY_DEFAULT_PORT,
+  API_GATEWAY_KEY_MASK,
   aggregateModels,
-  apiFusionConfigureTerminal,
-  apiFusionDeleteKey,
-  apiFusionDeleteProvider,
-  apiFusionGetConfig,
-  apiFusionReenableProvider,
-  apiFusionSaveConfig,
-  apiFusionSetDefaultKey,
-  apiFusionSetProviderEnabled,
-  apiFusionStart,
-  apiFusionStatus,
-  apiFusionStop,
-  apiFusionSyncTerminal,
-  apiFusionTerminalTargets,
-  apiFusionUpsertKey,
-  apiFusionUpsertProvider,
-  apiFusionModelPricesGet,
-  apiFusionModelPricesSave,
-  apiFusionRequestLogs,
-  apiFusionUsageRetentionGet,
-  apiFusionUsageRetentionSave,
-  apiFusionUsageStats,
+  apiGatewayConfigureTerminal,
+  apiGatewayDeleteKey,
+  apiGatewayDeleteProvider,
+  apiGatewayGetConfig,
+  apiGatewayReenableProvider,
+  apiGatewaySaveConfig,
+  apiGatewaySetDefaultKey,
+  apiGatewaySetProviderEnabled,
+  apiGatewayStart,
+  apiGatewayStatus,
+  apiGatewayStop,
+  apiGatewaySyncTerminal,
+  apiGatewayTerminalTargets,
+  apiGatewayUpsertKey,
+  apiGatewayUpsertProvider,
+  apiGatewayModelPricesGet,
+  apiGatewayModelPricesSave,
+  apiGatewayRequestLogs,
+  apiGatewayUsageRetentionGet,
+  apiGatewayUsageRetentionSave,
+  apiGatewayUsageStats,
   clampUsagePage,
-  formatFusionTimestamp,
+  formatGatewayTimestamp,
   formatUsageAmount,
   formatUsageGroupLabel,
   formatUsageRowAmount,
@@ -39,15 +39,15 @@ import {
   resolveMappingPreview,
   usageRangeToDays,
   usageStatusTranslationKey,
-  type FusionConfig,
-  type FusionKey,
-  type FusionUpstreamProvider,
+  type GatewayConfig,
+  type GatewayKey,
+  type GatewayUpstreamProvider,
   type ModelPrice,
   type UsageMetrics,
-} from "@/lib/apiFusion";
+} from "@/lib/apiGateway";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
-function key(overrides: Partial<FusionKey> = {}): FusionKey {
+function key(overrides: Partial<GatewayKey> = {}): GatewayKey {
   return {
     id: "k1",
     label: "Main",
@@ -59,13 +59,13 @@ function key(overrides: Partial<FusionKey> = {}): FusionKey {
 }
 
 function provider(
-  overrides: Partial<FusionUpstreamProvider> = {},
-): FusionUpstreamProvider {
+  overrides: Partial<GatewayUpstreamProvider> = {},
+): GatewayUpstreamProvider {
   return {
     id: "p1",
     name: "Provider",
     base_url: "https://upstream.example",
-    api_key: API_FUSION_KEY_MASK,
+    api_key: API_GATEWAY_KEY_MASK,
     default_model: null,
     mappings: [],
     enabled: true,
@@ -78,10 +78,10 @@ function provider(
   };
 }
 
-function config(overrides: Partial<FusionConfig> = {}): FusionConfig {
+function config(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
   return {
     enabled: false,
-    port: API_FUSION_DEFAULT_PORT,
+    port: API_GATEWAY_DEFAULT_PORT,
     providers: [],
     keys: [],
     default_key_id: null,
@@ -90,74 +90,74 @@ function config(overrides: Partial<FusionConfig> = {}): FusionConfig {
   };
 }
 
-describe("apiFusion 命令封装", () => {
+describe("apiGateway 命令封装", () => {
   beforeEach(() => {
     resetTauriMocks();
   });
 
   it("按逐字命令名与 camelCase 参数调用配置读写", async () => {
     const draft = config();
-    await apiFusionGetConfig();
-    await apiFusionSaveConfig(draft);
-    await apiFusionUpsertProvider(provider());
-    await apiFusionDeleteProvider("p1");
-    await apiFusionSetProviderEnabled("p1", false);
-    await apiFusionReenableProvider("p1");
+    await apiGatewayGetConfig();
+    await apiGatewaySaveConfig(draft);
+    await apiGatewayUpsertProvider(provider());
+    await apiGatewayDeleteProvider("p1");
+    await apiGatewaySetProviderEnabled("p1", false);
+    await apiGatewayReenableProvider("p1");
 
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_get_config");
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_save_config", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_get_config");
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_save_config", {
       config: draft,
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_upsert_provider", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_upsert_provider", {
       provider: provider(),
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_delete_provider", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_delete_provider", {
       providerId: "p1",
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_set_provider_enabled", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_set_provider_enabled", {
       providerId: "p1",
       enabled: false,
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_reenable_provider", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_reenable_provider", {
       providerId: "p1",
     });
   });
 
   it("按 camelCase 参数调用 Key、启停与终端同步命令", async () => {
-    await apiFusionUpsertKey(key());
-    await apiFusionDeleteKey("k1");
-    await apiFusionSetDefaultKey("k1");
-    await apiFusionStart();
-    await apiFusionStop();
-    await apiFusionStatus();
-    await apiFusionTerminalTargets();
-    await apiFusionConfigureTerminal(["t-open"]);
-    await apiFusionSyncTerminal(["t-open"]);
+    await apiGatewayUpsertKey(key());
+    await apiGatewayDeleteKey("k1");
+    await apiGatewaySetDefaultKey("k1");
+    await apiGatewayStart();
+    await apiGatewayStop();
+    await apiGatewayStatus();
+    await apiGatewayTerminalTargets();
+    await apiGatewayConfigureTerminal(["t-open"]);
+    await apiGatewaySyncTerminal(["t-open"]);
 
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_upsert_key", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_upsert_key", {
       key: key(),
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_delete_key", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_delete_key", {
       keyId: "k1",
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_set_default_key", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_set_default_key", {
       keyId: "k1",
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_start");
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_stop");
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_status");
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_terminal_targets");
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_configure_terminal", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_start");
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_stop");
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_status");
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_terminal_targets");
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_configure_terminal", {
       targetTools: ["t-open"],
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_sync_terminal", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_sync_terminal", {
       targetTools: ["t-open"],
     });
   });
 
   it("未指定目标时同步命令不携带目标载荷", async () => {
-    await apiFusionSyncTerminal();
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_sync_terminal", {});
+    await apiGatewaySyncTerminal();
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_sync_terminal", {});
   });
 });
 
@@ -211,7 +211,7 @@ describe("resolveDefaultKeyId 默认 Key 解析", () => {
 
 describe("localBaseUrl 本地 Api 地址", () => {
   it("固定绑定回环地址与端口", () => {
-    expect(localBaseUrl(API_FUSION_DEFAULT_PORT)).toBe("http://127.0.0.1:17688/v1");
+    expect(localBaseUrl(API_GATEWAY_DEFAULT_PORT)).toBe("http://127.0.0.1:17688/v1");
     expect(localBaseUrl(18000)).toBe("http://127.0.0.1:18000/v1");
   });
 });
@@ -336,13 +336,13 @@ describe("maskSecret 掩码", () => {
   });
 });
 
-describe("formatFusionTimestamp", () => {
+describe("formatGatewayTimestamp", () => {
   it("空值返回 null", () => {
-    expect(formatFusionTimestamp(null)).toBeNull();
+    expect(formatGatewayTimestamp(null)).toBeNull();
   });
 
   it("以稳定格式展示时间", () => {
-    const formatted = formatFusionTimestamp(1_700_000_000);
+    const formatted = formatGatewayTimestamp(1_700_000_000);
     expect(formatted).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
   });
 });
@@ -465,10 +465,10 @@ describe("clampUsagePage 页码收敛", () => {
 
 describe("usageStatusTranslationKey 状态展示", () => {
   it("映射三种结果到稳定文案键", () => {
-    expect(usageStatusTranslationKey("success")).toBe("apiFusionStatusSuccess");
-    expect(usageStatusTranslationKey("failure")).toBe("apiFusionStatusFailure");
+    expect(usageStatusTranslationKey("success")).toBe("apiGatewayStatusSuccess");
+    expect(usageStatusTranslationKey("failure")).toBe("apiGatewayStatusFailure");
     expect(usageStatusTranslationKey("cancelled")).toBe(
-      "apiFusionStatusCancelled",
+      "apiGatewayStatusCancelled",
     );
   });
 });
@@ -479,49 +479,49 @@ describe("用量与日志命令封装", () => {
   });
 
   it("按 camelCase 参数调用六个用量/价格/保留天数命令", async () => {
-    await apiFusionUsageStats(7);
-    await apiFusionUsageStats(null);
-    await apiFusionRequestLogs({
+    await apiGatewayUsageStats(7);
+    await apiGatewayUsageStats(null);
+    await apiGatewayRequestLogs({
       days: 1,
       groupBy: "day",
       status: "failure",
       model: "gpt-4o",
       page: 2,
     });
-    await apiFusionModelPricesGet();
+    await apiGatewayModelPricesGet();
     const prices: ModelPrice[] = [
       { upstream_model: "gpt-4o", input: 1, cache_read: 0.1, cache_write: 0.2, output: 2 },
     ];
-    await apiFusionModelPricesSave(prices);
-    await apiFusionUsageRetentionGet();
-    await apiFusionUsageRetentionSave(30);
+    await apiGatewayModelPricesSave(prices);
+    await apiGatewayUsageRetentionGet();
+    await apiGatewayUsageRetentionSave(30);
 
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_stats", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_stats", {
       days: 7,
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_stats", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_stats", {
       days: null,
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_request_logs", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
       days: 1,
       groupBy: "day",
       status: "failure",
       model: "gpt-4o",
       page: 2,
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_get");
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_save", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_model_prices_get");
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_model_prices_save", {
       prices,
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_retention_get");
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_retention_save", {
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_retention_get");
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_retention_save", {
       days: 30,
     });
   });
 
   it("查询参数缺省时携带空筛选与第 1 页", async () => {
-    await apiFusionRequestLogs({ days: null });
-    expect(invokeMock).toHaveBeenCalledWith("api_fusion_request_logs", {
+    await apiGatewayRequestLogs({ days: null });
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
       days: null,
       groupBy: null,
       status: null,
@@ -533,7 +533,7 @@ describe("用量与日志命令封装", () => {
 
 describe("aggregateModels 聚合本地模型", () => {
   it("仅统计启用且未自动禁用的服务商，去重模型并保留全部上游来源与解析协议", () => {
-    const providers: FusionUpstreamProvider[] = [
+    const providers: GatewayUpstreamProvider[] = [
       provider({
         id: "pa",
         name: "Alpha",
@@ -631,7 +631,7 @@ describe("aggregateModels 聚合本地模型", () => {
   });
 
   it("远端模型去空格后为空且无默认模型时不产生聚合模型", () => {
-    const providers: FusionUpstreamProvider[] = [
+    const providers: GatewayUpstreamProvider[] = [
       provider({
         id: "p-ghost",
         name: "Ghost",
@@ -644,7 +644,7 @@ describe("aggregateModels 聚合本地模型", () => {
   });
 
   it("默认模型与同名空白远端映射共存时只保留默认条目一次", () => {
-    const providers: FusionUpstreamProvider[] = [
+    const providers: GatewayUpstreamProvider[] = [
       provider({
         id: "p1",
         name: "Provider",

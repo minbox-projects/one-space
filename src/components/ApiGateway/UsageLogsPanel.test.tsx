@@ -2,11 +2,11 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import i18n from "@/i18n";
-import { UsageLogsPanel } from "@/components/ApiFusion/UsageLogsPanel";
+import { UsageLogsPanel } from "@/components/ApiGateway/UsageLogsPanel";
 import type {
   UsageLogRecord,
   UsageLogsPage,
-} from "@/lib/apiFusion";
+} from "@/lib/apiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
@@ -52,7 +52,7 @@ describe("UsageLogsPanel", () => {
   it("默认今日、不分组并以第 1 页取数，切换范围回到第 1 页", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return page({ total: 120, total_pages: 3 });
@@ -61,7 +61,7 @@ describe("UsageLogsPanel", () => {
     renderWithProviders(<UsageLogsPanel />);
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_request_logs", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
         days: 1,
         groupBy: "none",
         status: null,
@@ -70,13 +70,13 @@ describe("UsageLogsPanel", () => {
       }),
     );
 
-    const rangeTrigger = screen.getByTestId("api-fusion-logs-range-trigger");
+    const rangeTrigger = screen.getByTestId("api-gateway-logs-range-trigger");
     expect(rangeTrigger).toHaveTextContent("Today");
     await user.click(rangeTrigger);
     await user.click(screen.getByRole("option", { name: "30d" }));
     expect(rangeTrigger).toHaveTextContent("30d");
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_request_logs", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
         days: 30,
         groupBy: "none",
         status: null,
@@ -91,7 +91,7 @@ describe("UsageLogsPanel", () => {
     let calls = 0;
     let resolveSecond: (value: UsageLogsPage) => void = () => {};
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       calls += 1;
@@ -102,7 +102,7 @@ describe("UsageLogsPanel", () => {
     });
 
     renderWithProviders(<UsageLogsPanel />);
-    await screen.findByTestId("api-fusion-logs-ungrouped");
+    await screen.findByTestId("api-gateway-logs-ungrouped");
 
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     expect(await screen.findByText("Refreshing...")).toBeInTheDocument();
@@ -117,7 +117,7 @@ describe("UsageLogsPanel", () => {
 
   it("不分组表格按时间倒序展示时间/状态/模型/Tokens/花费", async () => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return page({
@@ -132,25 +132,25 @@ describe("UsageLogsPanel", () => {
 
     renderWithProviders(<UsageLogsPanel />);
 
-    const table = await screen.findByTestId("api-fusion-logs-ungrouped");
+    const table = await screen.findByTestId("api-gateway-logs-ungrouped");
     expect(within(table).getByText("Time")).toBeInTheDocument();
     expect(within(table).getByText("Status")).toBeInTheDocument();
     expect(within(table).getByText("Tokens")).toBeInTheDocument();
     expect(within(table).getByText("Cost ($)")).toBeInTheDocument();
 
-    const rows = within(table).getAllByTestId("api-fusion-logs-row");
+    const rows = within(table).getAllByTestId("api-gateway-logs-row");
     expect(rows).toHaveLength(3);
     // UTC+8 display: 2026-09-17T18:00Z is 2026-09-18 02:00.
     expect(within(rows[0]).getByText("2026-09-17 12:00")).toBeInTheDocument();
     expect(within(rows[0]).getByText("Success")).toBeInTheDocument();
-    expect(within(rows[0]).getByTestId("api-fusion-logs-status-badge")).toHaveClass("bg-emerald-500/10");
+    expect(within(rows[0]).getByTestId("api-gateway-logs-status-badge")).toHaveClass("bg-emerald-500/10");
     expect(within(rows[0]).getByText("newest")).toBeInTheDocument();
   });
 
   it("切换为 Day（UTC+8）分组展示分组列且错误数不含 cancelled", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string, args?: any) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       if (args.groupBy === "day") {
@@ -173,18 +173,18 @@ describe("UsageLogsPanel", () => {
     });
 
     renderWithProviders(<UsageLogsPanel />);
-    await screen.findByTestId("api-fusion-logs-ungrouped");
+    await screen.findByTestId("api-gateway-logs-ungrouped");
 
-    const groupTrigger = screen.getByTestId("api-fusion-logs-group-trigger");
+    const groupTrigger = screen.getByTestId("api-gateway-logs-group-trigger");
     expect(groupTrigger).toHaveTextContent("No grouping");
     await user.click(groupTrigger);
     await user.click(screen.getByRole("option", { name: "Day (UTC+8)" }));
     expect(groupTrigger).toHaveTextContent("Day (UTC+8)");
 
-    const grouped = await screen.findByTestId("api-fusion-logs-grouped");
+    const grouped = await screen.findByTestId("api-gateway-logs-grouped");
     expect(within(grouped).getByText("Group")).toBeInTheDocument();
     expect(within(grouped).getByText("Errors")).toBeInTheDocument();
-    const rows = within(grouped).getAllByTestId("api-fusion-logs-group-row");
+    const rows = within(grouped).getAllByTestId("api-gateway-logs-group-row");
     expect(rows).toHaveLength(1);
     expect(within(rows[0]).getByText("2026-09-17")).toBeInTheDocument();
     expect(within(rows[0]).getByText("3")).toBeInTheDocument();
@@ -196,17 +196,17 @@ describe("UsageLogsPanel", () => {
   it("过滤面板为选择式且状态与模型条件可组合，应用后回到第 1 页", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return page();
     });
 
     renderWithProviders(<UsageLogsPanel />);
-    await screen.findByTestId("api-fusion-logs-ungrouped");
+    await screen.findByTestId("api-gateway-logs-ungrouped");
 
     await user.click(screen.getByRole("button", { name: "Filter" }));
-    const panel = await screen.findByTestId("api-fusion-logs-filter-panel");
+    const panel = await screen.findByTestId("api-gateway-logs-filter-panel");
     expect(within(panel).queryByRole("combobox")).not.toBeInTheDocument();
 
     await user.click(within(panel).getByRole("button", { name: "Failure" }));
@@ -214,7 +214,7 @@ describe("UsageLogsPanel", () => {
     await user.click(within(panel).getByRole("button", { name: "Apply" }));
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_request_logs", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
         days: 1,
         groupBy: "none",
         status: "failure",
@@ -227,7 +227,7 @@ describe("UsageLogsPanel", () => {
   it("筛选无匹配显示空状态且不报错", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string, args?: any) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       if (args.status === "failure") {
@@ -237,10 +237,10 @@ describe("UsageLogsPanel", () => {
     });
 
     renderWithProviders(<UsageLogsPanel />);
-    await screen.findByTestId("api-fusion-logs-ungrouped");
+    await screen.findByTestId("api-gateway-logs-ungrouped");
 
     await user.click(screen.getByRole("button", { name: "Filter" }));
-    const panel = await screen.findByTestId("api-fusion-logs-filter-panel");
+    const panel = await screen.findByTestId("api-gateway-logs-filter-panel");
     await user.click(within(panel).getByRole("button", { name: "Failure" }));
     await user.click(within(panel).getByRole("button", { name: "Apply" }));
 
@@ -251,7 +251,7 @@ describe("UsageLogsPanel", () => {
   it("每页 50 条、默认第 1 页并支持翻页", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string, args?: any) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return page({
@@ -268,7 +268,7 @@ describe("UsageLogsPanel", () => {
 
     await user.click(screen.getByRole("button", { name: "Next" }));
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_request_logs", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
         days: 1,
         groupBy: "none",
         status: null,
@@ -282,7 +282,7 @@ describe("UsageLogsPanel", () => {
   it("切换分组时回到第 1 页", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string, args?: any) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return page({
@@ -297,12 +297,12 @@ describe("UsageLogsPanel", () => {
     await user.click(screen.getByRole("button", { name: "Next" }));
     await screen.findByText("Page 2 / 3");
 
-    const groupTrigger = screen.getByTestId("api-fusion-logs-group-trigger");
+    const groupTrigger = screen.getByTestId("api-gateway-logs-group-trigger");
     await user.click(groupTrigger);
     await user.click(screen.getByRole("option", { name: "Model" }));
     expect(groupTrigger).toHaveTextContent("Model");
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_request_logs", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
         days: 1,
         groupBy: "model",
         status: null,
@@ -315,7 +315,7 @@ describe("UsageLogsPanel", () => {
   it("范围缩短导致页码越界时回到第 1 页且不显示空白页", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string, args?: any) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       if (args.days === 7) {
@@ -329,7 +329,7 @@ describe("UsageLogsPanel", () => {
     await user.click(screen.getByRole("button", { name: "Next" }));
     await screen.findByText("Page 2 / 3");
 
-    const rangeTrigger = screen.getByTestId("api-fusion-logs-range-trigger");
+    const rangeTrigger = screen.getByTestId("api-gateway-logs-range-trigger");
     await user.click(rangeTrigger);
     await user.click(screen.getByRole("option", { name: "7d" }));
     expect(rangeTrigger).toHaveTextContent("7d");
@@ -345,7 +345,7 @@ describe("UsageLogsPanel", () => {
   it("后端返回页码越界时收敛到有效页且不显示空白页", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string, args?: any) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       if (args.page === 2) {
@@ -365,7 +365,7 @@ describe("UsageLogsPanel", () => {
     );
     const pageOneCalls = invokeMock.mock.calls.filter(
       ([command, args]) =>
-        command === "api_fusion_request_logs" &&
+        command === "api_gateway_request_logs" &&
         (args as { page?: number }).page === 1,
     );
     expect(pageOneCalls.length).toBeGreaterThanOrEqual(2);
@@ -379,7 +379,7 @@ describe("UsageLogsPanel", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(invokeMock).not.toHaveBeenCalledWith(
-      "api_fusion_request_logs",
+      "api_gateway_request_logs",
       expect.anything(),
     );
   });
@@ -387,7 +387,7 @@ describe("UsageLogsPanel", () => {
   it("过滤面板的模型选项来自范围内模型清单，而不限于当前页记录", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       const value = page({
@@ -404,10 +404,10 @@ describe("UsageLogsPanel", () => {
     });
 
     renderWithProviders(<UsageLogsPanel />);
-    await screen.findByTestId("api-fusion-logs-ungrouped");
+    await screen.findByTestId("api-gateway-logs-ungrouped");
 
     await user.click(screen.getByRole("button", { name: "Filter" }));
-    const panel = await screen.findByTestId("api-fusion-logs-filter-panel");
+    const panel = await screen.findByTestId("api-gateway-logs-filter-panel");
 
     // A model present in range but absent from page 1 must be selectable.
     expect(
@@ -420,7 +420,7 @@ describe("UsageLogsPanel", () => {
     await user.click(within(panel).getByRole("button", { name: "Apply" }));
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_request_logs", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
         days: 1,
         groupBy: "none",
         status: null,
@@ -433,19 +433,19 @@ describe("UsageLogsPanel", () => {
   it("点击过滤选项即时生效，过滤按钮更新文本且清除按钮可重置", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return page({ records: [record({ local_model: "gpt-4o" })] });
     });
 
     renderWithProviders(<UsageLogsPanel />);
-    await screen.findByTestId("api-fusion-logs-ungrouped");
+    await screen.findByTestId("api-gateway-logs-ungrouped");
 
-    const filterTrigger = screen.getByTestId("api-fusion-logs-filter-trigger");
+    const filterTrigger = screen.getByTestId("api-gateway-logs-filter-trigger");
     await user.click(filterTrigger);
 
-    const panel = await screen.findByTestId("api-fusion-logs-filter-panel");
+    const panel = await screen.findByTestId("api-gateway-logs-filter-panel");
     const failureBtn = within(panel).getByRole("button", { name: "Failure" });
     await user.click(failureBtn);
 
@@ -466,7 +466,7 @@ describe("UsageLogsPanel", () => {
 
   it("失败记录展示状态码与标准失败原因副标题，成功记录不显示失败原因", async () => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return page({
@@ -486,19 +486,19 @@ describe("UsageLogsPanel", () => {
     });
 
     renderWithProviders(<UsageLogsPanel />);
-    await screen.findByTestId("api-fusion-logs-ungrouped");
+    await screen.findByTestId("api-gateway-logs-ungrouped");
 
-    const rows = screen.getAllByTestId("api-fusion-logs-row");
+    const rows = screen.getAllByTestId("api-gateway-logs-row");
     expect(rows).toHaveLength(2);
 
     // 第一行：失败记录
     const failureBadge = within(rows[0]).getByTestId(
-      "api-fusion-logs-status-badge",
+      "api-gateway-logs-status-badge",
     );
     expect(failureBadge).toHaveTextContent("Failure");
     expect(failureBadge).toHaveTextContent("502");
     const failureReason = within(rows[0]).getByTestId(
-      "api-fusion-logs-status-reason",
+      "api-gateway-logs-status-reason",
     );
     expect(failureReason).toHaveTextContent(
       "Bad gateway / Upstream unavailable",
@@ -506,17 +506,17 @@ describe("UsageLogsPanel", () => {
 
     // 第二行：成功记录
     const successBadge = within(rows[1]).getByTestId(
-      "api-fusion-logs-status-badge",
+      "api-gateway-logs-status-badge",
     );
     expect(successBadge).toHaveTextContent("Success");
     expect(
-      within(rows[1]).queryByTestId("api-fusion-logs-status-reason"),
+      within(rows[1]).queryByTestId("api-gateway-logs-status-reason"),
     ).not.toBeInTheDocument();
   });
 
   it("Tokens 列同时显示输入、输出、缓存 Tokens 数，并提供 info 图标展示完整明细", async () => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return page({
@@ -533,32 +533,32 @@ describe("UsageLogsPanel", () => {
     });
 
     renderWithProviders(<UsageLogsPanel />);
-    await screen.findByTestId("api-fusion-logs-ungrouped");
+    await screen.findByTestId("api-gateway-logs-ungrouped");
 
-    const rows = screen.getAllByTestId("api-fusion-logs-row");
+    const rows = screen.getAllByTestId("api-gateway-logs-row");
     expect(rows).toHaveLength(1);
 
     const tokensCell = within(rows[0]).getByTestId(
-      "api-fusion-logs-tokens-cell",
+      "api-gateway-logs-tokens-cell",
     );
     const breakdown = within(tokensCell).getByTestId(
-      "api-fusion-logs-tokens-breakdown",
+      "api-gateway-logs-tokens-breakdown",
     );
     expect(
-      within(breakdown).getByTestId("api-fusion-logs-tokens-input-icon"),
+      within(breakdown).getByTestId("api-gateway-logs-tokens-input-icon"),
     ).toBeInTheDocument();
     expect(breakdown).toHaveTextContent("1,250");
     expect(
-      within(breakdown).getByTestId("api-fusion-logs-tokens-output-icon"),
+      within(breakdown).getByTestId("api-gateway-logs-tokens-output-icon"),
     ).toBeInTheDocument();
     expect(breakdown).toHaveTextContent("340");
     expect(
-      within(breakdown).getByTestId("api-fusion-logs-tokens-cache-icon"),
+      within(breakdown).getByTestId("api-gateway-logs-tokens-cache-icon"),
     ).toBeInTheDocument();
     expect(breakdown).toHaveTextContent("100"); // 80 + 20
 
     const infoBtn = within(tokensCell).getByTestId(
-      "api-fusion-logs-tokens-info-btn",
+      "api-gateway-logs-tokens-info-btn",
     );
     expect(infoBtn).toBeInTheDocument();
     expect(infoBtn).toHaveAttribute(
@@ -579,7 +579,7 @@ describe("UsageLogsPanel", () => {
     );
 
     const tooltip = within(tokensCell).getByTestId(
-      "api-fusion-logs-tokens-tooltip",
+      "api-gateway-logs-tokens-tooltip",
     );
     expect(tooltip).toHaveTextContent("Tokens breakdown");
     expect(tooltip).toHaveTextContent("Input:");
@@ -598,7 +598,7 @@ describe("UsageLogsPanel", () => {
 
   it("模型列展示本地模型，并在同一行展示上游服务商名称与上游模型", async () => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_request_logs") {
+      if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return page({
@@ -613,17 +613,17 @@ describe("UsageLogsPanel", () => {
     });
 
     renderWithProviders(<UsageLogsPanel />);
-    await screen.findByTestId("api-fusion-logs-ungrouped");
+    await screen.findByTestId("api-gateway-logs-ungrouped");
 
-    const rows = screen.getAllByTestId("api-fusion-logs-row");
+    const rows = screen.getAllByTestId("api-gateway-logs-row");
     expect(rows).toHaveLength(1);
 
     expect(within(rows[0]).getByText("claude-3-7-sonnet")).toBeInTheDocument();
     expect(
-      within(rows[0]).getByTestId("api-fusion-logs-provider-name"),
+      within(rows[0]).getByTestId("api-gateway-logs-provider-name"),
     ).toHaveTextContent("Anthropic Direct");
     expect(
-      within(rows[0]).getByTestId("api-fusion-logs-upstream-model"),
+      within(rows[0]).getByTestId("api-gateway-logs-upstream-model"),
     ).toHaveTextContent("claude-3-7-sonnet-20250219");
   });
 });

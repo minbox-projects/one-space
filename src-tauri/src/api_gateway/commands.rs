@@ -9,22 +9,25 @@ use super::usage_log::{
     UsageLogStore, UsageLogsPage, UsageStats, USAGE_LOG_PAGE_SIZE,
 };
 use super::{
-    now_ts, FusionConfig, FusionKey, FusionStatus, FusionUpstreamProvider, ModelPrice,
+    now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, ModelPrice,
     TerminalSyncRecord, UsageResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Terminal tools that API Fusion is allowed to write to.
-pub(in crate::api_fusion) const SUPPORTED_TERMINAL_TOOLS: [&str; 2] = ["opencode", "codex"];
+/// Terminal tools that API Gateway is allowed to write to.
+pub(in crate::api_gateway) const SUPPORTED_TERMINAL_TOOLS: [&str; 2] = ["opencode", "codex"];
 
-/// Display name and provider key of the managed API Fusion gateway record.
+/// Display name and provider key of the managed API Gateway gateway record.
 const GATEWAY_PROVIDER_NAME: &str = "API Gateway";
 const GATEWAY_PROVIDER_KEY: &str = "apigateway";
-/// Stable marker identifying a provider record written by API Fusion.
-const GATEWAY_MARKER_KEY: &str = "api_fusion_gateway";
+/// Stable marker identifying a provider record written by API Gateway.
+/// New records always carry the new key; the legacy `api_fusion_gateway` key
+/// is accepted read-only so previously synced records keep being recognized.
+const GATEWAY_MARKER_KEY: &str = "api_gateway_gateway";
+const LEGACY_GATEWAY_MARKER_KEY: &str = "api_fusion_gateway";
 
-/// A terminal service provider record that API Fusion can configure or sync.
+/// A terminal service provider record that API Gateway can configure or sync.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalTarget {
     pub tool: String,
@@ -41,7 +44,7 @@ pub struct TerminalTarget {
     pub synced_at: Option<u64>,
 }
 
-pub(in crate::api_fusion) fn is_supported_terminal_tool(tool: &str) -> bool {
+pub(in crate::api_gateway) fn is_supported_terminal_tool(tool: &str) -> bool {
     SUPPORTED_TERMINAL_TOOLS
         .iter()
         .any(|supported| supported.eq_ignore_ascii_case(tool.trim()))
@@ -55,14 +58,18 @@ fn provider_tool(provider: &Value) -> &str {
 }
 
 /// A provider carries the gateway marker either at the top level or under
-/// `tool_config`; both shapes are recognized.
+/// `tool_config`; both shapes are recognized. The legacy `api_fusion_gateway`
+/// marker is accepted read-only; new writes use `GATEWAY_MARKER_KEY` only.
 fn provider_has_gateway_marker(provider: &Value) -> bool {
-    provider.get(GATEWAY_MARKER_KEY).and_then(Value::as_bool) == Some(true)
-        || provider
-            .get("tool_config")
-            .and_then(|tool_config| tool_config.get(GATEWAY_MARKER_KEY))
-            .and_then(Value::as_bool)
-            == Some(true)
+    fn marked(provider: &Value, key: &str) -> bool {
+        provider.get(key).and_then(Value::as_bool) == Some(true)
+            || provider
+                .get("tool_config")
+                .and_then(|tool_config| tool_config.get(key))
+                .and_then(Value::as_bool)
+                == Some(true)
+    }
+    marked(provider, GATEWAY_MARKER_KEY) || marked(provider, LEGACY_GATEWAY_MARKER_KEY)
 }
 
 fn non_empty(value: Option<&str>) -> Option<String> {
@@ -74,24 +81,24 @@ fn non_empty(value: Option<&str>) -> Option<String> {
 
 /// A gateway contributes models only while it is active: user-enabled and not
 /// auto-disabled, the same rule used by candidate selection and `/v1/models`.
-fn gateway_is_active(gateway: &FusionUpstreamProvider) -> bool {
+fn gateway_is_active(gateway: &GatewayUpstreamProvider) -> bool {
     gateway.enabled && !gateway.auto_disabled
 }
 
-/// Build the terminal provider record written by API Fusion for one tool.
+/// Build the terminal provider record written by API Gateway for one tool.
 ///
-/// The record is always marked as an API Fusion gateway, carries the resolved
+/// The record is always marked as an API Gateway gateway, carries the resolved
 /// default local key value as its `api_key` (top-level and, for opencode,
 /// `tool_config.options.apiKey`), and never carries an `active`/`is_active`
 /// flag. Opencode activation plus projection to opencode.json are applied
 /// separately via the service-provider active list and projection after the
 /// upsert succeeds.
-pub(in crate::api_fusion) fn build_gateway_provider(
+pub(in crate::api_gateway) fn build_gateway_provider(
     provider_id: &str,
     tool: &str,
     base_url: &str,
     api_key: &str,
-    gateways: &[FusionUpstreamProvider],
+    gateways: &[GatewayUpstreamProvider],
 ) -> Result<serde_json::Value, String> {
     let tool = tool.trim().to_ascii_lowercase();
     if !is_supported_terminal_tool(&tool) {
@@ -173,7 +180,7 @@ pub(in crate::api_fusion) fn build_gateway_provider(
 }
 
 /// Pending-sync is derived from the persisted ledger, never from the redacted api_key.
-pub(in crate::api_fusion) fn terminal_sync_pending(
+pub(in crate::api_gateway) fn terminal_sync_pending(
     record: &TerminalSyncRecord,
     current_key_id: Option<&str>,
     current_base_url: &str,
@@ -186,8 +193,8 @@ pub(in crate::api_fusion) fn terminal_sync_pending(
     }
 }
 
-pub(in crate::api_fusion) fn default_key_for_sync(
-    config: &FusionConfig,
+pub(in crate::api_gateway) fn default_key_for_sync(
+    config: &GatewayConfig,
 ) -> Result<(String, String), String> {
     // Mirror the frontend `resolveDefaultKeyId` rule: the stored choice wins
     // while it points at an enabled key, otherwise fall through to the next
@@ -216,12 +223,12 @@ fn api_err_to_string(error: crate::app_store::ApiErr) -> String {
 }
 
 #[tauri::command]
-pub fn api_fusion_get_config() -> Result<FusionConfig, String> {
+pub fn api_gateway_get_config() -> Result<GatewayConfig, String> {
     read_config()
 }
 
 #[tauri::command]
-pub async fn api_fusion_save_config(config: FusionConfig) -> Result<FusionConfig, String> {
+pub async fn api_gateway_save_config(config: GatewayConfig) -> Result<GatewayConfig, String> {
     let existing = read_config()?;
     let mut next = config;
     for provider in &mut next.providers {
@@ -246,17 +253,17 @@ pub async fn api_fusion_save_config(config: FusionConfig) -> Result<FusionConfig
     }
     write_config(&next)?;
     if next.enabled {
-        api_fusion_start().await?;
+        api_gateway_start().await?;
     } else {
-        api_fusion_stop().await?;
+        api_gateway_stop().await?;
     }
     read_config()
 }
 
 #[tauri::command]
-pub fn api_fusion_upsert_provider(
-    mut provider: FusionUpstreamProvider,
-) -> Result<FusionConfig, String> {
+pub fn api_gateway_upsert_provider(
+    mut provider: GatewayUpstreamProvider,
+) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     if provider.id.trim().is_empty() {
         provider.id = new_provider_id();
@@ -274,7 +281,7 @@ pub fn api_fusion_upsert_provider(
 }
 
 #[tauri::command]
-pub fn api_fusion_delete_provider(provider_id: String) -> Result<FusionConfig, String> {
+pub fn api_gateway_delete_provider(provider_id: String) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     config.providers.retain(|provider| provider.id != provider_id);
     config
@@ -285,10 +292,10 @@ pub fn api_fusion_delete_provider(provider_id: String) -> Result<FusionConfig, S
 }
 
 #[tauri::command]
-pub fn api_fusion_set_provider_enabled(
+pub fn api_gateway_set_provider_enabled(
     provider_id: String,
     enabled: bool,
-) -> Result<FusionConfig, String> {
+) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     let provider = find_provider_mut(&mut config, &provider_id)
         .ok_or_else(|| format!("provider not found: {provider_id}"))?;
@@ -299,7 +306,7 @@ pub fn api_fusion_set_provider_enabled(
 
 /// Manual re-enable clears only the auto-disabled runtime state.
 #[tauri::command]
-pub fn api_fusion_reenable_provider(provider_id: String) -> Result<FusionConfig, String> {
+pub fn api_gateway_reenable_provider(provider_id: String) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     let provider = find_provider_mut(&mut config, &provider_id)
         .ok_or_else(|| format!("provider not found: {provider_id}"))?;
@@ -309,7 +316,7 @@ pub fn api_fusion_reenable_provider(provider_id: String) -> Result<FusionConfig,
 }
 
 #[tauri::command]
-pub fn api_fusion_upsert_key(mut key: FusionKey) -> Result<FusionConfig, String> {
+pub fn api_gateway_upsert_key(mut key: GatewayKey) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     touch_key_created_at(&mut key);
     if key.id.trim().is_empty() {
@@ -331,7 +338,7 @@ pub fn api_fusion_upsert_key(mut key: FusionKey) -> Result<FusionConfig, String>
 }
 
 #[tauri::command]
-pub fn api_fusion_delete_key(key_id: String) -> Result<FusionConfig, String> {
+pub fn api_gateway_delete_key(key_id: String) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     config.keys.retain(|key| key.id != key_id);
     write_config(&config)?;
@@ -339,7 +346,7 @@ pub fn api_fusion_delete_key(key_id: String) -> Result<FusionConfig, String> {
 }
 
 #[tauri::command]
-pub fn api_fusion_set_default_key(key_id: String) -> Result<FusionConfig, String> {
+pub fn api_gateway_set_default_key(key_id: String) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     let enabled = config
         .keys
@@ -369,25 +376,25 @@ fn persist_enabled(enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn api_fusion_start() -> Result<FusionStatus, String> {
+pub async fn api_gateway_start() -> Result<GatewayStatus, String> {
     let status = start_server().await?;
     persist_enabled(true)?;
     Ok(status)
 }
 
 #[tauri::command]
-pub async fn api_fusion_stop() -> Result<FusionStatus, String> {
+pub async fn api_gateway_stop() -> Result<GatewayStatus, String> {
     let status = stop_server().await?;
     persist_enabled(false)?;
     Ok(status)
 }
 
 #[tauri::command]
-pub fn api_fusion_status() -> Result<FusionStatus, String> {
+pub fn api_gateway_status() -> Result<GatewayStatus, String> {
     server_status()
 }
 
-pub async fn api_fusion_autostart() -> Result<FusionStatus, String> {
+pub async fn api_gateway_autostart() -> Result<GatewayStatus, String> {
     autostart().await
 }
 
@@ -424,7 +431,7 @@ fn find_managed_gateway_provider<'a>(
 fn resolve_gateway_provider_id(
     tool: &str,
     providers: &[Value],
-    config: &FusionConfig,
+    config: &GatewayConfig,
 ) -> String {
     for record in &config.terminal_syncs {
         if !record.tool.eq_ignore_ascii_case(tool) {
@@ -456,8 +463,8 @@ fn resolve_gateway_provider_id(
 /// the current terminal service provider list. Managed gateways are recognized
 /// through the gateway marker only; a stale ledger id that points at an unmarked
 /// user provider is never claimed.
-pub(in crate::api_fusion) fn terminal_targets_from(
-    config: &FusionConfig,
+pub(in crate::api_gateway) fn terminal_targets_from(
+    config: &GatewayConfig,
     providers_data: &serde_json::Value,
 ) -> Vec<TerminalTarget> {
     let providers = providers_data
@@ -504,7 +511,7 @@ pub(in crate::api_fusion) fn terminal_targets_from(
 }
 
 #[tauri::command]
-pub fn api_fusion_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
+pub fn api_gateway_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
     let config = read_config()?;
     let payload = crate::app_store::service_providers_list().map_err(api_err_to_string)?;
     Ok(terminal_targets_from(&config, &payload.data))
@@ -512,7 +519,7 @@ pub fn api_fusion_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
 
 /// Boxed future returned by an injected terminal upsert, kept `Send` so the
 /// pipeline can run on the Tauri async runtime.
-pub(in crate::api_fusion) type UpsertFuture =
+pub(in crate::api_gateway) type UpsertFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
 /// Terminal sync pipeline with an injectable upsert seam: build one gateway
@@ -523,7 +530,7 @@ pub(in crate::api_fusion) type UpsertFuture =
 /// `active`/`is_active` flag; opencode activation plus projection to
 /// opencode.json are applied separately in `apply_terminal_sync` after the
 /// ledger is persisted.
-pub(in crate::api_fusion) async fn apply_terminal_sync_with<F>(
+pub(in crate::api_gateway) async fn apply_terminal_sync_with<F>(
     providers_data: &serde_json::Value,
     mut upsert: F,
     target_tools: Vec<String>,
@@ -639,7 +646,7 @@ async fn apply_terminal_sync(
 }
 
 #[tauri::command]
-pub async fn api_fusion_configure_terminal(
+pub async fn api_gateway_configure_terminal(
     app: tauri::AppHandle,
     target_tools: Vec<String>,
 ) -> Result<Vec<TerminalSyncRecord>, String> {
@@ -647,7 +654,7 @@ pub async fn api_fusion_configure_terminal(
 }
 
 #[tauri::command]
-pub async fn api_fusion_sync_terminal(
+pub async fn api_gateway_sync_terminal(
     app: tauri::AppHandle,
     target_tools: Option<Vec<String>>,
 ) -> Result<Vec<TerminalSyncRecord>, String> {
@@ -670,7 +677,7 @@ pub async fn api_fusion_sync_terminal(
 /// Aggregated cards, UTC+8 buckets and per-model/provider detail for `days`.
 /// `None` means all time, `Some(1)` means today; a single day buckets by hour.
 #[tauri::command]
-pub fn api_fusion_usage_stats(days: Option<i64>) -> Result<UsageStats, String> {
+pub fn api_gateway_usage_stats(days: Option<i64>) -> Result<UsageStats, String> {
     let range = resolve_range(days, now_millis());
     let hour_buckets = days == Some(1);
     UsageLogStore::default_store()?.usage_stats(&range, hour_buckets)
@@ -680,7 +687,7 @@ pub fn api_fusion_usage_stats(days: Option<i64>) -> Result<UsageStats, String> {
 /// `group_by` is `"model"` or `"day"`. Range resolution, grouping, filtering and
 /// pagination all happen here in the backend.
 #[tauri::command]
-pub fn api_fusion_request_logs(
+pub fn api_gateway_request_logs(
     days: Option<i64>,
     group_by: Option<String>,
     status: Option<String>,
@@ -716,13 +723,13 @@ pub fn api_fusion_request_logs(
 }
 
 #[tauri::command]
-pub fn api_fusion_model_prices_get() -> Result<Vec<ModelPrice>, String> {
+pub fn api_gateway_model_prices_get() -> Result<Vec<ModelPrice>, String> {
     Ok(read_config()?.model_prices)
 }
 
 /// Replace only the price table, preserving providers, keys and terminal_syncs.
 #[tauri::command]
-pub fn api_fusion_model_prices_save(prices: Vec<ModelPrice>) -> Result<Vec<ModelPrice>, String> {
+pub fn api_gateway_model_prices_save(prices: Vec<ModelPrice>) -> Result<Vec<ModelPrice>, String> {
     let mut config = read_config()?;
     config.model_prices = prices;
     write_config(&config)?;
@@ -730,14 +737,14 @@ pub fn api_fusion_model_prices_save(prices: Vec<ModelPrice>) -> Result<Vec<Model
 }
 
 #[tauri::command]
-pub fn api_fusion_usage_retention_get() -> Result<u32, String> {
+pub fn api_gateway_usage_retention_get() -> Result<u32, String> {
     Ok(normalize_retention_days(read_config()?.usage_retention_days))
 }
 
 /// Replace only the retention days; invalid values (not 1-365) are rejected
 /// with an actionable error and are never persisted.
 #[tauri::command]
-pub fn api_fusion_usage_retention_save(days: i64) -> Result<u32, String> {
+pub fn api_gateway_usage_retention_save(days: i64) -> Result<u32, String> {
     let validated = validate_retention_days(days)?;
     let mut config = read_config()?;
     config.usage_retention_days = validated;

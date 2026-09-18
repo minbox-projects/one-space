@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RefreshCw, Tags } from "lucide-react";
 import {
-  apiFusionUsageStats,
+  apiGatewayUsageStats,
   formatUsageAmount,
   formatUsageRowAmount,
   USAGE_RANGE_KEYS,
@@ -10,7 +10,7 @@ import {
   type UsageMetrics,
   type UsageRangeKey,
   type UsageStats,
-} from "@/lib/apiFusion";
+} from "@/lib/apiGateway";
 import { errorToMessage } from "@/lib/messages";
 import { ModelPriceDialog } from "./ModelPriceDialog";
 import { SelectDropdown } from "./SelectDropdown";
@@ -20,11 +20,11 @@ function formatCount(value: number): string {
 }
 
 const RANGE_LABEL_KEYS: Record<UsageRangeKey, string> = {
-  today: "apiFusionRangeToday",
-  "7d": "apiFusionRange7d",
-  "15d": "apiFusionRange15d",
-  "30d": "apiFusionRange30d",
-  all: "apiFusionRangeAll",
+  today: "apiGatewayRangeToday",
+  "7d": "apiGatewayRange7d",
+  "15d": "apiGatewayRange15d",
+  "30d": "apiGatewayRange30d",
+  all: "apiGatewayRangeAll",
 };
 
 const RANGE_LABEL_FALLBACKS: Record<UsageRangeKey, string> = {
@@ -54,7 +54,7 @@ function UsageAnalysisRow({
   return (
     <tr
       className="border-t"
-      data-testid={indent ? "api-fusion-usage-provider-row" : "api-fusion-usage-model-row"}
+      data-testid={indent ? "api-gateway-usage-provider-row" : "api-gateway-usage-model-row"}
     >
       <td className={`px-3 py-2 ${indent ? "pl-8 text-muted-foreground" : "font-medium"}`}>
         {label}
@@ -87,7 +87,7 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
       if (options?.refresh) setRefreshing(true);
       else setLoading(true);
       try {
-        const next = await apiFusionUsageStats(usageRangeToDays(range));
+        const next = await apiGatewayUsageStats(usageRangeToDays(range));
         if (requestSeqRef.current !== seq) return;
         setStats(next);
       } catch (err) {
@@ -111,11 +111,11 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
   const buckets = stats ? selectBuckets(stats) : [];
 
   return (
-    <div className="rounded-2xl border bg-card p-5" data-testid="api-fusion-usage-stats">
+    <div className="rounded-2xl border bg-card p-5" data-testid="api-gateway-usage-stats">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-0.5">
           <h2 className="text-base font-semibold text-foreground">
-            {t("apiFusionUsageTab", "Usage")}
+            {t("apiGatewayUsageTab", "Usage")}
           </h2>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -126,15 +126,15 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
               label: t(RANGE_LABEL_KEYS[key], RANGE_LABEL_FALLBACKS[key]),
             }))}
             onChange={(nextRange) => setRange(nextRange)}
-            testId="api-fusion-usage-range"
-            ariaLabel={t("apiFusionRangeToday", "Time range")}
+            testId="api-gateway-usage-range"
+            ariaLabel={t("apiGatewayRangeToday", "Time range")}
           />
           <button
             type="button"
             onClick={() => void load({ refresh: true })}
             disabled={refreshing}
-            aria-label={t("apiFusionRefresh", "Refresh")}
-            title={t("apiFusionRefresh", "Refresh")}
+            aria-label={t("apiGatewayRefresh", "Refresh")}
+            title={t("apiGatewayRefresh", "Refresh")}
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border bg-background transition hover:bg-muted disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
@@ -145,14 +145,14 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
             className="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-2.5 text-xs font-medium transition hover:bg-muted"
           >
             <Tags className="h-3.5 w-3.5" />
-            {t("apiFusionModelPrices", "Model prices")}
+            {t("apiGatewayModelPrices", "Model prices")}
           </button>
         </div>
       </div>
 
       {refreshing ? (
         <div role="status" className="mt-3 text-xs text-muted-foreground">
-          {t("apiFusionRefreshing", "Refreshing...")}
+          {t("apiGatewayRefreshing", "Refreshing...")}
         </div>
       ) : null}
 
@@ -173,17 +173,17 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
         ) : null
       ) : stats.request_count === 0 ? (
         <p className="mt-4 rounded-xl border border-dashed bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
-          {t("apiFusionUsageEmpty", "No usage records in this range.")}
+          {t("apiGatewayUsageEmpty", "No usage records in this range.")}
         </p>
       ) : (
         <div className="mt-4 space-y-5">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div
               className="rounded-xl border bg-muted/20 px-4 py-3"
-              data-testid="api-fusion-usage-card-tokens"
+              data-testid="api-gateway-usage-card-tokens"
             >
               <div className="text-[11px] font-medium uppercase text-muted-foreground">
-                {t("apiFusionUsageTokens", "Tokens")}
+                {t("apiGatewayUsageTokens", "Tokens")}
               </div>
               <div className="mt-1 text-lg font-semibold">
                 {formatCount(stats.total_tokens)}
@@ -191,10 +191,10 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
             </div>
             <div
               className="rounded-xl border bg-muted/20 px-4 py-3"
-              data-testid="api-fusion-usage-card-requests"
+              data-testid="api-gateway-usage-card-requests"
             >
               <div className="text-[11px] font-medium uppercase text-muted-foreground">
-                {t("apiFusionUsageRequests", "Requests")}
+                {t("apiGatewayUsageRequests", "Requests")}
               </div>
               <div className="mt-1 text-lg font-semibold">
                 {formatCount(stats.request_count)}
@@ -202,10 +202,10 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
             </div>
             <div
               className="rounded-xl border bg-muted/20 px-4 py-3"
-              data-testid="api-fusion-usage-card-cost"
+              data-testid="api-gateway-usage-card-cost"
             >
               <div className="text-[11px] font-medium uppercase text-muted-foreground">
-                {t("apiFusionUsageCost", "Cost")}
+                {t("apiGatewayUsageCost", "Cost")}
               </div>
               <div className="mt-1 text-lg font-semibold">
                 {formatUsageAmount(stats.amount)}
@@ -215,11 +215,11 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
 
           {stats.unpriced_count > 0 ? (
             <div
-              data-testid="api-fusion-usage-unpriced-hint"
+              data-testid="api-gateway-usage-unpriced-hint"
               className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700"
             >
               {t(
-                "apiFusionUsageUnpricedHint",
+                "apiGatewayUsageUnpricedHint",
                 "{{count}} requests have no configured price and are excluded from the total.",
                 { count: stats.unpriced_count },
               )}
@@ -229,28 +229,28 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
           {buckets.length > 0 ? (
             <div>
               <h3 className="mb-2 text-sm font-semibold">
-                {t("apiFusionUsageTimeDistribution", "Time distribution")}
+                {t("apiGatewayUsageTimeDistribution", "Time distribution")}
               </h3>
               <div className="overflow-x-auto rounded-lg border">
                 <table
                   className="w-full text-left text-xs"
-                  data-testid="api-fusion-usage-buckets"
+                  data-testid="api-gateway-usage-buckets"
                 >
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
                       <th className="px-3 py-2 font-medium">
                         {stats.granularity === "hour"
-                          ? t("apiFusionLogsTimeColumn", "Time")
+                          ? t("apiGatewayLogsTimeColumn", "Time")
                           : t("date", "Date")}
                       </th>
                       <th className="px-3 py-2 text-right font-medium">
-                        {t("apiFusionUsageRequests", "Requests")}
+                        {t("apiGatewayUsageRequests", "Requests")}
                       </th>
                       <th className="px-3 py-2 text-right font-medium">
-                        {t("apiFusionUsageTokens", "Tokens")}
+                        {t("apiGatewayUsageTokens", "Tokens")}
                       </th>
                       <th className="px-3 py-2 text-right font-medium">
-                        {t("apiFusionUsageCostColumn", "Cost ($)")}
+                        {t("apiGatewayUsageCostColumn", "Cost ($)")}
                       </th>
                     </tr>
                   </thead>
@@ -259,7 +259,7 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
                       <tr
                         key={bucket.label}
                         className="border-t"
-                        data-testid="api-fusion-usage-bucket-row"
+                        data-testid="api-gateway-usage-bucket-row"
                       >
                         <td className="px-3 py-2 font-mono">{bucket.label}</td>
                         <td className="px-3 py-2 text-right">
@@ -281,35 +281,35 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
 
           <div>
             <h3 className="mb-2 text-sm font-semibold">
-              {t("apiFusionUsageAnalysis", "Usage analysis")}
+              {t("apiGatewayUsageAnalysis", "Usage analysis")}
             </h3>
             <div className="overflow-x-auto rounded-lg border">
               <table
                 className="w-full text-left text-xs"
-                data-testid="api-fusion-usage-models"
+                data-testid="api-gateway-usage-models"
               >
                 <thead className="bg-muted/50 text-muted-foreground">
                   <tr>
                     <th className="px-3 py-2 font-medium">
-                      {t("apiFusionUsageModelColumn", "Model")}
+                      {t("apiGatewayUsageModelColumn", "Model")}
                     </th>
                     <th className="px-3 py-2 text-right font-medium">
-                      {t("apiFusionUsageRequests", "Requests")}
+                      {t("apiGatewayUsageRequests", "Requests")}
                     </th>
                     <th className="px-3 py-2 text-right font-medium">
-                      {t("apiFusionUsageInput", "Input")}
+                      {t("apiGatewayUsageInput", "Input")}
                     </th>
                     <th className="px-3 py-2 text-right font-medium">
-                      {t("apiFusionUsageCacheRead", "Cache read")}
+                      {t("apiGatewayUsageCacheRead", "Cache read")}
                     </th>
                     <th className="px-3 py-2 text-right font-medium">
-                      {t("apiFusionUsageCacheWrite", "Cache write")}
+                      {t("apiGatewayUsageCacheWrite", "Cache write")}
                     </th>
                     <th className="px-3 py-2 text-right font-medium">
-                      {t("apiFusionUsageOutput", "Output")}
+                      {t("apiGatewayUsageOutput", "Output")}
                     </th>
                     <th className="px-3 py-2 text-right font-medium">
-                      {t("apiFusionUsageCostColumn", "Cost ($)")}
+                      {t("apiGatewayUsageCostColumn", "Cost ($)")}
                     </th>
                   </tr>
                 </thead>

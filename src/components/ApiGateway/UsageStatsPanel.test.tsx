@@ -2,8 +2,8 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import i18n from "@/i18n";
-import { UsageStatsPanel } from "@/components/ApiFusion/UsageStatsPanel";
-import type { UsageStats } from "@/lib/apiFusion";
+import { UsageStatsPanel } from "@/components/ApiGateway/UsageStatsPanel";
+import type { UsageStats } from "@/lib/apiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
@@ -37,7 +37,7 @@ describe("UsageStatsPanel", () => {
   it("默认今日并在切范围时按 days 重新取数，卡片展示 Tokens/请求数/花费", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string, args?: any) => {
-      if (command !== "api_fusion_usage_stats") {
+      if (command !== "api_gateway_usage_stats") {
         throw new Error(`Unhandled command: ${command}`);
       }
       const days = args.days as number | null;
@@ -51,31 +51,31 @@ describe("UsageStatsPanel", () => {
     renderWithProviders(<UsageStatsPanel />);
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_stats", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_stats", {
         days: 1,
       }),
     );
-    const tokensCard = await screen.findByTestId("api-fusion-usage-card-tokens");
+    const tokensCard = await screen.findByTestId("api-gateway-usage-card-tokens");
     expect(tokensCard).toHaveTextContent(formatCount(1000));
-    expect(screen.getByTestId("api-fusion-usage-card-requests")).toHaveTextContent(
+    expect(screen.getByTestId("api-gateway-usage-card-requests")).toHaveTextContent(
       formatCount(4),
     );
-    expect(screen.getByTestId("api-fusion-usage-card-cost")).toHaveTextContent(
+    expect(screen.getByTestId("api-gateway-usage-card-cost")).toHaveTextContent(
       "0.1234",
     );
 
-    const rangeTrigger = screen.getByTestId("api-fusion-usage-range-trigger");
+    const rangeTrigger = screen.getByTestId("api-gateway-usage-range-trigger");
     expect(rangeTrigger).toHaveTextContent("Today");
     await user.click(rangeTrigger);
     await user.click(screen.getByRole("option", { name: "7d" }));
     expect(rangeTrigger).toHaveTextContent("7d");
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_usage_stats", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_stats", {
         days: 7,
       }),
     );
     expect(
-      await screen.findByTestId("api-fusion-usage-card-requests"),
+      await screen.findByTestId("api-gateway-usage-card-requests"),
     ).toHaveTextContent(formatCount(10));
   });
 
@@ -84,7 +84,7 @@ describe("UsageStatsPanel", () => {
     let deferredResolve: (value: UsageStats) => void = () => {};
     let calls = 0;
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_usage_stats") {
+      if (command !== "api_gateway_usage_stats") {
         throw new Error(`Unhandled command: ${command}`);
       }
       calls += 1;
@@ -97,7 +97,7 @@ describe("UsageStatsPanel", () => {
     });
 
     renderWithProviders(<UsageStatsPanel />);
-    await screen.findByTestId("api-fusion-usage-card-requests");
+    await screen.findByTestId("api-gateway-usage-card-requests");
 
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     expect(await screen.findByText("Refreshing...")).toBeInTheDocument();
@@ -107,7 +107,7 @@ describe("UsageStatsPanel", () => {
     });
     await waitFor(() =>
       expect(
-        screen.getByTestId("api-fusion-usage-card-requests"),
+        screen.getByTestId("api-gateway-usage-card-requests"),
       ).toHaveTextContent(formatCount(2)),
     );
     expect(screen.queryByText("Refreshing...")).not.toBeInTheDocument();
@@ -115,7 +115,7 @@ describe("UsageStatsPanel", () => {
 
   it("未定价模型行显示破折号且不计入合计，同时提示未定价请求数", async () => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_usage_stats") {
+      if (command !== "api_gateway_usage_stats") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return metrics({
@@ -154,22 +154,22 @@ describe("UsageStatsPanel", () => {
 
     renderWithProviders(<UsageStatsPanel />);
 
-    const modelTable = await screen.findByTestId("api-fusion-usage-models");
+    const modelTable = await screen.findByTestId("api-gateway-usage-models");
     expect(within(modelTable).getAllByText("—").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByTestId("api-fusion-usage-card-cost")).toHaveTextContent(
+    expect(screen.getByTestId("api-gateway-usage-card-cost")).toHaveTextContent(
       "0.0000",
     );
     expect(
       screen.getByText(/3 requests have no configured price/),
     ).toBeInTheDocument();
     expect(
-      screen.queryByTestId("api-fusion-usage-unpriced-hint"),
+      screen.queryByTestId("api-gateway-usage-unpriced-hint"),
     ).toHaveTextContent("3");
   });
 
   it("模型行只展示范围内实际调用过的服务商明细", async () => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_usage_stats") {
+      if (command !== "api_gateway_usage_stats") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return metrics({
@@ -207,7 +207,7 @@ describe("UsageStatsPanel", () => {
 
     renderWithProviders(<UsageStatsPanel />);
 
-    const modelTable = await screen.findByTestId("api-fusion-usage-models");
+    const modelTable = await screen.findByTestId("api-gateway-usage-models");
     expect(within(modelTable).getByText("Called Provider")).toBeInTheDocument();
     expect(within(modelTable).queryByText("Never Called Provider")).not.toBeInTheDocument();
   });
@@ -225,7 +225,7 @@ describe("UsageStatsPanel", () => {
       unpriced_count: 0,
     }));
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_usage_stats") {
+      if (command !== "api_gateway_usage_stats") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return metrics({ request_count: 24, granularity: "hour", buckets });
@@ -233,15 +233,15 @@ describe("UsageStatsPanel", () => {
 
     renderWithProviders(<UsageStatsPanel />);
 
-    const bucketTable = await screen.findByTestId("api-fusion-usage-buckets");
-    const rows = within(bucketTable).getAllByTestId("api-fusion-usage-bucket-row");
+    const bucketTable = await screen.findByTestId("api-gateway-usage-buckets");
+    const rows = within(bucketTable).getAllByTestId("api-gateway-usage-bucket-row");
     expect(rows).toHaveLength(24);
     expect(within(bucketTable).queryByText("00:00")).not.toBeInTheDocument();
   });
 
   it("多日或全部范围按自然日展示", async () => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_usage_stats") {
+      if (command !== "api_gateway_usage_stats") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return metrics({
@@ -276,7 +276,7 @@ describe("UsageStatsPanel", () => {
 
     renderWithProviders(<UsageStatsPanel />);
 
-    const bucketTable = await screen.findByTestId("api-fusion-usage-buckets");
+    const bucketTable = await screen.findByTestId("api-gateway-usage-buckets");
     expect(within(bucketTable).getByText("2026-09-16")).toBeInTheDocument();
     expect(within(bucketTable).getByText("2026-09-17")).toBeInTheDocument();
   });
@@ -284,27 +284,27 @@ describe("UsageStatsPanel", () => {
   it("页内模型价格入口打开独立弹窗并向后端读取价格", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string) => {
-      if (command === "api_fusion_usage_stats") return metrics({ request_count: 1 });
-      if (command === "api_fusion_model_prices_get") return [];
+      if (command === "api_gateway_usage_stats") return metrics({ request_count: 1 });
+      if (command === "api_gateway_model_prices_get") return [];
       throw new Error(`Unhandled command: ${command}`);
     });
 
     renderWithProviders(<UsageStatsPanel />);
-    await screen.findByTestId("api-fusion-usage-card-requests");
+    await screen.findByTestId("api-gateway-usage-card-requests");
 
     await user.click(screen.getByRole("button", { name: "Model prices" }));
 
     expect(
-      await screen.findByTestId("api-fusion-model-price-dialog"),
+      await screen.findByTestId("api-gateway-model-price-dialog"),
     ).toBeInTheDocument();
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_get"),
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_model_prices_get"),
     );
   });
 
   it("范围内无记录时显示空状态且不报错", async () => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_usage_stats") {
+      if (command !== "api_gateway_usage_stats") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return metrics();
@@ -325,14 +325,14 @@ describe("UsageStatsPanel", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(invokeMock).not.toHaveBeenCalledWith(
-      "api_fusion_usage_stats",
+      "api_gateway_usage_stats",
       expect.anything(),
     );
   });
 
   it("每个模型的提供商明细紧跟其模型行之后渲染", async () => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command !== "api_fusion_usage_stats") {
+      if (command !== "api_gateway_usage_stats") {
         throw new Error(`Unhandled command: ${command}`);
       }
       return metrics({
@@ -395,9 +395,9 @@ describe("UsageStatsPanel", () => {
 
     renderWithProviders(<UsageStatsPanel />);
 
-    const modelTable = await screen.findByTestId("api-fusion-usage-models");
+    const modelTable = await screen.findByTestId("api-gateway-usage-models");
     const rows = within(modelTable).getAllByTestId(
-      /api-fusion-usage-(model|provider)-row/,
+      /api-gateway-usage-(model|provider)-row/,
     );
     const labels = rows.map(
       (row) => within(row).getAllByRole("cell")[0].textContent,

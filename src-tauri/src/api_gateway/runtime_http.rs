@@ -9,7 +9,7 @@ use super::usage_log::{
     compute_cost_at_time, match_price_for_provider, normalize_retention_days, now_millis, parse_usage_from_response,
     SseUsageAccumulator, UsageLogRecord, UsageLogStore, UsageResult, UsageTokens,
 };
-use super::{now_ts, FusionConfig, FusionKey, FusionStatus, FusionUpstreamProvider, UpstreamProtocol};
+use super::{now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, UpstreamProtocol};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -21,23 +21,23 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, Mutex};
 use tokio::time::{sleep, Instant};
 
-pub(in crate::api_fusion) struct RunningServer {
-    pub(in crate::api_fusion) port: u16,
-    pub(in crate::api_fusion) shutdown: Option<oneshot::Sender<()>>,
+pub(in crate::api_gateway) struct RunningServer {
+    pub(in crate::api_gateway) port: u16,
+    pub(in crate::api_gateway) shutdown: Option<oneshot::Sender<()>>,
 }
 
-pub(in crate::api_fusion) static RUNNING_SERVER: OnceLock<Mutex<Option<RunningServer>>> =
+pub(in crate::api_gateway) static RUNNING_SERVER: OnceLock<Mutex<Option<RunningServer>>> =
     OnceLock::new();
 
-pub(in crate::api_fusion) fn state_lock() -> &'static Mutex<Option<RunningServer>> {
+pub(in crate::api_gateway) fn state_lock() -> &'static Mutex<Option<RunningServer>> {
     RUNNING_SERVER.get_or_init(|| Mutex::new(None))
 }
 
-pub(in crate::api_fusion) fn status_from_config(
-    config: &FusionConfig,
+pub(in crate::api_gateway) fn status_from_config(
+    config: &GatewayConfig,
     running: bool,
-) -> FusionStatus {
-    FusionStatus {
+) -> GatewayStatus {
+    GatewayStatus {
         running,
         enabled: config.enabled,
         port: config.port,
@@ -58,7 +58,7 @@ pub(in crate::api_fusion) fn status_from_config(
 /// On bind failure the port configuration is left untouched and the error is
 /// actionable: it names the port and the underlying cause. It never falls back
 /// to another port.
-pub(in crate::api_fusion) async fn start_server() -> Result<FusionStatus, String> {
+pub(in crate::api_gateway) async fn start_server() -> Result<GatewayStatus, String> {
     let config = read_config()?;
     let mut guard = state_lock().lock().await;
     if let Some(running) = guard.as_ref() {
@@ -89,7 +89,7 @@ pub(in crate::api_fusion) async fn start_server() -> Result<FusionStatus, String
     Ok(status_from_config(&config, true))
 }
 
-pub(in crate::api_fusion) async fn stop_server() -> Result<FusionStatus, String> {
+pub(in crate::api_gateway) async fn stop_server() -> Result<GatewayStatus, String> {
     let config = read_config()?;
     let mut guard = state_lock().lock().await;
     if let Some(mut running) = guard.take() {
@@ -100,7 +100,7 @@ pub(in crate::api_fusion) async fn stop_server() -> Result<FusionStatus, String>
     Ok(status_from_config(&config, false))
 }
 
-pub(in crate::api_fusion) fn server_status() -> Result<FusionStatus, String> {
+pub(in crate::api_gateway) fn server_status() -> Result<GatewayStatus, String> {
     let config = read_config()?;
     let running = state_lock()
         .try_lock()
@@ -109,7 +109,7 @@ pub(in crate::api_fusion) fn server_status() -> Result<FusionStatus, String> {
     Ok(status_from_config(&config, running))
 }
 
-pub(in crate::api_fusion) async fn autostart() -> Result<FusionStatus, String> {
+pub(in crate::api_gateway) async fn autostart() -> Result<GatewayStatus, String> {
     let config = read_config()?;
     if config.enabled {
         start_server().await
@@ -118,7 +118,7 @@ pub(in crate::api_fusion) async fn autostart() -> Result<FusionStatus, String> {
     }
 }
 
-pub(in crate::api_fusion) async fn run_server(
+pub(in crate::api_gateway) async fn run_server(
     listener: TcpListener,
     mut shutdown: oneshot::Receiver<()>,
 ) {
@@ -141,43 +141,43 @@ pub(in crate::api_fusion) async fn run_server(
 }
 
 #[derive(Debug)]
-pub(in crate::api_fusion) struct HttpRequest {
-    pub(in crate::api_fusion) method: String,
-    pub(in crate::api_fusion) path: String,
-    pub(in crate::api_fusion) headers: HashMap<String, String>,
-    pub(in crate::api_fusion) body: Vec<u8>,
+pub(in crate::api_gateway) struct HttpRequest {
+    pub(in crate::api_gateway) method: String,
+    pub(in crate::api_gateway) path: String,
+    pub(in crate::api_gateway) headers: HashMap<String, String>,
+    pub(in crate::api_gateway) body: Vec<u8>,
 }
 
-pub(in crate::api_fusion) struct HttpResponse {
-    pub(in crate::api_fusion) status: u16,
-    pub(in crate::api_fusion) content_type: &'static str,
-    pub(in crate::api_fusion) body: Vec<u8>,
+pub(in crate::api_gateway) struct HttpResponse {
+    pub(in crate::api_gateway) status: u16,
+    pub(in crate::api_gateway) content_type: &'static str,
+    pub(in crate::api_gateway) body: Vec<u8>,
     /// Usage/provider metadata captured while forwarding, consumed by the
     /// request logger. Never forwarded to the caller.
-    pub(in crate::api_fusion) capture: Option<ForwardCapture>,
+    pub(in crate::api_gateway) capture: Option<ForwardCapture>,
 }
 
 /// Per-request forwarding metadata used to write exactly one usage log row.
 #[derive(Debug, Clone, Default)]
-pub(in crate::api_fusion) struct ForwardCapture {
-    pub(in crate::api_fusion) status: u16,
-    pub(in crate::api_fusion) provider_id: String,
-    pub(in crate::api_fusion) provider_name: String,
-    pub(in crate::api_fusion) upstream_model: String,
-    pub(in crate::api_fusion) usage: Option<UsageTokens>,
+pub(in crate::api_gateway) struct ForwardCapture {
+    pub(in crate::api_gateway) status: u16,
+    pub(in crate::api_gateway) provider_id: String,
+    pub(in crate::api_gateway) provider_name: String,
+    pub(in crate::api_gateway) upstream_model: String,
+    pub(in crate::api_gateway) usage: Option<UsageTokens>,
     /// No candidate could serve the request (including every candidate failing).
-    pub(in crate::api_fusion) all_unavailable: bool,
+    pub(in crate::api_gateway) all_unavailable: bool,
     /// The upstream stream failed after bytes had already reached the caller.
-    pub(in crate::api_fusion) upstream_error: bool,
+    pub(in crate::api_gateway) upstream_error: bool,
     /// The downstream client went away mid-forward, so the request is neither
     /// a success nor an error.
-    pub(in crate::api_fusion) downstream_cancelled: bool,
+    pub(in crate::api_gateway) downstream_cancelled: bool,
 }
 
 impl ForwardCapture {
     /// Final result classification: an HTTP 2xx is success only when the
     /// request was not cancelled, all-unavailable or an upstream error.
-    pub(in crate::api_fusion) fn result(&self) -> UsageResult {
+    pub(in crate::api_gateway) fn result(&self) -> UsageResult {
         if self.downstream_cancelled {
             UsageResult::Cancelled
         } else if self.all_unavailable || self.upstream_error || self.status >= 400 || self.status == 0 {
@@ -188,7 +188,7 @@ impl ForwardCapture {
     }
 }
 
-pub(in crate::api_fusion) async fn read_http_request(
+pub(in crate::api_gateway) async fn read_http_request(
     stream: &mut TcpStream,
 ) -> Result<HttpRequest, String> {
     let mut buf = Vec::new();
@@ -244,7 +244,7 @@ pub(in crate::api_fusion) async fn read_http_request(
     })
 }
 
-pub(in crate::api_fusion) fn find_header_end(buf: &[u8]) -> Option<usize> {
+pub(in crate::api_gateway) fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
@@ -275,7 +275,7 @@ fn protocol_for_path(path: &str) -> UpstreamProtocol {
     }
 }
 
-pub(in crate::api_fusion) fn json_response(status: u16, body: Value) -> HttpResponse {
+pub(in crate::api_gateway) fn json_response(status: u16, body: Value) -> HttpResponse {
     let payload = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
     HttpResponse {
         status,
@@ -285,7 +285,7 @@ pub(in crate::api_fusion) fn json_response(status: u16, body: Value) -> HttpResp
     }
 }
 
-pub(in crate::api_fusion) fn reason_for_status(status: u16) -> &'static str {
+pub(in crate::api_gateway) fn reason_for_status(status: u16) -> &'static str {
     match status {
         200..=299 => "OK",
         400 => "Bad Request",
@@ -297,7 +297,7 @@ pub(in crate::api_fusion) fn reason_for_status(status: u16) -> &'static str {
     }
 }
 
-pub(in crate::api_fusion) fn http_response_bytes(response: HttpResponse) -> Vec<u8> {
+pub(in crate::api_gateway) fn http_response_bytes(response: HttpResponse) -> Vec<u8> {
     let header = format!(
         "HTTP/1.1 {} {}\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         response.status,
@@ -310,8 +310,8 @@ pub(in crate::api_fusion) fn http_response_bytes(response: HttpResponse) -> Vec<
 
 /// Accept credentials from either `Authorization: Bearer <key>` or `x-api-key`.
 /// Any enabled local key matches; no enabled key means every request is rejected.
-pub(in crate::api_fusion) fn is_authorized(request: &HttpRequest, config: &FusionConfig) -> bool {
-    let enabled: Vec<&FusionKey> = config
+pub(in crate::api_gateway) fn is_authorized(request: &HttpRequest, config: &GatewayConfig) -> bool {
+    let enabled: Vec<&GatewayKey> = config
         .keys
         .iter()
         .filter(|key| key.enabled && !key.value.trim().is_empty())
@@ -334,7 +334,7 @@ pub(in crate::api_fusion) fn is_authorized(request: &HttpRequest, config: &Fusio
 }
 
 /// Union of local model names across enabled, non-auto-disabled providers.
-pub(in crate::api_fusion) fn local_model_names(config: &FusionConfig) -> Vec<String> {
+pub(in crate::api_gateway) fn local_model_names(config: &GatewayConfig) -> Vec<String> {
     let mut names: Vec<String> = config
         .providers
         .iter()
@@ -353,7 +353,7 @@ pub(in crate::api_fusion) fn local_model_names(config: &FusionConfig) -> Vec<Str
     names
 }
 
-pub(in crate::api_fusion) fn models_payload(config: &FusionConfig) -> Value {
+pub(in crate::api_gateway) fn models_payload(config: &GatewayConfig) -> Value {
     let data: Vec<Value> = local_model_names(config)
         .into_iter()
         .map(|id| json!({ "id": id, "object": "model" }))
@@ -404,7 +404,7 @@ fn all_unavailable_payload(message: impl Into<String>) -> Value {
 }
 
 fn no_candidate_message(
-    config: &FusionConfig,
+    config: &GatewayConfig,
     requested: Option<&str>,
     protocol: UpstreamProtocol,
 ) -> String {
@@ -464,8 +464,8 @@ fn all_unavailable_message(failures: &[(String, String)]) -> String {
 }
 
 fn apply_failure(
-    config: &mut FusionConfig,
-    provider: &FusionUpstreamProvider,
+    config: &mut GatewayConfig,
+    provider: &GatewayUpstreamProvider,
     class: FailureClass,
     reason: &str,
 ) {
@@ -484,7 +484,7 @@ fn apply_failure(
 /// This small scheduling state keeps the request's retry queue ordered by the
 /// earliest monotonic deadline; equal deadlines keep the initial candidate order.
 struct RetryCandidate {
-    provider: FusionUpstreamProvider,
+    provider: GatewayUpstreamProvider,
     model: String,
     /// Upstream attempts already made for this provider in this request.
     attempts: u32,
@@ -565,8 +565,8 @@ impl RequestHealth {
 
     fn record_failure(
         &mut self,
-        config: &mut FusionConfig,
-        provider: &FusionUpstreamProvider,
+        config: &mut GatewayConfig,
+        provider: &GatewayUpstreamProvider,
         class: FailureClass,
         reason: &str,
     ) {
@@ -595,7 +595,7 @@ impl RequestHealth {
         self.entry(provider_id).succeeded = true;
     }
 
-    fn apply(&self, config: &mut FusionConfig) {
+    fn apply(&self, config: &mut GatewayConfig) {
         let at = now_ts();
         let mut changed = false;
         for provider_id in &self.order {
@@ -627,7 +627,7 @@ impl RequestHealth {
 }
 
 async fn attempt_candidate(
-    provider: &FusionUpstreamProvider,
+    provider: &GatewayUpstreamProvider,
     path: &str,
     body: &[u8],
     model: &str,
@@ -705,12 +705,12 @@ fn record_provider_failure(failures: &mut Vec<(String, String)>, name: &str, rea
 
 /// Try the candidates for a non-streaming request: one immediate fallback-first
 /// pass in order, then bounded retries per provider in earliest-deadline order.
-pub(in crate::api_fusion) async fn attempt_non_streaming(
-    ordered: &[FusionUpstreamProvider],
+pub(in crate::api_gateway) async fn attempt_non_streaming(
+    ordered: &[GatewayUpstreamProvider],
     path: &str,
     body: &[u8],
     requested: Option<&str>,
-    config: &mut FusionConfig,
+    config: &mut GatewayConfig,
     client_headers: &HashMap<String, String>,
 ) -> HttpResponse {
     let protocol = protocol_for_path(path);
@@ -852,13 +852,13 @@ fn is_sse_response_chunk(content_type: &str, first_chunk: &[u8]) -> bool {
 ///
 /// Switching is permitted only until the first byte is written to `writer`; once
 /// written, an upstream failure terminates the stream without retrying.
-pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
+pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     writer: &mut W,
-    ordered: &[FusionUpstreamProvider],
+    ordered: &[GatewayUpstreamProvider],
     path: &str,
     body: &[u8],
     requested: Option<&str>,
-    config: &mut FusionConfig,
+    config: &mut GatewayConfig,
     client_headers: &HashMap<String, String>,
 ) -> Result<ForwardCapture, String> {
     let protocol = protocol_for_path(path);
@@ -1100,7 +1100,7 @@ async fn write_stream_headers<W: AsyncWrite + Unpin>(
         .map_err(|e| e.to_string())
 }
 
-pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
+pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
     let request = match read_http_request(&mut stream).await {
         Ok(request) => request,
         Err(error) => {
@@ -1219,7 +1219,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
         .unwrap_or(false);
 
     let protocol = protocol_for_path(path);
-    let candidates: Vec<FusionUpstreamProvider> =
+    let candidates: Vec<GatewayUpstreamProvider> =
         candidate_providers(&config.providers, requested.as_deref(), protocol)
             .into_iter()
             .cloned()
@@ -1334,7 +1334,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
 /// edits never rewrite history. Any storage failure is logged and swallowed:
 /// the response has already been produced and must not be affected.
 fn record_usage_log(
-    config: &FusionConfig,
+    config: &GatewayConfig,
     started: Instant,
     local_model: Option<&str>,
     result: UsageResult,

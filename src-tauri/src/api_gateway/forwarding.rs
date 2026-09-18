@@ -1,4 +1,4 @@
-use super::FusionUpstreamProvider;
+use super::GatewayUpstreamProvider;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
 use std::collections::HashMap;
@@ -6,11 +6,11 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 /// Parsed upstream response for a non-streaming attempt.
-pub(in crate::api_fusion) struct UpstreamJsonResponse {
-    pub(in crate::api_fusion) status: u16,
-    pub(in crate::api_fusion) body: Vec<u8>,
-    pub(in crate::api_fusion) parsed: bool,
-    pub(in crate::api_fusion) headers: HeaderMap,
+pub(in crate::api_gateway) struct UpstreamJsonResponse {
+    pub(in crate::api_gateway) status: u16,
+    pub(in crate::api_gateway) body: Vec<u8>,
+    pub(in crate::api_gateway) parsed: bool,
+    pub(in crate::api_gateway) headers: HeaderMap,
 }
 
 /// Bound only the connect phase (the repo's `proxy.rs` uses 10s) so a
@@ -35,11 +35,11 @@ fn shared_client() -> &'static Client {
             .connect_timeout(UPSTREAM_CONNECT_TIMEOUT)
             .read_timeout(UPSTREAM_READ_TIMEOUT)
             .build()
-            .expect("build API Fusion upstream HTTP client")
+            .expect("build API Gateway upstream HTTP client")
     })
 }
 
-pub(in crate::api_fusion) fn join_url(base: &str, path: &str) -> String {
+pub(in crate::api_gateway) fn join_url(base: &str, path: &str) -> String {
     let base = base.trim_end_matches('/');
     let path = path.trim_start_matches('/');
     // Providers are commonly configured with a base URL that already ends in
@@ -78,7 +78,7 @@ fn is_forwardable_client_header(name: &str) -> bool {
 }
 
 /// Rewrite only the top-level `model` field, leaving all other fields equivalent.
-pub(in crate::api_fusion) fn rewrite_body_model(
+pub(in crate::api_gateway) fn rewrite_body_model(
     body: &[u8],
     model: &str,
 ) -> Result<Vec<u8>, String> {
@@ -97,7 +97,7 @@ pub(in crate::api_fusion) fn rewrite_body_model(
 }
 
 fn build_request(
-    provider: &FusionUpstreamProvider,
+    provider: &GatewayUpstreamProvider,
     path: &str,
     body: &[u8],
     model: &str,
@@ -140,8 +140,8 @@ fn build_request(
 }
 
 /// Send a non-streaming upstream request and return status plus raw body.
-pub(in crate::api_fusion) async fn forward_non_streaming(
-    provider: &FusionUpstreamProvider,
+pub(in crate::api_gateway) async fn forward_non_streaming(
+    provider: &GatewayUpstreamProvider,
     path: &str,
     body: &[u8],
     model: &str,
@@ -169,8 +169,8 @@ pub(in crate::api_fusion) async fn forward_non_streaming(
 
 /// Open an upstream streaming response. Callers stream bytes and enforce the
 /// first-byte switching boundary themselves.
-pub(in crate::api_fusion) async fn open_streaming_response(
-    provider: &FusionUpstreamProvider,
+pub(in crate::api_gateway) async fn open_streaming_response(
+    provider: &GatewayUpstreamProvider,
     path: &str,
     body: &[u8],
     model: &str,

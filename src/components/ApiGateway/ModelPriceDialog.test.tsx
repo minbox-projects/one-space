@@ -2,8 +2,8 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
-import { ModelPriceDialog } from "@/components/ApiFusion/ModelPriceDialog";
-import type { FusionUpstreamProvider, ModelPrice } from "@/lib/apiFusion";
+import { ModelPriceDialog } from "@/components/ApiGateway/ModelPriceDialog";
+import type { GatewayUpstreamProvider, ModelPrice } from "@/lib/apiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
@@ -12,7 +12,7 @@ function mockProvider(
   name: string,
   defaultModel: string | null = null,
   mappings: Array<{ local_model: string; upstream_model: string; display_name?: string }> = [],
-): FusionUpstreamProvider {
+): GatewayUpstreamProvider {
   return {
     id,
     name,
@@ -45,9 +45,9 @@ function mockPrices(initial: ModelPrice[]) {
   let store = [...initial];
   invokeMock.mockImplementation(async (command: string, args?: any) => {
     switch (command) {
-      case "api_fusion_model_prices_get":
+      case "api_gateway_model_prices_get":
         return store;
-      case "api_fusion_model_prices_save":
+      case "api_gateway_model_prices_save":
         store = args.prices as ModelPrice[];
         return store;
       default:
@@ -81,7 +81,7 @@ describe("ModelPriceDialog", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_save", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_model_prices_save", {
         prices: [price({ output: 3.5 })],
       }),
     );
@@ -110,7 +110,7 @@ describe("ModelPriceDialog", () => {
 
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_save", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_model_prices_save", {
         prices: [
           {
             upstream_model: "deepseek-chat",
@@ -126,7 +126,7 @@ describe("ModelPriceDialog", () => {
 
   it("空价格表展示空状态", async () => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command === "api_fusion_model_prices_get") return [];
+      if (command === "api_gateway_model_prices_get") return [];
       throw new Error(`Unhandled command: ${command}`);
     });
 
@@ -150,16 +150,16 @@ describe("ModelPriceDialog", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_save", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_model_prices_save", {
         prices: [price()],
       }),
     );
     const commands = invokeMock.mock.calls.map(([command]) => command);
-    expect(commands).not.toContain("api_fusion_save_config");
-    expect(commands).not.toContain("api_fusion_upsert_provider");
-    expect(commands).not.toContain("api_fusion_upsert_key");
-    expect(commands).not.toContain("api_fusion_sync_terminal");
-    expect(commands).not.toContain("api_fusion_usage_retention_save");
+    expect(commands).not.toContain("api_gateway_save_config");
+    expect(commands).not.toContain("api_gateway_upsert_provider");
+    expect(commands).not.toContain("api_gateway_upsert_key");
+    expect(commands).not.toContain("api_gateway_sync_terminal");
+    expect(commands).not.toContain("api_gateway_usage_retention_save");
     expect(commands).not.toContain("save_storage_config");
   });
 
@@ -167,8 +167,8 @@ describe("ModelPriceDialog", () => {
     const user = userEvent.setup();
     const onSaved = vi.fn();
     invokeMock.mockImplementation(async (command: string) => {
-      if (command === "api_fusion_model_prices_get") return [price()];
-      if (command === "api_fusion_model_prices_save") {
+      if (command === "api_gateway_model_prices_get") return [price()];
+      if (command === "api_gateway_model_prices_save") {
         throw new Error("boom");
       }
       throw new Error(`Unhandled command: ${command}`);
@@ -188,7 +188,7 @@ describe("ModelPriceDialog", () => {
 
   it("弹窗只在请求的 open 状态下渲染价格入口", async () => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command === "api_fusion_model_prices_get") return [price()];
+      if (command === "api_gateway_model_prices_get") return [price()];
       throw new Error(`Unhandled command: ${command}`);
     });
 
@@ -197,20 +197,20 @@ describe("ModelPriceDialog", () => {
     );
 
     expect(
-      screen.queryByTestId("api-fusion-model-price-dialog"),
+      screen.queryByTestId("api-gateway-model-price-dialog"),
     ).not.toBeInTheDocument();
   });
 
   it("价格输入按四档单价渲染且单位为美元/百万 tokens", async () => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command === "api_fusion_model_prices_get") return [price()];
+      if (command === "api_gateway_model_prices_get") return [price()];
       throw new Error(`Unhandled command: ${command}`);
     });
 
     renderWithProviders(
       <ModelPriceDialog open onOpenChange={() => {}} />,
     );
-    const dialog = await screen.findByTestId("api-fusion-model-price-dialog");
+    const dialog = await screen.findByTestId("api-gateway-model-price-dialog");
     const scoped = within(dialog);
     expect(scoped.getByLabelText("Input")).toBeInTheDocument();
     expect(scoped.getByLabelText("Cache read")).toBeInTheDocument();
@@ -241,8 +241,8 @@ describe("ModelPriceDialog", () => {
       />,
     );
 
-    const openAiGroup = await screen.findByTestId("api-fusion-price-group-prov-openai");
-    const deepSeekGroup = await screen.findByTestId("api-fusion-price-group-prov-deepseek");
+    const openAiGroup = await screen.findByTestId("api-gateway-price-group-prov-openai");
+    const deepSeekGroup = await screen.findByTestId("api-gateway-price-group-prov-deepseek");
     expect(openAiGroup).toBeInTheDocument();
     expect(deepSeekGroup).toBeInTheDocument();
 
@@ -275,7 +275,7 @@ describe("ModelPriceDialog", () => {
       />,
     );
 
-    const openAiGroup = await screen.findByTestId("api-fusion-price-group-prov-openai");
+    const openAiGroup = await screen.findByTestId("api-gateway-price-group-prov-openai");
     const addBtn = within(openAiGroup).getByRole("button", { name: /Add price/ });
     await user.click(addBtn);
 
@@ -286,7 +286,7 @@ describe("ModelPriceDialog", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_save", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_model_prices_save", {
         prices: [
           price({ provider_id: "prov-openai", upstream_model: "gpt-4o", input: 2.5 }),
           {
@@ -316,7 +316,7 @@ describe("ModelPriceDialog", () => {
       />,
     );
 
-    const unassignedGroup = await screen.findByTestId("api-fusion-price-group-unassigned");
+    const unassignedGroup = await screen.findByTestId("api-gateway-price-group-unassigned");
     expect(unassignedGroup).toBeInTheDocument();
     expect(within(unassignedGroup).getByText("Other / Unassigned")).toBeInTheDocument();
     expect(within(unassignedGroup).getByDisplayValue("some-legacy-model")).toBeInTheDocument();
@@ -362,7 +362,7 @@ describe("ModelPriceDialog", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_save", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_model_prices_save", {
         prices: [
           {
             upstream_model: "gpt-4o",
@@ -421,7 +421,7 @@ describe("ModelPriceDialog", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_save", {
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_model_prices_save", {
         prices: [
           {
             upstream_model: "gpt-4o",

@@ -1,18 +1,18 @@
 import { useTranslation } from "react-i18next";
 import { Check, Copy, KeyRound, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
-import { maskSecret, type FusionKey } from "@/lib/apiFusion";
+import { maskSecret, type GatewayKey } from "@/lib/apiGateway";
 
 type LocalKeyListProps = {
-  keys: FusionKey[];
+  keys: GatewayKey[];
   defaultKeyId: string | null;
   busy: boolean;
   copiedKeyId: string | null;
   onAdd: () => void;
   onDelete: (keyId: string) => void;
   onSetDefault: (keyId: string) => void;
-  onToggleEnabled: (key: FusionKey, enabled: boolean) => void;
-  onCopy: (key: FusionKey) => void;
+  onToggleEnabled: (key: GatewayKey, enabled: boolean) => void;
+  onCopy: (key: GatewayKey) => void;
 };
 
 export function LocalKeyList({
@@ -29,14 +29,14 @@ export function LocalKeyList({
   const { t } = useTranslation();
 
   return (
-    <section className="space-y-3.5" data-testid="api-fusion-keys">
+    <section className="space-y-3.5" data-testid="api-gateway-keys">
       {/* 头部说明与添加栏 */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-0.5">
           <div className="flex items-center gap-2">
             <KeyRound className="h-4 w-4 text-primary" />
             <h3 className="text-sm font-semibold text-foreground">
-              {t("apiFusionKeys", "Api Keys")}
+              {t("apiGatewayKeys", "Api Keys")}
             </h3>
             <span className="rounded-full bg-muted px-2 py-0.2 text-[10px] font-semibold text-muted-foreground">
               {keys.length}
@@ -44,7 +44,7 @@ export function LocalKeyList({
           </div>
           <p className="text-xs text-muted-foreground">
             {t(
-              "apiFusionKeysDesc",
+              "apiGatewayKeysDesc",
               "Manage local bearer tokens used by clients to authenticate with this relay.",
             )}
           </p>
@@ -59,7 +59,7 @@ export function LocalKeyList({
             className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
           >
             <Plus className="h-3 w-3" />
-            {t("apiFusionAddKey", "Add key")}
+            {t("apiGatewayAddKey", "Add key")}
           </button>
         </div>
       </div>
@@ -70,11 +70,11 @@ export function LocalKeyList({
             <KeyRound className="h-5 w-5" />
           </div>
           <h4 className="mt-2.5 text-xs font-medium text-foreground">
-            {t("apiFusionNoKeys", "No local keys yet.")}
+            {t("apiGatewayNoKeys", "No local keys yet.")}
           </h4>
           <p className="mt-1 max-w-sm text-xs text-muted-foreground">
             {t(
-              "apiFusionNoKeysGuide",
+              "apiGatewayNoKeysGuide",
               "Create a local key to start accessing the proxy service securely from external tools.",
             )}
           </p>
@@ -88,7 +88,7 @@ export function LocalKeyList({
             return (
               <div
                 key={key.id}
-                data-testid={`api-fusion-key-${key.id}`}
+                data-testid={`api-gateway-key-${key.id}`}
                 className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-3 shadow-sm transition hover:border-primary/40 ${
                   isDefault ? "border-primary/30 bg-primary/[0.02]" : ""
                 }`}
@@ -102,7 +102,7 @@ export function LocalKeyList({
                     {isDefault ? (
                       <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium leading-4 text-primary">
                         <ShieldCheck className="h-3 w-3" />
-                        {t("apiFusionDefaultKey", "Default key")}
+                        {t("apiGatewayDefaultKey", "Default key")}
                       </span>
                     ) : null}
                   </div>
@@ -110,18 +110,18 @@ export function LocalKeyList({
                   <div className="mt-1 flex items-center gap-2">
                     <code
                       className="rounded bg-muted/60 px-1.5 py-0.5 font-mono text-xs text-muted-foreground"
-                      data-testid={`api-fusion-key-value-${key.id}`}
+                      data-testid={`api-gateway-key-value-${key.id}`}
                     >
                       {maskSecret(key.value)}
                     </code>
                     <button
                       type="button"
                       onClick={() => onCopy(key)}
-                      aria-label={t("apiFusionCopyKeyAria", {
+                      aria-label={t("apiGatewayCopyKeyAria", {
                         label: key.label,
                         defaultValue: `Copy key ${key.label}`,
                       })}
-                      title={t("apiFusionCopyKey", "Copy key")}
+                      title={t("apiGatewayCopyKey", "Copy key")}
                       className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground transition hover:bg-muted hover:text-foreground"
                     >
                       {isCopied ? (
@@ -138,11 +138,11 @@ export function LocalKeyList({
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs text-muted-foreground">
                       {key.enabled
-                        ? t("apiFusionEnabled", "Enabled")
-                        : t("apiFusionDisabled", "Disabled")}
+                        ? t("apiGatewayEnabled", "Enabled")
+                        : t("apiGatewayDisabled", "Disabled")}
                     </span>
                     <Switch
-                      aria-label={t("apiFusionToggleKeyAria", {
+                      aria-label={t("apiGatewayToggleKeyAria", {
                         label: key.label,
                         defaultValue: `Enable key ${key.label}`,
                       })}
@@ -159,18 +159,18 @@ export function LocalKeyList({
                       disabled={busy}
                       className="h-7 rounded-md border bg-background px-2.5 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
                     >
-                      {t("apiFusionSetDefault", "Set as default")}
+                      {t("apiGatewaySetDefault", "Set as default")}
                     </button>
                   ) : null}
 
                   <button
                     type="button"
                     onClick={() => onDelete(key.id)}
-                    aria-label={t("apiFusionDeleteKeyAria", {
+                    aria-label={t("apiGatewayDeleteKeyAria", {
                       label: key.label,
                       defaultValue: `Delete key ${key.label}`,
                     })}
-                    title={t("apiFusionDelete", "Delete")}
+                    title={t("apiGatewayDelete", "Delete")}
                     className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
@@ -185,10 +185,10 @@ export function LocalKeyList({
       {/* 使用说明底栏 */}
       <div className="rounded-lg border bg-muted/20 p-2.5 text-xs text-muted-foreground">
         <span className="font-medium text-foreground">
-          {t("apiFusionUsageTipTitle", "How to use:")}
+          {t("apiGatewayUsageTipTitle", "How to use:")}
         </span>{" "}
         {t(
-          "apiFusionUsageTipDesc",
+          "apiGatewayUsageTipDesc",
           "Pass the key as Bearer token in the Authorization header: `Authorization: Bearer <key>`.",
         )}
       </div>

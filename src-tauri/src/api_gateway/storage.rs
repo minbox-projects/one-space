@@ -1,9 +1,31 @@
-use super::{now_ts, FusionConfig, FusionKey, FusionUpstreamProvider, CONFIG_FILE, DEFAULT_PORT};
+use super::{
+    now_ts, GatewayConfig, GatewayKey, GatewayUpstreamProvider, CONFIG_FILE, DEFAULT_PORT,
+    LEGACY_CONFIG_FILE,
+};
 use std::fs;
 use std::path::PathBuf;
 
-pub(in crate::api_fusion) fn config_path() -> Result<PathBuf, String> {
+pub(in crate::api_gateway) fn config_path() -> Result<PathBuf, String> {
     Ok(crate::config::get_app_dir()?.join(CONFIG_FILE))
+}
+
+pub(in crate::api_gateway) fn legacy_config_path() -> Result<PathBuf, String> {
+    Ok(crate::config::get_app_dir()?.join(LEGACY_CONFIG_FILE))
+}
+
+fn read_config_file(path: &PathBuf) -> Result<Option<GatewayConfig>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if content.trim().is_empty() {
+        return Ok(None);
+    }
+    let password = crate::crypto::get_or_init_master_password()?;
+    let decrypted = crate::crypto::decrypt(content.trim(), &password)?;
+    let mut config: GatewayConfig = serde_json::from_str(&decrypted).map_err(|e| e.to_string())?;
+    normalize_config(&mut config);
+    Ok(Some(config))
 }
 
 /// Resolve the effective default key id.
@@ -11,8 +33,8 @@ pub(in crate::api_fusion) fn config_path() -> Result<PathBuf, String> {
 /// Manual choice wins while it points at an enabled key; otherwise the search
 /// advances to the next enabled key in list order (wrapping) so disabling or
 /// deleting the current default transparently falls through.
-pub(in crate::api_fusion) fn resolve_default_key_id(
-    keys: &[FusionKey],
+pub(in crate::api_gateway) fn resolve_default_key_id(
+    keys: &[GatewayKey],
     stored: Option<&str>,
 ) -> Option<String> {
     if keys.is_empty() {
@@ -35,14 +57,14 @@ pub(in crate::api_fusion) fn resolve_default_key_id(
     }
 }
 
-pub(in crate::api_fusion) fn effective_default_key(
-    config: &FusionConfig,
-) -> Option<&FusionKey> {
+pub(in crate::api_gateway) fn effective_default_key(
+    config: &GatewayConfig,
+) -> Option<&GatewayKey> {
     let id = config.default_key_id.as_deref()?;
     config.keys.iter().find(|key| key.id == id && key.enabled)
 }
 
-pub(in crate::api_fusion) fn normalize_config(config: &mut FusionConfig) {
+pub(in crate::api_gateway) fn normalize_config(config: &mut GatewayConfig) {
     if config.port == 0 {
         config.port = DEFAULT_PORT;
     }
@@ -61,25 +83,25 @@ pub(in crate::api_fusion) fn normalize_config(config: &mut FusionConfig) {
     config.default_key_id = resolve_default_key_id(&config.keys, config.default_key_id.as_deref());
 }
 
-pub(in crate::api_fusion) fn read_config() -> Result<FusionConfig, String> {
+pub(in crate::api_gateway) fn read_config() -> Result<GatewayConfig, String> {
     let path = config_path()?;
-    if !path.exists() {
-        return Ok(FusionConfig::default());
+    if let Some(config) = read_config_file(&path)? {
+        return Ok(config);
     }
-    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    if content.trim().is_empty() {
-        return Ok(FusionConfig::default());
+    // One-time read-only migration: a legacy `api_fusion.json` payload is read
+    // through the same decrypt path and rewritten to `api_gateway.json`.
+    // The legacy file is never deleted. Writes always target the new file.
+    let legacy = legacy_config_path()?;
+    if let Some(config) = read_config_file(&legacy)? {
+        let _ = write_config(&config);
+        return Ok(config);
     }
-    let password = crate::crypto::get_or_init_master_password()?;
-    let decrypted = crate::crypto::decrypt(content.trim(), &password)?;
-    let mut config: FusionConfig = serde_json::from_str(&decrypted).map_err(|e| e.to_string())?;
-    normalize_config(&mut config);
-    Ok(config)
+    Ok(GatewayConfig::default())
 }
 
 /// Encrypt the entire configuration and write it atomically through a temp file
 /// plus rename so a partial write can never corrupt the on-disk state.
-pub(in crate::api_fusion) fn write_config(config: &FusionConfig) -> Result<(), String> {
+pub(in crate::api_gateway) fn write_config(config: &GatewayConfig) -> Result<(), String> {
     let mut next = config.clone();
     normalize_config(&mut next);
     let json = serde_json::to_string(&next).map_err(|e| e.to_string())?;
@@ -91,35 +113,35 @@ pub(in crate::api_fusion) fn write_config(config: &FusionConfig) -> Result<(), S
     fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
-pub(in crate::api_fusion) fn new_provider_id() -> String {
-    format!("fus-{}", uuid::Uuid::new_v4().simple())
+pub(in crate::api_gateway) fn new_provider_id() -> String {
+    format!("gw-{}", uuid::Uuid::new_v4().simple())
 }
 
-pub(in crate::api_fusion) fn new_key_id() -> String {
+pub(in crate::api_gateway) fn new_key_id() -> String {
     format!("key-{}", uuid::Uuid::new_v4().simple())
 }
 
 /// Generate a random local API key value from OS entropy so clients never
 /// supply one themselves; 128 bits of randomness, no separators to copy wrong.
-pub(in crate::api_fusion) fn new_key_value() -> String {
-    format!("sk-fusion-{}", uuid::Uuid::new_v4().simple())
+pub(in crate::api_gateway) fn new_key_value() -> String {
+    format!("sk-gateway-{}", uuid::Uuid::new_v4().simple())
 }
 
-pub(in crate::api_fusion) fn find_provider_mut<'a>(
-    config: &'a mut FusionConfig,
+pub(in crate::api_gateway) fn find_provider_mut<'a>(
+    config: &'a mut GatewayConfig,
     provider_id: &str,
-) -> Option<&'a mut FusionUpstreamProvider> {
+) -> Option<&'a mut GatewayUpstreamProvider> {
     config
         .providers
         .iter_mut()
         .find(|provider| provider.id == provider_id)
 }
 
-pub(in crate::api_fusion) fn local_base_url(port: u16) -> String {
+pub(in crate::api_gateway) fn local_base_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/v1")
 }
 
-pub(in crate::api_fusion) fn touch_key_created_at(key: &mut FusionKey) {
+pub(in crate::api_gateway) fn touch_key_created_at(key: &mut GatewayKey) {
     if key.created_at == 0 {
         key.created_at = now_ts();
     }

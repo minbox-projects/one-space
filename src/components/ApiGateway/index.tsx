@@ -12,29 +12,29 @@ import {
 import { useToast } from "@/components/ToastProvider";
 import { errorToMessage } from "@/lib/messages";
 import {
-  API_FUSION_STATUS_UPDATED_EVENT,
-  apiFusionConfigureTerminal,
-  apiFusionDeleteKey,
-  apiFusionDeleteProvider,
-  apiFusionGetConfig,
-  apiFusionReenableProvider,
-  apiFusionSetDefaultKey,
-  apiFusionSetProviderEnabled,
-  apiFusionStart,
-  apiFusionStatus,
-  apiFusionStop,
-  apiFusionSyncTerminal,
-  apiFusionTerminalTargets,
-  apiFusionUpsertKey,
-  apiFusionUpsertProvider,
+  API_GATEWAY_STATUS_UPDATED_EVENT,
+  apiGatewayConfigureTerminal,
+  apiGatewayDeleteKey,
+  apiGatewayDeleteProvider,
+  apiGatewayGetConfig,
+  apiGatewayReenableProvider,
+  apiGatewaySetDefaultKey,
+  apiGatewaySetProviderEnabled,
+  apiGatewayStart,
+  apiGatewayStatus,
+  apiGatewayStop,
+  apiGatewaySyncTerminal,
+  apiGatewayTerminalTargets,
+  apiGatewayUpsertKey,
+  apiGatewayUpsertProvider,
   localBaseUrl,
   resolveDefaultKeyId,
-  type FusionConfig,
-  type FusionKey,
-  type FusionStatus,
-  type FusionTerminalTarget,
-  type FusionUpstreamProvider,
-} from "@/lib/apiFusion";
+  type GatewayConfig,
+  type GatewayKey,
+  type GatewayStatus,
+  type GatewayTerminalTarget,
+  type GatewayUpstreamProvider,
+} from "@/lib/apiGateway";
 import { RuntimeStatusCard } from "./RuntimeStatusCard";
 import { UpstreamProviderList } from "./UpstreamProviderList";
 import { ProviderDetailDialog } from "./ProviderDetailDialog";
@@ -45,9 +45,9 @@ import { TerminalSyncPanel } from "./TerminalSyncPanel";
 import { UsageStatsPanel } from "./UsageStatsPanel";
 import { UsageLogsPanel } from "./UsageLogsPanel";
 
-type ApiFusionTab = "providers" | "keys" | "terminals" | "usage" | "logs";
+type ApiGatewayTab = "providers" | "keys" | "terminals" | "usage" | "logs";
 
-function emptyProvider(): FusionUpstreamProvider {
+function emptyProvider(): GatewayUpstreamProvider {
   return {
     id: "",
     name: "",
@@ -65,19 +65,19 @@ function emptyProvider(): FusionUpstreamProvider {
   };
 }
 
-export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
+export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const { pushToast } = useToast();
   const ToolIcon = Network;
   const iconClassName = "bg-primary/10 text-primary";
 
-  const [activeTab, setActiveTab] = useState<ApiFusionTab>("providers");
-  const [config, setConfig] = useState<FusionConfig | null>(null);
-  const [status, setStatus] = useState<FusionStatus | null>(null);
-  const [targets, setTargets] = useState<FusionTerminalTarget[]>([]);
+  const [activeTab, setActiveTab] = useState<ApiGatewayTab>("providers");
+  const [config, setConfig] = useState<GatewayConfig | null>(null);
+  const [status, setStatus] = useState<GatewayStatus | null>(null);
+  const [targets, setTargets] = useState<GatewayTerminalTarget[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [editingProvider, setEditingProvider] =
-    useState<FusionUpstreamProvider | null>(null);
+    useState<GatewayUpstreamProvider | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isKeyDialogOpen, setIsKeyDialogOpen] = useState(false);
   const [isModelsDialogOpen, setIsModelsDialogOpen] = useState(false);
@@ -118,9 +118,9 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
     setLoadError(null);
     try {
       const [nextConfig, nextStatus, nextTargets] = await Promise.all([
-        apiFusionGetConfig(),
-        apiFusionStatus(),
-        apiFusionTerminalTargets(),
+        apiGatewayGetConfig(),
+        apiGatewayStatus(),
+        apiGatewayTerminalTargets(),
       ]);
       setConfig(nextConfig);
       setStatus(nextStatus);
@@ -129,7 +129,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
       const msg = errorToMessage(err);
       setLoadError(msg);
       pushToast({
-        title: t("apiFusionLoadFailed", "Failed to load API Gateway configuration."),
+        title: t("apiGatewayLoadFailed", "Failed to load API Gateway configuration."),
         description: msg,
         kind: "error",
       });
@@ -141,11 +141,11 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
     void load();
   }, [isVisible, load]);
 
-  const applyConfig = useCallback(async (next: FusionConfig) => {
+  const applyConfig = useCallback(async (next: GatewayConfig) => {
     setConfig(next);
     const [nextStatus, nextTargets] = await Promise.all([
-      apiFusionStatus(),
-      apiFusionTerminalTargets(),
+      apiGatewayStatus(),
+      apiGatewayTerminalTargets(),
     ]);
     setStatus(nextStatus);
     setTargets(nextTargets);
@@ -163,7 +163,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
         return true;
       } catch (err) {
         pushToast({
-          title: t("apiFusionActionFailed", "Action failed"),
+          title: t("apiGatewayActionFailed", "Action failed"),
           description: errorToMessage(err),
           kind: "error",
         });
@@ -178,25 +178,25 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
   const handleToggleService = () =>
     runAction(async () => {
       const running = Boolean(status?.running);
-      const nextStatus = running ? await apiFusionStop() : await apiFusionStart();
+      const nextStatus = running ? await apiGatewayStop() : await apiGatewayStart();
       setStatus(nextStatus);
-      setConfig(await apiFusionGetConfig());
-      await emit(API_FUSION_STATUS_UPDATED_EVENT).catch(() => {});
-    }, t("apiFusionSaved", "Saved."));
+      setConfig(await apiGatewayGetConfig());
+      await emit(API_GATEWAY_STATUS_UPDATED_EVENT).catch(() => {});
+    }, t("apiGatewaySaved", "Saved."));
 
-  const handleToggleProviderEnabled = (provider: FusionUpstreamProvider, enabled: boolean) =>
+  const handleToggleProviderEnabled = (provider: GatewayUpstreamProvider, enabled: boolean) =>
     runAction(async () => {
-      await applyConfig(await apiFusionSetProviderEnabled(provider.id, enabled));
-    }, t("apiFusionSaved", "Saved."));
+      await applyConfig(await apiGatewaySetProviderEnabled(provider.id, enabled));
+    }, t("apiGatewaySaved", "Saved."));
 
   const handleReenableProvider = (providerId: string) =>
     runAction(async () => {
-      await applyConfig(await apiFusionReenableProvider(providerId));
-    }, t("apiFusionSaved", "Saved."));
+      await applyConfig(await apiGatewayReenableProvider(providerId));
+    }, t("apiGatewaySaved", "Saved."));
 
-  const handleSaveProvider = (draft: FusionUpstreamProvider) =>
+  const handleSaveProvider = (draft: GatewayUpstreamProvider) =>
     runAction(async () => {
-      const next = await apiFusionUpsertProvider(draft);
+      const next = await apiGatewayUpsertProvider(draft);
       setConfig(next);
       const saved = draft.id
         ? next.providers.find((provider) => provider.id === draft.id) ?? null
@@ -204,40 +204,40 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
       setEditingProvider(saved);
       setSelectedProviderId(saved?.id ?? null);
       const [nextStatus, nextTargets] = await Promise.all([
-        apiFusionStatus(),
-        apiFusionTerminalTargets(),
+        apiGatewayStatus(),
+        apiGatewayTerminalTargets(),
       ]);
       setStatus(nextStatus);
       setTargets(nextTargets);
-    }, t("apiFusionProviderSaved", "Provider saved."));
+    }, t("apiGatewayProviderSaved", "Provider saved."));
 
   const handleDeleteProvider = (providerId: string) =>
     runAction(async () => {
-      await applyConfig(await apiFusionDeleteProvider(providerId));
+      await applyConfig(await apiGatewayDeleteProvider(providerId));
       setEditingProvider(null);
       setSelectedProviderId(null);
       setIsDialogOpen(false);
-    }, t("apiFusionDeleted", "Deleted."));
+    }, t("apiGatewayDeleted", "Deleted."));
 
-  const handleSaveKey = (key: FusionKey): Promise<boolean> =>
+  const handleSaveKey = (key: GatewayKey): Promise<boolean> =>
     runAction(async () => {
-      await applyConfig(await apiFusionUpsertKey(key));
-    }, t("apiFusionKeySaved", "Key saved."));
+      await applyConfig(await apiGatewayUpsertKey(key));
+    }, t("apiGatewayKeySaved", "Key saved."));
 
   const handleDeleteKey = (keyId: string) =>
     runAction(async () => {
-      await applyConfig(await apiFusionDeleteKey(keyId));
-    }, t("apiFusionDeleted", "Deleted."));
+      await applyConfig(await apiGatewayDeleteKey(keyId));
+    }, t("apiGatewayDeleted", "Deleted."));
 
-  const handleToggleKeyEnabled = (key: FusionKey, enabled: boolean) =>
+  const handleToggleKeyEnabled = (key: GatewayKey, enabled: boolean) =>
     runAction(async () => {
-      await applyConfig(await apiFusionUpsertKey({ ...key, enabled }));
-    }, t("apiFusionSaved", "Saved."));
+      await applyConfig(await apiGatewayUpsertKey({ ...key, enabled }));
+    }, t("apiGatewaySaved", "Saved."));
 
   const handleSetDefaultKey = (keyId: string) =>
     runAction(async () => {
-      await applyConfig(await apiFusionSetDefaultKey(keyId));
-    }, t("apiFusionSaved", "Saved."));
+      await applyConfig(await apiGatewaySetDefaultKey(keyId));
+    }, t("apiGatewaySaved", "Saved."));
 
   const runTerminalAction = useCallback(
     async (tool: string, action: () => Promise<void>, successTitle: string) => {
@@ -247,7 +247,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
         pushToast({ title: successTitle, kind: "success" });
       } catch (err) {
         pushToast({
-          title: t("apiFusionActionFailed", "Action failed"),
+          title: t("apiGatewayActionFailed", "Action failed"),
           description: errorToMessage(err),
           kind: "error",
         });
@@ -266,20 +266,20 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
     void runTerminalAction(
       tool,
       async () => {
-        await apiFusionConfigureTerminal([tool]);
-        await applyConfig(await apiFusionGetConfig());
+        await apiGatewayConfigureTerminal([tool]);
+        await applyConfig(await apiGatewayGetConfig());
       },
-      t("apiFusionConfigureSuccess", "Terminal targets configured."),
+      t("apiGatewayConfigureSuccess", "Terminal targets configured."),
     );
 
   const handleSyncTool = (tool: string) =>
     void runTerminalAction(
       tool,
       async () => {
-        await apiFusionSyncTerminal([tool]);
-        await applyConfig(await apiFusionGetConfig());
+        await apiGatewaySyncTerminal([tool]);
+        await applyConfig(await apiGatewayGetConfig());
       },
-      t("apiFusionSyncSuccess", "Terminal targets synced."),
+      t("apiGatewaySyncSuccess", "Terminal targets synced."),
     );
 
   const handleCopyAddress = async () => {
@@ -287,24 +287,24 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
     try {
       await navigator.clipboard.writeText(localBaseUrl(config.port));
       setAddressCopied(true);
-      pushToast({ title: t("apiFusionCopied", "Copied to clipboard"), kind: "success" });
+      pushToast({ title: t("apiGatewayCopied", "Copied to clipboard"), kind: "success" });
     } catch (err) {
       pushToast({
-        title: t("apiFusionCopyFailed", "Copy failed"),
+        title: t("apiGatewayCopyFailed", "Copy failed"),
         description: errorToMessage(err),
         kind: "error",
       });
     }
   };
 
-  const handleCopyKey = async (key: FusionKey) => {
+  const handleCopyKey = async (key: GatewayKey) => {
     try {
       await navigator.clipboard.writeText(key.value);
       setCopiedKeyId(key.id);
-      pushToast({ title: t("apiFusionCopied", "Copied to clipboard"), kind: "success" });
+      pushToast({ title: t("apiGatewayCopied", "Copied to clipboard"), kind: "success" });
     } catch (err) {
       pushToast({
-        title: t("apiFusionCopyFailed", "Copy failed"),
+        title: t("apiGatewayCopyFailed", "Copy failed"),
         description: errorToMessage(err),
         kind: "error",
       });
@@ -325,7 +325,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
                 <Network className="h-6 w-6" />
               </div>
               <h3 className="mt-3 text-base font-semibold text-foreground">
-                {t("apiFusionLoadFailed", "Failed to load API Gateway configuration.")}
+                {t("apiGatewayLoadFailed", "Failed to load API Gateway configuration.")}
               </h3>
               <p className="mt-1 max-w-md text-xs text-muted-foreground">{loadError}</p>
               <button
@@ -353,7 +353,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
   const autoDisabledCount = status?.auto_disabled_count ?? 0;
 
   const tabs: Array<{
-    id: ApiFusionTab;
+    id: ApiGatewayTab;
     label: string;
     icon: typeof Server;
     count?: number;
@@ -361,37 +361,37 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
   }> = [
     {
       id: "providers",
-      label: t("apiFusionProviders", "Upstream providers"),
+      label: t("apiGatewayProviders", "Upstream providers"),
       icon: Server,
       count: config?.providers?.length ?? 0,
       hasAlert: autoDisabledCount > 0,
     },
     {
       id: "keys",
-      label: t("apiFusionKeys", "Api Keys"),
+      label: t("apiGatewayKeys", "Api Keys"),
       icon: KeyRound,
       count: config?.keys?.length ?? 0,
     },
     {
       id: "terminals",
-      label: t("apiFusionTerminalSync", "AI terminal integration"),
+      label: t("apiGatewayTerminalSync", "AI terminal integration"),
       icon: TerminalSquare,
       hasAlert: pendingSyncCount > 0,
     },
     {
       id: "usage",
-      label: t("apiFusionUsageTab", "Usage"),
+      label: t("apiGatewayUsageTab", "Usage"),
       icon: BarChart3,
     },
     {
       id: "logs",
-      label: t("apiFusionLogsTab", "Request logs"),
+      label: t("apiGatewayLogsTab", "Request logs"),
       icon: ScrollText,
     },
   ];
 
   return (
-    <div className="h-full overflow-y-auto" data-testid="api-fusion-console">
+    <div className="h-full overflow-y-auto" data-testid="api-gateway-console">
       <div className="mx-auto max-w-7xl space-y-4 p-6">
         {/* 头部标题与简介（对齐 AiEnvironments 规范） */}
         <header className="flex items-start gap-3">
@@ -400,11 +400,11 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
           </div>
           <div className="space-y-0.5">
             <h1 className="text-xl font-bold tracking-tight text-foreground">
-              {t("apiFusion", "API Gateway")}
+              {t("apiGateway", "API Gateway")}
             </h1>
             <p className="max-w-3xl text-xs text-muted-foreground">
               {t(
-                "apiFusionWorkspaceDesc",
+                "apiGatewayWorkspaceDesc",
                 "Run a local OpenAI-compatible relay across multiple upstream providers, manage local keys, and push the local endpoint to OpenCode / Codex.",
               )}
             </p>
@@ -428,7 +428,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
         {/* 工作区 Tabs 标签页导航 */}
         <div
           role="tablist"
-          aria-label={t("apiFusionWorkspaceTabs", "API Gateway tabs")}
+          aria-label={t("apiGatewayWorkspaceTabs", "API Gateway tabs")}
           className="flex flex-wrap items-center gap-1.5 rounded-xl border bg-muted/50 p-1.5 shadow-xs"
         >
           {tabs.map((tab) => {
@@ -469,7 +469,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
                 {tab.hasAlert ? (
                   <span
                     className="relative flex h-2 w-2"
-                    title={t("apiFusionHasPendingItems", "Has items needing attention")}
+                    title={t("apiGatewayHasPendingItems", "Has items needing attention")}
                   >
                     <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
                     <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
@@ -483,7 +483,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
         {/* Tab 1: 上游服务商 */}
         <div
           role="tabpanel"
-          aria-label={t("apiFusionProviders", "Upstream providers")}
+          aria-label={t("apiGatewayProviders", "Upstream providers")}
           className={activeTab === "providers" ? "block" : "hidden"}
         >
           <UpstreamProviderList
@@ -513,7 +513,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
         {/* Tab 2: 本地密钥 */}
         <div
           role="tabpanel"
-          aria-label={t("apiFusionKeys", "Api Keys")}
+          aria-label={t("apiGatewayKeys", "Api Keys")}
           className={activeTab === "keys" ? "block" : "hidden"}
         >
           <LocalKeyList
@@ -532,7 +532,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
         {/* Tab 3: AI 终端集成 */}
         <div
           role="tabpanel"
-          aria-label={t("apiFusionTerminalSync", "AI terminal integration")}
+          aria-label={t("apiGatewayTerminalSync", "AI terminal integration")}
           className={activeTab === "terminals" ? "block" : "hidden"}
         >
           <TerminalSyncPanel
@@ -547,7 +547,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
         {/* Tab 4: 用量统计（面板常驻以保留范围等状态） */}
         <div
           role="tabpanel"
-          aria-label={t("apiFusionUsageTab", "Usage")}
+          aria-label={t("apiGatewayUsageTab", "Usage")}
           className={activeTab === "usage" ? "block" : "hidden"}
         >
           <UsageStatsPanel isActive={activeTab === "usage"} />
@@ -556,7 +556,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
         {/* Tab 5: 请求日志（面板常驻以保留分组/页码等状态） */}
         <div
           role="tabpanel"
-          aria-label={t("apiFusionLogsTab", "Request logs")}
+          aria-label={t("apiGatewayLogsTab", "Request logs")}
           className={activeTab === "logs" ? "block" : "hidden"}
         >
           <UsageLogsPanel isActive={activeTab === "logs"} />

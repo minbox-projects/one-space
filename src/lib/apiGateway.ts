@@ -1,21 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export const API_FUSION_DEFAULT_PORT = 17688;
-export const API_FUSION_STATUS_UPDATED_EVENT = "api-fusion-status-update";
+export const API_GATEWAY_DEFAULT_PORT = 17688;
+export const API_GATEWAY_STATUS_UPDATED_EVENT = "api-gateway-status-update";
 
 /** Sentinel mask the frontend submits to keep a stored provider api key or local key; the backend reads it as "preserve existing value" (or generate a new one) and does not echo masked secrets. */
-export const API_FUSION_KEY_MASK = "********";
+export const API_GATEWAY_KEY_MASK = "********";
 
-/** Terminal tools API Fusion is allowed to configure; claude/antigravity are excluded. */
-export const API_FUSION_SUPPORTED_TERMINAL_TOOLS = ["opencode", "codex"] as const;
+/** Terminal tools API Gateway is allowed to configure; claude/antigravity are excluded. */
+export const API_GATEWAY_SUPPORTED_TERMINAL_TOOLS = ["opencode", "codex"] as const;
 
-export interface FusionModelMapping {
+export interface GatewayModelMapping {
   local_model: string;
   upstream_model: string;
   /** Optional name surfaced by the gateway for this model. */
   display_name?: string | null;
   /** `null`/absent means this row inherits the provider protocol. */
-  protocol?: FusionUpstreamProtocol | null;
+  protocol?: GatewayUpstreamProtocol | null;
   /**
    * Whether this mapping participates in routing. Absent/`undefined` is treated
    * as enabled for backwards compatibility with configs written before the flag
@@ -25,16 +25,16 @@ export interface FusionModelMapping {
 }
 
 /** Upstream endpoint family a provider exposes; request bodies are not translated. */
-export type FusionUpstreamProtocol = "chat_completions" | "responses";
+export type GatewayUpstreamProtocol = "chat_completions" | "responses";
 
-export interface FusionUpstreamProvider {
+export interface GatewayUpstreamProvider {
   id: string;
   name: string;
   base_url: string;
   api_key: string;
   default_model: string | null;
-  protocol?: FusionUpstreamProtocol;
-  mappings: FusionModelMapping[];
+  protocol?: GatewayUpstreamProtocol;
+  mappings: GatewayModelMapping[];
   enabled: boolean;
   auto_disabled: boolean;
   disabled_reason: string | null;
@@ -43,7 +43,7 @@ export interface FusionUpstreamProvider {
   last_error_at: number | null;
 }
 
-export interface FusionKey {
+export interface GatewayKey {
   id: string;
   label: string;
   value: string;
@@ -51,7 +51,7 @@ export interface FusionKey {
   created_at: number;
 }
 
-export interface FusionTerminalSyncRecord {
+export interface GatewayTerminalSyncRecord {
   provider_id: string;
   tool: string;
   synced_key_id: string;
@@ -59,16 +59,16 @@ export interface FusionTerminalSyncRecord {
   synced_at: number;
 }
 
-export interface FusionConfig {
+export interface GatewayConfig {
   enabled: boolean;
   port: number;
-  providers: FusionUpstreamProvider[];
-  keys: FusionKey[];
+  providers: GatewayUpstreamProvider[];
+  keys: GatewayKey[];
   default_key_id: string | null;
-  terminal_syncs: FusionTerminalSyncRecord[];
+  terminal_syncs: GatewayTerminalSyncRecord[];
 }
 
-export interface FusionStatus {
+export interface GatewayStatus {
   running: boolean;
   enabled: boolean;
   port: number;
@@ -79,7 +79,7 @@ export interface FusionStatus {
   default_key_id: string | null;
 }
 
-export interface FusionTerminalTarget {
+export interface GatewayTerminalTarget {
   tool: string;
   name: string;
   provider_id: string | null;
@@ -98,7 +98,7 @@ export interface FusionTerminalTarget {
  * (wrapping), and empty means no enabled key is available.
  */
 export function resolveDefaultKeyId(
-  keys: FusionKey[],
+  keys: GatewayKey[],
   stored: string | null | undefined,
 ): string | null {
   if (keys.length === 0) return null;
@@ -124,9 +124,9 @@ export function localBaseUrl(port: number): string {
 }
 
 /** Resolved upstream model plus the endpoint family the request is sent to. */
-export interface FusionMappingPreview {
+export interface GatewayMappingPreview {
   upstreamModel: string;
-  endpoint: FusionUpstreamProtocol;
+  endpoint: GatewayUpstreamProtocol;
 }
 
 /**
@@ -140,12 +140,12 @@ export interface FusionMappingPreview {
  */
 export function resolveMappingPreview(
   provider: {
-    protocol?: FusionUpstreamProtocol;
-    mappings: FusionModelMapping[];
+    protocol?: GatewayUpstreamProtocol;
+    mappings: GatewayModelMapping[];
     default_model: string | null;
   },
   localModel: string,
-): FusionMappingPreview | null {
+): GatewayMappingPreview | null {
   const candidates = provider.mappings.filter(
     (entry) =>
       entry.local_model === localModel && entry.upstream_model.trim() !== "",
@@ -174,7 +174,7 @@ export interface AggregatedModelProvider {
   providerId: string;
   providerName: string;
   upstreamModel: string;
-  endpoint: FusionUpstreamProtocol;
+  endpoint: GatewayUpstreamProtocol;
   isDefault: boolean;
 }
 
@@ -192,7 +192,7 @@ export interface AggregatedModel {
  * deterministically.
  */
 export function aggregateModels(
-  providers: FusionUpstreamProvider[],
+  providers: GatewayUpstreamProvider[],
 ): AggregatedModel[] {
   const groups = new Map<string, AggregatedModelProvider[]>();
 
@@ -249,7 +249,7 @@ export function maskSecret(value: string): string {
 }
 
 /** Render a unix-seconds timestamp as a stable `YYYY-MM-DD HH:mm` string. */
-export function formatFusionTimestamp(ts: number | null | undefined): string | null {
+export function formatGatewayTimestamp(ts: number | null | undefined): string | null {
   if (ts === null || ts === undefined) return null;
   const date = new Date(ts * 1000);
   const pad = (part: number) => String(part).padStart(2, "0");
@@ -258,73 +258,73 @@ export function formatFusionTimestamp(ts: number | null | undefined): string | n
   )}:${pad(date.getMinutes())}`;
 }
 
-export function apiFusionGetConfig() {
-  return invoke<FusionConfig>("api_fusion_get_config");
+export function apiGatewayGetConfig() {
+  return invoke<GatewayConfig>("api_gateway_get_config");
 }
 
-export function apiFusionSaveConfig(config: FusionConfig) {
-  return invoke<FusionConfig>("api_fusion_save_config", { config });
+export function apiGatewaySaveConfig(config: GatewayConfig) {
+  return invoke<GatewayConfig>("api_gateway_save_config", { config });
 }
 
-export function apiFusionUpsertProvider(provider: FusionUpstreamProvider) {
-  return invoke<FusionConfig>("api_fusion_upsert_provider", { provider });
+export function apiGatewayUpsertProvider(provider: GatewayUpstreamProvider) {
+  return invoke<GatewayConfig>("api_gateway_upsert_provider", { provider });
 }
 
-export function apiFusionDeleteProvider(providerId: string) {
-  return invoke<FusionConfig>("api_fusion_delete_provider", { providerId });
+export function apiGatewayDeleteProvider(providerId: string) {
+  return invoke<GatewayConfig>("api_gateway_delete_provider", { providerId });
 }
 
-export function apiFusionSetProviderEnabled(
+export function apiGatewaySetProviderEnabled(
   providerId: string,
   enabled: boolean,
 ) {
-  return invoke<FusionConfig>("api_fusion_set_provider_enabled", {
+  return invoke<GatewayConfig>("api_gateway_set_provider_enabled", {
     providerId,
     enabled,
   });
 }
 
-export function apiFusionReenableProvider(providerId: string) {
-  return invoke<FusionConfig>("api_fusion_reenable_provider", { providerId });
+export function apiGatewayReenableProvider(providerId: string) {
+  return invoke<GatewayConfig>("api_gateway_reenable_provider", { providerId });
 }
 
-export function apiFusionUpsertKey(key: FusionKey) {
-  return invoke<FusionConfig>("api_fusion_upsert_key", { key });
+export function apiGatewayUpsertKey(key: GatewayKey) {
+  return invoke<GatewayConfig>("api_gateway_upsert_key", { key });
 }
 
-export function apiFusionDeleteKey(keyId: string) {
-  return invoke<FusionConfig>("api_fusion_delete_key", { keyId });
+export function apiGatewayDeleteKey(keyId: string) {
+  return invoke<GatewayConfig>("api_gateway_delete_key", { keyId });
 }
 
-export function apiFusionSetDefaultKey(keyId: string) {
-  return invoke<FusionConfig>("api_fusion_set_default_key", { keyId });
+export function apiGatewaySetDefaultKey(keyId: string) {
+  return invoke<GatewayConfig>("api_gateway_set_default_key", { keyId });
 }
 
-export function apiFusionStart() {
-  return invoke<FusionStatus>("api_fusion_start");
+export function apiGatewayStart() {
+  return invoke<GatewayStatus>("api_gateway_start");
 }
 
-export function apiFusionStop() {
-  return invoke<FusionStatus>("api_fusion_stop");
+export function apiGatewayStop() {
+  return invoke<GatewayStatus>("api_gateway_stop");
 }
 
-export function apiFusionStatus() {
-  return invoke<FusionStatus>("api_fusion_status");
+export function apiGatewayStatus() {
+  return invoke<GatewayStatus>("api_gateway_status");
 }
 
-export function apiFusionTerminalTargets() {
-  return invoke<FusionTerminalTarget[]>("api_fusion_terminal_targets");
+export function apiGatewayTerminalTargets() {
+  return invoke<GatewayTerminalTarget[]>("api_gateway_terminal_targets");
 }
 
-export function apiFusionConfigureTerminal(targetTools: string[]) {
-  return invoke<FusionTerminalSyncRecord[]>("api_fusion_configure_terminal", {
+export function apiGatewayConfigureTerminal(targetTools: string[]) {
+  return invoke<GatewayTerminalSyncRecord[]>("api_gateway_configure_terminal", {
     targetTools,
   });
 }
 
-export function apiFusionSyncTerminal(targetTools?: string[]) {
-  return invoke<FusionTerminalSyncRecord[]>(
-    "api_fusion_sync_terminal",
+export function apiGatewaySyncTerminal(targetTools?: string[]) {
+  return invoke<GatewayTerminalSyncRecord[]>(
+    "api_gateway_sync_terminal",
     targetTools ? { targetTools } : {},
   );
 }
@@ -477,7 +477,7 @@ export interface ProviderAvailableModel {
  * Extract unique upstream models configured for a provider (from default_model and mappings).
  */
 export function getProviderAvailableModels(
-  provider: FusionUpstreamProvider,
+  provider: GatewayUpstreamProvider,
 ): ProviderAvailableModel[] {
   const map = new Map<string, ProviderAvailableModel>();
   const defaultModel = (provider.default_model ?? "").trim();
@@ -584,22 +584,22 @@ export function clampUsagePage(page: number, totalPages: number): number {
 export function usageStatusTranslationKey(result: UsageLogResult): string {
   switch (result) {
     case "success":
-      return "apiFusionStatusSuccess";
+      return "apiGatewayStatusSuccess";
     case "failure":
-      return "apiFusionStatusFailure";
+      return "apiGatewayStatusFailure";
     case "cancelled":
-      return "apiFusionStatusCancelled";
+      return "apiGatewayStatusCancelled";
   }
 }
 
 /** Card totals, time buckets and model/provider breakdown for a time range. */
-export function apiFusionUsageStats(days: number | null) {
-  return invoke<UsageStats>("api_fusion_usage_stats", { days });
+export function apiGatewayUsageStats(days: number | null) {
+  return invoke<UsageStats>("api_gateway_usage_stats", { days });
 }
 
 /** Paged request logs, optionally grouped by model or UTC+8 day. */
-export function apiFusionRequestLogs(query: UsageLogsQuery) {
-  return invoke<UsageLogsPage>("api_fusion_request_logs", {
+export function apiGatewayRequestLogs(query: UsageLogsQuery) {
+  return invoke<UsageLogsPage>("api_gateway_request_logs", {
     days: query.days,
     groupBy: query.groupBy ?? null,
     status: query.status ?? null,
@@ -608,18 +608,18 @@ export function apiFusionRequestLogs(query: UsageLogsQuery) {
   });
 }
 
-export function apiFusionModelPricesGet() {
-  return invoke<ModelPrice[]>("api_fusion_model_prices_get");
+export function apiGatewayModelPricesGet() {
+  return invoke<ModelPrice[]>("api_gateway_model_prices_get");
 }
 
-export function apiFusionModelPricesSave(prices: ModelPrice[]) {
-  return invoke<ModelPrice[]>("api_fusion_model_prices_save", { prices });
+export function apiGatewayModelPricesSave(prices: ModelPrice[]) {
+  return invoke<ModelPrice[]>("api_gateway_model_prices_save", { prices });
 }
 
-export function apiFusionUsageRetentionGet() {
-  return invoke<number>("api_fusion_usage_retention_get");
+export function apiGatewayUsageRetentionGet() {
+  return invoke<number>("api_gateway_usage_retention_get");
 }
 
-export function apiFusionUsageRetentionSave(days: number) {
-  return invoke<number>("api_fusion_usage_retention_save", { days });
+export function apiGatewayUsageRetentionSave(days: number) {
+  return invoke<number>("api_gateway_usage_retention_save", { days });
 }

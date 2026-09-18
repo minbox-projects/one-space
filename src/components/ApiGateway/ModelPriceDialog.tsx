@@ -10,13 +10,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  apiFusionGetConfig,
-  apiFusionModelPricesGet,
-  apiFusionModelPricesSave,
+  apiGatewayGetConfig,
+  apiGatewayModelPricesGet,
+  apiGatewayModelPricesSave,
   getProviderAvailableModels,
-  type FusionUpstreamProvider,
+  type GatewayUpstreamProvider,
   type ModelPrice,
-} from "@/lib/apiFusion";
+} from "@/lib/apiGateway";
 import { errorToMessage } from "@/lib/messages";
 
 export type DraftPrice = {
@@ -41,7 +41,7 @@ export type ModelPriceDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved?: (prices: ModelPrice[]) => void;
-  providers?: FusionUpstreamProvider[];
+  providers?: GatewayUpstreamProvider[];
 };
 
 const priceInputClass =
@@ -83,7 +83,7 @@ export function ModelPriceDialog({
 }: ModelPriceDialogProps) {
   const { t } = useTranslation();
   const [drafts, setDrafts] = useState<DraftPrice[]>([]);
-  const [providers, setProviders] = useState<FusionUpstreamProvider[]>(
+  const [providers, setProviders] = useState<GatewayUpstreamProvider[]>(
     externalProviders ?? [],
   );
   const [loading, setLoading] = useState(false);
@@ -98,11 +98,11 @@ export function ModelPriceDialog({
 
     const loadProviders = externalProviders
       ? Promise.resolve(externalProviders)
-      : apiFusionGetConfig()
+      : apiGatewayGetConfig()
           .then((cfg) => cfg.providers ?? [])
-          .catch(() => [] as FusionUpstreamProvider[]);
+          .catch(() => [] as GatewayUpstreamProvider[]);
 
-    Promise.all([apiFusionModelPricesGet(), loadProviders])
+    Promise.all([apiGatewayModelPricesGet(), loadProviders])
       .then(([prices, loadedProviders]) => {
         if (cancelled) return;
         setProviders(loadedProviders);
@@ -222,7 +222,7 @@ export function ModelPriceDialog({
         })
         .filter((price) => price.upstream_model !== "");
 
-      const saved = await apiFusionModelPricesSave(prices);
+      const saved = await apiGatewayModelPricesSave(prices);
       onSaved?.(saved ?? prices);
       onOpenChange(false);
     } catch (err) {
@@ -238,10 +238,10 @@ export function ModelPriceDialog({
     key: PriceTierKey;
     label: string;
   }> = [
-    { key: "input", label: t("apiFusionPriceInput", "Input") },
-    { key: "cache_read", label: t("apiFusionPriceCacheRead", "Cache read") },
-    { key: "cache_write", label: t("apiFusionPriceCacheWrite", "Cache write") },
-    { key: "output", label: t("apiFusionPriceOutput", "Output") },
+    { key: "input", label: t("apiGatewayPriceInput", "Input") },
+    { key: "cache_read", label: t("apiGatewayPriceCacheRead", "Cache read") },
+    { key: "cache_write", label: t("apiGatewayPriceCacheWrite", "Cache write") },
+    { key: "output", label: t("apiGatewayPriceOutput", "Output") },
   ];
 
   // Group drafts by provider
@@ -275,15 +275,15 @@ export function ModelPriceDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="max-h-[90vh] w-full overflow-y-auto p-5 sm:max-w-4xl sm:rounded-xl"
-        data-testid="api-fusion-model-price-dialog"
+        data-testid="api-gateway-model-price-dialog"
       >
         <DialogHeader className="space-y-1">
           <DialogTitle className="text-base font-semibold">
-            {t("apiFusionModelPriceDialogTitle", "Model prices")}
+            {t("apiGatewayModelPriceDialogTitle", "Model prices")}
           </DialogTitle>
           <DialogDescription className="text-xs text-muted-foreground">
             {t(
-              "apiFusionModelPriceDialogDesc",
+              "apiGatewayModelPriceDialogDesc",
               "Maintain four price tiers per upstream model grouped by provider.",
             )}
           </DialogDescription>
@@ -292,7 +292,7 @@ export function ModelPriceDialog({
         <div className="space-y-4 py-2">
           <div className="flex items-center justify-between gap-3">
             <span className="text-xs text-muted-foreground">
-              {t("apiFusionPricePerMillion", "USD / million tokens")}
+              {t("apiGatewayPricePerMillion", "USD / million tokens")}
             </span>
             <button
               type="button"
@@ -300,7 +300,7 @@ export function ModelPriceDialog({
               className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium shadow-sm transition hover:bg-muted"
             >
               <Plus className="h-3.5 w-3.5" />
-              {t("apiFusionAddPrice", "Add price")}
+              {t("apiGatewayAddPrice", "Add price")}
             </button>
           </div>
 
@@ -319,7 +319,7 @@ export function ModelPriceDialog({
             </p>
           ) : providers.length === 0 && !hasAnyDrafts ? (
             <p className="rounded-lg border border-dashed bg-muted/20 px-3 py-6 text-center text-xs text-muted-foreground">
-              {t("apiFusionModelPricesEmpty", "No model prices configured yet.")}
+              {t("apiGatewayModelPricesEmpty", "No model prices configured yet.")}
             </p>
           ) : (
             <div className="space-y-4">
@@ -327,7 +327,7 @@ export function ModelPriceDialog({
               {providerGroups.map(({ provider, availableModels, drafts: pDrafts }) => (
                 <div
                   key={provider.id}
-                  data-testid={`api-fusion-price-group-${provider.id}`}
+                  data-testid={`api-gateway-price-group-${provider.id}`}
                   className="rounded-xl border border-border/80 bg-card p-4 shadow-sm"
                 >
                   <div className="mb-3 flex items-center justify-between gap-2 border-b border-border/60 pb-2.5">
@@ -337,7 +337,7 @@ export function ModelPriceDialog({
                         {provider.name}
                       </span>
                       <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                        {t("apiFusionPriceModelCount", {
+                        {t("apiGatewayPriceModelCount", {
                           count: pDrafts.length,
                           defaultValue: `${pDrafts.length} models priced`,
                         })}
@@ -351,29 +351,29 @@ export function ModelPriceDialog({
                       title={
                         availableModels.length === 0
                           ? t(
-                              "apiFusionPriceProviderNoModels",
+                              "apiGatewayPriceProviderNoModels",
                               "No models configured for this provider. Please add mappings in provider settings first.",
                             )
-                          : t("apiFusionAddPrice", "Add price")
+                          : t("apiGatewayAddPrice", "Add price")
                       }
                       className="inline-flex h-7 items-center gap-1 rounded-md border bg-background px-2 text-xs font-medium transition hover:bg-muted disabled:opacity-50"
                     >
                       <Plus className="h-3 w-3" />
-                      <span>{t("apiFusionAddPrice", "Add price")}</span>
+                      <span>{t("apiGatewayAddPrice", "Add price")}</span>
                     </button>
                   </div>
 
                   {availableModels.length === 0 ? (
                     <p className="rounded-lg border border-dashed bg-muted/10 px-3 py-3 text-center text-xs text-muted-foreground">
                       {t(
-                        "apiFusionPriceProviderNoModels",
+                        "apiGatewayPriceProviderNoModels",
                         "No models configured for this provider. Please add mappings in provider settings first.",
                       )}
                     </p>
                   ) : pDrafts.length === 0 ? (
                     <p className="rounded-lg border border-dashed bg-muted/10 px-3 py-3 text-center text-xs text-muted-foreground">
                       {t(
-                        "apiFusionModelPricesEmpty",
+                        "apiGatewayModelPricesEmpty",
                         "No model prices configured yet.",
                       )}
                     </p>
@@ -383,7 +383,7 @@ export function ModelPriceDialog({
                         <thead className="text-muted-foreground">
                           <tr>
                             <th className="px-2 py-1.5 font-medium">
-                              {t("apiFusionPriceModel", "Upstream model")}
+                              {t("apiGatewayPriceModel", "Upstream model")}
                             </th>
                             {columns.map((column) => (
                               <th
@@ -394,7 +394,7 @@ export function ModelPriceDialog({
                               </th>
                             ))}
                             <th className="px-2 py-1.5 font-medium text-center whitespace-nowrap">
-                              {t("apiFusionOffPeakBadge", "Off-peak")}
+                              {t("apiGatewayOffPeakBadge", "Off-peak")}
                             </th>
                             <th className="w-8 px-2 py-1.5" />
                           </tr>
@@ -412,7 +412,7 @@ export function ModelPriceDialog({
                                       })
                                     }
                                     aria-label={t(
-                                      "apiFusionPriceModel",
+                                      "apiGatewayPriceModel",
                                       "Upstream model",
                                     )}
                                     className={modelSelectClass}
@@ -420,7 +420,7 @@ export function ModelPriceDialog({
                                     {!draft.upstream_model ? (
                                       <option value="" disabled>
                                         {t(
-                                          "apiFusionPriceSelectModel",
+                                          "apiGatewayPriceSelectModel",
                                           "Select model",
                                         )}
                                       </option>
@@ -474,13 +474,13 @@ export function ModelPriceDialog({
                                     }
                                     title={
                                       draft.enable_off_peak
-                                        ? t("apiFusionOffPeakActive", {
+                                        ? t("apiGatewayOffPeakActive", {
                                             start: draft.off_peak_start,
                                             end: draft.off_peak_end,
                                             defaultValue: `Off-peak (${draft.off_peak_start} - ${draft.off_peak_end})`,
                                           })
                                         : t(
-                                            "apiFusionOffPeakConfigure",
+                                            "apiGatewayOffPeakConfigure",
                                             "Off-peak discount",
                                           )
                                     }
@@ -495,7 +495,7 @@ export function ModelPriceDialog({
                                       {draft.enable_off_peak
                                         ? `${draft.off_peak_start}-${draft.off_peak_end}`
                                         : t(
-                                            "apiFusionOffPeakConfigure",
+                                            "apiGatewayOffPeakConfigure",
                                             "Off-peak discount",
                                           )}
                                     </span>
@@ -510,7 +510,7 @@ export function ModelPriceDialog({
                                   <button
                                     type="button"
                                     onClick={() => removeDraft(originalIndex)}
-                                    aria-label={t("apiFusionDeletePriceAria", {
+                                    aria-label={t("apiGatewayDeletePriceAria", {
                                       model: draft.upstream_model || "—",
                                       defaultValue: `Delete price for ${draft.upstream_model || "—"}`,
                                     })}
@@ -539,7 +539,7 @@ export function ModelPriceDialog({
                                           />
                                           <span>
                                             {t(
-                                              "apiFusionOffPeakEnable",
+                                              "apiGatewayOffPeakEnable",
                                               "Enable off-peak pricing",
                                             )}
                                           </span>
@@ -549,7 +549,7 @@ export function ModelPriceDialog({
                                           <div className="flex items-center gap-1.5 text-xs">
                                             <span className="text-muted-foreground font-medium">
                                               {t(
-                                                "apiFusionOffPeakTimeRange",
+                                                "apiGatewayOffPeakTimeRange",
                                                 "Off-peak window (UTC+8)",
                                               )}
                                               :
@@ -564,7 +564,7 @@ export function ModelPriceDialog({
                                               }
                                               placeholder="00:30"
                                               aria-label={t(
-                                                "apiFusionOffPeakStartTime",
+                                                "apiGatewayOffPeakStartTime",
                                                 "Start",
                                               )}
                                               className="w-16 rounded border border-border bg-background px-2 py-1 text-center font-mono text-xs focus:border-primary focus:outline-none"
@@ -580,7 +580,7 @@ export function ModelPriceDialog({
                                               }
                                               placeholder="08:30"
                                               aria-label={t(
-                                                "apiFusionOffPeakEndTime",
+                                                "apiGatewayOffPeakEndTime",
                                                 "End",
                                               )}
                                               className="w-16 rounded border border-border bg-background px-2 py-1 text-center font-mono text-xs focus:border-primary focus:outline-none"
@@ -593,21 +593,21 @@ export function ModelPriceDialog({
                                         <>
                                           <p className="text-[11px] text-muted-foreground">
                                             {t(
-                                              "apiFusionOffPeakHint",
+                                              "apiGatewayOffPeakHint",
                                               "Calls during this window in UTC+8 use these discounted rates; standard rates apply otherwise.",
                                             )}
                                           </p>
                                           <div>
                                             <div className="text-[11px] font-medium text-muted-foreground mb-1.5">
                                               {t(
-                                                "apiFusionOffPeakRates",
+                                                "apiGatewayOffPeakRates",
                                                 "Off-peak rates ($/1M tokens)",
                                               )}
                                             </div>
                                             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                                               <div>
                                                 <label className="mb-1 block text-[10px] text-muted-foreground">
-                                                  {t("apiFusionPriceInput", "Input")}
+                                                  {t("apiGatewayPriceInput", "Input")}
                                                 </label>
                                                 <input
                                                   type="number"
@@ -619,14 +619,14 @@ export function ModelPriceDialog({
                                                       off_peak_input: event.target.value,
                                                     })
                                                   }
-                                                  aria-label={`${t("apiFusionPriceInput", "Input")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
+                                                  aria-label={`${t("apiGatewayPriceInput", "Input")} (${t("apiGatewayOffPeakBadge", "Off-peak")})`}
                                                   className={`${priceInputClass} min-w-[5rem]`}
                                                 />
                                               </div>
                                               <div>
                                                 <label className="mb-1 block text-[10px] text-muted-foreground">
                                                   {t(
-                                                    "apiFusionPriceCacheRead",
+                                                    "apiGatewayPriceCacheRead",
                                                     "Cache read",
                                                   )}
                                                 </label>
@@ -641,14 +641,14 @@ export function ModelPriceDialog({
                                                         event.target.value,
                                                     })
                                                   }
-                                                  aria-label={`${t("apiFusionPriceCacheRead", "Cache read")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
+                                                  aria-label={`${t("apiGatewayPriceCacheRead", "Cache read")} (${t("apiGatewayOffPeakBadge", "Off-peak")})`}
                                                   className={`${priceInputClass} min-w-[5rem]`}
                                                 />
                                               </div>
                                               <div>
                                                 <label className="mb-1 block text-[10px] text-muted-foreground">
                                                   {t(
-                                                    "apiFusionPriceCacheWrite",
+                                                    "apiGatewayPriceCacheWrite",
                                                     "Cache write",
                                                   )}
                                                 </label>
@@ -663,14 +663,14 @@ export function ModelPriceDialog({
                                                         event.target.value,
                                                     })
                                                   }
-                                                  aria-label={`${t("apiFusionPriceCacheWrite", "Cache write")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
+                                                  aria-label={`${t("apiGatewayPriceCacheWrite", "Cache write")} (${t("apiGatewayOffPeakBadge", "Off-peak")})`}
                                                   className={`${priceInputClass} min-w-[5rem]`}
                                                 />
                                               </div>
                                               <div>
                                                 <label className="mb-1 block text-[10px] text-muted-foreground">
                                                   {t(
-                                                    "apiFusionPriceOutput",
+                                                    "apiGatewayPriceOutput",
                                                     "Output",
                                                   )}
                                                 </label>
@@ -685,7 +685,7 @@ export function ModelPriceDialog({
                                                         event.target.value,
                                                     })
                                                   }
-                                                  aria-label={`${t("apiFusionPriceOutput", "Output")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
+                                                  aria-label={`${t("apiGatewayPriceOutput", "Output")} (${t("apiGatewayOffPeakBadge", "Off-peak")})`}
                                                   className={`${priceInputClass} min-w-[5rem]`}
                                                 />
                                               </div>
@@ -709,19 +709,19 @@ export function ModelPriceDialog({
               {/* Unassigned / Legacy prices */}
               {unassignedDrafts.length > 0 ? (
                 <div
-                  data-testid="api-fusion-price-group-unassigned"
+                  data-testid="api-gateway-price-group-unassigned"
                   className="rounded-xl border border-dashed border-border bg-card p-4 shadow-sm"
                 >
                   <div className="mb-3 flex items-center justify-between gap-2 border-b border-border/60 pb-2.5">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-semibold text-muted-foreground">
                         {t(
-                          "apiFusionPriceUnassignedProvider",
+                          "apiGatewayPriceUnassignedProvider",
                           "Other / Unassigned",
                         )}
                       </span>
                       <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                        {t("apiFusionPriceModelCount", {
+                        {t("apiGatewayPriceModelCount", {
                           count: unassignedDrafts.length,
                           defaultValue: `${unassignedDrafts.length} models priced`,
                         })}
@@ -734,7 +734,7 @@ export function ModelPriceDialog({
                       <thead className="text-muted-foreground">
                         <tr>
                           <th className="px-2 py-1.5 font-medium">
-                            {t("apiFusionPriceModel", "Upstream model")}
+                            {t("apiGatewayPriceModel", "Upstream model")}
                           </th>
                           {columns.map((column) => (
                             <th
@@ -745,7 +745,7 @@ export function ModelPriceDialog({
                             </th>
                           ))}
                           <th className="px-2 py-1.5 font-medium text-center whitespace-nowrap">
-                            {t("apiFusionOffPeakBadge", "Off-peak")}
+                            {t("apiGatewayOffPeakBadge", "Off-peak")}
                           </th>
                           <th className="w-8 px-2 py-1.5" />
                         </tr>
@@ -764,11 +764,11 @@ export function ModelPriceDialog({
                                     })
                                   }
                                   placeholder={t(
-                                    "apiFusionPriceModelPlaceholder",
+                                    "apiGatewayPriceModelPlaceholder",
                                     "e.g. gpt-4o",
                                   )}
                                   aria-label={t(
-                                    "apiFusionPriceModel",
+                                    "apiGatewayPriceModel",
                                     "Upstream model",
                                   )}
                                   className={`${priceInputClass} min-w-[10rem] font-mono`}
@@ -800,13 +800,13 @@ export function ModelPriceDialog({
                                   }
                                   title={
                                     draft.enable_off_peak
-                                      ? t("apiFusionOffPeakActive", {
+                                      ? t("apiGatewayOffPeakActive", {
                                           start: draft.off_peak_start,
                                           end: draft.off_peak_end,
                                           defaultValue: `Off-peak (${draft.off_peak_start} - ${draft.off_peak_end})`,
                                         })
                                       : t(
-                                          "apiFusionOffPeakConfigure",
+                                          "apiGatewayOffPeakConfigure",
                                           "Off-peak discount",
                                         )
                                   }
@@ -821,7 +821,7 @@ export function ModelPriceDialog({
                                     {draft.enable_off_peak
                                       ? `${draft.off_peak_start}-${draft.off_peak_end}`
                                       : t(
-                                          "apiFusionOffPeakConfigure",
+                                          "apiGatewayOffPeakConfigure",
                                           "Off-peak discount",
                                         )}
                                   </span>
@@ -836,7 +836,7 @@ export function ModelPriceDialog({
                                 <button
                                   type="button"
                                   onClick={() => removeDraft(originalIndex)}
-                                  aria-label={t("apiFusionDeletePriceAria", {
+                                  aria-label={t("apiGatewayDeletePriceAria", {
                                     model: draft.upstream_model || "—",
                                     defaultValue: `Delete price for ${draft.upstream_model || "—"}`,
                                   })}
@@ -866,7 +866,7 @@ export function ModelPriceDialog({
                                         />
                                         <span>
                                           {t(
-                                            "apiFusionOffPeakEnable",
+                                            "apiGatewayOffPeakEnable",
                                             "Enable off-peak pricing",
                                           )}
                                         </span>
@@ -876,7 +876,7 @@ export function ModelPriceDialog({
                                         <div className="flex items-center gap-1.5 text-xs">
                                           <span className="text-muted-foreground font-medium">
                                             {t(
-                                              "apiFusionOffPeakTimeRange",
+                                              "apiGatewayOffPeakTimeRange",
                                               "Off-peak window (UTC+8)",
                                             )}
                                             :
@@ -892,7 +892,7 @@ export function ModelPriceDialog({
                                             }
                                             placeholder="00:30"
                                             aria-label={t(
-                                              "apiFusionOffPeakStartTime",
+                                              "apiGatewayOffPeakStartTime",
                                               "Start",
                                             )}
                                             className="w-16 rounded border border-border bg-background px-2 py-1 text-center font-mono text-xs focus:border-primary focus:outline-none"
@@ -909,7 +909,7 @@ export function ModelPriceDialog({
                                             }
                                             placeholder="08:30"
                                             aria-label={t(
-                                              "apiFusionOffPeakEndTime",
+                                              "apiGatewayOffPeakEndTime",
                                               "End",
                                             )}
                                             className="w-16 rounded border border-border bg-background px-2 py-1 text-center font-mono text-xs focus:border-primary focus:outline-none"
@@ -922,21 +922,21 @@ export function ModelPriceDialog({
                                       <>
                                         <p className="text-[11px] text-muted-foreground">
                                           {t(
-                                            "apiFusionOffPeakHint",
+                                            "apiGatewayOffPeakHint",
                                             "Calls during this window in UTC+8 use these discounted rates; standard rates apply otherwise.",
                                           )}
                                         </p>
                                         <div>
                                           <div className="text-[11px] font-medium text-muted-foreground mb-1.5">
                                             {t(
-                                              "apiFusionOffPeakRates",
+                                              "apiGatewayOffPeakRates",
                                               "Off-peak rates ($/1M tokens)",
                                             )}
                                           </div>
                                           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                                             <div>
                                               <label className="mb-1 block text-[10px] text-muted-foreground">
-                                                {t("apiFusionPriceInput", "Input")}
+                                                {t("apiGatewayPriceInput", "Input")}
                                               </label>
                                               <input
                                                 type="number"
@@ -949,14 +949,14 @@ export function ModelPriceDialog({
                                                       event.target.value,
                                                   })
                                                 }
-                                                aria-label={`${t("apiFusionPriceInput", "Input")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
+                                                aria-label={`${t("apiGatewayPriceInput", "Input")} (${t("apiGatewayOffPeakBadge", "Off-peak")})`}
                                                 className={`${priceInputClass} min-w-[5rem]`}
                                               />
                                             </div>
                                             <div>
                                               <label className="mb-1 block text-[10px] text-muted-foreground">
                                                 {t(
-                                                  "apiFusionPriceCacheRead",
+                                                  "apiGatewayPriceCacheRead",
                                                   "Cache read",
                                                 )}
                                               </label>
@@ -971,14 +971,14 @@ export function ModelPriceDialog({
                                                       event.target.value,
                                                   })
                                                 }
-                                                aria-label={`${t("apiFusionPriceCacheRead", "Cache read")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
+                                                aria-label={`${t("apiGatewayPriceCacheRead", "Cache read")} (${t("apiGatewayOffPeakBadge", "Off-peak")})`}
                                                 className={`${priceInputClass} min-w-[5rem]`}
                                               />
                                             </div>
                                             <div>
                                               <label className="mb-1 block text-[10px] text-muted-foreground">
                                                 {t(
-                                                  "apiFusionPriceCacheWrite",
+                                                  "apiGatewayPriceCacheWrite",
                                                   "Cache write",
                                                 )}
                                               </label>
@@ -993,14 +993,14 @@ export function ModelPriceDialog({
                                                       event.target.value,
                                                   })
                                                 }
-                                                aria-label={`${t("apiFusionPriceCacheWrite", "Cache write")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
+                                                aria-label={`${t("apiGatewayPriceCacheWrite", "Cache write")} (${t("apiGatewayOffPeakBadge", "Off-peak")})`}
                                                 className={`${priceInputClass} min-w-[5rem]`}
                                               />
                                             </div>
                                             <div>
                                               <label className="mb-1 block text-[10px] text-muted-foreground">
                                                 {t(
-                                                  "apiFusionPriceOutput",
+                                                  "apiGatewayPriceOutput",
                                                   "Output",
                                                 )}
                                               </label>
@@ -1015,7 +1015,7 @@ export function ModelPriceDialog({
                                                       event.target.value,
                                                   })
                                                 }
-                                                aria-label={`${t("apiFusionPriceOutput", "Output")} (${t("apiFusionOffPeakBadge", "Off-peak")})`}
+                                                aria-label={`${t("apiGatewayPriceOutput", "Output")} (${t("apiGatewayOffPeakBadge", "Off-peak")})`}
                                                 className={`${priceInputClass} min-w-[5rem]`}
                                               />
                                             </div>
@@ -1053,7 +1053,7 @@ export function ModelPriceDialog({
             disabled={saving || loading}
             className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
           >
-            {t("apiFusionSave", "Save")}
+            {t("apiGatewaySave", "Save")}
           </button>
         </DialogFooter>
       </DialogContent>

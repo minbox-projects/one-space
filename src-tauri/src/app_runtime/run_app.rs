@@ -1,5 +1,5 @@
 use crate::{
-    ai_assistant, ai_env, ai_news, ai_sessions, api_fusion, app_store, assistant_mcp, backup,
+    ai_assistant, ai_env, ai_news, ai_sessions, api_gateway, app_store, assistant_mcp, backup,
     cli_updates, config, config_conflict, file_sharing, mcp_export, mcp_servers, mcp_templates,
     messages, protocol_router, proxy, secrets, short_link, skills, ssh_tunnels, storage, subagents,
     version_detect, workflows, workspaces,
@@ -114,9 +114,9 @@ pub fn run() {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let _ = protocol_router::protocol_router_autostart().await;
-                let _ = api_fusion::api_fusion_autostart().await;
+                let _ = api_gateway::api_gateway_autostart().await;
                 let _ = app_handle.emit("protocol-router-status-update", ());
-                let _ = app_handle.emit("api-fusion-status-update", ());
+                let _ = app_handle.emit("api-gateway-status-update", ());
             });
             setup_sessions_history_sync_service(app.handle());
             crate::ai_assistant::init_scheduler(app.handle().clone());
@@ -307,28 +307,28 @@ pub fn run() {
             file_sharing::file_sharing_start,
             file_sharing::file_sharing_status,
             file_sharing::file_sharing_stop,
-            // API Fusion
-            api_fusion::api_fusion_get_config,
-            api_fusion::api_fusion_save_config,
-            api_fusion::api_fusion_upsert_provider,
-            api_fusion::api_fusion_delete_provider,
-            api_fusion::api_fusion_set_provider_enabled,
-            api_fusion::api_fusion_reenable_provider,
-            api_fusion::api_fusion_upsert_key,
-            api_fusion::api_fusion_delete_key,
-            api_fusion::api_fusion_set_default_key,
-            api_fusion::api_fusion_start,
-            api_fusion::api_fusion_stop,
-            api_fusion::api_fusion_status,
-            api_fusion::api_fusion_terminal_targets,
-            api_fusion::api_fusion_configure_terminal,
-            api_fusion::api_fusion_sync_terminal,
-            api_fusion::api_fusion_usage_stats,
-            api_fusion::api_fusion_request_logs,
-            api_fusion::api_fusion_model_prices_get,
-            api_fusion::api_fusion_model_prices_save,
-            api_fusion::api_fusion_usage_retention_get,
-            api_fusion::api_fusion_usage_retention_save,
+            // API Gateway
+            api_gateway::api_gateway_get_config,
+            api_gateway::api_gateway_save_config,
+            api_gateway::api_gateway_upsert_provider,
+            api_gateway::api_gateway_delete_provider,
+            api_gateway::api_gateway_set_provider_enabled,
+            api_gateway::api_gateway_reenable_provider,
+            api_gateway::api_gateway_upsert_key,
+            api_gateway::api_gateway_delete_key,
+            api_gateway::api_gateway_set_default_key,
+            api_gateway::api_gateway_start,
+            api_gateway::api_gateway_stop,
+            api_gateway::api_gateway_status,
+            api_gateway::api_gateway_terminal_targets,
+            api_gateway::api_gateway_configure_terminal,
+            api_gateway::api_gateway_sync_terminal,
+            api_gateway::api_gateway_usage_stats,
+            api_gateway::api_gateway_request_logs,
+            api_gateway::api_gateway_model_prices_get,
+            api_gateway::api_gateway_model_prices_save,
+            api_gateway::api_gateway_usage_retention_get,
+            api_gateway::api_gateway_usage_retention_save,
             // New service_providers domain (replaces providers_*)
             app_store::service_providers_list,
             app_store::service_provider_read_opencode_config,
@@ -513,7 +513,7 @@ mod tests {
         );
         assert_eq!(
             setup_source
-                .matches("app_handle.emit(\"api-fusion-status-update\", ())")
+                .matches("app_handle.emit(\"api-gateway-status-update\", ())")
                 .count(),
             1
         );
