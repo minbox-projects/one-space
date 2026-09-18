@@ -5,6 +5,10 @@ use super::storage::{
     new_key_value, new_provider_id, read_config, resolve_default_key_id, touch_key_created_at,
     write_config,
 };
+use super::templates::{
+    apply_template_sync_with, effective_template, fetch_template_source, provider_template_views,
+    ProviderTemplateView,
+};
 use super::usage_log::{
     normalize_retention_days, now_millis, resolve_range, validate_retention_days, LogFilter,
     UsageLogStore, UsageLogsPage, UsageStats, USAGE_LOG_PAGE_SIZE,
@@ -754,4 +758,33 @@ pub fn api_gateway_usage_retention_save(days: i64) -> Result<u32, String> {
     config.usage_retention_days = validated;
     write_config(&config)?;
     Ok(read_config()?.usage_retention_days)
+}
+
+// ---------------------------------------------------------------------------
+// Provider templates
+// ---------------------------------------------------------------------------
+
+/// The two built-in provider templates with their current data source: a
+/// persisted sync result when one exists, else the in-app snapshot.
+#[tauri::command]
+pub fn api_gateway_provider_templates() -> Result<Vec<ProviderTemplateView>, String> {
+    let config = read_config()?;
+    provider_template_views(&config)
+}
+
+/// Refresh one template from its public source, merge it under the
+/// "source fields win, untouched template fields kept" rule, propagate the
+/// update incrementally to every derived provider, and persist atomically. Any
+/// fatal source problem (network, non-JSON, invalid structure, empty model set)
+/// leaves the configuration unchanged.
+#[tauri::command]
+pub async fn api_gateway_sync_provider_template(
+    template_id: String,
+) -> Result<ProviderTemplateView, String> {
+    let mut config = read_config()?;
+    let template = effective_template(&config, &template_id)?;
+    let raw = fetch_template_source(&template).await?;
+    apply_template_sync_with(&mut config, &template_id, move |_| Ok(raw), |next| {
+        write_config(next)
+    })
 }

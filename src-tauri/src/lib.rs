@@ -45,6 +45,7 @@ pub(crate) use app_runtime::{
 // Usage statistics, request logs, model prices and retention commands. Each one
 // is also registered in `app_runtime::run_app`'s `generate_handler!`.
 pub use api_gateway::{
-    api_gateway_model_prices_get, api_gateway_model_prices_save, api_gateway_request_logs,
-    api_gateway_usage_retention_get, api_gateway_usage_retention_save, api_gateway_usage_stats,
+    api_gateway_model_prices_get, api_gateway_model_prices_save, api_gateway_provider_templates,
+    api_gateway_request_logs, api_gateway_sync_provider_template, api_gateway_usage_retention_get,
+    api_gateway_usage_retention_save, api_gateway_usage_stats,
 };
