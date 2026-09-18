@@ -78,8 +78,15 @@ function renderSection(overrides: Partial<ProviderTemplateSectionProps> = {}) {
 }
 
 describe("ProviderTemplateSection 服务商模板区域", () => {
+  let writeText: ReturnType<typeof vi.fn>;
+
   beforeEach(async () => {
     await i18n.changeLanguage("en");
+    writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
   });
 
   it("rendersTemplateCardsWithMetadataSnapshotBadgeAndLastSync", () => {
@@ -310,5 +317,115 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
     // 空模型必须用专用的“无模型”提示，不能复用峰谷语义文案。
     expect(text).not.toContain("off-peak");
     expect(text).not.toContain(i18n.t("apiGatewayTemplateNoOffPeak").toLowerCase());
+  });
+
+  it("filtersModelsBySearchTermAndClearsFilter", () => {
+    const view = makeView({
+      template: makeTemplate({
+        id: "t1",
+        models: [
+          makeModel({ upstream_model: "deepseek-chat", display_name: "DeepSeek Chat" }),
+          makeModel({ upstream_model: "claude-3-opus", display_name: "Claude 3 Opus" }),
+        ],
+      }),
+    });
+
+    renderSection({ templates: [view] });
+
+    fireEvent.click(screen.getByTestId("api-gateway-template-expand-t1"));
+
+    expect(screen.getByTestId("api-gateway-template-model-t1-deepseek-chat")).toBeInTheDocument();
+    expect(screen.getByTestId("api-gateway-template-model-t1-claude-3-opus")).toBeInTheDocument();
+
+    const searchInput = screen.getByTestId("template-model-search-t1");
+    fireEvent.change(searchInput, { target: { value: "deepseek" } });
+
+    expect(screen.getByTestId("api-gateway-template-model-t1-deepseek-chat")).toBeInTheDocument();
+    expect(screen.queryByTestId("api-gateway-template-model-t1-claude-3-opus")).not.toBeInTheDocument();
+
+    fireEvent.change(searchInput, { target: { value: "not-exist" } });
+    expect(screen.queryByTestId("api-gateway-template-model-t1-deepseek-chat")).not.toBeInTheDocument();
+    expect(screen.getByTestId("template-no-matching-models-t1")).toBeInTheDocument();
+
+    // 点击清除筛选
+    fireEvent.click(screen.getByText(i18n.t("apiGatewayTemplateClearFilter")));
+    expect(screen.getByTestId("api-gateway-template-model-t1-deepseek-chat")).toBeInTheDocument();
+    expect(screen.getByTestId("api-gateway-template-model-t1-claude-3-opus")).toBeInTheDocument();
+  });
+
+  it("filtersModelsByProtocolPills", () => {
+    const view = makeView({
+      template: makeTemplate({
+        id: "t1",
+        protocol: "chat_completions",
+        models: [
+          makeModel({ upstream_model: "chat-model", protocol: "chat_completions" }),
+          makeModel({ upstream_model: "resp-model", protocol: "responses" }),
+        ],
+      }),
+    });
+
+    renderSection({ templates: [view] });
+    fireEvent.click(screen.getByTestId("api-gateway-template-expand-t1"));
+
+    expect(screen.getByTestId("api-gateway-template-model-t1-chat-model")).toBeInTheDocument();
+    expect(screen.getByTestId("api-gateway-template-model-t1-resp-model")).toBeInTheDocument();
+
+    // 切换到 Responses
+    fireEvent.click(screen.getByRole("button", { name: /Responses/ }));
+    expect(screen.queryByTestId("api-gateway-template-model-t1-chat-model")).not.toBeInTheDocument();
+    expect(screen.getByTestId("api-gateway-template-model-t1-resp-model")).toBeInTheDocument();
+
+    // 切换到 Chat
+    fireEvent.click(screen.getByRole("button", { name: /^Chat/ }));
+    expect(screen.getByTestId("api-gateway-template-model-t1-chat-model")).toBeInTheDocument();
+    expect(screen.queryByTestId("api-gateway-template-model-t1-resp-model")).not.toBeInTheDocument();
+
+    // 切换回 All
+    fireEvent.click(screen.getByRole("button", { name: /All/ }));
+    expect(screen.getByTestId("api-gateway-template-model-t1-chat-model")).toBeInTheDocument();
+    expect(screen.getByTestId("api-gateway-template-model-t1-resp-model")).toBeInTheDocument();
+  });
+
+  it("copiesModelIdentifierToClipboard", async () => {
+    const view = makeView({
+      template: makeTemplate({
+        id: "t1",
+        models: [makeModel({ upstream_model: "deepseek-chat" })],
+      }),
+    });
+
+    renderSection({ templates: [view] });
+    fireEvent.click(screen.getByTestId("api-gateway-template-expand-t1"));
+
+    const copyBtn = screen.getByTestId("template-copy-model-t1-deepseek-chat");
+    await waitFor(async () => {
+      fireEvent.click(copyBtn);
+      expect(writeText).toHaveBeenCalledWith("deepseek-chat");
+    });
+  });
+
+  it("togglesAllTemplatesExpandedState", () => {
+    const view1 = makeView({ template: makeTemplate({ id: "t1", name: "T1" }) });
+    const view2 = makeView({ template: makeTemplate({ id: "t2", name: "T2" }) });
+
+    renderSection({ templates: [view1, view2] });
+
+    const toggleAllBtn = screen.getByTestId("template-section-toggle-all-btn");
+    const expand1 = screen.getByTestId("api-gateway-template-expand-t1");
+    const expand2 = screen.getByTestId("api-gateway-template-expand-t2");
+
+    expect(expand1).toHaveAttribute("aria-expanded", "false");
+    expect(expand2).toHaveAttribute("aria-expanded", "false");
+
+    // 全部展开
+    fireEvent.click(toggleAllBtn);
+    expect(expand1).toHaveAttribute("aria-expanded", "true");
+    expect(expand2).toHaveAttribute("aria-expanded", "true");
+
+    // 全部收起
+    fireEvent.click(toggleAllBtn);
+    expect(expand1).toHaveAttribute("aria-expanded", "false");
+    expect(expand2).toHaveAttribute("aria-expanded", "false");
   });
 });
