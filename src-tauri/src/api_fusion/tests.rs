@@ -1001,28 +1001,38 @@ async fn spawn_json_sequence_mock(responses: Vec<(u16, Value)>) -> (String, Arc<
     (format!("http://{}", addr), count)
 }
 
-/// RED slice for REQ-002 / AC-002 (recovery): a single upstream that fails the
-/// first attempt with a retryable 500 and succeeds on the second must be
-/// retried within the same request. Observable boundary: the full HTTP response
-/// returned by `attempt_non_streaming` plus the exact number of upstream
-/// requests. Current behavior makes only one attempt, so this fails.
+/// AC-003 / REQ-002 regression (migrated to two candidates): provider A fails
+/// the first attempt with a retryable 500 and succeeds on the second, while
+/// provider B advertises a far-later cooldown. A must still be retried at its
+/// own deadline and recover, so multi-candidate scheduling keeps this
+/// observation instead of losing it to the single-candidate fast path.
+/// Observable boundary: the full HTTP response returned by
+/// `attempt_non_streaming` plus each provider's exact upstream request count.
 #[tokio::test]
-async fn attempt_non_streaming_retries_single_provider_after_500_then_succeeds() {
-    let _home = temp_home("retry-recovery-single-provider");
-    let (upstream_url, upstream_requests) = spawn_json_sequence_mock(vec![
+async fn attempt_non_streaming_retries_provider_after_500_then_succeeds() {
+    let _home = temp_home("retry-recovery-two-providers");
+    let (a_url, a_requests) = spawn_json_sequence_mock(vec![
         (500, json!({"error": {"message": "temporarily unavailable"}})),
         (200, json!({"id": "recovered", "choices": []})),
     ])
     .await;
+    let (b_url, b_requests) = spawn_header_sequence_mock(vec![HeaderReply::new(
+        500,
+        json!({"error": {"message": "busy"}}),
+    )
+    .header("retry-after-ms", "60000")])
+    .await;
 
     let mut config = FusionConfig::default();
     config.keys.push(key_named("k1", "local-key"));
-    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     config.providers.push(a.clone());
+    config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
     let response = super::runtime_http::attempt_non_streaming(
-        std::slice::from_ref(&a),
+        &[a.clone(), b.clone()],
         "/v1/chat/completions",
         &body,
         Some("local"),
@@ -1031,12 +1041,15 @@ async fn attempt_non_streaming_retries_single_provider_after_500_then_succeeds()
     )
     .await;
 
-    // Assert the attempt count first: the RED gap is that the current code stops
-    // after the first 500 instead of issuing a bounded retry.
     assert_eq!(
-        upstream_requests.load(Ordering::SeqCst),
+        a_requests.load(Ordering::SeqCst),
         2,
-        "one initial attempt plus exactly one bounded retry"
+        "A makes one initial attempt plus exactly one bounded retry"
+    );
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        1,
+        "B's far-later cooldown must not preempt A's retry"
     );
 
     let body_text = String::from_utf8_lossy(&response.body);
@@ -2708,8 +2721,8 @@ async fn end_to_end_retryable_failures_auto_disable_at_threshold_and_stop_callin
     assert_eq!(body["error"]["code"], "all_providers_unavailable");
     assert_eq!(
         log.lock().unwrap().len(),
-        18,
-        "three failed requests make six bounded attempts each; the auto-disabled provider is not contacted on the fourth request"
+        3,
+        "each of the three failed requests makes exactly one attempt for the single candidate; the auto-disabled provider is not contacted on the fourth request"
     );
 
     super::runtime_http::stop_server().await.unwrap();
@@ -5743,34 +5756,45 @@ fn spawn_paused_clock_ticker() -> tokio::task::JoinHandle<()> {
     })
 }
 
-/// AC-003 / REQ-003 RED: `retry-after-ms` wins over `retry-after` seconds. A
-/// single 500 carrying both `retry-after-ms: 1500` and `retry-after: 9` must be
-/// retried after ~1500ms, not 9s and not the default jittered backoff. Current
-/// code reads no retry headers and waits its default ~2s, so this fails.
+/// AC-003 / REQ-002 regression (migrated to two candidates): `retry-after-ms`
+/// wins over `retry-after` seconds. A carries both `retry-after-ms: 1500` and
+/// `retry-after: 9` on its 500 and must be retried after ~1500ms, not 9s and
+/// not the default jittered backoff. B advertises a far-later cooldown so A's
+/// own header governs the earliest-deadline retry.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_retry_after_ms_wins_over_seconds() {
     let _home = temp_home("retry-policy-header-priority");
-    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+    let (a_url, a_requests) = spawn_header_sequence_mock(vec![
         HeaderReply::new(500, json!({"error": {"message": "busy"}}))
             .header("retry-after-ms", "1500")
             .header("retry-after", "9"),
         HeaderReply::new(200, json!({"id": "recovered", "choices": []})),
     ])
     .await;
+    let (b_url, b_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after-ms", "60000")])
+        .await;
 
-    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
-    config.providers = vec![a.clone()];
+    config.providers = vec![a.clone(), b.clone()];
 
     let (response, elapsed) =
-        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+        attempt_non_streaming_timed(&[a.clone(), b.clone()], &mut config).await;
     let body_text = String::from_utf8_lossy(&response.body);
 
     assert_eq!(response.status, 200, "must recover on the retry: {body_text}");
     assert_eq!(
-        upstream_requests.load(Ordering::SeqCst),
+        a_requests.load(Ordering::SeqCst),
         2,
-        "one initial attempt plus one header-timed retry"
+        "A gets one initial attempt plus one header-timed retry"
+    );
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        1,
+        "B's 60s cooldown is later, so it must not be retried before A recovers"
     );
     assert!(
         elapsed >= millis(1400) && elapsed <= millis(1900),
@@ -5778,32 +5802,43 @@ async fn retry_policy_retry_after_ms_wins_over_seconds() {
     );
 }
 
-/// AC-003 / REQ-003 RED: an invalid high-priority `retry-after-ms` header keeps
-/// looking at lower priorities, so `retry-after: 3` gives a ~3s wait instead of
-/// the default backoff. Current code waits its default ~2s, so this fails.
+/// AC-003 / REQ-002 regression (migrated to two candidates): an invalid
+/// high-priority `retry-after-ms` header makes A keep looking at lower
+/// priorities, so `retry-after: 3` gives a ~3s wait instead of the default
+/// backoff. B's far-later cooldown leaves A's header as the earliest deadline.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_invalid_retry_after_ms_falls_back_to_seconds_header() {
     let _home = temp_home("retry-policy-header-invalid-ms");
-    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+    let (a_url, a_requests) = spawn_header_sequence_mock(vec![
         HeaderReply::new(500, json!({"error": {"message": "busy"}}))
             .header("retry-after-ms", "not-a-number")
             .header("retry-after", "3"),
         HeaderReply::new(200, json!({"id": "recovered", "choices": []})),
     ])
     .await;
+    let (b_url, b_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after-ms", "60000")])
+        .await;
 
-    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
-    config.providers = vec![a.clone()];
+    config.providers = vec![a.clone(), b.clone()];
 
     let (response, elapsed) =
-        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+        attempt_non_streaming_timed(&[a.clone(), b.clone()], &mut config).await;
     let body_text = String::from_utf8_lossy(&response.body);
 
     assert_eq!(
-        upstream_requests.load(Ordering::SeqCst),
+        a_requests.load(Ordering::SeqCst),
         2,
-        "one initial attempt plus one header-timed retry"
+        "A gets one initial attempt plus one header-timed retry"
+    );
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        1,
+        "B's 60s cooldown is later, so it must not be retried before A recovers"
     );
     assert_eq!(response.status, 200, "must recover on the retry: {body_text}");
     assert!(
@@ -5812,34 +5847,45 @@ async fn retry_policy_invalid_retry_after_ms_falls_back_to_seconds_header() {
     );
 }
 
-/// AC-003 / REQ-003 RED: a future HTTP date in `retry-after` is honored. The
-/// header is built ~10s in the future, so the retry must wait clearly longer
-/// than the default jittered backoff (~2s). Current code ignores the header.
+/// AC-003 / REQ-002 regression (migrated to two candidates): a future HTTP date
+/// in A's `retry-after` is honored. The header is built ~10s in the future, so
+/// A's retry must wait clearly longer than the default jittered backoff (~2s).
+/// B advertises a far-later cooldown so A's date remains the earliest deadline.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_future_http_date_is_honored() {
     let _home = temp_home("retry-policy-header-date");
     let when = chrono::Utc::now() + chrono::Duration::seconds(10);
     let http_date = when.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
 
-    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+    let (a_url, a_requests) = spawn_header_sequence_mock(vec![
         HeaderReply::new(500, json!({"error": {"message": "busy"}}))
             .header("retry-after", http_date),
         HeaderReply::new(200, json!({"id": "recovered", "choices": []})),
     ])
     .await;
+    let (b_url, b_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after-ms", "60000")])
+        .await;
 
-    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
-    config.providers = vec![a.clone()];
+    config.providers = vec![a.clone(), b.clone()];
 
     let (response, elapsed) =
-        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+        attempt_non_streaming_timed(&[a.clone(), b.clone()], &mut config).await;
     let body_text = String::from_utf8_lossy(&response.body);
 
     assert_eq!(
-        upstream_requests.load(Ordering::SeqCst),
+        a_requests.load(Ordering::SeqCst),
         2,
-        "one initial attempt plus one header-timed retry"
+        "A gets one initial attempt plus one header-timed retry"
+    );
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        1,
+        "B's 60s cooldown is later, so it must not be retried before A recovers"
     );
     assert_eq!(response.status, 200, "must recover on the retry: {body_text}");
     assert!(
@@ -5848,30 +5894,41 @@ async fn retry_policy_future_http_date_is_honored() {
     );
 }
 
-/// AC-003 / REQ-003 RED: `retry-after-ms: 0` means retry immediately with no
-/// backoff. Current code waits its default ~2s, so this fails.
+/// AC-003 / REQ-002 regression (migrated to two candidates): `retry-after-ms: 0`
+/// means A retries immediately with no backoff. B's far-later cooldown keeps A
+/// as the earliest ready candidate, so the zero-delay observation is preserved.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_zero_retry_after_ms_retries_immediately() {
     let _home = temp_home("retry-policy-header-zero");
-    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+    let (a_url, a_requests) = spawn_header_sequence_mock(vec![
         HeaderReply::new(500, json!({"error": {"message": "busy"}}))
             .header("retry-after-ms", "0"),
         HeaderReply::new(200, json!({"id": "recovered", "choices": []})),
     ])
     .await;
+    let (b_url, b_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after-ms", "60000")])
+        .await;
 
-    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
-    config.providers = vec![a.clone()];
+    config.providers = vec![a.clone(), b.clone()];
 
     let (response, elapsed) =
-        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+        attempt_non_streaming_timed(&[a.clone(), b.clone()], &mut config).await;
     let body_text = String::from_utf8_lossy(&response.body);
 
     assert_eq!(
-        upstream_requests.load(Ordering::SeqCst),
+        a_requests.load(Ordering::SeqCst),
         2,
-        "one initial attempt plus one immediate retry"
+        "A gets one initial attempt plus one immediate retry"
+    );
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        1,
+        "B's 60s cooldown is later, so it must not be retried before A recovers"
     );
     assert_eq!(response.status, 200, "must recover on the retry: {body_text}");
     assert!(
@@ -5973,28 +6030,40 @@ async fn retry_policy_cooling_provider_does_not_block_ready_candidate() {
     );
 }
 
-/// AC-002 / REQ-002 regression: a provider that keeps failing is contacted at
-/// most six times in one request (one initial plus five bounded retries).
+/// AC-003 / REQ-002 regression (migrated to two candidates): a provider that
+/// keeps failing is contacted at most six times in one request (one initial
+/// plus five bounded retries). A is always preferred first because both
+/// candidates have zero-delay headers and A precedes B on ties, so A exhausts
+/// its own cap before B is ever retried; both counters are asserted.
 #[tokio::test(start_paused = true)]
-async fn retry_policy_single_provider_is_attempted_at_most_six_times() {
+async fn retry_policy_provider_is_attempted_at_most_six_times() {
     let _home = temp_home("retry-policy-six-attempts");
-    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![HeaderReply::new(
-        500,
-        json!({"error": {"message": "always failing"}}),
-    )])
-    .await;
+    let (a_url, a_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "always failing"}}))
+            .header("retry-after-ms", "0")])
+            .await;
+    let (b_url, b_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "always failing"}}))
+            .header("retry-after-ms", "0")])
+            .await;
 
-    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
-    config.providers = vec![a.clone()];
+    config.providers = vec![a.clone(), b.clone()];
 
     let (response, _elapsed) =
-        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+        attempt_non_streaming_timed(&[a.clone(), b.clone()], &mut config).await;
 
     assert_eq!(
-        upstream_requests.load(Ordering::SeqCst),
+        a_requests.load(Ordering::SeqCst),
         6,
-        "one provider is attempted at most six times in a request"
+        "A is attempted at most six times in a request"
+    );
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        6,
+        "B is also capped at six attempts once A is exhausted"
     );
     assert_eq!(
         response.status, 502,
@@ -6002,32 +6071,41 @@ async fn retry_policy_single_provider_is_attempted_at_most_six_times() {
     );
 }
 
-/// AC-003 / REQ-003 RED: the cumulative actual wait is capped at 120s. With a
-/// 60s `retry-after-ms` on every failure, only two waits (60s + 60s = 120s,
-/// exactly the budget) are allowed, so the provider is attempted three times
-/// and then the next 60s wait exceeds the remaining budget. Current code
-/// ignores the header, uses the default backoff and attempts six times in
-/// ~60s, so this fails.
+/// AC-003 / REQ-002 regression (migrated to two candidates): the cumulative
+/// actual wait is capped at 120s. With a 60s `retry-after-ms` on every failure
+/// from both candidates, the scheduler alternates A/B at the 60s and 120s
+/// deadlines (A first on ties), so each provider is attempted three times and
+/// the next 60s wait exceeds the exhausted budget. Recomputed for two
+/// candidates: A=3, B=3, paused elapsed exactly the 120s budget.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_stops_before_wait_exceeds_120s_budget() {
     let _home = temp_home("retry-policy-budget-120s");
-    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
-        HeaderReply::new(500, json!({"error": {"message": "always failing"}}))
-            .header("retry-after-ms", "60000"),
-    ])
-    .await;
+    let (a_url, a_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "always failing"}}))
+            .header("retry-after-ms", "60000")])
+            .await;
+    let (b_url, b_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "always failing"}}))
+            .header("retry-after-ms", "60000")])
+            .await;
 
-    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
-    config.providers = vec![a.clone()];
+    config.providers = vec![a.clone(), b.clone()];
 
     let (response, elapsed) =
-        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+        attempt_non_streaming_timed(&[a.clone(), b.clone()], &mut config).await;
 
     assert_eq!(
-        upstream_requests.load(Ordering::SeqCst),
+        a_requests.load(Ordering::SeqCst),
         3,
-        "only waits totalling the 120s budget are allowed (attempt 1 + two 60s waits)"
+        "A gets one initial attempt plus two 60s waits inside the 120s budget"
+    );
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        3,
+        "B gets one initial attempt plus two 60s waits inside the 120s budget"
     );
     assert_eq!(
         response.status, 502,
@@ -6040,17 +6118,190 @@ async fn retry_policy_stops_before_wait_exceeds_120s_budget() {
 }
 
 // ---------------------------------------------------------------------------
+// Step 1 (20260918-gateway-retry-and-openai-errors): single-candidate fast fail
+// ---------------------------------------------------------------------------
+
+/// AC-001 / REQ-001 RED: exactly one serviceable candidate that returns HTTP 500
+/// must be attempted once and then fail the request immediately with the
+/// standard 502 envelope. Today the single candidate enters the retry queue, so
+/// the upstream is contacted six times (the `retry-after-ms: 0` header keeps
+/// this RED run fast and must never be consumed as a wait).
+#[tokio::test]
+async fn single_candidate_500_non_streaming_fails_fast_without_retry() {
+    let _home = temp_home("single-candidate-500-non-streaming");
+    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(500, json!({"error": {"message": "boom"}}))
+            .header("retry-after-ms", "0"),
+    ])
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone()];
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&a),
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+    )
+    .await;
+
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        1,
+        "a single candidate must be attempted exactly once with no backoff retry"
+    );
+    assert_eq!(response.status, 502, "the gateway must fail with HTTP 502");
+    let parsed: Value =
+        serde_json::from_slice(&response.body).expect("standard JSON error envelope");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(|value| value.as_str()),
+        Some("all_providers_unavailable"),
+        "body: {}",
+        String::from_utf8_lossy(&response.body)
+    );
+}
+
+/// AC-002 / REQ-001 RED: exactly one serviceable candidate that returns HTTP 429
+/// with a valid `retry-after-ms` header must not consume that header for a wait;
+/// it is attempted once and the request fails with the standard 502 envelope.
+#[tokio::test]
+async fn single_candidate_429_with_retry_header_non_streaming_fails_fast_without_retry() {
+    let _home = temp_home("single-candidate-429-header-non-streaming");
+    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(429, json!({"error": {"message": "slow down"}}))
+            .header("retry-after-ms", "0"),
+    ])
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone()];
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&a),
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+    )
+    .await;
+
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        1,
+        "a single 429 candidate must be attempted exactly once"
+    );
+    assert_eq!(response.status, 502, "the gateway must fail with HTTP 502");
+    let parsed: Value =
+        serde_json::from_slice(&response.body).expect("standard JSON error envelope");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(|value| value.as_str()),
+        Some("all_providers_unavailable"),
+        "body: {}",
+        String::from_utf8_lossy(&response.body)
+    );
+}
+
+/// AC-002 / REQ-001 RED: a single-candidate 429 *without* a retry header must
+/// still be attempted exactly once and fail immediately; the paused clock keeps
+/// the default-backoff RED run fast (today it retries six times).
+#[tokio::test(start_paused = true)]
+async fn single_candidate_429_without_retry_header_non_streaming_fails_fast_without_retry() {
+    let _home = temp_home("single-candidate-429-no-header-non-streaming");
+    let _ticker = spawn_paused_clock_ticker();
+    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![HeaderReply::new(
+        429,
+        json!({"error": {"message": "slow down"}}),
+    )])
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone()];
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&a),
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+    )
+    .await;
+
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        1,
+        "a single 429 candidate must be attempted exactly once even without a retry header"
+    );
+    assert_eq!(response.status, 502, "the gateway must fail with HTTP 502");
+    let parsed: Value =
+        serde_json::from_slice(&response.body).expect("standard JSON error envelope");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(|value| value.as_str()),
+        Some("all_providers_unavailable"),
+        "body: {}",
+        String::from_utf8_lossy(&response.body)
+    );
+}
+
+/// AC-011 / REQ-001 RED (Step 1 scope): a single serviceable streaming
+/// candidate whose upstream fails retryably before any byte must be contacted
+/// exactly once and must not enter the retry queue. The terminal pre-stream
+/// transport shape (502 + `application/json` + standard envelope) is owned by
+/// Step 2/REQ-003 and is deliberately not asserted here, nor is the presence or
+/// absence of `data: [DONE]`. `attempt_streaming_text` still drives the real
+/// streaming path and drains the response, proving the single attempt does not
+/// hang.
+#[tokio::test]
+async fn single_candidate_streaming_retryable_failure_attempts_upstream_once() {
+    let _home = temp_home("single-candidate-streaming-fast-fail");
+    let (upstream_url, upstream_requests) =
+        spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+            status: 500,
+            content_type: "application/json",
+            body: br#"{"error":{"message":"boom"}}"#.to_vec(),
+            headers: vec![("retry-after-ms", "0")],
+        }])
+        .await;
+
+    let provider =
+        upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers.push(provider.clone());
+
+    let _text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        1,
+        "a single streaming candidate must be attempted exactly once with no backoff retry"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Step 3 (20260916-api-fusion-upstream-retry): streaming retry and health RED
 // ---------------------------------------------------------------------------
 
-/// REQ-002/REQ-003/REQ-005: before a stream emits any bytes, a retryable 503
-/// with `retry-after-ms: 0` is retried immediately. Only the completed SSE
-/// stream is success: it clears previously seeded health without first counting
-/// the transient attempt as a separate inbound-request failure.
+/// REQ-002/REQ-005 regression (migrated to two candidates): before a stream
+/// emits any bytes, a retryable 503 with `retry-after-ms: 0` is retried
+/// immediately. A recovers on its second attempt; B also advertises a zero
+/// cooldown but A wins the tie, so B is only tried on the first pass. Only the
+/// completed SSE stream is success: it clears A's previously seeded health
+/// without first counting the transient attempt as a separate inbound-request
+/// failure.
 #[tokio::test]
 async fn retry_stream_recovers_after_zero_cooldown_and_completed_sse_clears_health() {
     let _home = temp_home("retry-stream-recovery-health");
-    let (upstream_url, attempts) = spawn_streaming_sequence_mock(vec![
+    let (a_url, a_attempts) = spawn_streaming_sequence_mock(vec![
         StreamingReply::Status {
             status: 503,
             content_type: "application/json",
@@ -6060,20 +6311,34 @@ async fn retry_stream_recovers_after_zero_cooldown_and_completed_sse_clears_heal
         StreamingReply::Sse("data: {\"id\":\"recovered-stream\"}\n\ndata: [DONE]\n\n".to_string()),
     ])
     .await;
+    let (b_url, b_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+        status: 503,
+        content_type: "application/json",
+        body: br#"{"error":{"message":"busy"}}"#.to_vec(),
+        headers: vec![("retry-after-ms", "0")],
+    }])
+    .await;
 
     let mut provider =
-        upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+        upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
     provider.consecutive_failures = 2;
     provider.last_error_at = Some(1);
+    let other = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
     config.providers.push(provider.clone());
+    config.providers.push(other.clone());
 
-    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+    let text = attempt_streaming_text(&[provider.clone(), other.clone()], &mut config).await;
 
     assert_eq!(
-        attempts.load(Ordering::SeqCst),
+        a_attempts.load(Ordering::SeqCst),
         2,
-        "a pre-output 503 with retry-after-ms: 0 must be retried immediately"
+        "A's pre-output 503 with retry-after-ms: 0 must be retried immediately"
+    );
+    assert_eq!(
+        b_attempts.load(Ordering::SeqCst),
+        1,
+        "A wins the zero-deadline tie and recovers before B is retried"
     );
     assert!(text.contains("recovered-stream"), "completed retry stream: {text}");
     assert!(text.contains("data: [DONE]"), "completed retry stream: {text}");
@@ -6088,14 +6353,23 @@ async fn retry_stream_recovers_after_zero_cooldown_and_completed_sse_clears_heal
     );
 }
 
-/// REQ-002/REQ-005: a permanently failing stream gets one initial try plus at
-/// most five retries, while provider health records that whole inbound request
-/// once. Its retry header makes the count/health regression immediate; retry
-/// delay semantics are covered by the dedicated retry-policy tests.
+/// REQ-002/REQ-005 regression (migrated to two candidates): a permanently
+/// failing stream gets one initial try plus at most five retries per provider,
+/// while provider health records the whole inbound request once. Both A and B
+/// stay at zero cooldown, so A exhausts its cap first and then B; the terminal
+/// transport shape (SSE today, 502 JSON after Step 2) is intentionally not
+/// asserted here so the per-provider count and health observations stay stable.
 #[tokio::test]
 async fn retry_stream_persistent_503_attempts_six_times_and_counts_health_once() {
     let _home = temp_home("retry-stream-six-attempts-health");
-    let (upstream_url, attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+    let (a_url, a_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+        status: 503,
+        content_type: "application/json",
+        body: br#"{"error":{"message":"still busy"}}"#.to_vec(),
+        headers: vec![("retry-after-ms", "0")],
+    }])
+    .await;
+    let (b_url, b_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
         status: 503,
         content_type: "application/json",
         body: br#"{"error":{"message":"still busy"}}"#.to_vec(),
@@ -6104,22 +6378,31 @@ async fn retry_stream_persistent_503_attempts_six_times_and_counts_health_once()
     .await;
 
     let provider =
-        upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+        upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let other = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
     config.providers.push(provider.clone());
-    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+    config.providers.push(other.clone());
+    let text = attempt_streaming_text(&[provider.clone(), other.clone()], &mut config).await;
 
     assert_eq!(
-        attempts.load(Ordering::SeqCst),
+        a_attempts.load(Ordering::SeqCst),
         6,
-        "one initial stream attempt plus five bounded retries"
+        "A gets one initial stream attempt plus five bounded retries"
     );
-    assert!(text.contains("all_providers_unavailable"), "exhausted stream: {text}");
-    assert!(text.contains("data: [DONE]"), "exhausted stream: {text}");
+    assert_eq!(
+        b_attempts.load(Ordering::SeqCst),
+        6,
+        "B gets one initial stream attempt plus five bounded retries once A is exhausted"
+    );
+    assert!(
+        text.contains("all_providers_unavailable"),
+        "exhausted stream: {text}"
+    );
     let stored = config.providers.iter().find(|item| item.id == "a").unwrap();
     assert_eq!(
         stored.consecutive_failures, 1,
-        "six upstream failures in one inbound request count once"
+        "A's six upstream failures in one inbound request count once"
     );
     assert!(!stored.auto_disabled, "one failed request is below the threshold");
 }

@@ -709,7 +709,7 @@ pub(in crate::api_fusion) async fn attempt_non_streaming(
                     upstream_model: model.clone(),
                     ..Default::default()
                 });
-                if retryable {
+                if retryable && ordered.len() > 1 {
                     retries.push(RetryCandidate {
                         provider: provider.clone(),
                         model,
@@ -976,7 +976,7 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         health.record_failure(config, provider, class, &reason);
         record_provider_failure(&mut failures, &provider.name, reason);
         candidate.attempts += 1;
-        if retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
+        if retryable && ordered.len() > 1 && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
             candidate.ready_at = Instant::now().checked_add(
                 retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
             );
