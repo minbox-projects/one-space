@@ -799,7 +799,7 @@ pub fn api_gateway_create_provider_from_template(
     base_url: String,
     protocol: UpstreamProtocol,
     api_key: String,
-) -> Result<GatewayUpstreamProvider, String> {
+) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     apply_create_provider_from_template(
         &mut config,
@@ -809,7 +809,8 @@ pub fn api_gateway_create_provider_from_template(
         protocol,
         &api_key,
         write_config,
-    )
+    )?;
+    read_config()
 }
 
 /// Delete one model from a provider: a template-bound provider records it in the

@@ -380,6 +380,7 @@ use crate::api_gateway::templates::{
 use crate::api_gateway::types_config::{
     GatewayUpstreamProvider, ModelMapping, ModelPrice, ProviderTemplate, ProviderTemplateState,
 };
+use crate::api_gateway::{compute_cost_at_time, UsageTokens};
 use serde_json::{json, Value};
 
 /// models.dev payload shape: one provider object with `models` keyed by id.
@@ -743,6 +744,7 @@ fn sync_preserves_user_disable_delete_and_hand_edits() {
 
     let mut mapping_c = mapping_from_snapshot(&snapshot, model_c);
     mapping_c.display_name = Some("My Custom Name".to_string());
+    mapping_c.reasoning_efforts = vec!["custom-a".to_string(), "custom-b".to_string()];
 
     provider.mappings = vec![
         mapping_a,
@@ -817,6 +819,11 @@ fn sync_preserves_user_disable_delete_and_hand_edits() {
         mapping_c.display_name.as_deref(),
         Some("My Custom Name"),
         "a hand-edited display name must not be overwritten"
+    );
+    assert_eq!(
+        mapping_c.reasoning_efforts,
+        vec!["custom-a", "custom-b"],
+        "hand-edited reasoning efforts must not be overwritten"
     );
 
     // d: untouched mapping and price update to the source.
@@ -1419,6 +1426,147 @@ fn delete_model_survives_later_template_sync() {
     );
 }
 
+/// B2 counterexample: after deleting a model, its provider-scoped price row was
+/// removed; a later template sync that still lists that model must not silently
+/// resurrect the row even though the ignored mapping stays gone.
+#[test]
+fn sync_does_not_resurrect_price_row_for_ignored_model() {
+    let snapshot = opencode_snapshot();
+    let model = snapshot_model(&snapshot, "deepseek-v4-flash");
+
+    let mut config = GatewayConfig::default();
+    let mut provider = bound_provider("bound", "opencode-zen");
+    provider.mappings = vec![mapping_from_snapshot(&snapshot, model)];
+    config.providers.push(provider);
+    config.model_prices.push(price_from_snapshot("bound", model));
+
+    apply_delete_provider_model(&mut config, "bound", &model.upstream_model, |_next| Ok(()))
+        .expect("deleting a mapped model must succeed");
+    assert!(
+        find_price_row(&config, "bound", &model.upstream_model).is_none(),
+        "the delete must remove the provider-scoped price row"
+    );
+
+    let body = models_dev_body(json!({
+        "deepseek-v4-flash": {
+            "name": "DeepSeek V4 Flash",
+            "cost": {"input": 1.0, "cache_read": 0.1, "cache_write": 0.0, "output": 2.0}
+        },
+        "another-model": {
+            "name": "Another Model",
+            "cost": {"input": 1.0, "cache_read": 0.1, "cache_write": 0.0, "output": 2.0}
+        }
+    }));
+
+    apply_template_sync_with(
+        &mut config,
+        "opencode-zen",
+        |_current| Ok(body.clone()),
+        |_next| Ok(()),
+    )
+    .expect("the sync must succeed");
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|candidate| candidate.id == "bound")
+        .expect("the bound provider must exist");
+    assert!(
+        find_mapping(provider, &model.upstream_model).is_none(),
+        "an ignored mapping must not be resurrected"
+    );
+    assert!(
+        provider
+            .ignored_models
+            .iter()
+            .any(|id| id == &model.upstream_model),
+        "the ignored record must survive the sync"
+    );
+    assert!(
+        find_price_row(&config, "bound", &model.upstream_model).is_none(),
+        "an ignored model's provider-scoped price row must not be resurrected"
+    );
+    assert!(
+        find_price_row(&config, "bound", "another-model").is_some(),
+        "the sync must still propagate the source's other models"
+    );
+}
+
+/// N5 counterexample: saving the price table mirrors the first off-peak window
+/// into the legacy singular `off_peak`; that mirror must not stop a later
+/// template sync from applying the official price update, and the stale mirror
+/// must be cleared so the row reflects the current template data.
+#[test]
+fn sync_updates_price_after_legacy_off_peak_mirror_save() {
+    let snapshot = opencode_snapshot();
+    let model = snapshot_model(&snapshot, "deepseek-v4-flash");
+
+    let mut previous_model = model.clone();
+    previous_model.off_peaks = vec![OffPeakPrice {
+        start_time: "00:00".to_string(),
+        end_time: "09:00".to_string(),
+        input: 0.5,
+        cache_read: 0.05,
+        cache_write: 0.0,
+        output: 1.0,
+        days: Some(vec![0, 6]),
+    }];
+
+    // The last synced/persisted template carries the off-peak window; the sync
+    // merges new source prices over it.
+    let mut previous_template = snapshot.clone();
+    previous_template.models = vec![previous_model.clone()];
+
+    let mut config = GatewayConfig::default();
+    config.provider_templates.push(ProviderTemplateState {
+        template_id: "opencode-zen".to_string(),
+        template: Some(previous_template.clone()),
+        synced_at: Some(1),
+        source: Some("snapshot:models.dev".to_string()),
+    });
+
+    let mut provider = bound_provider("bound", "opencode-zen");
+    provider.mappings = vec![mapping_from_snapshot(&previous_template, &previous_model)];
+    config.providers.push(provider);
+
+    // Exactly what `api_gateway_model_prices_save` persists for a multi-window
+    // row: `off_peak` mirrors the first `off_peaks` entry.
+    let mut mirrored = price_from_snapshot("bound", &previous_model);
+    mirrored.off_peak = mirrored.off_peaks.first().cloned();
+    assert!(
+        mirrored.off_peak.is_some(),
+        "the fixture must model the legacy singular mirror"
+    );
+    config.model_prices.push(mirrored);
+
+    let body = models_dev_body(json!({
+        "deepseek-v4-flash": {
+            "name": previous_model.display_name.clone(),
+            "cost": {"input": 3.0, "cache_read": 0.3, "cache_write": 0.1, "output": 6.0},
+            "reasoning_options": [{"type": "effort", "values": previous_model.reasoning_efforts.clone()}]
+        }
+    }));
+
+    apply_template_sync_with(
+        &mut config,
+        "opencode-zen",
+        |_current| Ok(body.clone()),
+        |_next| Ok(()),
+    )
+    .expect("the sync must succeed");
+
+    let row = find_price_row(&config, "bound", &model.upstream_model)
+        .expect("the provider-scoped price row must still exist");
+    assert_eq!(row.input, 3.0, "the official price update must win over the mirror");
+    assert_eq!(row.cache_read, 0.3);
+    assert_eq!(row.cache_write, 0.1);
+    assert_eq!(row.output, 6.0);
+    assert_eq!(
+        row.off_peak, None,
+        "the stale legacy singular mirror must be cleared once the row updates"
+    );
+}
+
 /// REQ-005: deleting from a manual (unbound) provider only removes the mapping;
 /// it must not write an ignored record and must keep the price row.
 #[test]
@@ -1913,5 +2061,75 @@ fn sync_reports_missing_opencode_entry_in_models_dev_catalog() {
         before,
         serde_json::to_value(&config).expect("encode config after"),
         "a failed sync must write nothing"
+    );
+}
+
+/// Real UTC milliseconds for a UTC+8 wall-clock instant.
+fn utc8_timestamp_ms(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> i64 {
+    use chrono::TimeZone;
+    let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+    tz.with_ymd_and_hms(year, month, day, hour, minute, 0)
+        .unwrap()
+        .timestamp_millis()
+}
+
+/// N1 / AC-012 coverage: the CommandCode DeepSeek template's curated off-peak
+/// windows must price exactly like the official semantics — UTC+8 workdays
+/// 09:00-12:00 and 14:00-18:00 are peak, every other instant is off-peak.
+#[test]
+fn compute_cost_at_time_commandcode_official_windows_match_ac012() {
+    let template = find_builtin_template("commandcode").expect("the commandcode snapshot must parse");
+    let model = template
+        .models
+        .iter()
+        .find(|model| model.upstream_model.contains("deepseek") && !model.off_peaks.is_empty())
+        .expect("the commandcode template must ship a deepseek model with off-peak windows");
+
+    let price = ModelPrice {
+        provider_id: None,
+        upstream_model: model.upstream_model.clone(),
+        input: model.input,
+        cache_read: model.cache_read,
+        cache_write: model.cache_write,
+        output: model.output,
+        off_peaks: model.off_peaks.clone(),
+        off_peak: None,
+    };
+    let tokens = UsageTokens {
+        input_tokens: 1_000_000,
+        cache_read_tokens: 1_000_000,
+        cache_write_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+    };
+    let tier_sum =
+        |window: &OffPeakPrice| window.input + window.cache_read + window.cache_write + window.output;
+    let standard_sum = price.input + price.cache_read + price.cache_write + price.output;
+
+    // UTC+8 2026-09-19 is a Saturday; 10:00 falls inside the weekend 09:00-18:00
+    // off-peak window (official: weekends are off-peak all day).
+    let saturday_10 = utc8_timestamp_ms(2026, 9, 19, 10, 0);
+    let weekend_window = model
+        .off_peaks
+        .iter()
+        .find(|window| {
+            window.start_time == "09:00"
+                && window.end_time == "18:00"
+                && window.days.as_deref() == Some(&[0, 6][..])
+        })
+        .expect("the deepseek model must define the weekend 09:00-18:00 window");
+    let saturday_cost = compute_cost_at_time(&price, &tokens, saturday_10);
+    assert!(
+        (saturday_cost - tier_sum(weekend_window)).abs() < 1e-9,
+        "Saturday 10:00 must bill the weekend off-peak tier ({}), got {saturday_cost}",
+        tier_sum(weekend_window)
+    );
+
+    // UTC+8 2026-09-16 is a Wednesday; 10:00 falls inside the peak 09:00-12:00
+    // block, so the standard tier must apply.
+    let wednesday_10 = utc8_timestamp_ms(2026, 9, 16, 10, 0);
+    let wednesday_cost = compute_cost_at_time(&price, &tokens, wednesday_10);
+    assert!(
+        (wednesday_cost - standard_sum).abs() < 1e-9,
+        "Wednesday 10:00 is a workday peak block and must bill the standard tier ({standard_sum}), got {wednesday_cost}"
     );
 }

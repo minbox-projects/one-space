@@ -680,6 +680,13 @@ fn propagate_to_derived(
 
         let provider_id = provider.id.clone();
         for model in &new_template.models {
+            if provider
+                .ignored_models
+                .iter()
+                .any(|ignored| ignored == &model.upstream_model)
+            {
+                continue;
+            }
             let previous_model = previous
                 .models
                 .iter()
@@ -688,13 +695,22 @@ fn propagate_to_derived(
                 row.provider_id.as_deref() == Some(provider_id.as_str())
                     && row.upstream_model == model.upstream_model
             }) {
+                // `off_peak` is the legacy single-window mirror of
+                // `off_peaks.first()`. `None` means untouched; a `Some` that
+                // still equals the first window is an untouched mirror, while
+                // a `Some` with no matching first window is a user edit that
+                // must keep the old behavior.
+                let off_peak_is_mirror = match &row.off_peak {
+                    None => true,
+                    Some(mirror) => row.off_peaks.first() == Some(mirror),
+                };
                 let untouched = previous_model.is_some_and(|previous_model| {
                     row.input == previous_model.input
                         && row.cache_read == previous_model.cache_read
                         && row.cache_write == previous_model.cache_write
                         && row.output == previous_model.output
                         && row.off_peaks == previous_model.off_peaks
-                        && row.off_peak.is_none()
+                        && off_peak_is_mirror
                 });
                 if untouched {
                     row.input = model.input;

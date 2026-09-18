@@ -2866,6 +2866,33 @@ fn every_command_is_registered_in_the_invoke_handler() {
     }
 }
 
+/// B1 command return shape: creating from a template must return the refreshed
+/// `GatewayConfig` (like the delete/restore commands) so the caller can find the
+/// new provider and open its detail from a single call.
+#[test]
+fn create_provider_from_template_command_returns_config() {
+    with_temp_home("create-from-template-command", |_home| {
+        super::storage::write_config(&GatewayConfig::default()).expect("write config");
+
+        let result = super::commands::api_gateway_create_provider_from_template(
+            "opencode-zen".into(),
+            "T".into(),
+            "".into(),
+            UpstreamProtocol::ChatCompletions,
+            "sk-test".into(),
+        )
+        .expect("a non-blank API key must create the provider");
+
+        assert!(
+            result
+                .providers
+                .iter()
+                .any(|provider| provider.template_id.as_deref() == Some("opencode-zen")),
+            "the command must return the config containing the new template provider"
+        );
+    });
+}
+
 #[tokio::test]
 async fn no_candidate_model_returns_all_unavailable_without_upstream_request() {
     let home = temp_home("no-candidate");

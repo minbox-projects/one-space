@@ -1585,6 +1585,82 @@ describe("ApiGateway", () => {
     );
   });
 
+  it("syncTemplateRefreshesProviderConfiguration", async () => {
+    const providerBefore = makeProvider({
+      id: "p1",
+      name: "Template Bound",
+      template_id: "t1",
+      mappings: [{ local_model: "remote-a", upstream_model: "remote-a" }],
+    });
+    const providerAfter = makeProvider({
+      ...providerBefore,
+      mappings: [
+        { local_model: "remote-a", upstream_model: "remote-a" },
+        { local_model: "new-model", upstream_model: "new-model" },
+      ],
+    });
+    const store: Store = {
+      config: makeConfig({ providers: [providerBefore] }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [],
+    };
+    const templates = [
+      makeTemplateView({ template: makeTemplate({ id: "t1" }), synced_at: null }),
+    ];
+
+    let getConfigCalls = 0;
+    invokeMock.mockImplementation(async (command: string, _args?: any) => {
+      switch (command) {
+        case "api_gateway_get_config":
+          getConfigCalls += 1;
+          return store.config;
+        case "api_gateway_status":
+          return store.status;
+        case "api_gateway_terminal_targets":
+          return store.targets;
+        case "api_gateway_provider_templates":
+          return templates;
+        case "api_gateway_model_prices_get":
+          return [];
+        case "api_gateway_sync_provider_template": {
+          // 后端同步会把官方新模型增量传播到绑定服务商。
+          store.config = { ...store.config, providers: [providerAfter] };
+          return {
+            ...templates[0],
+            synced_at: 1_800_000_000,
+            from_snapshot: false,
+          };
+        }
+        default:
+          throw new Error(`Unhandled command: ${command}`);
+      }
+    });
+
+    renderWithProviders(<ApiGateway />);
+
+    const syncButton = await screen.findByTestId("api-gateway-template-sync-t1");
+    const callsBeforeSync = getConfigCalls;
+    fireEvent.click(syncButton);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_sync_provider_template", {
+        templateId: "t1",
+      }),
+    );
+
+    // 同步后必须重新拉取配置，派生服务商的传播结果才能进入详情。
+    await waitFor(() => expect(getConfigCalls).toBeGreaterThan(callsBeforeSync));
+
+    fireEvent.click(screen.getByText("Template Bound"));
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("api-gateway-provider-detail")).getByLabelText(
+          "Upstream model 2",
+        ),
+      ).toHaveValue("new-model"),
+    );
+  });
+
   it("createFromTemplateOpensNewProviderDetail", async () => {
     const store: Store = {
       config: makeConfig(),

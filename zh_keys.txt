@@ -54,6 +54,7 @@ apiGatewayTemplateExpand
 apiGatewayTemplateLastSync
 apiGatewayTemplateModelsCount
 apiGatewayTemplateNameLabel
+apiGatewayTemplateNoModels
 apiGatewayTemplateNoOffPeak
 apiGatewayTemplateNotSynced
 apiGatewayTemplateOffPeak
@@ -66,6 +67,7 @@ apiGatewayTemplateProviderCreated
 apiGatewayTemplateReasoningEfforts
 apiGatewayTemplatesLoadFailed
 apiGatewayTemplateSnapshot
+apiGatewayTemplateSnapshotVersion
 apiGatewayTemplateSource
 apiGatewayTemplateSync
 apiGatewayTemplateSyncing

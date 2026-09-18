@@ -134,13 +134,24 @@ export function ProviderTemplateSection({
                         {protocolLabel}
                       </span>
                       {view.from_snapshot ? (
-                        <span
-                          data-testid={`api-gateway-template-snapshot-${template.id}`}
-                          className="inline-flex items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-4 text-amber-700 dark:text-amber-400"
-                        >
-                          <CloudOff className="h-3 w-3" />
-                          {t("apiGatewayTemplateSnapshot", "Offline snapshot")}
-                        </span>
+                        <>
+                          <span
+                            data-testid={`api-gateway-template-snapshot-${template.id}`}
+                            className="inline-flex items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-4 text-amber-700 dark:text-amber-400"
+                          >
+                            <CloudOff className="h-3 w-3" />
+                            {t("apiGatewayTemplateSnapshot", "Offline snapshot")}
+                          </span>
+                          <span
+                            data-testid={`api-gateway-template-snapshot-version-${template.id}`}
+                            className="inline-flex items-center rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-4 text-amber-700 dark:text-amber-400"
+                          >
+                            {t("apiGatewayTemplateSnapshotVersion", {
+                              version: template.snapshot_version,
+                              defaultValue: "Snapshot {{version}}",
+                            })}
+                          </span>
+                        </>
                       ) : null}
                     </div>
 
@@ -227,8 +238,11 @@ export function ProviderTemplateSection({
                 {expanded ? (
                   <div className="max-h-64 overflow-y-auto border-t bg-muted/20 rounded-b-xl">
                     {template.models.length === 0 ? (
-                      <p className="p-3 text-[11px] text-muted-foreground">
-                        {t("apiGatewayTemplateNoOffPeak", "No models")}
+                      <p
+                        data-testid={`api-gateway-template-no-models-${template.id}`}
+                        className="p-3 text-[11px] text-muted-foreground"
+                      >
+                        {t("apiGatewayTemplateNoModels", "No models in this template")}
                       </p>
                     ) : (
                       template.models.map((model) => {

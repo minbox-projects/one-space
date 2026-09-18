@@ -346,6 +346,7 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
               view.template.id === templateId ? updated : view,
             ),
           );
+          await applyConfig(await apiGatewayGetConfig());
           pushToast({
             title: t("apiGatewayTemplateSyncSuccess", "Provider template synced."),
             kind: "success",
@@ -365,7 +366,7 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
         }
       })();
     },
-    [pushToast, t],
+    [applyConfig, pushToast, t],
   );
 
   const handleCreateProviderFromTemplate = useCallback(

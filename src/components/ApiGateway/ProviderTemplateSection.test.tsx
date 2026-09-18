@@ -278,4 +278,37 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
     await waitFor(() => expect(onCreateProvider).toHaveBeenCalledTimes(1));
     expect(screen.getByTestId("api-gateway-template-api-key")).toBeInTheDocument();
   });
+
+  it("rendersSnapshotVersionForUnsyncedTemplate", () => {
+    const view = makeView({
+      template: makeTemplate({
+        id: "t1",
+        snapshot_version: "2026.09.18",
+      }),
+      from_snapshot: true,
+    });
+
+    renderSection({ templates: [view] });
+
+    const version = screen.getByTestId("api-gateway-template-snapshot-version-t1");
+    expect(version).toHaveTextContent("2026.09.18");
+  });
+
+  it("zeroModelTemplateShowsDedicatedNoModelsHint", () => {
+    const view = makeView({
+      template: makeTemplate({ id: "t-empty", models: [] }),
+      from_snapshot: true,
+    });
+
+    renderSection({ templates: [view] });
+
+    fireEvent.click(screen.getByTestId("api-gateway-template-expand-t-empty"));
+
+    const hint = screen.getByTestId("api-gateway-template-no-models-t-empty");
+    const text = (hint.textContent ?? "").toLowerCase();
+    expect(text.length).toBeGreaterThan(0);
+    // 空模型必须用专用的“无模型”提示，不能复用峰谷语义文案。
+    expect(text).not.toContain("off-peak");
+    expect(text).not.toContain(i18n.t("apiGatewayTemplateNoOffPeak").toLowerCase());
+  });
 });
