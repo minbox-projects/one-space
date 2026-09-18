@@ -1001,7 +1001,7 @@ done"#.to_string(),
                     .unwrap_or(Value::Null);
                 let response = match method.as_str() {
                     "initialize" => format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nMCP-Session-Id: session-1\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nMCP-Session-Id: session-1\r\nConnection: close\r\n\r\n{}",
                         json!({
                             "jsonrpc": "2.0",
                             "id": id,
@@ -1012,9 +1012,9 @@ done"#.to_string(),
                             }
                         })
                     ),
-                    "notifications/initialized" => "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n".to_string(),
+                    "notifications/initialized" => "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
                     "tools/list" => format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
                         json!({
                             "jsonrpc": "2.0",
                             "id": id,
@@ -1030,7 +1030,7 @@ done"#.to_string(),
                         })
                     ),
                     _ => format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
                         json!({
                             "jsonrpc": "2.0",
                             "id": id,
