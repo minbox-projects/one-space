@@ -35,6 +35,7 @@ import {
   isUnpricedOnly,
   localBaseUrl,
   maskSecret,
+  resolveAggregatedModelName,
   resolveDefaultKeyId,
   resolveMappingPreview,
   usageRangeToDays,
@@ -699,6 +700,259 @@ describe("aggregateModels 聚合本地模型", () => {
       "聚合视图应保留默认模型 d 与启用/缺省启用的映射 a、c",
     ).toEqual(expect.arrayContaining(["d", "a", "c"]));
     expect(models, "聚合视图不应包含禁用映射 b").not.toContain("b");
+  });
+
+  it("映射声明 display_name 时仅声明条目携带 trim 后的 displayName", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "pa",
+        name: "Alpha",
+        mappings: [
+          {
+            local_model: "gpt-4o",
+            upstream_model: "gpt-4o-2024",
+            display_name: "  GPT-4o 旗舰  ",
+          },
+        ],
+      }),
+      provider({
+        id: "pb",
+        name: "Beta",
+        mappings: [{ local_model: "gpt-4o", upstream_model: "gpt-4o-mini" }],
+      }),
+    ];
+
+    expect(aggregateModels(providers)).toEqual([
+      {
+        model: "gpt-4o",
+        providers: [
+          {
+            providerId: "pa",
+            providerName: "Alpha",
+            upstreamModel: "gpt-4o-2024",
+            endpoint: "chat_completions",
+            isDefault: false,
+            displayName: "GPT-4o 旗舰",
+          },
+          {
+            providerId: "pb",
+            providerName: "Beta",
+            upstreamModel: "gpt-4o-mini",
+            endpoint: "chat_completions",
+            isDefault: false,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("全空白 display_name 不产生 displayName，且不抑制同模型已声明的名称", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "pa",
+        name: "Alpha",
+        mappings: [
+          {
+            local_model: "gpt-4o",
+            upstream_model: "gpt-4o-2024",
+            display_name: "   ",
+          },
+          {
+            local_model: "gpt-4o",
+            upstream_model: "gpt-4o-mini",
+            display_name: "  mini  ",
+          },
+        ],
+      }),
+    ];
+
+    expect(aggregateModels(providers)).toEqual([
+      {
+        model: "gpt-4o",
+        providers: [
+          {
+            providerId: "pa",
+            providerName: "Alpha",
+            upstreamModel: "gpt-4o-2024",
+            endpoint: "chat_completions",
+            isDefault: false,
+          },
+          {
+            providerId: "pa",
+            providerName: "Alpha",
+            upstreamModel: "gpt-4o-mini",
+            endpoint: "chat_completions",
+            isDefault: false,
+            displayName: "mini",
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("默认条目与其同名映射并存时默认条目不携带 displayName", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "p1",
+        name: "Provider",
+        default_model: "gpt-4o",
+        mappings: [
+          {
+            local_model: "gpt-4o",
+            upstream_model: "gpt-4o-2024",
+            display_name: "旗舰版",
+          },
+        ],
+      }),
+    ];
+
+    expect(aggregateModels(providers)).toEqual([
+      {
+        model: "gpt-4o",
+        providers: [
+          {
+            providerId: "p1",
+            providerName: "Provider",
+            upstreamModel: "gpt-4o",
+            endpoint: "chat_completions",
+            isDefault: true,
+          },
+          {
+            providerId: "p1",
+            providerName: "Provider",
+            upstreamModel: "gpt-4o-2024",
+            endpoint: "chat_completions",
+            isDefault: false,
+            displayName: "旗舰版",
+          },
+        ],
+      },
+    ]);
+  });
+});
+
+describe("resolveAggregatedModelName 聚合模型名称解析", () => {
+  it("优先返回首个非空 displayName 的 trim 值", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "pa",
+        name: "Alpha",
+        mappings: [
+          {
+            local_model: "gpt-4o",
+            upstream_model: "gpt-4o-2024",
+            display_name: "  GPT-4o 旗舰  ",
+          },
+        ],
+      }),
+      provider({
+        id: "pb",
+        name: "Beta",
+        mappings: [{ local_model: "gpt-4o", upstream_model: "gpt-4o-mini" }],
+      }),
+    ];
+
+    const entry = aggregateModels(providers).find(
+      (item) => item.model === "gpt-4o",
+    );
+    expect(entry).toBeDefined();
+    expect(resolveAggregatedModelName(entry!)).toBe("GPT-4o 旗舰");
+  });
+
+  it("无 displayName 时跳过默认条目并返回首个非默认映射来源的 upstreamModel", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "pa",
+        name: "Alpha",
+        default_model: "gpt-4o",
+        mappings: [{ local_model: "gpt-4o", upstream_model: "gpt-4o-2024" }],
+      }),
+      provider({
+        id: "pb",
+        name: "Beta",
+        mappings: [{ local_model: "gpt-4o", upstream_model: "gpt-4o-mini" }],
+      }),
+    ];
+
+    const entry = aggregateModels(providers).find(
+      (item) => item.model === "gpt-4o",
+    );
+    expect(entry).toBeDefined();
+    expect(entry!.providers[0]).toMatchObject({
+      isDefault: true,
+      upstreamModel: "gpt-4o",
+    });
+    expect(resolveAggregatedModelName(entry!)).toBe("gpt-4o-2024");
+  });
+
+  it("仅作为 default_model 存在的模型返回该默认模型", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "p-only",
+        name: "OnlyDefault",
+        default_model: "  gpt-4o-default  ",
+        mappings: [],
+      }),
+    ];
+
+    const entry = aggregateModels(providers).find(
+      (item) => item.model === "gpt-4o-default",
+    );
+    expect(entry).toBeDefined();
+    expect(resolveAggregatedModelName(entry!)).toBe("gpt-4o-default");
+  });
+
+  it("display_name 全空白时回退首个非默认映射来源的 upstreamModel", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "pa",
+        name: "Alpha",
+        mappings: [
+          {
+            local_model: "gpt-4o",
+            upstream_model: "gpt-4o-2024",
+            display_name: "   ",
+          },
+        ],
+      }),
+    ];
+
+    const entry = aggregateModels(providers).find(
+      (item) => item.model === "gpt-4o",
+    );
+    expect(entry).toBeDefined();
+    expect(entry!.providers[0]).not.toHaveProperty("displayName");
+    expect(resolveAggregatedModelName(entry!)).toBe("gpt-4o-2024");
+  });
+
+  it("默认条目与携带 displayName 的映射条目并存时返回映射的 displayName", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "p1",
+        name: "Provider",
+        default_model: "gpt-4o",
+        mappings: [
+          {
+            local_model: "gpt-4o",
+            upstream_model: "gpt-4o-2024",
+            display_name: "旗舰版",
+          },
+        ],
+      }),
+    ];
+
+    const entry = aggregateModels(providers).find(
+      (item) => item.model === "gpt-4o",
+    );
+    expect(entry).toBeDefined();
+    expect(entry!.providers[0]).toMatchObject({ isDefault: true });
+    expect(resolveAggregatedModelName(entry!)).toBe("旗舰版");
+  });
+
+  it("providers 为空数组时返回 entry.model", () => {
+    expect(
+      resolveAggregatedModelName({ model: "orphan-model", providers: [] }),
+    ).toBe("orphan-model");
   });
 });
 

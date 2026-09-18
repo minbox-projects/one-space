@@ -183,6 +183,8 @@ export interface AggregatedModelProvider {
   upstreamModel: string;
   endpoint: GatewayUpstreamProtocol;
   isDefault: boolean;
+  /** Trimmed mapping `display_name`; absent for default-model sources or undeclared names. */
+  displayName?: string;
 }
 
 /** A local model name and every enabled upstream source mapped to it. */
@@ -226,12 +228,14 @@ export function aggregateModels(
       const upstreamModel = mapping.upstream_model.trim();
       if (!upstreamModel) return;
       const entries = groups.get(localModel) ?? [];
+      const displayName = mapping.display_name?.trim();
       entries.push({
         providerId: provider.id,
         providerName: provider.name,
         upstreamModel,
         endpoint: mapping.protocol ?? provider.protocol ?? "chat_completions",
         isDefault: false,
+        ...(displayName ? { displayName } : {}),
       });
       groups.set(localModel, entries);
     });
@@ -246,6 +250,23 @@ export function aggregateModels(
       }),
     }))
     .sort((a, b) => a.model.localeCompare(b.model));
+}
+
+/**
+ * Resolve the display name for an aggregated local model.
+ *
+ * The first mapping source declaring a non-empty `displayName` wins; otherwise
+ * the name falls back to the first mapping source's `upstreamModel`, then to the
+ * first source, and finally to the local model itself when there are no sources.
+ */
+export function resolveAggregatedModelName(entry: AggregatedModel): string {
+  for (const provider of entry.providers) {
+    const displayName = provider.displayName?.trim();
+    if (displayName) return displayName;
+  }
+  const mapping = entry.providers.find((provider) => !provider.isDefault);
+  const source = mapping ?? entry.providers[0];
+  return source ? source.upstreamModel.trim() : entry.model;
 }
 
 /** Redact a secret for display while keeping head/tail recognizable. */
