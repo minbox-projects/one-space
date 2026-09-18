@@ -2836,6 +2836,10 @@ fn every_command_is_registered_in_the_invoke_handler() {
         "api_gateway_create_provider_from_template",
         "api_gateway_delete_provider_model",
         "api_gateway_restore_provider_model",
+        "api_gateway_upsert_provider_template",
+        "api_gateway_delete_provider_template",
+        "api_gateway_reset_provider_templates",
+        "api_gateway_fetch_models",
     ];
     for command in commands {
         let registration = format!("api_gateway::{command},");
@@ -2858,6 +2862,10 @@ fn every_command_is_registered_in_the_invoke_handler() {
         "api_gateway_create_provider_from_template",
         "api_gateway_delete_provider_model",
         "api_gateway_restore_provider_model",
+        "api_gateway_upsert_provider_template",
+        "api_gateway_delete_provider_template",
+        "api_gateway_reset_provider_templates",
+        "api_gateway_fetch_models",
     ] {
         assert!(
             LIB_SOURCE.contains(command),

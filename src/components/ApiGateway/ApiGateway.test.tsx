@@ -1033,6 +1033,9 @@ describe("ApiGateway", () => {
     const addButtons = screen.getAllByRole("button", { name: /Add provider/i });
     fireEvent.click(addButtons[0]);
 
+    const blankBtn = await screen.findByTestId("template-picker-blank-btn");
+    fireEvent.click(blankBtn);
+
     const dialog = await screen.findByTestId("api-gateway-provider-detail");
     expect(dialog).toBeInTheDocument();
 
@@ -1699,6 +1702,56 @@ describe("ApiGateway", () => {
 
     const detail = await screen.findByTestId("api-gateway-provider-detail");
     expect(within(detail).getByLabelText("Name")).toHaveValue("OpenCode Zen");
+  });
+
+  it("切换到服务商模板Tab，以及点击添加服务商弹出预设选择器并可就地打开编辑弹窗", async () => {
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus(),
+      targets: [],
+    };
+    const templates = [
+      makeTemplateView({
+        template: makeTemplate({
+          id: "tpl-test",
+          name: "Test Presets Vendor",
+        }),
+      }),
+    ];
+    mockStoreWithTemplates(store, templates);
+
+    renderWithProviders(<ApiGateway />);
+
+    // 1. 切换到独立的服务商模板 Tab
+    const templateTab = await screen.findByRole("tab", { name: /Templates|服务商模板/i });
+    fireEvent.click(templateTab);
+
+    // 可以在服务商模板 Tab 查看到模板卡片和管理按钮
+    expect(await screen.findByText("Test Presets Vendor")).toBeInTheDocument();
+    expect(screen.getByTestId("template-section-reset-btn")).toBeInTheDocument();
+    expect(screen.getByTestId("template-section-new-btn")).toBeInTheDocument();
+    expect(screen.getByTestId("api-gateway-template-edit-tpl-test")).toBeInTheDocument();
+
+    // 2. 切回上游服务商 Tab
+    const providersTab = screen.getByRole("tab", { name: /Upstream providers|上游服务商/i });
+    fireEvent.click(providersTab);
+
+    // 点击添加服务商
+    const addBtn = screen.getAllByRole("button", { name: /Add provider/i })[0];
+    fireEvent.click(addBtn);
+
+    // 弹出选择服务商模板弹窗
+    const picker = await screen.findByTestId("api-gateway-template-picker-dialog");
+    expect(picker).toBeInTheDocument();
+
+    // 在弹窗中点击编辑图标
+    const editIcon = screen.getByTestId("template-picker-edit-tpl-test");
+    fireEvent.click(editIcon);
+
+    // 弹出编辑模板弹窗
+    const editDialog = await screen.findByTestId("api-gateway-template-edit-dialog");
+    expect(editDialog).toBeInTheDocument();
+    expect(screen.getByTestId("template-edit-name")).toHaveValue("Test Presets Vendor");
   });
 });
 

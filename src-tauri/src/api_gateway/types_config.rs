@@ -194,6 +194,8 @@ pub struct ProviderTemplate {
     pub source: String,
     #[serde(default)]
     pub snapshot_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models_url: Option<String>,
     #[serde(default)]
     pub models: Vec<ProviderTemplateModel>,
 }
@@ -402,6 +404,9 @@ pub struct GatewayConfig {
     /// Persisted provider-template state (last snapshot plus sync metadata).
     #[serde(default)]
     pub provider_templates: Vec<ProviderTemplateState>,
+    /// Deleted template IDs; absent in older configs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted_template_ids: Vec<String>,
 }
 
 impl Default for GatewayConfig {
@@ -416,6 +421,7 @@ impl Default for GatewayConfig {
             usage_retention_days: DEFAULT_USAGE_RETENTION_DAYS,
             model_prices: Vec::new(),
             provider_templates: Vec::new(),
+            deleted_template_ids: Vec::new(),
         }
     }
 }

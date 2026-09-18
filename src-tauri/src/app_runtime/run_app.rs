@@ -334,6 +334,10 @@ pub fn run() {
             api_gateway::api_gateway_create_provider_from_template,
             api_gateway::api_gateway_delete_provider_model,
             api_gateway::api_gateway_restore_provider_model,
+            api_gateway::api_gateway_upsert_provider_template,
+            api_gateway::api_gateway_delete_provider_template,
+            api_gateway::api_gateway_reset_provider_templates,
+            api_gateway::api_gateway_fetch_models,
             // New service_providers domain (replaces providers_*)
             app_store::service_providers_list,
             app_store::service_provider_read_opencode_config,

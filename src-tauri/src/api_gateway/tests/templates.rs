@@ -8,6 +8,7 @@
 //! lands.
 
 use crate::api_gateway::templates::{
+    apply_delete_provider_template, apply_reset_provider_templates, apply_upsert_provider_template,
     builtin_templates, find_builtin_template, parse_template_snapshot,
 };
 use crate::api_gateway::types_config::{
@@ -2133,3 +2134,106 @@ fn compute_cost_at_time_commandcode_official_windows_match_ac012() {
         "Wednesday 10:00 is a workday peak block and must bill the standard tier ({standard_sum}), got {wednesday_cost}"
     );
 }
+
+#[test]
+fn test_template_upsert_edits_existing_and_creates_new() {
+    let mut config = GatewayConfig::default();
+    let mut modified_builtin = builtin_templates()
+        .expect("built-in templates")
+        .into_iter()
+        .find(|t| t.id == "opencode-zen")
+        .expect("opencode-zen exists");
+
+    modified_builtin.name = "OpenCode Zen Custom".to_string();
+    modified_builtin.base_url = "https://custom.zen/v1".to_string();
+
+    let views = apply_upsert_provider_template(&mut config, modified_builtin, |_| Ok(()))
+        .expect("upsert should succeed");
+
+    let zen_view = views.iter().find(|v| v.template.id == "opencode-zen").unwrap();
+    assert_eq!(zen_view.template.name, "OpenCode Zen Custom");
+    assert_eq!(zen_view.template.base_url, "https://custom.zen/v1");
+    assert!(!zen_view.from_snapshot);
+
+    // Create a new custom template
+    let new_custom = ProviderTemplate {
+        id: "my-custom-tpl".to_string(),
+        name: "My Custom Template".to_string(),
+        description: "A custom test template".to_string(),
+        base_url: "https://myapi.com/v1".to_string(),
+        protocol: UpstreamProtocol::ChatCompletions,
+        source: "".to_string(),
+        snapshot_version: "1".to_string(),
+        models_url: None,
+        models: vec![],
+    };
+
+    let views2 = apply_upsert_provider_template(&mut config, new_custom, |_| Ok(()))
+        .expect("custom template upsert should succeed");
+
+    let custom_view = views2.iter().find(|v| v.template.id == "my-custom-tpl");
+    assert!(custom_view.is_some());
+    assert_eq!(custom_view.unwrap().template.name, "My Custom Template");
+}
+
+#[test]
+fn test_template_delete_fails_when_used_by_provider() {
+    let mut config = GatewayConfig::default();
+    config.providers.push(GatewayUpstreamProvider {
+        id: "p1".to_string(),
+        name: "Active Provider".to_string(),
+        template_id: Some("opencode-zen".to_string()),
+        ..Default::default()
+    });
+
+    let err = apply_delete_provider_template(&mut config, "opencode-zen", |_| Ok(()))
+        .expect_err("should reject deleting a template that is in use");
+
+    assert!(err.contains("currently used by upstream provider 'Active Provider'"));
+}
+
+#[test]
+fn test_template_delete_succeeds_when_unused_and_reset_restores() {
+    let mut config = GatewayConfig::default();
+    // No providers using "commandcode"
+    let views = apply_delete_provider_template(&mut config, "commandcode", |_| Ok(()))
+        .expect("delete should succeed");
+
+    assert!(views.iter().all(|v| v.template.id != "commandcode"));
+    assert!(config.deleted_template_ids.contains(&"commandcode".to_string()));
+
+    // Reset restores builtins
+    let restored_views = apply_reset_provider_templates(&mut config, |_| Ok(()))
+        .expect("reset should succeed");
+
+    assert!(restored_views.iter().any(|v| v.template.id == "commandcode"));
+    assert!(config.deleted_template_ids.is_empty());
+}
+
+#[test]
+fn test_models_url_is_parsed_and_preserved() {
+    let json = r#"[
+        {
+            "id": "tpl-with-url",
+            "name": "Template with models URL",
+            "base_url": "https://api.test.com/v1",
+            "models_url": "https://api.test.com/v1/models",
+            "models": []
+        }
+    ]"#;
+    let templates = parse_template_snapshot(json).expect("should parse");
+    assert_eq!(templates.len(), 1);
+    assert_eq!(
+        templates[0].models_url.as_deref(),
+        Some("https://api.test.com/v1/models")
+    );
+}
+
+#[tokio::test]
+async fn test_fetch_models_from_url_rejects_empty() {
+    let res = crate::api_gateway::templates::fetch_models_from_url("   ", None).await;
+    assert!(res.is_err());
+    assert!(res.unwrap_err().contains("models URL cannot be empty"));
+}
+
+

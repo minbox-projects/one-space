@@ -7,14 +7,17 @@ import {
   CloudOff,
   Loader2,
   Moon,
+  Pencil,
   Plus,
   RefreshCw,
+  RotateCcw,
   Sparkles,
 } from "lucide-react";
 import {
   formatGatewayTimestamp,
   formatOffPeakDays,
   type CreateProviderFromTemplateRequest,
+  type GatewayProviderTemplate,
   type GatewayProviderTemplateModel,
   type GatewayProviderTemplateView,
 } from "@/lib/apiGateway";
@@ -26,6 +29,9 @@ export type ProviderTemplateSectionProps = {
   syncingTemplateIds: Record<string, boolean>;
   onSync: (templateId: string) => void;
   onCreateProvider: (request: CreateProviderFromTemplateRequest) => Promise<boolean>;
+  onEditTemplate?: (template: GatewayProviderTemplate) => void;
+  onNewTemplate?: () => void;
+  onResetBuiltin?: () => void;
 };
 
 /** Offline brand accents: OpenCode Zen emerald/cyan, CommandCode indigo/violet. */
@@ -56,6 +62,9 @@ export function ProviderTemplateSection({
   syncingTemplateIds,
   onSync,
   onCreateProvider,
+  onEditTemplate,
+  onNewTemplate,
+  onResetBuiltin,
 }: ProviderTemplateSectionProps) {
   const { t } = useTranslation();
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
@@ -69,22 +78,52 @@ export function ProviderTemplateSection({
 
   return (
     <section className="space-y-3" data-testid="api-gateway-provider-templates">
-      <div className="space-y-0.5">
-        <div className="flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-primary" />
-          <h3 className="text-sm font-semibold text-foreground">
-            {t("apiGatewayProviderTemplates", "Provider Templates")}
-          </h3>
-          <span className="rounded-full bg-muted px-2 py-0.2 text-[10px] font-semibold text-muted-foreground">
-            {templates.length}
-          </span>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="space-y-0.5">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary" />
+            <h3 className="text-sm font-semibold text-foreground">
+              {t("apiGatewayProviderTemplates", "Provider Templates")}
+            </h3>
+            <span className="rounded-full bg-muted px-2 py-0.2 text-[10px] font-semibold text-muted-foreground">
+              {templates.length}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {t(
+              "apiGatewayProviderTemplatesDesc",
+              "Built-in catalogs of official models, prices and reasoning efforts. Sync to refresh, then add one as an upstream provider.",
+            )}
+          </p>
         </div>
-        <p className="text-xs text-muted-foreground">
-          {t(
-            "apiGatewayProviderTemplatesDesc",
-            "Built-in catalogs of official models, prices and reasoning efforts.",
+
+        <div className="flex items-center gap-2">
+          {onResetBuiltin && (
+            <button
+              type="button"
+              data-testid="template-section-reset-btn"
+              onClick={onResetBuiltin}
+              disabled={busy}
+              title={t("apiGatewayTemplateResetBuiltin", "Restore built-in presets")}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted disabled:opacity-50"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              <span>{t("apiGatewayTemplateResetBuiltin", "Restore built-in presets")}</span>
+            </button>
           )}
-        </p>
+          {onNewTemplate && (
+            <button
+              type="button"
+              data-testid="template-section-new-btn"
+              onClick={onNewTemplate}
+              disabled={busy}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              <span>{t("apiGatewayNewTemplate", "New template")}</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {templates.length === 0 ? (
@@ -179,27 +218,43 @@ export function ProviderTemplateSection({
                   </div>
 
                   <div className="flex shrink-0 flex-col items-end gap-1.5">
-                    <button
-                      type="button"
-                      data-testid={`api-gateway-template-sync-${template.id}`}
-                      onClick={() => onSync(template.id)}
-                      disabled={syncing}
-                      aria-label={
-                        syncing
-                          ? t("apiGatewayTemplateSyncing", "Syncing...")
-                          : t("apiGatewayTemplateSync", "Sync")
-                      }
-                      className="inline-flex h-7 items-center gap-1 rounded-md border bg-background px-2 text-[11px] font-medium shadow-sm transition hover:bg-muted disabled:opacity-60"
-                    >
-                      {syncing ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <RefreshCw className="h-3 w-3" />
+                    <div className="flex items-center gap-1.5">
+                      {onEditTemplate && (
+                        <button
+                          type="button"
+                          data-testid={`api-gateway-template-edit-${template.id}`}
+                          onClick={() => onEditTemplate(template)}
+                          disabled={busy}
+                          aria-label={t("apiGatewayEditTemplate", "Edit template")}
+                          title={t("apiGatewayEditTemplate", "Edit template")}
+                          className="inline-flex h-7 items-center gap-1 rounded-md border bg-background px-2 text-[11px] font-medium shadow-sm transition hover:bg-muted disabled:opacity-50"
+                        >
+                          <Pencil className="h-3 w-3" />
+                          <span>{t("edit", "Edit")}</span>
+                        </button>
                       )}
-                      {syncing
-                        ? t("apiGatewayTemplateSyncing", "Syncing...")
-                        : t("apiGatewayTemplateSync", "Sync")}
-                    </button>
+                      <button
+                        type="button"
+                        data-testid={`api-gateway-template-sync-${template.id}`}
+                        onClick={() => onSync(template.id)}
+                        disabled={syncing}
+                        aria-label={
+                          syncing
+                            ? t("apiGatewayTemplateSyncing", "Syncing...")
+                            : t("apiGatewayTemplateSync", "Sync")
+                        }
+                        className="inline-flex h-7 items-center gap-1 rounded-md border bg-background px-2 text-[11px] font-medium shadow-sm transition hover:bg-muted disabled:opacity-60"
+                      >
+                        {syncing ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-3 w-3" />
+                        )}
+                        {syncing
+                          ? t("apiGatewayTemplateSyncing", "Syncing...")
+                          : t("apiGatewayTemplateSync", "Sync")}
+                      </button>
+                    </div>
 
                     <button
                       type="button"
