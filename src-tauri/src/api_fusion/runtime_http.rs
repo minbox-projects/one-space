@@ -828,6 +828,11 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     // influences the bytes written to the caller.
     let mut usage = SseUsageAccumulator::default();
     let mut capture = ForwardCapture::default();
+    // Real failure status to persist for a terminal all-unavailable outcome: the
+    // last upstream HTTP status (0 for a network error). The caller-facing
+    // streaming failure is an SSE event over HTTP 200, which must never be the
+    // status recorded in the request log.
+    let mut last_failure_status: Option<u16> = None;
     loop {
         let (mut candidate, retry_index) = if let Some(provider) = initial.next() {
             let model = match resolve_model_for_protocol(provider, requested, protocol) {
@@ -859,6 +864,7 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             let response = match streamed {
                 Ok(response) => response,
                 Err(error) => {
+                    last_failure_status = Some(0);
                     let reason = format!("network error: {error}");
                     break 'attempt (FailureClass::Retryable, true, reason, None);
                 }
@@ -886,6 +892,7 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     .await?;
                     return Ok(capture);
                 }
+                last_failure_status = Some(status);
                 let reason = failure_reason(status, parsed);
                 break 'attempt (class, is_retryable_failure(class, status), reason, retry_delay);
             }
@@ -900,6 +907,7 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             match chunks.next().await {
                 Some(Ok(first)) => {
                     if !is_sse_response_chunk(&content_type, &first) {
+                        last_failure_status = Some(502);
                         let reason = format!(
                             "2xx response is not a valid SSE stream (content-type: {content_type})"
                         );
@@ -938,7 +946,7 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     &format!("stream failed after first byte: {error}"),
                                 );
                                 health.apply(config);
-                                capture.status = status;
+                                capture.status = 502;
                                 capture.usage = usage.usage();
                                 capture.upstream_error = true;
                                 return Ok(capture);
@@ -954,10 +962,12 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     }
                 }
                 Some(Err(error)) => {
+                    last_failure_status = Some(0);
                     let reason = format!("stream failed before first byte: {error}");
                     break 'attempt (FailureClass::Retryable, true, reason, retry_delay);
                 }
                 None => {
+                    last_failure_status = Some(502);
                     let reason = "upstream returned an empty stream".to_string();
                     break 'attempt (FailureClass::Retryable, true, reason, retry_delay);
                 }
@@ -985,8 +995,10 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         .write_all(sse.as_bytes())
         .await
         .map_err(|e| e.to_string())?;
-    // HTTP 200 with an SSE error event is still a failure: never a success.
-    capture.status = 200;
+    // HTTP 200 with an SSE error event is still a failure: never a success, and
+    // the log records the real upstream failure status (502 when no upstream
+    // HTTP status was determinable) rather than the SSE transport's 200.
+    capture.status = last_failure_status.unwrap_or(502);
     capture.usage = None;
     capture.all_unavailable = true;
     Ok(capture)
@@ -1144,7 +1156,9 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
             .collect();
     if candidates.is_empty() {
         let message = no_candidate_message(&config, requested.as_deref(), protocol);
-        let status = if wants_stream { 200 } else { 502 };
+        // Streaming answers HTTP 200 + an SSE error event, but the log always
+        // records the gateway failure status, never the transport's 200.
+        let status = 502;
         if wants_stream {
             let payload = all_unavailable_payload(message);
             let sse = format!(

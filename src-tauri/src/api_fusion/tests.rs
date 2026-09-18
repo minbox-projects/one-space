@@ -7281,12 +7281,93 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
         .iter()
         .find(|record| record.result == UsageResult::Failure)
         .expect("streaming all-unavailable row");
-    assert_eq!(failure.status, 200);
+    assert_eq!(
+        failure.status, 502,
+        "the log records the gateway failure status, not the SSE transport's 200"
+    );
     assert_eq!(failure.total_tokens, 0);
     assert_eq!(failure.amount.unwrap_or(0.0), 0.0);
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
+}
+
+/// AC-009 / REQ-008: a streaming all-unavailable failure records the real
+/// upstream HTTP status in the request log, never the caller-facing SSE 200.
+#[tokio::test]
+async fn streaming_all_unavailable_logs_real_upstream_status() {
+    let home = temp_home("usage-forward-stream-status");
+    let port = free_port().await;
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(503, json!({"error": {"message": "upstream down"}}))
+    })
+    .await;
+
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a", "stream": true})),
+    )
+    .await;
+    assert_eq!(status, 200, "streaming all-unavailable still answers HTTP 200 SSE");
+    assert!(text.contains("all_providers_unavailable"), "body: {text}");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.result, UsageResult::Failure);
+    assert_eq!(
+        record.status, 503,
+        "the log must show the real upstream failure status, not the SSE 200"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-009 / REQ-008: a streaming all-unavailable caused by upstream connection
+/// errors records status 0, never the SSE transport's 200.
+#[tokio::test(start_paused = true)]
+async fn streaming_all_unavailable_network_error_logs_zero_status() {
+    let _home = temp_home("usage-forward-stream-network");
+    let _ticker = spawn_paused_clock_ticker();
+    let (drop_url, _log) = spawn_mock_upstream(|_| MockReply::Drop).await;
+    let provider = upstream_provider("p1", "Provider One", &drop_url, "sk", Some("remote-a"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![provider.clone()];
+    let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
+
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+    )
+    .await
+    .expect("streaming attempt");
+    drop(server);
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    assert!(String::from_utf8_lossy(&out).contains("all_providers_unavailable"));
+    assert_eq!(
+        capture.status, 0,
+        "a network failure has no HTTP status and must not be logged as 200"
+    );
 }
 
 /// AC-008 / REQ-007: 401, `GET /v1/models` and unknown paths/methods add no row.
