@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { TFunction } from "i18next";
 
 export const API_GATEWAY_DEFAULT_PORT = 17688;
 export const API_GATEWAY_STATUS_UPDATED_EVENT = "api-gateway-status-update";
@@ -22,6 +23,8 @@ export interface GatewayModelMapping {
    * existed; only an explicit `false` disables the row.
    */
   enabled?: boolean;
+  /** Reasoning-effort identifiers the model advertises. */
+  reasoning_efforts?: string[];
 }
 
 /** Upstream endpoint family a provider exposes; request bodies are not translated. */
@@ -41,6 +44,10 @@ export interface GatewayUpstreamProvider {
   disabled_at: number | null;
   consecutive_failures: number;
   last_error_at: number | null;
+  /** Template this provider was created from; absent for manual providers. */
+  template_id?: string | null;
+  /** Template models the user deleted for this provider. */
+  ignored_models?: string[];
 }
 
 export interface GatewayKey {
@@ -454,6 +461,8 @@ export interface OffPeakPrice {
   cache_read: number;
   cache_write: number;
   output: number;
+  /** UTC+8 weekdays the window applies to (`0` Sunday–`6` Saturday); absent/empty means every day. */
+  days?: number[] | null;
 }
 
 export interface ModelPrice {
@@ -623,4 +632,152 @@ export function apiGatewayUsageRetentionGet() {
 
 export function apiGatewayUsageRetentionSave(days: number) {
   return invoke<number>("api_gateway_usage_retention_save", { days });
+}
+
+// ---------------------------------------------------------------------------
+// Provider templates
+// ---------------------------------------------------------------------------
+
+/** One model shipped by a provider template. */
+export interface GatewayProviderTemplateModel {
+  upstream_model: string;
+  display_name?: string | null;
+  protocol?: GatewayUpstreamProtocol | null;
+  /** USD per million tokens. */
+  input: number;
+  cache_read: number;
+  cache_write: number;
+  output: number;
+  off_peaks?: OffPeakPrice[];
+  off_peak?: OffPeakPrice | null;
+  reasoning_efforts?: string[];
+}
+
+/** A built-in provider template catalog entry. */
+export interface GatewayProviderTemplate {
+  id: string;
+  name: string;
+  description: string;
+  base_url: string;
+  protocol: GatewayUpstreamProtocol;
+  source: string;
+  snapshot_version: string;
+  models: GatewayProviderTemplateModel[];
+}
+
+/** A template plus the last-sync metadata surfaced to the UI. */
+export interface GatewayProviderTemplateView {
+  template: GatewayProviderTemplate;
+  synced_at: number | null;
+  source: string;
+  from_snapshot: boolean;
+}
+
+/** Payload for creating one upstream provider from a template. */
+export interface CreateProviderFromTemplateRequest {
+  templateId: string;
+  name: string;
+  baseUrl: string;
+  protocol: GatewayUpstreamProtocol;
+  apiKey: string;
+}
+
+/** Display order for weekday chips: Monday first, Sunday last. */
+export const GATEWAY_WEEKDAY_ORDER: readonly number[] = [1, 2, 3, 4, 5, 6, 0];
+
+const GATEWAY_WEEKDAY_KEYS = [
+  "apiGatewayWeekdaySun",
+  "apiGatewayWeekdayMon",
+  "apiGatewayWeekdayTue",
+  "apiGatewayWeekdayWed",
+  "apiGatewayWeekdayThu",
+  "apiGatewayWeekdayFri",
+  "apiGatewayWeekdaySat",
+] as const;
+
+/** i18n key for a UTC+8 weekday (`0` Sunday–`6` Saturday); `""` when out of range. */
+export function gatewayWeekdayTranslationKey(day: number): string {
+  return GATEWAY_WEEKDAY_KEYS[day] ?? "";
+}
+
+/**
+ * Render a weekday set as localized labels. Invalid entries are dropped and
+ * duplicates collapsed; an empty result means every day.
+ */
+export function formatOffPeakDays(
+  days: number[] | null | undefined,
+  t: TFunction,
+): string {
+  const unique = Array.from(
+    new Set((days ?? []).filter((day) => day >= 0 && day <= 6)),
+  );
+  if (unique.length === 0) return t("apiGatewayEveryDay");
+  return GATEWAY_WEEKDAY_ORDER.filter((day) => unique.includes(day))
+    .map((day) => t(gatewayWeekdayTranslationKey(day)))
+    .join(", ");
+}
+
+/** Whether a mapping's upstream model is absent from the template's current models. */
+export function isMappingDeprecated(
+  mapping: GatewayModelMapping,
+  template: GatewayProviderTemplate | null | undefined,
+): boolean {
+  if (!template) return false;
+  return !template.models.some(
+    (model) => model.upstream_model === mapping.upstream_model,
+  );
+}
+
+/** Trim, drop blanks and deduplicate reasoning efforts preserving first-seen order. */
+export function normalizeReasoningEfforts(
+  efforts: string[] | null | undefined,
+): string[] {
+  const normalized: string[] = [];
+  for (const effort of efforts ?? []) {
+    const trimmed = effort.trim();
+    if (trimmed !== "" && !normalized.includes(trimmed)) normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+export function apiGatewayProviderTemplates() {
+  return invoke<GatewayProviderTemplateView[]>("api_gateway_provider_templates");
+}
+
+export function apiGatewaySyncProviderTemplate(templateId: string) {
+  return invoke<GatewayProviderTemplateView>("api_gateway_sync_provider_template", {
+    templateId,
+  });
+}
+
+export function apiGatewayCreateProviderFromTemplate(
+  request: CreateProviderFromTemplateRequest,
+) {
+  return invoke<GatewayConfig>("api_gateway_create_provider_from_template", {
+    templateId: request.templateId,
+    name: request.name,
+    baseUrl: request.baseUrl,
+    protocol: request.protocol,
+    apiKey: request.apiKey,
+  });
+}
+
+export function apiGatewayDeleteProviderModel(
+  providerId: string,
+  upstreamModel: string,
+) {
+  return invoke<GatewayConfig>("api_gateway_delete_provider_model", {
+    providerId,
+    upstreamModel,
+  });
+}
+
+export function apiGatewayRestoreProviderModel(
+  providerId: string,
+  upstreamModel: string,
+) {
+  return invoke<GatewayConfig>("api_gateway_restore_provider_model", {
+    providerId,
+    upstreamModel,
+  });
 }

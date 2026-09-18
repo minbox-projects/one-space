@@ -701,3 +701,212 @@ describe("aggregateModels 聚合本地模型", () => {
     expect(models, "聚合视图不应包含禁用映射 b").not.toContain("b");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 5: provider template types, command wrappers and display helpers.
+// RED tests for the frozen interface contract. Only this test file is touched.
+// ---------------------------------------------------------------------------
+
+import type { TFunction } from "i18next";
+import {
+  apiGatewayCreateProviderFromTemplate,
+  apiGatewayDeleteProviderModel,
+  apiGatewayProviderTemplates,
+  apiGatewayRestoreProviderModel,
+  apiGatewaySyncProviderTemplate,
+  formatOffPeakDays,
+  gatewayWeekdayTranslationKey,
+  GATEWAY_WEEKDAY_ORDER,
+  isMappingDeprecated,
+  normalizeReasoningEfforts,
+  type CreateProviderFromTemplateRequest,
+  type GatewayModelMapping,
+  type GatewayProviderTemplate,
+  type GatewayProviderTemplateView,
+  type OffPeakPrice,
+} from "@/lib/apiGateway";
+
+/** Identity translator so `formatOffPeakDays` assertions read the raw i18n keys. */
+const identityT = ((key: string) => key) as unknown as TFunction;
+
+function templateFixture(
+  overrides: Partial<GatewayProviderTemplate> = {},
+): GatewayProviderTemplate {
+  return {
+    id: "tpl-1",
+    name: "Template",
+    description: "Template description",
+    base_url: "https://template.example",
+    protocol: "chat_completions",
+    source: "snapshot",
+    snapshot_version: "2026-09-18",
+    models: [
+      {
+        upstream_model: "model-a",
+        input: 1,
+        cache_read: 0.1,
+        cache_write: 0.2,
+        output: 2,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+describe("apiGateway provider template helpers", () => {
+  beforeEach(() => {
+    resetTauriMocks();
+  });
+
+  it("gatewayWeekdayOrderIsMondayFirstAndZeroIsSunday", () => {
+    expect(GATEWAY_WEEKDAY_ORDER).toEqual([1, 2, 3, 4, 5, 6, 0]);
+
+    expect(gatewayWeekdayTranslationKey(0)).toBe("apiGatewayWeekdaySun");
+    expect(gatewayWeekdayTranslationKey(1)).toBe("apiGatewayWeekdayMon");
+    expect(gatewayWeekdayTranslationKey(2)).toBe("apiGatewayWeekdayTue");
+    expect(gatewayWeekdayTranslationKey(3)).toBe("apiGatewayWeekdayWed");
+    expect(gatewayWeekdayTranslationKey(4)).toBe("apiGatewayWeekdayThu");
+    expect(gatewayWeekdayTranslationKey(5)).toBe("apiGatewayWeekdayFri");
+    expect(gatewayWeekdayTranslationKey(6)).toBe("apiGatewayWeekdaySat");
+
+    expect(gatewayWeekdayTranslationKey(7)).toBe("");
+    expect(gatewayWeekdayTranslationKey(-1)).toBe("");
+  });
+
+  it("formatOffPeakDaysTreatsAbsentAndEmptyAsEveryDay", () => {
+    expect(formatOffPeakDays(undefined, identityT)).toBe("apiGatewayEveryDay");
+    expect(formatOffPeakDays(null, identityT)).toBe("apiGatewayEveryDay");
+    expect(formatOffPeakDays([], identityT)).toBe("apiGatewayEveryDay");
+  });
+
+  it("formatOffPeakDaysDeduplicatesFiltersAndOrdersDays", () => {
+    expect(formatOffPeakDays([5, 1, 1, 9], identityT)).toBe(
+      "apiGatewayWeekdayMon, apiGatewayWeekdayFri",
+    );
+    expect(formatOffPeakDays([0, 6], identityT)).toBe(
+      "apiGatewayWeekdaySat, apiGatewayWeekdaySun",
+    );
+    expect(formatOffPeakDays([9, -1], identityT)).toBe("apiGatewayEveryDay");
+  });
+
+  it("normalizeReasoningEffortsTrimsDropsEmptyAndDeduplicates", () => {
+    expect(
+      normalizeReasoningEfforts([" low ", "", "low", "high", " high "]),
+    ).toEqual(["low", "high"]);
+    expect(normalizeReasoningEfforts(null)).toEqual([]);
+    expect(normalizeReasoningEfforts(undefined)).toEqual([]);
+  });
+
+  it("isMappingDeprecatedDetectsRetiredTemplateModels", () => {
+    const template = templateFixture();
+    const installed: GatewayModelMapping = {
+      local_model: "model-a",
+      upstream_model: "model-a",
+    };
+    const retired: GatewayModelMapping = {
+      local_model: "model-b",
+      upstream_model: "model-b",
+    };
+
+    expect(isMappingDeprecated(installed, template)).toBe(false);
+    expect(isMappingDeprecated(retired, template)).toBe(true);
+    expect(isMappingDeprecated(installed, null)).toBe(false);
+    expect(isMappingDeprecated(installed, undefined)).toBe(false);
+  });
+
+  it("providerTemplateWrappersPassExactCommandArguments", async () => {
+    const request: CreateProviderFromTemplateRequest = {
+      templateId: "tpl-1",
+      name: "My Provider",
+      baseUrl: "https://upstream.example",
+      protocol: "responses",
+      apiKey: "test-key",
+    };
+
+    const templatesCall = apiGatewayProviderTemplates();
+    const syncCall = apiGatewaySyncProviderTemplate("tpl-1");
+    const createCall = apiGatewayCreateProviderFromTemplate(request);
+    const deleteCall = apiGatewayDeleteProviderModel("p1", "model-a");
+    const restoreCall = apiGatewayRestoreProviderModel("p1", "model-a");
+
+    expect(templatesCall).toBeInstanceOf(Promise);
+    expect(syncCall).toBeInstanceOf(Promise);
+    expect(createCall).toBeInstanceOf(Promise);
+    expect(deleteCall).toBeInstanceOf(Promise);
+    expect(restoreCall).toBeInstanceOf(Promise);
+
+    await Promise.all([
+      templatesCall,
+      syncCall,
+      createCall,
+      deleteCall,
+      restoreCall,
+    ]);
+
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_provider_templates");
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_sync_provider_template", {
+      templateId: "tpl-1",
+    });
+    expect(invokeMock).toHaveBeenCalledWith(
+      "api_gateway_create_provider_from_template",
+      {
+        templateId: "tpl-1",
+        name: "My Provider",
+        baseUrl: "https://upstream.example",
+        protocol: "responses",
+        apiKey: "test-key",
+      },
+    );
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_delete_provider_model", {
+      providerId: "p1",
+      upstreamModel: "model-a",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_restore_provider_model", {
+      providerId: "p1",
+      upstreamModel: "model-a",
+    });
+  });
+
+  it("newOptionalTemplateFieldsDoNotBreakExistingConstruction", () => {
+    const legacyOffPeak: OffPeakPrice = {
+      start_time: "00:00",
+      end_time: "08:00",
+      input: 1,
+      cache_read: 0.1,
+      cache_write: 0.2,
+      output: 2,
+    };
+    expect(legacyOffPeak.days).toBeUndefined();
+    const weekdayOffPeak: OffPeakPrice = { ...legacyOffPeak, days: [1, 3, 5] };
+    expect(weekdayOffPeak.days).toEqual([1, 3, 5]);
+
+    const legacyMapping: GatewayModelMapping = {
+      local_model: "local-a",
+      upstream_model: "remote-a",
+    };
+    expect(legacyMapping.reasoning_efforts).toBeUndefined();
+    const effortMapping: GatewayModelMapping = {
+      ...legacyMapping,
+      reasoning_efforts: ["low"],
+    };
+    expect(effortMapping.reasoning_efforts).toEqual(["low"]);
+
+    const legacyProvider = provider();
+    expect(legacyProvider.template_id).toBeUndefined();
+    expect(legacyProvider.ignored_models).toBeUndefined();
+    const boundProvider = provider({
+      template_id: "tpl-1",
+      ignored_models: ["model-b"],
+    });
+    expect(boundProvider.template_id).toBe("tpl-1");
+    expect(boundProvider.ignored_models).toEqual(["model-b"]);
+
+    const view: GatewayProviderTemplateView = {
+      template: templateFixture(),
+      synced_at: null,
+      source: "snapshot",
+      from_snapshot: true,
+    };
+    expect(view.from_snapshot).toBe(true);
+  });
+});
