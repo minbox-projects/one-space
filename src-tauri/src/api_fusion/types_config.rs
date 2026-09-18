@@ -38,6 +38,11 @@ pub(in crate::api_fusion) fn now_ts() -> u64 {
 pub struct ModelMapping {
     pub local_model: String,
     pub upstream_model: String,
+    /// Whether this row may serve requests. Rows in legacy configs without the
+    /// field default to enabled; the value is always serialized so the user's
+    /// per-mapping intent survives a round trip.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<UpstreamProtocol>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -87,6 +87,7 @@ fn fusion_config_round_trips_and_encrypts_secrets_on_disk() {
             upstream_model: "remote-a".to_string(),
             protocol: None,
             display_name: None,
+            enabled: true,
         }];
         config.providers.push(first);
         config.keys.push(FusionKey {
@@ -253,6 +254,7 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         upstream_model: "remote-a".to_string(),
         protocol: None,
         display_name: None,
+        enabled: true,
     }];
 
     // 1. A matching row whose effective protocol equals the inbound protocol is served,
@@ -289,6 +291,7 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         upstream_model: "remote-r".to_string(),
         protocol: Some(UpstreamProtocol::Responses),
         display_name: None,
+        enabled: true,
     }];
     assert!(matches!(
         resolve_model_for_protocol(&per_model, Some("local-r"), UpstreamProtocol::Responses),
@@ -308,6 +311,7 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         upstream_model: "   ".to_string(),
         protocol: Some(UpstreamProtocol::Responses),
         display_name: None,
+        enabled: true,
     }];
     assert!(matches!(
         resolve_model_for_protocol(&blank_row, Some("local-blank"), UpstreamProtocol::ChatCompletions),
@@ -682,6 +686,7 @@ fn mapping(local_model: &str, upstream_model: &str, display_name: Option<&str>) 
         upstream_model: upstream_model.to_string(),
         protocol: None,
         display_name: display_name.map(str::to_string),
+        enabled: true,
     }
 }
 
@@ -706,6 +711,7 @@ async fn forwards_chat_completions_path_body_and_provider_auth() {
         upstream_model: "remote-a".to_string(),
         protocol: None,
         display_name: None,
+        enabled: true,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -872,6 +878,7 @@ async fn provider_base_url_with_v1_does_not_double_the_version_segment() {
         upstream_model: "remote-a".to_string(),
         protocol: None,
         display_name: None,
+        enabled: true,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -1295,12 +1302,14 @@ async fn models_endpoint_returns_local_union_without_upstream() {
             upstream_model: "remote-a".to_string(),
             protocol: None,
             display_name: None,
+            enabled: true,
         },
         ModelMapping {
             local_model: "local-b".to_string(),
             upstream_model: "remote-b".to_string(),
             protocol: None,
             display_name: None,
+            enabled: true,
         },
     ];
     config.providers.push(provider);
@@ -2688,6 +2697,7 @@ async fn no_candidate_model_returns_all_unavailable_without_upstream_request() {
         upstream_model: "remote-a".to_string(),
         protocol: None,
         display_name: None,
+        enabled: true,
     }];
     config.providers.push(p);
     super::storage::write_config(&config).unwrap();
@@ -3421,6 +3431,7 @@ async fn end_to_end_path_prefix_and_body_equivalence_for_chat_and_responses() {
         upstream_model: "remote-a".to_string(),
         protocol: None,
         display_name: None,
+        enabled: true,
     };
     let mut chat_provider =
         upstream_provider("p1", "Provider One", &base_url, "upstream-secret", None);
@@ -3506,12 +3517,14 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
             upstream_model: "remote-b".to_string(),
             protocol: None,
             display_name: None,
+            enabled: true,
         },
         ModelMapping {
             local_model: "local-a".to_string(),
             upstream_model: "remote-a".to_string(),
             protocol: None,
             display_name: None,
+            enabled: true,
         },
     ];
     let mut disabled = upstream_provider("p2", "Provider Two", &upstream_url, "sk", None);
@@ -3521,6 +3534,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         upstream_model: "x".to_string(),
         protocol: None,
         display_name: None,
+        enabled: true,
     }];
     let mut auto_disabled = upstream_provider("p3", "Provider Three", &upstream_url, "sk", None);
     auto_disabled.auto_disabled = true;
@@ -3529,6 +3543,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         upstream_model: "x".to_string(),
         protocol: None,
         display_name: None,
+        enabled: true,
     }];
     let no_model = upstream_provider("p4", "Provider Four", &upstream_url, "sk", None);
     config
@@ -5053,6 +5068,7 @@ async fn default_model_fallback_requires_a_matching_provider_protocol() {
         upstream_model: "other-remote".to_string(),
         protocol: None,
         display_name: None,
+        enabled: true,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -5287,6 +5303,7 @@ async fn mapping_without_protocol_inherits_the_provider_protocol() {
         upstream_model: "legacy-remote".to_string(),
         protocol: None,
         display_name: None,
+        enabled: true,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -5637,6 +5654,7 @@ async fn cross_record_candidates_are_selected_by_each_records_protocol() {
         upstream_model: "remote-chat".to_string(),
         protocol: None,
         display_name: None,
+        enabled: true,
     }];
     let mut responses_record = upstream_provider(
         "responses-record",
@@ -5651,6 +5669,7 @@ async fn cross_record_candidates_are_selected_by_each_records_protocol() {
         upstream_model: "remote-responses".to_string(),
         protocol: None,
         display_name: None,
+        enabled: true,
     }];
     config.providers.push(chat_record);
     config.providers.push(responses_record);
@@ -10049,4 +10068,272 @@ async fn mid_stream_failure_end_to_end_logs_one_failure_with_usage() {
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
+}
+
+// ---------------------------------------------------------------------------
+// Plan 20260918-gateway-per-model-mapping-disable, Step 1 (RED)
+// Per-mapping `enabled`: legacy default, persistence, routing exclusion and
+// provider-toggle independence.
+// ---------------------------------------------------------------------------
+
+/// AC-001/REQ-001: a mapping without an `enabled` field loads as enabled, the
+/// field is always serialized, and a disabled value survives write/read.
+#[test]
+fn mapping_enabled_defaults_true_for_legacy_config_and_survives_round_trip() {
+    with_temp_home("mapping-enabled-persist", |_home| {
+        let mut config: FusionConfig = serde_json::from_value(json_config_with_key(
+            17688,
+            vec![json_provider(
+                "p1",
+                "Provider One",
+                "https://api.example.com/v1",
+                "chat_completions",
+                None,
+                vec![
+                    json_mapping("m1-local", "m1-remote", Some("chat_completions")),
+                    json_mapping("m2-local", "m2-remote", Some("chat_completions")),
+                ],
+            )],
+        ))
+        .expect("a legacy config without mapping.enabled must deserialize");
+
+        assert!(
+            config.providers[0].mappings.iter().all(|row| row.enabled),
+            "every legacy mapping without an enabled field must default to enabled"
+        );
+
+        let serialized = serde_json::to_value(&config).expect("serialize config");
+        let rows = serialized["providers"][0]["mappings"]
+            .as_array()
+            .expect("mappings must be an array");
+        for (index, row) in rows.iter().enumerate() {
+            assert!(
+                row.get("enabled").is_some(),
+                "serialized mapping {index} must include the enabled field: {serialized}"
+            );
+            assert_eq!(
+                row["enabled"], true,
+                "a legacy mapping must serialize as enabled: {serialized}"
+            );
+        }
+
+        config.providers[0].mappings[1].enabled = false;
+        super::storage::write_config(&config).expect("write config");
+        let reloaded = super::storage::read_config().expect("read config");
+        assert!(
+            reloaded.providers[0].mappings[0].enabled,
+            "an enabled mapping must stay enabled across write/read"
+        );
+        assert!(
+            !reloaded.providers[0].mappings[1].enabled,
+            "a disabled mapping must stay disabled across write/read"
+        );
+
+        let serialized = serde_json::to_value(&reloaded).expect("encode reloaded config");
+        assert_eq!(
+            serialized["providers"][0]["mappings"][1]["enabled"], false,
+            "the reloaded disabled mapping must serialize as false: {serialized}"
+        );
+    });
+}
+
+/// AC-002/REQ-002: a disabled mapping is never served, blocks the provider's
+/// `default_model` fallback for its local model, and drops the provider from the
+/// candidate set; enabled and unmapped models keep their existing behavior.
+#[test]
+fn disabled_mapping_is_excluded_and_blocks_default_fallback() {
+    let mut disabled_m2 = mapping("m2-local", "m2-remote", None);
+    disabled_m2.enabled = false;
+    let mut p = provider("p1");
+    p.default_model = Some("d".to_string());
+    p.mappings = vec![mapping("m1-local", "m1-remote", None), disabled_m2];
+
+    let m2 = resolve_model_for_protocol(&p, Some("m2-local"), UpstreamProtocol::ChatCompletions);
+    assert!(
+        matches!(m2, ModelResolution::NoMatch),
+        "a request that only matches a disabled mapping must be NoMatch, never a default fallback; got {m2:?}"
+    );
+
+    let m1 = resolve_model_for_protocol(&p, Some("m1-local"), UpstreamProtocol::ChatCompletions);
+    assert!(
+        matches!(m1, ModelResolution::Serve(ref model) if model.as_str() == "m1-remote"),
+        "an enabled mapping must be served with its own upstream model; got {m1:?}"
+    );
+
+    let fallback =
+        resolve_model_for_protocol(&p, Some("unmapped"), UpstreamProtocol::ChatCompletions);
+    assert!(
+        matches!(fallback, ModelResolution::Serve(ref model) if model.as_str() == "d"),
+        "a model that matches no mapping must still fall back to default_model; got {fallback:?}"
+    );
+
+    let providers = [p];
+    let candidates = candidate_providers(&providers, Some("m2-local"), UpstreamProtocol::ChatCompletions);
+    assert!(
+        candidates.is_empty(),
+        "a provider whose only match is disabled must not be a candidate: {candidates:?}"
+    );
+}
+
+/// AC-002/REQ-002 (HTTP): requesting a disabled mapping returns the standard 502
+/// `all_providers_unavailable` error without contacting upstream, while enabled
+/// and unmapped models still reach upstream through the same process.
+#[tokio::test]
+async fn disabled_mapping_request_returns_all_providers_unavailable() {
+    let home = temp_home("mapping-disabled-http");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
+
+    let config: FusionConfig = serde_json::from_value(json_config_with_key(
+        port,
+        vec![json_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            "chat_completions",
+            Some("d"),
+            vec![
+                json_mapping("m1-local", "m1-remote", None),
+                json!({"local_model": "m2-local", "upstream_model": "m2-remote", "enabled": false}),
+            ],
+        )],
+    ))
+    .expect("decode config containing a disabled mapping");
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "m2-local", "messages": []})),
+    )
+    .await;
+    assert_eq!(
+        status, 502,
+        "a request whose only match is disabled must fail with 502: {text}"
+    );
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(
+        body["error"]["code"], "all_providers_unavailable",
+        "a disabled mapping must produce all_providers_unavailable: {text}"
+    );
+    let captured = log.lock().unwrap().clone();
+    assert!(
+        captured.is_empty(),
+        "the disabled mapping must never reach upstream: {}",
+        captured_summary(&captured)
+    );
+
+    let (m1_status, _content_type, m1_text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "m1-local", "messages": []})),
+    )
+    .await;
+    assert_eq!(
+        m1_status, 200,
+        "the enabled mapping must still be served: {m1_text}"
+    );
+
+    let (fallback_status, _content_type, fallback_text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "unmapped-local", "messages": []})),
+    )
+    .await;
+    assert_eq!(
+        fallback_status, 200,
+        "a model matching no mapping must still use default_model: {fallback_text}"
+    );
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        2,
+        "only the enabled mapping and the unmapped fallback may reach upstream: {}",
+        captured_summary(&captured)
+    );
+    let m1_sent: Value = serde_json::from_slice(&captured[0].body).unwrap();
+    assert_eq!(
+        m1_sent["model"], "m1-remote",
+        "the enabled mapping must forward its own upstream model: {}",
+        captured_summary(&captured)
+    );
+    let fallback_sent: Value = serde_json::from_slice(&captured[1].body).unwrap();
+    assert_eq!(
+        fallback_sent["model"], "d",
+        "an unmapped model must forward the provider default model: {}",
+        captured_summary(&captured)
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-003/REQ-003: toggling the provider (user disable/re-enable) and clearing
+/// an auto-disable never rewrite any mapping's `enabled`, including across a
+/// config round trip.
+#[test]
+fn provider_disable_and_reenable_preserves_mapping_enabled_state() {
+    with_temp_home("mapping-provider-toggle", |_home| {
+        let mut disabled_b = mapping("b-local", "b-remote", None);
+        disabled_b.enabled = false;
+        let mut p = provider("p1");
+        p.mappings = vec![mapping("a-local", "a-remote", None), disabled_b];
+
+        set_user_enabled(&mut p, false);
+        assert!(!p.enabled, "user disable must clear the provider intent flag");
+        assert!(
+            p.mappings[0].enabled,
+            "provider disable must not touch mapping A"
+        );
+        assert!(
+            !p.mappings[1].enabled,
+            "provider disable must not touch mapping B"
+        );
+
+        set_user_enabled(&mut p, true);
+        assert!(p.enabled, "user re-enable must set the provider intent flag");
+        assert!(
+            p.mappings[0].enabled,
+            "provider re-enable must not touch mapping A"
+        );
+        assert!(
+            !p.mappings[1].enabled,
+            "provider re-enable must not touch mapping B"
+        );
+
+        register_failure(&mut p, FailureClass::DisableImmediately, "auth", 1);
+        assert!(p.auto_disabled, "an auth failure must auto-disable the provider");
+        manual_reenable(&mut p);
+        assert!(!p.auto_disabled, "manual re-enable must clear auto-disabled");
+        assert!(
+            p.mappings[0].enabled,
+            "manual re-enable must not touch mapping A"
+        );
+        assert!(
+            !p.mappings[1].enabled,
+            "manual re-enable must not touch mapping B"
+        );
+
+        let mut config = FusionConfig::default();
+        config.providers.push(p);
+        super::storage::write_config(&config).expect("write config");
+        let reloaded = super::storage::read_config().expect("read config");
+        assert!(
+            reloaded.providers[0].mappings[0].enabled,
+            "mapping A must stay enabled after the provider toggle round trip"
+        );
+        assert!(
+            !reloaded.providers[0].mappings[1].enabled,
+            "mapping B must stay disabled after the provider toggle round trip"
+        );
+    });
 }
