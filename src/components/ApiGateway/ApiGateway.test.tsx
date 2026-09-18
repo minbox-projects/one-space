@@ -933,7 +933,7 @@ describe("ApiGateway", () => {
     const tabsList = screen.getByRole("tablist", { name: /API Gateway tabs/i });
     expect(tabsList).toBeInTheDocument();
 
-    const keysTab = screen.getByRole("tab", { name: /Api Keys/i });
+    const keysTab = screen.getByRole("tab", { name: /API Keys|API 密钥/i });
     const terminalsTab = screen.getByRole("tab", { name: /AI terminal integration/i });
     const providersTab = screen.getByRole("tab", { name: /Upstream providers/i });
 
@@ -1312,7 +1312,7 @@ describe("ApiGateway", () => {
 
     renderWithProviders(<ApiGateway />);
 
-    const keysTab = await screen.findByRole("tab", { name: /Api Keys/i });
+    const keysTab = await screen.findByRole("tab", { name: /API Keys|API 密钥/i });
     fireEvent.click(keysTab);
     expect(keysTab).toHaveAttribute("aria-selected", "true");
 
@@ -1336,7 +1336,7 @@ describe("ApiGateway", () => {
 
     renderWithProviders(<ApiGateway />);
 
-    const keysTab = await screen.findByRole("tab", { name: /Api Keys/i });
+    const keysTab = await screen.findByRole("tab", { name: /API Keys|API 密钥/i });
     fireEvent.click(keysTab);
     expect(keysTab).toHaveAttribute("aria-selected", "true");
 

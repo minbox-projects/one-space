@@ -594,7 +594,7 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
     },
     {
       id: "keys",
-      label: t("apiGatewayKeys", "Api Keys"),
+      label: t("apiGatewayKeys", "API Keys"),
       icon: KeyRound,
       count: config?.keys?.length ?? 0,
     },
@@ -743,7 +743,7 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
         {/* Tab 3: 本地密钥 */}
         <div
           role="tabpanel"
-          aria-label={t("apiGatewayKeys", "Api Keys")}
+          aria-label={t("apiGatewayKeys", "API Keys")}
           className={activeTab === "keys" ? "block" : "hidden"}
         >
           <LocalKeyList
