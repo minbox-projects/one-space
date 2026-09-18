@@ -164,6 +164,21 @@ pub struct TerminalSyncRecord {
     pub synced_at: u64,
 }
 
+/// Pricing tier configuration during off-peak hours.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OffPeakPrice {
+    pub start_time: String,
+    pub end_time: String,
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub cache_read: f64,
+    #[serde(default)]
+    pub cache_write: f64,
+    #[serde(default)]
+    pub output: f64,
+}
+
 /// Unit prices for one upstream model, in US dollars per million tokens.
 ///
 /// Prices are matched against the upstream model name recorded at request time;
@@ -171,6 +186,8 @@ pub struct TerminalSyncRecord {
 /// already-persisted usage records.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelPrice {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
     pub upstream_model: String,
     #[serde(default)]
     pub input: f64,
@@ -180,6 +197,8 @@ pub struct ModelPrice {
     pub cache_write: f64,
     #[serde(default)]
     pub output: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub off_peak: Option<OffPeakPrice>,
 }
 
 /// Persisted API Fusion configuration.

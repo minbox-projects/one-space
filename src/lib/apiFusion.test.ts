@@ -211,8 +211,8 @@ describe("resolveDefaultKeyId 默认 Key 解析", () => {
 
 describe("localBaseUrl 本地 Api 地址", () => {
   it("固定绑定回环地址与端口", () => {
-    expect(localBaseUrl(API_FUSION_DEFAULT_PORT)).toBe("http://127.0.0.1:17688");
-    expect(localBaseUrl(18000)).toBe("http://127.0.0.1:18000");
+    expect(localBaseUrl(API_FUSION_DEFAULT_PORT)).toBe("http://127.0.0.1:17688/v1");
+    expect(localBaseUrl(18000)).toBe("http://127.0.0.1:18000/v1");
   });
 });
 

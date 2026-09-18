@@ -104,7 +104,7 @@ export function ApiFusion({ isVisible = true }: { isVisible?: boolean }) {
         running: false,
         enabled: false,
         port: 17688,
-        local_base_url: "http://127.0.0.1:17688",
+        local_base_url: "http://127.0.0.1:17688/v1",
         provider_count: 0,
         auto_disabled_count: 0,
         key_count: 0,

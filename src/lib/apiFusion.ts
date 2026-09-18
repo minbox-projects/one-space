@@ -112,9 +112,9 @@ export function resolveDefaultKeyId(
   return keys.find((key) => key.enabled)?.id ?? null;
 }
 
-/** Build the local OpenAI-compatible base address the listener binds to. */
+/** Build the local OpenAI-compatible base address (with `/v1` suffix) the listener binds to. */
 export function localBaseUrl(port: number): string {
-  return `http://127.0.0.1:${port}`;
+  return `http://127.0.0.1:${port}/v1`;
 }
 
 /** Resolved upstream model plus the endpoint family the request is sent to. */
@@ -430,13 +430,66 @@ export interface UsageLogsQuery {
   page?: number;
 }
 
+export interface OffPeakPrice {
+  /** "HH:mm" 24-hour string in UTC+8, e.g. "00:30" */
+  start_time: string;
+  /** "HH:mm" 24-hour string in UTC+8, e.g. "08:30" */
+  end_time: string;
+  /** USD per million tokens in off-peak hours */
+  input: number;
+  cache_read: number;
+  cache_write: number;
+  output: number;
+}
+
 export interface ModelPrice {
+  provider_id?: string | null;
   upstream_model: string;
   /** USD per million tokens. */
   input: number;
   cache_read: number;
   cache_write: number;
   output: number;
+  off_peak?: OffPeakPrice | null;
+}
+
+export interface ProviderAvailableModel {
+  upstream_model: string;
+  display_name?: string | null;
+  is_default?: boolean;
+}
+
+/**
+ * Extract unique upstream models configured for a provider (from default_model and mappings).
+ */
+export function getProviderAvailableModels(
+  provider: FusionUpstreamProvider,
+): ProviderAvailableModel[] {
+  const map = new Map<string, ProviderAvailableModel>();
+  const defaultModel = (provider.default_model ?? "").trim();
+  if (defaultModel) {
+    map.set(defaultModel, {
+      upstream_model: defaultModel,
+      is_default: true,
+    });
+  }
+  for (const m of provider.mappings) {
+    const upstream = m.upstream_model.trim();
+    if (!upstream) continue;
+    const existing = map.get(upstream);
+    if (!existing) {
+      map.set(upstream, {
+        upstream_model: upstream,
+        display_name: m.display_name?.trim() || m.local_model.trim(),
+        is_default: false,
+      });
+    } else if (!existing.display_name && (m.display_name?.trim() || m.local_model.trim())) {
+      existing.display_name = m.display_name?.trim() || m.local_model.trim();
+    }
+  }
+  return Array.from(map.values()).sort((a, b) =>
+    a.upstream_model.localeCompare(b.upstream_model),
+  );
 }
 
 const UTC8_OFFSET_MS = 8 * 60 * 60 * 1000;

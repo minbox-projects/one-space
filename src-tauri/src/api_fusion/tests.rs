@@ -5,9 +5,9 @@ use super::selection::{
 };
 use super::storage::{config_path, resolve_default_key_id};
 use super::{
-    compute_cost, match_price, normalize_retention_days, resolve_range, usage_tokens_from_value,
+    compute_cost, compute_cost_at_time, is_off_peak, match_price, match_price_for_provider, normalize_retention_days, resolve_range, usage_tokens_from_value,
     validate_retention_days, FusionConfig, FusionKey, FusionUpstreamProvider, LogFilter,
-    ModelMapping, ModelPrice, SseUsageAccumulator, TerminalSyncRecord, TimeRange, UpstreamProtocol,
+    ModelMapping, ModelPrice, OffPeakPrice, SseUsageAccumulator, TerminalSyncRecord, TimeRange, UpstreamProtocol,
     UsageLogRecord, UsageLogStore, UsageResult, UsageTokens, DEFAULT_USAGE_RETENTION_DAYS,
     USAGE_LOG_PAGE_SIZE,
 };
@@ -1023,28 +1023,38 @@ async fn spawn_json_sequence_mock(responses: Vec<(u16, Value)>) -> (String, Arc<
     (format!("http://{}", addr), count)
 }
 
-/// RED slice for REQ-002 / AC-002 (recovery): a single upstream that fails the
-/// first attempt with a retryable 500 and succeeds on the second must be
-/// retried within the same request. Observable boundary: the full HTTP response
-/// returned by `attempt_non_streaming` plus the exact number of upstream
-/// requests. Current behavior makes only one attempt, so this fails.
+/// AC-003 / REQ-002 regression (migrated to two candidates): provider A fails
+/// the first attempt with a retryable 500 and succeeds on the second, while
+/// provider B advertises a far-later cooldown. A must still be retried at its
+/// own deadline and recover, so multi-candidate scheduling keeps this
+/// observation instead of losing it to the single-candidate fast path.
+/// Observable boundary: the full HTTP response returned by
+/// `attempt_non_streaming` plus each provider's exact upstream request count.
 #[tokio::test(start_paused = true)]
-async fn attempt_non_streaming_retries_single_provider_after_500_then_succeeds() {
-    let _home = isolated_temp_home("retry-recovery-single-provider");
-    let (upstream_url, upstream_requests) = spawn_json_sequence_mock(vec![
+async fn attempt_non_streaming_retries_provider_after_500_then_succeeds() {
+    let _home = isolated_temp_home("retry-recovery-two-providers");
+    let (a_url, a_requests) = spawn_json_sequence_mock(vec![
         (500, json!({"error": {"message": "temporarily unavailable"}})),
         (200, json!({"id": "recovered", "choices": []})),
     ])
     .await;
+    let (b_url, b_requests) = spawn_header_sequence_mock(vec![HeaderReply::new(
+        500,
+        json!({"error": {"message": "busy"}}),
+    )
+    .header("retry-after-ms", "60000")])
+    .await;
 
     let mut config = FusionConfig::default();
     config.keys.push(key_named("k1", "local-key"));
-    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     config.providers.push(a.clone());
+    config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
     let (response, _default_backoff_elapsed) = attempt_non_streaming_paused(
-        std::slice::from_ref(&a),
+        &[a.clone(), b.clone()],
         "/v1/chat/completions",
         &body,
         Some("local"),
@@ -1052,12 +1062,15 @@ async fn attempt_non_streaming_retries_single_provider_after_500_then_succeeds()
     )
     .await;
 
-    // Assert the attempt count first: the RED gap is that the current code stops
-    // after the first 500 instead of issuing a bounded retry.
     assert_eq!(
-        upstream_requests.load(Ordering::SeqCst),
+        a_requests.load(Ordering::SeqCst),
         2,
-        "one initial attempt plus exactly one bounded retry"
+        "A makes one initial attempt plus exactly one bounded retry"
+    );
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        1,
+        "B's far-later cooldown must not preempt A's retry"
     );
 
     let body_text = String::from_utf8_lossy(&response.body);
@@ -1485,6 +1498,232 @@ async fn unknown_path_and_method_return_404() {
     drop(home);
 }
 
+/// AC-010 / REQ-006: a malformed request line (no header terminator) is a
+/// gateway-generated 400 carrying the full standard envelope.
+#[tokio::test]
+async fn gateway_request_parse_failure_uses_standard_error_envelope() {
+    let home = temp_home("gateway-parse-error-envelope");
+    let port = free_port().await;
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let text = call_fusion_raw(port, "GARBAGE\r\n").await;
+    let (status_line, body) = raw_http_status_and_body(&text);
+    assert!(
+        status_line.starts_with("HTTP/1.1 400"),
+        "a malformed request must answer 400: {text}"
+    );
+    assert!(
+        text.to_ascii_lowercase()
+            .contains("content-type: application/json"),
+        "content-type must be application/json: {text}"
+    );
+    assert_standard_error_envelope(&body);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-006: when the encrypted config file cannot be read the gateway
+/// answers 500 with the full standard envelope.
+#[tokio::test]
+async fn gateway_config_read_failure_uses_standard_error_envelope() {
+    let home = temp_home("gateway-config-error-envelope");
+    let port = free_port().await;
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(upstream_provider(
+        "p1",
+        "Provider One",
+        "http://127.0.0.1:1",
+        "sk",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    let path = config_path().unwrap();
+    let valid = fs::read(&path).expect("read valid config");
+    super::runtime_http::start_server().await.unwrap();
+
+    fs::write(&path, b"not encrypted ciphertext").expect("corrupt config");
+
+    let (status, content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 500, "config read failure must answer 500: {text}");
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    assert_standard_error_envelope(&text);
+
+    // Restore a decryptable config so the shared server can stop cleanly.
+    fs::write(&path, valid).expect("restore config");
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-006: an unknown path is a gateway-generated 404 with the full
+/// standard envelope.
+#[tokio::test]
+async fn gateway_unknown_path_uses_standard_error_envelope() {
+    let home = temp_home("gateway-unknown-path-envelope");
+    let port = free_port().await;
+    let config = config_with_key(port);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/embeddings",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"input": "x"})),
+    )
+    .await;
+    assert_eq!(status, 404, "unknown path must answer 404: {text}");
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    assert_standard_error_envelope(&text);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-006: a missing or wrong local key is a gateway-generated 401
+/// with the full standard envelope.
+#[tokio::test]
+async fn gateway_unauthorized_uses_standard_error_envelope() {
+    let home = temp_home("gateway-unauthorized-envelope");
+    let port = free_port().await;
+    let config = config_with_key(port);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer wrong-key")],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 401, "unauthorized must answer 401: {text}");
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    assert_standard_error_envelope(&text);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-006: a non-GET method on `/v1/models` is a gateway-generated
+/// 404 with the full standard envelope.
+#[tokio::test]
+async fn gateway_wrong_method_on_models_uses_standard_error_envelope() {
+    let home = temp_home("gateway-models-method-envelope");
+    let port = free_port().await;
+    let config = config_with_key(port);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/models",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, 404, "a non-GET /v1/models must answer 404: {text}");
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    assert_standard_error_envelope(&text);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-006: a malformed JSON body on a supported path is a
+/// gateway-generated 400 with the full standard envelope.
+#[tokio::test]
+async fn gateway_invalid_request_body_uses_standard_error_envelope() {
+    let home = temp_home("gateway-invalid-body-envelope");
+    let port = free_port().await;
+    let config = config_with_key(port);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let body = "{not valid json";
+    let request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nhost: 127.0.0.1\r\nauthorization: Bearer local-key\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let text = call_fusion_raw(port, &request).await;
+    let (status_line, response_body) = raw_http_status_and_body(&text);
+    assert!(
+        status_line.starts_with("HTTP/1.1 400"),
+        "a malformed body must answer 400: {text}"
+    );
+    assert!(
+        text.to_ascii_lowercase()
+            .contains("content-type: application/json"),
+        "content-type must be application/json: {text}"
+    );
+    assert_standard_error_envelope(&response_body);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-006: the non-streaming no-candidate 502 carries the full
+/// standard envelope (the streaming variant is covered separately).
+#[tokio::test]
+async fn gateway_no_candidate_uses_standard_error_envelope() {
+    let home = temp_home("gateway-no-candidate-envelope");
+    let port = free_port().await;
+    let mut config = config_with_key(port);
+    let mut p = upstream_provider("p1", "Provider One", "http://127.0.0.1:1", "sk", None);
+    p.mappings = vec![mapping("known-local", "remote-a", None)];
+    config.providers.push(p);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "unknown-local"})),
+    )
+    .await;
+    assert_eq!(status, 502, "no candidate must answer 502: {text}");
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
 #[tokio::test]
 async fn retryable_failure_switches_to_next_candidate() {
     let home = temp_home("retryable-switch");
@@ -1569,7 +1808,7 @@ async fn all_candidates_fail_returns_502_all_providers_unavailable() {
     )
     .await;
     assert_eq!(status, 502, "unexpected response: {text}");
-    let body: Value = serde_json::from_str(&text).unwrap();
+    let body = assert_standard_error_envelope(&text);
     assert_eq!(body["error"]["code"], "all_providers_unavailable");
     let message = body["error"]["message"].as_str().unwrap();
     assert!(message.contains("Provider A"), "message: {message}");
@@ -1579,8 +1818,11 @@ async fn all_candidates_fail_returns_502_all_providers_unavailable() {
     drop(home);
 }
 
+/// AC-005 / REQ-003: every serviceable streaming candidate fails before any
+/// byte is written, so the gateway answers HTTP 502 + `application/json` with
+/// the standard envelope instead of HTTP 200 SSE.
 #[tokio::test]
-async fn streaming_all_fail_returns_200_sse_error_then_done() {
+async fn streaming_all_fail_returns_502_json_error_envelope() {
     let home = temp_home("stream-all-fail");
     let port = free_port().await;
     let (url_a, _) =
@@ -1616,10 +1858,68 @@ async fn streaming_all_fail_returns_200_sse_error_then_done() {
         Some(json!({"model": "local", "stream": true})),
     )
     .await;
-    assert_eq!(status, 200, "streaming stop response uses HTTP 200");
-    assert!(content_type.contains("text/event-stream"), "content-type: {content_type}");
-    assert!(text.contains("all_providers_unavailable"), "body: {text}");
-    assert!(text.contains("data: [DONE]"), "body: {text}");
+    assert_eq!(
+        status, 502,
+        "a pre-stream streaming failure must answer HTTP 502: {text}"
+    );
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    assert!(
+        !content_type.contains("text/event-stream"),
+        "a pre-stream failure must not be SSE: {content_type}"
+    );
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-004 / REQ-003: a streaming request with no serviceable candidate answers
+/// HTTP 502 + `application/json` (not HTTP 200 SSE) with the standard envelope,
+/// `error.code == "all_providers_unavailable"` and `error.param` present/null.
+#[tokio::test]
+async fn streaming_no_candidate_returns_502_json_error_envelope() {
+    let home = temp_home("stream-no-candidate");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-run"}))).await;
+
+    let mut config = config_with_key(port);
+    let mut p = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    p.mappings = vec![mapping("known-local", "remote-a", None)];
+    config.providers.push(p);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "unknown-local", "stream": true})),
+    )
+    .await;
+    assert_eq!(
+        status, 502,
+        "no serviceable candidate must answer HTTP 502: {text}"
+    );
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    assert!(
+        !content_type.contains("text/event-stream"),
+        "no-candidate must not answer SSE: {content_type}"
+    );
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "no upstream request may be issued when there is no candidate"
+    );
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
@@ -1703,6 +2003,21 @@ async fn streaming_terminates_after_first_byte_without_switching() {
         !text.contains("from-b"),
         "must not retry after bytes were written: {text}"
     );
+    assert!(
+        !text.contains("data: [DONE]"),
+        "an abnormal stream must not send [DONE]: {text}"
+    );
+    let (_, body) = raw_http_status_and_body(&text);
+    let errors = sse_error_events(&body);
+    assert_eq!(
+        errors.len(),
+        1,
+        "exactly one standalone error fragment must close the stream: {text}"
+    );
+    assert!(
+        !errors[0]["error"]["message"].as_str().unwrap_or("").is_empty(),
+        "the error fragment must carry a readable message: {text}"
+    );
     assert_eq!(partial_log.lock().unwrap().len(), 1);
     assert!(
         stream_log.lock().unwrap().is_empty(),
@@ -1754,7 +2069,7 @@ async fn server_starts_listens_and_stops() {
     let status = super::runtime_http::start_server().await.unwrap();
     assert!(status.running);
     assert_eq!(status.port, port);
-    assert_eq!(status.local_base_url, format!("http://127.0.0.1:{port}"));
+    assert_eq!(status.local_base_url, format!("http://127.0.0.1:{port}/v1"));
 
     let (code, _, _) = call_fusion(
         port,
@@ -2134,28 +2449,28 @@ fn terminal_sync_pending_uses_ledger_not_plaintext_key() {
         provider_id: "p1".to_string(),
         tool: "opencode".to_string(),
         synced_key_id: "k1".to_string(),
-        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_base_url: "http://127.0.0.1:17688/v1".to_string(),
         synced_at: 10,
     };
     assert!(!terminal_sync_pending(
         &record,
         Some("k1"),
-        "http://127.0.0.1:17688"
+        "http://127.0.0.1:17688/v1"
     ));
     assert!(terminal_sync_pending(
         &record,
         Some("k2"),
-        "http://127.0.0.1:17688"
+        "http://127.0.0.1:17688/v1"
     ));
     assert!(terminal_sync_pending(
         &record,
         Some("k1"),
-        "http://127.0.0.1:17777"
+        "http://127.0.0.1:17777/v1"
     ));
     assert!(terminal_sync_pending(
         &record,
         None,
-        "http://127.0.0.1:17688"
+        "http://127.0.0.1:17688/v1"
     ));
 }
 
@@ -2408,7 +2723,7 @@ async fn no_candidate_model_returns_all_unavailable_without_upstream_request() {
     )
     .await;
     assert_eq!(status, 502, "unexpected response: {text}");
-    let body: Value = serde_json::from_str(&text).unwrap();
+    let body = assert_standard_error_envelope(&text);
     assert_eq!(body["error"]["code"], "all_providers_unavailable");
     assert!(
         log.lock().unwrap().is_empty(),
@@ -2729,8 +3044,8 @@ async fn end_to_end_retryable_failures_auto_disable_at_threshold_and_stop_callin
     assert_eq!(body["error"]["code"], "all_providers_unavailable");
     assert_eq!(
         log.lock().unwrap().len(),
-        18,
-        "three failed requests make six bounded attempts each; the auto-disabled provider is not contacted on the fourth request"
+        3,
+        "each of the three failed requests makes exactly one attempt for the single candidate; the auto-disabled provider is not contacted on the fourth request"
     );
 
     super::runtime_http::stop_server().await.unwrap();
@@ -2991,7 +3306,7 @@ async fn end_to_end_all_unavailable_non_streaming_lists_each_provider_failure() 
     )
     .await;
     assert_eq!(status, 502, "unexpected response: {text}");
-    let body: Value = serde_json::from_str(&text).unwrap();
+    let body = assert_standard_error_envelope(&text);
     assert_eq!(body["error"]["code"], "all_providers_unavailable");
     let message = body["error"]["message"].as_str().unwrap();
     assert!(message.contains("Provider A"), "message: {message}");
@@ -3003,10 +3318,10 @@ async fn end_to_end_all_unavailable_non_streaming_lists_each_provider_failure() 
     drop(home);
 }
 
+/// AC-005 / REQ-003: end-to-end streaming all-unavailable is HTTP 502 JSON with
+/// the standard envelope; it is no longer HTTP 200 SSE and carries no `[DONE]`.
 #[tokio::test]
-async fn end_to_end_all_unavailable_streaming_error_event_precedes_done() {
-    // AC-015: streaming all-unavailable is HTTP 200 SSE whose error object event
-    // comes before the terminating `data: [DONE]`.
+async fn end_to_end_all_unavailable_streaming_returns_502_json_envelope() {
     let home = temp_home("e2e-all-unavailable-stream");
     let port = free_port().await;
     let (url_a, _) =
@@ -3040,27 +3355,23 @@ async fn end_to_end_all_unavailable_streaming_error_event_precedes_done() {
         Some(json!({"model": "local-model", "stream": true})),
     )
     .await;
-    assert_eq!(status, 200, "streaming stop response uses HTTP 200");
-    assert!(
-        content_type.contains("text/event-stream"),
-        "content-type: {content_type}"
+    assert_eq!(
+        status, 502,
+        "streaming all-unavailable must answer HTTP 502: {text}"
     );
-    let error_index = text
-        .find("all_providers_unavailable")
-        .unwrap_or_else(|| panic!("missing error payload: {text}"));
-    let done_index = text
-        .find("data: [DONE]")
-        .unwrap_or_else(|| panic!("missing [DONE]: {text}"));
     assert!(
-        error_index < done_index,
-        "error event must precede [DONE]: {text}"
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
     );
-
-    let first_event = text.split("\n\n").next().unwrap();
-    let payload = first_event
-        .strip_prefix("data: ")
-        .unwrap_or_else(|| panic!("first event must be a data event: {text}"));
-    let value: Value = serde_json::from_str(payload).expect("error event must be JSON");
+    assert!(
+        !content_type.contains("text/event-stream"),
+        "a pre-stream failure must not be SSE: {content_type}"
+    );
+    assert!(
+        !text.contains("data: [DONE]"),
+        "the JSON error body must not carry an SSE terminator: {text}"
+    );
+    let value = assert_standard_error_envelope(&text);
     assert_eq!(value["error"]["code"], "all_providers_unavailable");
     let message = value["error"]["message"].as_str().unwrap();
     assert!(message.contains("Provider A"), "message: {message}");
@@ -4304,7 +4615,7 @@ fn terminal_targets_from_marks_synced_when_marker_and_ledger_match() {
         provider_id: "managed-oc".to_string(),
         tool: "opencode".to_string(),
         synced_key_id: "k1".to_string(),
-        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_base_url: "http://127.0.0.1:17688/v1".to_string(),
         synced_at: 10,
     });
     let providers_data =
@@ -4337,7 +4648,7 @@ fn terminal_targets_from_reports_unsynced_when_managed_provider_deleted() {
         provider_id: "managed-oc".to_string(),
         tool: "opencode".to_string(),
         synced_key_id: "k1".to_string(),
-        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_base_url: "http://127.0.0.1:17688/v1".to_string(),
         synced_at: 10,
     });
 
@@ -4361,7 +4672,7 @@ fn terminal_targets_from_marks_pending_when_ledger_key_or_base_url_drifted() {
         provider_id: "managed-oc".to_string(),
         tool: "opencode".to_string(),
         synced_key_id: "k-old".to_string(),
-        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_base_url: "http://127.0.0.1:17688/v1".to_string(),
         synced_at: 10,
     });
     let providers_data =
@@ -4448,14 +4759,56 @@ fn json_config_with_key(port: u16, providers: Vec<Value>) -> Value {
     })
 }
 
-/// Decode the first `data:` event of a relay SSE error stream as JSON.
-fn first_sse_event(text: &str) -> Value {
-    let line = text
-        .lines()
-        .find(|line| line.starts_with("data: ") && !line.contains("[DONE]"))
-        .unwrap_or_else(|| panic!("no SSE data event in: {text}"));
-    serde_json::from_str(line.trim_start_matches("data: "))
-        .unwrap_or_else(|error| panic!("SSE event is not JSON ({error}): {text}"))
+/// Assert the OpenAI standard error envelope (AC-010): `error.message`,
+/// `error.type` and `error.code` are non-empty strings and `error.param` exists
+/// as `null`. Returns the parsed body so a caller can assert a specific code or
+/// message.
+fn assert_standard_error_envelope(text: &str) -> Value {
+    let body: Value = serde_json::from_str(text)
+        .unwrap_or_else(|error| panic!("error body must be valid JSON ({error}): {text}"));
+    let error = body
+        .get("error")
+        .unwrap_or_else(|| panic!("response must carry an error object: {text}"));
+    for field in ["message", "type", "code"] {
+        let value = error.get(field).and_then(Value::as_str).unwrap_or("");
+        assert!(
+            !value.is_empty(),
+            "error.{field} must be a non-empty string: {text}"
+        );
+    }
+    match error.get("param") {
+        Some(param) => assert!(param.is_null(), "error.param must be null: {text}"),
+        None => panic!("error object must carry a param field: {text}"),
+    }
+    body
+}
+
+/// Send one raw HTTP/1.1 request to the gateway and return the full response.
+/// Used for malformed requests/bodies that `call_fusion`'s JSON encoder cannot
+/// produce, and for direct `attempt_streaming` transport assertions.
+async fn call_fusion_raw(port: u16, request: &str) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect gateway");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write raw request");
+    stream.shutdown().await.expect("half-close raw request");
+    let mut out = Vec::new();
+    stream.read_to_end(&mut out).await.expect("read raw response");
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Split a raw relay response (status line + headers + body) into its status
+/// line and body so a direct-call streaming test can assert the transport
+/// without a full HTTP client.
+fn raw_http_status_and_body(text: &str) -> (String, String) {
+    let (head, body) = text
+        .split_once("\r\n\r\n")
+        .unwrap_or_else(|| panic!("raw response is missing the header terminator: {text}"));
+    let status = head.lines().next().unwrap_or_default().to_string();
+    (status, body.to_string())
 }
 
 /// `Debug`-free rendering of the captured upstream calls for failure messages.
@@ -4629,22 +4982,29 @@ async fn mapping_protocol_mismatch_is_never_served_and_never_falls_back_to_defau
         "a protocol-mismatched mapping must not contact upstream and must not fall back to default_model: non_stream=(status={status}, body={text}) stream=(status={stream_status}, type={stream_content_type}, body={stream_text})"
     );
 
-    let body: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(status, 502, "non-streaming mismatch must be 502: {text}");
+    let body = assert_standard_error_envelope(&text);
     assert_eq!(
         body["error"]["code"], "all_providers_unavailable",
         "body={text}"
     );
 
-    assert_eq!(stream_status, 200, "streaming mismatch keeps HTTP 200: {stream_text}");
-    assert!(
-        stream_content_type.contains("text/event-stream"),
-        "content-type: {stream_content_type}"
-    );
-    assert!(stream_text.contains("data: [DONE]"), "body: {stream_text}");
     assert_eq!(
-        first_sse_event(&stream_text)["error"],
-        body["error"],
+        stream_status, 502,
+        "a pre-stream mismatch must answer HTTP 502: {stream_text}"
+    );
+    assert!(
+        stream_content_type.contains("application/json"),
+        "streaming mismatch content-type must be JSON: {stream_content_type}"
+    );
+    assert!(
+        !stream_content_type.contains("text/event-stream"),
+        "a pre-stream mismatch must not answer SSE: {stream_content_type}"
+    );
+    assert!(!stream_text.contains("data: [DONE]"), "body: {stream_text}");
+    let stream_body = assert_standard_error_envelope(&stream_text);
+    assert_eq!(
+        stream_body["error"], body["error"],
         "the streaming error object must equal the non-streaming one: {stream_text}"
     );
 
@@ -4714,7 +5074,7 @@ async fn default_model_fallback_requires_a_matching_provider_protocol() {
         "an unmapped model falls back to default_model: {summary}"
     );
     assert_eq!(chat_status, 502, "the provider cannot serve the chat protocol: {summary}");
-    let body: Value = serde_json::from_str(&chat_text).unwrap();
+    let body = assert_standard_error_envelope(&chat_text);
     assert_eq!(body["error"]["code"], "all_providers_unavailable", "{summary}");
 
     super::runtime_http::stop_server().await.unwrap();
@@ -4860,7 +5220,7 @@ async fn protocol_mismatch_error_names_the_required_endpoint() {
         "non_stream=(status={status}, body={text}) stream=(status={stream_status}, type={stream_content_type}, body={stream_text})"
     );
     assert_eq!(status, 502, "{summary}");
-    let body: Value = serde_json::from_str(&text).unwrap();
+    let body = assert_standard_error_envelope(&text);
     assert_eq!(
         body["error"]["code"], "all_providers_unavailable",
         "{summary}"
@@ -4871,16 +5231,21 @@ async fn protocol_mismatch_error_names_the_required_endpoint() {
         "the 502 must name the endpoint the requested model is configured for: {summary}"
     );
 
-    assert_eq!(stream_status, 200, "{summary}");
+    assert_eq!(stream_status, 502, "{summary}");
     assert!(
-        stream_content_type.contains("text/event-stream"),
+        stream_content_type.contains("application/json"),
         "{summary}"
     );
     assert!(
-        stream_text.contains("/chat/completions"),
+        !stream_content_type.contains("text/event-stream"),
+        "{summary}"
+    );
+    let stream_body = assert_standard_error_envelope(&stream_text);
+    let stream_message = stream_body["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        stream_message.contains("/chat/completions"),
         "the streaming error must carry the same endpoint hint: {summary}"
     );
-    assert!(stream_text.contains("data: [DONE]"), "{summary}");
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
@@ -5032,7 +5397,7 @@ async fn mapping_with_explicit_null_protocol_inherits_the_provider_protocol() {
         chat_status, 502,
         "the inherited responses protocol cannot serve a chat request: {summary}"
     );
-    let body: Value = serde_json::from_str(&chat_text).unwrap();
+    let body = assert_standard_error_envelope(&chat_text);
     assert_eq!(
         body["error"]["code"], "all_providers_unavailable",
         "body={chat_text}"
@@ -5202,11 +5567,11 @@ async fn protocol_mismatch_never_counts_as_failure_or_auto_disables() {
             Some(json!({"model": "mimo-v2.5", "input": "hi"})),
         )
         .await;
-        let body: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(
             status, 502,
             "mismatched attempt {attempt} must stay all-unavailable: {text}"
         );
+        let body = assert_standard_error_envelope(&text);
         assert_eq!(
             body["error"]["code"], "all_providers_unavailable",
             "attempt {attempt}: {text}"
@@ -5768,34 +6133,45 @@ fn spawn_paused_clock_ticker() -> tokio::task::JoinHandle<()> {
     })
 }
 
-/// AC-003 / REQ-003 RED: `retry-after-ms` wins over `retry-after` seconds. A
-/// single 500 carrying both `retry-after-ms: 1500` and `retry-after: 9` must be
-/// retried after ~1500ms, not 9s and not the default jittered backoff. Current
-/// code reads no retry headers and waits its default ~2s, so this fails.
+/// AC-003 / REQ-002 regression (migrated to two candidates): `retry-after-ms`
+/// wins over `retry-after` seconds. A carries both `retry-after-ms: 1500` and
+/// `retry-after: 9` on its 500 and must be retried after ~1500ms, not 9s and
+/// not the default jittered backoff. B advertises a far-later cooldown so A's
+/// own header governs the earliest-deadline retry.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_retry_after_ms_wins_over_seconds() {
     let _home = isolated_temp_home("retry-policy-header-priority");
-    let (upstream_url, upstream_requests, arrivals) = spawn_header_sequence_mock_recording(vec![
+    let (a_url, a_requests, arrivals) = spawn_header_sequence_mock_recording(vec![
         HeaderReply::new(500, json!({"error": {"message": "busy"}}))
             .header("retry-after-ms", "1500")
             .header("retry-after", "9"),
         HeaderReply::new(200, json!({"id": "recovered", "choices": []})),
     ])
     .await;
+    let (b_url, b_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after-ms", "60000")])
+        .await;
 
-    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
-    config.providers = vec![a.clone()];
+    config.providers = vec![a.clone(), b.clone()];
 
     let (response, _total_elapsed) =
-        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+        attempt_non_streaming_timed(&[a.clone(), b.clone()], &mut config).await;
     let body_text = String::from_utf8_lossy(&response.body);
 
     assert_eq!(response.status, 200, "must recover on the retry: {body_text}");
     assert_eq!(
-        upstream_requests.load(Ordering::SeqCst),
+        a_requests.load(Ordering::SeqCst),
         2,
-        "one initial attempt plus one header-timed retry"
+        "A gets one initial attempt plus one header-timed retry"
+    );
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        1,
+        "B's 60s cooldown is later, so it must not be retried before A recovers"
     );
     // Measure the wait between the two upstream attempts: the whole-request clock
     // also advances while real loopback I/O is in flight under `start_paused`.
@@ -5808,32 +6184,43 @@ async fn retry_policy_retry_after_ms_wins_over_seconds() {
     );
 }
 
-/// AC-003 / REQ-003 RED: an invalid high-priority `retry-after-ms` header keeps
-/// looking at lower priorities, so `retry-after: 3` gives a ~3s wait instead of
-/// the default backoff. Current code waits its default ~2s, so this fails.
+/// AC-003 / REQ-002 regression (migrated to two candidates): an invalid
+/// high-priority `retry-after-ms` header makes A keep looking at lower
+/// priorities, so `retry-after: 3` gives a ~3s wait instead of the default
+/// backoff. B's far-later cooldown leaves A's header as the earliest deadline.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_invalid_retry_after_ms_falls_back_to_seconds_header() {
     let _home = isolated_temp_home("retry-policy-header-invalid-ms");
-    let (upstream_url, upstream_requests, arrivals) = spawn_header_sequence_mock_recording(vec![
+    let (a_url, a_requests, arrivals) = spawn_header_sequence_mock_recording(vec![
         HeaderReply::new(500, json!({"error": {"message": "busy"}}))
             .header("retry-after-ms", "not-a-number")
             .header("retry-after", "3"),
         HeaderReply::new(200, json!({"id": "recovered", "choices": []})),
     ])
     .await;
+    let (b_url, b_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after-ms", "60000")])
+        .await;
 
-    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
-    config.providers = vec![a.clone()];
+    config.providers = vec![a.clone(), b.clone()];
 
     let (response, _total_elapsed) =
-        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+        attempt_non_streaming_timed(&[a.clone(), b.clone()], &mut config).await;
     let body_text = String::from_utf8_lossy(&response.body);
 
     assert_eq!(
-        upstream_requests.load(Ordering::SeqCst),
+        a_requests.load(Ordering::SeqCst),
         2,
-        "one initial attempt plus one header-timed retry"
+        "A gets one initial attempt plus one header-timed retry"
+    );
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        1,
+        "B's 60s cooldown is later, so it must not be retried before A recovers"
     );
     assert_eq!(response.status, 200, "must recover on the retry: {body_text}");
     // Measure the wait between the two upstream attempts instead of the whole
@@ -5848,34 +6235,45 @@ async fn retry_policy_invalid_retry_after_ms_falls_back_to_seconds_header() {
     );
 }
 
-/// AC-003 / REQ-003 RED: a future HTTP date in `retry-after` is honored. The
-/// header is built ~10s in the future, so the retry must wait clearly longer
-/// than the default jittered backoff (~2s). Current code ignores the header.
+/// AC-003 / REQ-002 regression (migrated to two candidates): a future HTTP date
+/// in A's `retry-after` is honored. The header is built ~10s in the future, so
+/// A's retry must wait clearly longer than the default jittered backoff (~2s).
+/// B advertises a far-later cooldown so A's date remains the earliest deadline.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_future_http_date_is_honored() {
     let _home = isolated_temp_home("retry-policy-header-date");
     let when = chrono::Utc::now() + chrono::Duration::seconds(10);
     let http_date = when.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
 
-    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+    let (a_url, a_requests) = spawn_header_sequence_mock(vec![
         HeaderReply::new(500, json!({"error": {"message": "busy"}}))
             .header("retry-after", http_date),
         HeaderReply::new(200, json!({"id": "recovered", "choices": []})),
     ])
     .await;
+    let (b_url, b_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after-ms", "60000")])
+        .await;
 
-    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
-    config.providers = vec![a.clone()];
+    config.providers = vec![a.clone(), b.clone()];
 
     let (response, elapsed) =
-        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+        attempt_non_streaming_timed(&[a.clone(), b.clone()], &mut config).await;
     let body_text = String::from_utf8_lossy(&response.body);
 
     assert_eq!(
-        upstream_requests.load(Ordering::SeqCst),
+        a_requests.load(Ordering::SeqCst),
         2,
-        "one initial attempt plus one header-timed retry"
+        "A gets one initial attempt plus one header-timed retry"
+    );
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        1,
+        "B's 60s cooldown is later, so it must not be retried before A recovers"
     );
     assert_eq!(response.status, 200, "must recover on the retry: {body_text}");
     assert!(
@@ -5884,30 +6282,41 @@ async fn retry_policy_future_http_date_is_honored() {
     );
 }
 
-/// AC-003 / REQ-003 RED: `retry-after-ms: 0` means retry immediately with no
-/// backoff. Current code waits its default ~2s, so this fails.
+/// AC-003 / REQ-002 regression (migrated to two candidates): `retry-after-ms: 0`
+/// means A retries immediately with no backoff. B's far-later cooldown keeps A
+/// as the earliest ready candidate, so the zero-delay observation is preserved.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_zero_retry_after_ms_retries_immediately() {
     let _home = isolated_temp_home("retry-policy-header-zero");
-    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+    let (a_url, a_requests) = spawn_header_sequence_mock(vec![
         HeaderReply::new(500, json!({"error": {"message": "busy"}}))
             .header("retry-after-ms", "0"),
         HeaderReply::new(200, json!({"id": "recovered", "choices": []})),
     ])
     .await;
+    let (b_url, b_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "busy"}}))
+            .header("retry-after-ms", "60000")])
+        .await;
 
-    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
-    config.providers = vec![a.clone()];
+    config.providers = vec![a.clone(), b.clone()];
 
     let (response, elapsed) =
-        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+        attempt_non_streaming_timed(&[a.clone(), b.clone()], &mut config).await;
     let body_text = String::from_utf8_lossy(&response.body);
 
     assert_eq!(
-        upstream_requests.load(Ordering::SeqCst),
+        a_requests.load(Ordering::SeqCst),
         2,
-        "one initial attempt plus one immediate retry"
+        "A gets one initial attempt plus one immediate retry"
+    );
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        1,
+        "B's 60s cooldown is later, so it must not be retried before A recovers"
     );
     assert_eq!(response.status, 200, "must recover on the retry: {body_text}");
     assert!(
@@ -6014,28 +6423,40 @@ async fn retry_policy_cooling_provider_does_not_block_ready_candidate() {
     );
 }
 
-/// AC-002 / REQ-002 regression: a provider that keeps failing is contacted at
-/// most six times in one request (one initial plus five bounded retries).
+/// AC-003 / REQ-002 regression (migrated to two candidates): a provider that
+/// keeps failing is contacted at most six times in one request (one initial
+/// plus five bounded retries). A is always preferred first because both
+/// candidates have zero-delay headers and A precedes B on ties, so A exhausts
+/// its own cap before B is ever retried; both counters are asserted.
 #[tokio::test(start_paused = true)]
-async fn retry_policy_single_provider_is_attempted_at_most_six_times() {
+async fn retry_policy_provider_is_attempted_at_most_six_times() {
     let _home = isolated_temp_home("retry-policy-six-attempts");
-    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![HeaderReply::new(
-        500,
-        json!({"error": {"message": "always failing"}}),
-    )])
-    .await;
+    let (a_url, a_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "always failing"}}))
+            .header("retry-after-ms", "0")])
+            .await;
+    let (b_url, b_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "always failing"}}))
+            .header("retry-after-ms", "0")])
+            .await;
 
-    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
-    config.providers = vec![a.clone()];
+    config.providers = vec![a.clone(), b.clone()];
 
     let (response, _elapsed) =
-        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+        attempt_non_streaming_timed(&[a.clone(), b.clone()], &mut config).await;
 
     assert_eq!(
-        upstream_requests.load(Ordering::SeqCst),
+        a_requests.load(Ordering::SeqCst),
         6,
-        "one provider is attempted at most six times in a request"
+        "A is attempted at most six times in a request"
+    );
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        6,
+        "B is also capped at six attempts once A is exhausted"
     );
     assert_eq!(
         response.status, 502,
@@ -6043,32 +6464,41 @@ async fn retry_policy_single_provider_is_attempted_at_most_six_times() {
     );
 }
 
-/// AC-003 / REQ-003 RED: the cumulative actual wait is capped at 120s. With a
-/// 60s `retry-after-ms` on every failure, only two waits (60s + 60s = 120s,
-/// exactly the budget) are allowed, so the provider is attempted three times
-/// and then the next 60s wait exceeds the remaining budget. Current code
-/// ignores the header, uses the default backoff and attempts six times in
-/// ~60s, so this fails.
+/// AC-003 / REQ-002 regression (migrated to two candidates): the cumulative
+/// actual wait is capped at 120s. With a 60s `retry-after-ms` on every failure
+/// from both candidates, the scheduler alternates A/B at the 60s and 120s
+/// deadlines (A first on ties), so each provider is attempted three times and
+/// the next 60s wait exceeds the exhausted budget. Recomputed for two
+/// candidates: A=3, B=3, paused elapsed exactly the 120s budget.
 #[tokio::test(start_paused = true)]
 async fn retry_policy_stops_before_wait_exceeds_120s_budget() {
     let _home = isolated_temp_home("retry-policy-budget-120s");
-    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
-        HeaderReply::new(500, json!({"error": {"message": "always failing"}}))
-            .header("retry-after-ms", "60000"),
-    ])
-    .await;
+    let (a_url, a_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "always failing"}}))
+            .header("retry-after-ms", "60000")])
+            .await;
+    let (b_url, b_requests) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(500, json!({"error": {"message": "always failing"}}))
+            .header("retry-after-ms", "60000")])
+            .await;
 
-    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let a = upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
-    config.providers = vec![a.clone()];
+    config.providers = vec![a.clone(), b.clone()];
 
     let (response, elapsed) =
-        attempt_non_streaming_timed(std::slice::from_ref(&a), &mut config).await;
+        attempt_non_streaming_timed(&[a.clone(), b.clone()], &mut config).await;
 
     assert_eq!(
-        upstream_requests.load(Ordering::SeqCst),
+        a_requests.load(Ordering::SeqCst),
         3,
-        "only waits totalling the 120s budget are allowed (attempt 1 + two 60s waits)"
+        "A gets one initial attempt plus two 60s waits inside the 120s budget"
+    );
+    assert_eq!(
+        b_requests.load(Ordering::SeqCst),
+        3,
+        "B gets one initial attempt plus two 60s waits inside the 120s budget"
     );
     assert_eq!(
         response.status, 502,
@@ -6081,17 +6511,204 @@ async fn retry_policy_stops_before_wait_exceeds_120s_budget() {
 }
 
 // ---------------------------------------------------------------------------
+// Step 1 (20260918-gateway-retry-and-openai-errors): single-candidate fast fail
+// ---------------------------------------------------------------------------
+
+/// AC-001 / REQ-001 RED: exactly one serviceable candidate that returns HTTP 500
+/// must be attempted once and then fail the request immediately with the
+/// standard 502 envelope. Today the single candidate enters the retry queue, so
+/// the upstream is contacted six times (the `retry-after-ms: 0` header keeps
+/// this RED run fast and must never be consumed as a wait).
+#[tokio::test]
+async fn single_candidate_500_non_streaming_fails_fast_without_retry() {
+    let _home = temp_home("single-candidate-500-non-streaming");
+    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(500, json!({"error": {"message": "boom"}}))
+            .header("retry-after-ms", "0"),
+    ])
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone()];
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&a),
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+    )
+    .await;
+
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        1,
+        "a single candidate must be attempted exactly once with no backoff retry"
+    );
+    assert_eq!(response.status, 502, "the gateway must fail with HTTP 502");
+    let parsed: Value =
+        serde_json::from_slice(&response.body).expect("standard JSON error envelope");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(|value| value.as_str()),
+        Some("all_providers_unavailable"),
+        "body: {}",
+        String::from_utf8_lossy(&response.body)
+    );
+}
+
+/// AC-002 / REQ-001 RED: exactly one serviceable candidate that returns HTTP 429
+/// with a valid `retry-after-ms` header must not consume that header for a wait;
+/// it is attempted once and the request fails with the standard 502 envelope.
+#[tokio::test]
+async fn single_candidate_429_with_retry_header_non_streaming_fails_fast_without_retry() {
+    let _home = temp_home("single-candidate-429-header-non-streaming");
+    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(429, json!({"error": {"message": "slow down"}}))
+            .header("retry-after-ms", "0"),
+    ])
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone()];
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&a),
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+    )
+    .await;
+
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        1,
+        "a single 429 candidate must be attempted exactly once"
+    );
+    assert_eq!(response.status, 502, "the gateway must fail with HTTP 502");
+    let parsed: Value =
+        serde_json::from_slice(&response.body).expect("standard JSON error envelope");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(|value| value.as_str()),
+        Some("all_providers_unavailable"),
+        "body: {}",
+        String::from_utf8_lossy(&response.body)
+    );
+}
+
+/// AC-002 / REQ-001 RED: a single-candidate 429 *without* a retry header must
+/// still be attempted exactly once and fail immediately; the paused clock keeps
+/// the default-backoff RED run fast (today it retries six times).
+#[tokio::test(start_paused = true)]
+async fn single_candidate_429_without_retry_header_non_streaming_fails_fast_without_retry() {
+    let _home = temp_home("single-candidate-429-no-header-non-streaming");
+    let _ticker = spawn_paused_clock_ticker();
+    let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![HeaderReply::new(
+        429,
+        json!({"error": {"message": "slow down"}}),
+    )])
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone()];
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&a),
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+    )
+    .await;
+
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        1,
+        "a single 429 candidate must be attempted exactly once even without a retry header"
+    );
+    assert_eq!(response.status, 502, "the gateway must fail with HTTP 502");
+    let parsed: Value =
+        serde_json::from_slice(&response.body).expect("standard JSON error envelope");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(|value| value.as_str()),
+        Some("all_providers_unavailable"),
+        "body: {}",
+        String::from_utf8_lossy(&response.body)
+    );
+}
+
+/// AC-011 / REQ-001 + AC-005 / REQ-003: a single serviceable streaming
+/// candidate whose upstream fails retryably before any byte is contacted
+/// exactly once and the terminal transport is HTTP 502 + `application/json`
+/// with the standard envelope, never HTTP 200 SSE. `attempt_streaming_text`
+/// drives the real streaming path and drains the response, proving the single
+/// attempt does not hang.
+#[tokio::test]
+async fn single_candidate_streaming_retryable_failure_attempts_upstream_once() {
+    let _home = temp_home("single-candidate-streaming-fast-fail");
+    let (upstream_url, upstream_requests) =
+        spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+            status: 500,
+            content_type: "application/json",
+            body: br#"{"error":{"message":"boom"}}"#.to_vec(),
+            headers: vec![("retry-after-ms", "0")],
+        }])
+        .await;
+
+    let provider =
+        upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers.push(provider.clone());
+
+    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+
+    assert_eq!(
+        upstream_requests.load(Ordering::SeqCst),
+        1,
+        "a single streaming candidate must be attempted exactly once with no backoff retry"
+    );
+    let (status_line, body) = raw_http_status_and_body(&text);
+    assert!(
+        status_line.starts_with("HTTP/1.1 502"),
+        "a pre-stream failure must answer HTTP 502: {text}"
+    );
+    assert!(
+        text.to_ascii_lowercase()
+            .contains("content-type: application/json"),
+        "content-type must be application/json: {text}"
+    );
+    assert!(
+        !text.contains("text/event-stream"),
+        "a pre-stream failure must not answer SSE: {text}"
+    );
+    let envelope = assert_standard_error_envelope(&body);
+    assert_eq!(envelope["error"]["code"], "all_providers_unavailable");
+}
+
+// ---------------------------------------------------------------------------
 // Step 3 (20260916-api-fusion-upstream-retry): streaming retry and health RED
 // ---------------------------------------------------------------------------
 
-/// REQ-002/REQ-003/REQ-005: before a stream emits any bytes, a retryable 503
-/// with `retry-after-ms: 0` is retried immediately. Only the completed SSE
-/// stream is success: it clears previously seeded health without first counting
-/// the transient attempt as a separate inbound-request failure.
+/// REQ-002/REQ-005 regression (migrated to two candidates): before a stream
+/// emits any bytes, a retryable 503 with `retry-after-ms: 0` is retried
+/// immediately. A recovers on its second attempt; B also advertises a zero
+/// cooldown but A wins the tie, so B is only tried on the first pass. Only the
+/// completed SSE stream is success: it clears A's previously seeded health
+/// without first counting the transient attempt as a separate inbound-request
+/// failure.
 #[tokio::test]
 async fn retry_stream_recovers_after_zero_cooldown_and_completed_sse_clears_health() {
     let _home = isolated_temp_home("retry-stream-recovery-health");
-    let (upstream_url, attempts) = spawn_streaming_sequence_mock(vec![
+    let (a_url, a_attempts) = spawn_streaming_sequence_mock(vec![
         StreamingReply::Status {
             status: 503,
             content_type: "application/json",
@@ -6101,20 +6718,34 @@ async fn retry_stream_recovers_after_zero_cooldown_and_completed_sse_clears_heal
         StreamingReply::Sse("data: {\"id\":\"recovered-stream\"}\n\ndata: [DONE]\n\n".to_string()),
     ])
     .await;
+    let (b_url, b_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+        status: 503,
+        content_type: "application/json",
+        body: br#"{"error":{"message":"busy"}}"#.to_vec(),
+        headers: vec![("retry-after-ms", "0")],
+    }])
+    .await;
 
     let mut provider =
-        upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+        upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
     provider.consecutive_failures = 2;
     provider.last_error_at = Some(1);
+    let other = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
     config.providers.push(provider.clone());
+    config.providers.push(other.clone());
 
-    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+    let text = attempt_streaming_text(&[provider.clone(), other.clone()], &mut config).await;
 
     assert_eq!(
-        attempts.load(Ordering::SeqCst),
+        a_attempts.load(Ordering::SeqCst),
         2,
-        "a pre-output 503 with retry-after-ms: 0 must be retried immediately"
+        "A's pre-output 503 with retry-after-ms: 0 must be retried immediately"
+    );
+    assert_eq!(
+        b_attempts.load(Ordering::SeqCst),
+        1,
+        "A wins the zero-deadline tie and recovers before B is retried"
     );
     assert!(text.contains("recovered-stream"), "completed retry stream: {text}");
     assert!(text.contains("data: [DONE]"), "completed retry stream: {text}");
@@ -6129,14 +6760,23 @@ async fn retry_stream_recovers_after_zero_cooldown_and_completed_sse_clears_heal
     );
 }
 
-/// REQ-002/REQ-005: a permanently failing stream gets one initial try plus at
-/// most five retries, while provider health records that whole inbound request
-/// once. Its retry header makes the count/health regression immediate; retry
-/// delay semantics are covered by the dedicated retry-policy tests.
+/// REQ-002/REQ-005 regression (migrated to two candidates): a permanently
+/// failing stream gets one initial try plus at most five retries per provider,
+/// while provider health records the whole inbound request once. Both A and B
+/// stay at zero cooldown, so A exhausts its cap first and then B; the terminal
+/// transport shape (SSE today, 502 JSON after Step 2) is intentionally not
+/// asserted here so the per-provider count and health observations stay stable.
 #[tokio::test]
 async fn retry_stream_persistent_503_attempts_six_times_and_counts_health_once() {
     let _home = isolated_temp_home("retry-stream-six-attempts-health");
-    let (upstream_url, attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+    let (a_url, a_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+        status: 503,
+        content_type: "application/json",
+        body: br#"{"error":{"message":"still busy"}}"#.to_vec(),
+        headers: vec![("retry-after-ms", "0")],
+    }])
+    .await;
+    let (b_url, b_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
         status: 503,
         content_type: "application/json",
         body: br#"{"error":{"message":"still busy"}}"#.to_vec(),
@@ -6145,22 +6785,31 @@ async fn retry_stream_persistent_503_attempts_six_times_and_counts_health_once()
     .await;
 
     let provider =
-        upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+        upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
+    let other = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = FusionConfig::default();
     config.providers.push(provider.clone());
-    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+    config.providers.push(other.clone());
+    let text = attempt_streaming_text(&[provider.clone(), other.clone()], &mut config).await;
 
     assert_eq!(
-        attempts.load(Ordering::SeqCst),
+        a_attempts.load(Ordering::SeqCst),
         6,
-        "one initial stream attempt plus five bounded retries"
+        "A gets one initial stream attempt plus five bounded retries"
     );
-    assert!(text.contains("all_providers_unavailable"), "exhausted stream: {text}");
-    assert!(text.contains("data: [DONE]"), "exhausted stream: {text}");
+    assert_eq!(
+        b_attempts.load(Ordering::SeqCst),
+        6,
+        "B gets one initial stream attempt plus five bounded retries once A is exhausted"
+    );
+    assert!(
+        text.contains("all_providers_unavailable"),
+        "exhausted stream: {text}"
+    );
     let stored = config.providers.iter().find(|item| item.id == "a").unwrap();
     assert_eq!(
         stored.consecutive_failures, 1,
-        "six upstream failures in one inbound request count once"
+        "A's six upstream failures in one inbound request count once"
     );
     assert!(!stored.auto_disabled, "one failed request is below the threshold");
 }
@@ -6274,8 +6923,9 @@ async fn retry_stream_404_traverses_each_candidate_once_without_health_failure()
     }
 }
 
-/// REQ-004: a 413 HTML response is a caller error, so the streaming boundary
-/// returns the original status and bytes without trying a fallback provider.
+/// REQ-004/AC-006: a 413 HTML response is a caller error, so the streaming
+/// boundary keeps the original status but wraps the non-standard body in the
+/// standard gateway envelope, without trying a fallback provider.
 #[tokio::test]
 async fn retry_stream_html_413_returns_unchanged_without_fallback() {
     let _home = isolated_temp_home("retry-stream-html-413");
@@ -6299,7 +6949,13 @@ async fn retry_stream_html_413_returns_unchanged_without_fallback() {
     let text = attempt_streaming_text(&[rejected, fallback], &mut config).await;
 
     assert!(text.starts_with("HTTP/1.1 413"), "response: {text}");
-    assert!(text.ends_with(std::str::from_utf8(&body).unwrap()), "response: {text}");
+    let (_, response_body) = raw_http_status_and_body(&text);
+    let envelope = assert_standard_error_envelope(&response_body);
+    let message = envelope["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("413"),
+        "the wrapped message must name the upstream status: {message}"
+    );
     assert_eq!(rejected_attempts.load(Ordering::SeqCst), 1);
     assert_eq!(fallback_attempts.load(Ordering::SeqCst), 0, "413 must not switch");
     assert_eq!(config.providers[0].consecutive_failures, 0, "413 must not count");
@@ -6578,11 +7234,13 @@ fn fusion_config_accepts_legacy_json_and_round_trips_usage_fields() {
     let mut updated = config;
     updated.usage_retention_days = 30;
     updated.model_prices.push(ModelPrice {
+        provider_id: None,
         upstream_model: "remote-a".to_string(),
         input: 1.0,
         cache_read: 2.0,
         cache_write: 3.0,
         output: 4.0,
+        off_peak: None,
     });
     let encoded = serde_json::to_string(&updated).expect("encode config");
     let decoded: FusionConfig = serde_json::from_str(&encoded).expect("round trip config");
@@ -6590,14 +7248,38 @@ fn fusion_config_accepts_legacy_json_and_round_trips_usage_fields() {
     assert_eq!(decoded.model_prices.len(), 1);
     assert_eq!(decoded.model_prices[0].upstream_model, "remote-a");
     assert_eq!(decoded.model_prices[0].output, 4.0);
+    assert_eq!(decoded.model_prices[0].off_peak, None);
 
     // Missing per-tier prices default to zero, not a deserialize error.
     let partial: ModelPrice =
         serde_json::from_value(serde_json::json!({ "upstream_model": "remote-b" })).unwrap();
+    assert_eq!(partial.provider_id, None);
     assert_eq!(partial.input, 0.0);
     assert_eq!(partial.cache_read, 0.0);
     assert_eq!(partial.cache_write, 0.0);
     assert_eq!(partial.output, 0.0);
+    assert_eq!(partial.off_peak, None);
+
+    // OffPeak round trip test
+    let with_off_peak = ModelPrice {
+        provider_id: Some("prov-test".to_string()),
+        upstream_model: "remote-c".to_string(),
+        input: 2.0,
+        cache_read: 1.0,
+        cache_write: 2.0,
+        output: 4.0,
+        off_peak: Some(OffPeakPrice {
+            start_time: "00:30".to_string(),
+            end_time: "08:30".to_string(),
+            input: 1.0,
+            cache_read: 0.5,
+            cache_write: 1.0,
+            output: 2.0,
+        }),
+    };
+    let encoded_op = serde_json::to_string(&with_off_peak).unwrap();
+    let decoded_op: ModelPrice = serde_json::from_str(&encoded_op).unwrap();
+    assert_eq!(decoded_op.off_peak, with_off_peak.off_peak);
 }
 
 /// AC-004 / AC-005 / REQ-004 / REQ-006: four-tier cost math and exact,
@@ -6605,11 +7287,13 @@ fn fusion_config_accepts_legacy_json_and_round_trips_usage_fields() {
 #[test]
 fn usage_pricing_matches_exact_model_and_sums_four_tiers() {
     let price = ModelPrice {
+        provider_id: None,
         upstream_model: "gpt-x".to_string(),
         input: 1.0,
         cache_read: 0.5,
         cache_write: 2.0,
         output: 4.0,
+        off_peak: None,
     };
     let prices = vec![price.clone()];
     assert_eq!(match_price("gpt-x", &prices), Some(&price));
@@ -6623,6 +7307,156 @@ fn usage_pricing_matches_exact_model_and_sums_four_tiers() {
     // Missing fields are zero and never affect the other tiers.
     let only_input = compute_cost(&price, &tokens(2_000_000, 0, 0, 0));
     assert!((only_input - 2.0).abs() < 1e-9);
+}
+
+#[test]
+fn usage_pricing_matches_provider_specific_price_and_falls_back() {
+    let global_price = ModelPrice {
+        provider_id: None,
+        upstream_model: "gpt-4o".to_string(),
+        input: 2.5,
+        cache_read: 1.25,
+        cache_write: 2.5,
+        output: 10.0,
+        off_peak: None,
+    };
+    let provider_a_price = ModelPrice {
+        provider_id: Some("prov-a".to_string()),
+        upstream_model: "gpt-4o".to_string(),
+        input: 2.0,
+        cache_read: 1.0,
+        cache_write: 2.0,
+        output: 8.0,
+        off_peak: None,
+    };
+    let provider_b_price = ModelPrice {
+        provider_id: Some("prov-b".to_string()),
+        upstream_model: "gpt-4o".to_string(),
+        input: 3.0,
+        cache_read: 1.5,
+        cache_write: 3.0,
+        output: 12.0,
+        off_peak: None,
+    };
+
+    let prices = vec![
+        global_price.clone(),
+        provider_a_price.clone(),
+        provider_b_price.clone(),
+    ];
+
+    // Matches provider-specific price when provider_id is provided
+    assert_eq!(
+        match_price_for_provider(Some("prov-a"), "gpt-4o", &prices),
+        Some(&provider_a_price)
+    );
+    assert_eq!(
+        match_price_for_provider(Some("prov-b"), "gpt-4o", &prices),
+        Some(&provider_b_price)
+    );
+
+    // Falls back to global price when provider_id does not match any provider-specific price
+    assert_eq!(
+        match_price_for_provider(Some("prov-unknown"), "gpt-4o", &prices),
+        Some(&global_price)
+    );
+
+    // When provider_id is None, prefers the global price without provider_id
+    assert_eq!(
+        match_price_for_provider(None, "gpt-4o", &prices),
+        Some(&global_price)
+    );
+    assert_eq!(
+        match_price("gpt-4o", &prices),
+        Some(&global_price)
+    );
+
+    // Non-existent model returns None
+    assert_eq!(
+        match_price_for_provider(Some("prov-a"), "unknown-model", &prices),
+        None
+    );
+}
+
+#[test]
+fn is_off_peak_window_and_midnight_crossing() {
+    use chrono::TimeZone;
+    let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+    let make_utc8_ms = |h: u32, m: u32| {
+        tz.with_ymd_and_hms(2026, 9, 18, h, m, 0)
+            .unwrap()
+            .timestamp_millis()
+    };
+
+    let ms_0400 = make_utc8_ms(4, 0);
+    let ms_0800 = make_utc8_ms(8, 0);
+    let ms_0830 = make_utc8_ms(8, 30);
+    let ms_0900 = make_utc8_ms(9, 0);
+
+    // Normal daytime/morning window: 00:30 to 08:30
+    assert!(is_off_peak(ms_0400, "00:30", "08:30"), "04:00 UTC+8 is in 00:30-08:30");
+    assert!(is_off_peak(ms_0800, "00:30", "08:30"), "08:00 UTC+8 is in 00:30-08:30");
+    assert!(!is_off_peak(ms_0830, "00:30", "08:30"), "08:30 UTC+8 is at boundary end (exclusive)");
+    assert!(!is_off_peak(ms_0900, "00:30", "08:30"), "09:00 UTC+8 is outside 00:30-08:30");
+
+    // Overnight window: 22:00 to 06:00
+    // 04:00 UTC+8 is in 22:00-06:00
+    assert!(is_off_peak(ms_0400, "22:00", "06:00"));
+    // 08:00 UTC+8 is outside 22:00-06:00
+    assert!(!is_off_peak(ms_0800, "22:00", "06:00"));
+
+    // Equal times: zero duration window -> false
+    assert!(!is_off_peak(ms_0800, "08:00", "08:00"));
+    // Invalid time strings -> false
+    assert!(!is_off_peak(ms_0800, "invalid", "08:00"));
+}
+
+#[test]
+fn compute_cost_at_time_applies_off_peak_pricing_when_active() {
+    use chrono::TimeZone;
+    let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+    let make_utc8_ms = |h: u32, m: u32| {
+        tz.with_ymd_and_hms(2026, 9, 18, h, m, 0)
+            .unwrap()
+            .timestamp_millis()
+    };
+
+    let standard_price = ModelPrice {
+        provider_id: None,
+        upstream_model: "deepseek-chat".to_string(),
+        input: 2.0,
+        cache_read: 1.0,
+        cache_write: 2.0,
+        output: 4.0,
+        off_peak: Some(OffPeakPrice {
+            start_time: "00:30".to_string(),
+            end_time: "08:30".to_string(),
+            input: 1.0, // 50% discount
+            cache_read: 0.5,
+            cache_write: 1.0,
+            output: 2.0,
+        }),
+    };
+
+    let test_tokens = tokens(1_000_000, 1_000_000, 1_000_000, 1_000_000);
+
+    // 04:00 UTC+8 (off-peak)
+    let off_peak_ms = make_utc8_ms(4, 0);
+    let off_peak_cost = compute_cost_at_time(&standard_price, &test_tokens, off_peak_ms);
+    // (1.0 + 0.5 + 1.0 + 2.0) = 4.5
+    assert!((off_peak_cost - 4.5).abs() < 1e-9, "expected $4.50, got {off_peak_cost}");
+
+    // 14:00 UTC+8 (peak / standard)
+    let peak_ms = make_utc8_ms(14, 0);
+    let peak_cost = compute_cost_at_time(&standard_price, &test_tokens, peak_ms);
+    // (2.0 + 1.0 + 2.0 + 4.0) = 9.0
+    assert!((peak_cost - 9.0).abs() < 1e-9, "expected $9.00, got {peak_cost}");
+
+    // Price without off-peak always returns standard cost regardless of time
+    let mut no_off_peak = standard_price.clone();
+    no_off_peak.off_peak = None;
+    assert_eq!(compute_cost_at_time(&no_off_peak, &test_tokens, off_peak_ms), 9.0);
+    assert_eq!(compute_cost_at_time(&no_off_peak, &test_tokens, peak_ms), 9.0);
 }
 
 /// AC-012 / REQ-010: only 1-365 is accepted; invalid values are rejected and
@@ -7059,11 +7893,33 @@ async fn wait_for_usage_logs(expected: u32) -> Vec<UsageLogRecord> {
 
 fn priced(upstream_model: &str, input: f64, cache_read: f64, cache_write: f64, output: f64) -> ModelPrice {
     ModelPrice {
+        provider_id: None,
         upstream_model: upstream_model.to_string(),
         input,
         cache_read,
         cache_write,
         output,
+        off_peak: None,
+    }
+}
+
+#[allow(dead_code)]
+fn priced_with_provider(
+    provider_id: &str,
+    upstream_model: &str,
+    input: f64,
+    cache_read: f64,
+    cache_write: f64,
+    output: f64,
+) -> ModelPrice {
+    ModelPrice {
+        provider_id: Some(provider_id.to_string()),
+        upstream_model: upstream_model.to_string(),
+        input,
+        cache_read,
+        cache_write,
+        output,
+        off_peak: None,
     }
 }
 
@@ -7261,8 +8117,9 @@ async fn usage_log_records_failure_when_no_upstream_can_serve() {
     drop(home);
 }
 
-/// AC-002 / AC-009 / REQ-002 / REQ-008: streaming forwards the upstream bytes
-/// verbatim, captures usage, and a 200 SSE all-unavailable event is failure.
+/// AC-002 / AC-009 / REQ-002 / REQ-003 / REQ-008: streaming forwards the
+/// upstream bytes verbatim and captures usage; a no-candidate streaming failure
+/// is HTTP 502 JSON (not HTTP 200 SSE) and still records one failure row.
 #[tokio::test]
 async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavailable() {
     let home = temp_home("usage-forward-stream");
@@ -7306,8 +8163,8 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
     let expected = compute_cost(&priced("remote-a", 1.0, 0.5, 2.0, 4.0), &tokens(11, 3, 0, 7));
     assert!((record.amount.expect("priced") - expected).abs() < 1e-12);
 
-    // Streaming with no serving upstream: HTTP 200 SSE error event is failure.
-    let (empty_status, _ct, empty_text) = call_fusion(
+    // Streaming with no serving upstream: HTTP 502 JSON envelope is failure.
+    let (empty_status, empty_ct, empty_text) = call_fusion(
         port,
         "POST",
         "/v1/chat/completions",
@@ -7315,8 +8172,16 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
         Some(json!({"model": "unknown-local", "stream": true})),
     )
     .await;
-    assert_eq!(empty_status, 200);
-    assert!(empty_text.contains("all_providers_unavailable"));
+    assert_eq!(
+        empty_status, 502,
+        "a pre-stream streaming failure must answer HTTP 502: {empty_text}"
+    );
+    assert!(
+        empty_ct.contains("application/json"),
+        "content-type must be application/json: {empty_ct}"
+    );
+    let empty_body = assert_standard_error_envelope(&empty_text);
+    assert_eq!(empty_body["error"]["code"], "all_providers_unavailable");
 
     let records = wait_for_usage_logs(2).await;
     assert_eq!(records.len(), 2);
@@ -7326,7 +8191,7 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
         .expect("streaming all-unavailable row");
     assert_eq!(
         failure.status, 502,
-        "the log records the gateway failure status, not the SSE transport's 200"
+        "the log records the gateway failure status, not the transport status"
     );
     assert_eq!(failure.total_tokens, 0);
     assert_eq!(failure.amount.unwrap_or(0.0), 0.0);
@@ -7335,8 +8200,9 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
     drop(home);
 }
 
-/// AC-009 / REQ-008: a streaming all-unavailable failure records the real
-/// upstream HTTP status in the request log, never the caller-facing SSE 200.
+/// AC-009 / REQ-003 / REQ-008: a streaming all-unavailable failure answers HTTP
+/// 502 JSON but still records the real upstream HTTP status in the request log,
+/// never the transport status.
 #[tokio::test]
 async fn streaming_all_unavailable_logs_real_upstream_status() {
     let home = temp_home("usage-forward-stream-status");
@@ -7355,7 +8221,7 @@ async fn streaming_all_unavailable_logs_real_upstream_status() {
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
-    let (status, _content_type, text) = call_fusion(
+    let (status, content_type, text) = call_fusion(
         port,
         "POST",
         "/v1/chat/completions",
@@ -7363,8 +8229,16 @@ async fn streaming_all_unavailable_logs_real_upstream_status() {
         Some(json!({"model": "local-a", "stream": true})),
     )
     .await;
-    assert_eq!(status, 200, "streaming all-unavailable still answers HTTP 200 SSE");
-    assert!(text.contains("all_providers_unavailable"), "body: {text}");
+    assert_eq!(
+        status, 502,
+        "streaming all-unavailable must answer HTTP 502: {text}"
+    );
+    assert!(
+        content_type.contains("application/json"),
+        "content-type must be application/json: {content_type}"
+    );
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
 
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1);
@@ -7372,15 +8246,16 @@ async fn streaming_all_unavailable_logs_real_upstream_status() {
     assert_eq!(record.result, UsageResult::Failure);
     assert_eq!(
         record.status, 503,
-        "the log must show the real upstream failure status, not the SSE 200"
+        "the log must show the real upstream failure status, not the transport status"
     );
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
 }
 
-/// AC-009 / REQ-008: a streaming all-unavailable caused by upstream connection
-/// errors records status 0, never the SSE transport's 200.
+/// AC-009 / REQ-003 / REQ-008: a streaming all-unavailable caused by upstream
+/// connection errors answers HTTP 502 JSON but records status 0, never the
+/// transport status.
 #[tokio::test(start_paused = true)]
 async fn streaming_all_unavailable_network_error_logs_zero_status() {
     let _home = isolated_temp_home("usage-forward-stream-network");
@@ -7406,7 +8281,23 @@ async fn streaming_all_unavailable_network_error_logs_zero_status() {
     drop(server);
     let mut out = Vec::new();
     client.read_to_end(&mut out).await.expect("read relay stream");
-    assert!(String::from_utf8_lossy(&out).contains("all_providers_unavailable"));
+    let text = String::from_utf8_lossy(&out).into_owned();
+    let (status_line, body) = raw_http_status_and_body(&text);
+    assert!(
+        status_line.starts_with("HTTP/1.1 502"),
+        "a pre-stream failure must answer HTTP 502: {text}"
+    );
+    assert!(
+        text.to_ascii_lowercase()
+            .contains("content-type: application/json"),
+        "content-type must be application/json: {text}"
+    );
+    assert!(
+        !text.contains("text/event-stream"),
+        "a pre-stream failure must not answer SSE: {text}"
+    );
+    let envelope = assert_standard_error_envelope(&body);
+    assert_eq!(envelope["error"]["code"], "all_providers_unavailable");
     assert_eq!(
         capture.status, 0,
         "a network failure has no HTTP status and must not be logged as 200"
@@ -9014,4 +9905,391 @@ async fn save_config_generates_secret_for_new_keys_with_blank_or_masked_value() 
         !masked.value.trim().is_empty(),
         "a generated secret must not be empty"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 20260918-gateway-retry-and-openai-errors Step 3: upstream 4xx normalization
+// and the mid-stream error fragment (REQ-004/REQ-005, AC-006..AC-009)
+// ---------------------------------------------------------------------------
+
+/// Parse every `\n\n`-delimited SSE event in a relay body and return the JSON
+/// payload of its `data:` line(s). Empty keep-alives and `[DONE]` are skipped.
+/// An event boundary is required, so a fragment appended without a blank-line
+/// separator stays invisible to this parser.
+fn parse_sse_events(body: &str) -> Vec<Value> {
+    let mut events = Vec::new();
+    for segment in body.split("\n\n") {
+        let payload = segment
+            .lines()
+            .filter_map(|line| line.trim_end_matches('\r').strip_prefix("data:"))
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(&payload) {
+            events.push(value);
+        }
+    }
+    events
+}
+
+/// The independently parseable SSE error fragments (AC-008). A conforming
+/// mid-stream failure emits exactly one, carrying a non-empty `error.message`.
+fn sse_error_events(body: &str) -> Vec<Value> {
+    parse_sse_events(body)
+        .into_iter()
+        .filter(|event| event.get("error").map(|value| value.is_object()).unwrap_or(false))
+        .collect()
+}
+
+/// AC-006/REQ-004: a non-streaming upstream 4xx whose body is not valid JSON
+/// keeps the upstream status but is wrapped in the standard gateway envelope
+/// whose message names the status and readable upstream text, and never a
+/// credential or request header.
+#[tokio::test]
+async fn non_streaming_upstream_html_400_is_wrapped_in_standard_envelope() {
+    let _home = temp_home("step3-non-stream-html-400");
+    let html = b"<html><body>upstream rejected the payload</body></html>".to_vec();
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(move |_| MockReply::Raw(400, "text/html", html.clone())).await;
+    let provider = upstream_provider(
+        "a",
+        "Provider A",
+        &upstream_url,
+        "sk-upstream-secret",
+        Some("remote-default"),
+    );
+    let mut config = FusionConfig::default();
+    config.providers.push(provider.clone());
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+    let headers = HashMap::from([
+        ("authorization".to_string(), "Bearer local-secret".to_string()),
+        ("x-request-marker".to_string(), "header-secret".to_string()),
+    ]);
+
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &headers,
+    )
+    .await;
+
+    assert_eq!(response.status, 400, "the upstream status must be kept");
+    assert_eq!(
+        upstream_log.lock().unwrap().len(),
+        1,
+        "a single candidate is attempted exactly once"
+    );
+    let text = String::from_utf8_lossy(&response.body).into_owned();
+    let envelope = assert_standard_error_envelope(&text);
+    let message = envelope["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("400"),
+        "the envelope message must name the upstream status: {message}"
+    );
+    assert!(
+        message.contains("upstream rejected the payload"),
+        "the envelope message must carry readable upstream information: {message}"
+    );
+    for secret in ["sk-upstream-secret", "local-secret", "header-secret"] {
+        assert!(
+            !message.contains(secret),
+            "the envelope message must not leak {secret}: {message}"
+        );
+    }
+}
+
+/// AC-006/REQ-004: the streaming branch wraps a non-standard upstream 4xx body
+/// the same way while keeping the upstream status line.
+#[tokio::test]
+async fn streaming_upstream_html_400_is_wrapped_in_standard_envelope() {
+    let _home = temp_home("step3-stream-html-400");
+    let html = b"<html><body>upstream rejected the payload</body></html>".to_vec();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Raw(400, "text/html", html.clone())).await;
+    let provider = upstream_provider(
+        "a",
+        "Provider A",
+        &upstream_url,
+        "sk-upstream-secret",
+        Some("remote-default"),
+    );
+    let mut config = FusionConfig::default();
+    config.providers.push(provider.clone());
+
+    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+    let (status_line, body) = raw_http_status_and_body(&text);
+    assert_eq!(status_line, "HTTP/1.1 400 Bad Request", "response: {text}");
+    let envelope = assert_standard_error_envelope(&body);
+    let message = envelope["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("400"),
+        "the envelope message must name the upstream status: {message}"
+    );
+    assert!(
+        message.contains("upstream rejected the payload"),
+        "the envelope message must carry readable upstream information: {message}"
+    );
+    assert!(
+        !message.contains("sk-upstream-secret"),
+        "the envelope message must not leak the upstream key: {message}"
+    );
+}
+
+/// AC-007/REQ-004: a non-streaming upstream 4xx whose body is valid JSON with an
+/// `error` object must be passed through byte-for-byte, never re-wrapped.
+#[tokio::test]
+async fn non_streaming_upstream_json_400_is_passed_through_byte_for_byte() {
+    let _home = temp_home("step3-non-stream-json-400");
+    let upstream_body = json!({
+        "error": {
+            "message": "bad request",
+            "type": "invalid_request_error",
+            "code": "bad_request",
+            "param": "model",
+        }
+    });
+    let expected = serde_json::to_vec(&upstream_body).unwrap();
+    let for_mock = upstream_body.clone();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Json(400, for_mock.clone())).await;
+    let provider = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers.push(provider.clone());
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+    )
+    .await;
+
+    assert_eq!(response.status, 400, "the upstream status must be kept");
+    assert_eq!(
+        response.body, expected,
+        "a standard upstream error body must pass through byte-for-byte"
+    );
+}
+
+/// AC-007/REQ-004: the streaming branch passes a standard upstream 4xx JSON body
+/// through byte-for-byte after the header block.
+#[tokio::test]
+async fn streaming_upstream_json_400_is_passed_through_byte_for_byte() {
+    let _home = temp_home("step3-stream-json-400");
+    let upstream_body = json!({
+        "error": {
+            "message": "bad request",
+            "type": "invalid_request_error",
+            "code": "bad_request",
+            "param": "model",
+        }
+    });
+    let expected = serde_json::to_vec(&upstream_body).unwrap();
+    let for_mock = upstream_body.clone();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Json(400, for_mock.clone())).await;
+    let provider = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers.push(provider.clone());
+
+    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+    let (status_line, body) = raw_http_status_and_body(&text);
+    assert_eq!(status_line, "HTTP/1.1 400 Bad Request", "response: {text}");
+    assert_eq!(
+        body.as_bytes(),
+        expected.as_slice(),
+        "a standard upstream error body must pass through byte-for-byte"
+    );
+}
+
+/// AC-008/REQ-005: after the first byte has been forwarded, a mid-stream upstream
+/// read failure must complete the event boundary and append exactly one
+/// standalone parseable error fragment, and must never send `[DONE]`.
+#[tokio::test]
+async fn mid_stream_failure_appends_standalone_error_fragment_without_done() {
+    let _home = temp_home("step3-mid-stream-fragment");
+    // Deliberately no trailing newline: the last forwarded byte is not a newline.
+    let partial = "data: {\"choices\":[{\"delta\":{\"content\":\"partial-a\"}}]}".to_string();
+    let declared = partial.len() + 500;
+    let (partial_url, partial_log) =
+        spawn_mock_upstream(move |_| MockReply::PartialStream(partial.clone(), declared)).await;
+    let provider = upstream_provider("a", "Provider A", &partial_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers.push(provider.clone());
+
+    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+    let (status_line, body) = raw_http_status_and_body(&text);
+    assert!(status_line.starts_with("HTTP/1.1 200"), "response: {text}");
+    assert!(
+        body.contains("partial-a"),
+        "the forwarded bytes must reach the caller: {text}"
+    );
+    assert!(
+        !body.contains("[DONE]"),
+        "an abnormal stream must not send [DONE]: {text}"
+    );
+    let errors = sse_error_events(&body);
+    assert_eq!(
+        errors.len(),
+        1,
+        "exactly one standalone parseable error fragment is required: {text}"
+    );
+    let message = errors[0]["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        !message.is_empty(),
+        "the error fragment must carry a non-empty message: {text}"
+    );
+    assert_eq!(partial_log.lock().unwrap().len(), 1);
+}
+
+/// AC-009/REQ-005: a mid-stream failure returns a 502 `ForwardCapture` flagged
+/// as an upstream error, keeps the accumulated usage, and never contacts another
+/// candidate; the bytes on the wire still close with one error fragment and no
+/// `[DONE]`.
+#[tokio::test]
+async fn mid_stream_failure_capture_is_failure_keeps_usage_and_skips_other_candidates() {
+    let _home = temp_home("step3-mid-stream-capture");
+    // A usage-bearing event followed by an unterminated partial event.
+    let partial = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial-a\"}}],",
+        "\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,",
+        "\"prompt_tokens_details\":{\"cached_tokens\":2}}}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"tail\"}}]}",
+    )
+    .to_string();
+    let declared = partial.len() + 500;
+    let (partial_url, partial_log) =
+        spawn_mock_upstream(move |_| MockReply::PartialStream(partial.clone(), declared)).await;
+    let (fallback_url, fallback_log) = spawn_mock_upstream(|_| {
+        MockReply::Stream(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"from-b\"}}]}\n\ndata: [DONE]\n\n"
+                .to_string(),
+        )
+    })
+    .await;
+
+    let a = upstream_provider("a", "Provider A", &partial_url, "sk", Some("remote-default"));
+    let b = upstream_provider("b", "Provider B", &fallback_url, "sk", Some("remote-default"));
+    let mut config = FusionConfig::default();
+    config.providers = vec![a.clone(), b.clone()];
+    let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
+
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        &[a, b],
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+    )
+    .await
+    .expect("streaming attempt");
+    drop(server);
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    let text = String::from_utf8_lossy(&out).into_owned();
+
+    assert_eq!(capture.status, 502, "a mid-stream failure is recorded as 502");
+    assert!(
+        capture.upstream_error,
+        "the capture must flag the upstream stream error"
+    );
+    assert_eq!(
+        capture.usage,
+        Some(tokens(7, 2, 0, 3)),
+        "the accumulated usage must survive the mid-stream failure"
+    );
+    let (_, body_text) = raw_http_status_and_body(&text);
+    assert_eq!(
+        sse_error_events(&body_text).len(),
+        1,
+        "the stream must close with one error fragment: {text}"
+    );
+    assert!(
+        !body_text.contains("[DONE]"),
+        "an abnormal stream must not send [DONE]: {text}"
+    );
+    assert_eq!(partial_log.lock().unwrap().len(), 1);
+    assert!(
+        fallback_log.lock().unwrap().is_empty(),
+        "must not switch candidates after the first byte"
+    );
+}
+
+/// AC-009/REQ-005 end-to-end: through the real listener a mid-stream failure
+/// yields one error fragment on the wire and exactly one `failure` log row with
+/// status 502 that keeps the accumulated usage.
+#[tokio::test]
+async fn mid_stream_failure_end_to_end_logs_one_failure_with_usage() {
+    let home = temp_home("step3-mid-stream-e2e");
+    let port = free_port().await;
+    let partial = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial-a\"}}],",
+        "\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,",
+        "\"prompt_tokens_details\":{\"cached_tokens\":2}}}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"tail\"}}]}",
+    )
+    .to_string();
+    let declared = partial.len() + 500;
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::PartialStream(partial.clone(), declared)).await;
+
+    let mut config = FusionConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut a = upstream_provider("a", "Provider A", &upstream_url, "sk", None);
+    a.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(a);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_fusion(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a", "stream": true})),
+    )
+    .await;
+    assert_eq!(status, 200, "the SSE status is committed before the failure: {text}");
+    assert!(
+        text.contains("partial-a"),
+        "the partial bytes must reach the caller: {text}"
+    );
+    assert!(
+        !text.contains("[DONE]"),
+        "an abnormal stream must not send [DONE]: {text}"
+    );
+    assert_eq!(
+        sse_error_events(&text).len(),
+        1,
+        "exactly one parseable error fragment is required: {text}"
+    );
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1, "exactly one failure row for the request");
+    assert_eq!(records[0].result, UsageResult::Failure);
+    assert_eq!(records[0].status, 502);
+    assert_eq!(records[0].input_tokens, 7, "accumulated input tokens must be kept");
+    assert_eq!(
+        records[0].cache_read_tokens, 2,
+        "accumulated cache-read tokens must be kept"
+    );
+    assert_eq!(records[0].output_tokens, 3, "accumulated output tokens must be kept");
+    // The row sums all four usage tiers (7 + 2 + 0 + 3).
+    assert_eq!(records[0].total_tokens, 12, "all four usage tiers are summed");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
 }

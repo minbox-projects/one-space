@@ -116,7 +116,7 @@ pub(in crate::api_fusion) fn find_provider_mut<'a>(
 }
 
 pub(in crate::api_fusion) fn local_base_url(port: u16) -> String {
-    format!("http://127.0.0.1:{port}")
+    format!("http://127.0.0.1:{port}/v1")
 }
 
 pub(in crate::api_fusion) fn touch_key_created_at(key: &mut FusionKey) {

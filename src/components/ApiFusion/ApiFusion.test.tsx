@@ -40,7 +40,7 @@ function makeStatus(overrides: Partial<FusionStatus> = {}): FusionStatus {
     running: true,
     enabled: true,
     port: 17688,
-    local_base_url: "http://127.0.0.1:17688",
+    local_base_url: "http://127.0.0.1:17688/v1",
     provider_count: 0,
     auto_disabled_count: 0,
     key_count: 0,
@@ -56,7 +56,7 @@ function openCodeTarget(
     provider_id: "t-open",
     tool: "opencode",
     name: "OpenCode",
-    base_url: "http://127.0.0.1:17688",
+    base_url: "http://127.0.0.1:17688/v1",
     synced: false,
     pending_sync: true,
     synced_key_id: null,
@@ -539,7 +539,7 @@ describe("ApiFusion", () => {
           tool: "opencode",
           name: "OpenCode",
           provider_id: "gw-open",
-          base_url: "http://127.0.0.1:17688",
+          base_url: "http://127.0.0.1:17688/v1",
           synced: true,
           pending_sync: false,
           synced_key_id: "k1",
@@ -597,7 +597,7 @@ describe("ApiFusion", () => {
       "Running",
     );
     expect(screen.getByTestId("api-fusion-local-address")).toHaveTextContent(
-      "http://127.0.0.1:17688",
+      "http://127.0.0.1:17688/v1",
     );
     expect(screen.getByText(/Reason: HTTP 401/)).toBeInTheDocument();
     expect(
@@ -609,7 +609,7 @@ describe("ApiFusion", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Copy local API address/ }));
     await waitFor(() =>
-      expect(writeText).toHaveBeenCalledWith("http://127.0.0.1:17688"),
+      expect(writeText).toHaveBeenCalledWith("http://127.0.0.1:17688/v1"),
     );
 
     const masked = screen.getByTestId("api-fusion-key-value-k1");

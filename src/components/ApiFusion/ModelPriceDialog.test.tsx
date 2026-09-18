@@ -3,9 +3,32 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { ModelPriceDialog } from "@/components/ApiFusion/ModelPriceDialog";
-import type { ModelPrice } from "@/lib/apiFusion";
+import type { FusionUpstreamProvider, ModelPrice } from "@/lib/apiFusion";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
+
+function mockProvider(
+  id: string,
+  name: string,
+  defaultModel: string | null = null,
+  mappings: Array<{ local_model: string; upstream_model: string; display_name?: string }> = [],
+): FusionUpstreamProvider {
+  return {
+    id,
+    name,
+    base_url: "https://api.example.com",
+    api_key: "test-key",
+    default_model: defaultModel,
+    protocol: "chat_completions",
+    mappings,
+    enabled: true,
+    auto_disabled: false,
+    disabled_reason: null,
+    disabled_at: null,
+    consecutive_failures: 0,
+    last_error_at: null,
+  };
+}
 
 function price(overrides: Partial<ModelPrice> = {}): ModelPrice {
   return {
@@ -194,5 +217,221 @@ describe("ModelPriceDialog", () => {
     expect(scoped.getByLabelText("Cache write")).toBeInTheDocument();
     expect(scoped.getByLabelText("Output")).toBeInTheDocument();
     expect(scoped.getAllByText(/USD \/ million tokens/).length).toBeGreaterThan(0);
+  });
+
+  it("按服务商分组展示已维护的价格，且模型可下拉选择", async () => {
+    const user = userEvent.setup();
+    const provOpenAI = mockProvider("prov-openai", "OpenAI", "gpt-4o", [
+      { local_model: "gpt-4o-mini", upstream_model: "gpt-4o-mini", display_name: "GPT-4o Mini" },
+    ]);
+    const provDeepSeek = mockProvider("prov-deepseek", "DeepSeek", "deepseek-chat", [
+      { local_model: "deepseek-reasoner", upstream_model: "deepseek-reasoner", display_name: "DeepSeek R1" },
+    ]);
+
+    mockPrices([
+      price({ provider_id: "prov-openai", upstream_model: "gpt-4o", input: 2.5 }),
+      price({ provider_id: "prov-deepseek", upstream_model: "deepseek-chat", input: 0.14 }),
+    ]);
+
+    renderWithProviders(
+      <ModelPriceDialog
+        open
+        onOpenChange={() => {}}
+        providers={[provOpenAI, provDeepSeek]}
+      />,
+    );
+
+    const openAiGroup = await screen.findByTestId("api-fusion-price-group-prov-openai");
+    const deepSeekGroup = await screen.findByTestId("api-fusion-price-group-prov-deepseek");
+    expect(openAiGroup).toBeInTheDocument();
+    expect(deepSeekGroup).toBeInTheDocument();
+
+    expect(within(openAiGroup).getByText("OpenAI")).toBeInTheDocument();
+    expect(within(deepSeekGroup).getByText("DeepSeek")).toBeInTheDocument();
+
+    const select = within(openAiGroup).getByLabelText("Upstream model") as HTMLSelectElement;
+    expect(select.tagName).toBe("SELECT");
+    expect(select.value).toBe("gpt-4o");
+
+    await user.selectOptions(select, "gpt-4o-mini");
+    expect(select.value).toBe("gpt-4o-mini");
+  });
+
+  it("点击特定服务商的添加价格按钮，支持从该服务商未定价模型中选择添加并保存", async () => {
+    const user = userEvent.setup();
+    const provOpenAI = mockProvider("prov-openai", "OpenAI", "gpt-4o", [
+      { local_model: "gpt-4o-mini", upstream_model: "gpt-4o-mini" },
+    ]);
+
+    mockPrices([
+      price({ provider_id: "prov-openai", upstream_model: "gpt-4o", input: 2.5 }),
+    ]);
+
+    renderWithProviders(
+      <ModelPriceDialog
+        open
+        onOpenChange={() => {}}
+        providers={[provOpenAI]}
+      />,
+    );
+
+    const openAiGroup = await screen.findByTestId("api-fusion-price-group-prov-openai");
+    const addBtn = within(openAiGroup).getByRole("button", { name: /Add price/ });
+    await user.click(addBtn);
+
+    const selects = within(openAiGroup).getAllByLabelText("Upstream model") as HTMLSelectElement[];
+    expect(selects).toHaveLength(2);
+    expect(selects[1].value).toBe("gpt-4o-mini");
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_save", {
+        prices: [
+          price({ provider_id: "prov-openai", upstream_model: "gpt-4o", input: 2.5 }),
+          {
+            provider_id: "prov-openai",
+            upstream_model: "gpt-4o-mini",
+            input: 0,
+            cache_read: 0,
+            cache_write: 0,
+            output: 0,
+          },
+        ],
+      }),
+    );
+  });
+
+  it("未关联到现有服务商的旧价格显示在其他分组中", async () => {
+    const provOpenAI = mockProvider("prov-openai", "OpenAI", "gpt-4o");
+    mockPrices([
+      price({ provider_id: null, upstream_model: "some-legacy-model", input: 5 }),
+    ]);
+
+    renderWithProviders(
+      <ModelPriceDialog
+        open
+        onOpenChange={() => {}}
+        providers={[provOpenAI]}
+      />,
+    );
+
+    const unassignedGroup = await screen.findByTestId("api-fusion-price-group-unassigned");
+    expect(unassignedGroup).toBeInTheDocument();
+    expect(within(unassignedGroup).getByText("Other / Unassigned")).toBeInTheDocument();
+    expect(within(unassignedGroup).getByDisplayValue("some-legacy-model")).toBeInTheDocument();
+  });
+
+  it("可配置峰谷时间段及优惠单价，保存时提交 off_peak 数据", async () => {
+    const user = userEvent.setup();
+    mockPrices([price({ upstream_model: "gpt-4o", input: 2.0, output: 4.0 })]);
+
+    renderWithProviders(
+      <ModelPriceDialog open onOpenChange={() => {}} />,
+    );
+
+    await screen.findByLabelText("Upstream model");
+
+    // Click off-peak configuration button to expand
+    const offPeakBtn = screen.getByRole("button", { name: /Off-peak discount/i });
+    await user.click(offPeakBtn);
+
+    // Check "Enable off-peak pricing"
+    const enableCheckbox = screen.getByRole("checkbox", { name: /Enable off-peak pricing/i });
+    expect(enableCheckbox).not.toBeChecked();
+    await user.click(enableCheckbox);
+    expect(enableCheckbox).toBeChecked();
+
+    // Modify start time & end time
+    const startInput = screen.getByLabelText("Start");
+    const endInput = screen.getByLabelText("End");
+    await user.clear(startInput);
+    await user.type(startInput, "01:00");
+    await user.clear(endInput);
+    await user.type(endInput, "07:30");
+
+    // Set off-peak input and output prices
+    const offPeakInput = screen.getByLabelText("Input (Off-peak)");
+    const offPeakOutput = screen.getByLabelText("Output (Off-peak)");
+    await user.clear(offPeakInput);
+    await user.type(offPeakInput, "1.0");
+    await user.clear(offPeakOutput);
+    await user.type(offPeakOutput, "2.0");
+
+    // Save
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_save", {
+        prices: [
+          {
+            upstream_model: "gpt-4o",
+            input: 2.0,
+            cache_read: 0.1,
+            cache_write: 0.2,
+            output: 4.0,
+            off_peak: {
+              start_time: "01:00",
+              end_time: "07:30",
+              input: 1.0,
+              cache_read: 0.1, // fallback to standard cache_read
+              cache_write: 0.2, // fallback to standard cache_write
+              output: 2.0,
+            },
+          },
+        ],
+      }),
+    );
+  });
+
+  it("已配置峰谷的模型正确还原并在关闭勾选后保存时不带 off_peak", async () => {
+    const user = userEvent.setup();
+    mockPrices([
+      price({
+        upstream_model: "gpt-4o",
+        off_peak: {
+          start_time: "00:30",
+          end_time: "08:30",
+          input: 0.5,
+          cache_read: 0.05,
+          cache_write: 0.1,
+          output: 1.0,
+        },
+      }),
+    ]);
+
+    renderWithProviders(
+      <ModelPriceDialog open onOpenChange={() => {}} />,
+    );
+
+    // Off-peak button displays active time range badge
+    const activeBadge = await screen.findByRole("button", { name: /00:30-08:30/i });
+    expect(activeBadge).toBeInTheDocument();
+
+    // Click to expand
+    await user.click(activeBadge);
+
+    // Uncheck "Enable off-peak pricing"
+    const enableCheckbox = screen.getByRole("checkbox", { name: /Enable off-peak pricing/i });
+    expect(enableCheckbox).toBeChecked();
+    await user.click(enableCheckbox);
+    expect(enableCheckbox).not.toBeChecked();
+
+    // Save
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_fusion_model_prices_save", {
+        prices: [
+          {
+            upstream_model: "gpt-4o",
+            input: 1,
+            cache_read: 0.1,
+            cache_write: 0.2,
+            output: 2,
+          },
+        ],
+      }),
+    );
   });
 });

@@ -6,7 +6,7 @@ use super::selection::{
 };
 use super::storage::{local_base_url, read_config, write_config};
 use super::usage_log::{
-    compute_cost, match_price, normalize_retention_days, now_millis, parse_usage_from_response,
+    compute_cost_at_time, match_price_for_provider, normalize_retention_days, now_millis, parse_usage_from_response,
     SseUsageAccumulator, UsageLogRecord, UsageLogStore, UsageResult, UsageTokens,
 };
 use super::{now_ts, FusionConfig, FusionKey, FusionStatus, FusionUpstreamProvider, UpstreamProtocol};
@@ -360,14 +360,46 @@ pub(in crate::api_fusion) fn models_payload(config: &FusionConfig) -> Value {
     json!({ "object": "list", "data": data })
 }
 
-fn all_unavailable_payload(message: impl Into<String>) -> Value {
+/// The one gateway-generated error envelope (REQ-006/AC-010): `error.message`,
+/// `error.type` and `error.code` are always present and non-empty, and
+/// `error.param` always exists as `null`.
+fn error_envelope(message: impl Into<String>, error_type: &str, code: &str) -> Value {
     json!({
         "error": {
             "message": message.into(),
-            "type": "server_error",
-            "code": "all_providers_unavailable",
+            "type": error_type,
+            "code": code,
+            "param": null,
         }
     })
+}
+
+/// Whether an upstream error body already uses the OpenAI standard shape: valid
+/// JSON containing an `error` object. Such a body is passed through unchanged;
+/// anything else is wrapped by the gateway (REQ-004/AC-007).
+fn is_standard_error_body(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| value.get("error").map(Value::is_object))
+        .unwrap_or(false)
+}
+
+/// The standard envelope for a non-standard upstream 4xx body (REQ-004/AC-006).
+/// The message names the upstream status and carries only the readable body
+/// text, never credentials or request headers.
+fn upstream_error_payload(status: u16, body: &[u8]) -> Value {
+    let readable = String::from_utf8_lossy(body);
+    let trimmed = readable.trim();
+    let message = if trimmed.is_empty() {
+        format!("upstream returned HTTP {status} with an empty body")
+    } else {
+        format!("upstream returned HTTP {status}: {trimmed}")
+    };
+    error_envelope(message, "upstream_error", "upstream_error")
+}
+
+fn all_unavailable_payload(message: impl Into<String>) -> Value {
+    error_envelope(message, "server_error", "all_providers_unavailable")
 }
 
 fn no_candidate_message(
@@ -627,10 +659,20 @@ async fn attempt_candidate(
             }
             let class = classify_failure(response.status, false, response.parsed);
             if class == FailureClass::ReturnToClient {
+                // A standard upstream error body stays byte-for-byte; a
+                // non-standard one keeps the status but is wrapped so clients
+                // can read `error.message` (REQ-004/AC-006/AC-007).
+                let standard = is_standard_error_body(&response.body);
+                let body = if standard {
+                    response.body
+                } else {
+                    serde_json::to_vec(&upstream_error_payload(response.status, &response.body))
+                        .unwrap_or_else(|_| b"{}".to_vec())
+                };
                 return AttemptResult::ReturnToClient(HttpResponse {
                     status: response.status,
                     content_type: "application/json",
-                    body: response.body,
+                    body,
                     capture: Some(capture),
                 });
             }
@@ -709,7 +751,7 @@ pub(in crate::api_fusion) async fn attempt_non_streaming(
                     upstream_model: model.clone(),
                     ..Default::default()
                 });
-                if retryable {
+                if retryable && ordered.len() > 1 {
                     retries.push(RetryCandidate {
                         provider: provider.clone(),
                         model,
@@ -830,8 +872,8 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     let mut capture = ForwardCapture::default();
     // Real failure status to persist for a terminal all-unavailable outcome: the
     // last upstream HTTP status (0 for a network error). The caller-facing
-    // streaming failure is an SSE event over HTTP 200, which must never be the
-    // status recorded in the request log.
+    // pre-stream failure is a 502 JSON transport, which must never replace that
+    // real status in the request log.
     let mut last_failure_status: Option<u16> = None;
     loop {
         let (mut candidate, retry_index) = if let Some(provider) = initial.next() {
@@ -880,12 +922,22 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 if class == FailureClass::ReturnToClient {
                     health.apply(config);
                     capture.status = status;
+                    // Byte-for-byte only when the upstream body is already a
+                    // standard error; otherwise keep the status and wrap it
+                    // (REQ-004/AC-006/AC-007).
+                    let standard = is_standard_error_body(&bytes);
+                    let body = if standard {
+                        bytes.to_vec()
+                    } else {
+                        serde_json::to_vec(&upstream_error_payload(status, &bytes))
+                            .unwrap_or_else(|_| b"{}".to_vec())
+                    };
                     write_response(
                         writer,
                         HttpResponse {
                             status,
                             content_type: "application/json",
-                            body: bytes.to_vec(),
+                            body,
                             capture: None,
                         },
                     )
@@ -924,6 +976,10 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         health.apply(config);
                         return Err(error.to_string());
                     }
+                    // Last byte forwarded to the caller, used to complete the
+                    // SSE event boundary before a mid-stream error fragment
+                    // (REQ-005/AC-008).
+                    let mut last_forwarded = first.last().copied();
                     if writer.flush().await.is_err() {
                         health.apply(config);
                         capture.downstream_cancelled = true;
@@ -938,14 +994,34 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     capture.downstream_cancelled = true;
                                     return Ok(capture);
                                 }
+                                last_forwarded = chunk.last().copied();
                             }
                             // Bytes already sent: terminate the stream, never switch.
                             Some(Err(error)) => {
+                                let reason = format!("stream failed after first byte: {error}");
                                 health.record_failure(
                                     config, provider, FailureClass::Retryable,
-                                    &format!("stream failed after first byte: {error}"),
+                                    &reason,
                                 );
                                 health.apply(config);
+                                // Complete the SSE event boundary so the error
+                                // fragment parses standalone even when the last
+                                // forwarded byte is not a newline, then append one
+                                // `data:` error event. No `[DONE]`, no retry, no
+                                // candidate switch; downstream write failures stay
+                                // best-effort (REQ-005/AC-008).
+                                if last_forwarded != Some(b'\n') {
+                                    let _ = writer.write_all(b"\n").await;
+                                }
+                                let _ = writer.write_all(b"\n").await;
+                                let envelope = error_envelope(
+                                    reason,
+                                    "server_error",
+                                    "upstream_stream_error",
+                                );
+                                let fragment = format!("data: {envelope}\n\n");
+                                let _ = writer.write_all(fragment.as_bytes()).await;
+                                let _ = writer.flush().await;
                                 capture.status = 502;
                                 capture.usage = usage.usage();
                                 capture.upstream_error = true;
@@ -976,7 +1052,7 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         health.record_failure(config, provider, class, &reason);
         record_provider_failure(&mut failures, &provider.name, reason);
         candidate.attempts += 1;
-        if retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
+        if retryable && ordered.len() > 1 && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
             candidate.ready_at = Instant::now().checked_add(
                 retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
             );
@@ -985,19 +1061,13 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     }
 
     health.apply(config);
-    let payload = all_unavailable_payload(all_unavailable_message(&failures));
-    let sse = format!(
-        "data: {}\n\ndata: [DONE]\n\n",
-        serde_json::to_string(&payload).unwrap_or_default()
-    );
-    write_stream_headers(writer, 200).await?;
-    writer
-        .write_all(sse.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    // HTTP 200 with an SSE error event is still a failure: never a success, and
-    // the log records the real upstream failure status (502 when no upstream
-    // HTTP status was determinable) rather than the SSE transport's 200.
+    // Nothing was written downstream yet, so the failure is a plain HTTP 502
+    // JSON response rather than an SSE error event over HTTP 200 (REQ-003).
+    let response = json_response(502, all_unavailable_payload(all_unavailable_message(&failures)));
+    write_response(writer, response).await?;
+    // The transport is 502, but the log records the real upstream failure status
+    // (0 when no upstream HTTP status was determinable, for example a network
+    // error) rather than the transport's status.
     capture.status = last_failure_status.unwrap_or(502);
     capture.usage = None;
     capture.all_unavailable = true;
@@ -1035,7 +1105,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
         Err(error) => {
             let response = json_response(
                 400,
-                json!({ "error": { "message": error, "type": "invalid_request_error" } }),
+                error_envelope(error, "invalid_request_error", "invalid_request"),
             );
             let _ = stream.write_all(&http_response_bytes(response)).await;
             return Ok(());
@@ -1049,7 +1119,10 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
     let mut config = match read_config() {
         Ok(config) => config,
         Err(error) => {
-            let response = json_response(500, json!({ "error": { "message": error } }));
+            let response = json_response(
+                500,
+                error_envelope(error, "server_error", "config_error"),
+            );
             let _ = stream.write_all(&http_response_bytes(response)).await;
             return Ok(());
         }
@@ -1059,13 +1132,11 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
     let Some(path) = canonical_api_path(raw_path) else {
         let response = json_response(
             404,
-            json!({
-                "error": {
-                    "message": format!("unknown path: {raw_path}"),
-                    "type": "invalid_request_error",
-                    "code": "not_found",
-                }
-            }),
+            error_envelope(
+                format!("unknown path: {raw_path}"),
+                "invalid_request_error",
+                "not_found",
+            ),
         );
         stream
             .write_all(&http_response_bytes(response))
@@ -1078,13 +1149,11 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
     if !is_authorized(&request, &config) {
         let response = json_response(
             401,
-            json!({
-                "error": {
-                    "message": "invalid or missing local API key",
-                    "type": "invalid_request_error",
-                    "code": "invalid_api_key",
-                }
-            }),
+            error_envelope(
+                "invalid or missing local API key",
+                "invalid_request_error",
+                "invalid_api_key",
+            ),
         );
         stream
             .write_all(&http_response_bytes(response))
@@ -1097,7 +1166,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
         if request.method != "GET" {
             let response = json_response(
                 404,
-                json!({ "error": { "message": "not found", "type": "invalid_request_error" } }),
+                error_envelope("not found", "invalid_request_error", "not_found"),
             );
             stream
                 .write_all(&http_response_bytes(response))
@@ -1116,7 +1185,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
     if request.method != "POST" {
         let response = json_response(
             404,
-            json!({ "error": { "message": "not found", "type": "invalid_request_error" } }),
+            error_envelope("not found", "invalid_request_error", "not_found"),
         );
         stream
             .write_all(&http_response_bytes(response))
@@ -1130,7 +1199,7 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
         Err(error) => {
             let response = json_response(
                 400,
-                json!({ "error": { "message": error.to_string(), "type": "invalid_request_error" } }),
+                error_envelope(error.to_string(), "invalid_request_error", "invalid_request"),
             );
             stream
                 .write_all(&http_response_bytes(response))
@@ -1156,27 +1225,14 @@ pub(in crate::api_fusion) async fn handle_connection(mut stream: TcpStream) -> R
             .collect();
     if candidates.is_empty() {
         let message = no_candidate_message(&config, requested.as_deref(), protocol);
-        // Streaming answers HTTP 200 + an SSE error event, but the log always
-        // records the gateway failure status, never the transport's 200.
+        // Streaming and non-streaming alike answer HTTP 502 + JSON before any
+        // byte is written; the log always records the gateway failure status.
         let status = 502;
-        if wants_stream {
-            let payload = all_unavailable_payload(message);
-            let sse = format!(
-                "data: {}\n\ndata: [DONE]\n\n",
-                serde_json::to_string(&payload).unwrap_or_default()
-            );
-            write_stream_headers(&mut stream, 200).await?;
-            stream
-                .write_all(sse.as_bytes())
-                .await
-                .map_err(|e| e.to_string())?;
-        } else {
-            let response = json_response(502, all_unavailable_payload(message));
-            stream
-                .write_all(&http_response_bytes(response))
-                .await
-                .map_err(|e| e.to_string())?;
-        }
+        let response = json_response(502, all_unavailable_payload(message));
+        stream
+            .write_all(&http_response_bytes(response))
+            .await
+            .map_err(|e| e.to_string())?;
         // A request that entered the normalized flow but had no serving
         // upstream is a failure (REQ-007/REQ-008), never a silent no-log.
         record_usage_log(
@@ -1284,12 +1340,17 @@ fn record_usage_log(
     status: u16,
     capture: ForwardCapture,
 ) {
+    let timestamp_ms = now_millis();
     let tokens = capture.usage.unwrap_or_default();
-    let amount = match_price(&capture.upstream_model, &config.model_prices)
-        .map(|price| compute_cost(price, &tokens));
+    let amount = match_price_for_provider(
+        Some(&capture.provider_id),
+        &capture.upstream_model,
+        &config.model_prices,
+    )
+    .map(|price| compute_cost_at_time(price, &tokens, timestamp_ms));
     let duration_ms = started.elapsed().as_millis().max(1) as u64;
     let record = UsageLogRecord {
-        timestamp_ms: now_millis(),
+        timestamp_ms,
         local_model: local_model.unwrap_or_default().to_string(),
         upstream_model: capture.upstream_model,
         provider_id: capture.provider_id,
