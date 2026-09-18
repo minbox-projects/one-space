@@ -1,7 +1,9 @@
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
   ArrowRightLeft,
+  Filter,
   Globe,
   Pencil,
   Plus,
@@ -14,6 +16,8 @@ import {
   formatFusionTimestamp,
   type FusionUpstreamProvider,
 } from "@/lib/apiFusion";
+
+export type ProviderStatusFilter = "all" | "enabled" | "disabled";
 
 type UpstreamProviderListProps = {
   providers: FusionUpstreamProvider[];
@@ -37,10 +41,38 @@ export function UpstreamProviderList({
   onDelete,
 }: UpstreamProviderListProps) {
   const { t } = useTranslation();
+  const [statusFilter, setStatusFilter] = useState<ProviderStatusFilter>("all");
+
+  const counts = useMemo(() => {
+    let enabled = 0;
+    let disabled = 0;
+    for (const p of providers) {
+      if (p.enabled) {
+        enabled++;
+      } else {
+        disabled++;
+      }
+    }
+    return {
+      all: providers.length,
+      enabled,
+      disabled,
+    };
+  }, [providers]);
+
+  const filteredProviders = useMemo(() => {
+    if (statusFilter === "enabled") {
+      return providers.filter((p) => p.enabled);
+    }
+    if (statusFilter === "disabled") {
+      return providers.filter((p) => !p.enabled);
+    }
+    return providers;
+  }, [providers, statusFilter]);
 
   return (
     <section className="space-y-3.5" data-testid="api-fusion-providers">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-0.5">
           <div className="flex items-center gap-2">
             <Server className="h-4 w-4 text-primary" />
@@ -59,15 +91,97 @@ export function UpstreamProviderList({
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={onAdd}
-          disabled={busy}
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          {t("apiFusionAddProvider", "Add provider")}
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5">
+          {providers.length > 0 ? (
+            <div
+              role="group"
+              aria-label={t("apiFusionFilterAria", "Filter providers by status")}
+              data-testid="api-fusion-provider-status-filter"
+              className="inline-flex items-center rounded-lg border border-border/50 bg-muted/60 p-0.5 text-xs shadow-inner"
+            >
+              <button
+                type="button"
+                data-testid="filter-status-all"
+                aria-pressed={statusFilter === "all"}
+                onClick={() => setStatusFilter("all")}
+                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                  statusFilter === "all"
+                    ? "bg-background text-foreground shadow-sm border border-border/40"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                }`}
+              >
+                <span>{t("apiFusionFilterAll", "All")}</span>
+                <span
+                  className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                    statusFilter === "all"
+                      ? "bg-muted text-foreground"
+                      : "bg-background/60 text-muted-foreground"
+                  }`}
+                >
+                  {counts.all}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="filter-status-enabled"
+                aria-pressed={statusFilter === "enabled"}
+                onClick={() => setStatusFilter("enabled")}
+                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                  statusFilter === "enabled"
+                    ? "bg-background text-foreground shadow-sm border border-border/40"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                }`}
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                <span>{t("apiFusionFilterEnabled", "Enabled")}</span>
+                <span
+                  className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                    statusFilter === "enabled"
+                      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-semibold"
+                      : "bg-background/60 text-muted-foreground"
+                  }`}
+                >
+                  {counts.enabled}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="filter-status-disabled"
+                aria-pressed={statusFilter === "disabled"}
+                onClick={() => setStatusFilter("disabled")}
+                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                  statusFilter === "disabled"
+                    ? "bg-background text-foreground shadow-sm border border-border/40"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                }`}
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                <span>{t("apiFusionFilterDisabled", "Disabled")}</span>
+                <span
+                  className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                    statusFilter === "disabled"
+                      ? "bg-rose-500/15 text-rose-700 dark:text-rose-300 font-semibold"
+                      : "bg-background/60 text-muted-foreground"
+                  }`}
+                >
+                  {counts.disabled}
+                </span>
+              </button>
+            </div>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={onAdd}
+            disabled={busy}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {t("apiFusionAddProvider", "Add provider")}
+          </button>
+        </div>
       </div>
 
       {providers.length === 0 ? (
@@ -94,10 +208,38 @@ export function UpstreamProviderList({
             {t("apiFusionAddProvider", "Add provider")}
           </button>
         </div>
+      ) : filteredProviders.length === 0 ? (
+        <div
+          data-testid="api-fusion-providers-filter-empty"
+          className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/40 px-6 py-10 text-center"
+        >
+          <div className="rounded-full bg-muted/60 p-2.5 text-muted-foreground">
+            <Filter className="h-5 w-5 opacity-70" />
+          </div>
+          <h4 className="mt-2.5 text-xs font-medium text-foreground">
+            {t("apiFusionNoMatchingProviders", "No matching upstream providers")}
+          </h4>
+          <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+            {t(
+              "apiFusionNoMatchingProvidersGuide",
+              "No upstream providers match the selected status filter.",
+            )}
+          </p>
+          <button
+            type="button"
+            onClick={() => setStatusFilter("all")}
+            className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
+          >
+            <RotateCcw className="h-3 w-3" />
+            {t("apiFusionClearFilter", "Show all providers")}
+          </button>
+        </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
-          {providers.map((provider) => {
+          {filteredProviders.map((provider) => {
             const isSelected = provider.id === selectedProviderId;
+            const isAutoDisabled = Boolean(provider.auto_disabled);
+            const isEnabled = provider.enabled;
             const disabledAt = formatFusionTimestamp(provider.disabled_at);
             const mappingCount = provider.mappings?.length ?? 0;
             const isChatProtocol = provider.protocol !== "responses";
@@ -108,7 +250,7 @@ export function UpstreamProviderList({
                 data-testid={`api-fusion-provider-${provider.id}`}
                 className={`group relative flex flex-col justify-between rounded-xl border bg-card p-3.5 shadow-sm transition-all hover:border-primary/40 hover:shadow-md ${
                   isSelected ? "ring-2 ring-primary/20 border-primary" : ""
-                }`}
+                } ${!isEnabled ? "opacity-85 hover:opacity-100" : ""}`}
               >
                 {/* 头部：名称、协议徽章、启用开关 */}
                 <div>
@@ -221,11 +363,34 @@ export function UpstreamProviderList({
 
                 {/* 卡片底栏操作按钮 */}
                 <div className="mt-3 flex items-center justify-between border-t pt-2.5">
-                  <span className="text-[11px] text-muted-foreground">
-                    {provider.enabled
-                      ? t("apiFusionEnabled", "Enabled")
-                      : t("apiFusionDisabled", "Disabled")}
-                  </span>
+                  {isAutoDisabled ? (
+                    <span
+                      data-testid={`api-fusion-status-badge-${provider.id}`}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                    >
+                      <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                      <span>{t("apiFusionAutoDisabled", "Auto-disabled")}</span>
+                    </span>
+                  ) : isEnabled ? (
+                    <span
+                      data-testid={`api-fusion-status-badge-${provider.id}`}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300"
+                    >
+                      <span className="relative flex h-1.5 w-1.5">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75 duration-1000" />
+                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      </span>
+                      <span>{t("apiFusionEnabled", "Enabled")}</span>
+                    </span>
+                  ) : (
+                    <span
+                      data-testid={`api-fusion-status-badge-${provider.id}`}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/25 bg-rose-500/10 px-2 py-0.5 text-[11px] font-medium text-rose-700 dark:text-rose-400"
+                    >
+                      <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                      <span>{t("apiFusionDisabled", "Disabled")}</span>
+                    </span>
+                  )}
                   <div className="flex items-center gap-1">
                     {onDelete ? (
                       <button
