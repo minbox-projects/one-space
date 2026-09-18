@@ -1,8 +1,21 @@
 use super::{
     now_ts, GatewayConfig, GatewayKey, GatewayUpstreamProvider, CONFIG_FILE, DEFAULT_PORT,
+    LEGACY_CONFIG_FILE_NAME, LEGACY_USAGE_DB_FILE_NAME,
 };
 use std::fs;
 use std::path::PathBuf;
+
+/// Best-effort removal of `api_fusion`-era files under `get_app_dir()`.
+///
+/// Never fails: every error is ignored so the main flow is unaffected, and
+/// the current `api_gateway.*` files are never touched.
+pub(in crate::api_gateway) fn cleanup_legacy_files() {
+    let Ok(dir) = crate::config::get_app_dir() else {
+        return;
+    };
+    let _ = fs::remove_file(dir.join(LEGACY_CONFIG_FILE_NAME));
+    let _ = fs::remove_file(dir.join(LEGACY_USAGE_DB_FILE_NAME));
+}
 
 pub(in crate::api_gateway) fn config_path() -> Result<PathBuf, String> {
     Ok(crate::config::get_app_dir()?.join(CONFIG_FILE))
@@ -81,6 +94,7 @@ pub(in crate::api_gateway) fn normalize_config(config: &mut GatewayConfig) {
 pub(in crate::api_gateway) fn read_config() -> Result<GatewayConfig, String> {
     let path = config_path()?;
     if let Some(config) = read_config_file(&path)? {
+        cleanup_legacy_files();
         return Ok(config);
     }
     Ok(GatewayConfig::default())
@@ -97,7 +111,9 @@ pub(in crate::api_gateway) fn write_config(config: &GatewayConfig) -> Result<(),
     let path = config_path()?;
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, encrypted).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, path).map_err(|e| e.to_string())
+    fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    cleanup_legacy_files();
+    Ok(())
 }
 
 pub(in crate::api_gateway) fn new_provider_id() -> String {

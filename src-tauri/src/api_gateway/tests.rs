@@ -10896,3 +10896,56 @@ fn provider_disable_and_reenable_preserves_mapping_enabled_state() {
         );
     });
 }
+
+/// Legacy cleanup removes only the `api_fusion`-era files while coexisting
+/// new `api_gateway` files stay byte-identical.
+#[test]
+fn cleanup_legacy_files_removes_only_legacy_files() {
+    let _home = isolated_temp_home("legacy-cleanup");
+    let dir = crate::config::get_app_dir().expect("app dir");
+    fs::create_dir_all(&dir).expect("create app dir");
+    fs::write(dir.join(super::CONFIG_FILE), b"new-config").expect("write new config");
+    fs::write(dir.join(super::USAGE_DB_FILE), b"new-db").expect("write new db");
+    fs::write(
+        dir.join(super::LEGACY_CONFIG_FILE_NAME),
+        b"legacy-config",
+    )
+    .expect("write legacy config");
+    fs::write(
+        dir.join(super::LEGACY_USAGE_DB_FILE_NAME),
+        b"legacy-db",
+    )
+    .expect("write legacy db");
+
+    super::storage::cleanup_legacy_files();
+
+    assert!(
+        !dir.join(super::LEGACY_CONFIG_FILE_NAME).exists(),
+        "legacy config must be gone"
+    );
+    assert!(
+        !dir.join(super::LEGACY_USAGE_DB_FILE_NAME).exists(),
+        "legacy usage db must be gone"
+    );
+    assert_eq!(
+        fs::read(dir.join(super::CONFIG_FILE)).expect("read new config"),
+        b"new-config",
+        "new config must stay intact"
+    );
+    assert_eq!(
+        fs::read(dir.join(super::USAGE_DB_FILE)).expect("read new db"),
+        b"new-db",
+        "new usage db must stay intact"
+    );
+}
+
+/// Legacy cleanup with no legacy files present succeeds silently and is idempotent.
+#[test]
+fn cleanup_legacy_files_succeeds_without_legacy_files() {
+    let _home = isolated_temp_home("legacy-cleanup-absent");
+    let dir = crate::config::get_app_dir().expect("app dir");
+    fs::create_dir_all(&dir).expect("create app dir");
+
+    super::storage::cleanup_legacy_files();
+    super::storage::cleanup_legacy_files();
+}
