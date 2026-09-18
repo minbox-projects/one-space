@@ -1066,8 +1066,8 @@ pub(in crate::api_fusion) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     let response = json_response(502, all_unavailable_payload(all_unavailable_message(&failures)));
     write_response(writer, response).await?;
     // The transport is 502, but the log records the real upstream failure status
-    // (502 when no upstream HTTP status was determinable) rather than the
-    // transport's status.
+    // (0 when no upstream HTTP status was determinable, for example a network
+    // error) rather than the transport's status.
     capture.status = last_failure_status.unwrap_or(502);
     capture.usage = None;
     capture.all_unavailable = true;
