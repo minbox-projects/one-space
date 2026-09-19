@@ -14,6 +14,7 @@ import { useToast } from "@/components/ToastProvider";
 import { SelectDropdown } from "./SelectDropdown";
 import {
   aggregateModels,
+  localBaseUrl,
   resolveAggregatedModelName,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
@@ -48,11 +49,13 @@ function ProtocolBadge({ protocol }: { protocol: GatewayUpstreamProtocol }) {
 
 type ModelListPanelProps = {
   providers: GatewayUpstreamProvider[];
+  port?: number;
   onNavigateProviders?: () => void;
 };
 
 export function ModelListPanel({
   providers,
+  port = 17688,
   onNavigateProviders,
 }: ModelListPanelProps) {
   const { t } = useTranslation();
@@ -146,15 +149,23 @@ export function ModelListPanel({
     return result;
   }, [normalizedQuery, protocolFilter, providerFilter, rows]);
 
-  const handleCopy = async (text: string, targetKey: string) => {
+  const modelsApiUrl = `${localBaseUrl(port)}/models`;
+
+  const handleCopy = async (
+    text: string,
+    targetKey: string,
+    successTitle?: string,
+  ) => {
     try {
       await navigator.clipboard.writeText(text);
       setCopiedTarget(targetKey);
       pushToast({
-        title: t(
-          "apiGatewayModelListCopySuccess",
-          "Model ID copied to clipboard",
-        ),
+        title:
+          successTitle ??
+          t(
+            "apiGatewayModelListCopySuccess",
+            "Model ID copied to clipboard",
+          ),
         kind: "success",
       });
       setTimeout(() => {
@@ -208,6 +219,59 @@ export function ModelListPanel({
             })}
           </div>
         ) : null}
+      </div>
+
+      {/* 模型列表 API 获取地址栏 */}
+      <div
+        data-testid="api-gateway-model-list-api-url-bar"
+        className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-xs"
+      >
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
+          <span className="inline-flex items-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-primary">
+            GET
+          </span>
+          <span className="font-medium text-foreground/90">
+            {t("apiGatewayModelListApiUrl", "Models API endpoint")}:
+          </span>
+          <div className="flex items-center gap-1 min-w-0">
+            <code
+              data-testid="api-gateway-model-list-api-url"
+              className="rounded border border-border/50 bg-background/80 px-2 py-0.5 font-mono text-xs text-foreground select-all truncate"
+              title={modelsApiUrl}
+            >
+              {modelsApiUrl}
+            </code>
+            <button
+              type="button"
+              data-testid="api-gateway-model-list-copy-api-url-btn"
+              aria-label={t(
+                "apiGatewayModelListCopyApiUrlAria",
+                "Copy models API endpoint",
+              )}
+              title={t(
+                "apiGatewayModelListCopyApiUrlAria",
+                "Copy models API endpoint",
+              )}
+              onClick={() =>
+                void handleCopy(
+                  modelsApiUrl,
+                  "api-url",
+                  t(
+                    "apiGatewayModelListCopyApiUrlSuccess",
+                    "Models API endpoint copied to clipboard",
+                  ),
+                )
+              }
+              className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            >
+              {copiedTarget === "api-url" ? (
+                <Check className="h-3.5 w-3.5 text-emerald-500" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* 控制栏：美化型搜索框与防换行过滤器 */}

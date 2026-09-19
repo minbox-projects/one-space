@@ -31,10 +31,12 @@ function makeProvider(
 function renderPanel(
   providers: GatewayUpstreamProvider[],
   onNavigateProviders?: () => void,
+  port?: number,
 ) {
   return renderWithProviders(
     <ModelListPanel
       providers={providers}
+      port={port}
       onNavigateProviders={onNavigateProviders}
     />,
   );
@@ -400,6 +402,41 @@ describe("ModelListPanel 本地模型列表", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("展示模型列表 API 获取地址并在指定端口时正确计算 URL", () => {
+    const { unmount } = renderPanel([]);
+    const defaultApiUrl = screen.getByTestId("api-gateway-model-list-api-url");
+    expect(defaultApiUrl.textContent).toBe("http://127.0.0.1:17688/v1/models");
+    unmount();
+
+    renderPanel([], undefined, 18888);
+    const customApiUrl = screen.getByTestId("api-gateway-model-list-api-url");
+    expect(customApiUrl.textContent).toBe("http://127.0.0.1:18888/v1/models");
+  });
+
+  it("点击 API 地址复制按钮调用剪贴板并复制对应的模型列表地址", async () => {
+    const writeTextSpy = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: writeTextSpy,
+      },
+    });
+
+    renderPanel([], undefined, 18888);
+
+    const copyBtn = screen.getByTestId("api-gateway-model-list-copy-api-url-btn");
+    expect(copyBtn).toHaveAttribute("aria-label", "Copy models API endpoint");
+    await act(async () => {
+      fireEvent.click(copyBtn);
+    });
+
+    expect(writeTextSpy).toHaveBeenCalledWith(
+      "http://127.0.0.1:18888/v1/models",
+    );
+    expect(
+      screen.getByText("Models API endpoint copied to clipboard"),
+    ).toBeInTheDocument();
+  });
+
   it("点击复制按钮调用剪贴板并复制对应的 Model ID", async () => {
     const writeTextSpy = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, {
@@ -636,6 +673,17 @@ const MODEL_LIST_I18N_KEYS: ReadonlyArray<
     "apiGatewayModelListGoToProviders",
     "Configure upstream providers",
     "前往配置上游服务商",
+  ],
+  ["apiGatewayModelListApiUrl", "Models API endpoint", "模型列表 API 地址"],
+  [
+    "apiGatewayModelListCopyApiUrlSuccess",
+    "Models API endpoint copied to clipboard",
+    "模型列表 API 地址已复制到剪贴板",
+  ],
+  [
+    "apiGatewayModelListCopyApiUrlAria",
+    "Copy models API endpoint",
+    "复制模型列表 API 地址",
   ],
 ];
 

@@ -770,6 +770,7 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
         >
           <ModelListPanel
             providers={config.providers}
+            port={config.port}
             onNavigateProviders={() => setActiveTab("providers")}
           />
         </div>
