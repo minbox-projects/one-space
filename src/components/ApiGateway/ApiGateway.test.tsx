@@ -13,6 +13,7 @@ import {
   type GatewayStatus,
   type GatewayTerminalTarget,
   type GatewayUpstreamProvider,
+  type ModelPrice,
   type UsageLogRecord,
   type UsageLogsPage,
   type UsageStats,
@@ -170,13 +171,27 @@ function mockStoreWithUpsert(store: Store) {
   const read = invokeMock.getMockImplementation()!;
   invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
     if (command === "api_gateway_upsert_provider") {
-      const { provider } = args as { provider: GatewayUpstreamProvider };
+      const { provider, prices } = args as {
+        provider: GatewayUpstreamProvider;
+        prices?: ModelPrice[] | null;
+      };
+      const otherRows = (store.config.model_prices ?? []).filter(
+        (row) => row.provider_id !== provider.id,
+      );
       store.config = {
         ...store.config,
         providers: [
           ...store.config.providers.filter((entry) => entry.id !== provider.id),
           provider,
         ],
+        ...(prices == null
+          ? {}
+          : {
+              model_prices: [
+                ...otherRows,
+                ...prices.map((row) => ({ ...row, provider_id: provider.id })),
+              ],
+            }),
       };
       return store.config;
     }
@@ -737,6 +752,62 @@ describe("ApiGateway", () => {
     expect(payload.provider.mappings[0].protocol).toBe("responses");
   });
 
+  it("provider_save_sends_prices_in_one_upsert_call", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [
+          makeProvider({
+            mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
+          }),
+        ],
+      }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [openCodeTarget()],
+    };
+    mockStoreWithUpsert(store);
+
+    renderWithProviders(<ApiGateway />);
+    fireEvent.click(
+      await within(
+        await screen.findByTestId("api-gateway-providers"),
+      ).findByText("Upstream A"),
+    );
+
+    await screen.findByTestId("api-gateway-price-0-input");
+    fireEvent.change(screen.getByTestId("api-gateway-price-0-input"), {
+      target: { value: "2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "api_gateway_upsert_provider",
+        expect.objectContaining({
+          provider: expect.objectContaining({ id: "p1" }),
+          prices: expect.any(Array),
+        }),
+      ),
+    );
+
+    const upsertCalls = invokeMock.mock.calls.filter(
+      ([command]) => command === "api_gateway_upsert_provider",
+    );
+    expect(upsertCalls).toHaveLength(1);
+    const payload = upsertCalls[0][1] as {
+      provider: GatewayUpstreamProvider;
+      prices: ModelPrice[];
+    };
+    expect(payload.provider.id).toBe("p1");
+    expect(payload.prices).toHaveLength(1);
+    expect(payload.prices[0]).toMatchObject({
+      upstream_model: "remote-a",
+      input: 2,
+      cache_read: 0,
+      cache_write: 0,
+      output: 0,
+    });
+  });
+
   it("新增本地 Key 只需名称，值留空交由后端随机生成", async () => {
     const store: Store = {
       config: makeConfig({ keys: [], default_key_id: null }),
@@ -1080,6 +1151,7 @@ describe("ApiGateway", () => {
           name: "New Remote",
           base_url: "https://new.example.com",
         }),
+        prices: [],
       }),
     );
   });

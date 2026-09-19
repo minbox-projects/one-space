@@ -166,3 +166,19 @@ describe("服务商模板国际化键", () => {
     expect(i18n.t("apiGatewayTemplateModelsCount", { count: 3 })).not.toContain("{{count}}");
   });
 });
+
+const PROVIDER_MAPPING_PRICE_KEYS = [
+  "apiGatewayMappingPrice",
+  "apiGatewayDefaultModelNone",
+  "apiGatewayDefaultModelAutoAdded",
+] as const;
+
+describe("服务商映射价格国际化键", () => {
+  it.each(["en", "zh"] as const)("为 %s 提供映射价格真实文案", async (language) => {
+    await i18n.changeLanguage(language);
+    const fallbacks = PROVIDER_MAPPING_PRICE_KEYS.filter(
+      (key) => i18n.t(key) === key,
+    );
+    expect(fallbacks, `${language} 中回退为键名的映射价格键`).toEqual([]);
+  });
+});

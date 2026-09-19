@@ -26,10 +26,13 @@ allGroups
 allowedTools
 allowedToolsDesc
 allTags
+apiGatewayDefaultModelAutoAdded
+apiGatewayDefaultModelNone
 apiGatewayEveryDay
 apiGatewayIgnoredModels
 apiGatewayIgnoredModelsDesc
 apiGatewayMappingDeleted
+apiGatewayMappingPrice
 apiGatewayModelRestored
 apiGatewayNoTemplates
 apiGatewayProviderTemplates
