@@ -9,6 +9,7 @@ import {
   Info,
   Plus,
   RotateCcw,
+  Server,
   Trash2,
   X,
 } from "lucide-react";
@@ -291,24 +292,38 @@ export function ProviderDetailDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-h-[90vh] w-full sm:max-w-6xl overflow-y-auto sm:rounded-xl p-5"
+        className="max-h-[90vh] w-full sm:max-w-6xl overflow-hidden flex flex-col sm:rounded-2xl p-0 gap-0"
         data-testid="api-gateway-provider-detail"
       >
-        <DialogHeader className="space-y-1">
-          <DialogTitle className="text-base font-semibold">
-            {isEditing
-              ? t("apiGatewayEditProvider", "Edit provider")
-              : t("apiGatewayNewProvider", "New provider")}
-          </DialogTitle>
-          <DialogDescription className="text-xs text-muted-foreground">
-            {t(
-              "apiGatewayProviderDialogDesc",
-              "Configure upstream provider credentials, endpoint protocol, and model routing mappings.",
-            )}
-          </DialogDescription>
+        <DialogHeader className="pl-6 pr-14 py-4 border-b bg-card/80 backdrop-blur-sm shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-2xs">
+              <Server className="h-4.5 w-4.5" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <DialogTitle className="truncate text-base font-semibold leading-5 text-foreground">
+                  {isEditing
+                    ? t("apiGatewayEditProvider", "Edit provider")
+                    : t("apiGatewayNewProvider", "New provider")}
+                </DialogTitle>
+                {isTemplateBound ? (
+                  <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                    {t("apiGatewayTemplateTab", "Provider Templates")}
+                  </span>
+                ) : null}
+              </div>
+              <DialogDescription className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
+                {t(
+                  "apiGatewayProviderDialogDesc",
+                  "Configure upstream provider credentials, endpoint protocol, and model routing mappings.",
+                )}
+              </DialogDescription>
+            </div>
+          </div>
         </DialogHeader>
 
-        <div className="space-y-4 py-2">
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
           {/* 基础配置两列网格（使用 AI 终端服务商统一的标准 field-grid 和 field） */}
           <div className="field-grid col-2 mb-0">
             {/* 第 1 行：名称独占一行 */}
@@ -738,7 +753,7 @@ export function ProviderDetailDialog({
           </div>
         </div>
 
-        <DialogFooter className="flex flex-row items-center justify-between gap-2 pt-2 sm:justify-between">
+        <DialogFooter className="px-6 py-4 border-t bg-card/80 backdrop-blur-sm shrink-0 flex flex-row items-center justify-between gap-2 sm:justify-between">
           <div>
             {isEditing && onDelete ? (
               <button
@@ -747,7 +762,7 @@ export function ProviderDetailDialog({
                 disabled={busy}
                 className="acc-panel-btn danger"
               >
-                <Trash2 />
+                <Trash2 className="h-4 w-4" />
                 {t("apiGatewayDelete", "Delete")}
               </button>
             ) : null}

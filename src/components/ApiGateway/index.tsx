@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { emit } from "@tauri-apps/api/event";
 import {
   BarChart3,
   Boxes,
+  ChevronsUpDown,
   KeyRound,
   Network,
+  Plus,
+  RotateCcw,
   ScrollText,
   Server,
   Sparkles,
@@ -132,7 +135,34 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const [creatingTemplate, setCreatingTemplate] =
     useState<GatewayProviderTemplate | null>(null);
   const [isTemplateManageOpen, setIsTemplateManageOpen] = useState(false);
+  const [templateExpandedIds, setTemplateExpandedIds] = useState<
+    Record<string, boolean>
+  >({});
   const [usageSubTab, setUsageSubTab] = useState<UsageSubTab>("stats");
+
+  const allTemplatesExpanded = useMemo(() => {
+    if (templates.length === 0) return false;
+    return templates.every((view) => Boolean(templateExpandedIds[view.template.id]));
+  }, [templates, templateExpandedIds]);
+
+  const handleToggleTemplateExpand = useCallback((templateId: string) => {
+    setTemplateExpandedIds((prev) => ({
+      ...prev,
+      [templateId]: !prev[templateId],
+    }));
+  }, []);
+
+  const handleToggleAllTemplates = useCallback(() => {
+    if (allTemplatesExpanded) {
+      setTemplateExpandedIds({});
+    } else {
+      const next: Record<string, boolean> = {};
+      for (const view of templates) {
+        next[view.template.id] = true;
+      }
+      setTemplateExpandedIds(next);
+    }
+  }, [allTemplatesExpanded, templates]);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -928,26 +958,88 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
         {/* 服务商模板管理模态弹窗 */}
         <Dialog open={isTemplateManageOpen} onOpenChange={setIsTemplateManageOpen}>
           <DialogContent
-            className="max-h-[90vh] w-full sm:max-w-4xl overflow-y-auto sm:rounded-2xl p-6"
+            className="max-h-[90vh] w-full sm:max-w-5xl lg:max-w-6xl overflow-hidden flex flex-col sm:rounded-2xl p-0 gap-0"
             data-testid="api-gateway-templates-dialog"
           >
-            <DialogHeader className="space-y-1">
-              <DialogTitle className="flex items-center gap-2 text-base font-semibold">
-                <Sparkles className="h-4 w-4 text-primary" />
-                <span>{t("apiGatewayTemplateTab", "Provider Templates")}</span>
-              </DialogTitle>
-              <DialogDescription className="text-xs text-muted-foreground">
-                {t(
-                  "apiGatewayTemplatesDialogDesc",
-                  "Browse built-in provider templates, sync official model lists, or create custom provider configurations.",
-                )}
-              </DialogDescription>
+            <DialogHeader className="pl-6 pr-14 py-4 border-b bg-card/80 backdrop-blur-sm shrink-0">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-2xs">
+                    <Sparkles className="h-4.5 w-4.5" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <DialogTitle className="truncate text-base font-semibold leading-5 text-foreground">
+                        {t("apiGatewayTemplateTab", "Provider Templates")}
+                      </DialogTitle>
+                      <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
+                        {t("apiGatewayAvailableTemplatesCount", {
+                          count: templates.length,
+                          defaultValue: `共 ${templates.length} 个可用模板`,
+                        })}
+                      </span>
+                    </div>
+                    <DialogDescription className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
+                      {t(
+                        "apiGatewayTemplatesDialogDesc",
+                        "Manage official and custom templates. Sync official models and add upstream providers with one click.",
+                      )}
+                    </DialogDescription>
+                  </div>
+                </div>
+
+                {/* 顶部操作栏常驻按钮 */}
+                <div className="flex items-center gap-2 shrink-0">
+                  {templates.length > 0 && (
+                    <button
+                      type="button"
+                      data-testid="template-section-toggle-all-btn"
+                      onClick={handleToggleAllTemplates}
+                      disabled={busy}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/80 bg-background px-3 text-xs font-medium text-foreground shadow-2xs transition hover:bg-muted active:scale-98 disabled:opacity-50"
+                    >
+                      <ChevronsUpDown className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span>
+                        {allTemplatesExpanded
+                          ? t("apiGatewayTemplateCollapseAll", "Collapse all")
+                          : t("apiGatewayTemplateExpandAll", "Expand all")}
+                      </span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    data-testid="template-section-reset-btn"
+                    onClick={() => void handleResetBuiltinTemplates()}
+                    disabled={busy}
+                    title={t("apiGatewayTemplateResetBuiltin", "Restore built-in presets")}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/80 bg-background px-3 text-xs font-medium text-foreground shadow-2xs transition hover:bg-muted active:scale-98 disabled:opacity-50"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span>{t("apiGatewayTemplateResetBuiltin", "Restore built-in presets")}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="template-section-new-btn"
+                    onClick={() => {
+                      setEditingTemplate(null);
+                      setIsTemplateEditOpen(true);
+                    }}
+                    disabled={busy}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-2xs transition hover:bg-primary/90 active:scale-98 disabled:opacity-50"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>{t("apiGatewayNewTemplate", "New template")}</span>
+                  </button>
+                </div>
+              </div>
             </DialogHeader>
             {templatesLoadError ? (
               <div
                 data-testid="api-gateway-templates-load-error"
                 title={templatesLoadError}
-                className="my-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+                className="mx-6 mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-700 dark:text-amber-400"
               >
                 {t(
                   "apiGatewayTemplatesLoadFailed",
@@ -955,9 +1047,12 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
                 )}
               </div>
             ) : null}
-            <div className="mt-2">
+            <div className="flex-1 overflow-y-auto p-6">
               <ProviderTemplateSection
                 templates={templates}
+                hideHeader
+                expandedIds={templateExpandedIds}
+                onToggleExpand={handleToggleTemplateExpand}
                 busy={busy}
                 syncingTemplateIds={syncingTemplates}
                 onSync={handleSyncTemplate}

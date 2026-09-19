@@ -1,6 +1,6 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, Server } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -87,23 +87,35 @@ export function TemplateCreateDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="w-full p-5 sm:max-w-lg sm:rounded-xl"
+        className="w-full sm:max-w-xl overflow-hidden flex flex-col sm:rounded-2xl p-0 gap-0"
         data-testid="api-gateway-template-create-dialog"
       >
-        <DialogHeader className="space-y-1">
-          <DialogTitle className="text-base font-semibold">
-            {t("apiGatewayTemplateCreateTitle", "Add provider from template")}
-          </DialogTitle>
-          <DialogDescription className="text-xs text-muted-foreground">
-            {t("apiGatewayTemplateCreateDesc", {
-              name: template.name,
-              defaultValue:
-                "Create an upstream provider from {{name}}. Every enabled template model is added as a mapping.",
-            })}
-          </DialogDescription>
+        <DialogHeader className="pl-6 pr-14 py-4 border-b bg-card/80 backdrop-blur-sm shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-2xs">
+              <Server className="h-4.5 w-4.5" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <DialogTitle className="truncate text-base font-semibold leading-5 text-foreground">
+                  {t("apiGatewayTemplateCreateTitle", "Add provider from template")}
+                </DialogTitle>
+                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                  {template.name}
+                </span>
+              </div>
+              <DialogDescription className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
+                {t("apiGatewayTemplateCreateDesc", {
+                  name: template.name,
+                  defaultValue:
+                    "Create an upstream provider from {{name}}. Every enabled template model is added as a mapping.",
+                })}
+              </DialogDescription>
+            </div>
+          </div>
         </DialogHeader>
 
-        <div className="space-y-3.5 py-2">
+        <div className="space-y-4 p-6 overflow-y-auto">
           {/* Name 独占整行 */}
           <div className="field full-span">
             <label className="required">
@@ -215,7 +227,7 @@ export function TemplateCreateDialog({
           </div>
         </div>
 
-        <DialogFooter className="flex flex-row items-center justify-end gap-2 pt-2">
+        <DialogFooter className="px-6 py-4 border-t bg-card/80 backdrop-blur-sm shrink-0 flex flex-row items-center justify-end gap-2">
           <button
             type="button"
             onClick={() => onOpenChange(false)}

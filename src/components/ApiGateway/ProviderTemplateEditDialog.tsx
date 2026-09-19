@@ -4,6 +4,7 @@ import {
   AlertCircle,
   Plus,
   Search,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -208,26 +209,43 @@ export function ProviderTemplateEditDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="w-full p-5 sm:max-w-4xl sm:rounded-xl max-h-[90vh] flex flex-col"
+        className="w-full sm:max-w-5xl max-h-[90vh] overflow-hidden flex flex-col sm:rounded-2xl p-0 gap-0"
         data-testid="api-gateway-template-edit-dialog"
       >
-        <DialogHeader className="space-y-1">
-          <DialogTitle className="text-base font-semibold">
-            {isEditing
-              ? t("apiGatewayEditTemplate", "Edit template")
-              : t("apiGatewayNewTemplate", "New template")}
-          </DialogTitle>
-          <DialogDescription className="text-xs text-muted-foreground">
-            {t(
-              "apiGatewayEditTemplateDesc",
-              "Configure the template name, API base URL, protocol, description, and models.",
-            )}
-          </DialogDescription>
+        <DialogHeader className="pl-6 pr-14 py-4 border-b bg-card/80 backdrop-blur-sm shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-2xs">
+              <Sparkles className="h-4.5 w-4.5" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <DialogTitle className="truncate text-base font-semibold leading-5 text-foreground">
+                  {isEditing
+                    ? t("apiGatewayEditTemplate", "Edit template")
+                    : t("apiGatewayNewTemplate", "New template")}
+                </DialogTitle>
+                {models.length > 0 ? (
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                    {t("apiGatewayTemplateModelsCount", {
+                      count: models.length,
+                      defaultValue: `${models.length} 个模型`,
+                    })}
+                  </span>
+                ) : null}
+              </div>
+              <DialogDescription className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
+                {t(
+                  "apiGatewayEditTemplateDesc",
+                  "Configure the template name, API base URL, protocol, description, and models.",
+                )}
+              </DialogDescription>
+            </div>
+          </div>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto space-y-4 py-2 px-1.5 -mx-1.5">
+        <div className="flex-1 overflow-y-auto space-y-4.5 p-6">
           {validationError && (
-            <div className="flex items-center gap-1.5 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            <div className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-xs text-destructive">
               <AlertCircle className="h-4 w-4 shrink-0" />
               <span>{validationError}</span>
             </div>
@@ -469,7 +487,7 @@ export function ProviderTemplateEditDialog({
           </div>
         </div>
 
-        <DialogFooter className="border-t pt-3 flex items-center justify-between gap-2 sm:justify-between">
+        <DialogFooter className="border-t px-6 py-4 bg-card/80 backdrop-blur-sm shrink-0 flex items-center justify-between gap-3 sm:justify-between">
           <div>
             {isEditing && (
               <div className="flex items-center gap-2">
@@ -522,7 +540,7 @@ export function ProviderTemplateEditDialog({
               type="button"
               onClick={() => onOpenChange(false)}
               disabled={disabled}
-              className="inline-flex h-8 items-center rounded-lg border px-3 text-xs font-medium hover:bg-muted transition"
+              className="inline-flex h-8 items-center rounded-lg border border-border/70 px-3 text-xs font-medium hover:bg-muted active:scale-98 transition"
             >
               {t("cancel", "Cancel")}
             </button>
@@ -531,7 +549,7 @@ export function ProviderTemplateEditDialog({
               data-testid="template-edit-save-btn"
               onClick={() => void handleSubmit()}
               disabled={disabled}
-              className="inline-flex h-8 items-center rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 shadow-sm transition"
+              className="inline-flex h-8 items-center rounded-lg bg-primary px-3.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 active:scale-98 disabled:opacity-50 shadow-xs transition"
             >
               {t("save", "Save")}
             </button>

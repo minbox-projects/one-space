@@ -600,9 +600,15 @@ const resources = {
       apiGatewayTemplateCreateSubmit: "Create provider",
       apiGatewayTemplateDeprecated: "Deprecated",
       apiGatewaySelectProviderTemplate: "Select provider preset",
+      apiGatewayAddUpstreamProviderDialogTitle: "Add Upstream Provider",
       apiGatewaySelectProviderTemplateDesc:
-        "Create an upstream provider quickly from a provider template endpoint, or configure from a blank form.",
+        "Connect quickly via official or preset templates, or configure manually from a blank form.",
       apiGatewayBlankProviderPreset: "Create manually",
+      apiGatewayBlankProviderPresetQuick: "Manual create",
+      apiGatewayPresetTemplatesSectionTitle: "Recommended Presets",
+      apiGatewayPresetTemplatesHint:
+        "Select a template to import official models and protocol configurations",
+      apiGatewayUseThisTemplate: "Use template",
       apiGatewayBlankProviderPresetDesc:
         "Skip presets and configure provider endpoint, protocol, and model mappings manually.",
       apiGatewayEditTemplate: "Edit template",
@@ -674,7 +680,8 @@ const resources = {
       apiGatewayUsageSubTabs: "Usage and logs subtabs",
       apiGatewayProviderTemplatesButton: "Provider templates",
       apiGatewayTemplatesDialogDesc:
-        "Browse built-in provider templates, sync official model lists, or create custom provider configurations.",
+        "Manage official and custom templates. Sync official models and add upstream providers with one click.",
+      apiGatewayAvailableTemplatesCount: "{{count}} templates available",
       apiGatewayLogsTab: "Request logs",
       apiGatewayRangeToday: "Today",
       apiGatewayRange7d: "7d",
@@ -4208,9 +4215,15 @@ const resources = {
       apiGatewayTemplateCreateSubmit: "创建服务商",
       apiGatewayTemplateDeprecated: "已弃用",
       apiGatewaySelectProviderTemplate: "选择预设服务商模板",
+      apiGatewayAddUpstreamProviderDialogTitle: "添加上游服务商",
       apiGatewaySelectProviderTemplateDesc:
-        "从服务商模板端点快速创建上游服务商，或从空白表单自定义配置。",
+        "选择官方或预设模板快速接入，或直接从空白表单手动自定义配置。",
       apiGatewayBlankProviderPreset: "从空白表单创建",
+      apiGatewayBlankProviderPresetQuick: "手动空白创建",
+      apiGatewayPresetTemplatesSectionTitle: "预设推荐模板",
+      apiGatewayPresetTemplatesHint:
+        "选择模板快速导入官方模型与协议配置",
+      apiGatewayUseThisTemplate: "使用此模板",
       apiGatewayBlankProviderPresetDesc:
         "跳过预设模板，手动配置服务商地址、通信协议与模型路由映射。",
       apiGatewayEditTemplate: "编辑服务商模板",
@@ -4279,7 +4292,8 @@ const resources = {
       apiGatewayUsageSubTabs: "用量与日志子标签",
       apiGatewayProviderTemplatesButton: "服务商模板",
       apiGatewayTemplatesDialogDesc:
-        "浏览内置服务商模板、同步官方模型清单，或创建自定义服务商模板。",
+        "管理官方与自定义模板，支持一键同步最新模型列表并快速添加为上游服务商。",
+      apiGatewayAvailableTemplatesCount: "共 {{count}} 个可用模板",
       apiGatewayLogsTab: "请求日志",
       apiGatewayRangeToday: "今日",
       apiGatewayRange7d: "近 7 天",
