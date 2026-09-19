@@ -267,34 +267,19 @@ pub fn compute_cost_at_time(
     compute_cost(price, tokens)
 }
 
-/// Match a price row, prioritizing provider-specific price over global price.
+/// Match a price row scoped to the forwarded provider and upstream model.
+///
+/// Matching is exact and case-sensitive; a row that belongs to another provider
+/// or carries no provider id never prices a request.
 pub fn match_price_for_provider<'a>(
-    provider_id: Option<&str>,
+    provider_id: &str,
     upstream_model: &str,
     prices: &'a [ModelPrice],
 ) -> Option<&'a ModelPrice> {
-    if let Some(pid) = provider_id {
-        if let Some(found) = prices
-            .iter()
-            .find(|price| price.provider_id.as_deref() == Some(pid) && price.upstream_model == upstream_model)
-        {
-            return Some(found);
-        }
-    }
-    prices
-        .iter()
-        .find(|price| price.provider_id.is_none() && price.upstream_model == upstream_model)
-        .or_else(|| {
-            prices
-                .iter()
-                .find(|price| price.upstream_model == upstream_model)
-        })
-}
-
-/// Exact (case-sensitive) lookup of the upstream model in the price table.
-#[allow(dead_code)]
-pub fn match_price<'a>(upstream_model: &str, prices: &'a [ModelPrice]) -> Option<&'a ModelPrice> {
-    match_price_for_provider(None, upstream_model, prices)
+    prices.iter().find(|price| {
+        price.provider_id.as_deref() == Some(provider_id)
+            && price.upstream_model == upstream_model
+    })
 }
 
 fn token_number(value: Option<&Value>) -> u64 {

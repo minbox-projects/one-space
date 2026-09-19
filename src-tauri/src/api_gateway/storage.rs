@@ -1,7 +1,8 @@
 use super::{
-    now_ts, GatewayConfig, GatewayKey, GatewayUpstreamProvider, CONFIG_FILE, DEFAULT_PORT,
-    LEGACY_CONFIG_FILE_NAME, LEGACY_USAGE_DB_FILE_NAME,
+    now_ts, GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelPrice, CONFIG_FILE,
+    DEFAULT_PORT, LEGACY_CONFIG_FILE_NAME, LEGACY_USAGE_DB_FILE_NAME,
 };
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -89,6 +90,80 @@ pub(in crate::api_gateway) fn normalize_config(config: &mut GatewayConfig) {
         });
     }
     config.default_key_id = resolve_default_key_id(&config.keys, config.default_key_id.as_deref());
+    normalize_model_prices(config);
+}
+
+/// Migrate legacy global price rows into the providers that reach their model
+/// and drop rows that no longer belong to an existing, reachable provider/model.
+///
+/// A provider reaches every non-blank mapping upstream model plus its trimmed
+/// default model. A global row is copied into each reaching provider that has no
+/// scoped row for that model yet; then only provider-scoped, reachable rows are
+/// kept, deduplicated by `(provider_id, upstream_model)` keeping the first.
+/// Idempotent because the result is a function of the provider mappings and the
+/// first occurrence of each row.
+fn normalize_model_prices(config: &mut GatewayConfig) {
+    let reachable: Vec<(String, HashSet<String>)> = config
+        .providers
+        .iter()
+        .map(|provider| {
+            let mut models = HashSet::new();
+            for mapping in &provider.mappings {
+                if !mapping.upstream_model.trim().is_empty() {
+                    models.insert(mapping.upstream_model.clone());
+                }
+            }
+            if let Some(default_model) = provider.default_model.as_deref() {
+                if !default_model.trim().is_empty() {
+                    models.insert(default_model.to_string());
+                }
+            }
+            (provider.id.clone(), models)
+        })
+        .collect();
+
+    let global_rows: Vec<ModelPrice> = config
+        .model_prices
+        .iter()
+        .filter(|row| row.provider_id.is_none())
+        .cloned()
+        .collect();
+    for row in global_rows {
+        for (provider_id, models) in &reachable {
+            if !models.contains(&row.upstream_model) {
+                continue;
+            }
+            let already_scoped = config.model_prices.iter().any(|existing| {
+                existing.provider_id.as_deref() == Some(provider_id.as_str())
+                    && existing.upstream_model == row.upstream_model
+            });
+            if already_scoped {
+                continue;
+            }
+            let mut migrated = row.clone();
+            migrated.provider_id = Some(provider_id.clone());
+            config.model_prices.push(migrated);
+        }
+    }
+
+    let mut seen: Vec<(String, String)> = Vec::new();
+    config.model_prices.retain(|row| {
+        let Some(provider_id) = row.provider_id.as_deref() else {
+            return false;
+        };
+        let Some((_, models)) = reachable.iter().find(|(id, _)| id == provider_id) else {
+            return false;
+        };
+        if !models.contains(&row.upstream_model) {
+            return false;
+        }
+        let key = (provider_id.to_string(), row.upstream_model.clone());
+        if seen.contains(&key) {
+            return false;
+        }
+        seen.push(key);
+        true
+    });
 }
 
 pub(in crate::api_gateway) fn read_config() -> Result<GatewayConfig, String> {

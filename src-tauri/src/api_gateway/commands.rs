@@ -263,18 +263,49 @@ pub async fn api_gateway_save_config(config: GatewayConfig) -> Result<GatewayCon
 #[tauri::command]
 pub fn api_gateway_upsert_provider(
     mut provider: GatewayUpstreamProvider,
+    prices: Option<Vec<ModelPrice>>,
 ) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     if provider.id.trim().is_empty() {
         provider.id = new_provider_id();
     }
-    if let Some(existing) = find_provider_mut(&mut config, &provider.id) {
+    let provider_id = provider.id.clone();
+    if let Some(existing) = find_provider_mut(&mut config, &provider_id) {
         if provider.api_key.trim().is_empty() || provider.api_key == "********" {
             provider.api_key = existing.api_key.clone();
         }
         *existing = provider;
     } else {
         config.providers.push(provider);
+    }
+    if let Some(prices) = prices {
+        let mut normalized: Vec<ModelPrice> = Vec::with_capacity(prices.len());
+        for mut row in prices {
+            let upstream_model = row.upstream_model.trim().to_string();
+            if upstream_model.is_empty() {
+                continue;
+            }
+            if normalized
+                .iter()
+                .any(|existing| existing.upstream_model == upstream_model)
+            {
+                continue;
+            }
+            row.upstream_model = upstream_model;
+            row.provider_id = Some(provider_id.clone());
+            if row.off_peaks.is_empty() {
+                if let Some(off_peak) = row.off_peak.clone() {
+                    row.off_peaks = vec![off_peak];
+                }
+            } else if row.off_peak.is_none() {
+                row.off_peak = row.off_peaks.first().cloned();
+            }
+            normalized.push(row);
+        }
+        config
+            .model_prices
+            .retain(|row| row.provider_id.as_deref() != Some(provider_id.as_str()));
+        config.model_prices.extend(normalized);
     }
     write_config(&config)?;
     read_config()
@@ -284,6 +315,9 @@ pub fn api_gateway_upsert_provider(
 pub fn api_gateway_delete_provider(provider_id: String) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     config.providers.retain(|provider| provider.id != provider_id);
+    config
+        .model_prices
+        .retain(|row| row.provider_id.as_deref() != Some(provider_id.as_str()));
     config
         .terminal_syncs
         .retain(|record| record.provider_id != provider_id);
@@ -672,7 +706,7 @@ pub async fn api_gateway_sync_terminal(
 }
 
 // ---------------------------------------------------------------------------
-// Usage statistics, request logs, model prices and retention
+// Usage statistics, request logs and retention
 // ---------------------------------------------------------------------------
 
 /// Aggregated cards, UTC+8 buckets and per-model/provider detail for `days`.
@@ -721,29 +755,6 @@ pub fn api_gateway_request_logs(
             "unsupported group_by '{other}': expected 'none', 'model' or 'day'"
         )),
     }
-}
-
-#[tauri::command]
-pub fn api_gateway_model_prices_get() -> Result<Vec<ModelPrice>, String> {
-    Ok(read_config()?.model_prices)
-}
-
-/// Replace only the price table, preserving providers, keys and terminal_syncs.
-#[tauri::command]
-pub fn api_gateway_model_prices_save(mut prices: Vec<ModelPrice>) -> Result<Vec<ModelPrice>, String> {
-    for price in &mut prices {
-        if price.off_peaks.is_empty() {
-            if let Some(ref op) = price.off_peak {
-                price.off_peaks = vec![op.clone()];
-            }
-        } else if price.off_peak.is_none() {
-            price.off_peak = price.off_peaks.first().cloned();
-        }
-    }
-    let mut config = read_config()?;
-    config.model_prices = prices;
-    write_config(&config)?;
-    Ok(read_config()?.model_prices)
 }
 
 #[tauri::command]
