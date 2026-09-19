@@ -151,21 +151,57 @@ impl Default for GatewayUpstreamProvider {
     }
 }
 
+fn is_zero_f64(val: &f64) -> bool {
+    *val == 0.0
+}
+
 /// One model entry of a provider template.
 ///
 /// `protocol` is optional and inherits the template protocol when absent.
 /// `display_name` is the official model name shown by the gateway. `enabled`
 /// carries the operator's local intent and is always persisted; a model stored
-/// without the flag reads as enabled. Templates ship no pricing data.
+/// without the flag reads as enabled.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderTemplateModel {
     pub upstream_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<UpstreamProtocol>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub input: f64,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub cache_read: f64,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub cache_write: f64,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub output: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub off_peaks: Vec<OffPeakPrice>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_efforts: Vec<String>,
+}
+
+impl Default for ProviderTemplateModel {
+    fn default() -> Self {
+        Self {
+            upstream_model: String::new(),
+            local_model: None,
+            display_name: None,
+            protocol: None,
+            enabled: true,
+            input: 0.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            output: 0.0,
+            off_peaks: Vec::new(),
+            reasoning_efforts: Vec::new(),
+        }
+    }
 }
 
 /// A built-in provider template shipped with the app.

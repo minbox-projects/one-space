@@ -36,6 +36,7 @@ fn template_model(
         display_name: display_name.map(str::to_string),
         protocol,
         enabled,
+        ..ProviderTemplateModel::default()
     }
 }
 
@@ -241,6 +242,7 @@ fn template_model_serializes_the_reduced_shape_and_defaults_enabled() {
         display_name: None,
         protocol: None,
         enabled: false,
+        ..ProviderTemplateModel::default()
     };
     let value = serde_json::to_value(&model).expect("serialize model");
     let object = value.as_object().expect("a model serializes as an object");

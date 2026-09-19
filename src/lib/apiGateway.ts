@@ -759,9 +759,17 @@ export function apiGatewayUsageRetentionSave(days: number) {
 /** One model shipped by a provider template. */
 export interface GatewayProviderTemplateModel {
   upstream_model: string;
+  local_model?: string;
   display_name?: string | null;
   protocol?: GatewayUpstreamProtocol | null;
   enabled: boolean;
+  input?: number;
+  cache_read?: number;
+  cache_write?: number;
+  output?: number;
+  off_peaks?: OffPeakPrice[];
+  off_peak?: OffPeakPrice | null;
+  reasoning_efforts?: string[];
 }
 
 /** A built-in provider template catalog entry. */

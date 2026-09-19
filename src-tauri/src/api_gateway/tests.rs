@@ -12147,3 +12147,212 @@ fn cleanup_legacy_files_succeeds_without_legacy_files() {
     super::storage::cleanup_legacy_files();
     super::storage::cleanup_legacy_files();
 }
+
+#[test]
+fn query_model_reasoning_efforts_matches_families_and_ignores_prefixes() {
+    use super::storage::query_model_reasoning_efforts;
+
+    // GPT-5.6 / GPT-5.5
+    assert_eq!(
+        query_model_reasoning_efforts("gpt-5.6-luna"),
+        vec!["low", "medium", "high", "xhigh", "max"]
+    );
+    assert_eq!(
+        query_model_reasoning_efforts("gpt-5.5"),
+        vec!["low", "medium", "high", "xhigh", "max"]
+    );
+
+    // GPT-5.4 / GPT-5.3
+    assert_eq!(
+        query_model_reasoning_efforts("gpt-5.4-mini"),
+        vec!["low", "medium", "high", "xhigh"]
+    );
+    assert_eq!(
+        query_model_reasoning_efforts("gpt-5.3-codex"),
+        vec!["low", "medium", "high", "xhigh"]
+    );
+
+    // DeepSeek V4
+    assert_eq!(
+        query_model_reasoning_efforts("deepseek/deepseek-v4-flash"),
+        vec!["low", "high", "max"]
+    );
+    assert_eq!(
+        query_model_reasoning_efforts("deepseek-v4-flash-free"),
+        vec!["low", "high", "max"]
+    );
+
+    // Gemini
+    assert_eq!(
+        query_model_reasoning_efforts("google/gemini-3.7-flash"),
+        vec!["low", "medium", "high"]
+    );
+
+    // Kimi
+    assert_eq!(
+        query_model_reasoning_efforts("moonshotai/Kimi-K3"),
+        vec!["low", "high", "max"]
+    );
+    assert_eq!(
+        query_model_reasoning_efforts("kimi-k2.7-code"),
+        vec!["low", "high", "max"]
+    );
+
+    // GLM
+    assert_eq!(
+        query_model_reasoning_efforts("zai-org/GLM-5.3"),
+        vec!["low", "high", "max"]
+    );
+    assert_eq!(
+        query_model_reasoning_efforts("glm-5.2"),
+        vec!["low", "medium", "high", "xhigh", "max"]
+    );
+
+    // Qwen Max
+    assert_eq!(
+        query_model_reasoning_efforts("Qwen/Qwen3.8-Max"),
+        vec!["low", "medium", "xhigh"]
+    );
+
+    // Non-reasoning models
+    assert!(query_model_reasoning_efforts("mimo-v2.5").is_empty());
+    assert!(query_model_reasoning_efforts("hy3").is_empty());
+    assert!(query_model_reasoning_efforts("big-pickle").is_empty());
+}
+
+#[test]
+fn normalize_template_prices_and_efforts_populates_prices_and_efforts_and_is_idempotent() {
+    use super::types_config::{ProviderTemplate, ProviderTemplateModel, ProviderTemplateState};
+    let mut config = GatewayConfig::default();
+
+    // 1. Setup a provider
+    let mut p = provider("p1");
+    p.template_id = Some("tpl-test".to_string());
+    p.mappings = vec![
+        ModelMapping {
+            local_model: "my-ds".to_string(),
+            upstream_model: "deepseek-v4-flash".to_string(),
+            enabled: true,
+            protocol: None,
+            display_name: None,
+            reasoning_efforts: Vec::new(),
+        },
+        ModelMapping {
+            local_model: "my-plain".to_string(),
+            upstream_model: "plain-model".to_string(),
+            enabled: true,
+            protocol: None,
+            display_name: None,
+            reasoning_efforts: Vec::new(),
+        },
+    ];
+    config.providers.push(p);
+
+    // 2. Setup model prices for p1
+    config.model_prices = vec![
+        priced_with_provider("p1", "deepseek-v4-flash", 0.3, 0.006, 0.0, 1.2),
+        priced_with_provider("p1", "plain-model", 0.1, 0.0, 0.0, 0.2),
+    ];
+
+    // 3. Setup a provider template
+    let template = ProviderTemplate {
+        id: "tpl-test".to_string(),
+        name: "Test Template".to_string(),
+        description: "Testing".to_string(),
+        base_url: "https://test.api".to_string(),
+        protocol: UpstreamProtocol::ChatCompletions,
+        source: "https://test.api/models".to_string(),
+        models_url: Some("https://test.api/models".to_string()),
+        models: vec![
+            ProviderTemplateModel {
+                upstream_model: "deepseek-v4-flash".to_string(),
+                local_model: None,
+                display_name: None,
+                protocol: None,
+                enabled: true,
+                input: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+                output: 0.0,
+                off_peaks: Vec::new(),
+                reasoning_efforts: Vec::new(),
+            },
+            ProviderTemplateModel {
+                upstream_model: "gpt-5.6-luna".to_string(),
+                local_model: None,
+                display_name: None,
+                protocol: None,
+                enabled: true,
+                input: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+                output: 0.0,
+                off_peaks: Vec::new(),
+                reasoning_efforts: Vec::new(),
+            },
+            ProviderTemplateModel {
+                upstream_model: "plain-model".to_string(),
+                local_model: None,
+                display_name: None,
+                protocol: None,
+                enabled: true,
+                input: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+                output: 0.0,
+                off_peaks: Vec::new(),
+                reasoning_efforts: Vec::new(),
+            },
+        ],
+    };
+
+    config.provider_templates.push(ProviderTemplateState {
+        template_id: "tpl-test".to_string(),
+        template: Some(template),
+        synced_at: Some(100),
+        source: None,
+    });
+
+    // Run normalize_config
+    super::storage::normalize_config(&mut config);
+
+    // Verify provider mappings reasoning efforts populated
+    let prov = &config.providers[0];
+    let ds_mapping = prov.mappings.iter().find(|m| m.upstream_model == "deepseek-v4-flash").unwrap();
+    assert_eq!(ds_mapping.reasoning_efforts, vec!["low", "high", "max"]);
+    let plain_mapping = prov.mappings.iter().find(|m| m.upstream_model == "plain-model").unwrap();
+    assert!(plain_mapping.reasoning_efforts.is_empty());
+
+    // Verify template models
+    let tpl_state = &config.provider_templates[0];
+    let tpl = tpl_state.template.as_ref().unwrap();
+
+    // 1) deepseek-v4-flash in template:
+    let tpl_ds = tpl.models.iter().find(|m| m.upstream_model == "deepseek-v4-flash").unwrap();
+    assert_eq!(tpl_ds.input, 0.3);
+    assert_eq!(tpl_ds.cache_read, 0.006);
+    assert_eq!(tpl_ds.output, 1.2);
+    assert_eq!(tpl_ds.local_model.as_deref(), Some("my-ds"));
+    assert_eq!(tpl_ds.reasoning_efforts, vec!["low", "high", "max"]);
+
+    // 2) gpt-5.6-luna in template (not in provider prices, but gets real reasoning efforts):
+    let tpl_luna = tpl.models.iter().find(|m| m.upstream_model == "gpt-5.6-luna").unwrap();
+    assert_eq!(tpl_luna.input, 0.0);
+    assert_eq!(tpl_luna.reasoning_efforts, vec!["low", "medium", "high", "xhigh", "max"]);
+
+    // 3) plain-model in template (gets price from provider, empty reasoning efforts):
+    let tpl_plain = tpl.models.iter().find(|m| m.upstream_model == "plain-model").unwrap();
+    assert_eq!(tpl_plain.input, 0.1);
+    assert_eq!(tpl_plain.output, 0.2);
+    assert_eq!(tpl_plain.local_model.as_deref(), Some("my-plain"));
+    assert!(tpl_plain.reasoning_efforts.is_empty());
+
+    // Verify idempotency
+    let before_tpl = config.provider_templates.clone();
+    let before_prices = config.model_prices.clone();
+    let before_mappings = config.providers[0].mappings.clone();
+    super::storage::normalize_config(&mut config);
+    assert_eq!(config.provider_templates, before_tpl, "templates must be unchanged on second normalize");
+    assert_eq!(config.model_prices, before_prices, "prices must be unchanged on second normalize");
+    assert_eq!(config.providers[0].mappings, before_mappings, "mappings must be unchanged on second normalize");
+}

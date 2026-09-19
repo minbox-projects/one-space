@@ -91,6 +91,7 @@ pub(in crate::api_gateway) fn normalize_config(config: &mut GatewayConfig) {
     }
     config.default_key_id = resolve_default_key_id(&config.keys, config.default_key_id.as_deref());
     normalize_model_prices(config);
+    normalize_template_prices_and_efforts(config);
 }
 
 /// Migrate legacy global price rows into the providers that reach their model
@@ -164,6 +165,187 @@ fn normalize_model_prices(config: &mut GatewayConfig) {
         seen.push(key);
         true
     });
+}
+
+/// Query the real reasoning effort levels supported by a model based on its model identifier.
+pub(in crate::api_gateway) fn query_model_reasoning_efforts(model: &str) -> Vec<String> {
+    let lower = model.trim().to_lowercase();
+    let base = lower.split('/').last().unwrap_or(&lower);
+    let base = base.strip_suffix(":free").unwrap_or(base);
+    let base = base.strip_suffix("-free").unwrap_or(base);
+
+    if base.starts_with("gpt-5.5")
+        || base.starts_with("gpt-5.6")
+        || base.starts_with("gpt-6")
+        || base.starts_with("claude-fable")
+        || base.starts_with("claude-opus")
+        || base.starts_with("claude-sonnet-5")
+        || base == "glm-5.2"
+        || base == "glm-5.2-fast"
+        || base == "muse-spark-1.3"
+    {
+        vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+            "max".to_string(),
+        ]
+    } else if base.starts_with("gpt-5.3")
+        || base.starts_with("gpt-5.4")
+        || base.starts_with("muse-spark-1")
+        || base == "grok-4.6"
+    {
+        vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+        ]
+    } else if base == "claude-sonnet-4-6" {
+        vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "max".to_string(),
+        ]
+    } else if base.starts_with("qwen3.8-max") {
+        vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "xhigh".to_string(),
+        ]
+    } else if base.starts_with("deepseek-v4")
+        || base.starts_with("kimi-k")
+        || base.starts_with("glm-5")
+    {
+        vec![
+            "low".to_string(),
+            "high".to_string(),
+            "max".to_string(),
+        ]
+    } else if base.starts_with("gemini-3")
+        || base.starts_with("step-3.5")
+        || base.starts_with("step-3.7")
+        || base == "grok-4.5"
+    {
+        vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+        ]
+    } else if base.starts_with("fugu-ultra") {
+        vec![
+            "high".to_string(),
+            "max".to_string(),
+            "xhigh".to_string(),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Synchronize pricing configurations from providers into template models and
+/// ensure real reasoning efforts are populated for providers and templates.
+pub(in crate::api_gateway) fn normalize_template_prices_and_efforts(config: &mut GatewayConfig) {
+    // 1. Ensure provider mappings have real reasoning efforts when empty
+    for provider in &mut config.providers {
+        for mapping in &mut provider.mappings {
+            if mapping.reasoning_efforts.is_empty() {
+                let efforts = query_model_reasoning_efforts(&mapping.upstream_model);
+                if !efforts.is_empty() {
+                    mapping.reasoning_efforts = efforts;
+                }
+            }
+        }
+    }
+
+    // 2. Populate template model prices and reasoning efforts
+    for state in &mut config.provider_templates {
+        let Some(template) = &mut state.template else {
+            continue;
+        };
+        for model in &mut template.models {
+            // Populate pricing if unpriced
+            if model.input == 0.0
+                && model.output == 0.0
+                && model.cache_read == 0.0
+                && model.cache_write == 0.0
+                && model.off_peaks.is_empty()
+            {
+                let matched_price = config
+                    .model_prices
+                    .iter()
+                    .find(|p| {
+                        p.upstream_model == model.upstream_model
+                            && p.provider_id.as_deref().map_or(false, |pid| {
+                                config.providers.iter().any(|prov| {
+                                    prov.id == pid && prov.template_id.as_deref() == Some(&state.template_id)
+                                })
+                            })
+                    })
+                    .or_else(|| {
+                        config
+                            .model_prices
+                            .iter()
+                            .find(|p| p.upstream_model == model.upstream_model)
+                    })
+                    .or_else(|| {
+                        let m_base = model.upstream_model.split('/').last().unwrap_or(&model.upstream_model).to_lowercase();
+                        config.model_prices.iter().find(|p| {
+                            let p_base = p.upstream_model.split('/').last().unwrap_or(&p.upstream_model).to_lowercase();
+                            p_base == m_base
+                        })
+                    });
+
+                if let Some(price) = matched_price {
+                    if price.input > 0.0
+                        || price.output > 0.0
+                        || price.cache_read > 0.0
+                        || price.cache_write > 0.0
+                        || !price.off_peaks.is_empty()
+                    {
+                        model.input = price.input;
+                        model.output = price.output;
+                        model.cache_read = price.cache_read;
+                        model.cache_write = price.cache_write;
+                        model.off_peaks = price.effective_off_peaks().to_vec();
+                    }
+                }
+            }
+
+            // Populate local_model if absent and matching provider mapping exists
+            if model.local_model.is_none() {
+                if let Some(local) = config.providers.iter().find_map(|prov| {
+                    prov.mappings
+                        .iter()
+                        .find(|m| m.upstream_model == model.upstream_model && !m.local_model.trim().is_empty())
+                        .map(|m| m.local_model.clone())
+                }) {
+                    model.local_model = Some(local);
+                }
+            }
+
+            // Populate reasoning efforts
+            if model.reasoning_efforts.is_empty() {
+                let from_mapping = config.providers.iter().find_map(|prov| {
+                    prov.mappings
+                        .iter()
+                        .find(|m| m.upstream_model == model.upstream_model && !m.reasoning_efforts.is_empty())
+                        .map(|m| m.reasoning_efforts.clone())
+                });
+
+                if let Some(efforts) = from_mapping {
+                    model.reasoning_efforts = efforts;
+                } else {
+                    let real_efforts = query_model_reasoning_efforts(&model.upstream_model);
+                    if !real_efforts.is_empty() {
+                        model.reasoning_efforts = real_efforts;
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub(in crate::api_gateway) fn read_config() -> Result<GatewayConfig, String> {

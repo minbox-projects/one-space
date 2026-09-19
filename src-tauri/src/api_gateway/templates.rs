@@ -8,8 +8,8 @@
 
 use super::storage::new_provider_id;
 use super::types_config::{
-    now_ts, GatewayConfig, GatewayUpstreamProvider, ModelMapping, ProviderTemplate,
-    ProviderTemplateModel, ProviderTemplateState, UpstreamProtocol,
+    now_ts, GatewayConfig, GatewayUpstreamProvider, ModelMapping, ModelPrice, OffPeakPrice,
+    ProviderTemplate, ProviderTemplateModel, ProviderTemplateState, UpstreamProtocol,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -43,11 +43,25 @@ struct RawTemplateModel {
     #[serde(default)]
     upstream_model: String,
     #[serde(default)]
+    local_model: Option<String>,
+    #[serde(default)]
     display_name: Option<String>,
     #[serde(default)]
     protocol: Option<String>,
     #[serde(default = "super::types_config::default_true")]
     enabled: bool,
+    #[serde(default)]
+    input: f64,
+    #[serde(default)]
+    cache_read: f64,
+    #[serde(default)]
+    cache_write: f64,
+    #[serde(default)]
+    output: f64,
+    #[serde(default)]
+    off_peaks: Vec<OffPeakPrice>,
+    #[serde(default)]
+    reasoning_efforts: Vec<String>,
 }
 
 fn parse_protocol(raw: &str) -> Option<UpstreamProtocol> {
@@ -106,9 +120,16 @@ pub fn parse_template_snapshot(json: &str) -> Result<Vec<ProviderTemplate>, Stri
             }
             models.push(ProviderTemplateModel {
                 upstream_model,
+                local_model: raw_model.local_model,
                 display_name: raw_model.display_name,
                 protocol,
                 enabled: raw_model.enabled,
+                input: raw_model.input,
+                cache_read: raw_model.cache_read,
+                cache_write: raw_model.cache_write,
+                output: raw_model.output,
+                off_peaks: raw_model.off_peaks,
+                reasoning_efforts: raw_model.reasoning_efforts,
             });
         }
 
@@ -310,11 +331,22 @@ fn parse_model_list_source(
             {
                 continue;
             }
+            let previous_model = previous
+                .models
+                .iter()
+                .find(|model| model.upstream_model == identifier);
             merged.push(ProviderTemplateModel {
                 upstream_model: identifier.to_string(),
-                display_name: None,
-                protocol: None,
-                enabled: true,
+                local_model: previous_model.and_then(|model| model.local_model.clone()),
+                display_name: previous_model.and_then(|model| model.display_name.clone()),
+                protocol: previous_model.and_then(|model| model.protocol),
+                enabled: previous_model.map(|model| model.enabled).unwrap_or(true),
+                input: previous_model.map(|model| model.input).unwrap_or(0.0),
+                cache_read: previous_model.map(|model| model.cache_read).unwrap_or(0.0),
+                cache_write: previous_model.map(|model| model.cache_write).unwrap_or(0.0),
+                output: previous_model.map(|model| model.output).unwrap_or(0.0),
+                off_peaks: previous_model.map(|model| model.off_peaks.clone()).unwrap_or_default(),
+                reasoning_efforts: previous_model.map(|model| model.reasoning_efforts.clone()).unwrap_or_default(),
             });
             continue;
         }
@@ -371,6 +403,7 @@ fn parse_model_list_source(
             .find(|model| model.upstream_model == identifier);
         merged.push(ProviderTemplateModel {
             upstream_model: identifier,
+            local_model: previous_model.and_then(|model| model.local_model.clone()),
             display_name: object
                 .get("name")
                 .and_then(Value::as_str)
@@ -378,6 +411,12 @@ fn parse_model_list_source(
                 .or_else(|| previous_model.and_then(|model| model.display_name.clone())),
             protocol: protocol.or_else(|| previous_model.and_then(|model| model.protocol)),
             enabled: previous_model.map(|model| model.enabled).unwrap_or(true),
+            input: previous_model.map(|model| model.input).unwrap_or(0.0),
+            cache_read: previous_model.map(|model| model.cache_read).unwrap_or(0.0),
+            cache_write: previous_model.map(|model| model.cache_write).unwrap_or(0.0),
+            output: previous_model.map(|model| model.output).unwrap_or(0.0),
+            off_peaks: previous_model.map(|model| model.off_peaks.clone()).unwrap_or_default(),
+            reasoning_efforts: previous_model.map(|model| model.reasoning_efforts.clone()).unwrap_or_default(),
         });
     }
 
@@ -474,12 +513,18 @@ fn propagate_to_derived(
                 }
             } else {
                 provider.mappings.push(ModelMapping {
-                    local_model: model.upstream_model.clone(),
+                    local_model: model
+                        .local_model
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(&model.upstream_model)
+                        .to_string(),
                     upstream_model: model.upstream_model.clone(),
                     enabled: true,
                     protocol: Some(effective_protocol),
                     display_name: model.display_name.clone(),
-                    reasoning_efforts: Vec::new(),
+                    reasoning_efforts: model.reasoning_efforts.clone(),
                 });
             }
         }
@@ -585,12 +630,18 @@ fn mapping_from_template(
     model: &ProviderTemplateModel,
 ) -> ModelMapping {
     ModelMapping {
-        local_model: model.upstream_model.clone(),
+        local_model: model
+            .local_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&model.upstream_model)
+            .to_string(),
         upstream_model: model.upstream_model.clone(),
         enabled: model.enabled,
         protocol: Some(model.protocol.unwrap_or(template.protocol)),
         display_name: model.display_name.clone(),
-        reasoning_efforts: Vec::new(),
+        reasoning_efforts: model.reasoning_efforts.clone(),
     }
 }
 
@@ -602,8 +653,8 @@ fn mapping_from_template(
 /// template's value; the protocol argument always wins. The new provider binds
 /// the template, leaves `default_model` empty, receives one mapping per enabled
 /// template model (`local_model` = `upstream_model`, official display name,
-/// effective protocol) and writes no price row. The staged clone is handed to
-/// `persist` and only committed to `config` once persistence succeeds.
+/// effective protocol) and writes prices if defined on the template models.
+/// The staged clone is handed to `persist` and only committed to `config` once persistence succeeds.
 pub fn apply_create_provider_from_template(
     config: &mut GatewayConfig,
     template_id: &str,
@@ -618,8 +669,9 @@ pub fn apply_create_provider_from_template(
     }
     let template = effective_template(config, template_id)?;
 
+    let provider_id = new_provider_id();
     let provider = GatewayUpstreamProvider {
-        id: new_provider_id(),
+        id: provider_id.clone(),
         name: if name.trim().is_empty() {
             template.name.clone()
         } else {
@@ -645,6 +697,26 @@ pub fn apply_create_provider_from_template(
 
     let mut next = config.clone();
     next.providers.push(provider.clone());
+    for model in &template.models {
+        if model.enabled
+            && (model.input > 0.0
+                || model.output > 0.0
+                || model.cache_read > 0.0
+                || model.cache_write > 0.0
+                || !model.off_peaks.is_empty())
+        {
+            next.model_prices.push(ModelPrice {
+                provider_id: Some(provider_id.clone()),
+                upstream_model: model.upstream_model.clone(),
+                input: model.input,
+                cache_read: model.cache_read,
+                cache_write: model.cache_write,
+                output: model.output,
+                off_peaks: model.off_peaks.clone(),
+                off_peak: None,
+            });
+        }
+    }
 
     persist(&next)?;
     *config = next;

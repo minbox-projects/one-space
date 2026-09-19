@@ -156,14 +156,66 @@ describe("ProviderTemplateEditDialog", () => {
   it("filters models list by search keyword", () => {
     renderDialog();
 
-    expect(screen.getByDisplayValue("test-model-1")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("gpt-4o")).toBeInTheDocument();
+    expect(screen.getByTestId("template-edit-model-upstream-0")).toHaveValue("test-model-1");
+    expect(screen.getByTestId("template-edit-model-upstream-1")).toHaveValue("gpt-4o");
 
     const searchInput = screen.getByTestId("template-edit-models-search");
     fireEvent.change(searchInput, { target: { value: "gpt" } });
 
-    expect(screen.queryByDisplayValue("test-model-1")).not.toBeInTheDocument();
-    expect(screen.getByDisplayValue("gpt-4o")).toBeInTheDocument();
+    expect(screen.queryByTestId("template-edit-model-upstream-0")).not.toBeInTheDocument();
+    expect(screen.getByTestId("template-edit-model-upstream-1")).toHaveValue("gpt-4o");
+  });
+
+  it("expands mapping row to edit pricing and reasoning efforts and saves them", async () => {
+    const { onSave } = renderDialog();
+
+    // 默认未展开，价格与推理档位不显示
+    expect(screen.queryByTestId("api-gateway-mapping-price-0")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("api-gateway-mapping-efforts-0")).not.toBeInTheDocument();
+
+    // 点击展开第 1 个模型
+    fireEvent.click(screen.getByTestId("template-edit-model-expand-0"));
+
+    expect(screen.getByTestId("api-gateway-mapping-price-0")).toBeInTheDocument();
+    expect(screen.getByTestId("api-gateway-mapping-efforts-0")).toBeInTheDocument();
+
+    // 编辑本地模型 ID
+    const local0 = screen.getByTestId("template-edit-model-local-0");
+    fireEvent.change(local0, { target: { value: "custom-local-1" } });
+
+    // 编辑协议
+    const protocol0 = screen.getByTestId("template-edit-model-protocol-0");
+    fireEvent.change(protocol0, { target: { value: "responses" } });
+
+    // 编辑价格 (通过 MappingPriceEditor 的输入框)
+    const inputPrice = screen.getByTestId("api-gateway-price-0-input");
+    const outputPrice = screen.getByTestId("api-gateway-price-0-output");
+    fireEvent.change(inputPrice, { target: { value: "1.5" } });
+    fireEvent.change(outputPrice, { target: { value: "3.5" } });
+
+    // 添加推理档位
+    const effortInput = screen.getByTestId("api-gateway-mapping-effort-input-0");
+    fireEvent.change(effortInput, { target: { value: "medium" } });
+    fireEvent.click(screen.getByTestId("api-gateway-mapping-effort-add-0"));
+
+    expect(screen.getByTestId("api-gateway-mapping-effort-0-medium")).toBeInTheDocument();
+
+    // 保存
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("template-edit-save-btn"));
+    });
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as GatewayProviderTemplate;
+    expect(saved.models[0]).toMatchObject({
+      upstream_model: "test-model-1",
+      local_model: "custom-local-1",
+      protocol: "responses",
+      input: 1.5,
+      output: 3.5,
+      reasoning_efforts: ["medium"],
+      enabled: true,
+    });
   });
 
   it("saves the complete model list with enabled flags and no snapshot_version", async () => {
@@ -274,5 +326,83 @@ describe("ProviderTemplateEditDialog", () => {
     fireEvent.click(screen.getByTestId("template-edit-save-btn"));
 
     expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("creates a new template with model mappings, prices and protocols", async () => {
+    const onSave = vi.fn().mockResolvedValue(true);
+    render(
+      <ProviderTemplateEditDialog
+        open={true}
+        onOpenChange={vi.fn()}
+        template={null}
+        providers={[]}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("template-edit-name")).toHaveValue("");
+    expect(screen.getByTestId("template-edit-models-count")).toHaveTextContent("0");
+
+    // 填写基本信息
+    fireEvent.change(screen.getByTestId("template-edit-name"), {
+      target: { value: "New Custom Template" },
+    });
+    fireEvent.change(screen.getByTestId("template-edit-base-url"), {
+      target: { value: "https://new.example.com/v1" },
+    });
+
+    // 添加模型映射行
+    fireEvent.click(screen.getByTestId("template-edit-add-model"));
+    expect(screen.getByTestId("template-edit-model-row-0")).toBeInTheDocument();
+
+    // 输入本地模型 ID、上游模型 ID、显示名称、协议
+    fireEvent.change(screen.getByTestId("template-edit-model-local-0"), {
+      target: { value: "claude-3-7-sonnet" },
+    });
+    fireEvent.change(screen.getByTestId("template-edit-model-upstream-0"), {
+      target: { value: "claude-3-7-sonnet-20250219" },
+    });
+    fireEvent.change(screen.getByTestId("template-edit-model-display-0"), {
+      target: { value: "Claude 3.7 Sonnet" },
+    });
+    fireEvent.change(screen.getByTestId("template-edit-model-protocol-0"), {
+      target: { value: "chat_completions" },
+    });
+
+    // 展开并配置价格与推理档位
+    fireEvent.click(screen.getByTestId("template-edit-model-expand-0"));
+    fireEvent.change(screen.getByTestId("api-gateway-price-0-input"), {
+      target: { value: "3" },
+    });
+    fireEvent.change(screen.getByTestId("api-gateway-price-0-output"), {
+      target: { value: "15" },
+    });
+
+    const effortInput = screen.getByTestId("api-gateway-mapping-effort-input-0");
+    fireEvent.change(effortInput, { target: { value: "high" } });
+    fireEvent.click(screen.getByTestId("api-gateway-mapping-effort-add-0"));
+
+    // 保存
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("template-edit-save-btn"));
+    });
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as GatewayProviderTemplate;
+    expect(saved.name).toBe("New Custom Template");
+    expect(saved.base_url).toBe("https://new.example.com/v1");
+    expect(saved.models).toHaveLength(1);
+    expect(saved.models[0]).toMatchObject({
+      local_model: "claude-3-7-sonnet",
+      upstream_model: "claude-3-7-sonnet-20250219",
+      display_name: "Claude 3.7 Sonnet",
+      protocol: "chat_completions",
+      input: 3,
+      output: 15,
+      reasoning_efforts: ["high"],
+      enabled: true,
+    });
   });
 });
