@@ -86,23 +86,15 @@ const PROVIDER_TEMPLATE_KEYS = [
   "apiGatewayTemplateSource",
   "apiGatewayTemplateLastSync",
   "apiGatewayTemplateNotSynced",
-  "apiGatewayTemplateSnapshot",
-  "apiGatewayTemplateSnapshotVersion",
   "apiGatewayTemplateSync",
   "apiGatewayTemplateSyncing",
+  "apiGatewayTemplateModelDisabled",
   "apiGatewayTemplateAddProvider",
   "apiGatewayTemplateExpand",
   "apiGatewayTemplateCollapse",
   "apiGatewayNoTemplates",
   "apiGatewayTemplatesLoadFailed",
-  "apiGatewayTemplatePriceInput",
-  "apiGatewayTemplatePriceCacheRead",
-  "apiGatewayTemplatePriceCacheWrite",
-  "apiGatewayTemplatePriceOutput",
-  "apiGatewayTemplateOffPeak",
-  "apiGatewayTemplateNoOffPeak",
   "apiGatewayTemplateNoModels",
-  "apiGatewayTemplateReasoningEfforts",
   "apiGatewayTemplateSyncSuccess",
   "apiGatewayTemplateProviderCreated",
   "apiGatewayTemplateCreateFailed",
@@ -158,6 +150,21 @@ describe("服务商模板国际化键", () => {
     expect(i18n.t("apiGatewayEveryDay")).toBe("每天");
     expect(i18n.t("apiGatewayTemplateSyncing")).toBe("同步中...");
   });
+
+  it.each([
+    ["en", "Sync models", "Disabled"],
+    ["zh", "同步模型列表", "已禁用"],
+  ] as const)(
+    "为 %s 提供同步模型列表与模型禁用状态真实文案",
+    async (language, syncLabel, disabledLabel) => {
+      await i18n.changeLanguage(language);
+      expect(i18n.t("apiGatewayTemplateSync")).toBe(syncLabel);
+      expect(i18n.t("apiGatewayTemplateModelDisabled")).toBe(disabledLabel);
+      expect(i18n.t("apiGatewayTemplateSyncing")).not.toBe(
+        "apiGatewayTemplateSyncing",
+      );
+    },
+  );
 
   it.each(["en", "zh"] as const)("为 %s 的模型数量文案保留 {{count}} 并正常插值", async (language) => {
     await i18n.changeLanguage(language);
@@ -246,3 +253,39 @@ describe("API 网关模型价格旧入口国际化键清理", () => {
     },
   );
 });
+
+const REMOVED_PROVIDER_TEMPLATE_KEYS = [
+  "apiGatewayTemplateSnapshot",
+  "apiGatewayTemplateSnapshotVersion",
+  "apiGatewayTemplatePriceInput",
+  "apiGatewayTemplatePriceCacheRead",
+  "apiGatewayTemplatePriceCacheWrite",
+  "apiGatewayTemplatePriceOutput",
+  "apiGatewayTemplatePriceUnit",
+  "apiGatewayTemplateOffPeak",
+  "apiGatewayTemplateNoOffPeak",
+  "apiGatewayTemplateReasoningEfforts",
+  "apiGatewayTemplateFetchModels",
+  "apiGatewayTemplateFetchingModels",
+  "apiGatewayTemplateFetchModelsApiKey",
+  "apiGatewayTemplateFetchModelsSuccess",
+  "apiGatewayTemplateImportSelected",
+  "apiGatewayTemplateSelectAll",
+  "apiGatewayTemplateDeselectAll",
+  "targetUrl",
+  "alreadyAdded",
+] as const;
+
+describe("服务商模板快照、价格与获取模型旧键清理", () => {
+  it.each(["en", "zh"] as const)("为 %s 移除快照、价格与获取模型键", async (language) => {
+    await i18n.changeLanguage(language);
+    const fallbacks = REMOVED_PROVIDER_TEMPLATE_KEYS.filter(
+      (key) => i18n.t(key) !== key,
+    );
+    expect(
+      fallbacks,
+      `${language} 中应回退为键名的旧模板键`,
+    ).toEqual([]);
+  });
+});
+

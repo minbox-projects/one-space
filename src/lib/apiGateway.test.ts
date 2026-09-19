@@ -890,6 +890,7 @@ import {
   apiGatewayProviderTemplates,
   apiGatewayRestoreProviderModel,
   apiGatewaySyncProviderTemplate,
+  apiGatewayUpsertProviderTemplate,
   formatOffPeakDays,
   gatewayWeekdayTranslationKey,
   GATEWAY_WEEKDAY_ORDER,
@@ -898,6 +899,7 @@ import {
   type CreateProviderFromTemplateRequest,
   type GatewayModelMapping,
   type GatewayProviderTemplate,
+  type GatewayProviderTemplateModel,
   type GatewayProviderTemplateView,
   type OffPeakPrice,
 } from "@/lib/apiGateway";
@@ -915,14 +917,12 @@ function templateFixture(
     base_url: "https://template.example",
     protocol: "chat_completions",
     source: "snapshot",
-    snapshot_version: "2026-09-18",
     models: [
       {
         upstream_model: "model-a",
-        input: 1,
-        cache_read: 0.1,
-        cache_write: 0.2,
-        output: 2,
+        display_name: "Model A",
+        protocol: "chat_completions",
+        enabled: true,
       },
     ],
     ...overrides,
@@ -988,6 +988,57 @@ describe("apiGateway provider template helpers", () => {
     expect(isMappingDeprecated(retired, template)).toBe(true);
     expect(isMappingDeprecated(installed, null)).toBe(false);
     expect(isMappingDeprecated(installed, undefined)).toBe(false);
+  });
+
+  it("removed_fetch_models_wrapper_is_not_exported", async () => {
+    const gatewayModule = await import("@/lib/apiGateway");
+    expect(
+      (gatewayModule as Record<string, unknown>).apiGatewayFetchModels,
+      "apiGatewayFetchModels 包装函数必须随获取模型面板一起删除",
+    ).toBeUndefined();
+  });
+
+  it("gateway_template_model_has_no_price_or_snapshot_fields", () => {
+    const model: GatewayProviderTemplateModel = {
+      upstream_model: "model-a",
+      display_name: "Model A",
+      protocol: "chat_completions",
+      enabled: true,
+    };
+    expect(Object.keys(model).sort()).toEqual(
+      ["display_name", "enabled", "protocol", "upstream_model"].sort(),
+    );
+
+    const template = templateFixture();
+    expect(template).not.toHaveProperty("snapshot_version");
+  });
+
+  it("upsert_provider_template_passes_enabled_models_through", async () => {
+    const template = templateFixture({
+      models: [
+        {
+          upstream_model: "model-a",
+          display_name: "Model A",
+          protocol: "chat_completions",
+          enabled: true,
+        },
+        {
+          upstream_model: "model-b",
+          display_name: null,
+          protocol: "responses",
+          enabled: false,
+        },
+      ],
+    });
+
+    await apiGatewayUpsertProviderTemplate(template);
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "api_gateway_upsert_provider_template",
+      { template },
+    );
+    expect(template.models[0].enabled).toBe(true);
+    expect(template.models[1].enabled).toBe(false);
   });
 
   it("providerTemplateWrappersPassExactCommandArguments", async () => {

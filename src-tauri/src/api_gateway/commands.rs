@@ -9,7 +9,7 @@ use super::templates::{
     apply_create_provider_from_template, apply_delete_provider_model,
     apply_delete_provider_template, apply_reset_provider_templates, apply_restore_provider_model,
     apply_template_sync_with, apply_upsert_provider_template, effective_template,
-    fetch_template_source, provider_template_views, ProviderTemplateView,
+    fetch_template_models, provider_template_views, ProviderTemplateView,
 };
 use super::usage_log::{
     normalize_retention_days, now_millis, resolve_range, validate_retention_days, LogFilter,
@@ -796,14 +796,15 @@ pub async fn api_gateway_sync_provider_template(
 ) -> Result<ProviderTemplateView, String> {
     let mut config = read_config()?;
     let template = effective_template(&config, &template_id)?;
-    let raw = fetch_template_source(&template).await?;
+    let raw = fetch_template_models(&template).await?;
     apply_template_sync_with(&mut config, &template_id, move |_| Ok(raw), |next| {
         write_config(next)
     })
 }
 
-/// Create an upstream provider from a template, carrying every mapping plus its
-/// provider-scoped price row. A blank API key is rejected and writes nothing.
+/// Create an upstream provider from a template, carrying one enabled mapping per
+/// enabled template model and writing no price row. A blank API key is rejected
+/// and writes nothing.
 #[tauri::command]
 pub fn api_gateway_create_provider_from_template(
     template_id: String,
@@ -826,7 +827,8 @@ pub fn api_gateway_create_provider_from_template(
 }
 
 /// Delete one model from a provider: a template-bound provider records it in the
-/// ignored set and drops its price row, a manual provider only drops the mapping.
+/// ignored set exactly once and both bound and manual providers drop that model's
+/// provider-scoped price row.
 #[tauri::command]
 pub fn api_gateway_delete_provider_model(
     provider_id: String,
@@ -872,15 +874,6 @@ pub fn api_gateway_delete_provider_template(
 pub fn api_gateway_reset_provider_templates() -> Result<Vec<ProviderTemplateView>, String> {
     let mut config = read_config()?;
     apply_reset_provider_templates(&mut config, write_config)
-}
-
-/// Fetch available models from an upstream URL (models endpoint).
-#[tauri::command]
-pub async fn api_gateway_fetch_models(
-    url: String,
-    api_key: Option<String>,
-) -> Result<Vec<String>, String> {
-    crate::api_gateway::templates::fetch_models_from_url(&url, api_key.as_deref()).await
 }
 
 

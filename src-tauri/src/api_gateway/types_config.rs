@@ -51,8 +51,8 @@ pub struct ModelMapping {
     pub protocol: Option<UpstreamProtocol>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
-    /// Ordered reasoning-effort levels this mapping advertises, populated from
-    /// the bound template at creation and merged on later template syncs.
+    /// Ordered reasoning-effort levels this mapping advertises; maintained manually
+    /// in the provider editor. Templates and template syncs neither carry nor write it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<String>,
 }
@@ -154,9 +154,9 @@ impl Default for GatewayUpstreamProvider {
 /// One model entry of a provider template.
 ///
 /// `protocol` is optional and inherits the template protocol when absent.
-/// `display_name` is the official model name shown by the gateway; prices are
-/// US dollars per million tokens and `off_peaks` reuse the weekday-aware
-/// [`OffPeakPrice`] windows.
+/// `display_name` is the official model name shown by the gateway. `enabled`
+/// carries the operator's local intent and is always persisted; a model stored
+/// without the flag reads as enabled. Templates ship no pricing data.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderTemplateModel {
     pub upstream_model: String,
@@ -164,18 +164,8 @@ pub struct ProviderTemplateModel {
     pub display_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<UpstreamProtocol>,
-    #[serde(default)]
-    pub input: f64,
-    #[serde(default)]
-    pub cache_read: f64,
-    #[serde(default)]
-    pub cache_write: f64,
-    #[serde(default)]
-    pub output: f64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub off_peaks: Vec<OffPeakPrice>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reasoning_efforts: Vec<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 /// A built-in provider template shipped with the app.
@@ -192,8 +182,6 @@ pub struct ProviderTemplate {
     pub protocol: UpstreamProtocol,
     #[serde(default)]
     pub source: String,
-    #[serde(default)]
-    pub snapshot_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models_url: Option<String>,
     #[serde(default)]

@@ -98,7 +98,7 @@ export function TemplateCreateDialog({
             {t("apiGatewayTemplateCreateDesc", {
               name: template.name,
               defaultValue:
-                "Create an upstream provider from {{name}}. Every template model is added as a mapping.",
+                "Create an upstream provider from {{name}}. Every enabled template model is added as a mapping.",
             })}
           </DialogDescription>
         </DialogHeader>

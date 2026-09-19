@@ -2,11 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
-  Check,
-  Globe,
-  Loader2,
   Plus,
-  RotateCw,
   Search,
   Trash2,
   X,
@@ -20,7 +16,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  apiGatewayFetchModels,
   type GatewayProviderTemplate,
   type GatewayProviderTemplateModel,
   type GatewayUpstreamProtocol,
@@ -61,7 +56,6 @@ export function ProviderTemplateEditDialog({
   const [description, setDescription] = useState("");
   const [models, setModels] = useState<GatewayProviderTemplateModel[]>([]);
   const [source, setSource] = useState("");
-  const [snapshotVersion, setSnapshotVersion] = useState("1");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -69,21 +63,10 @@ export function ProviderTemplateEditDialog({
   // 搜索与模型列表查看
   const [searchTerm, setSearchTerm] = useState("");
 
-  // 获取远端模型面板状态
-  const [showFetchModal, setShowFetchModal] = useState(false);
-  const [fetchApiKey, setFetchApiKey] = useState("");
-  const [fetchingModels, setFetchingModels] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
-  const [fetchedModels, setFetchedModels] = useState<string[]>([]);
-  const [selectedFetchedModels, setSelectedFetchedModels] = useState<Set<string>>(
-    new Set(),
-  );
-
   useEffect(() => {
     if (!open) {
       setConfirmDelete(false);
       setValidationError(null);
-      setShowFetchModal(false);
       setSearchTerm("");
       return;
     }
@@ -94,9 +77,15 @@ export function ProviderTemplateEditDialog({
       setProtocol(template.protocol);
       setModelsUrl(template.models_url || "");
       setDescription(template.description);
-      setModels(template.models ? [...template.models] : []);
+      setModels(
+        template.models
+          ? template.models.map((model) => ({
+              ...model,
+              enabled: model.enabled !== false,
+            }))
+          : [],
+      );
       setSource(template.source || "");
-      setSnapshotVersion(template.snapshot_version || "1");
     } else {
       setId("");
       setName("");
@@ -106,16 +95,11 @@ export function ProviderTemplateEditDialog({
       setDescription("");
       setModels([]);
       setSource("");
-      setSnapshotVersion("1");
     }
     setConfirmDelete(false);
     setValidationError(null);
     setSubmitting(false);
-    setShowFetchModal(false);
     setSearchTerm("");
-    setFetchedModels([]);
-    setSelectedFetchedModels(new Set());
-    setFetchError(null);
   }, [open, template]);
 
   const usingProviders = useMemo(() => {
@@ -125,16 +109,6 @@ export function ProviderTemplateEditDialog({
 
   const isUsed = usingProviders.length > 0;
   const disabled = busy || submitting;
-
-  const targetFetchUrl = useMemo(() => {
-    const explicit = modelsUrl.trim();
-    if (explicit) return explicit;
-    const base = baseUrl.trim().replace(/\/+$/, "");
-    if (!base) return "";
-    if (base.endsWith("/models")) return base;
-    if (base.endsWith("/v1")) return `${base}/models`;
-    return `${base}/v1/models`;
-  }, [modelsUrl, baseUrl]);
 
   const filteredModels = useMemo(() => {
     const query = searchTerm.trim().toLowerCase();
@@ -156,12 +130,7 @@ export function ProviderTemplateEditDialog({
       {
         upstream_model: "",
         display_name: "",
-        input: 0,
-        cache_read: 0,
-        cache_write: 0,
-        output: 0,
-        off_peaks: [],
-        reasoning_efforts: [],
+        enabled: true,
       },
     ]);
   };
@@ -180,65 +149,6 @@ export function ProviderTemplateEditDialog({
 
   const handleRemoveModel = (index: number) => {
     setModels((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  const handleStartFetchModels = async () => {
-    if (!targetFetchUrl) {
-      setFetchError(
-        t(
-          "apiGatewayTemplateBaseUrlLabel",
-          "API base URL or Models URL is required",
-        ),
-      );
-      return;
-    }
-    setFetchingModels(true);
-    setFetchError(null);
-    try {
-      const list = await apiGatewayFetchModels(targetFetchUrl, fetchApiKey);
-      setFetchedModels(list);
-      const existingIds = new Set(models.map((m) => m.upstream_model.trim()));
-      const initialSelected = new Set(list.filter((id) => !existingIds.has(id)));
-      setSelectedFetchedModels(initialSelected);
-    } catch (err: any) {
-      setFetchError(err?.message || String(err));
-    } finally {
-      setFetchingModels(false);
-    }
-  };
-
-  const handleToggleSelectAllFetched = () => {
-    const existingIds = new Set(models.map((m) => m.upstream_model.trim()));
-    const unadded = fetchedModels.filter((id) => !existingIds.has(id));
-    if (selectedFetchedModels.size === unadded.length) {
-      setSelectedFetchedModels(new Set());
-    } else {
-      setSelectedFetchedModels(new Set(unadded));
-    }
-  };
-
-  const handleImportFetched = () => {
-    const existingIds = new Set(models.map((m) => m.upstream_model.trim()));
-    const newModels: GatewayProviderTemplateModel[] = [];
-    for (const id of fetchedModels) {
-      if (selectedFetchedModels.has(id) && !existingIds.has(id)) {
-        newModels.push({
-          upstream_model: id,
-          display_name: "",
-          input: 0,
-          cache_read: 0,
-          cache_write: 0,
-          output: 0,
-          off_peaks: [],
-          reasoning_efforts: [],
-        });
-        existingIds.add(id);
-      }
-    }
-    if (newModels.length > 0) {
-      setModels((prev) => [...prev, ...newModels]);
-    }
-    setShowFetchModal(false);
   };
 
   const handleSubmit = async () => {
@@ -263,7 +173,6 @@ export function ProviderTemplateEditDialog({
       base_url: trimmedUrl,
       protocol,
       source: source.trim(),
-      snapshot_version: snapshotVersion.trim() || "1",
       models_url: modelsUrl.trim() ? modelsUrl.trim() : null,
       models: models.filter((m) => m.upstream_model.trim().length > 0),
     };
@@ -435,25 +344,6 @@ export function ProviderTemplateEditDialog({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  data-testid="template-edit-fetch-models-btn"
-                  onClick={() => setShowFetchModal((prev) => !prev)}
-                  disabled={disabled}
-                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium shadow-sm transition ${
-                    showFetchModal
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-background hover:bg-muted text-foreground"
-                  }`}
-                  title={t(
-                    "apiGatewayTemplateFetchModels",
-                    "Fetch models from endpoint",
-                  )}
-                >
-                  <Globe className="h-3.5 w-3.5" />
-                  {t("apiGatewayTemplateFetchModels", "Fetch models")}
-                </button>
-
-                <button
-                  type="button"
                   data-testid="template-edit-add-model"
                   onClick={handleAddModel}
                   disabled={disabled}
@@ -464,164 +354,6 @@ export function ProviderTemplateEditDialog({
                 </button>
               </div>
             </div>
-
-            {/* 获取远端模型面板 */}
-            {showFetchModal && (
-              <div
-                data-testid="template-edit-fetch-panel"
-                className="space-y-3 rounded-xl border bg-background/80 p-3.5 text-xs shadow-xs"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="font-semibold text-foreground flex items-center gap-1.5 text-sm">
-                    <Globe className="h-4 w-4 text-primary" />
-                    <span>
-                      {t("apiGatewayTemplateFetchModels", "Fetch models")}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowFetchModal(false)}
-                    className="text-muted-foreground hover:text-foreground p-1 rounded-md transition"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-
-                <div className="space-y-2.5">
-                  <div>
-                    <div className="text-[11px] text-muted-foreground mb-1.5">
-                      {t("targetUrl", "Target URL")}:{" "}
-                      <span className="font-mono text-foreground font-semibold">
-                        {targetFetchUrl || "(Not configured)"}
-                      </span>
-                    </div>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        data-testid="template-edit-fetch-api-key"
-                        value={fetchApiKey}
-                        onChange={(e) => setFetchApiKey(e.target.value)}
-                        placeholder={t(
-                          "apiGatewayTemplateFetchModelsApiKey",
-                          "API Key (optional, leave empty if public)",
-                        )}
-                        className={`${mappingInputClass} flex-1 font-mono`}
-                      />
-                      <button
-                        type="button"
-                        data-testid="template-edit-fetch-start-btn"
-                        onClick={() => void handleStartFetchModels()}
-                        disabled={fetchingModels || !targetFetchUrl}
-                        className="inline-flex h-[38px] items-center gap-1.5 rounded-lg bg-primary px-4 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 shadow-sm transition"
-                      >
-                        {fetchingModels ? (
-                          <>
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            {t(
-                              "apiGatewayTemplateFetchingModels",
-                              "Fetching...",
-                            )}
-                          </>
-                        ) : (
-                          <>
-                            <RotateCw className="h-3.5 w-3.5" />
-                            {t("apiGatewayTemplateFetchModels", "Fetch")}
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  {fetchError && (
-                    <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive">
-                      {fetchError}
-                    </div>
-                  )}
-
-                  {fetchedModels.length > 0 && (
-                    <div className="space-y-2 pt-2 border-t">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-muted-foreground">
-                          {t("apiGatewayTemplateFetchModelsSuccess", {
-                            count: fetchedModels.length,
-                          })}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={handleToggleSelectAllFetched}
-                          className="text-primary hover:underline font-medium"
-                        >
-                          {selectedFetchedModels.size > 0
-                            ? t("apiGatewayTemplateDeselectAll", "Deselect all")
-                            : t("apiGatewayTemplateSelectAll", "Select all")}
-                        </button>
-                      </div>
-
-                      <div className="max-h-40 overflow-y-auto space-y-1.5 rounded-lg border bg-background p-2">
-                        {fetchedModels.map((mId) => {
-                          const alreadyAdded = models.some(
-                            (m) => m.upstream_model.trim() === mId,
-                          );
-                          const isSelected = selectedFetchedModels.has(mId);
-                          return (
-                            <label
-                              key={mId}
-                              className={`flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs cursor-pointer select-none transition ${
-                                alreadyAdded
-                                  ? "opacity-50 cursor-not-allowed bg-muted/40"
-                                  : isSelected
-                                    ? "bg-primary/10 text-primary font-medium"
-                                    : "hover:bg-muted"
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                disabled={alreadyAdded}
-                                checked={alreadyAdded || isSelected}
-                                onChange={(e) => {
-                                  if (alreadyAdded) return;
-                                  const next = new Set(selectedFetchedModels);
-                                  if (e.target.checked) {
-                                    next.add(mId);
-                                  } else {
-                                    next.delete(mId);
-                                  }
-                                  setSelectedFetchedModels(next);
-                                }}
-                                className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
-                              />
-                              <span className="font-mono flex-1 truncate">
-                                {mId}
-                              </span>
-                              {alreadyAdded && (
-                                <span className="text-[10px] text-muted-foreground italic">
-                                  {t("alreadyAdded", "Already added")}
-                                </span>
-                              )}
-                            </label>
-                          );
-                        })}
-                      </div>
-
-                      <div className="flex justify-end pt-1">
-                        <button
-                          type="button"
-                          data-testid="template-edit-import-fetched-btn"
-                          onClick={handleImportFetched}
-                          disabled={selectedFetchedModels.size === 0}
-                          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 shadow-sm transition"
-                        >
-                          <Check className="h-3.5 w-3.5" />
-                          {t("apiGatewayTemplateImportSelected", {
-                            count: selectedFetchedModels.size,
-                          })}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
 
             {/* 搜索与过滤栏 */}
             {models.length > 0 && (
@@ -664,100 +396,74 @@ export function ProviderTemplateEditDialog({
                 data-testid="template-edit-models-list"
                 className="space-y-2 max-h-64 overflow-y-auto pr-1"
               >
-                {filteredModels.map(({ model: m, originalIndex: idx }) => (
-                  <div
-                    key={idx}
-                    className="flex items-center gap-2 rounded-xl border bg-card p-2.5 text-xs shadow-xs"
-                  >
-                    <div className="flex-1 min-w-0 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <input
-                        type="text"
-                        placeholder={t("upstreamModel", "Upstream model")}
-                        value={m.upstream_model}
-                        onChange={(e) =>
-                          handleUpdateModel(
-                            idx,
-                            "upstream_model",
-                            e.target.value,
-                          )
-                        }
-                        disabled={disabled}
-                        className={`${mappingInputClass} font-mono w-full`}
-                      />
-                      <input
-                        type="text"
-                        placeholder={t(
-                          "displayName",
-                          "Display name (optional)",
-                        )}
-                        value={m.display_name ?? ""}
-                        onChange={(e) =>
-                          handleUpdateModel(idx, "display_name", e.target.value)
-                        }
-                        disabled={disabled}
-                        className={`${mappingInputClass} w-full`}
-                      />
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <span>{t("in", "In")}:</span>
-                        <input
-                          type="number"
-                          step="any"
-                          min="0"
-                          value={m.input}
-                          onChange={(e) =>
-                            handleUpdateModel(
-                              idx,
-                              "input",
-                              parseFloat(e.target.value) || 0,
-                            )
-                          }
-                          disabled={disabled}
-                          title={t(
-                            "apiGatewayTemplateInputPrice",
-                            "Input ($/1M)",
-                          )}
-                          className={`${mappingInputClass} w-20 font-mono text-right`}
-                        />
-                      </div>
-                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <span>{t("out", "Out")}:</span>
-                        <input
-                          type="number"
-                          step="any"
-                          min="0"
-                          value={m.output}
-                          onChange={(e) =>
-                            handleUpdateModel(
-                              idx,
-                              "output",
-                              parseFloat(e.target.value) || 0,
-                            )
-                          }
-                          disabled={disabled}
-                          title={t(
-                            "apiGatewayTemplateOutputPrice",
-                            "Output ($/1M)",
-                          )}
-                          className={`${mappingInputClass} w-20 font-mono text-right`}
-                        />
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      data-testid={`template-edit-remove-model-${idx}`}
-                      onClick={() => handleRemoveModel(idx)}
-                      disabled={disabled}
-                      className="text-muted-foreground hover:text-destructive p-2 rounded-lg transition shrink-0"
-                      title={t("delete", "Delete")}
+                {filteredModels.map(({ model: m, originalIndex: idx }) => {
+                  const isDisabled = m.enabled === false;
+                  return (
+                    <div
+                      key={idx}
+                      data-testid={`template-edit-model-row-${idx}`}
+                      data-disabled={isDisabled ? "true" : undefined}
+                      className={`flex items-center gap-2 rounded-xl border bg-card p-2.5 text-xs shadow-xs${
+                        isDisabled ? " opacity-60" : ""
+                      }`}
                     >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                ))}
+                      <div className="flex-1 min-w-0 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          data-testid={`template-edit-model-upstream-${idx}`}
+                          placeholder={t("upstreamModel", "Upstream model")}
+                          value={m.upstream_model}
+                          onChange={(e) =>
+                            handleUpdateModel(
+                              idx,
+                              "upstream_model",
+                              e.target.value,
+                            )
+                          }
+                          disabled={disabled}
+                          className={`${mappingInputClass} font-mono w-full`}
+                        />
+                        <input
+                          type="text"
+                          data-testid={`template-edit-model-display-${idx}`}
+                          placeholder={t(
+                            "displayName",
+                            "Display name (optional)",
+                          )}
+                          value={m.display_name ?? ""}
+                          onChange={(e) =>
+                            handleUpdateModel(idx, "display_name", e.target.value)
+                          }
+                          disabled={disabled}
+                          className={`${mappingInputClass} w-full`}
+                        />
+                      </div>
+
+                      <input
+                        type="checkbox"
+                        data-testid={`template-edit-model-enabled-${idx}`}
+                        checked={!isDisabled}
+                        onChange={(e) =>
+                          handleUpdateModel(idx, "enabled", e.target.checked)
+                        }
+                        disabled={disabled}
+                        aria-label={t("enabled", "Enabled")}
+                        className="h-4 w-4 shrink-0 rounded border-border text-primary focus:ring-primary"
+                      />
+
+                      <button
+                        type="button"
+                        data-testid={`template-edit-remove-model-${idx}`}
+                        onClick={() => handleRemoveModel(idx)}
+                        disabled={disabled}
+                        className="text-muted-foreground hover:text-destructive p-2 rounded-lg transition shrink-0"
+                        title={t("delete", "Delete")}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

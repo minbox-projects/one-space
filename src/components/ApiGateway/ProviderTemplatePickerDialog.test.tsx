@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
 import { ProviderTemplatePickerDialog } from "./ProviderTemplatePickerDialog";
 import type { GatewayProviderTemplateView } from "@/lib/apiGateway";
 
@@ -11,25 +12,28 @@ const mockTemplates: GatewayProviderTemplateView[] = [
       description: "Official OpenCode Zen models",
       base_url: "https://opencode.ai/zen/v1",
       protocol: "chat_completions",
-      source: "https://models.dev/api.json",
-      snapshot_version: "1",
+      source: "https://opencode.ai/zen/v1/models",
+      models_url: "https://opencode.ai/zen/v1/models",
       models: [
         {
           upstream_model: "zen-model-1",
-          input: 1,
-          cache_read: 0.1,
-          cache_write: 0.2,
-          output: 2,
+          display_name: "Zen Model 1",
+          protocol: "chat_completions",
+          enabled: true,
         },
       ],
     },
     synced_at: 1_700_000_000,
-    from_snapshot: false,
-    source: "https://models.dev/api.json",
+    from_snapshot: true,
+    source: "https://opencode.ai/zen/v1/models",
   },
 ];
 
 describe("ProviderTemplatePickerDialog", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
   it("renders manual creation and templates list", () => {
     render(
       <ProviderTemplatePickerDialog
@@ -48,6 +52,26 @@ describe("ProviderTemplatePickerDialog", () => {
     expect(screen.getByTestId("template-picker-blank-btn")).toBeInTheDocument();
     expect(screen.getByText("OpenCode Zen")).toBeInTheDocument();
     expect(screen.getByTestId("template-picker-edit-tpl-zen")).toBeInTheDocument();
+  });
+
+  it("renders model count and source without the offline snapshot badge", () => {
+    render(
+      <ProviderTemplatePickerDialog
+        open={true}
+        onOpenChange={vi.fn()}
+        templates={mockTemplates}
+        providers={[]}
+        busy={false}
+        onSelectBlank={vi.fn()}
+        onSelectTemplate={vi.fn()}
+        onEditTemplate={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("Offline snapshot")).not.toBeInTheDocument();
+    expect(screen.queryByText(i18n.t("apiGatewayTemplateSnapshot"))).not.toBeInTheDocument();
+    expect(screen.getByText(/1 models/)).toBeInTheDocument();
+    expect(screen.getByText(/opencode\.ai\/zen\/v1\/models/)).toBeInTheDocument();
   });
 
   it("triggers onSelectBlank when clicking manual creation card", () => {

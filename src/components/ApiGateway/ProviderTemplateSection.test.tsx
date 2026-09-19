@@ -7,7 +7,6 @@ import {
 } from "./ProviderTemplateSection";
 import {
   formatGatewayTimestamp,
-  formatOffPeakDays,
   type GatewayProviderTemplate,
   type GatewayProviderTemplateModel,
   type GatewayProviderTemplateView,
@@ -21,12 +20,7 @@ function makeModel(
     upstream_model: "deepseek-chat",
     display_name: "DeepSeek Chat",
     protocol: "chat_completions",
-    input: 1.11,
-    cache_read: 2.22,
-    cache_write: 3.33,
-    output: 4.44,
-    off_peaks: [],
-    reasoning_efforts: [],
+    enabled: true,
     ...overrides,
   };
 }
@@ -40,8 +34,8 @@ function makeTemplate(
     description: "Curated OpenCode models",
     base_url: "https://opencode.ai/zen/v1",
     protocol: "responses",
-    source: "snapshot:models.dev",
-    snapshot_version: "2026.09.18",
+    source: "https://opencode.ai/zen/v1/models",
+    models_url: "https://opencode.ai/zen/v1/models",
     models: [makeModel()],
     ...overrides,
   };
@@ -53,7 +47,7 @@ function makeView(
   return {
     template: makeTemplate(),
     synced_at: null,
-    source: "snapshot:models.dev",
+    source: "https://opencode.ai/zen/v1/models",
     from_snapshot: true,
     ...overrides,
   };
@@ -89,15 +83,19 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
     });
   });
 
-  it("rendersTemplateCardsWithMetadataSnapshotBadgeAndLastSync", () => {
+  it("rendersTemplateCardsWithMetadataAndNoSnapshotBadges", () => {
     const syncedAt = 1_700_000_000;
     const snapshotView = makeView({
       template: makeTemplate({
         id: "t1",
         name: "OpenCode Zen",
         description: "Curated OpenCode models",
-        source: "snapshot:models.dev",
-        models: [makeModel(), makeModel({ upstream_model: "m2" }), makeModel({ upstream_model: "m3" })],
+        source: "https://opencode.ai/zen/v1/models",
+        models: [
+          makeModel(),
+          makeModel({ upstream_model: "m2" }),
+          makeModel({ upstream_model: "m3" }),
+        ],
       }),
       from_snapshot: true,
       synced_at: null,
@@ -112,7 +110,7 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
       }),
       from_snapshot: false,
       synced_at: syncedAt,
-      source: "live:commandcode",
+      source: "https://api.commandcode.ai/provider/v1/models",
     });
 
     renderSection({ templates: [snapshotView, syncedView] });
@@ -121,14 +119,15 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
     expect(snapshotCard).toHaveTextContent("OpenCode Zen");
     expect(snapshotCard).toHaveTextContent("Curated OpenCode models");
     expect(snapshotCard).toHaveTextContent("3");
-    expect(snapshotCard).toHaveTextContent("models.dev");
+    expect(snapshotCard).toHaveTextContent("opencode.ai");
     // synced_at 为空时展示未同步文案，而不是时间戳
     expect(snapshotCard).toHaveTextContent(i18n.t("apiGatewayTemplateNotSynced"));
     expect(snapshotCard).not.toHaveTextContent(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
 
-    // 快照徽标只出现在 from_snapshot=true 的模板上
-    expect(screen.getByTestId("api-gateway-template-snapshot-t1")).toBeInTheDocument();
-    expect(screen.queryByTestId("api-gateway-template-snapshot-t2")).not.toBeInTheDocument();
+    // 离线快照与快照版本徽标必须彻底移除
+    expect(screen.queryByTestId("api-gateway-template-snapshot-t1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("api-gateway-template-snapshot-version-t1")).not.toBeInTheDocument();
+    expect(screen.queryByText("Offline snapshot")).not.toBeInTheDocument();
 
     const syncedCard = screen.getByTestId("api-gateway-template-t2");
     expect(syncedCard).toHaveTextContent("CommandCode");
@@ -138,28 +137,47 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
     expect(screen.getByTestId("api-gateway-provider-templates")).toBeInTheDocument();
   });
 
-  it("expandingTemplateShowsFourTierPricesOffPeakDaysAndReasoningEfforts", () => {
+  it("syncActionRendersOnlyWhenModelsUrlIsConfigured", () => {
+    renderSection({
+      templates: [
+        makeView({ template: makeTemplate({ id: "t-blank", models_url: "" }) }),
+        makeView({ template: makeTemplate({ id: "t-space", models_url: "   " }) }),
+        makeView({ template: makeTemplate({ id: "t-null", models_url: null }) }),
+        makeView({ template: makeTemplate({ id: "t-defined" }) }),
+      ],
+    });
+
+    expect(screen.queryByTestId("api-gateway-template-sync-t-blank")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("api-gateway-template-sync-t-space")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("api-gateway-template-sync-t-null")).not.toBeInTheDocument();
+
+    const syncButton = screen.getByTestId("api-gateway-template-sync-t-defined");
+    expect(syncButton).toBeEnabled();
+    expect(syncButton).toHaveTextContent("Sync models");
+  });
+
+  it("syncActionUsesLocalizedLabel", async () => {
+    await i18n.changeLanguage("zh");
+    renderSection({ templates: [makeView()] });
+
+    expect(screen.getByTestId("api-gateway-template-sync-t1")).toHaveTextContent(
+      "同步模型列表",
+    );
+  });
+
+  it("expandedTemplateListsModelsWithoutPricesOffPeakOrReasoningEfforts", () => {
     const view = makeView({
       template: makeTemplate({
         models: [
           makeModel({
             upstream_model: "deepseek-chat",
-            input: 1.11,
-            cache_read: 2.22,
-            cache_write: 3.33,
-            output: 4.44,
-            off_peaks: [
-              {
-                start_time: "00:00",
-                end_time: "09:00",
-                input: 5.55,
-                cache_read: 6.66,
-                cache_write: 7.77,
-                output: 8.88,
-                days: [1, 2, 3, 4, 5],
-              },
-            ],
-            reasoning_efforts: ["reasoning-low", "reasoning-medium", "reasoning-high"],
+            display_name: "DeepSeek Chat",
+            enabled: true,
+          }),
+          makeModel({
+            upstream_model: "gpt-4o",
+            display_name: "GPT-4o",
+            enabled: false,
           }),
         ],
       }),
@@ -173,23 +191,62 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
     expect(expand).toHaveAttribute("aria-expanded", "true");
 
     const row = screen.getByTestId("api-gateway-template-model-t1-deepseek-chat");
-    // 四档标准价
-    expect(row).toHaveTextContent("1.11");
-    expect(row).toHaveTextContent("2.22");
-    expect(row).toHaveTextContent("3.33");
-    expect(row).toHaveTextContent("4.44");
-    // 峰谷时段：时间 + 星期文案 + 四档优惠价
-    expect(row).toHaveTextContent("00:00");
-    expect(row).toHaveTextContent("09:00");
-    expect(row).toHaveTextContent(formatOffPeakDays([1, 2, 3, 4, 5], i18n.t));
-    expect(row).toHaveTextContent("5.55");
-    expect(row).toHaveTextContent("6.66");
-    expect(row).toHaveTextContent("7.77");
-    expect(row).toHaveTextContent("8.88");
-    // reasoning_efforts chips
-    expect(row).toHaveTextContent("reasoning-low");
-    expect(row).toHaveTextContent("reasoning-medium");
-    expect(row).toHaveTextContent("reasoning-high");
+    expect(row).toHaveTextContent("deepseek-chat");
+    expect(row).toHaveTextContent("DeepSeek Chat");
+    expect(row).toHaveTextContent("Chat");
+    expect(screen.getByTestId("template-copy-model-t1-deepseek-chat")).toBeInTheDocument();
+
+    for (const label of [
+      "$/1M tokens",
+      "Input",
+      "Cache read",
+      "Cache write",
+      "Output",
+      "Off-peak",
+      "No off-peak windows",
+      "Reasoning efforts",
+    ]) {
+      expect(
+        screen.queryAllByText(label),
+        `${label} 不应出现在模板卡片`,
+      ).toHaveLength(0);
+    }
+    expect(screen.queryByTestId("api-gateway-template-snapshot-t1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("api-gateway-template-snapshot-version-t1")).not.toBeInTheDocument();
+  });
+
+  it("disabledModelRowIsDeemphasizedAndMarked", () => {
+    const view = makeView({
+      template: makeTemplate({
+        models: [
+          makeModel({ upstream_model: "enabled-model", enabled: true }),
+          makeModel({ upstream_model: "disabled-model", enabled: false }),
+        ],
+      }),
+    });
+
+    renderSection({ templates: [view] });
+    fireEvent.click(screen.getByTestId("api-gateway-template-expand-t1"));
+
+    const disabledRow = screen.getByTestId(
+      "api-gateway-template-model-t1-disabled-model",
+    );
+    expect(
+      disabledRow.getAttribute("data-disabled"),
+      "禁用模型行应带 data-disabled=true",
+    ).toBe("true");
+    expect(
+      disabledRow.className,
+      "禁用模型行应带弱化样式 opacity-60",
+    ).toContain("opacity-60");
+
+    const enabledRow = screen.getByTestId(
+      "api-gateway-template-model-t1-enabled-model",
+    );
+    expect(
+      enabledRow.getAttribute("data-disabled"),
+      "启用模型行不应带 data-disabled",
+    ).toBeNull();
   });
 
   it("syncButtonIsolatesBusyStatePerTemplate", () => {
@@ -205,6 +262,8 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
     expect(buttonA).toBeDisabled();
     expect(buttonA).toHaveTextContent(i18n.t("apiGatewayTemplateSyncing"));
     expect(buttonB).toBeEnabled();
+    // 同步中的模板仍可重开添加弹窗，busy 只作用于当前模板的同步按钮
+    expect(screen.getByTestId("api-gateway-template-add-t1")).toBeEnabled();
 
     fireEvent.click(buttonB);
 
@@ -286,21 +345,6 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
     expect(screen.getByTestId("api-gateway-template-api-key")).toBeInTheDocument();
   });
 
-  it("rendersSnapshotVersionForUnsyncedTemplate", () => {
-    const view = makeView({
-      template: makeTemplate({
-        id: "t1",
-        snapshot_version: "2026.09.18",
-      }),
-      from_snapshot: true,
-    });
-
-    renderSection({ templates: [view] });
-
-    const version = screen.getByTestId("api-gateway-template-snapshot-version-t1");
-    expect(version).toHaveTextContent("2026.09.18");
-  });
-
   it("zeroModelTemplateShowsDedicatedNoModelsHint", () => {
     const view = makeView({
       template: makeTemplate({ id: "t-empty", models: [] }),
@@ -316,7 +360,6 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
     expect(text.length).toBeGreaterThan(0);
     // 空模型必须用专用的“无模型”提示，不能复用峰谷语义文案。
     expect(text).not.toContain("off-peak");
-    expect(text).not.toContain(i18n.t("apiGatewayTemplateNoOffPeak").toLowerCase());
   });
 
   it("filtersModelsBySearchTermAndClearsFilter", () => {

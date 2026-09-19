@@ -1,6 +1,5 @@
 import { useTranslation } from "react-i18next";
 import {
-  CloudOff,
   Pencil,
   Plus,
   Sparkles,
@@ -83,7 +82,7 @@ export function ProviderTemplatePickerDialog({
           <DialogDescription className="text-xs text-muted-foreground">
             {t(
               "apiGatewaySelectProviderTemplateDesc",
-              "Create an upstream provider quickly from an official catalog preset, or configure from a blank form.",
+              "Create an upstream provider quickly from a provider template endpoint, or configure from a blank form.",
             )}
           </DialogDescription>
         </DialogHeader>
@@ -152,12 +151,6 @@ export function ProviderTemplatePickerDialog({
                       >
                         {protocolLabel}
                       </span>
-                      {view.from_snapshot ? (
-                        <span className="inline-flex items-center gap-0.5 rounded-md border border-amber-500/25 bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-                          <CloudOff className="h-2.5 w-2.5" />
-                          {t("apiGatewayTemplateSnapshot", "Offline snapshot")}
-                        </span>
-                      ) : null}
                     </div>
 
                     {template.description && (
