@@ -1629,12 +1629,7 @@ describe("ApiGateway", () => {
       upstream_model: "deepseek-chat",
       display_name: "DeepSeek Chat",
       protocol: "chat_completions",
-      input: 1.11,
-      cache_read: 2.22,
-      cache_write: 3.33,
-      output: 4.44,
-      off_peaks: [],
-      reasoning_efforts: [],
+      enabled: true,
       ...overrides,
     };
   }
@@ -1648,8 +1643,8 @@ describe("ApiGateway", () => {
       description: "Curated OpenCode models",
       base_url: "https://opencode.ai/zen/v1",
       protocol: "responses",
-      source: "snapshot:models.dev",
-      snapshot_version: "2026.09.18",
+      source: "https://opencode.ai/zen/v1/models",
+      models_url: "https://opencode.ai/zen/v1/models",
       models: [makeTemplateModel()],
       ...overrides,
     };
@@ -1661,7 +1656,7 @@ describe("ApiGateway", () => {
     return {
       template: makeTemplate(),
       synced_at: null,
-      source: "snapshot:models.dev",
+      source: "https://opencode.ai/zen/v1/models",
       from_snapshot: true,
       ...overrides,
     };
@@ -1966,22 +1961,17 @@ describe("ApiGateway 模板服务商模型维护", () => {
         description: "Curated OpenCode models",
         base_url: "https://opencode.ai/zen/v1",
         protocol: "chat_completions",
-        source: "snapshot:models.dev",
-        snapshot_version: "2026.09.18",
+        source: "https://opencode.ai/zen/v1/models",
+        models_url: "https://opencode.ai/zen/v1/models",
         models: models.map((upstream_model) => ({
           upstream_model,
           display_name: upstream_model,
           protocol: "chat_completions" as const,
-          input: 1,
-          cache_read: 0,
-          cache_write: 0,
-          output: 1,
-          off_peaks: [],
-          reasoning_efforts: [],
+          enabled: true,
         })),
       },
       synced_at: null,
-      source: "snapshot:models.dev",
+      source: "https://opencode.ai/zen/v1/models",
       from_snapshot: true,
     };
   }

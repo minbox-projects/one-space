@@ -761,14 +761,7 @@ export interface GatewayProviderTemplateModel {
   upstream_model: string;
   display_name?: string | null;
   protocol?: GatewayUpstreamProtocol | null;
-  /** USD per million tokens. */
-  input: number;
-  cache_read: number;
-  cache_write: number;
-  output: number;
-  off_peaks?: OffPeakPrice[];
-  off_peak?: OffPeakPrice | null;
-  reasoning_efforts?: string[];
+  enabled: boolean;
 }
 
 /** A built-in provider template catalog entry. */
@@ -779,7 +772,6 @@ export interface GatewayProviderTemplate {
   base_url: string;
   protocol: GatewayUpstreamProtocol;
   source: string;
-  snapshot_version: string;
   models_url?: string | null;
   models: GatewayProviderTemplateModel[];
 }
@@ -889,13 +881,6 @@ export function apiGatewayResetProviderTemplates() {
   return invoke<GatewayProviderTemplateView[]>(
     "api_gateway_reset_provider_templates",
   );
-}
-
-export function apiGatewayFetchModels(url: string, apiKey?: string) {
-  return invoke<string[]>("api_gateway_fetch_models", {
-    url,
-    apiKey: apiKey && apiKey.trim() ? apiKey.trim() : null,
-  });
 }
 
 export function apiGatewayCreateProviderFromTemplate(

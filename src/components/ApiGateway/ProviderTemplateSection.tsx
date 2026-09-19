@@ -1,15 +1,12 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Brain,
   Check,
   ChevronDown,
   ChevronsUpDown,
   ChevronUp,
-  CloudOff,
   Copy,
   Loader2,
-  Moon,
   Pencil,
   Plus,
   RefreshCw,
@@ -21,7 +18,6 @@ import {
 import { useToast } from "@/components/ToastProvider";
 import {
   formatGatewayTimestamp,
-  formatOffPeakDays,
   type CreateProviderFromTemplateRequest,
   type GatewayProviderTemplate,
   type GatewayProviderTemplateModel,
@@ -53,13 +49,6 @@ function protocolBadgeClass(protocol: GatewayProviderTemplateModel["protocol"]):
   return protocol === "responses"
     ? "bg-purple-500/10 text-purple-600 dark:text-purple-400"
     : "bg-blue-500/10 text-blue-600 dark:text-blue-400";
-}
-
-function offPeakWindows(
-  model: GatewayProviderTemplateModel,
-): NonNullable<GatewayProviderTemplateModel["off_peaks"]> {
-  if (model.off_peaks && model.off_peaks.length > 0) return model.off_peaks;
-  return model.off_peak ? [model.off_peak] : [];
 }
 
 type ProviderTemplateCardProps = {
@@ -182,26 +171,6 @@ function ProviderTemplateCard({
             >
               {protocolLabel}
             </span>
-            {view.from_snapshot ? (
-              <>
-                <span
-                  data-testid={`api-gateway-template-snapshot-${template.id}`}
-                  className="inline-flex items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-4 text-amber-700 dark:text-amber-400"
-                >
-                  <CloudOff className="h-3 w-3" />
-                  {t("apiGatewayTemplateSnapshot", "Offline snapshot")}
-                </span>
-                <span
-                  data-testid={`api-gateway-template-snapshot-version-${template.id}`}
-                  className="inline-flex items-center rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-4 text-amber-700 dark:text-amber-400"
-                >
-                  {t("apiGatewayTemplateSnapshotVersion", {
-                    version: template.snapshot_version,
-                    defaultValue: "Snapshot {{version}}",
-                  })}
-                </span>
-              </>
-            ) : null}
           </div>
 
           <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
@@ -244,29 +213,31 @@ function ProviderTemplateCard({
                 <span>{t("edit", "Edit")}</span>
               </button>
             )}
-            <button
-              type="button"
-              data-testid={`api-gateway-template-sync-${template.id}`}
-              onClick={() => onSync(template.id)}
-              disabled={syncing}
-              aria-label={
-                syncing
-                  ? t("apiGatewayTemplateSyncing", "Syncing...")
-                  : t("apiGatewayTemplateSync", "Sync")
-              }
-              className="inline-flex h-7 items-center gap-1 rounded-md border bg-background px-2 text-[11px] font-medium shadow-xs transition hover:bg-muted disabled:opacity-60"
-            >
-              {syncing ? (
-                <Loader2 className="h-3 w-3 animate-spin text-primary" />
-              ) : (
-                <RefreshCw className="h-3 w-3" />
-              )}
-              <span>
-                {syncing
-                  ? t("apiGatewayTemplateSyncing", "Syncing...")
-                  : t("apiGatewayTemplateSync", "Sync")}
-              </span>
-            </button>
+            {template.models_url?.trim() ? (
+              <button
+                type="button"
+                data-testid={`api-gateway-template-sync-${template.id}`}
+                onClick={() => onSync(template.id)}
+                disabled={syncing}
+                aria-label={
+                  syncing
+                    ? t("apiGatewayTemplateSyncing", "Syncing models...")
+                    : t("apiGatewayTemplateSync", "Sync models")
+                }
+                className="inline-flex h-7 items-center gap-1 rounded-md border bg-background px-2 text-[11px] font-medium shadow-xs transition hover:bg-muted disabled:opacity-60"
+              >
+                {syncing ? (
+                  <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                ) : (
+                  <RefreshCw className="h-3 w-3" />
+                )}
+                <span>
+                  {syncing
+                    ? t("apiGatewayTemplateSyncing", "Syncing models...")
+                    : t("apiGatewayTemplateSync", "Sync models")}
+                </span>
+              </button>
+            ) : null}
           </div>
 
           <button
@@ -415,15 +386,17 @@ function ProviderTemplateCard({
                   </div>
                 ) : (
                   filteredModels.map((model) => {
-                    const peaks = offPeakWindows(model);
-                    const efforts = model.reasoning_efforts ?? [];
                     const isCopied = copiedModel === model.upstream_model;
+                    const isDisabled = model.enabled === false;
 
                     return (
                       <div
                         key={model.upstream_model}
                         data-testid={`api-gateway-template-model-${template.id}-${model.upstream_model}`}
-                        className="space-y-2 p-3 transition-colors hover:bg-muted/30"
+                        data-disabled={isDisabled ? "true" : undefined}
+                        className={`space-y-2 p-3 transition-colors hover:bg-muted/30${
+                          isDisabled ? " opacity-60" : ""
+                        }`}
                       >
                         {/* 模型标识、显示名、协议与复制按钮 */}
                         <div className="flex flex-wrap items-center justify-between gap-1.5">
@@ -454,145 +427,24 @@ function ProviderTemplateCard({
                             ) : null}
                           </div>
 
-                          <span
-                            className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium leading-4 ${protocolBadgeClass(
-                              model.protocol,
-                            )}`}
-                          >
-                            {model.protocol === "responses" ? "Responses" : "Chat"}
-                          </span>
-                        </div>
-
-                        {/* 四档标准价（带 $/1M tokens 计费单位标注） */}
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-                            <span>{t("models", "Models")}</span>
-                            <span className="font-mono text-[9px] text-muted-foreground/80">
-                              {t("apiGatewayTemplatePriceUnit", "$/1M tokens")}
-                            </span>
-                          </div>
-                          <div className="grid grid-cols-4 gap-1.5">
-                            {[
-                              {
-                                label: t("apiGatewayTemplatePriceInput", "Input"),
-                                value: model.input,
-                                className: "text-foreground",
-                              },
-                              {
-                                label: t(
-                                  "apiGatewayTemplatePriceCacheRead",
-                                  "Cache read",
-                                ),
-                                value: model.cache_read,
-                                className: "text-muted-foreground",
-                              },
-                              {
-                                label: t(
-                                  "apiGatewayTemplatePriceCacheWrite",
-                                  "Cache write",
-                                ),
-                                value: model.cache_write,
-                                className: "text-muted-foreground",
-                              },
-                              {
-                                label: t(
-                                  "apiGatewayTemplatePriceOutput",
-                                  "Output",
-                                ),
-                                value: model.output,
-                                className: "text-foreground",
-                              },
-                            ].map((tier) => (
-                              <div
-                                key={tier.label}
-                                className="rounded-md border bg-background/70 px-2 py-1 shadow-2xs"
-                              >
-                                <div className="truncate text-[10px] text-muted-foreground">
-                                  {tier.label}
-                                </div>
-                                <div className={`font-mono text-xs ${tier.className}`}>
-                                  {tier.value}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        {/* 峰谷时段 */}
-                        {peaks.length === 0 ? (
-                          <p className="text-[10px] text-muted-foreground">
-                            {t(
-                              "apiGatewayTemplateNoOffPeak",
-                              "No off-peak windows",
-                            )}
-                          </p>
-                        ) : (
-                          <div className="space-y-1">
-                            {peaks.map((peak, index) => (
-                              <div
-                                key={`${peak.start_time}-${peak.end_time}-${index}`}
-                                className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-amber-500/20 bg-amber-500/5 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-400"
-                              >
-                                <span className="inline-flex items-center gap-1 font-medium">
-                                  <Moon className="h-3 w-3" />
-                                  {t("apiGatewayTemplateOffPeak", "Off-peak")}
-                                </span>
-                                <span className="font-mono">
-                                  {peak.start_time} - {peak.end_time}
-                                </span>
-                                <span>{formatOffPeakDays(peak.days, t)}</span>
-                                <span className="flex items-center gap-1.5 font-mono">
-                                  <span>
-                                    {t("apiGatewayTemplatePriceInput", "Input")}{" "}
-                                    {peak.input}
-                                  </span>
-                                  <span>
-                                    {t(
-                                      "apiGatewayTemplatePriceCacheRead",
-                                      "Cache read",
-                                    )}{" "}
-                                    {peak.cache_read}
-                                  </span>
-                                  <span>
-                                    {t(
-                                      "apiGatewayTemplatePriceCacheWrite",
-                                      "Cache write",
-                                    )}{" "}
-                                    {peak.cache_write}
-                                  </span>
-                                  <span>
-                                    {t(
-                                      "apiGatewayTemplatePriceOutput",
-                                      "Output",
-                                    )}{" "}
-                                    {peak.output}
-                                  </span>
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        {/* reasoning_efforts chips */}
-                        {efforts.length > 0 ? (
-                          <div className="flex flex-wrap items-center gap-1 pt-0.5">
-                            <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
-                              <Brain className="h-3 w-3" />
-                              {t(
-                                "apiGatewayTemplateReasoningEfforts",
-                                "Reasoning efforts",
-                              )}
-                            </span>
-                            {efforts.map((effort) => (
-                              <span
-                                key={effort}
-                                className="inline-flex items-center rounded-full bg-secondary px-2 py-0.5 text-[10px] font-medium text-secondary-foreground"
-                              >
-                                {effort}
+                          <div className="flex items-center gap-1.5">
+                            {isDisabled ? (
+                              <span className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium leading-4 text-muted-foreground">
+                                {t(
+                                  "apiGatewayTemplateModelDisabled",
+                                  "Disabled",
+                                )}
                               </span>
-                            ))}
+                            ) : null}
+                            <span
+                              className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium leading-4 ${protocolBadgeClass(
+                                model.protocol,
+                              )}`}
+                            >
+                              {model.protocol === "responses" ? "Responses" : "Chat"}
+                            </span>
                           </div>
-                        ) : null}
+                        </div>
                       </div>
                     );
                   })
