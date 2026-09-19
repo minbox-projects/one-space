@@ -2837,7 +2837,6 @@ fn every_command_is_registered_in_the_invoke_handler() {
         "api_gateway_upsert_provider_template",
         "api_gateway_delete_provider_template",
         "api_gateway_reset_provider_templates",
-        "api_gateway_fetch_models",
     ];
     for command in commands {
         let registration = format!("api_gateway::{command},");
@@ -2861,7 +2860,6 @@ fn every_command_is_registered_in_the_invoke_handler() {
         "api_gateway_upsert_provider_template",
         "api_gateway_delete_provider_template",
         "api_gateway_reset_provider_templates",
-        "api_gateway_fetch_models",
     ] {
         assert!(
             LIB_SOURCE.contains(command),
@@ -2873,6 +2871,18 @@ fn every_command_is_registered_in_the_invoke_handler() {
         "api_gateway_model_prices_get",
         "api_gateway_model_prices_save",
     ] {
+        assert!(
+            !RUN_APP_SOURCE.contains(&format!("api_gateway::{removed},")),
+            "the removed command {removed} must not be registered in generate_handler!"
+        );
+        assert!(
+            !LIB_SOURCE.contains(removed),
+            "the removed command {removed} must not be exported from lib.rs"
+        );
+    }
+    // REQ-011: the standalone model-fetch command is removed together with its
+    // frontend wrapper; its registration and export must be gone.
+    for removed in ["api_gateway_fetch_models"] {
         assert!(
             !RUN_APP_SOURCE.contains(&format!("api_gateway::{removed},")),
             "the removed command {removed} must not be registered in generate_handler!"
@@ -3181,14 +3191,15 @@ fn delete_provider_removes_its_price_rows_but_keeps_others() {
     });
 }
 
-/// AC-006 boundary / REQ-004: `apply_delete_provider_model` keeps a manual
-/// provider's price row in memory, but the next persisted write drops it once
-/// the model is unreachable; a default-model row stays reachable and survives.
+/// AC-009 boundary / REQ-008: `apply_delete_provider_model` removes the
+/// provider-scoped price row together with the mapping for both manual and
+/// template-bound providers without waiting for a persisted normalization pass,
+/// records the ignored model on a bound provider, and leaves an unrelated
+/// default-model row reachable.
 #[test]
-fn delete_model_normalization_drops_unreachable_manual_row_after_persisted_write() {
-    with_temp_home("delete-model-normalization", |_home| {
-        // Manual provider with `default_model: None`: after the only mapping is
-        // deleted the row is unreachable and the persisted write drops it.
+fn delete_model_removes_provider_price_row_for_manual_and_bound_providers() {
+    with_temp_home("delete-model-price-row", |_home| {
+        // Manual provider: the row is removed in memory and stays removed.
         let mut manual = provider("manual");
         manual.template_id = None;
         manual.default_model = None;
@@ -3212,10 +3223,10 @@ fn delete_model_normalization_drops_unreachable_manual_row_after_persisted_write
         )
         .expect("deleting a manual mapping must succeed");
         assert!(
-            config.model_prices.iter().any(|row| {
+            !config.model_prices.iter().any(|row| {
                 row.provider_id.as_deref() == Some("manual") && row.upstream_model == "model-m"
             }),
-            "a manual provider's row is kept in memory while the mapping is deleted"
+            "a manual provider's row is removed with the mapping, not later"
         );
 
         super::storage::write_config(&config).expect("persist after the delete");
@@ -3225,7 +3236,38 @@ fn delete_model_normalization_drops_unreachable_manual_row_after_persisted_write
                 !(row.provider_id.as_deref() == Some("manual")
                     && row.upstream_model == "model-m")
             }),
-            "an unreachable manual row must be dropped by the persisted normalization"
+            "the removed row must not reappear after a persisted write"
+        );
+
+        // Template-bound provider: the row is removed and the model is ignored.
+        let mut bound = provider("bound");
+        bound.template_id = Some("opencode-zen".to_string());
+        bound.mappings = vec![mapping("local-b", "model-b", None)];
+        let mut config = GatewayConfig::default();
+        config.providers.push(bound);
+        config.model_prices = vec![priced_with_provider("bound", "model-b", 2.0, 0.0, 0.0, 2.0)];
+
+        super::templates::apply_delete_provider_model(
+            &mut config,
+            "bound",
+            "model-b",
+            |_next| Ok(()),
+        )
+        .expect("deleting a bound mapping must succeed");
+        let bound = config
+            .providers
+            .iter()
+            .find(|candidate| candidate.id == "bound")
+            .expect("the bound provider must exist");
+        assert!(
+            bound.ignored_models.iter().any(|id| id == "model-b"),
+            "a bound provider must record the deleted model"
+        );
+        assert!(
+            !config.model_prices.iter().any(|row| {
+                row.provider_id.as_deref() == Some("bound") && row.upstream_model == "model-b"
+            }),
+            "a bound provider's row is removed with the mapping"
         );
 
         // Default model X (X != M) stays reachable after mapping M is deleted.
@@ -3260,7 +3302,7 @@ fn delete_model_normalization_drops_unreachable_manual_row_after_persisted_write
                 row.provider_id.as_deref() == Some("default-provider")
                     && row.upstream_model == "model-x"
             })
-            .expect("the default-model row must survive the delete-model normalization");
+            .expect("the default-model row must survive the delete");
         assert_eq!(x_row.input, 3.0);
     });
 }
