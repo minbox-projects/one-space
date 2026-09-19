@@ -70,8 +70,9 @@ function blankOffPeak(): GatewayPriceDraftOffPeak {
 }
 
 /**
- * Always-visible price editor for a single upstream model: four standard tiers
- * plus an optional UTC+8 weekday-aware off-peak configuration.
+ * Price editor for a single upstream model, rendered on demand by the mapping
+ * row's expandable section when it is expanded: four standard tiers plus an
+ * optional UTC+8 weekday-aware off-peak configuration.
  */
 export function MappingPriceEditor({
   draft,
