@@ -170,6 +170,117 @@ describe("ProviderDetailDialog 模型映射", () => {
     expect(displayNameInput).toHaveValue("");
   });
 
+  it("mappingRowStartsWithDetailsCollapsedAndArrowTogglesPriceAndEfforts", async () => {
+    const user = userEvent.setup();
+    const provider = makeProvider({
+      mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
+    });
+    const prices: ModelPrice[] = [
+      {
+        provider_id: "p1",
+        upstream_model: "remote-a",
+        input: 1.5,
+        cache_read: 0,
+        cache_write: 0,
+        output: 0,
+      },
+    ];
+    renderProviderDialog({ provider, prices });
+
+    const expand = screen.getByTestId("api-gateway-mapping-expand-0");
+    expect(
+      expand,
+      "默认收起时展开箭头应为 aria-expanded=false",
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByTestId("api-gateway-mapping-price-0"),
+      "默认收起时不渲染计价配置",
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("api-gateway-mapping-efforts-0"),
+      "默认收起时不渲染推理档位面板",
+    ).not.toBeInTheDocument();
+
+    await user.click(expand);
+    expect(
+      expand,
+      "点击展开后箭头应为 aria-expanded=true",
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByTestId("api-gateway-mapping-price-0"),
+      "展开后应渲染计价配置",
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("api-gateway-mapping-efforts-0"),
+      "展开后应渲染推理档位面板",
+    ).toBeInTheDocument();
+    expect(
+      valueOf("api-gateway-price-0-input"),
+      "展开后应回显已存价格",
+    ).toBe("1.5");
+
+    await user.click(expand);
+    expect(
+      expand,
+      "再次点击后箭头应回到 aria-expanded=false",
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByTestId("api-gateway-mapping-price-0"),
+      "再次点击应收起计价配置",
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("api-gateway-mapping-efforts-0"),
+      "再次点击应收起推理档位面板",
+    ).not.toBeInTheDocument();
+  });
+
+  it("saveWithoutExpandingPersistsStoredMappingPrice", async () => {
+    const user = userEvent.setup();
+    const provider = makeProvider({
+      mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
+    });
+    const prices: ModelPrice[] = [
+      {
+        provider_id: "p1",
+        upstream_model: "remote-a",
+        input: 1.5,
+        cache_read: 0,
+        cache_write: 0,
+        output: 0,
+      },
+    ];
+    const { onSave } = renderProviderDialog({ provider, prices });
+
+    expect(
+      screen.queryByTestId("api-gateway-mapping-price-0"),
+      "未展开时不应渲染计价配置",
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const [, savedPrices] = onSave.mock.calls[0] as [
+      GatewayUpstreamProvider,
+      ModelPrice[],
+    ];
+    expect(
+      savedPrices.find((row) => row.upstream_model === "remote-a"),
+      "未展开直接保存仍应提交已存价格行",
+    ).toMatchObject({ upstream_model: "remote-a", input: 1.5 });
+  });
+
+  it("mappingExpandButtonExposesMappingDetailsAccessibleName", () => {
+    const provider = makeProvider({
+      mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
+    });
+    renderProviderDialog({ provider });
+
+    expect(
+      screen.getByTestId("api-gateway-mapping-expand-0"),
+      "展开箭头可访问名称应为 Mapping details",
+    ).toHaveAccessibleName("Mapping details");
+  });
+
   it("provider_dialog_round_trips_mapping_prices_after_reopen", async () => {
     const user = userEvent.setup();
     const provider = makeProvider({
@@ -191,11 +302,13 @@ describe("ProviderDetailDialog 模型映射", () => {
       prices: [storedZero],
     });
 
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-1"));
     expect(
       valueOf("api-gateway-price-1-input"),
       "显式存储 0 应回显为字符串 0 而不是空白",
     ).toBe("0");
 
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-0"));
     await user.type(screen.getByTestId("api-gateway-price-0-input"), "1.5");
     await user.type(screen.getByTestId("api-gateway-price-0-output"), "3");
     await user.click(screen.getByTestId("api-gateway-price-0-off-peak"));
@@ -245,6 +358,8 @@ describe("ProviderDetailDialog 模型映射", () => {
 
     unmount();
     renderProviderDialog({ provider, prices: savedPrices });
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-0"));
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-1"));
     expect(valueOf("api-gateway-price-0-input")).toBe("1.5");
     expect(valueOf("api-gateway-price-0-output")).toBe("3");
     expect(valueOf("api-gateway-off-peak-0-start-0")).toBe("23:00");
@@ -262,6 +377,8 @@ describe("ProviderDetailDialog 模型映射", () => {
     });
     const { onSave } = renderProviderDialog({ provider });
 
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-0"));
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-1"));
     await user.type(screen.getByTestId("api-gateway-price-0-input"), "2");
     expect(
       valueOf("api-gateway-price-1-input"),
@@ -306,6 +423,7 @@ describe("ProviderDetailDialog 模型映射", () => {
     });
     const first = renderProviderDialog({ provider });
 
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-0"));
     await user.type(screen.getByTestId("api-gateway-price-0-output"), "3");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -321,6 +439,7 @@ describe("ProviderDetailDialog 模型映射", () => {
     first.unmount();
 
     const second = renderProviderDialog({ provider });
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-0"));
     for (const testId of [
       "api-gateway-price-0-input",
       "api-gateway-price-0-cache-read",
@@ -348,6 +467,7 @@ describe("ProviderDetailDialog 模型映射", () => {
     });
 
     const enabled = renderProviderDialog({ provider });
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-0"));
     await user.type(screen.getByTestId("api-gateway-price-0-input"), "1");
     await user.click(screen.getByTestId("api-gateway-price-0-off-peak"));
     await user.click(screen.getByRole("button", { name: "Save" }));
@@ -361,6 +481,7 @@ describe("ProviderDetailDialog 模型映射", () => {
     enabled.unmount();
 
     const disabled = renderProviderDialog({ provider });
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-0"));
     await user.type(screen.getByTestId("api-gateway-price-0-input"), "1");
     await user.click(screen.getByTestId("api-gateway-price-0-off-peak"));
     await user.click(screen.getByTestId("api-gateway-price-0-off-peak"));
@@ -372,6 +493,7 @@ describe("ProviderDetailDialog 模型映射", () => {
     disabled.unmount();
 
     const noWindows = renderProviderDialog({ provider });
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-0"));
     await user.type(screen.getByTestId("api-gateway-price-0-input"), "1");
     await user.click(screen.getByTestId("api-gateway-price-0-off-peak"));
     await user.click(screen.getByTestId("api-gateway-off-peak-0-remove-0"));
@@ -447,6 +569,7 @@ describe("ProviderDetailDialog 模型映射", () => {
         i18n.t("apiGatewayDefaultModelAutoAdded"),
       ),
     ).toBeInTheDocument();
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-0"));
     expect(
       valueOf("api-gateway-price-0-input"),
       "自动补出的默认模型映射行应带出该服务商已有的价格行",
@@ -516,7 +639,8 @@ describe("ProviderDetailDialog 模型映射", () => {
     ).toBeUndefined();
   });
 
-  it("provider_dialog_blank_upstream_model_has_no_price_editor", () => {
+  it("provider_dialog_blank_upstream_model_has_no_price_editor", async () => {
+    const user = userEvent.setup();
     const provider = makeProvider({
       mappings: [
         { local_model: "local-a", upstream_model: "   " },
@@ -524,6 +648,9 @@ describe("ProviderDetailDialog 模型映射", () => {
       ],
     });
     renderProviderDialog({ provider });
+
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-0"));
+    await user.click(screen.getByTestId("api-gateway-mapping-expand-1"));
 
     expect(
       screen.queryByTestId("api-gateway-mapping-price-0"),

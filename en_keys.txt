@@ -32,6 +32,7 @@ apiGatewayEveryDay
 apiGatewayIgnoredModels
 apiGatewayIgnoredModelsDesc
 apiGatewayMappingDeleted
+apiGatewayMappingDetails
 apiGatewayMappingPrice
 apiGatewayModelRestored
 apiGatewayNoTemplates

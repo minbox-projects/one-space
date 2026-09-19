@@ -484,7 +484,7 @@ export function ProviderDetailDialog({
                         type="button"
                         data-testid={`api-gateway-mapping-expand-${index}`}
                         aria-expanded={isExpanded}
-                        aria-label={t("apiGatewayReasoningEfforts", "Reasoning efforts")}
+                        aria-label={t("apiGatewayMappingDetails", "Mapping details")}
                         onClick={() =>
                           setExpandedMappings((prev) => ({
                             ...prev,
@@ -595,24 +595,23 @@ export function ProviderDetailDialog({
                       </button>
                     </div>
 
-                    {upstreamModel !== "" ? (
-                      <>
-                        {isAutoAdded ? (
-                          <span className="inline-flex w-fit items-center rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
-                            {t("apiGatewayDefaultModelAutoAdded")}
-                          </span>
-                        ) : null}
-                        <MappingPriceEditor
-                          index={index}
-                          draft={draftForModel(upstreamModel)}
-                          onChange={(patch) =>
-                            updateDraftForModel(upstreamModel, patch)
-                          }
-                        />
-                      </>
+                    {isAutoAdded ? (
+                      <span className="inline-flex w-fit items-center rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                        {t("apiGatewayDefaultModelAutoAdded")}
+                      </span>
                     ) : null}
 
                     {isExpanded ? (
+                      <>
+                        {upstreamModel !== "" ? (
+                          <MappingPriceEditor
+                            index={index}
+                            draft={draftForModel(upstreamModel)}
+                            onChange={(patch) =>
+                              updateDraftForModel(upstreamModel, patch)
+                            }
+                          />
+                        ) : null}
                       <div
                         data-testid={`api-gateway-mapping-efforts-${index}`}
                         className="space-y-2 rounded-lg border-t border-border/60 bg-muted/10 px-3 py-2.5"
@@ -686,6 +685,7 @@ export function ProviderDetailDialog({
                           </button>
                         </div>
                       </div>
+                      </>
                     ) : null}
                   </li>
                   );
