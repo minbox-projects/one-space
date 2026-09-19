@@ -900,6 +900,18 @@ fn sync_fatal_failures_name_the_url_and_write_nothing() {
         SYNC_URL,
         "identif",
     );
+    // A blank string entry carries no identifier, so a mixed list must be fatal
+    // rather than silently dropping it.
+    assert_sync_fatal_keeps_config(
+        Ok(r#"{"data": ["", {"id": "valid-model"}]}"#),
+        SYNC_URL,
+        "identif",
+    );
+    assert_sync_fatal_keeps_config(
+        Ok(r#"{"data": ["   ", {"id": "valid-model"}]}"#),
+        SYNC_URL,
+        "identif",
+    );
     assert_sync_fatal_keeps_config(Ok(r#"{"data": []}"#), SYNC_URL, "empty");
     assert_sync_fatal_keeps_config(
         Ok(r#"{"data": [{"id": "only-messages", "supported_endpoints": ["/messages"]}]}"#),
@@ -967,7 +979,8 @@ fn sync_unknown_template_id_reports_actionable_error() {
 
 /// REQ-005 / AC-004: a successful sync adds enabled mappings for newly
 /// available enabled models only, skips ignored and disabled models, updates an
-/// untouched display name, keeps retired mappings, leaves an unrelated manual
+/// untouched display name, keeps retired mappings, preserves a locally disabled
+/// mapping and a locally rewritten protocol, leaves an unrelated manual
 /// provider alone and never touches price rows.
 #[test]
 fn sync_propagates_enabled_models_and_never_writes_prices() {
@@ -977,7 +990,9 @@ fn sync_propagates_enabled_models_and_never_writes_prices() {
         UpstreamProtocol::ChatCompletions,
         vec![
             template_model("a", Some("Local A"), Some(UpstreamProtocol::Responses), true),
+            template_model("c", Some("Local C"), None, true),
             template_model("d", Some("Disabled D"), None, false),
+            template_model("e", Some("Local E"), None, true),
             template_model("retired", Some("Retired"), None, true),
         ],
     );
@@ -990,15 +1005,39 @@ fn sync_propagates_enabled_models_and_never_writes_prices() {
     });
 
     let mut provider = bound_provider("p", "t");
+    let mapping_a = mapping_for(
+        previous
+            .models
+            .iter()
+            .find(|model| model.upstream_model == "a")
+            .expect("model a"),
+        &previous,
+    );
+    // A locally rewritten protocol must survive even when it differs from the
+    // previous template-derived protocol.
+    let mut mapping_c = mapping_for(
+        previous
+            .models
+            .iter()
+            .find(|model| model.upstream_model == "c")
+            .expect("model c"),
+        &previous,
+    );
+    mapping_c.protocol = Some(UpstreamProtocol::Responses);
+    // A locally disabled mapping must stay disabled across a sync.
+    let mut mapping_e = mapping_for(
+        previous
+            .models
+            .iter()
+            .find(|model| model.upstream_model == "e")
+            .expect("model e"),
+        &previous,
+    );
+    mapping_e.enabled = false;
     provider.mappings = vec![
-        mapping_for(
-            previous
-                .models
-                .iter()
-                .find(|model| model.upstream_model == "a")
-                .expect("model a"),
-            &previous,
-        ),
+        mapping_a,
+        mapping_c,
+        mapping_e,
         model_mapping("retired"),
     ];
     provider.ignored_models = vec!["ignored".to_string()];
@@ -1030,7 +1069,9 @@ fn sync_propagates_enabled_models_and_never_writes_prices() {
     let body = json!({
         "data": [
             {"id": "a", "name": "Source A", "supported_endpoints": ["/chat/completions"]},
+            {"id": "c", "name": "Source C", "supported_endpoints": ["/chat/completions"]},
             {"id": "d", "name": "Disabled D"},
+            {"id": "e", "name": "Source E", "supported_endpoints": ["/chat/completions"]},
             {"id": "b", "name": "Source B", "supported_endpoints": ["/chat/completions"]},
             {"id": "u", "name": "Unlabeled"},
             {"id": "ignored", "name": "Ignored"}
@@ -1087,6 +1128,29 @@ fn sync_propagates_enabled_models_and_never_writes_prices() {
     );
     assert_eq!(a.local_model, "a", "the local model name is never touched");
     assert!(a.enabled, "a mapping's enabled flag is never touched");
+
+    let c = find_mapping(provider, "c").expect("the existing mapping must remain");
+    assert_eq!(
+        c.protocol,
+        Some(UpstreamProtocol::Responses),
+        "a locally rewritten protocol must never be overwritten by the sync"
+    );
+
+    let e = find_mapping(provider, "e").expect("the existing mapping must remain");
+    assert!(
+        !e.enabled,
+        "a locally disabled mapping must never be re-enabled by the sync"
+    );
+    assert_eq!(
+        e.display_name.as_deref(),
+        Some("Source E"),
+        "the sync still refreshes the display name of a disabled mapping"
+    );
+    assert_eq!(
+        e.protocol,
+        Some(UpstreamProtocol::ChatCompletions),
+        "the sync still refreshes the protocol of a disabled mapping"
+    );
 
     assert_eq!(
         serde_json::to_value(&config.providers[1]).expect("encode manual after"),

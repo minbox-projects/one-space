@@ -512,7 +512,7 @@ export function ProviderTemplateSection({
           <p className="text-xs text-muted-foreground">
             {t(
               "apiGatewayProviderTemplatesDesc",
-              "Built-in catalogs of official models, prices and reasoning efforts. Sync to refresh, then add one as an upstream provider.",
+              "Provider templates carry an optional model-list URL. Sync to refresh the model list, then add one as an upstream provider; prices stay on mapping rows.",
             )}
           </p>
         </div>

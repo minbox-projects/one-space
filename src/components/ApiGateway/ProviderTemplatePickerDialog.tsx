@@ -82,7 +82,7 @@ export function ProviderTemplatePickerDialog({
           <DialogDescription className="text-xs text-muted-foreground">
             {t(
               "apiGatewaySelectProviderTemplateDesc",
-              "Create an upstream provider quickly from an official catalog preset, or configure from a blank form.",
+              "Create an upstream provider quickly from a provider template endpoint, or configure from a blank form.",
             )}
           </DialogDescription>
         </DialogHeader>

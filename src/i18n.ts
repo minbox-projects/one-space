@@ -561,7 +561,7 @@ const resources = {
       apiGatewayDeleteProviderAria: "Delete provider {{name}}",
       apiGatewayProviderTemplates: "Provider Templates",
       apiGatewayProviderTemplatesDesc:
-        "Built-in catalogs of official models, prices and reasoning efforts. Sync to refresh, then add one as an upstream provider.",
+        "Provider templates carry an optional model-list URL. Sync to refresh the model list, then add one as an upstream provider; prices stay on mapping rows.",
       apiGatewayTemplateModelsCount: "{{count}} models",
       apiGatewayTemplateSource: "Source",
       apiGatewayTemplateLastSync: "Last sync",
@@ -590,7 +590,7 @@ const resources = {
       apiGatewayTemplateCreateFailed: "Failed to create provider from template.",
       apiGatewayTemplateCreateTitle: "Add provider from template",
       apiGatewayTemplateCreateDesc:
-        "Create an upstream provider from {{name}}. Every template model is added as a mapping.",
+        "Create an upstream provider from {{name}}. Every enabled template model is added as a mapping.",
       apiGatewayTemplateNameLabel: "Name",
       apiGatewayTemplateBaseUrlLabel: "API base URL",
       apiGatewayTemplateProtocolLabel: "API protocol",
@@ -600,7 +600,7 @@ const resources = {
       apiGatewayTemplateDeprecated: "Deprecated",
       apiGatewaySelectProviderTemplate: "Select provider preset",
       apiGatewaySelectProviderTemplateDesc:
-        "Create an upstream provider quickly from an official catalog preset, or configure from a blank form.",
+        "Create an upstream provider quickly from a provider template endpoint, or configure from a blank form.",
       apiGatewayBlankProviderPreset: "Create manually",
       apiGatewayBlankProviderPresetDesc:
         "Skip presets and configure provider endpoint, protocol, and model mappings manually.",
@@ -4168,7 +4168,7 @@ const resources = {
       apiGatewayDeleteProviderAria: "删除服务商 {{name}}",
       apiGatewayProviderTemplates: "服务商模板",
       apiGatewayProviderTemplatesDesc:
-        "内置官方模型、价格与推理档位的目录。同步以刷新，然后可直接添加为上游服务商。",
+        "服务商模板携带可选模型清单 URL，可手动同步刷新模型列表后添加为上游服务商；价格仅在映射行维护。",
       apiGatewayTemplateModelsCount: "{{count}} 个模型",
       apiGatewayTemplateSource: "来源",
       apiGatewayTemplateLastSync: "最近同步",
@@ -4197,7 +4197,7 @@ const resources = {
       apiGatewayTemplateCreateFailed: "从模板创建服务商失败。",
       apiGatewayTemplateCreateTitle: "从模板添加服务商",
       apiGatewayTemplateCreateDesc:
-        "基于 {{name}} 创建上游服务商，模板中的每个模型都会写入为映射。",
+        "基于 {{name}} 创建上游服务商，模板中每个启用的模型都会写入为映射。",
       apiGatewayTemplateNameLabel: "名称",
       apiGatewayTemplateBaseUrlLabel: "API 基础地址",
       apiGatewayTemplateProtocolLabel: "API 协议",
@@ -4207,7 +4207,7 @@ const resources = {
       apiGatewayTemplateDeprecated: "已弃用",
       apiGatewaySelectProviderTemplate: "选择预设服务商模板",
       apiGatewaySelectProviderTemplateDesc:
-        "从预设官方目录快速创建上游服务商，或从空白表单自定义配置。",
+        "从服务商模板端点快速创建上游服务商，或从空白表单自定义配置。",
       apiGatewayBlankProviderPreset: "从空白表单创建",
       apiGatewayBlankProviderPresetDesc:
         "跳过预设模板，手动配置服务商地址、通信协议与模型路由映射。",

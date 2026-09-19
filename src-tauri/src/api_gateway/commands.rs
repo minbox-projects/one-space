@@ -802,8 +802,9 @@ pub async fn api_gateway_sync_provider_template(
     })
 }
 
-/// Create an upstream provider from a template, carrying every mapping plus its
-/// provider-scoped price row. A blank API key is rejected and writes nothing.
+/// Create an upstream provider from a template, carrying one enabled mapping per
+/// enabled template model and writing no price row. A blank API key is rejected
+/// and writes nothing.
 #[tauri::command]
 pub fn api_gateway_create_provider_from_template(
     template_id: String,
@@ -826,7 +827,8 @@ pub fn api_gateway_create_provider_from_template(
 }
 
 /// Delete one model from a provider: a template-bound provider records it in the
-/// ignored set and drops its price row, a manual provider only drops the mapping.
+/// ignored set exactly once and both bound and manual providers drop that model's
+/// provider-scoped price row.
 #[tauri::command]
 pub fn api_gateway_delete_provider_model(
     provider_id: String,

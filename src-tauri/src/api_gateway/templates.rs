@@ -299,10 +299,14 @@ fn parse_model_list_source(
     for entry in entries {
         if let Some(raw_identifier) = entry.as_str() {
             let identifier = raw_identifier.trim();
-            if identifier.is_empty()
-                || merged
-                    .iter()
-                    .any(|model| model.upstream_model == identifier)
+            if identifier.is_empty() {
+                return Err(
+                    "response contains a model entry without an identifier".to_string()
+                );
+            }
+            if merged
+                .iter()
+                .any(|model| model.upstream_model == identifier)
             {
                 continue;
             }
