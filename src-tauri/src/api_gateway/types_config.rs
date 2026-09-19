@@ -51,8 +51,8 @@ pub struct ModelMapping {
     pub protocol: Option<UpstreamProtocol>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
-    /// Ordered reasoning-effort levels this mapping advertises, populated from
-    /// the bound template at creation and merged on later template syncs.
+    /// Ordered reasoning-effort levels this mapping advertises; maintained manually
+    /// in the provider editor. Templates and template syncs neither carry nor write it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<String>,
 }
