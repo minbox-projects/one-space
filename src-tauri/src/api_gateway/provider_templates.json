@@ -2,7 +2,7 @@
   {
     "id": "opencode-zen",
     "name": "OpenCode Zen",
-    "description": "OpenCode 官方模型网关，模型与价格来自 models.dev",
+    "description": "OpenCode 官方模型网关，模型列表经同步获取",
     "base_url": "https://opencode.ai/zen/v1",
     "protocol": "chat_completions",
     "source": "https://opencode.ai/zen/v1/models",
@@ -12,7 +12,7 @@
   {
     "id": "commandcode",
     "name": "CommandCode",
-    "description": "CommandCode 官方模型网关，模型列表来自官方接口，价格与推理档位为应用内整理",
+    "description": "CommandCode 官方模型网关，模型列表经同步获取",
     "base_url": "https://api.commandcode.ai/provider/v1",
     "protocol": "chat_completions",
     "source": "https://api.commandcode.ai/provider/v1/models",
