@@ -131,6 +131,7 @@ const PROVIDER_TEMPLATE_KEYS = [
   "apiGatewayReasoningEffortPlaceholder",
   "apiGatewayReasoningEffortAdd",
   "apiGatewayReasoningEffortRemove",
+  "apiGatewayMappingDetails",
   "apiGatewayMappingDeleted",
   "apiGatewayModelRestored",
   "apiGatewayWeekdaySelect",

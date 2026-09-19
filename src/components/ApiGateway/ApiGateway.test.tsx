@@ -771,6 +771,7 @@ describe("ApiGateway", () => {
       ).findByText("Upstream A"),
     );
 
+    fireEvent.click(screen.getByTestId("api-gateway-mapping-expand-0"));
     await screen.findByTestId("api-gateway-price-0-input");
     fireEvent.change(screen.getByTestId("api-gateway-price-0-input"), {
       target: { value: "2" },
