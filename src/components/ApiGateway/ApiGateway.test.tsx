@@ -1934,14 +1934,16 @@ describe("ApiGateway", () => {
     const picker = await screen.findByTestId("api-gateway-template-picker-dialog");
     expect(picker).toBeInTheDocument();
 
-    // 在弹窗中点击编辑图标
-    const editIcon = screen.getByTestId("template-picker-edit-tpl-test");
-    fireEvent.click(editIcon);
+    // 各模板卡片中已移除编辑图标按钮
+    expect(screen.queryByTestId("template-picker-edit-tpl-test")).not.toBeInTheDocument();
+
+    // 在弹窗中点击新建模板按钮打开模板编辑/新建弹窗
+    const newTemplateBtn = screen.getByTestId("template-picker-new-btn");
+    fireEvent.click(newTemplateBtn);
 
     // 弹出编辑模板弹窗
     const editDialog = await screen.findByTestId("api-gateway-template-edit-dialog");
     expect(editDialog).toBeInTheDocument();
-    expect(screen.getByTestId("template-edit-name")).toHaveValue("Test Presets Vendor");
   });
 });
 

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { ProviderTemplatePickerDialog } from "./ProviderTemplatePickerDialog";
@@ -51,10 +51,11 @@ describe("ProviderTemplatePickerDialog", () => {
 
     expect(screen.getByTestId("template-picker-blank-btn")).toBeInTheDocument();
     expect(screen.getByText("OpenCode Zen")).toBeInTheDocument();
-    expect(screen.getByTestId("template-picker-edit-tpl-zen")).toBeInTheDocument();
+    expect(screen.getByTestId("template-picker-item-tpl-zen")).toBeInTheDocument();
+    expect(screen.queryByTestId("template-picker-edit-tpl-zen")).not.toBeInTheDocument();
   });
 
-  it("renders model count and source without the offline snapshot badge", () => {
+  it("renders model count and source without duplicate numbers and without truncation", () => {
     render(
       <ProviderTemplatePickerDialog
         open={true}
@@ -70,8 +71,35 @@ describe("ProviderTemplatePickerDialog", () => {
 
     expect(screen.queryByText("Offline snapshot")).not.toBeInTheDocument();
     expect(screen.queryByText(i18n.t("apiGatewayTemplateSnapshot"))).not.toBeInTheDocument();
-    expect(screen.getByText(/1 models/)).toBeInTheDocument();
-    expect(screen.getByText(/opencode\.ai\/zen\/v1\/models/)).toBeInTheDocument();
+    expect(screen.getByText("Provider Templates")).toBeInTheDocument();
+    expect(screen.getByText("1 models")).toBeInTheDocument();
+    const sourceElement = screen.getByText(/opencode\.ai\/zen\/v1\/models/);
+    expect(sourceElement).toBeInTheDocument();
+    expect(sourceElement.className).toContain("break-all");
+    expect(sourceElement.className).not.toContain("truncate");
+  });
+
+  it("renders non-duplicate model count and full source in Chinese locale", async () => {
+    await i18n.changeLanguage("zh");
+    render(
+      <ProviderTemplatePickerDialog
+        open={true}
+        onOpenChange={vi.fn()}
+        templates={mockTemplates}
+        providers={[]}
+        busy={false}
+        onSelectBlank={vi.fn()}
+        onSelectTemplate={vi.fn()}
+        onEditTemplate={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("服务商模板")).toBeInTheDocument();
+    expect(screen.getByText("1 个模型")).toBeInTheDocument();
+    const sourceElement = screen.getByText(/opencode\.ai\/zen\/v1\/models/);
+    expect(sourceElement).toBeInTheDocument();
+    expect(sourceElement.className).toContain("break-all");
+    expect(sourceElement.className).not.toContain("truncate");
   });
 
   it("triggers onSelectBlank when clicking manual creation card", () => {
@@ -93,7 +121,7 @@ describe("ProviderTemplatePickerDialog", () => {
     expect(onSelectBlank).toHaveBeenCalledTimes(1);
   });
 
-  it("triggers onSelectTemplate when clicking template card body", () => {
+  it("triggers onSelectTemplate when clicking template card", () => {
     const onSelectTemplate = vi.fn();
     render(
       <ProviderTemplatePickerDialog
@@ -108,12 +136,11 @@ describe("ProviderTemplatePickerDialog", () => {
       />,
     );
 
-    fireEvent.click(screen.getByTestId("template-picker-select-tpl-zen"));
+    fireEvent.click(screen.getByTestId("template-picker-item-tpl-zen"));
     expect(onSelectTemplate).toHaveBeenCalledWith(mockTemplates[0].template);
   });
 
-  it("triggers onEditTemplate when clicking pencil edit icon", () => {
-    const onEditTemplate = vi.fn();
+  it("does not render pencil edit button on template cards and has matching action cue", () => {
     render(
       <ProviderTemplatePickerDialog
         open={true}
@@ -123,12 +150,13 @@ describe("ProviderTemplatePickerDialog", () => {
         busy={false}
         onSelectBlank={vi.fn()}
         onSelectTemplate={vi.fn()}
-        onEditTemplate={onEditTemplate}
+        onEditTemplate={vi.fn()}
       />,
     );
 
-    fireEvent.click(screen.getByTestId("template-picker-edit-tpl-zen"));
-    expect(onEditTemplate).toHaveBeenCalledWith(mockTemplates[0].template);
+    expect(screen.queryByTestId("template-picker-edit-tpl-zen")).not.toBeInTheDocument();
+    const templateCard = screen.getByTestId("template-picker-item-tpl-zen");
+    expect(within(templateCard).getByText("Use template")).toBeInTheDocument();
   });
 
   it("triggers onNewTemplate when clicking new template button", () => {

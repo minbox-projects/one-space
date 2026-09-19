@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next";
 import {
   ArrowRight,
-  Pencil,
   Plus,
   Server,
   Sparkles,
@@ -27,7 +26,7 @@ export type ProviderTemplatePickerDialogProps = {
   busy: boolean;
   onSelectBlank: () => void;
   onSelectTemplate: (template: GatewayProviderTemplate) => void;
-  onEditTemplate: (template: GatewayProviderTemplate) => void;
+  onEditTemplate?: (template: GatewayProviderTemplate) => void;
   onNewTemplate?: () => void;
 };
 
@@ -52,7 +51,6 @@ export function ProviderTemplatePickerDialog({
   busy,
   onSelectBlank,
   onSelectTemplate,
-  onEditTemplate,
   onNewTemplate,
 }: ProviderTemplatePickerDialogProps) {
   const { t } = useTranslation();
@@ -144,7 +142,7 @@ export function ProviderTemplatePickerDialog({
             <div className="flex items-center gap-2">
               <Sparkles className="h-3.5 w-3.5 text-primary" />
               <span className="text-xs font-semibold text-foreground">
-                {t("apiGatewayPresetTemplatesSectionTitle", "Recommended Presets")}
+                {t("apiGatewayPresetTemplatesSectionTitle", "Provider Templates")}
               </span>
               <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] font-medium text-muted-foreground">
                 {templates.length}
@@ -163,84 +161,64 @@ export function ProviderTemplatePickerDialog({
                 template.protocol === "responses" ? "Responses" : "Chat";
 
               return (
-                <div
+                <button
+                  type="button"
                   key={template.id}
                   data-testid={`template-picker-item-${template.id}`}
-                  className="group/card flex items-start justify-between gap-3 rounded-2xl border border-border/80 bg-card p-4 sm:p-5 shadow-2xs transition-all duration-200 hover:border-primary/40 hover:shadow-sm"
+                  onClick={() => onSelectTemplate(template)}
+                  disabled={busy}
+                  className="group w-full rounded-2xl border border-border/80 bg-card p-4 sm:p-5 text-left shadow-2xs transition-all duration-200 hover:border-primary/40 hover:shadow-sm active:scale-[0.99]"
                 >
-                  <button
-                    type="button"
-                    data-testid={`template-picker-select-${template.id}`}
-                    onClick={() => onSelectTemplate(template)}
-                    disabled={busy}
-                    className="min-w-0 flex-1 text-left flex items-start gap-3.5"
-                  >
-                    <div
-                      className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-2xs ${brandAccent(template.id, template.name)}`}
-                    >
-                      <Sparkles className="h-5 w-5" />
-                    </div>
-
-                    <div className="min-w-0 flex-1 space-y-1.5">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-semibold text-sm text-foreground tracking-tight group-hover/card:text-primary transition-colors">
-                          {template.name}
-                        </span>
-                        <span
-                          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-4 ${protocolBadgeClass(
-                            template.protocol,
-                          )}`}
-                        >
-                          {protocolLabel}
-                        </span>
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex items-start gap-3.5 min-w-0 flex-1">
+                      <div
+                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-2xs transition group-hover:scale-105 ${brandAccent(template.id, template.name)}`}
+                      >
+                        <Sparkles className="h-5 w-5" />
                       </div>
 
-                      {template.description && (
-                        <p className="line-clamp-2 text-xs text-muted-foreground leading-relaxed">
-                          {template.description}
-                        </p>
-                      )}
-
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1 text-xs text-muted-foreground">
-                        <span className="inline-flex items-center gap-1 font-medium text-foreground/80">
-                          <span className="text-primary font-semibold">{template.models.length}</span>
-                          {t("apiGatewayTemplateModelsCount", {
-                            count: template.models.length,
-                            defaultValue: "{{count}} models",
-                          })}
-                        </span>
-                        {template.source && (
-                          <span className="truncate max-w-[280px] font-mono text-[11px]" title={template.source}>
-                            {t("apiGatewayTemplateSource", "Source")}: {template.source}
+                      <div className="min-w-0 flex-1 space-y-1.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-semibold text-sm text-foreground tracking-tight group-hover:text-primary transition-colors">
+                            {template.name}
                           </span>
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-4 ${protocolBadgeClass(
+                              template.protocol,
+                            )}`}
+                          >
+                            {protocolLabel}
+                          </span>
+                        </div>
+
+                        {template.description && (
+                          <p className="line-clamp-2 text-xs text-muted-foreground leading-relaxed">
+                            {template.description}
+                          </p>
                         )}
+
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1 text-xs text-muted-foreground">
+                          <span className="inline-flex items-center gap-1 font-medium text-foreground/80">
+                            {t("apiGatewayTemplateModelsCount", {
+                              count: template.models.length,
+                              defaultValue: "{{count}} models",
+                            })}
+                          </span>
+                          {template.source && (
+                            <span className="font-mono text-[11px] break-all" title={template.source}>
+                              {t("apiGatewayTemplateSource", "Source")}: {template.source}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </button>
 
-                  {/* 右侧操作按钮组 */}
-                  <div className="flex items-center gap-2 shrink-0 pt-0.5">
-                    <button
-                      type="button"
-                      onClick={() => onSelectTemplate(template)}
-                      disabled={busy}
-                      className="hidden sm:inline-flex h-8 items-center gap-1 rounded-lg bg-muted/70 hover:bg-primary hover:text-primary-foreground px-2.5 text-xs font-medium text-foreground transition active:scale-95"
-                    >
+                    <div className="hidden sm:flex items-center gap-1 text-xs font-medium text-primary shrink-0 opacity-80 group-hover:opacity-100 group-hover:translate-x-0.5 transition">
                       <span>{t("apiGatewayUseThisTemplate", "Use template")}</span>
-                    </button>
-                    <button
-                      type="button"
-                      data-testid={`template-picker-edit-${template.id}`}
-                      onClick={() => onEditTemplate(template)}
-                      disabled={busy}
-                      title={t("apiGatewayEditTemplate", "Edit template")}
-                      aria-label={t("apiGatewayEditTemplate", "Edit template")}
-                      className="rounded-lg border border-border/60 p-2 text-muted-foreground hover:bg-muted hover:text-foreground active:scale-95 transition"
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </div>
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>

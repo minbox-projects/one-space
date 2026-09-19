@@ -231,7 +231,6 @@ function ProviderTemplateCard({
         {/* 元数据微胶囊 (Chips) 栏 */}
         <div className="flex flex-wrap items-center gap-2 pt-0.5 text-xs">
           <div className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/40 px-2.5 py-1 text-[11px] font-medium text-foreground">
-            <span className="text-primary font-semibold">{template.models.length}</span>
             <span>
               {t("apiGatewayTemplateModelsCount", {
                 count: template.models.length,

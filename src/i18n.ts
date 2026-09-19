@@ -605,7 +605,7 @@ const resources = {
         "Connect quickly via official or preset templates, or configure manually from a blank form.",
       apiGatewayBlankProviderPreset: "Create manually",
       apiGatewayBlankProviderPresetQuick: "Manual create",
-      apiGatewayPresetTemplatesSectionTitle: "Recommended Presets",
+      apiGatewayPresetTemplatesSectionTitle: "Provider Templates",
       apiGatewayPresetTemplatesHint:
         "Select a template to import official models and protocol configurations",
       apiGatewayUseThisTemplate: "Use template",
@@ -4220,7 +4220,7 @@ const resources = {
         "选择官方或预设模板快速接入，或直接从空白表单手动自定义配置。",
       apiGatewayBlankProviderPreset: "从空白表单创建",
       apiGatewayBlankProviderPresetQuick: "手动空白创建",
-      apiGatewayPresetTemplatesSectionTitle: "预设推荐模板",
+      apiGatewayPresetTemplatesSectionTitle: "服务商模板",
       apiGatewayPresetTemplatesHint:
         "选择模板快速导入官方模型与协议配置",
       apiGatewayUseThisTemplate: "使用此模板",
