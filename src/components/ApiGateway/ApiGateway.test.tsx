@@ -158,8 +158,6 @@ function mockStore(store: Store) {
           });
         }
         return usageLogsPage({ page: (args?.page as number) ?? 1 });
-      case "api_gateway_model_prices_get":
-        return [];
       default:
         throw new Error(`Unhandled command: ${command}`);
     }
@@ -1019,7 +1017,7 @@ describe("ApiGateway", () => {
     expect(terminalsTab).toHaveAttribute("aria-selected", "true");
   });
 
-  it("用量与日志页签可达且用量统计与请求日志二级切换后保留各自状态，价格入口仅在用量统计", async () => {
+  it("用量与日志页签可达且用量统计与请求日志二级切换后保留各自状态，且不再提供模型价格入口", async () => {
     const store: Store = {
       config: makeConfig({
         providers: [makeProvider()],
@@ -1056,10 +1054,10 @@ describe("ApiGateway", () => {
     fireEvent.click(screen.getByRole("option", { name: "7d" }));
     await within(usagePanel).findByTestId("api-gateway-usage-card-requests");
 
-    // The model-price entry must live only inside the usage-stats panel.
+    // The legacy model-price entry must not exist anywhere in the usage panel.
     expect(
-      within(usagePanel).getByRole("button", { name: "Model prices" }),
-    ).toBeInTheDocument();
+      within(usagePanel).queryByRole("button", { name: "Model prices" }),
+    ).not.toBeInTheDocument();
 
     // 切换到请求日志二级子页
     fireEvent.click(logsSubTab);
@@ -1813,8 +1811,6 @@ describe("ApiGateway", () => {
           return store.targets;
         case "api_gateway_provider_templates":
           return templates;
-        case "api_gateway_model_prices_get":
-          return [];
         case "api_gateway_sync_provider_template": {
           // 后端同步会把官方新模型增量传播到绑定服务商。
           store.config = { ...store.config, providers: [providerAfter] };
@@ -2005,8 +2001,6 @@ describe("ApiGateway 模板服务商模型维护", () => {
           return store.targets;
         case "api_gateway_provider_templates":
           return [templateView(["remote-a", "retired-model"])];
-        case "api_gateway_model_prices_get":
-          return [];
         case "api_gateway_delete_provider_model":
         case "api_gateway_restore_provider_model":
           return store.config;

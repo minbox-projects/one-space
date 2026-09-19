@@ -281,25 +281,24 @@ describe("UsageStatsPanel", () => {
     expect(within(bucketTable).getByText("2026-09-17")).toBeInTheDocument();
   });
 
-  it("页内模型价格入口打开独立弹窗并向后端读取价格", async () => {
-    const user = userEvent.setup();
+  it("usage_stats_panel_has_no_model_prices_entry", async () => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command === "api_gateway_usage_stats") return metrics({ request_count: 1 });
-      if (command === "api_gateway_model_prices_get") return [];
-      throw new Error(`Unhandled command: ${command}`);
+      if (command !== "api_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({ request_count: 1 });
     });
 
     renderWithProviders(<UsageStatsPanel />);
     await screen.findByTestId("api-gateway-usage-card-requests");
 
-    await user.click(screen.getByRole("button", { name: "Model prices" }));
-
     expect(
-      await screen.findByTestId("api-gateway-model-price-dialog"),
-    ).toBeInTheDocument();
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_gateway_model_prices_get"),
-    );
+      screen.queryByRole("button", { name: "Model prices" }),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId("api-gateway-model-price-dialog"),
+    ).toBeNull();
+    expect(invokeMock).not.toHaveBeenCalledWith("api_gateway_model_prices_get");
   });
 
   it("范围内无记录时显示空状态且不报错", async () => {

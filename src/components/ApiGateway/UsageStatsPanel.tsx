@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { RefreshCw, Tags } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import {
   apiGatewayUsageStats,
   formatUsageAmount,
@@ -12,7 +12,6 @@ import {
   type UsageStats,
 } from "@/lib/apiGateway";
 import { errorToMessage } from "@/lib/messages";
-import { ModelPriceDialog } from "./ModelPriceDialog";
 import { SelectDropdown } from "./SelectDropdown";
 
 function formatCount(value: number): string {
@@ -76,7 +75,6 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [pricesOpen, setPricesOpen] = useState(false);
   const requestSeqRef = useRef(0);
 
   const load = useCallback(
@@ -138,14 +136,6 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border bg-background transition hover:bg-muted disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
-          </button>
-          <button
-            type="button"
-            onClick={() => setPricesOpen(true)}
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-2.5 text-xs font-medium transition hover:bg-muted"
-          >
-            <Tags className="h-3.5 w-3.5" />
-            {t("apiGatewayModelPrices", "Model prices")}
           </button>
         </div>
       </div>
@@ -333,12 +323,6 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
           </div>
         </div>
       )}
-
-      <ModelPriceDialog
-        open={pricesOpen}
-        onOpenChange={setPricesOpen}
-        onSaved={() => void load()}
-      />
     </div>
   );
 }

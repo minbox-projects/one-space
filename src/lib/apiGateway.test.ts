@@ -18,8 +18,6 @@ import {
   apiGatewayTerminalTargets,
   apiGatewayUpsertKey,
   apiGatewayUpsertProvider,
-  apiGatewayModelPricesGet,
-  apiGatewayModelPricesSave,
   apiGatewayRequestLogs,
   apiGatewayUsageRetentionGet,
   apiGatewayUsageRetentionSave,
@@ -480,7 +478,7 @@ describe("用量与日志命令封装", () => {
     resetTauriMocks();
   });
 
-  it("按 camelCase 参数调用六个用量/价格/保留天数命令", async () => {
+  it("按 camelCase 参数调用用量与保留天数命令", async () => {
     await apiGatewayUsageStats(7);
     await apiGatewayUsageStats(null);
     await apiGatewayRequestLogs({
@@ -490,11 +488,6 @@ describe("用量与日志命令封装", () => {
       model: "gpt-4o",
       page: 2,
     });
-    await apiGatewayModelPricesGet();
-    const prices: ModelPrice[] = [
-      { upstream_model: "gpt-4o", input: 1, cache_read: 0.1, cache_write: 0.2, output: 2 },
-    ];
-    await apiGatewayModelPricesSave(prices);
     await apiGatewayUsageRetentionGet();
     await apiGatewayUsageRetentionSave(30);
 
@@ -511,14 +504,17 @@ describe("用量与日志命令封装", () => {
       model: "gpt-4o",
       page: 2,
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_gateway_model_prices_get");
-    expect(invokeMock).toHaveBeenCalledWith("api_gateway_model_prices_save", {
-      prices,
-    });
     expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_retention_get");
     expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_retention_save", {
       days: 30,
     });
+  });
+
+  it("removed_legacy_price_wrappers_are_not_exported", async () => {
+    const gatewayModule = await import("@/lib/apiGateway");
+    expect("apiGatewayModelPricesGet" in gatewayModule).toBe(false);
+    expect("apiGatewayModelPricesSave" in gatewayModule).toBe(false);
+    expect("getProviderAvailableModels" in gatewayModule).toBe(false);
   });
 
   it("查询参数缺省时携带空筛选与第 1 页", async () => {

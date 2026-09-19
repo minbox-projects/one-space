@@ -516,45 +516,6 @@ export type GatewayPriceDraft = {
   off_peaks: GatewayPriceDraftOffPeak[];
 };
 
-export interface ProviderAvailableModel {
-  upstream_model: string;
-  display_name?: string | null;
-  is_default?: boolean;
-}
-
-/**
- * Extract unique upstream models configured for a provider (from default_model and mappings).
- */
-export function getProviderAvailableModels(
-  provider: GatewayUpstreamProvider,
-): ProviderAvailableModel[] {
-  const map = new Map<string, ProviderAvailableModel>();
-  const defaultModel = (provider.default_model ?? "").trim();
-  if (defaultModel) {
-    map.set(defaultModel, {
-      upstream_model: defaultModel,
-      is_default: true,
-    });
-  }
-  for (const m of provider.mappings) {
-    const upstream = m.upstream_model.trim();
-    if (!upstream) continue;
-    const existing = map.get(upstream);
-    if (!existing) {
-      map.set(upstream, {
-        upstream_model: upstream,
-        display_name: m.display_name?.trim() || m.local_model.trim(),
-        is_default: false,
-      });
-    } else if (!existing.display_name && (m.display_name?.trim() || m.local_model.trim())) {
-      existing.display_name = m.display_name?.trim() || m.local_model.trim();
-    }
-  }
-  return Array.from(map.values()).sort((a, b) =>
-    a.upstream_model.localeCompare(b.upstream_model),
-  );
-}
-
 /** Distinct non-blank mapping upstream models in first-seen order. */
 export function mappedUpstreamModels(provider: GatewayUpstreamProvider): string[] {
   const models: string[] = [];
@@ -781,14 +742,6 @@ export function apiGatewayRequestLogs(query: UsageLogsQuery) {
     model: query.model ?? null,
     page: query.page ?? 1,
   });
-}
-
-export function apiGatewayModelPricesGet() {
-  return invoke<ModelPrice[]>("api_gateway_model_prices_get");
-}
-
-export function apiGatewayModelPricesSave(prices: ModelPrice[]) {
-  return invoke<ModelPrice[]>("api_gateway_model_prices_save", { prices });
 }
 
 export function apiGatewayUsageRetentionGet() {
