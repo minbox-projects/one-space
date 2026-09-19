@@ -325,8 +325,6 @@ pub fn run() {
             api_gateway::api_gateway_sync_terminal,
             api_gateway::api_gateway_usage_stats,
             api_gateway::api_gateway_request_logs,
-            api_gateway::api_gateway_model_prices_get,
-            api_gateway::api_gateway_model_prices_save,
             api_gateway::api_gateway_usage_retention_get,
             api_gateway::api_gateway_usage_retention_save,
             api_gateway::api_gateway_provider_templates,

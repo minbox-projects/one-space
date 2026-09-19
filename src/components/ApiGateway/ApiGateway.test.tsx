@@ -13,6 +13,7 @@ import {
   type GatewayStatus,
   type GatewayTerminalTarget,
   type GatewayUpstreamProvider,
+  type ModelPrice,
   type UsageLogRecord,
   type UsageLogsPage,
   type UsageStats,
@@ -157,8 +158,6 @@ function mockStore(store: Store) {
           });
         }
         return usageLogsPage({ page: (args?.page as number) ?? 1 });
-      case "api_gateway_model_prices_get":
-        return [];
       default:
         throw new Error(`Unhandled command: ${command}`);
     }
@@ -170,13 +169,27 @@ function mockStoreWithUpsert(store: Store) {
   const read = invokeMock.getMockImplementation()!;
   invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
     if (command === "api_gateway_upsert_provider") {
-      const { provider } = args as { provider: GatewayUpstreamProvider };
+      const { provider, prices } = args as {
+        provider: GatewayUpstreamProvider;
+        prices?: ModelPrice[] | null;
+      };
+      const otherRows = (store.config.model_prices ?? []).filter(
+        (row) => row.provider_id !== provider.id,
+      );
       store.config = {
         ...store.config,
         providers: [
           ...store.config.providers.filter((entry) => entry.id !== provider.id),
           provider,
         ],
+        ...(prices == null
+          ? {}
+          : {
+              model_prices: [
+                ...otherRows,
+                ...prices.map((row) => ({ ...row, provider_id: provider.id })),
+              ],
+            }),
       };
       return store.config;
     }
@@ -737,6 +750,62 @@ describe("ApiGateway", () => {
     expect(payload.provider.mappings[0].protocol).toBe("responses");
   });
 
+  it("provider_save_sends_prices_in_one_upsert_call", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [
+          makeProvider({
+            mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
+          }),
+        ],
+      }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [openCodeTarget()],
+    };
+    mockStoreWithUpsert(store);
+
+    renderWithProviders(<ApiGateway />);
+    fireEvent.click(
+      await within(
+        await screen.findByTestId("api-gateway-providers"),
+      ).findByText("Upstream A"),
+    );
+
+    await screen.findByTestId("api-gateway-price-0-input");
+    fireEvent.change(screen.getByTestId("api-gateway-price-0-input"), {
+      target: { value: "2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "api_gateway_upsert_provider",
+        expect.objectContaining({
+          provider: expect.objectContaining({ id: "p1" }),
+          prices: expect.any(Array),
+        }),
+      ),
+    );
+
+    const upsertCalls = invokeMock.mock.calls.filter(
+      ([command]) => command === "api_gateway_upsert_provider",
+    );
+    expect(upsertCalls).toHaveLength(1);
+    const payload = upsertCalls[0][1] as {
+      provider: GatewayUpstreamProvider;
+      prices: ModelPrice[];
+    };
+    expect(payload.provider.id).toBe("p1");
+    expect(payload.prices).toHaveLength(1);
+    expect(payload.prices[0]).toMatchObject({
+      upstream_model: "remote-a",
+      input: 2,
+      cache_read: 0,
+      cache_write: 0,
+      output: 0,
+    });
+  });
+
   it("新增本地 Key 只需名称，值留空交由后端随机生成", async () => {
     const store: Store = {
       config: makeConfig({ keys: [], default_key_id: null }),
@@ -948,7 +1017,7 @@ describe("ApiGateway", () => {
     expect(terminalsTab).toHaveAttribute("aria-selected", "true");
   });
 
-  it("用量与日志页签可达且用量统计与请求日志二级切换后保留各自状态，价格入口仅在用量统计", async () => {
+  it("用量与日志页签可达且用量统计与请求日志二级切换后保留各自状态，且不再提供模型价格入口", async () => {
     const store: Store = {
       config: makeConfig({
         providers: [makeProvider()],
@@ -985,10 +1054,10 @@ describe("ApiGateway", () => {
     fireEvent.click(screen.getByRole("option", { name: "7d" }));
     await within(usagePanel).findByTestId("api-gateway-usage-card-requests");
 
-    // The model-price entry must live only inside the usage-stats panel.
+    // The legacy model-price entry must not exist anywhere in the usage panel.
     expect(
-      within(usagePanel).getByRole("button", { name: "Model prices" }),
-    ).toBeInTheDocument();
+      within(usagePanel).queryByRole("button", { name: "Model prices" }),
+    ).not.toBeInTheDocument();
 
     // 切换到请求日志二级子页
     fireEvent.click(logsSubTab);
@@ -1080,6 +1149,7 @@ describe("ApiGateway", () => {
           name: "New Remote",
           base_url: "https://new.example.com",
         }),
+        prices: [],
       }),
     );
   });
@@ -1741,8 +1811,6 @@ describe("ApiGateway", () => {
           return store.targets;
         case "api_gateway_provider_templates":
           return templates;
-        case "api_gateway_model_prices_get":
-          return [];
         case "api_gateway_sync_provider_template": {
           // 后端同步会把官方新模型增量传播到绑定服务商。
           store.config = { ...store.config, providers: [providerAfter] };
@@ -1933,8 +2001,6 @@ describe("ApiGateway 模板服务商模型维护", () => {
           return store.targets;
         case "api_gateway_provider_templates":
           return [templateView(["remote-a", "retired-model"])];
-        case "api_gateway_model_prices_get":
-          return [];
         case "api_gateway_delete_provider_model":
         case "api_gateway_restore_provider_model":
           return store.config;

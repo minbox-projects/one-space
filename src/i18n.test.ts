@@ -166,3 +166,82 @@ describe("服务商模板国际化键", () => {
     expect(i18n.t("apiGatewayTemplateModelsCount", { count: 3 })).not.toContain("{{count}}");
   });
 });
+
+const PROVIDER_MAPPING_PRICE_KEYS = [
+  "apiGatewayMappingPrice",
+  "apiGatewayDefaultModelNone",
+  "apiGatewayDefaultModelAutoAdded",
+] as const;
+
+describe("服务商映射价格国际化键", () => {
+  it.each(["en", "zh"] as const)("为 %s 提供映射价格真实文案", async (language) => {
+    await i18n.changeLanguage(language);
+    const fallbacks = PROVIDER_MAPPING_PRICE_KEYS.filter(
+      (key) => i18n.t(key) === key,
+    );
+    expect(fallbacks, `${language} 中回退为键名的映射价格键`).toEqual([]);
+  });
+});
+
+const REMOVED_LEGACY_MODEL_PRICE_KEYS = [
+  "apiGatewayAddPrice",
+  "apiGatewayDeletePriceAria",
+  "apiGatewayModelPriceDialogTitle",
+  "apiGatewayModelPriceDialogDesc",
+  "apiGatewayModelPrices",
+  "apiGatewayModelPricesDesc",
+  "apiGatewayModelPricesEmpty",
+  "apiGatewayModelPricesLoadFailed",
+  "apiGatewayModelPricesSaveFailed",
+  "apiGatewayModelPricesSaved",
+  "apiGatewayOffPeakActive",
+  "apiGatewayOffPeakBadge",
+  "apiGatewayOffPeakCount",
+  "apiGatewayOffPeakEmpty",
+  "apiGatewayPriceAllModelsConfigured",
+  "apiGatewayPriceModel",
+  "apiGatewayPriceModelCount",
+  "apiGatewayPriceModelCount_plural",
+  "apiGatewayPriceModelPlaceholder",
+  "apiGatewayPriceNoAvailableModels",
+  "apiGatewayPriceNoProviders",
+  "apiGatewayPriceProviderNoModels",
+  "apiGatewayPriceSelectModel",
+  "apiGatewayPriceUnassignedProvider",
+] as const;
+
+const KEPT_PROVIDER_PRICE_KEYS = [
+  "apiGatewayMappingPrice",
+  "apiGatewayDefaultModelNone",
+  "apiGatewayDefaultModelAutoAdded",
+  "apiGatewayPriceInput",
+  "apiGatewayPriceCacheRead",
+  "apiGatewayPriceCacheWrite",
+  "apiGatewayPriceOutput",
+  "apiGatewayPricePerMillion",
+  "apiGatewayOffPeakEnable",
+  "apiGatewayOffPeakConfigure",
+  "apiGatewayOffPeakTimeRange",
+  "apiGatewayOffPeakStartTime",
+  "apiGatewayOffPeakEndTime",
+  "apiGatewayOffPeakRates",
+  "apiGatewayOffPeakAdd",
+  "apiGatewayOffPeakWindowIndex",
+  "apiGatewayEveryDay",
+  "apiGatewayWeekdaySelect",
+] as const;
+
+describe("API 网关模型价格旧入口国际化键清理", () => {
+  it.each(["en", "zh"] as const)(
+    "为 %s 移除旧入口键并保留服务商弹窗价格键",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      for (const key of REMOVED_LEGACY_MODEL_PRICE_KEYS) {
+        expect(i18n.t(key), `${language} 中旧键 ${key} 应回退为键名`).toBe(key);
+      }
+      for (const key of KEPT_PROVIDER_PRICE_KEYS) {
+        expect(i18n.t(key), `${language} 中保留键 ${key} 应仍有文案`).not.toBe(key);
+      }
+    },
+  );
+});

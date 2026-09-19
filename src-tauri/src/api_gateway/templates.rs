@@ -982,7 +982,10 @@ pub fn apply_create_provider_from_template(
 /// template-bound provider the mapping is removed, the model is recorded in the
 /// ignored set exactly once (so a later sync cannot resurrect it) and the
 /// provider-scoped price row is removed. On a manual provider only the mapping
-/// is removed: no ignored record is written and the price row is kept.
+/// is removed: no ignored record is written and the price row is kept in memory,
+/// while the persisted normalization drops that row once the model is
+/// unreachable (the mapping was removed and it is not the default model). A row
+/// for the default model stays reachable and is retained.
 pub fn apply_delete_provider_model(
     config: &mut GatewayConfig,
     provider_id: &str,

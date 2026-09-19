@@ -1344,7 +1344,7 @@ fn record_usage_log(
     let timestamp_ms = now_millis();
     let tokens = capture.usage.unwrap_or_default();
     let amount = match_price_for_provider(
-        Some(&capture.provider_id),
+        &capture.provider_id,
         &capture.upstream_model,
         &config.model_prices,
     )

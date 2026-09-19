@@ -22,20 +22,28 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import {
+  draftToPriceRow,
   isMappingDeprecated,
+  mappedUpstreamModels,
   normalizeReasoningEfforts,
+  priceRowToDraft,
+  resolveProviderPriceRow,
   type GatewayModelMapping,
+  type GatewayPriceDraft,
   type GatewayProviderTemplateView,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
+  type ModelPrice,
 } from "@/lib/apiGateway";
+import { MappingPriceEditor } from "./MappingPriceEditor";
 
 type ProviderDetailDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   provider: GatewayUpstreamProvider | null;
+  prices?: ModelPrice[];
   busy: boolean;
-  onSave: (provider: GatewayUpstreamProvider) => void;
+  onSave: (provider: GatewayUpstreamProvider, prices: ModelPrice[]) => void;
   onDelete?: (providerId: string) => void;
   templates?: GatewayProviderTemplateView[];
   onDeleteModel?: (providerId: string, upstreamModel: string) => void;
@@ -49,6 +57,7 @@ export function ProviderDetailDialog({
   open,
   onOpenChange,
   provider,
+  prices,
   busy,
   onSave,
   onDelete,
@@ -64,6 +73,8 @@ export function ProviderDetailDialog({
   const [defaultModel, setDefaultModel] = useState("");
   const [protocol, setProtocol] = useState<GatewayUpstreamProtocol>("chat_completions");
   const [mappings, setMappings] = useState<GatewayModelMapping[]>([]);
+  const [priceDrafts, setPriceDrafts] = useState<GatewayPriceDraft[]>([]);
+  const [autoAddedModel, setAutoAddedModel] = useState<string | null>(null);
   const [revealApiKey, setRevealApiKey] = useState(false);
   const [expandedMappings, setExpandedMappings] = useState<Record<number, boolean>>(
     {},
@@ -78,20 +89,62 @@ export function ProviderDetailDialog({
       setDefaultModel("");
       setProtocol("chat_completions");
       setMappings([]);
+      setPriceDrafts([]);
+      setAutoAddedModel(null);
       setRevealApiKey(false);
       setExpandedMappings({});
       setEffortInputs({});
       return;
     }
+    const providerPrices = prices ?? [];
+    const baseMappings = provider.mappings ?? [];
+    const trimmedDefault = (provider.default_model ?? "").trim();
+    let nextMappings = baseMappings;
+    let nextAutoAdded: string | null = null;
+    if (
+      trimmedDefault !== "" &&
+      !baseMappings.some(
+        (mapping) => mapping.upstream_model.trim() === trimmedDefault,
+      )
+    ) {
+      nextMappings = [
+        ...baseMappings,
+        {
+          local_model: trimmedDefault,
+          upstream_model: trimmedDefault,
+          enabled: true,
+        },
+      ];
+      nextAutoAdded = trimmedDefault;
+    }
+
+    const seeded: GatewayPriceDraft[] = [];
+    const seenModels = new Set<string>();
+    for (const mapping of nextMappings) {
+      const model = mapping.upstream_model.trim();
+      if (model === "" || seenModels.has(model)) continue;
+      seenModels.add(model);
+      seeded.push(
+        priceRowToDraft(
+          resolveProviderPriceRow(providerPrices, provider.id, model),
+          model,
+          `price-${model}`,
+        ),
+      );
+    }
+
     setName(provider.name);
     setBaseUrl(provider.base_url);
     setApiKey(provider.api_key);
     setDefaultModel(provider.default_model ?? "");
     setProtocol(provider.protocol ?? "chat_completions");
-    setMappings(provider.mappings ?? []);
+    setMappings(nextMappings);
+    setPriceDrafts(seeded);
+    setAutoAddedModel(nextAutoAdded);
     setRevealApiKey(false);
     setExpandedMappings({});
     setEffortInputs({});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider, open]);
 
   if (!provider) return null;
@@ -102,6 +155,27 @@ export function ProviderDetailDialog({
     ? templates?.find((view) => view.template.id === provider.template_id)?.template
     : undefined;
   const ignoredModels = isTemplateBound ? provider.ignored_models ?? [] : [];
+
+  const draftForModel = (model: string): GatewayPriceDraft =>
+    priceDrafts.find((draft) => draft.upstream_model === model) ??
+    priceRowToDraft(undefined, model, `price-${model}`);
+
+  const updateDraftForModel = (
+    model: string,
+    patch: Partial<GatewayPriceDraft>,
+  ) => {
+    setPriceDrafts((prev) => {
+      if (!prev.some((draft) => draft.upstream_model === model)) {
+        return [
+          ...prev,
+          { ...priceRowToDraft(undefined, model, `price-${model}`), ...patch },
+        ];
+      }
+      return prev.map((draft) =>
+        draft.upstream_model === model ? { ...draft, ...patch } : draft,
+      );
+    });
+  };
 
   const updateMapping = (index: number, patch: Partial<GatewayModelMapping>) => {
     setMappings((prev) =>
@@ -153,30 +227,58 @@ export function ProviderDetailDialog({
     ) {
       onDeleteModel(provider.id, mapping.upstream_model);
     }
-    setMappings((prev) => prev.filter((_, entryIndex) => entryIndex !== index));
+    const removedModel = mapping?.upstream_model.trim() ?? "";
+    const nextMappings = mappings.filter((_, entryIndex) => entryIndex !== index);
+    setMappings(nextMappings);
+    if (
+      removedModel !== "" &&
+      removedModel === defaultModel.trim() &&
+      !nextMappings.some((entry) => entry.upstream_model.trim() === removedModel)
+    ) {
+      setDefaultModel("");
+    }
+    if (autoAddedModel !== null && removedModel === autoAddedModel) {
+      setAutoAddedModel(null);
+    }
   };
 
   const handleSave = () => {
-    onSave({
-      ...provider,
-      name: name.trim(),
-      base_url: baseUrl.trim(),
-      api_key: apiKey,
-      default_model: defaultModel.trim() ? defaultModel.trim() : null,
-      protocol,
-      mappings: mappings.map((mapping) => {
-        const reasoningEfforts = normalizeReasoningEfforts(mapping.reasoning_efforts);
-        return {
-          ...mapping,
-          enabled: mapping.enabled !== false,
-          display_name: mapping.display_name?.trim()
-            ? mapping.display_name.trim()
-            : undefined,
-          protocol: mapping.protocol ? mapping.protocol : undefined,
-          reasoning_efforts: reasoningEfforts.length > 0 ? reasoningEfforts : undefined,
-        };
-      }),
+    const savedMappings = mappings.map((mapping) => {
+      const reasoningEfforts = normalizeReasoningEfforts(mapping.reasoning_efforts);
+      return {
+        ...mapping,
+        enabled: mapping.enabled !== false,
+        display_name: mapping.display_name?.trim()
+          ? mapping.display_name.trim()
+          : undefined,
+        protocol: mapping.protocol ? mapping.protocol : undefined,
+        reasoning_efforts: reasoningEfforts.length > 0 ? reasoningEfforts : undefined,
+      };
     });
+    const savedModels = new Set(
+      savedMappings
+        .map((mapping) => mapping.upstream_model.trim())
+        .filter((model) => model !== ""),
+    );
+    const submittedPrices: ModelPrice[] = [];
+    for (const draft of priceDrafts) {
+      if (!savedModels.has(draft.upstream_model.trim())) continue;
+      const row = draftToPriceRow(draft);
+      if (!row) continue;
+      submittedPrices.push(provider.id ? { ...row, provider_id: provider.id } : row);
+    }
+    onSave(
+      {
+        ...provider,
+        name: name.trim(),
+        base_url: baseUrl.trim(),
+        api_key: apiKey,
+        default_model: defaultModel.trim() ? defaultModel.trim() : null,
+        protocol,
+        mappings: savedMappings,
+      },
+      submittedPrices,
+    );
     onOpenChange(false);
   };
 
@@ -259,14 +361,22 @@ export function ProviderDetailDialog({
                   </span>
                 </span>
               </label>
-              <input
-                type="text"
+              <select
+                data-testid="api-gateway-default-model-select"
                 value={defaultModel}
                 onChange={(event) => setDefaultModel(event.target.value)}
-                placeholder="e.g. gpt-4o / deepseek-chat"
                 aria-label={t("apiGatewayDefaultModel", "Default model")}
                 className="font-mono"
-              />
+              >
+                <option value="">
+                  {t("apiGatewayDefaultModelNone", "None")}
+                </option>
+                {mappedUpstreamModels({ ...provider, mappings }).map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {/* 第 3 行：API Base URL 独占一行 */}
@@ -358,11 +468,15 @@ export function ProviderDetailDialog({
                   );
                   const isExpanded = expandedMappings[index] === true;
                   const efforts = mapping.reasoning_efforts ?? [];
+                  const upstreamModel = mapping.upstream_model.trim();
+                  const isAutoAdded =
+                    upstreamModel !== "" && upstreamModel === autoAddedModel;
                   return (
                   <li
                     key={index}
                     data-disabled={mapping.enabled === false ? "true" : undefined}
                     data-deprecated={deprecated ? "true" : undefined}
+                    data-auto-added={isAutoAdded ? "true" : undefined}
                     className={`space-y-2 ${mapping.enabled === false ? "opacity-60" : ""}`}
                   >
                     <div className="flex items-center gap-2">
@@ -480,6 +594,23 @@ export function ProviderDetailDialog({
                         <Trash2 className="h-4 w-4" />
                       </button>
                     </div>
+
+                    {upstreamModel !== "" ? (
+                      <>
+                        {isAutoAdded ? (
+                          <span className="inline-flex w-fit items-center rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                            {t("apiGatewayDefaultModelAutoAdded")}
+                          </span>
+                        ) : null}
+                        <MappingPriceEditor
+                          index={index}
+                          draft={draftForModel(upstreamModel)}
+                          onChange={(patch) =>
+                            updateDraftForModel(upstreamModel, patch)
+                          }
+                        />
+                      </>
+                    ) : null}
 
                     {isExpanded ? (
                       <div

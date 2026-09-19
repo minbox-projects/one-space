@@ -48,6 +48,7 @@ import {
   type GatewayStatus,
   type GatewayTerminalTarget,
   type GatewayUpstreamProvider,
+  type ModelPrice,
 } from "@/lib/apiGateway";
 import {
   Dialog,
@@ -255,9 +256,12 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
       await applyConfig(await apiGatewayReenableProvider(providerId));
     }, t("apiGatewaySaved", "Saved."));
 
-  const handleSaveProvider = (draft: GatewayUpstreamProvider) =>
+  const handleSaveProvider = (
+    draft: GatewayUpstreamProvider,
+    prices: ModelPrice[],
+  ) =>
     runAction(async () => {
-      const next = await apiGatewayUpsertProvider(draft);
+      const next = await apiGatewayUpsertProvider(draft, prices);
       setConfig(next);
       const saved = draft.id
         ? next.providers.find((provider) => provider.id === draft.id) ?? null
@@ -840,8 +844,9 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
             }
           }}
           provider={editingProvider}
+          prices={config.model_prices ?? []}
           busy={busy}
-          onSave={(draft) => void handleSaveProvider(draft)}
+          onSave={(draft, prices) => void handleSaveProvider(draft, prices)}
           onDelete={(providerId) => void handleDeleteProvider(providerId)}
           templates={templates}
           onDeleteModel={(providerId, upstreamModel) =>

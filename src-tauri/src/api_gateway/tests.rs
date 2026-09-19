@@ -5,7 +5,7 @@ use super::selection::{
 };
 use super::storage::{config_path, resolve_default_key_id};
 use super::{
-    compute_cost, compute_cost_at_time, is_off_peak, match_price, match_price_for_provider, normalize_retention_days, resolve_range, usage_tokens_from_value,
+    compute_cost, compute_cost_at_time, is_off_peak, match_price_for_provider, normalize_retention_days, resolve_range, usage_tokens_from_value,
     validate_retention_days, GatewayConfig, GatewayKey, GatewayUpstreamProvider, LogFilter,
     ModelMapping, ModelPrice, OffPeakPrice, SseUsageAccumulator, TerminalSyncRecord, TimeRange, UpstreamProtocol,
     UsageLogRecord, UsageLogStore, UsageResult, UsageTokens, DEFAULT_USAGE_RETENTION_DAYS,
@@ -2826,8 +2826,6 @@ fn every_command_is_registered_in_the_invoke_handler() {
         // 20260917-ai-gateway-usage-logs commands.
         "api_gateway_usage_stats",
         "api_gateway_request_logs",
-        "api_gateway_model_prices_get",
-        "api_gateway_model_prices_save",
         "api_gateway_usage_retention_get",
         "api_gateway_usage_retention_save",
         // 20260918-provider-templates commands.
@@ -2853,8 +2851,6 @@ fn every_command_is_registered_in_the_invoke_handler() {
     for command in [
         "api_gateway_usage_stats",
         "api_gateway_request_logs",
-        "api_gateway_model_prices_get",
-        "api_gateway_model_prices_save",
         "api_gateway_usage_retention_get",
         "api_gateway_usage_retention_save",
         "api_gateway_provider_templates",
@@ -2872,6 +2868,401 @@ fn every_command_is_registered_in_the_invoke_handler() {
             "command {command} must be exported from lib.rs"
         );
     }
+    // REQ-005: the legacy price-table commands are removed from the surface.
+    for removed in [
+        "api_gateway_model_prices_get",
+        "api_gateway_model_prices_save",
+    ] {
+        assert!(
+            !RUN_APP_SOURCE.contains(&format!("api_gateway::{removed},")),
+            "the removed command {removed} must not be registered in generate_handler!"
+        );
+        assert!(
+            !LIB_SOURCE.contains(removed),
+            "the removed command {removed} must not be exported from lib.rs"
+        );
+    }
+}
+
+/// AC-007 / REQ-005: saving a provider atomically replaces exactly its own
+/// price rows, drops blank-model, duplicate and unreachable rows, mirrors
+/// off-peak windows into both directions, and leaves its rows unchanged when
+/// no price list is submitted.
+#[test]
+fn upsert_provider_replaces_exactly_its_own_price_rows() {
+    with_temp_home("upsert-provider-price-rows", |_home| {
+        let mut p = provider("p");
+        p.mappings = vec![
+            mapping("local-a", "model-a", None),
+            mapping("local-b", "model-b", None),
+        ];
+        let mut q = provider("q");
+        q.mappings = vec![mapping("local-x", "model-x", None)];
+
+        let mut config = GatewayConfig::default();
+        config.providers.push(p);
+        config.providers.push(q);
+        config.model_prices = vec![
+            priced_with_provider("p", "model-a", 1.0, 0.0, 0.0, 1.0),
+            priced_with_provider("p", "model-b", 2.0, 0.0, 0.0, 2.0),
+            priced_with_provider("q", "model-x", 3.0, 0.0, 0.0, 3.0),
+        ];
+        super::storage::write_config(&config).expect("seed config");
+
+        let op1 = OffPeakPrice {
+            start_time: "00:00".to_string(),
+            end_time: "09:00".to_string(),
+            input: 0.5,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            output: 1.0,
+            days: None,
+        };
+        let op2 = OffPeakPrice {
+            start_time: "18:00".to_string(),
+            end_time: "23:00".to_string(),
+            input: 0.4,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            output: 0.8,
+            days: None,
+        };
+
+        let mut updated = provider("p");
+        updated.name = "Provider P Renamed".to_string();
+        updated.mappings = vec![mapping("local-a", "model-a", None)];
+
+        let edited_a = ModelPrice {
+            provider_id: None,
+            upstream_model: "model-a".to_string(),
+            input: 11.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            output: 22.0,
+            off_peaks: vec![op1.clone(), op2.clone()],
+            off_peak: None,
+        };
+        let blank_model = ModelPrice {
+            upstream_model: "  ".to_string(),
+            input: 7.0,
+            ..ModelPrice::default()
+        };
+        let duplicate_a = ModelPrice {
+            provider_id: None,
+            upstream_model: "model-a".to_string(),
+            input: 99.0,
+            ..ModelPrice::default()
+        };
+        let unreachable_z = ModelPrice {
+            provider_id: None,
+            upstream_model: "model-z".to_string(),
+            input: 5.0,
+            ..ModelPrice::default()
+        };
+
+        let saved = super::commands::api_gateway_upsert_provider(
+            updated.clone(),
+            Some(vec![edited_a, blank_model, duplicate_a, unreachable_z]),
+        )
+        .expect("upsert with prices");
+
+        let p_rows: Vec<&ModelPrice> = saved
+            .model_prices
+            .iter()
+            .filter(|row| row.provider_id.as_deref() == Some("p"))
+            .collect();
+        assert_eq!(
+            p_rows.len(),
+            1,
+            "only one reachable A row may remain: {p_rows:?}"
+        );
+        let a = p_rows[0];
+        assert_eq!(a.upstream_model, "model-a");
+        assert_eq!(a.provider_id.as_deref(), Some("p"));
+        assert_eq!(a.input, 11.0, "the submitted edit must win");
+        assert_eq!(a.output, 22.0);
+        assert_eq!(
+            a.off_peak,
+            Some(op1.clone()),
+            "the first window mirrors into off_peak"
+        );
+        assert_eq!(
+            a.off_peaks,
+            vec![op1.clone(), op2.clone()],
+            "both submitted windows are kept"
+        );
+
+        assert!(
+            saved
+                .model_prices
+                .iter()
+                .all(|row| !row.upstream_model.trim().is_empty()),
+            "a blank-model row must leave no trace"
+        );
+        assert!(
+            saved.model_prices.iter().all(|row| row.input != 99.0),
+            "a duplicate row must not overwrite the first"
+        );
+        assert!(
+            saved
+                .model_prices
+                .iter()
+                .all(|row| row.upstream_model != "model-z"),
+            "a row for a model unreachable from the provider must leave no trace"
+        );
+
+        let q_rows: Vec<&ModelPrice> = saved
+            .model_prices
+            .iter()
+            .filter(|row| row.provider_id.as_deref() == Some("q"))
+            .collect();
+        assert_eq!(q_rows.len(), 1);
+        assert_eq!(q_rows[0].upstream_model, "model-x");
+        assert_eq!(q_rows[0].input, 3.0, "another provider's rows stay untouched");
+
+        // `prices: None` leaves that provider's rows unchanged.
+        let mut renamed = updated.clone();
+        renamed.name = "Provider P Renamed Again".to_string();
+        let after_none = super::commands::api_gateway_upsert_provider(renamed, None)
+            .expect("upsert without prices");
+        let mut before_rows: Vec<ModelPrice> = saved
+            .model_prices
+            .iter()
+            .filter(|row| row.provider_id.as_deref() == Some("p"))
+            .cloned()
+            .collect();
+        let mut after_rows: Vec<ModelPrice> = after_none
+            .model_prices
+            .iter()
+            .filter(|row| row.provider_id.as_deref() == Some("p"))
+            .cloned()
+            .collect();
+        before_rows.sort_by(|left, right| left.upstream_model.cmp(&right.upstream_model));
+        after_rows.sort_by(|left, right| left.upstream_model.cmp(&right.upstream_model));
+        assert_eq!(
+            before_rows, after_rows,
+            "an absent price list must leave the provider's rows unchanged"
+        );
+
+        // Legacy `off_peak` must mirror into `off_peaks`.
+        let legacy_op = OffPeakPrice {
+            start_time: "01:00".to_string(),
+            end_time: "05:00".to_string(),
+            input: 0.25,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            output: 0.5,
+            days: Some(vec![1, 2, 3]),
+        };
+        let legacy_row = ModelPrice {
+            provider_id: None,
+            upstream_model: "model-a".to_string(),
+            input: 12.0,
+            off_peak: Some(legacy_op.clone()),
+            off_peaks: Vec::new(),
+            ..ModelPrice::default()
+        };
+        let mirrored = super::commands::api_gateway_upsert_provider(
+            updated.clone(),
+            Some(vec![legacy_row]),
+        )
+        .expect("upsert a legacy off_peak row");
+        let mirrored_row = mirrored
+            .model_prices
+            .iter()
+            .find(|row| {
+                row.provider_id.as_deref() == Some("p") && row.upstream_model == "model-a"
+            })
+            .expect("the mirrored row must exist");
+        assert_eq!(
+            mirrored_row.off_peaks,
+            vec![legacy_op],
+            "a legacy off_peak must mirror into off_peaks"
+        );
+    });
+}
+
+/// AC-008 / REQ-005: a new provider's submitted rows are bound to the generated
+/// id, overwriting any submitted foreign provider id, and survive a reopen.
+#[test]
+fn upsert_provider_binds_new_provider_rows_to_generated_id() {
+    with_temp_home("upsert-new-provider-prices", |_home| {
+        let mut new_provider = provider("");
+        new_provider.name = "Brand New".to_string();
+        new_provider.mappings = vec![mapping("local-new", "remote-new", None)];
+        let submitted = priced_with_provider("other", "remote-new", 1.0, 0.0, 0.0, 2.0);
+
+        let config =
+            super::commands::api_gateway_upsert_provider(new_provider, Some(vec![submitted]))
+                .expect("creating a priced provider");
+
+        let created = config
+            .providers
+            .iter()
+            .find(|candidate| candidate.id.starts_with("gw-"))
+            .expect("the new provider must receive a generated gw- id");
+        let rows: Vec<&ModelPrice> = config
+            .model_prices
+            .iter()
+            .filter(|row| row.provider_id.as_deref() == Some(created.id.as_str()))
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "the submitted row must bind to the generated id: {:?}",
+            config.model_prices
+        );
+        assert_eq!(rows[0].upstream_model, "remote-new");
+        assert!(
+            config
+                .model_prices
+                .iter()
+                .all(|row| row.provider_id.as_deref() != Some("other")),
+            "a submitted foreign provider id must be overwritten"
+        );
+
+        let reloaded = super::storage::read_config().expect("reopen config");
+        let reloaded_provider = reloaded
+            .providers
+            .iter()
+            .find(|candidate| candidate.id == created.id)
+            .expect("the generated provider must persist");
+        assert!(reloaded_provider.id.starts_with("gw-"));
+        let reloaded_rows: Vec<&ModelPrice> = reloaded
+            .model_prices
+            .iter()
+            .filter(|row| row.provider_id.as_deref() == Some(created.id.as_str()))
+            .collect();
+        assert_eq!(reloaded_rows.len(), 1);
+        assert_eq!(reloaded_rows[0].upstream_model, "remote-new");
+    });
+}
+
+/// REQ-005 counterexample: deleting a provider removes its price rows and
+/// leaves every other provider's rows intact.
+#[test]
+fn delete_provider_removes_its_price_rows_but_keeps_others() {
+    with_temp_home("delete-provider-prices", |_home| {
+        let mut p = provider("p");
+        p.mappings = vec![mapping("local-p", "remote-p", None)];
+        let mut q = provider("q");
+        q.mappings = vec![mapping("local-q", "remote-q", None)];
+
+        let mut config = GatewayConfig::default();
+        config.providers.push(p);
+        config.providers.push(q);
+        config.model_prices = vec![
+            priced_with_provider("p", "remote-p", 1.0, 0.0, 0.0, 1.0),
+            priced_with_provider("q", "remote-q", 2.0, 0.0, 0.0, 2.0),
+        ];
+        super::storage::write_config(&config).expect("seed config");
+
+        let after = super::commands::api_gateway_delete_provider("p".to_string())
+            .expect("delete the provider");
+        assert!(
+            after.providers.iter().all(|candidate| candidate.id != "p"),
+            "the provider must be removed"
+        );
+        assert!(
+            after
+                .model_prices
+                .iter()
+                .all(|row| row.provider_id.as_deref() != Some("p")),
+            "the deleted provider's rows must be gone: {:?}",
+            after.model_prices
+        );
+        let q_row = after
+            .model_prices
+            .iter()
+            .find(|row| row.provider_id.as_deref() == Some("q"))
+            .expect("the other provider's row must survive");
+        assert_eq!(q_row.upstream_model, "remote-q");
+        assert_eq!(q_row.input, 2.0);
+    });
+}
+
+/// AC-006 boundary / REQ-004: `apply_delete_provider_model` keeps a manual
+/// provider's price row in memory, but the next persisted write drops it once
+/// the model is unreachable; a default-model row stays reachable and survives.
+#[test]
+fn delete_model_normalization_drops_unreachable_manual_row_after_persisted_write() {
+    with_temp_home("delete-model-normalization", |_home| {
+        // Manual provider with `default_model: None`: after the only mapping is
+        // deleted the row is unreachable and the persisted write drops it.
+        let mut manual = provider("manual");
+        manual.template_id = None;
+        manual.default_model = None;
+        manual.mappings = vec![mapping("local-m", "model-m", None)];
+        let mut config = GatewayConfig::default();
+        config.providers.push(manual);
+        config.model_prices = vec![priced_with_provider(
+            "manual",
+            "model-m",
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+        )];
+
+        super::templates::apply_delete_provider_model(
+            &mut config,
+            "manual",
+            "model-m",
+            |_next| Ok(()),
+        )
+        .expect("deleting a manual mapping must succeed");
+        assert!(
+            config.model_prices.iter().any(|row| {
+                row.provider_id.as_deref() == Some("manual") && row.upstream_model == "model-m"
+            }),
+            "a manual provider's row is kept in memory while the mapping is deleted"
+        );
+
+        super::storage::write_config(&config).expect("persist after the delete");
+        let reloaded = super::storage::read_config().expect("reload config");
+        assert!(
+            reloaded.model_prices.iter().all(|row| {
+                !(row.provider_id.as_deref() == Some("manual")
+                    && row.upstream_model == "model-m")
+            }),
+            "an unreachable manual row must be dropped by the persisted normalization"
+        );
+
+        // Default model X (X != M) stays reachable after mapping M is deleted.
+        let mut with_default = provider("default-provider");
+        with_default.template_id = None;
+        with_default.default_model = Some("model-x".to_string());
+        with_default.mappings = vec![mapping("local-m", "model-m", None)];
+        let mut config = GatewayConfig::default();
+        config.providers.push(with_default);
+        config.model_prices = vec![priced_with_provider(
+            "default-provider",
+            "model-x",
+            3.0,
+            0.0,
+            0.0,
+            3.0,
+        )];
+
+        super::templates::apply_delete_provider_model(
+            &mut config,
+            "default-provider",
+            "model-m",
+            |_next| Ok(()),
+        )
+        .expect("deleting the mapping must succeed");
+        super::storage::write_config(&config).expect("persist the default-model config");
+        let reloaded = super::storage::read_config().expect("reload config");
+        let x_row = reloaded
+            .model_prices
+            .iter()
+            .find(|row| {
+                row.provider_id.as_deref() == Some("default-provider")
+                    && row.upstream_model == "model-x"
+            })
+            .expect("the default-model row must survive the delete-model normalization");
+        assert_eq!(x_row.input, 3.0);
+    });
 }
 
 /// B1 command return shape: creating from a template must return the refreshed
@@ -7549,11 +7940,11 @@ fn gateway_config_accepts_older_json_and_round_trips_usage_fields() {
 }
 
 /// AC-004 / AC-005 / REQ-004 / REQ-006: four-tier cost math and exact,
-/// case-sensitive model matching with `None` for unpriced models.
+/// case-sensitive provider-scoped model matching with `None` for unpriced models.
 #[test]
 fn usage_pricing_matches_exact_model_and_sums_four_tiers() {
     let price = ModelPrice {
-        provider_id: None,
+        provider_id: Some("prov-x".to_string()),
         upstream_model: "gpt-x".to_string(),
         input: 1.0,
         cache_read: 0.5,
@@ -7563,10 +7954,21 @@ fn usage_pricing_matches_exact_model_and_sums_four_tiers() {
         off_peak: None,
     };
     let prices = vec![price.clone()];
-    assert_eq!(match_price("gpt-x", &prices), Some(&price));
-    assert_eq!(match_price("gpt-x ", &prices), None, "no trimming");
-    assert_eq!(match_price("GPT-X", &prices), None, "no case folding");
-    assert_eq!(match_price("gpt-y", &prices), None);
+    assert_eq!(
+        match_price_for_provider("prov-x", "gpt-x", &prices),
+        Some(&price)
+    );
+    assert_eq!(
+        match_price_for_provider("prov-x", "gpt-x ", &prices),
+        None,
+        "no trimming"
+    );
+    assert_eq!(
+        match_price_for_provider("prov-x", "GPT-X", &prices),
+        None,
+        "no case folding"
+    );
+    assert_eq!(match_price_for_provider("prov-x", "gpt-y", &prices), None);
 
     let cost = compute_cost(&price, &tokens(1_000_000, 2_000_000, 500_000, 1_000_000));
     assert!((cost - 7.0).abs() < 1e-9, "expected $7.00, got {cost}");
@@ -7576,8 +7978,11 @@ fn usage_pricing_matches_exact_model_and_sums_four_tiers() {
     assert!((only_input - 2.0).abs() < 1e-9);
 }
 
+/// AC-005 / REQ-003: a price row is matched only by its own provider and the
+/// exact, case-sensitive upstream model; the global row and any other
+/// provider's row never price a request.
 #[test]
-fn usage_pricing_matches_provider_specific_price_and_falls_back() {
+fn provider_scoped_price_matching_never_uses_global_or_foreign_rows() {
     let global_price = ModelPrice {
         provider_id: None,
         upstream_model: "gpt-4o".to_string(),
@@ -7615,37 +8020,244 @@ fn usage_pricing_matches_provider_specific_price_and_falls_back() {
         provider_b_price.clone(),
     ];
 
-    // Matches provider-specific price when provider_id is provided
     assert_eq!(
-        match_price_for_provider(Some("prov-a"), "gpt-4o", &prices),
-        Some(&provider_a_price)
+        match_price_for_provider("prov-a", "gpt-4o", &prices),
+        Some(&provider_a_price),
+        "each provider must get its own row"
     );
     assert_eq!(
-        match_price_for_provider(Some("prov-b"), "gpt-4o", &prices),
-        Some(&provider_b_price)
-    );
-
-    // Falls back to global price when provider_id does not match any provider-specific price
-    assert_eq!(
-        match_price_for_provider(Some("prov-unknown"), "gpt-4o", &prices),
-        Some(&global_price)
+        match_price_for_provider("prov-b", "gpt-4o", &prices),
+        Some(&provider_b_price),
+        "each provider must get its own row"
     );
 
-    // When provider_id is None, prefers the global price without provider_id
+    // A provider with no row never borrows the global row or another provider's.
     assert_eq!(
-        match_price_for_provider(None, "gpt-4o", &prices),
-        Some(&global_price)
-    );
-    assert_eq!(
-        match_price("gpt-4o", &prices),
-        Some(&global_price)
+        match_price_for_provider("prov-unknown", "gpt-4o", &prices),
+        None,
+        "the global row must never match a provider"
     );
 
-    // Non-existent model returns None
+    // Exact, case-sensitive matching; no trimming and no case folding.
     assert_eq!(
-        match_price_for_provider(Some("prov-a"), "unknown-model", &prices),
+        match_price_for_provider("prov-a", "Gpt-4o", &prices),
+        None,
+        "model matching must be case-sensitive"
+    );
+    assert_eq!(
+        match_price_for_provider("prov-a", "unknown-model", &prices),
         None
     );
+}
+
+/// AC-006 / REQ-004: normalization copies each global row into a provider that
+/// reaches that model, never overwrites an existing scoped row, deletes
+/// unmatched/orphan/unreachable rows, deduplicates keeping the first, and is
+/// idempotent.
+#[test]
+fn normalize_config_migrates_global_rows_and_drops_unreachable_rows() {
+    let mut p = provider("p");
+    p.mappings = vec![mapping("local-a", "remote-a", None)];
+    p.default_model = Some("remote-default".to_string());
+    let mut q = provider("q");
+    q.mappings = vec![mapping("local-q", "remote-q", None)];
+
+    let mut config = GatewayConfig::default();
+    config.providers.push(p);
+    config.providers.push(q);
+    config.model_prices = vec![
+        priced("remote-a", 1.0, 0.0, 0.0, 0.0),
+        priced("remote-default", 2.0, 0.0, 0.0, 0.0),
+        priced("no-provider-model", 3.0, 0.0, 0.0, 0.0),
+        priced_with_provider("p", "remote-a", 9.0, 0.0, 0.0, 0.0),
+        priced_with_provider("ghost", "remote-a", 5.0, 0.0, 0.0, 0.0),
+        priced_with_provider("p", "unreachable", 5.0, 0.0, 0.0, 0.0),
+        priced_with_provider("q", "remote-q", 4.0, 0.0, 0.0, 0.0),
+        priced_with_provider("q", "remote-q", 5.0, 0.0, 0.0, 0.0),
+    ];
+
+    super::storage::normalize_config(&mut config);
+
+    assert!(
+        config.model_prices.iter().all(|row| row.provider_id.is_some()),
+        "every row must carry a provider id: {:?}",
+        config.model_prices
+    );
+    assert!(
+        config
+            .model_prices
+            .iter()
+            .all(|row| row.provider_id.as_deref() != Some("ghost")),
+        "a row for a nonexistent provider must be dropped"
+    );
+    assert!(
+        config
+            .model_prices
+            .iter()
+            .all(|row| row.upstream_model != "no-provider-model"),
+        "an unmatched global row must be deleted"
+    );
+    assert!(
+        config.model_prices.iter().all(|row| {
+            !(row.provider_id.as_deref() == Some("p") && row.upstream_model == "unreachable")
+        }),
+        "a row unreachable from its provider must be dropped"
+    );
+
+    // P keeps its own scoped row and gains the migrated default-model row.
+    let p_rows: Vec<&ModelPrice> = config
+        .model_prices
+        .iter()
+        .filter(|row| row.provider_id.as_deref() == Some("p"))
+        .collect();
+    assert_eq!(
+        p_rows.len(),
+        2,
+        "P must hold exactly remote-a and remote-default: {p_rows:?}"
+    );
+    let p_remote_a = p_rows
+        .iter()
+        .find(|row| row.upstream_model == "remote-a")
+        .expect("P keeps its own remote-a row");
+    assert_eq!(
+        p_remote_a.input, 9.0,
+        "the pre-existing scoped row must not be overwritten or duplicated"
+    );
+    let p_default = p_rows
+        .iter()
+        .find(|row| row.upstream_model == "remote-default")
+        .expect("the global default-model row must migrate to P");
+    assert_eq!(p_default.input, 2.0);
+
+    // Q's two duplicate rows collapse to exactly one, keeping the first.
+    let q_rows: Vec<&ModelPrice> = config
+        .model_prices
+        .iter()
+        .filter(|row| row.provider_id.as_deref() == Some("q"))
+        .collect();
+    assert_eq!(
+        q_rows.len(),
+        1,
+        "duplicate rows must collapse to one: {q_rows:?}"
+    );
+    assert_eq!(q_rows[0].upstream_model, "remote-q");
+    assert_eq!(q_rows[0].input, 4.0, "deduplication keeps the first row");
+
+    // Idempotence: a second normalization changes nothing.
+    let mut again = config.clone();
+    super::storage::normalize_config(&mut again);
+    assert_eq!(
+        again.model_prices, config.model_prices,
+        "normalization must be idempotent"
+    );
+}
+
+/// AC-006 counterexample / REQ-004: a legacy encrypted `api_gateway.json`
+/// carrying global rows stays readable, migrates the reachable global row,
+/// deletes the unmatched one, preserves providers/keys/default key/ledger/
+/// retention, and is stable across a further load-write cycle with only
+/// provider-scoped rows persisted.
+#[test]
+fn legacy_config_file_with_global_rows_migrates_on_load_and_persists_on_write() {
+    with_temp_home("legacy-global-prices", |_home| {
+        let legacy = json!({
+            "enabled": true,
+            "port": 17688,
+            "providers": [
+                {
+                    "id": "p",
+                    "name": "Provider P",
+                    "base_url": "https://p.example.com/v1",
+                    "api_key": "sk-p",
+                    "default_model": "remote-default",
+                    "protocol": "chat_completions",
+                    "mappings": [
+                        {"local_model": "local-a", "upstream_model": "remote-a", "enabled": true}
+                    ]
+                },
+                {
+                    "id": "q",
+                    "name": "Provider Q",
+                    "base_url": "https://q.example.com/v1",
+                    "api_key": "sk-q",
+                    "protocol": "chat_completions",
+                    "mappings": [
+                        {"local_model": "local-q", "upstream_model": "remote-q", "enabled": true}
+                    ]
+                }
+            ],
+            "keys": [
+                {"id": "k1", "label": "k1", "value": "local-key", "enabled": true, "created_at": 1}
+            ],
+            "default_key_id": "k1",
+            "terminal_syncs": [
+                {
+                    "provider_id": "p",
+                    "tool": "opencode",
+                    "synced_key_id": "k1",
+                    "synced_base_url": "http://127.0.0.1:17688",
+                    "synced_at": 7
+                }
+            ],
+            "usage_retention_days": 30,
+            "model_prices": [
+                {"upstream_model": "remote-a", "input": 1.0, "cache_read": 0.0, "cache_write": 0.0, "output": 2.0},
+                {"upstream_model": "unmatched-model", "input": 3.0, "cache_read": 0.0, "cache_write": 0.0, "output": 4.0}
+            ]
+        });
+
+        let password = crate::crypto::get_or_init_master_password().expect("master password");
+        let encrypted =
+            crate::crypto::encrypt(&legacy.to_string(), &password).expect("encrypt legacy config");
+        fs::write(config_path().expect("config path"), encrypted).expect("write legacy config");
+
+        let first = super::storage::read_config().expect("legacy config must stay readable");
+        assert_eq!(first.providers.len(), 2, "providers must be intact");
+        assert_eq!(first.providers[0].mappings[0].upstream_model, "remote-a");
+        assert_eq!(
+            first.providers[0].default_model.as_deref(),
+            Some("remote-default")
+        );
+        assert_eq!(first.keys.len(), 1, "keys must be intact");
+        assert_eq!(first.keys[0].value, "local-key");
+        assert_eq!(first.default_key_id.as_deref(), Some("k1"));
+        assert_eq!(first.terminal_syncs.len(), 1, "terminal_syncs must be intact");
+        assert_eq!(first.terminal_syncs[0].provider_id, "p");
+        assert_eq!(first.usage_retention_days, 30, "retention must be intact");
+
+        assert!(
+            first.model_prices.iter().all(|row| row.provider_id.is_some()),
+            "migration must leave only provider-scoped rows: {:?}",
+            first.model_prices
+        );
+        assert!(
+            first
+                .model_prices
+                .iter()
+                .all(|row| row.upstream_model != "unmatched-model"),
+            "an unmatched global row must be deleted"
+        );
+        let migrated = first
+            .model_prices
+            .iter()
+            .find(|row| {
+                row.provider_id.as_deref() == Some("p") && row.upstream_model == "remote-a"
+            })
+            .expect("P must receive the migrated remote-a row");
+        assert_eq!(migrated.output, 2.0);
+
+        super::storage::write_config(&first).expect("persist the migrated config");
+        let second = super::storage::read_config().expect("reload the persisted config");
+        assert_eq!(
+            serde_json::to_value(&second).expect("second config"),
+            serde_json::to_value(&first).expect("first config"),
+            "a further load-write cycle must change nothing"
+        );
+        assert!(
+            second.model_prices.iter().all(|row| row.provider_id.is_some()),
+            "every persisted row must carry a provider id"
+        );
+    });
 }
 
 #[test]
@@ -9213,13 +9825,19 @@ async fn unpriced_model_records_none_amount_and_excludes_it_from_totals() {
 // 20260917-ai-gateway-usage-logs Step 3: commands, merge semantics, registration
 // ---------------------------------------------------------------------------
 
-/// AC-007 / REQ-006: saving prices replaces only the price table and preserves
-/// providers, keys, default key, terminal_syncs and retention.
+/// REQ-005: upserting a provider together with its price rows replaces only
+/// that provider's rows and preserves other providers, keys, default key,
+/// terminal_syncs and retention.
 #[test]
-fn api_gateway_model_prices_save_preserves_existing_config_fields() {
-    with_temp_home("prices-preserve", |_home| {
+fn upsert_provider_with_prices_preserves_existing_config_fields() {
+    with_temp_home("upsert-prices-preserve", |_home| {
         let mut config = GatewayConfig::default();
-        config.providers.push(provider("p1"));
+        let mut p1 = provider("p1");
+        p1.mappings = vec![mapping("local-a", "remote-a", None)];
+        config.providers.push(p1);
+        let mut q = provider("q");
+        q.mappings = vec![mapping("local-q", "remote-q", None)];
+        config.providers.push(q);
         config.keys.push(key("k1", true));
         config.default_key_id = Some("k1".to_string());
         config.terminal_syncs.push(TerminalSyncRecord {
@@ -9230,33 +9848,52 @@ fn api_gateway_model_prices_save_preserves_existing_config_fields() {
             synced_at: 7,
         });
         config.usage_retention_days = 30;
-        config.model_prices = vec![priced("old-model", 1.0, 1.0, 1.0, 1.0)];
         super::storage::write_config(&config).expect("seed config");
 
-        let saved = super::commands::api_gateway_model_prices_save(vec![priced(
-            "new-model",
-            2.0,
-            0.0,
-            0.0,
-            3.0,
-        )])
-        .expect("save prices");
-        assert_eq!(saved.len(), 1);
-        assert_eq!(saved[0].upstream_model, "new-model");
+        let mut edited = provider("p1");
+        edited.mappings = vec![mapping("local-a", "remote-a", None)];
+        let saved = super::commands::api_gateway_upsert_provider(
+            edited,
+            Some(vec![priced_with_provider(
+                "p1",
+                "remote-a",
+                2.0,
+                0.0,
+                0.0,
+                3.0,
+            )]),
+        )
+        .expect("upsert with prices");
+
+        assert_eq!(saved.providers.len(), 2, "the other provider must remain");
+        assert!(saved.providers.iter().any(|candidate| candidate.id == "q"));
+        assert!(saved.model_prices.iter().any(|row| {
+            row.provider_id.as_deref() == Some("p1")
+                && row.upstream_model == "remote-a"
+                && row.output == 3.0
+        }));
 
         let reloaded = super::storage::read_config().expect("reload config");
-        assert_eq!(reloaded.providers.len(), 1);
-        assert_eq!(reloaded.providers[0].api_key, "sk-test");
+        assert_eq!(reloaded.providers.len(), 2);
+        assert!(reloaded.providers.iter().any(|candidate| candidate.id == "q"));
+        assert_eq!(
+            reloaded
+                .providers
+                .iter()
+                .find(|candidate| candidate.id == "p1")
+                .expect("p1 must remain")
+                .api_key,
+            "sk-test"
+        );
         assert_eq!(reloaded.keys.len(), 1);
         assert_eq!(reloaded.keys[0].value, "value-k1");
         assert_eq!(reloaded.default_key_id.as_deref(), Some("k1"));
         assert_eq!(reloaded.terminal_syncs.len(), 1);
         assert_eq!(reloaded.usage_retention_days, 30, "retention untouched");
-        assert_eq!(reloaded.model_prices[0].upstream_model, "new-model");
-        assert_eq!(
-            super::commands::api_gateway_model_prices_get().unwrap()[0].output,
-            3.0
-        );
+        assert_eq!(reloaded.model_prices.len(), 1);
+        assert_eq!(reloaded.model_prices[0].provider_id.as_deref(), Some("p1"));
+        assert_eq!(reloaded.model_prices[0].upstream_model, "remote-a");
+        assert_eq!(reloaded.model_prices[0].output, 3.0);
     });
 }
 
@@ -9877,9 +10514,26 @@ async fn price_change_does_not_alter_historical_amounts() {
     assert_eq!(records[0].amount, None, "unpriced at record time stays unpriced");
 
     // Adding a price later must not retroactively price the existing row, but
-    // must price the next request.
-    super::commands::api_gateway_model_prices_save(vec![priced("remote-a", 1.0, 0.0, 0.0, 2.0)])
-        .unwrap();
+    // must price the next request. Prices now ride along with the provider.
+    let current = super::storage::read_config().expect("read config before pricing");
+    let p1 = current
+        .providers
+        .iter()
+        .find(|candidate| candidate.id == "p1")
+        .expect("p1 must exist")
+        .clone();
+    super::commands::api_gateway_upsert_provider(
+        p1,
+        Some(vec![priced_with_provider(
+            "p1",
+            "remote-a",
+            1.0,
+            0.0,
+            0.0,
+            2.0,
+        )]),
+    )
+    .unwrap();
     let (status, _ct, _text) = call_gateway(
         port,
         "POST",
@@ -9899,8 +10553,25 @@ async fn price_change_does_not_alter_historical_amounts() {
     assert!((priced_record.amount.unwrap() - expected_a).abs() < 1e-12);
 
     // Changing the price again must not rewrite any history.
-    super::commands::api_gateway_model_prices_save(vec![priced("remote-a", 9.0, 9.0, 9.0, 9.0)])
-        .unwrap();
+    let current = super::storage::read_config().expect("read config before re-pricing");
+    let p1 = current
+        .providers
+        .iter()
+        .find(|candidate| candidate.id == "p1")
+        .expect("p1 must exist")
+        .clone();
+    super::commands::api_gateway_upsert_provider(
+        p1,
+        Some(vec![priced_with_provider(
+            "p1",
+            "remote-a",
+            9.0,
+            9.0,
+            9.0,
+            9.0,
+        )]),
+    )
+    .unwrap();
     let history = default_usage_store().all_records().unwrap();
     assert_eq!(history.len(), 2);
     assert_eq!(

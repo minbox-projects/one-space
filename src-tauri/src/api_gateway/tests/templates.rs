@@ -1530,8 +1530,8 @@ fn sync_updates_price_after_legacy_off_peak_mirror_save() {
     provider.mappings = vec![mapping_from_snapshot(&previous_template, &previous_model)];
     config.providers.push(provider);
 
-    // Exactly what `api_gateway_model_prices_save` persists for a multi-window
-    // row: `off_peak` mirrors the first `off_peaks` entry.
+    // Exactly what `api_gateway_upsert_provider`'s off-peak mirroring persists
+    // for a multi-window row: `off_peak` mirrors the first `off_peaks` entry.
     let mut mirrored = price_from_snapshot("bound", &previous_model);
     mirrored.off_peak = mirrored.off_peaks.first().cloned();
     assert!(
@@ -1566,6 +1566,48 @@ fn sync_updates_price_after_legacy_off_peak_mirror_save() {
         row.off_peak, None,
         "the stale legacy singular mirror must be cleared once the row updates"
     );
+}
+
+/// REQ-007 / AC-011 boundary: when the operator clears a template model's price
+/// the row is removed on save; the next template sync restores the template's
+/// official values while that mapping still exists and is not ignored.
+#[test]
+fn sync_restores_cleared_price_row_from_template() {
+    let snapshot = opencode_snapshot();
+    let model = snapshot_model(&snapshot, "deepseek-v4-flash");
+
+    let mut config = GatewayConfig::default();
+    let mut provider = bound_provider("bound", "opencode-zen");
+    provider.mappings = vec![mapping_from_snapshot(&snapshot, model)];
+    config.providers.push(provider);
+    assert!(
+        find_price_row(&config, "bound", &model.upstream_model).is_none(),
+        "the fixture must start with the row cleared"
+    );
+
+    let body = models_dev_body(json!({
+        "deepseek-v4-flash": {
+            "name": "DeepSeek V4 Flash",
+            "cost": {"input": 3.0, "cache_read": 0.3, "cache_write": 0.1, "output": 6.0},
+            "reasoning_options": [{"type": "effort", "values": ["low", "high"]}]
+        }
+    }));
+
+    apply_template_sync_with(
+        &mut config,
+        "opencode-zen",
+        |_current| Ok(body.clone()),
+        |_next| Ok(()),
+    )
+    .expect("the sync must restore the cleared row");
+
+    let row = find_price_row(&config, "bound", &model.upstream_model)
+        .expect("a cleared template row must be restored by the next sync");
+    assert_eq!(row.input, 3.0);
+    assert_eq!(row.cache_read, 0.3);
+    assert_eq!(row.cache_write, 0.1);
+    assert_eq!(row.output, 6.0);
+    assert!(row.off_peaks.is_empty());
 }
 
 /// REQ-005: deleting from a manual (unbound) provider only removes the mapping;

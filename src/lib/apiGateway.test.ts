@@ -18,8 +18,6 @@ import {
   apiGatewayTerminalTargets,
   apiGatewayUpsertKey,
   apiGatewayUpsertProvider,
-  apiGatewayModelPricesGet,
-  apiGatewayModelPricesSave,
   apiGatewayRequestLogs,
   apiGatewayUsageRetentionGet,
   apiGatewayUsageRetentionSave,
@@ -111,6 +109,7 @@ describe("apiGateway 命令封装", () => {
     });
     expect(invokeMock).toHaveBeenCalledWith("api_gateway_upsert_provider", {
       provider: provider(),
+      prices: null,
     });
     expect(invokeMock).toHaveBeenCalledWith("api_gateway_delete_provider", {
       providerId: "p1",
@@ -479,7 +478,7 @@ describe("用量与日志命令封装", () => {
     resetTauriMocks();
   });
 
-  it("按 camelCase 参数调用六个用量/价格/保留天数命令", async () => {
+  it("按 camelCase 参数调用用量与保留天数命令", async () => {
     await apiGatewayUsageStats(7);
     await apiGatewayUsageStats(null);
     await apiGatewayRequestLogs({
@@ -489,11 +488,6 @@ describe("用量与日志命令封装", () => {
       model: "gpt-4o",
       page: 2,
     });
-    await apiGatewayModelPricesGet();
-    const prices: ModelPrice[] = [
-      { upstream_model: "gpt-4o", input: 1, cache_read: 0.1, cache_write: 0.2, output: 2 },
-    ];
-    await apiGatewayModelPricesSave(prices);
     await apiGatewayUsageRetentionGet();
     await apiGatewayUsageRetentionSave(30);
 
@@ -510,14 +504,17 @@ describe("用量与日志命令封装", () => {
       model: "gpt-4o",
       page: 2,
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_gateway_model_prices_get");
-    expect(invokeMock).toHaveBeenCalledWith("api_gateway_model_prices_save", {
-      prices,
-    });
     expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_retention_get");
     expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_retention_save", {
       days: 30,
     });
+  });
+
+  it("removed_legacy_price_wrappers_are_not_exported", async () => {
+    const gatewayModule = await import("@/lib/apiGateway");
+    expect("apiGatewayModelPricesGet" in gatewayModule).toBe(false);
+    expect("apiGatewayModelPricesSave" in gatewayModule).toBe(false);
+    expect("getProviderAvailableModels" in gatewayModule).toBe(false);
   });
 
   it("查询参数缺省时携带空筛选与第 1 页", async () => {
@@ -1087,5 +1084,411 @@ describe("apiGateway provider template helpers", () => {
       from_snapshot: true,
     };
     expect(view.from_snapshot).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 2: provider-scoped price types, command wrapper and pure helpers.
+// RED tests for the frozen interface contract. Only this test file is touched.
+// ---------------------------------------------------------------------------
+
+import {
+  draftToPriceRow,
+  isPriceDraftPriced,
+  mappedUpstreamModels,
+  normalizeDraftDays,
+  parsePriceNumber,
+  priceRowToDraft,
+  resolveProviderPriceRow,
+  type GatewayPriceDraft,
+  type GatewayPriceDraftOffPeak,
+} from "@/lib/apiGateway";
+
+function priceDraftWindow(
+  overrides: Partial<GatewayPriceDraftOffPeak> = {},
+): GatewayPriceDraftOffPeak {
+  return {
+    id: "op-1",
+    start_time: "00:30",
+    end_time: "08:30",
+    input: "",
+    cache_read: "",
+    cache_write: "",
+    output: "",
+    days: [],
+    ...overrides,
+  };
+}
+
+function priceDraft(
+  overrides: Partial<GatewayPriceDraft> = {},
+): GatewayPriceDraft {
+  return {
+    id: "draft-1",
+    upstream_model: "model-a",
+    input: "",
+    cache_read: "",
+    cache_write: "",
+    output: "",
+    enable_off_peak: false,
+    off_peaks: [],
+    ...overrides,
+  };
+}
+
+function modelPrice(overrides: Partial<ModelPrice> = {}): ModelPrice {
+  return {
+    upstream_model: "model-a",
+    input: 0,
+    cache_read: 0,
+    cache_write: 0,
+    output: 0,
+    ...overrides,
+  };
+}
+
+describe("apiGateway provider price helpers", () => {
+  beforeEach(() => {
+    resetTauriMocks();
+  });
+
+  it("mapped_upstream_models_deduplicates_and_keeps_first_seen_order", () => {
+    const p = provider({
+      default_model: "not-a-mapping",
+      mappings: [
+        { local_model: "l1", upstream_model: "  model-b  " },
+        { local_model: "l2", upstream_model: "model-a" },
+        { local_model: "l3", upstream_model: "model-b" },
+        { local_model: "l4", upstream_model: "   " },
+        // 缺省 enabled 的映射仍应计入映射上游模型
+        { local_model: "l5", upstream_model: "model-c" },
+      ],
+    });
+
+    expect(mappedUpstreamModels(p)).toEqual(["model-b", "model-a", "model-c"]);
+    expect(mappedUpstreamModels(p)).not.toContain("");
+    expect(
+      mappedUpstreamModels(p),
+      "未映射的默认模型不应进入映射上游列表",
+    ).not.toContain("not-a-mapping");
+  });
+
+  it("resolve_provider_price_row_is_provider_scoped_and_shared_model_safe", () => {
+    const providerARow = modelPrice({
+      provider_id: "provider-a",
+      upstream_model: "X",
+      input: 1,
+      output: 1,
+    });
+    const providerBRow = modelPrice({
+      provider_id: "provider-b",
+      upstream_model: "X",
+      input: 2,
+      output: 2,
+    });
+    const globalRow = modelPrice({ upstream_model: "X", input: 9, output: 9 });
+    const prices = [providerARow, providerBRow, globalRow];
+
+    expect(resolveProviderPriceRow(prices, "provider-a", "X")).toBe(providerARow);
+    expect(resolveProviderPriceRow(prices, "provider-b", "X")).toBe(providerBRow);
+    expect(resolveProviderPriceRow(prices, "provider-a", "X")?.input).toBe(1);
+    expect(resolveProviderPriceRow(prices, "provider-b", "X")?.input).toBe(2);
+    expect(resolveProviderPriceRow(prices, "provider-c", "X")).toBeUndefined();
+    expect(resolveProviderPriceRow(prices, "provider-a", "Y")).toBeUndefined();
+    expect(
+      resolveProviderPriceRow(prices, "provider-a", "x"),
+      "上游模型名精确区分大小写",
+    ).toBeUndefined();
+    expect(resolveProviderPriceRow(null, "provider-a", "X")).toBeUndefined();
+    expect(resolveProviderPriceRow(undefined, "provider-a", "X")).toBeUndefined();
+  });
+
+  it("price_draft_round_trip_echoes_explicit_zeros_and_off_peak", () => {
+    const row = modelPrice({
+      provider_id: "provider-a",
+      upstream_model: "model-a",
+      input: 0,
+      cache_read: 0,
+      cache_write: 0,
+      output: 0,
+      off_peaks: [
+        {
+          start_time: "00:30",
+          end_time: "08:30",
+          input: 0,
+          cache_read: 0,
+          cache_write: 0,
+          output: 0,
+          days: [1, 3],
+        },
+      ],
+    });
+
+    const draft = priceRowToDraft(row, "model-a", "row-1");
+
+    expect(draft.upstream_model).toBe("model-a");
+    expect(draft.input).toBe("0");
+    expect(draft.cache_read).toBe("0");
+    expect(draft.cache_write).toBe("0");
+    expect(draft.output).toBe("0");
+    expect(draft.enable_off_peak).toBe(true);
+    expect(draft.off_peaks).toHaveLength(1);
+    expect(draft.off_peaks[0].id).toBe("row-1-op-0");
+    expect(draft.off_peaks[0].start_time).toBe("00:30");
+    expect(draft.off_peaks[0].end_time).toBe("08:30");
+    expect(draft.off_peaks[0].input).toBe("0");
+    expect(draft.off_peaks[0].cache_read).toBe("0");
+    expect(draft.off_peaks[0].cache_write).toBe("0");
+    expect(draft.off_peaks[0].output).toBe("0");
+    expect(draft.off_peaks[0].days).toEqual([1, 3]);
+    expect(isPriceDraftPriced(draft)).toBe(true);
+
+    const echoedRow = draftToPriceRow(draft);
+    expect(echoedRow).not.toBeNull();
+    expect(echoedRow!.provider_id).toBeUndefined();
+    expect(echoedRow!.upstream_model).toBe("model-a");
+    expect(echoedRow!.input).toBe(0);
+    expect(echoedRow!.cache_read).toBe(0);
+    expect(echoedRow!.cache_write).toBe(0);
+    expect(echoedRow!.output).toBe(0);
+    expect(echoedRow!.off_peaks).toHaveLength(1);
+    expect(echoedRow!.off_peaks![0]).toEqual({
+      start_time: "00:30",
+      end_time: "08:30",
+      input: 0,
+      cache_read: 0,
+      cache_write: 0,
+      output: 0,
+      days: [1, 3],
+    });
+    expect(echoedRow!.off_peak).toEqual(echoedRow!.off_peaks![0]);
+
+    // 窗口某一档留空时应回退到草稿标准档位；用非零标准值证明是回退而非直接归零。
+    const fallbackDraft = priceDraft({
+      input: "4",
+      cache_read: "1",
+      cache_write: "2",
+      output: "9",
+      enable_off_peak: true,
+      off_peaks: [
+        priceDraftWindow({
+          id: "w0",
+          input: "",
+          cache_read: "",
+          output: "5",
+          days: [5, 1, 1, 9],
+        }),
+      ],
+    });
+    const fallbackRow = draftToPriceRow(fallbackDraft);
+    expect(fallbackRow!.off_peaks![0].input).toBe(4);
+    expect(fallbackRow!.off_peaks![0].cache_read).toBe(1);
+    expect(fallbackRow!.off_peaks![0].cache_write).toBe(2);
+    expect(fallbackRow!.off_peaks![0].output).toBe(5);
+    expect(fallbackRow!.off_peaks![0].days).toEqual([1, 5]);
+  });
+
+  it("blank_draft_is_unpriced_and_produces_no_row", () => {
+    const blank = priceDraft();
+    expect(isPriceDraftPriced(blank)).toBe(false);
+    expect(draftToPriceRow(blank)).toBeNull();
+
+    // 启用离峰也无法让全空档位变成已定价
+    const blankWithOffPeak = priceDraft({
+      enable_off_peak: true,
+      off_peaks: [priceDraftWindow({ input: "5" })],
+    });
+    expect(isPriceDraftPriced(blankWithOffPeak)).toBe(false);
+    expect(draftToPriceRow(blankWithOffPeak)).toBeNull();
+
+    const partial = priceDraft({ output: "3" });
+    expect(isPriceDraftPriced(partial)).toBe(true);
+    expect(draftToPriceRow(partial)).toEqual({
+      upstream_model: "model-a",
+      input: 0,
+      cache_read: 0,
+      cache_write: 0,
+      output: 3,
+    });
+
+    const zeros = priceDraft({
+      input: "0",
+      cache_read: "0",
+      cache_write: "0",
+      output: "0",
+    });
+    expect(isPriceDraftPriced(zeros)).toBe(true);
+    expect(draftToPriceRow(zeros)).toEqual({
+      upstream_model: "model-a",
+      input: 0,
+      cache_read: 0,
+      cache_write: 0,
+      output: 0,
+    });
+
+    const blankModel = priceDraft({ upstream_model: "   ", output: "3" });
+    expect(isPriceDraftPriced(blankModel)).toBe(true);
+    expect(draftToPriceRow(blankModel)).toBeNull();
+  });
+
+  it("draft_to_price_row_writes_off_peak_only_when_enabled_with_windows", () => {
+    const noWindows = priceDraft({
+      output: "3",
+      enable_off_peak: true,
+      off_peaks: [],
+    });
+    const noWindowsRow = draftToPriceRow(noWindows);
+    expect(noWindowsRow).not.toBeNull();
+    expect(noWindowsRow!).not.toHaveProperty("off_peaks");
+    expect(noWindowsRow!).not.toHaveProperty("off_peak");
+
+    const disabled = priceDraft({
+      output: "3",
+      enable_off_peak: false,
+      off_peaks: [priceDraftWindow({ input: "5" })],
+    });
+    const disabledRow = draftToPriceRow(disabled);
+    expect(disabledRow).not.toBeNull();
+    expect(disabledRow!).not.toHaveProperty("off_peaks");
+    expect(disabledRow!).not.toHaveProperty("off_peak");
+
+    const enabled = priceDraft({
+      output: "3",
+      enable_off_peak: true,
+      off_peaks: [
+        priceDraftWindow({
+          id: "w0",
+          start_time: "  ",
+          end_time: "",
+          input: "1",
+          output: "2",
+          days: [],
+        }),
+        priceDraftWindow({ id: "w1", input: "4", days: [5, 1, 1, 9] }),
+      ],
+    });
+    const enabledRow = draftToPriceRow(enabled);
+    expect(enabledRow!.off_peaks).toHaveLength(2);
+    expect(enabledRow!.off_peaks![0].start_time).toBe("00:30");
+    expect(enabledRow!.off_peaks![0].end_time).toBe("08:30");
+    expect(
+      enabledRow!.off_peaks![0],
+      "空 days 应省略该字段（旧数据形态）",
+    ).not.toHaveProperty("days");
+    expect(enabledRow!.off_peaks![1].days).toEqual([1, 5]);
+    expect(enabledRow!.off_peak).toEqual(enabledRow!.off_peaks![0]);
+  });
+
+  it("normalize_draft_days_filters_sorts_and_dedupes", () => {
+    expect(normalizeDraftDays([3, 1, 1, 7, -1, 0])).toEqual([0, 1, 3]);
+    expect(normalizeDraftDays([])).toEqual([]);
+    expect(normalizeDraftDays(null)).toEqual([]);
+    expect(normalizeDraftDays(undefined)).toEqual([]);
+  });
+
+  it("parse_price_number_trims_parses_and_guards_non_finite", () => {
+    expect(parsePriceNumber("  1.25  ")).toBe(1.25);
+    expect(parsePriceNumber("0")).toBe(0);
+    expect(parsePriceNumber("")).toBe(0);
+    expect(parsePriceNumber("   ")).toBe(0);
+    expect(parsePriceNumber("abc")).toBe(0);
+    expect(parsePriceNumber("Infinity")).toBe(0);
+    expect(parsePriceNumber("-Infinity")).toBe(0);
+    expect(parsePriceNumber("NaN")).toBe(0);
+  });
+
+  it("price_row_to_draft_handles_missing_and_legacy_off_peak", () => {
+    const blank = priceRowToDraft(null, "model-x", "row-9");
+    expect(blank.upstream_model).toBe("model-x");
+    expect(blank.input).toBe("");
+    expect(blank.cache_read).toBe("");
+    expect(blank.cache_write).toBe("");
+    expect(blank.output).toBe("");
+    expect(blank.enable_off_peak).toBe(false);
+    expect(blank.off_peaks).toEqual([]);
+
+    const legacy = priceRowToDraft(
+      modelPrice({
+        upstream_model: "model-y",
+        output: 3,
+        off_peak: {
+          start_time: undefined as unknown as string,
+          end_time: undefined as unknown as string,
+          input: 1,
+          cache_read: 0.5,
+          cache_write: undefined as unknown as number,
+          output: 3,
+        },
+      }),
+      "model-y",
+      "row-9",
+    );
+    expect(legacy.upstream_model).toBe("model-y");
+    expect(legacy.output).toBe("3");
+    expect(legacy.enable_off_peak).toBe(true);
+    expect(legacy.off_peaks).toHaveLength(1);
+    expect(legacy.off_peaks[0].id).toBe("row-9-op-0");
+    expect(legacy.off_peaks[0].start_time).toBe("00:30");
+    expect(legacy.off_peaks[0].end_time).toBe("08:30");
+    expect(legacy.off_peaks[0].input).toBe("1");
+    expect(legacy.off_peaks[0].cache_read).toBe("0.5");
+    expect(legacy.off_peaks[0].cache_write).toBe("");
+  });
+
+  it("upsert_provider_wrapper_passes_prices_through", async () => {
+    const p = provider({ id: "p1" });
+    const prices: ModelPrice[] = [
+      {
+        provider_id: "p1",
+        upstream_model: "model-a",
+        input: 1,
+        cache_read: 0.1,
+        cache_write: 0.2,
+        output: 2,
+      },
+    ];
+    const saved = config({ providers: [p] });
+    invokeMock.mockResolvedValueOnce(saved);
+
+    const withPrices = await apiGatewayUpsertProvider(p, prices);
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_upsert_provider", {
+      provider: p,
+      prices,
+    });
+    expect(withPrices).toBe(saved);
+
+    invokeMock.mockClear();
+    invokeMock.mockResolvedValueOnce(saved);
+    const withoutPrices = await apiGatewayUpsertProvider(p);
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_upsert_provider", {
+      provider: p,
+      prices: null,
+    });
+    expect(withoutPrices).toBe(saved);
+  });
+
+  it("gateway_config_accepts_missing_model_prices", () => {
+    const legacy = config();
+    expect(legacy.model_prices).toBeUndefined();
+    expect(
+      resolveProviderPriceRow(legacy.model_prices, "p1", "model-a"),
+    ).toBeUndefined();
+
+    const configured = config({
+      model_prices: [
+        {
+          provider_id: "p1",
+          upstream_model: "model-a",
+          input: 1,
+          cache_read: 0,
+          cache_write: 0,
+          output: 2,
+        },
+      ],
+    });
+    expect(configured.model_prices).toHaveLength(1);
+    expect(
+      resolveProviderPriceRow(configured.model_prices, "p1", "model-a")?.input,
+    ).toBe(1);
   });
 });
