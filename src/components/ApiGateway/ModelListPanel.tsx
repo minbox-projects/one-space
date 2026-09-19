@@ -60,7 +60,7 @@ export function ModelListPanel({
   const [query, setQuery] = useState("");
   const [providerFilter, setProviderFilter] = useState<string>("all");
   const [protocolFilter, setProtocolFilter] = useState<string>("all");
-  const [copiedModel, setCopiedModel] = useState<string | null>(null);
+  const [copiedTarget, setCopiedTarget] = useState<string | null>(null);
 
   const rows = useMemo(
     () =>
@@ -146,10 +146,10 @@ export function ModelListPanel({
     return result;
   }, [normalizedQuery, protocolFilter, providerFilter, rows]);
 
-  const handleCopy = async (modelId: string) => {
+  const handleCopy = async (text: string, targetKey: string) => {
     try {
-      await navigator.clipboard.writeText(modelId);
-      setCopiedModel(modelId);
+      await navigator.clipboard.writeText(text);
+      setCopiedTarget(targetKey);
       pushToast({
         title: t(
           "apiGatewayModelListCopySuccess",
@@ -158,7 +158,7 @@ export function ModelListPanel({
         kind: "success",
       });
       setTimeout(() => {
-        setCopiedModel((prev) => (prev === modelId ? null : prev));
+        setCopiedTarget((prev) => (prev === targetKey ? null : prev));
       }, 1500);
     } catch {
       // 剪贴板异常优雅降级
@@ -369,7 +369,8 @@ export function ModelListPanel({
             </thead>
             <tbody className="divide-y divide-border/60">
               {visibleRows.map(({ entry, name, protocols }) => {
-                const isCopied = copiedModel === entry.model;
+                const localTargetKey = `local:${entry.model}`;
+                const isCopied = copiedTarget === localTargetKey;
                 return (
                   <tr
                     key={entry.model}
@@ -407,7 +408,7 @@ export function ModelListPanel({
                             "apiGatewayModelListCopyAria",
                             "Copy model ID",
                           )}
-                          onClick={() => void handleCopy(entry.model)}
+                          onClick={() => void handleCopy(entry.model, localTargetKey)}
                           className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
                         >
                           {isCopied ? (
@@ -442,50 +443,78 @@ export function ModelListPanel({
                       className="px-3.5 py-2.5"
                     >
                       <ul className="space-y-1.5">
-                        {entry.providers.map((upstream, index) => (
-                          <li
-                            key={`${upstream.providerId}-${upstream.upstreamModel}-${index}`}
-                            data-testid="api-gateway-model-list-upstream"
-                            data-default={upstream.isDefault ? "true" : "false"}
-                            className="flex items-center justify-between gap-2.5 rounded-lg border border-border/60 bg-muted/20 px-2.5 py-1.5 text-xs transition-colors hover:bg-muted/40"
-                          >
-                            <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-                              <span
-                                data-testid="api-gateway-model-list-upstream-provider"
-                                className="font-medium text-foreground"
-                              >
-                                {upstream.providerName}
-                              </span>
-                              <span
-                                aria-hidden="true"
-                                className="text-muted-foreground/60 text-[11px]"
-                              >
-                                →
-                              </span>
-                              <code
-                                data-testid="api-gateway-model-list-upstream-model"
-                                className="rounded border border-border/40 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-foreground"
-                              >
-                                {upstream.upstreamModel}
-                              </code>
-                              {upstream.isDefault ? (
-                                <span
-                                  data-testid="api-gateway-model-list-upstream-default"
-                                  className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
-                                >
-                                  {t(
-                                    "apiGatewayAggregatedModelDefaultBadge",
-                                    "Default",
-                                  )}
-                                </span>
-                              ) : null}
-                            </div>
+                        {entry.providers.map((upstream, index) => {
+                          const upstreamKey = `${upstream.providerId}-${upstream.upstreamModel}-${index}`;
+                          const upstreamTargetKey = `upstream:${upstreamKey}`;
+                          const isUpstreamCopied =
+                            copiedTarget === upstreamTargetKey;
 
-                            <div className="shrink-0">
-                              <ProtocolBadge protocol={upstream.endpoint} />
-                            </div>
-                          </li>
-                        ))}
+                          return (
+                            <li
+                              key={upstreamKey}
+                              data-testid="api-gateway-model-list-upstream"
+                              data-default={upstream.isDefault ? "true" : "false"}
+                              className="flex items-center justify-between gap-2.5 rounded-lg border border-border/60 bg-muted/20 px-2.5 py-1.5 text-xs transition-colors hover:bg-muted/40"
+                            >
+                              <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                                <span
+                                  data-testid="api-gateway-model-list-upstream-provider"
+                                  className="font-medium text-foreground"
+                                >
+                                  {upstream.providerName}
+                                </span>
+                                <span
+                                  aria-hidden="true"
+                                  className="text-muted-foreground/60 text-[11px]"
+                                >
+                                  →
+                                </span>
+                                <code
+                                  data-testid="api-gateway-model-list-upstream-model"
+                                  className="rounded border border-border/40 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-foreground"
+                                >
+                                  {upstream.upstreamModel}
+                                </code>
+                                <button
+                                  type="button"
+                                  data-testid="api-gateway-model-list-upstream-copy-btn"
+                                  aria-label={t(
+                                    "apiGatewayModelListCopyUpstreamAria",
+                                    "Copy upstream model ID",
+                                  )}
+                                  onClick={() =>
+                                    void handleCopy(
+                                      upstream.upstreamModel,
+                                      upstreamTargetKey,
+                                    )
+                                  }
+                                  className="rounded p-0.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                                >
+                                  {isUpstreamCopied ? (
+                                    <Check className="h-3.5 w-3.5 text-emerald-500" />
+                                  ) : (
+                                    <Copy className="h-3.5 w-3.5" />
+                                  )}
+                                </button>
+                                {upstream.isDefault ? (
+                                  <span
+                                    data-testid="api-gateway-model-list-upstream-default"
+                                    className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+                                  >
+                                    {t(
+                                      "apiGatewayAggregatedModelDefaultBadge",
+                                      "Default",
+                                    )}
+                                  </span>
+                                ) : null}
+                              </div>
+
+                              <div className="shrink-0">
+                                <ProtocolBadge protocol={upstream.endpoint} />
+                              </div>
+                            </li>
+                          );
+                        })}
                       </ul>
                     </td>
                   </tr>

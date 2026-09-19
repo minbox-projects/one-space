@@ -423,6 +423,79 @@ describe("ModelListPanel 本地模型列表", () => {
     expect(writeTextSpy).toHaveBeenCalledWith("test-copy-model");
   });
 
+  it("点击上游模型复制按钮调用剪贴板并复制对应的上游模型 ID", async () => {
+    const writeTextSpy = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: writeTextSpy,
+      },
+    });
+
+    renderPanel([
+      makeProvider({
+        mappings: [
+          { local_model: "test-model", upstream_model: "upstream-gpt-4o" },
+        ],
+      }),
+    ]);
+
+    const upstreamCopyBtn = screen.getByTestId(
+      "api-gateway-model-list-upstream-copy-btn",
+    );
+    expect(upstreamCopyBtn).toBeInTheDocument();
+    expect(upstreamCopyBtn).toHaveAttribute(
+      "aria-label",
+      "Copy upstream model ID",
+    );
+
+    await act(async () => {
+      fireEvent.click(upstreamCopyBtn);
+    });
+
+    expect(writeTextSpy).toHaveBeenCalledWith("upstream-gpt-4o");
+  });
+
+  it("多个上游服务商时，每个上游条目的复制按钮分别复制各自的上游模型 ID", async () => {
+    const writeTextSpy = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: writeTextSpy,
+      },
+    });
+
+    renderPanel([
+      makeProvider({
+        id: "p1",
+        name: "Provider 1",
+        mappings: [
+          { local_model: "shared-model", upstream_model: "upstream-first" },
+        ],
+      }),
+      makeProvider({
+        id: "p2",
+        name: "Provider 2",
+        mappings: [
+          { local_model: "shared-model", upstream_model: "upstream-second" },
+        ],
+      }),
+    ]);
+
+    const upstreamCopyBtns = screen.getAllByTestId(
+      "api-gateway-model-list-upstream-copy-btn",
+    );
+    expect(upstreamCopyBtns).toHaveLength(2);
+
+    await act(async () => {
+      fireEvent.click(upstreamCopyBtns[0]);
+    });
+    expect(writeTextSpy).toHaveBeenLastCalledWith("upstream-first");
+
+    await act(async () => {
+      fireEvent.click(upstreamCopyBtns[1]);
+    });
+    expect(writeTextSpy).toHaveBeenLastCalledWith("upstream-second");
+  });
+
   it("支持按服务商筛选模型", () => {
     renderPanel([
       makeProvider({
@@ -554,6 +627,11 @@ const MODEL_LIST_I18N_KEYS: ReadonlyArray<
     "模型 ID 已复制到剪贴板",
   ],
   ["apiGatewayModelListCopyAria", "Copy model ID", "复制模型 ID"],
+  [
+    "apiGatewayModelListCopyUpstreamAria",
+    "Copy upstream model ID",
+    "复制上游模型 ID",
+  ],
   [
     "apiGatewayModelListGoToProviders",
     "Configure upstream providers",
