@@ -622,6 +622,116 @@ describe("ModelListPanel 本地模型列表", () => {
     fireEvent.click(goToBtn);
     expect(onNavigateProviders).toHaveBeenCalledTimes(1);
   });
+
+  it("未配置推理强度时不渲染推理强度标签容器", () => {
+    renderPanel([
+      makeProvider({
+        mappings: [{ local_model: "gpt-4o", upstream_model: "gpt-4o-2024" }],
+      }),
+    ]);
+
+    expect(
+      screen.queryByTestId("api-gateway-model-list-reasoning-efforts"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("配置推理强度时在第二列模型名称下方展示推理强度标签及各个档位", () => {
+    renderPanel([
+      makeProvider({
+        mappings: [
+          {
+            local_model: "o3-mini",
+            upstream_model: "o3-mini-2025",
+            reasoning_efforts: ["low", "medium", "high"],
+          },
+        ],
+      }),
+    ]);
+
+    const container = screen.getByTestId(
+      "api-gateway-model-list-reasoning-efforts",
+    );
+    expect(container).toBeInTheDocument();
+    expect(container).toHaveTextContent("Reasoning efforts:");
+
+    expect(
+      screen.getByTestId("api-gateway-model-list-effort-low"),
+    ).toHaveTextContent("low");
+    expect(
+      screen.getByTestId("api-gateway-model-list-effort-medium"),
+    ).toHaveTextContent("medium");
+    expect(
+      screen.getByTestId("api-gateway-model-list-effort-high"),
+    ).toHaveTextContent("high");
+  });
+
+  it("多服务商映射同一模型时在第二列合并去重展示所有推理强度档位", () => {
+    renderPanel([
+      makeProvider({
+        id: "p1",
+        name: "Provider 1",
+        mappings: [
+          {
+            local_model: "deepseek-r1",
+            upstream_model: "deepseek-r1-a",
+            reasoning_efforts: ["medium", "high"],
+          },
+        ],
+      }),
+      makeProvider({
+        id: "p2",
+        name: "Provider 2",
+        mappings: [
+          {
+            local_model: "deepseek-r1",
+            upstream_model: "deepseek-r1-b",
+            reasoning_efforts: ["low", "high", "max"],
+          },
+        ],
+      }),
+    ]);
+
+    const rows = screen.getAllByTestId("api-gateway-model-list-row");
+    expect(rows).toHaveLength(1);
+
+    const effortsContainer = within(rows[0]).getByTestId(
+      "api-gateway-model-list-reasoning-efforts",
+    );
+    expect(effortsContainer).toBeInTheDocument();
+
+    const efforts = within(effortsContainer)
+      .getAllByTestId(/^api-gateway-model-list-effort-/)
+      .map((el) => el.textContent);
+    expect(efforts).toEqual(["medium", "high", "low", "max"]);
+  });
+
+  it("中文环境下第二列正确展示推理档位标签文案", async () => {
+    await act(async () => {
+      await i18n.changeLanguage("zh");
+    });
+    renderPanel([
+      makeProvider({
+        mappings: [
+          {
+            local_model: "deepseek-r1",
+            upstream_model: "deepseek-r1",
+            reasoning_efforts: ["high"],
+          },
+        ],
+      }),
+    ]);
+
+    const container = screen.getByTestId(
+      "api-gateway-model-list-reasoning-efforts",
+    );
+    expect(container).toHaveTextContent("推理档位:");
+    expect(
+      screen.getByTestId("api-gateway-model-list-effort-high"),
+    ).toHaveTextContent("high");
+    await act(async () => {
+      await i18n.changeLanguage("en");
+    });
+  });
 });
 
 const MODEL_LIST_I18N_KEYS: ReadonlyArray<

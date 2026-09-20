@@ -148,6 +148,28 @@ pub(in crate::api_gateway) fn build_gateway_provider(
                     .unwrap_or_default();
                 let mut model = Map::new();
                 model.insert("name".to_string(), Value::String(name));
+
+                // OpenCode exposes a reasoning model's selectable strengths as
+                // model variants. Carry the mapping's configured levels so the
+                // tool offers exactly the gateway's tiers instead of falling
+                // back to its own catalog/built-in guess for the model id.
+                let mut variants = Map::new();
+                for effort in &mapping.reasoning_efforts {
+                    let Some(effort) = non_empty(Some(effort.as_str())) else {
+                        continue;
+                    };
+                    if variants.contains_key(&effort) {
+                        continue;
+                    }
+                    let mut variant = Map::new();
+                    variant.insert("reasoningEffort".to_string(), Value::String(effort.clone()));
+                    variants.insert(effort, Value::Object(variant));
+                }
+                if !variants.is_empty() {
+                    model.insert("reasoning".to_string(), Value::Bool(true));
+                    model.insert("variants".to_string(), Value::Object(variants));
+                }
+
                 models.insert(local_model, Value::Object(model));
             }
         }

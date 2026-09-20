@@ -35,6 +35,7 @@ import {
   localBaseUrl,
   maskSecret,
   resolveAggregatedModelName,
+  resolveAggregatedReasoningEfforts,
   resolveDefaultKeyId,
   resolveMappingPreview,
   usageRangeToDays,
@@ -919,6 +920,95 @@ describe("resolveAggregatedModelName 聚合模型名称解析", () => {
     expect(
       resolveAggregatedModelName({ model: "orphan-model", providers: [] }),
     ).toBe("orphan-model");
+  });
+});
+
+describe("resolveAggregatedReasoningEfforts 与推理强度聚合", () => {
+  it("聚合单服务商映射的推理强度并规范化去重", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "pa",
+        name: "Alpha",
+        mappings: [
+          {
+            local_model: "o3-mini",
+            upstream_model: "o3-mini-2025",
+            reasoning_efforts: [" low ", "high", "low", ""],
+          },
+        ],
+      }),
+    ];
+
+    const entries = aggregateModels(providers);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].reasoningEfforts).toEqual(["low", "high"]);
+    expect(entries[0].providers[0].reasoningEfforts).toEqual(["low", "high"]);
+    expect(resolveAggregatedReasoningEfforts(entries[0])).toEqual(["low", "high"]);
+  });
+
+  it("多服务商映射到同一模型时去重合并推理强度并保留首现顺序", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "pa",
+        name: "Alpha",
+        mappings: [
+          {
+            local_model: "deepseek-r1",
+            upstream_model: "deepseek-r1-a",
+            reasoning_efforts: ["medium", "high"],
+          },
+        ],
+      }),
+      provider({
+        id: "pb",
+        name: "Beta",
+        mappings: [
+          {
+            local_model: "deepseek-r1",
+            upstream_model: "deepseek-r1-b",
+            reasoning_efforts: ["low", "high", "max"],
+          },
+        ],
+      }),
+    ];
+
+    const entries = aggregateModels(providers);
+    expect(entries).toHaveLength(1);
+    // Alpha sorted before Beta, efforts order: medium, high, low, max
+    expect(entries[0].reasoningEfforts).toEqual(["medium", "high", "low", "max"]);
+    expect(resolveAggregatedReasoningEfforts(entries[0])).toEqual([
+      "medium",
+      "high",
+      "low",
+      "max",
+    ]);
+  });
+
+  it("未配置推理强度时不带 reasoningEfforts 属性且解析为空数组", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "pa",
+        name: "Alpha",
+        mappings: [
+          {
+            local_model: "gpt-4o",
+            upstream_model: "gpt-4o-2024",
+          },
+        ],
+      }),
+    ];
+
+    const entries = aggregateModels(providers);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).not.toHaveProperty("reasoningEfforts");
+    expect(entries[0].providers[0]).not.toHaveProperty("reasoningEfforts");
+    expect(resolveAggregatedReasoningEfforts(entries[0])).toEqual([]);
+  });
+
+  it("providers 为空或无有效映射时返回空数组", () => {
+    expect(
+      resolveAggregatedReasoningEfforts({ model: "orphan-model", providers: [] }),
+    ).toEqual([]);
   });
 });
 
