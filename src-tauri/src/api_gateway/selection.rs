@@ -158,6 +158,7 @@ pub(in crate::api_gateway) fn resolve_session_id(
 
 /// One live binding: the provider that should be attempted first and the
 /// consecutive misses recorded since its last bound success.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::api_gateway) struct SessionBinding {
     pub(in crate::api_gateway) provider_id: String,
@@ -196,6 +197,7 @@ impl SessionAffinityStore {
 
     /// Read a live binding and refresh its recency; an entry idle for more than
     /// the timeout is dropped and reported as absent.
+    #[cfg(test)]
     pub(in crate::api_gateway) fn lookup(
         &mut self,
         session: &str,
