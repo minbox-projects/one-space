@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/bug-fix/2026-09-20-opencode-session-storage-compatibility.md
-2026-09-20-opencode-session-storage-compatibility.md: 6bfe70c399996e2fa9ac59d2b85811d9233fee7a
-2026-09-20-opencode-session-storage-compatibility.zh.md: f39f4e8262ba11bc8267b42ee0434c8db75755cb
+2026-09-20-opencode-session-storage-compatibility.md: a6894ec53383f030a737c901384a06b2a67435a4
+2026-09-20-opencode-session-storage-compatibility.zh.md: a82313c845de1b1eb2faaaf3f9fd4df38f1aa11f

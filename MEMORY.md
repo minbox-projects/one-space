@@ -38,7 +38,7 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 - `app_store/` 是统一存储与迁移核心：`storage_engine.rs`、`migration.rs`、`provider_projection/`、`sync.rs`、`types/`；会话、provider 与 launcher 命令都在此汇聚。
 - 配置与密钥：`config.rs`、`runtime_profiles.rs`、`claude_profiles.rs`、`secrets.rs`、`crypto.rs`。
 - CLI 探测与版本：`cli_probe.rs`、`cli_updates.rs`、`version_detect.rs`。
-- OpenCode CLI 探测解析完整 semver，兼容 1.x 与 2.x，并在检测到多个安装时选择最高版本。
+- OpenCode CLI 探测按完整 semver 优先级解析并比较版本，兼容 1.x 与 2.x：prerelease 的纯数字标识低于字母数字标识、stable 高于 prerelease，build metadata 保留在显示文本中但不参与优先级比较；检测到多个安装时选择最高版本，更新检查同样容忍 build metadata。
 - OpenCode 会话历史与用量同时读取 legacy JSON、SQLite v1（`session` / `message`）和 SQLite v2（`session_v2` / `session_message`）。trim 后相同的 session ID 固定按 v2 > v1 > JSON 选择来源，低优先级来源只补充独有 session；用量在选中来源内保留该 session 的全部 message，以 message 级 token 数据兼容早期 v1 并匹配 v2，跨来源不重复累计。Tauri schema、前端与 resolver 保持不变；原因与取舍见 [OpenCode session storage compatibility](.ai-workflow/notes/implemented/bug-fix/2026-09-20-opencode-session-storage-compatibility.md)。
 
 ## Skills 统一目录与兼容

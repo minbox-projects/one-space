@@ -10,7 +10,7 @@ OpenCode moved session storage from legacy JSON to SQLite in v1.2.0, and the for
 
 ## Decision
 
-- Parse complete OpenCode CLI semver values for both 1.x and 2.x, and select the highest version when multiple installations are detected.
+- Parse OpenCode CLI versions as full SemVer: extract `1.x` and `2.x` values including prerelease and build metadata, and compare installations by SemVer precedence — numeric prerelease identifiers before alphanumeric, stable above prerelease, build metadata preserved in the reported text but ignored for precedence.
 - Read history and usage from legacy JSON, SQLite v1 tables `session` and `message`, and SQLite v2 tables `session_v2` and `session_message`.
 - Normalize session identity by its trimmed ID. When the same ID exists in multiple stores, select exactly one source with fixed priority v2 > v1 > JSON; lower-priority sources contribute only session IDs absent from higher-priority sources.
 - For usage, retain every message from the selected source and derive tokens from message-level data. This supports early v1 records and matches v2 without accumulating the same session across sources.
@@ -27,4 +27,5 @@ OpenCode moved session storage from legacy JSON to SQLite in v1.2.0, and the for
 - History and usage remain available across the JSON-to-SQLite and v1-to-v2 transitions.
 - Source selection is deterministic per trimmed session ID, while unique sessions from older sources remain visible.
 - Usage includes all messages from the selected source but never repeats a session solely because migration left another copy behind.
+- Version probing reports the exact printed version, including prerelease and build metadata, and update checking tolerates build metadata without changing comparison outcomes.
 - Compatibility stays inside OpenCode CLI probing and session storage readers; public Tauri data shape, frontend behavior, resolver behavior, and database-discovery scope do not expand.
