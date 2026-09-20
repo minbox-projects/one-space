@@ -301,6 +301,54 @@ mod tests {
         assert_eq!(result.version, "0.149.0");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn probe_cli_version_prefers_opencode_v2_over_v1() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "onespace-opencode-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        let v1_dir = root.join("v1");
+        let v2_dir = root.join("v2");
+        fs::create_dir_all(&v1_dir).expect("create OpenCode v1 directory");
+        fs::create_dir_all(&v2_dir).expect("create OpenCode v2 directory");
+        for (dir, version) in [(&v1_dir, "1.9.9"), (&v2_dir, "2.0.0")] {
+            let path = dir.join("fixture-opencode");
+            fs::write(
+                &path,
+                format!("#!/bin/sh\nprintf 'opencode {version}\\n'\n"),
+            )
+            .expect("write OpenCode fixture");
+            let mut permissions = fs::metadata(&path)
+                .expect("read OpenCode fixture")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).expect("make OpenCode fixture executable");
+        }
+
+        let path_guard = TestPath {
+            previous: std::env::var_os("PATH"),
+            root: root.clone(),
+        };
+        std::env::set_var(
+            "PATH",
+            std::env::join_paths([v1_dir.as_path(), v2_dir.as_path()])
+                .expect("build OpenCode fixture PATH"),
+        );
+
+        let result = probe_cli_version("fixture-opencode");
+
+        drop(path_guard);
+        assert!(result.installed);
+        assert_eq!(result.version, "2.0.0");
+    }
+
     #[test]
     fn test_fnm_node_version_roots_supports_legacy_and_xdg_layouts() {
         assert_eq!(
