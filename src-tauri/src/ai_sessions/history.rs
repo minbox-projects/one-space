@@ -780,116 +780,129 @@ fn antigravity_entry_model(value: &Value) -> Option<String> {
 pub(in crate::ai_sessions) fn collect_opencode_history_sessions(
     min_updated_at_ms: Option<i64>,
 ) -> Vec<HistorySessionEntry> {
-    let mut out = Vec::new();
+    let db_path = dirs::home_dir()
+        .map(|home| {
+            home.join(".local")
+                .join("share")
+                .join("opencode")
+                .join("opencode.db")
+        })
+        .unwrap_or_default();
+    let storage_roots = candidate_opencode_storage_paths()
+        .into_iter()
+        .filter_map(|paths| paths.sessions_root.parent().map(Path::to_path_buf))
+        .collect::<Vec<_>>();
 
-    // Try to read from SQLite database first (opencode 1.2+)
-    if let Some(sessions) = collect_opencode_sessions_from_db(min_updated_at_ms) {
-        return sessions;
+    let mut sessions =
+        collect_opencode_history_sessions_from_sources(&db_path, &storage_roots, min_updated_at_ms);
+    for session in &mut sessions {
+        session.working_dir = canonicalize_to_string(&session.working_dir);
     }
-
-    // Fallback to file-based storage (opencode 1.1.x)
-    for storage_paths in candidate_opencode_storage_paths() {
-        if !storage_paths.sessions_root.is_dir() {
-            continue;
-        }
-        let project_worktree_by_id =
-            read_opencode_project_worktree_map(&storage_paths.projects_root);
-
-        let mut stack = vec![storage_paths.sessions_root.clone()];
-        while let Some(current) = stack.pop() {
-            let Ok(entries) = fs::read_dir(&current) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-                if !path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(|name| name.ends_with(".json"))
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
-                let Some(parsed) = read_opencode_history_file(
-                    &path,
-                    &storage_paths.messages_root,
-                    &project_worktree_by_id,
-                ) else {
-                    continue;
-                };
-                if let Some(min) = min_updated_at_ms {
-                    if parsed.updated_at_ms < min {
-                        continue;
-                    }
-                }
-                out.push(parsed);
-            }
-        }
-    }
-
-    dedupe_history_sessions(out)
+    sessions
 }
 
-pub(in crate::ai_sessions) fn collect_opencode_sessions_from_db(
+pub(in crate::ai_sessions) fn collect_opencode_history_sessions_from_sources(
+    db_path: &Path,
+    storage_roots: &[PathBuf],
     min_updated_at_ms: Option<i64>,
-) -> Option<Vec<HistorySessionEntry>> {
-    let db_path = dirs::home_dir()?
-        .join(".local")
-        .join("share")
-        .join("opencode")
-        .join("opencode.db");
+) -> Vec<HistorySessionEntry> {
+    let mut by_session_id = HashMap::<String, HistorySessionEntry>::new();
 
-    if !db_path.exists() {
-        return None;
+    if db_path.is_file() {
+        if let Ok(conn) = Connection::open(db_path) {
+            insert_opencode_sessions_by_priority(
+                &mut by_session_id,
+                collect_opencode_sessions_from_db_query(
+                    &conn,
+                    r#"
+                    SELECT s.id, s.title, s.directory, s.time_created, s.time_updated,
+                           (SELECT COALESCE(
+                                       json_extract(m.data, '$.model.id'),
+                                       json_extract(m.data, '$.modelID')
+                                   )
+                            FROM session_message m
+                            WHERE m.session_id = s.id
+                            ORDER BY m.time_created DESC
+                            LIMIT 1) as model_id
+                    FROM session_v2 s
+                    WHERE s.time_archived IS NULL
+                    ORDER BY s.time_updated DESC
+                    "#,
+                    min_updated_at_ms,
+                ),
+            );
+            insert_opencode_sessions_by_priority(
+                &mut by_session_id,
+                collect_opencode_sessions_from_db_query(
+                    &conn,
+                    r#"
+                    SELECT s.id, s.title, s.directory, s.time_created, s.time_updated,
+                           (SELECT json_extract(m.data, '$.modelID')
+                            FROM message m
+                            WHERE m.session_id = s.id
+                            ORDER BY m.time_created DESC
+                            LIMIT 1) as model_id
+                    FROM session s
+                    WHERE s.time_archived IS NULL
+                    ORDER BY s.time_updated DESC
+                    "#,
+                    min_updated_at_ms,
+                ),
+            );
+        }
     }
 
-    let conn = Connection::open(&db_path).ok()?;
+    let mut json_sessions = Vec::new();
+    for storage_root in storage_roots {
+        json_sessions.extend(collect_opencode_sessions_from_storage_root(
+            storage_root,
+            min_updated_at_ms,
+        ));
+    }
+    insert_opencode_sessions_by_priority(
+        &mut by_session_id,
+        dedupe_history_sessions(json_sessions),
+    );
 
-    let mut stmt = conn
-        .prepare(
-            r#"
-        SELECT s.id, s.title, s.directory, s.time_created, s.time_updated,
-               (SELECT json_extract(m.data, '$.modelID')
-                FROM message m
-                WHERE m.session_id = s.id
-                ORDER BY m.time_created DESC
-                LIMIT 1) as model_id
-        FROM session s
-        WHERE s.time_archived IS NULL
-        ORDER BY s.time_updated DESC
-        "#,
-        )
-        .ok()?;
+    dedupe_history_sessions(by_session_id.into_values().collect())
+}
+
+fn collect_opencode_sessions_from_db_query(
+    conn: &Connection,
+    query: &str,
+    min_updated_at_ms: Option<i64>,
+) -> Vec<HistorySessionEntry> {
+    let Ok(mut stmt) = conn.prepare(query) else {
+        return Vec::new();
+    };
+
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, Option<String>>(5)?,
+        ))
+    }) else {
+        return Vec::new();
+    };
 
     let mut out = Vec::new();
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, Option<String>>(5)?,
-            ))
-        })
-        .ok()?;
-
     for row_result in rows.flatten() {
         let (session_id, title, directory, time_created, time_updated, model_id) = row_result;
-
-        // Filter by min_updated_at_ms if specified
         if let Some(min) = min_updated_at_ms {
             if time_updated < min {
                 continue;
             }
         }
 
-        let working_dir = canonicalize_to_string(&directory);
+        let session_id = session_id.trim().to_string();
+        if session_id.is_empty() {
+            continue;
+        }
+        let working_dir = directory.trim().to_string();
         if working_dir.is_empty() {
             continue;
         }
@@ -905,7 +918,73 @@ pub(in crate::ai_sessions) fn collect_opencode_sessions_from_db(
         });
     }
 
-    Some(dedupe_history_sessions(out))
+    out
+}
+
+fn collect_opencode_sessions_from_storage_root(
+    storage_root: &Path,
+    min_updated_at_ms: Option<i64>,
+) -> Vec<HistorySessionEntry> {
+    let sessions_root = storage_root.join("session");
+    if !sessions_root.is_dir() {
+        return Vec::new();
+    }
+    let messages_root = storage_root.join("message");
+    let project_worktree_by_id = read_opencode_project_worktree_map(&storage_root.join("project"));
+    let mut out = Vec::new();
+    let mut stack = vec![sessions_root];
+
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.ends_with(".json"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let Some(parsed) = read_opencode_history_file_from_source(
+                &path,
+                &messages_root,
+                &project_worktree_by_id,
+                false,
+            ) else {
+                continue;
+            };
+            if min_updated_at_ms
+                .map(|min| parsed.updated_at_ms < min)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            out.push(parsed);
+        }
+    }
+
+    out
+}
+
+fn insert_opencode_sessions_by_priority(
+    by_session_id: &mut HashMap<String, HistorySessionEntry>,
+    sessions: Vec<HistorySessionEntry>,
+) {
+    for mut session in sessions {
+        let session_id = session.tool_session_id.trim().to_string();
+        if session_id.is_empty() {
+            continue;
+        }
+        session.tool_session_id = session_id.clone();
+        by_session_id.entry(session_id).or_insert(session);
+    }
 }
 
 pub(in crate::ai_sessions) fn read_opencode_project_worktree_map(
@@ -964,10 +1043,20 @@ pub(in crate::ai_sessions) fn read_opencode_project_worktree_map(
     out
 }
 
+#[cfg(test)]
 pub(in crate::ai_sessions) fn read_opencode_history_file(
     path: &Path,
     messages_root: &Path,
     project_worktree_by_id: &HashMap<String, String>,
+) -> Option<HistorySessionEntry> {
+    read_opencode_history_file_from_source(path, messages_root, project_worktree_by_id, true)
+}
+
+fn read_opencode_history_file_from_source(
+    path: &Path,
+    messages_root: &Path,
+    project_worktree_by_id: &HashMap<String, String>,
+    normalize_directory: bool,
 ) -> Option<HistorySessionEntry> {
     let content = fs::read_to_string(path).ok()?;
     let value: Value = serde_json::from_str(&content).ok()?;
@@ -983,8 +1072,15 @@ pub(in crate::ai_sessions) fn read_opencode_history_file(
     let working_dir = value
         .get("directory")
         .and_then(|v| v.as_str())
-        .map(canonicalize_to_string)
+        .map(str::trim)
         .filter(|value| !value.is_empty())
+        .map(|value| {
+            if normalize_directory {
+                canonicalize_to_string(value)
+            } else {
+                value.to_string()
+            }
+        })
         .or_else(|| {
             project_id.and_then(|project_id| project_worktree_by_id.get(project_id).cloned())
         })
