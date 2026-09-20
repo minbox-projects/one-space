@@ -6,7 +6,7 @@ use super::{
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -807,64 +807,93 @@ pub(in crate::ai_sessions) fn collect_opencode_history_sessions_from_sources(
     min_updated_at_ms: Option<i64>,
 ) -> Vec<HistorySessionEntry> {
     let mut by_session_id = HashMap::<String, HistorySessionEntry>::new();
+    let mut higher_priority_ids = HashSet::<String>::new();
 
     if db_path.is_file() {
         if let Ok(conn) = Connection::open(db_path) {
-            insert_opencode_sessions_by_priority(
-                &mut by_session_id,
-                collect_opencode_sessions_from_db_query(
-                    &conn,
-                    r#"
-                    SELECT s.id, s.title, s.directory, s.time_created, s.time_updated,
-                           (SELECT COALESCE(
-                                       json_extract(m.data, '$.model.id'),
-                                       json_extract(m.data, '$.modelID')
-                                   )
-                            FROM session_message m
-                            WHERE m.session_id = s.id
-                            ORDER BY m.time_created DESC
-                            LIMIT 1) as model_id
-                    FROM session_v2 s
-                    WHERE s.time_archived IS NULL
-                    ORDER BY s.time_updated DESC
-                    "#,
-                    min_updated_at_ms,
-                ),
+            let v2_ids = collect_opencode_session_ids(&conn, "SELECT id FROM session_v2");
+            let v2_sessions = collect_opencode_sessions_from_db_query(
+                &conn,
+                r#"
+                SELECT s.id, s.title, s.directory, s.time_created, s.time_updated,
+                        (SELECT COALESCE(
+                                   json_extract(m.data, '$.data.model.id'),
+                                   json_extract(m.data, '$.data.modelID'),
+                                   json_extract(m.data, '$.model.id'),
+                                   json_extract(m.data, '$.modelID')
+                               )
+                        FROM session_message m
+                        WHERE m.session_id = s.id
+                        ORDER BY m.time_created DESC
+                        LIMIT 1) as model_id
+                FROM session_v2 s
+                WHERE s.time_archived IS NULL
+                ORDER BY s.time_updated DESC
+                "#,
+                min_updated_at_ms,
+            );
+            insert_opencode_sessions_by_priority(&mut by_session_id, v2_sessions);
+            higher_priority_ids.extend(v2_ids);
+
+            let v1_ids = collect_opencode_session_ids(&conn, "SELECT id FROM session");
+            let v1_sessions = collect_opencode_sessions_from_db_query(
+                &conn,
+                r#"
+                SELECT s.id, s.title, s.directory, s.time_created, s.time_updated,
+                       (SELECT json_extract(m.data, '$.modelID')
+                        FROM message m
+                        WHERE m.session_id = s.id
+                        ORDER BY m.time_created DESC
+                        LIMIT 1) as model_id
+                FROM session s
+                WHERE s.time_archived IS NULL
+                ORDER BY s.time_updated DESC
+                "#,
+                min_updated_at_ms,
             );
             insert_opencode_sessions_by_priority(
                 &mut by_session_id,
-                collect_opencode_sessions_from_db_query(
-                    &conn,
-                    r#"
-                    SELECT s.id, s.title, s.directory, s.time_created, s.time_updated,
-                           (SELECT json_extract(m.data, '$.modelID')
-                            FROM message m
-                            WHERE m.session_id = s.id
-                            ORDER BY m.time_created DESC
-                            LIMIT 1) as model_id
-                    FROM session s
-                    WHERE s.time_archived IS NULL
-                    ORDER BY s.time_updated DESC
-                    "#,
-                    min_updated_at_ms,
-                ),
+                v1_sessions
+                    .into_iter()
+                    .filter(|session| !higher_priority_ids.contains(&session.tool_session_id))
+                    .collect(),
             );
+            higher_priority_ids.extend(v1_ids);
         }
     }
 
     let mut json_sessions = Vec::new();
     for storage_root in storage_roots {
-        json_sessions.extend(collect_opencode_sessions_from_storage_root(
-            storage_root,
-            min_updated_at_ms,
-        ));
+        json_sessions.extend(collect_opencode_sessions_from_storage_root(storage_root));
     }
     insert_opencode_sessions_by_priority(
         &mut by_session_id,
-        dedupe_history_sessions(json_sessions),
+        dedupe_history_sessions(json_sessions)
+            .into_iter()
+            .filter(|session| !higher_priority_ids.contains(&session.tool_session_id))
+            .filter(|session| {
+                min_updated_at_ms
+                    .map(|min| session.updated_at_ms >= min)
+                    .unwrap_or(true)
+            })
+            .collect(),
     );
 
     dedupe_history_sessions(by_session_id.into_values().collect())
+}
+
+fn collect_opencode_session_ids(conn: &Connection, query: &str) -> HashSet<String> {
+    let Ok(mut stmt) = conn.prepare(query) else {
+        return HashSet::new();
+    };
+    let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
+        return HashSet::new();
+    };
+
+    rows.flatten()
+        .map(|session_id| session_id.trim().to_string())
+        .filter(|session_id| !session_id.is_empty())
+        .collect()
 }
 
 fn collect_opencode_sessions_from_db_query(
@@ -921,10 +950,7 @@ fn collect_opencode_sessions_from_db_query(
     out
 }
 
-fn collect_opencode_sessions_from_storage_root(
-    storage_root: &Path,
-    min_updated_at_ms: Option<i64>,
-) -> Vec<HistorySessionEntry> {
+fn collect_opencode_sessions_from_storage_root(storage_root: &Path) -> Vec<HistorySessionEntry> {
     let sessions_root = storage_root.join("session");
     if !sessions_root.is_dir() {
         return Vec::new();
@@ -960,12 +986,6 @@ fn collect_opencode_sessions_from_storage_root(
             ) else {
                 continue;
             };
-            if min_updated_at_ms
-                .map(|min| parsed.updated_at_ms < min)
-                .unwrap_or(false)
-            {
-                continue;
-            }
             out.push(parsed);
         }
     }

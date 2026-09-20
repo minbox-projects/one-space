@@ -1,18 +1,17 @@
 use super::{
     aggregate_day_stats_for_test, aggregate_usage_for_test, antigravity_brain_roots,
     antigravity_conversation_bindings_from_value, antigravity_managed_launch_env,
-    build_native_terminal_applescript,
-    clean_terminal_app_name, collect_antigravity_sessions_from_brain_root,
-    collect_opencode_history_sessions_from_sources, collect_opencode_usage_records_from_sources,
-    command_uses_resume_semantics,
+    build_native_terminal_applescript, clean_terminal_app_name,
+    collect_antigravity_sessions_from_brain_root, collect_opencode_history_sessions_from_sources,
+    collect_opencode_usage_records_from_sources, command_uses_resume_semantics,
     normalize_initial_prompt, normalize_terminal_app_key, normalize_working_dir_for_terminal,
     parse_claude_usage_file, parse_codex_usage_file, parse_opencode_message_usage_dir,
     read_antigravity_history_file, read_claude_project_file, read_codex_history_session_file,
-    read_opencode_history_file,
-    read_opencode_message_tokens_for_test, run_native_terminal_command_for_app_with_executor,
-    select_antigravity_session_for_create, select_antigravity_session_for_existing,
-    sessions_usage_tool_stats, timestamp_days_ago, usage_file_may_overlap_window_for_test,
-    validate_create_command, AntigravitySessionCandidate, ToolScan, ToolScanCache, UsageRecord,
+    read_opencode_history_file, read_opencode_message_tokens_for_test,
+    run_native_terminal_command_for_app_with_executor, select_antigravity_session_for_create,
+    select_antigravity_session_for_existing, sessions_usage_tool_stats, timestamp_days_ago,
+    usage_file_may_overlap_window_for_test, validate_create_command, AntigravitySessionCandidate,
+    ToolScan, ToolScanCache, UsageRecord,
 };
 use chrono::Local;
 use rusqlite::{params, Connection};
@@ -594,7 +593,7 @@ fn opencode_history_merges_sqlite_v2_v1_and_legacy_json_with_priority() {
             "v2-message",
             "shared-all",
             1_000_i64,
-            r#"{"modelID":"sqlite-v2-model"}"#,
+            r#"{"data":{"model":{"id":"sqlite-v2-model"}}}"#,
         ],
     )
     .expect("insert v2 message");
@@ -682,10 +681,7 @@ fn opencode_history_merges_sqlite_v2_v1_and_legacy_json_with_priority() {
         );
         let message = serde_json::json!({ "role": "assistant", "modelID": model });
         write_temp_file(
-            &storage_root
-                .join("message")
-                .join(id)
-                .join("message-1.json"),
+            &storage_root.join("message").join(id).join("message-1.json"),
             &serde_json::to_string(&message).expect("encode legacy message"),
         );
     }
@@ -708,9 +704,7 @@ fn opencode_history_merges_sqlite_v2_v1_and_legacy_json_with_priority() {
     assert_eq!(shared_all.working_dir, v2_directory.to_string_lossy());
     assert_eq!(shared_all.updated_at_ms, 1_000);
 
-    let shared_v1_json = by_id
-        .get("shared-v1-json")
-        .expect("shared-v1-json session");
+    let shared_v1_json = by_id.get("shared-v1-json").expect("shared-v1-json session");
     assert_eq!(shared_v1_json.title, "SQLite v1 title");
     assert_eq!(
         shared_v1_json.model_name.as_deref(),
@@ -728,11 +722,74 @@ fn opencode_history_merges_sqlite_v2_v1_and_legacy_json_with_priority() {
         json_only.model_name.as_deref(),
         Some("legacy-json-only-model")
     );
-    assert_eq!(
-        json_only.working_dir,
-        json_only_directory.to_string_lossy()
-    );
+    assert_eq!(json_only.working_dir, json_only_directory.to_string_lossy());
     assert_eq!(json_only.updated_at_ms, 11_000);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn opencode_history_does_not_fallback_when_v2_owner_is_filtered() {
+    let root = make_temp_dir("opencode-history-filtered-v2-owner");
+    let db_path = root.join("opencode.db");
+    let cutoff = 1_000_i64;
+
+    let conn = Connection::open(&db_path).expect("create temporary opencode database");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE session (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            directory TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            time_archived INTEGER
+        );
+        CREATE TABLE message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );
+        CREATE TABLE session_v2 (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            directory TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            time_archived INTEGER
+        );
+        CREATE TABLE session_message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );
+
+        INSERT INTO session_v2
+            (id, title, directory, time_created, time_updated, time_archived)
+        VALUES
+            ('archived-owner', 'Archived v2 owner', '/tmp/archived-v2', 100, 2000, 2000),
+            ('stale-owner', 'Stale v2 owner', '/tmp/stale-v2', 100, 900, NULL);
+
+        INSERT INTO session
+            (id, title, directory, time_created, time_updated, time_archived)
+        VALUES
+            ('archived-owner', 'Active v1 duplicate', '/tmp/archived-v1', 100, 3000, NULL),
+            ('stale-owner', 'Fresh v1 duplicate', '/tmp/stale-v1', 100, 2500, NULL),
+            ('v1-only', 'Fresh v1 only', '/tmp/v1-only', 100, 2000, NULL);
+        "#,
+    )
+    .expect("create schemas and insert filtered owner sessions");
+    drop(conn);
+
+    let entries = collect_opencode_history_sessions_from_sources(&db_path, &[], Some(cutoff));
+    let actual_ids = entries
+        .iter()
+        .map(|entry| entry.tool_session_id.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(actual_ids, vec!["v1-only"]);
 
     let _ = fs::remove_dir_all(root);
 }
@@ -834,8 +891,8 @@ fn opencode_json_usage_parser_reads_message_tokens() {
 }"#,
     );
 
-    let records =
-        parse_opencode_message_usage_dir(&messages_dir, "ses_123").expect("opencode usage");
+    let (records, errors) = parse_opencode_message_usage_dir(&messages_dir, "ses_123");
+    assert!(errors.is_empty());
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].session_id, "ses_123");
     assert_eq!(records[0].model.as_deref(), Some("deepseek-v4"));
@@ -1053,6 +1110,248 @@ fn opencode_usage_merges_sqlite_v2_v1_and_legacy_json_per_session() {
             "json-only-winning-model",
         ])
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn opencode_usage_trims_session_ids_before_source_selection() {
+    let root = make_temp_dir("opencode-usage-trimmed-session-id");
+    let db_path = root.join("opencode.db");
+
+    let conn = Connection::open(&db_path).expect("create temporary opencode database");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE session (
+            id TEXT PRIMARY KEY,
+            time_archived INTEGER
+        );
+        CREATE TABLE message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );
+        CREATE TABLE session_v2 (
+            id TEXT PRIMARY KEY,
+            time_archived INTEGER
+        );
+        CREATE TABLE session_message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );
+        INSERT INTO session_v2 (id, time_archived) VALUES (' shared ', NULL);
+        INSERT INTO session (id, time_archived) VALUES ('shared', NULL);
+        "#,
+    )
+    .expect("create v1 and v2 usage schemas");
+    conn.execute(
+        "INSERT INTO session_message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            "v2-message",
+            " shared ",
+            200_i64,
+            r#"{"role":"assistant","modelID":"v2-model","tokens":{"input":6,"output":5}}"#,
+        ],
+    )
+    .expect("insert v2 usage message");
+    conn.execute(
+        "INSERT INTO message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            "v1-message",
+            "shared",
+            300_i64,
+            r#"{"role":"assistant","modelID":"v1-model","tokens":{"input":500,"output":500}}"#,
+        ],
+    )
+    .expect("insert v1 usage message");
+    drop(conn);
+
+    let scan = collect_opencode_usage_records_from_sources(&db_path, &[], 100, 1_000);
+
+    assert_eq!(scan.scanned_sessions, 1);
+    assert!(!scan.records.is_empty());
+    assert!(scan
+        .records
+        .iter()
+        .all(|record| record.session_id == "shared"));
+    assert_eq!(
+        scan.records
+            .iter()
+            .map(|record| record.total_tokens)
+            .sum::<u64>(),
+        11
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn opencode_usage_keeps_valid_messages_when_a_sibling_is_corrupt() {
+    let root = make_temp_dir("opencode-usage-corrupt-sibling");
+    let db_path = root.join("opencode.db");
+    let storage_root = root.join("storage");
+
+    let conn = Connection::open(&db_path).expect("create temporary opencode database");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE session_v2 (
+            id TEXT PRIMARY KEY,
+            time_archived INTEGER
+        );
+        CREATE TABLE session_message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );
+        INSERT INTO session_v2 (id, time_archived) VALUES ('db-partial', NULL);
+        "#,
+    )
+    .expect("create v2 usage schema");
+    conn.execute(
+        "INSERT INTO session_message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            "db-valid",
+            "db-partial",
+            200_i64,
+            r#"{"role":"assistant","modelID":"db-valid-model","tokens":{"input":6,"output":5}}"#,
+        ],
+    )
+    .expect("insert valid v2 message");
+    conn.execute(
+        "INSERT INTO session_message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+        params!["db-corrupt", "db-partial", 300_i64, "{not-json"],
+    )
+    .expect("insert corrupt v2 message");
+    drop(conn);
+
+    write_temp_file(
+        &storage_root
+            .join("session")
+            .join("project-1")
+            .join("json-partial.json"),
+        &serde_json::json!({ "id": "json-partial" }).to_string(),
+    );
+    let messages_dir = storage_root.join("message").join("json-partial");
+    write_temp_file(
+        &messages_dir.join("message-valid.json"),
+        &serde_json::json!({
+            "role": "assistant",
+            "modelID": "json-valid-model",
+            "time": { "created": 600 },
+            "tokens": { "total": 22 }
+        })
+        .to_string(),
+    );
+    write_temp_file(&messages_dir.join("message-corrupt.json"), "{not-json");
+
+    let scan = collect_opencode_usage_records_from_sources(
+        &db_path,
+        std::slice::from_ref(&storage_root),
+        100,
+        1_000,
+    );
+
+    assert_eq!(scan.scanned_sessions, 2);
+    assert_eq!(
+        scan.records
+            .iter()
+            .map(|record| record.total_tokens)
+            .sum::<u64>(),
+        33
+    );
+    assert!(scan
+        .records
+        .iter()
+        .any(|record| record.model.as_deref() == Some("db-valid-model")));
+    assert!(scan
+        .records
+        .iter()
+        .any(|record| record.model.as_deref() == Some("json-valid-model")));
+    assert!(scan.errors.iter().any(|error| error.contains("db-partial")));
+    assert!(scan
+        .errors
+        .iter()
+        .any(|error| error.contains("json-partial")));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn opencode_usage_does_not_fall_back_when_v2_owner_is_archived() {
+    let root = make_temp_dir("opencode-usage-archived-owner");
+    let db_path = root.join("opencode.db");
+
+    let conn = Connection::open(&db_path).expect("create temporary opencode database");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE session (
+            id TEXT PRIMARY KEY,
+            time_archived INTEGER
+        );
+        CREATE TABLE message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );
+        CREATE TABLE session_v2 (
+            id TEXT PRIMARY KEY,
+            time_archived INTEGER
+        );
+        CREATE TABLE session_message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );
+        INSERT INTO session_v2 (id, time_archived) VALUES ('archived-owner', 500);
+        INSERT INTO session (id, time_archived) VALUES ('archived-owner', NULL);
+        INSERT INTO session (id, time_archived) VALUES ('v1-only', NULL);
+        "#,
+    )
+    .expect("create v1 and v2 usage schemas");
+    conn.execute(
+        "INSERT INTO session_message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            "v2-archived-message",
+            "archived-owner",
+            200_i64,
+            r#"{"modelID":"v2-archived-model","tokens":{"input":100,"output":100}}"#,
+        ],
+    )
+    .expect("insert v2 message for archived session");
+    conn.execute(
+        "INSERT INTO message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            "v1-archived-owner-message",
+            "archived-owner",
+            300_i64,
+            r#"{"modelID":"v1-losing-model","tokens":{"input":500,"output":500}}"#,
+        ],
+    )
+    .expect("insert v1 message for archived owner");
+    conn.execute(
+        "INSERT INTO message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            "v1-only-message",
+            "v1-only",
+            400_i64,
+            r#"{"modelID":"v1-kept-model","tokens":{"input":6,"output":5}}"#,
+        ],
+    )
+    .expect("insert v1 only message");
+    drop(conn);
+
+    let scan = collect_opencode_usage_records_from_sources(&db_path, &[], 100, 1_000);
+
+    assert_eq!(scan.scanned_sessions, 1);
+    assert_eq!(scan.records.len(), 1);
+    assert_eq!(scan.records[0].session_id, "v1-only");
+    assert_eq!(scan.records[0].total_tokens, 11);
 
     let _ = fs::remove_dir_all(root);
 }
