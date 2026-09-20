@@ -16775,9 +16775,11 @@ async fn session_affinity_cancelled_request_does_not_count_as_a_miss() {
     .expect("upstream must begin waiting");
     entered.expect("held upstream entry signal");
     drop(client);
-    tokio::time::timeout(std::time::Duration::from_millis(500), &mut handler)
-        .await
-        .expect("the handler must exit after the disconnect");
+    let timeout_result = tokio::time::timeout(std::time::Duration::from_millis(500), &mut handler)
+        .await;
+    let join_result = timeout_result.expect("the handler must exit after the disconnect");
+    let inner = join_result.expect("handle_connection must not join-err for a cancelled request");
+    assert!(inner.is_ok(), "handle_connection must return Ok(()) for a cancelled request: {inner:?}");
     let _ = release_tx.send(());
     let _ = tokio::time::timeout(std::time::Duration::from_secs(1), held).await;
 
