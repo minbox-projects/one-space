@@ -86,6 +86,8 @@ apiGatewayTemplateSource
 apiGatewayTemplateSync
 apiGatewayTemplateSyncing
 apiGatewayTemplateSyncSuccess
+apiGatewayTerminalLastSync
+apiGatewayTerminalNotSynced
 apiGatewayWeekdayFri
 apiGatewayWeekdayMon
 apiGatewayWeekdaySat

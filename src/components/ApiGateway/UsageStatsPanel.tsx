@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
 import {
   apiGatewayUsageStats,
+  formatGatewayTokens,
   formatUsageAmount,
   formatUsageRowAmount,
   USAGE_RANGE_KEYS,
@@ -59,10 +60,18 @@ function UsageAnalysisRow({
         {label}
       </td>
       <td className="px-3 py-2 text-right">{formatCount(metrics.request_count)}</td>
-      <td className="px-3 py-2 text-right">{formatCount(metrics.input_tokens)}</td>
-      <td className="px-3 py-2 text-right">{formatCount(metrics.cache_read_tokens)}</td>
-      <td className="px-3 py-2 text-right">{formatCount(metrics.cache_write_tokens)}</td>
-      <td className="px-3 py-2 text-right">{formatCount(metrics.output_tokens)}</td>
+      <td className="px-3 py-2 text-right" title={formatCount(metrics.input_tokens)}>
+        {formatGatewayTokens(metrics.input_tokens)}
+      </td>
+      <td className="px-3 py-2 text-right" title={formatCount(metrics.cache_read_tokens)}>
+        {formatGatewayTokens(metrics.cache_read_tokens)}
+      </td>
+      <td className="px-3 py-2 text-right" title={formatCount(metrics.cache_write_tokens)}>
+        {formatGatewayTokens(metrics.cache_write_tokens)}
+      </td>
+      <td className="px-3 py-2 text-right" title={formatCount(metrics.output_tokens)}>
+        {formatGatewayTokens(metrics.output_tokens)}
+      </td>
       <td className="px-3 py-2 text-right">{formatUsageRowAmount(metrics)}</td>
     </tr>
   );
@@ -175,8 +184,11 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
               <div className="text-[11px] font-medium uppercase text-muted-foreground">
                 {t("apiGatewayUsageTokens", "Tokens")}
               </div>
-              <div className="mt-1 text-lg font-semibold">
-                {formatCount(stats.total_tokens)}
+              <div
+                className="mt-1 text-lg font-semibold"
+                title={formatCount(stats.total_tokens)}
+              >
+                {formatGatewayTokens(stats.total_tokens)}
               </div>
             </div>
             <div
@@ -255,8 +267,11 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
                         <td className="px-3 py-2 text-right">
                           {formatCount(bucket.request_count)}
                         </td>
-                        <td className="px-3 py-2 text-right">
-                          {formatCount(bucket.total_tokens)}
+                        <td
+                          className="px-3 py-2 text-right"
+                          title={formatCount(bucket.total_tokens)}
+                        >
+                          {formatGatewayTokens(bucket.total_tokens)}
                         </td>
                         <td className="px-3 py-2 text-right">
                           {formatUsageRowAmount(bucket)}

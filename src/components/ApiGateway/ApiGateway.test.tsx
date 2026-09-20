@@ -543,6 +543,9 @@ describe("ApiGateway", () => {
     await waitFor(() =>
       expect(screen.queryByText("Pending sync")).not.toBeInTheDocument(),
     );
+    expect(
+      screen.getByTestId("api-gateway-target-synced-opencode"),
+    ).toHaveTextContent(formatGatewayTimestamp(2)!);
     expect(screen.getByText("Synced")).toBeInTheDocument();
   });
 
@@ -571,6 +574,60 @@ describe("ApiGateway", () => {
     const panel = within(screen.getByTestId("api-gateway-terminals"));
     expect(panel.getByText("Synced")).toBeInTheDocument();
     expect(panel.queryByText("Pending sync")).not.toBeInTheDocument();
+  });
+
+  it("AI终端集成展示未同步文案及已同步的最后一次同步时间", async () => {
+    const syncedAt = 1_700_000_000;
+    const store: Store = {
+      config: makeConfig({
+        keys: [{ id: "k1", label: "Default Key", value: "sk-test", enabled: true, created_at: 1 }],
+        default_key_id: "k1",
+        terminal_syncs: [
+          {
+            provider_id: "gw-open",
+            tool: "opencode",
+            synced_key_id: "k1",
+            synced_base_url: "http://127.0.0.1:17688/v1",
+            synced_at: syncedAt,
+          },
+        ],
+      }),
+      status: makeStatus({ key_count: 1, default_key_id: "k1" }),
+      targets: [
+        {
+          tool: "opencode",
+          name: "OpenCode",
+          provider_id: "gw-open",
+          base_url: "http://127.0.0.1:17688/v1",
+          synced: true,
+          pending_sync: false,
+          synced_key_id: "k1",
+          synced_at: syncedAt,
+        },
+        {
+          tool: "codex",
+          name: "Codex",
+          provider_id: null,
+          base_url: null,
+          synced: false,
+          pending_sync: true,
+          synced_key_id: null,
+          synced_at: null,
+        },
+      ],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiGateway />);
+    await screen.findByText("OpenCode");
+
+    const openCodeSyncedEl = screen.getByTestId("api-gateway-target-synced-opencode");
+    expect(openCodeSyncedEl).toHaveTextContent(formatGatewayTimestamp(syncedAt)!);
+    expect(openCodeSyncedEl).toHaveTextContent("Last sync");
+
+    const codexSyncedEl = screen.getByTestId("api-gateway-target-synced-codex");
+    expect(codexSyncedEl).toHaveTextContent("Not synced yet");
+    expect(codexSyncedEl).toHaveTextContent("Last sync");
   });
 
   it("展示运行状态、端口、自动禁用原因与时间，并支持复制地址与掩码 Key", async () => {

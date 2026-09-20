@@ -651,6 +651,61 @@ describe("UsageLogsPanel", () => {
       within(rows[0]).getByTestId("api-gateway-logs-upstream-model"),
     ).toHaveTextContent("claude-3-7-sonnet-20250219");
   });
+
+  it("大额 Tokens 在日志行与 Tooltip 中正确转换为万/百万/千万/亿等单位并展示完整数值 title", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          record({
+            input_tokens: 150_000,
+            output_tokens: 1_200_000,
+            cache_read_tokens: 10_000_000,
+            cache_write_tokens: 500_000,
+            total_tokens: 11_850_000,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-gateway-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("api-gateway-logs-row");
+    const tokensCell = within(rows[0]).getByTestId("api-gateway-logs-tokens-cell");
+    const breakdown = within(tokensCell).getByTestId("api-gateway-logs-tokens-breakdown");
+
+    // 行内展示
+    expect(breakdown).toHaveTextContent("15万");
+    expect(breakdown).toHaveTextContent("1.2百万");
+    expect(breakdown).toHaveTextContent("1.1千万"); // 10,000,000 + 500,000 = 10,500,000 => 1.1千万
+
+    // breakdown 外层 span 的 title 提示完整精确数值
+    const inputSpan = breakdown.querySelector('span[title*="Input"]');
+    expect(inputSpan).toHaveAttribute("title", "Input: 150,000");
+
+    const outputSpan = breakdown.querySelector('span[title*="Output"]');
+    expect(outputSpan).toHaveAttribute("title", "Output: 1,200,000");
+
+    const cacheSpan = breakdown.querySelector('span[title*="Cache"]');
+    expect(cacheSpan).toHaveAttribute("title", "Cache: 10,500,000");
+
+    // Tooltip 展示
+    const tooltip = within(tokensCell).getByTestId("api-gateway-logs-tokens-tooltip");
+    expect(tooltip).toHaveTextContent("15万");
+    expect(tooltip).toHaveTextContent("1.2百万");
+    expect(tooltip).toHaveTextContent("1.1千万");
+    expect(tooltip).toHaveTextContent("1千万"); // Cache read: 10_000_000
+    expect(tooltip).toHaveTextContent("50万"); // Cache write: 500_000
+    expect(tooltip).toHaveTextContent("1.2千万"); // Total: 11_850_000
+
+    // Tooltip 内数值 span 的 title
+    const totalVal = tooltip.querySelector('span[title="11,850,000"]');
+    expect(totalVal).toBeInTheDocument();
+    expect(totalVal).toHaveTextContent("1.2千万");
+  });
 });
 
 

@@ -408,4 +408,74 @@ describe("UsageStatsPanel", () => {
       "Beta Provider",
     ]);
   });
+
+  it("Tokens 卡片、时间分布与用量分析行正确应用单位转换格式并展示完整数值 title", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({
+        request_count: 50,
+        total_tokens: 15_200_000,
+        amount: 1.25,
+        buckets: [
+          {
+            label: "10:00",
+            request_count: 10,
+            input_tokens: 1_000_000,
+            cache_read_tokens: 500_000,
+            cache_write_tokens: 0,
+            output_tokens: 1_000_000,
+            total_tokens: 2_500_000,
+            amount: 0.25,
+            unpriced_count: 0,
+          },
+        ],
+        models: [
+          {
+            local_model: "gpt-4o",
+            request_count: 50,
+            input_tokens: 120_000,
+            cache_read_tokens: 35_000,
+            cache_write_tokens: 100_000_000,
+            output_tokens: 800,
+            total_tokens: 15_200_000,
+            amount: 1.25,
+            unpriced_count: 0,
+            providers: [],
+          },
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+
+    // 顶部卡片
+    const tokensCard = await screen.findByTestId("api-gateway-usage-card-tokens");
+    expect(tokensCard).toHaveTextContent("1.5千万");
+    const tokensVal = tokensCard.querySelector(".text-lg");
+    expect(tokensVal).toHaveAttribute("title", "15,200,000");
+
+    // 时间分布表格
+    const bucketTable = screen.getByTestId("api-gateway-usage-buckets");
+    const bucketRow = within(bucketTable).getByTestId("api-gateway-usage-bucket-row");
+    const bucketCells = within(bucketRow).getAllByRole("cell");
+    expect(bucketCells[2]).toHaveTextContent("2.5百万");
+    expect(bucketCells[2]).toHaveAttribute("title", "2,500,000");
+
+    // 模型分析表格
+    const modelTable = screen.getByTestId("api-gateway-usage-models");
+    const modelRow = within(modelTable).getByTestId("api-gateway-usage-model-row");
+    const modelCells = within(modelRow).getAllByRole("cell");
+    // [0]=Label, [1]=Requests, [2]=Input, [3]=CacheRead, [4]=CacheWrite, [5]=Output, [6]=Cost
+    expect(modelCells[1]).toHaveTextContent("50"); // 请求数不带 token 转换
+    expect(modelCells[2]).toHaveTextContent("12万");
+    expect(modelCells[2]).toHaveAttribute("title", "120,000");
+    expect(modelCells[3]).toHaveTextContent("3.5万");
+    expect(modelCells[3]).toHaveAttribute("title", "35,000");
+    expect(modelCells[4]).toHaveTextContent("1亿");
+    expect(modelCells[4]).toHaveAttribute("title", "100,000,000");
+    expect(modelCells[5]).toHaveTextContent("800");
+    expect(modelCells[5]).toHaveAttribute("title", "800");
+  });
 });

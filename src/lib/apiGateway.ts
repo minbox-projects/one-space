@@ -680,6 +680,34 @@ export function formatUsageAmount(amount: number | null | undefined): string {
 }
 
 /**
+ * Format a token count using compact Chinese units (万, 百万, 千万, 亿),
+ * matching the formatting used in AI Usage Stats.
+ * Numbers below 10,000 are formatted with thousand separators.
+ * Null, undefined, NaN, or non-finite values default to "0".
+ */
+export function formatGatewayTokens(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "0";
+  }
+  const absValue = Math.abs(value);
+  const units = [
+    { threshold: 100_000_000, suffix: "亿" },
+    { threshold: 10_000_000, suffix: "千万" },
+    { threshold: 1_000_000, suffix: "百万" },
+    { threshold: 10_000, suffix: "万" },
+  ];
+  const unit = units.find((item) => absValue >= item.threshold);
+  if (!unit) {
+    return new Intl.NumberFormat().format(value);
+  }
+
+  const formatted = new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 1,
+  }).format(value / unit.threshold);
+  return `${formatted}${unit.suffix}`;
+}
+
+/**
  * A row is "unpriced" only when every request in scope lacks a price row.
  * A partially priced row still shows its priced amount.
  */

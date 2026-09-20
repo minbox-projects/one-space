@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import {
   API_GATEWAY_SUPPORTED_TERMINAL_TOOLS,
+  formatGatewayTimestamp,
   resolveDefaultKeyId,
   type GatewayConfig,
   type GatewayTerminalTarget,
@@ -129,8 +130,24 @@ export function TerminalSyncPanel({
                       {target.tool}
                     </span>
                   </div>
-                  <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
-                    {target.base_url ?? t("apiGatewayNoValue", "not set")}
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+                    <span className="truncate font-mono">
+                      {target.base_url ?? t("apiGatewayNoValue", "not set")}
+                    </span>
+                    <span className="text-muted-foreground/30">•</span>
+                    <span
+                      data-testid={`api-gateway-target-synced-${target.tool}`}
+                      className="inline-flex items-center gap-1 text-[11px]"
+                    >
+                      <span className="shrink-0">
+                        {t("apiGatewayTerminalLastSync", "Last sync")}:
+                      </span>
+                      <span className="font-medium text-foreground/80">
+                        {target.synced_at
+                          ? formatGatewayTimestamp(target.synced_at)
+                          : t("apiGatewayTerminalNotSynced", "Not synced yet")}
+                      </span>
+                    </span>
                   </div>
                 </div>
 

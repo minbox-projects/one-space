@@ -24,6 +24,7 @@ import {
   apiGatewayUsageStats,
   clampUsagePage,
   formatGatewayTimestamp,
+  formatGatewayTokens,
   formatUsageAmount,
   formatUsageGroupLabel,
   formatUsageRowAmount,
@@ -432,6 +433,49 @@ describe("金额格式化与未定价判定", () => {
         metrics({ request_count: 2, unpriced_count: 1, amount: 0.5 }),
       ),
     ).toBe("0.5000");
+  });
+});
+
+describe("formatGatewayTokens Token格式化", () => {
+  it("0或无输入时返回0", () => {
+    expect(formatGatewayTokens(0)).toBe("0");
+    expect(formatGatewayTokens(null)).toBe("0");
+    expect(formatGatewayTokens(undefined)).toBe("0");
+    expect(formatGatewayTokens(Number.NaN)).toBe("0");
+    expect(formatGatewayTokens(Number.POSITIVE_INFINITY)).toBe("0");
+  });
+
+  it("小于1万的数字展示千分位完整整数", () => {
+    expect(formatGatewayTokens(1)).toBe("1");
+    expect(formatGatewayTokens(340)).toBe("340");
+    expect(formatGatewayTokens(1250)).toBe("1,250");
+    expect(formatGatewayTokens(9999)).toBe("9,999");
+  });
+
+  it("1万至100万（含十万级）转换为万并最多保留1位小数", () => {
+    expect(formatGatewayTokens(10000)).toBe("1万");
+    expect(formatGatewayTokens(15000)).toBe("1.5万");
+    expect(formatGatewayTokens(15400)).toBe("1.5万");
+    expect(formatGatewayTokens(100000)).toBe("10万");
+    expect(formatGatewayTokens(250000)).toBe("25万");
+    expect(formatGatewayTokens(856000)).toBe("85.6万");
+  });
+
+  it("1百万至1千万转换为百万并最多保留1位小数", () => {
+    expect(formatGatewayTokens(1000000)).toBe("1百万");
+    expect(formatGatewayTokens(1500000)).toBe("1.5百万");
+    expect(formatGatewayTokens(8000000)).toBe("8百万");
+  });
+
+  it("1千万至1亿转换为千万并最多保留1位小数", () => {
+    expect(formatGatewayTokens(10000000)).toBe("1千万");
+    expect(formatGatewayTokens(12000000)).toBe("1.2千万");
+  });
+
+  it("1亿以上转换为亿并最多保留1位小数", () => {
+    expect(formatGatewayTokens(100000000)).toBe("1亿");
+    expect(formatGatewayTokens(150000000)).toBe("1.5亿");
+    expect(formatGatewayTokens(2300000000)).toBe("23亿");
   });
 });
 
