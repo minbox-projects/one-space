@@ -447,10 +447,19 @@ export interface UsageModelBreakdown extends UsageMetrics {
   providers: UsageProviderBreakdown[];
 }
 
+export interface UnpricedUsageItem {
+  provider_id: string;
+  provider_name: string;
+  local_model: string;
+  upstream_model: string;
+  count: number;
+}
+
 export interface UsageStats extends UsageMetrics {
   granularity: "hour" | "day";
   buckets: UsageBucket[];
   models: UsageModelBreakdown[];
+  unpriced_items?: UnpricedUsageItem[];
 }
 
 export type UsageLogResult = "success" | "failure" | "cancelled";

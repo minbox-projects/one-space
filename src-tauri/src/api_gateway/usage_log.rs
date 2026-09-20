@@ -616,6 +616,15 @@ pub struct UsageModelRow {
     pub providers: Vec<UsageProviderRow>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnpricedUsageItem {
+    pub provider_id: String,
+    pub provider_name: String,
+    pub local_model: String,
+    pub upstream_model: String,
+    pub count: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageStats {
     /// `"hour"` for a single-day range, `"day"` for multi-day or all.
@@ -624,6 +633,8 @@ pub struct UsageStats {
     pub totals: UsageMetrics,
     pub buckets: Vec<UsageBucketRow>,
     pub models: Vec<UsageModelRow>,
+    #[serde(default)]
+    pub unpriced_items: Vec<UnpricedUsageItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1169,11 +1180,38 @@ impl UsageLogStore {
             });
         }
 
+        let mut unpriced_items = Vec::new();
+        if totals.unpriced_count > 0 {
+            let mut unpriced_statement = connection
+                .prepare(&format!(
+                    "SELECT provider_id, provider_name, local_model, upstream_model, COUNT(*)
+                     FROM usage_logs{stats_where} AND amount IS NULL AND upstream_model <> ''
+                     GROUP BY provider_id, provider_name, local_model, upstream_model
+                     ORDER BY COUNT(*) DESC, provider_name ASC, local_model ASC"
+                ))
+                .map_err(|error| error.to_string())?;
+            for row in unpriced_statement
+                .query_map(params_from_iter(params.iter()), |row| {
+                    Ok(UnpricedUsageItem {
+                        provider_id: row.get(0)?,
+                        provider_name: row.get(1)?,
+                        local_model: row.get(2)?,
+                        upstream_model: row.get(3)?,
+                        count: row.get::<_, i64>(4)? as u32,
+                    })
+                })
+                .map_err(|error| error.to_string())?
+            {
+                unpriced_items.push(row.map_err(|error| error.to_string())?);
+            }
+        }
+
         Ok(UsageStats {
             granularity: if hour_buckets { "hour" } else { "day" }.to_string(),
             totals,
             buckets,
             models,
+            unpriced_items,
         })
     }
 }

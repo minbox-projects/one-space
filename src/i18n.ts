@@ -729,6 +729,7 @@ const resources = {
       apiGatewayUsageHideTable: "Hide Details",
       apiGatewayUsageUnpricedHint:
         "{{count}} requests have no configured price and are excluded from the total.",
+      apiGatewayUsageUnpricedModelsLabel: "Unconfigured models:",
       apiGatewayUsageEmpty: "No usage records in this range.",
       apiGatewayUsageLoadFailed: "Failed to load usage statistics.",
       apiGatewayUsageAnalysis: "Usage analysis",
@@ -4376,6 +4377,7 @@ const resources = {
       apiGatewayUsageShowTable: "展开明细",
       apiGatewayUsageHideTable: "收起明细",
       apiGatewayUsageUnpricedHint: "{{count}} 条请求未配置价格，未计入合计。",
+      apiGatewayUsageUnpricedModelsLabel: "未配置价格模型：",
       apiGatewayUsageEmpty: "该范围内暂无用量记录。",
       apiGatewayUsageLoadFailed: "加载用量统计失败。",
       apiGatewayUsageAnalysis: "用量分析",

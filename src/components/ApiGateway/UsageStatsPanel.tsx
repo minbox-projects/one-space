@@ -22,6 +22,7 @@ import {
   formatUsageRowAmount,
   USAGE_RANGE_KEYS,
   usageRangeToDays,
+  type UnpricedUsageItem,
   type UsageBucket,
   type UsageMetrics,
   type UsageRangeKey,
@@ -228,6 +229,51 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
     return Math.max(0.0001, ...buckets.map((b) => b.amount));
   }, [buckets, trendMetric]);
 
+  const unpricedItems = useMemo(() => {
+    if (!stats || stats.unpriced_count <= 0) return [];
+    if (stats.unpriced_items && stats.unpriced_items.length > 0) {
+      return stats.unpriced_items;
+    }
+    const items: UnpricedUsageItem[] = [];
+    for (const model of stats.models) {
+      let foundInProviders = false;
+      for (const provider of model.providers) {
+        if (provider.unpriced_count > 0) {
+          foundInProviders = true;
+          items.push({
+            provider_id: provider.provider_id,
+            provider_name: provider.provider_name || provider.provider_id,
+            local_model: model.local_model,
+            upstream_model: model.local_model,
+            count: provider.unpriced_count,
+          });
+        }
+      }
+      if (!foundInProviders && model.unpriced_count > 0) {
+        if (model.providers.length > 0) {
+          for (const provider of model.providers) {
+            items.push({
+              provider_id: provider.provider_id,
+              provider_name: provider.provider_name || provider.provider_id,
+              local_model: model.local_model,
+              upstream_model: model.local_model,
+              count: model.unpriced_count,
+            });
+          }
+        } else {
+          items.push({
+            provider_id: "",
+            provider_name: "",
+            local_model: model.local_model,
+            upstream_model: model.local_model,
+            count: model.unpriced_count,
+          });
+        }
+      }
+    }
+    return items;
+  }, [stats]);
+
   const cacheHitRate = useMemo(() => {
     if (!stats) return 0;
     const base = stats.input_tokens + stats.cache_read_tokens;
@@ -427,13 +473,61 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
           {stats.unpriced_count > 0 ? (
             <div
               data-testid="api-gateway-usage-unpriced-hint"
-              className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700"
+              className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400 space-y-1.5"
             >
-              {t(
-                "apiGatewayUsageUnpricedHint",
-                "{{count}} requests have no configured price and are excluded from the total.",
-                { count: stats.unpriced_count },
-              )}
+              <div>
+                {t(
+                  "apiGatewayUsageUnpricedHint",
+                  "{{count}} requests have no configured price and are excluded from the total.",
+                  { count: stats.unpriced_count },
+                )}
+              </div>
+              {unpricedItems.length > 0 ? (
+                <div
+                  className="space-y-1.5 pt-0.5"
+                  data-testid="api-gateway-usage-unpriced-list"
+                >
+                  <div className="text-[11px] font-medium text-amber-800/90 dark:text-amber-300/90">
+                    {t("apiGatewayUsageUnpricedModelsLabel", "Unconfigured models:")}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {unpricedItems.map((item, index) => {
+                      const providerLabel = item.provider_name || item.provider_id;
+                      const hasDifferentUpstream =
+                        Boolean(item.upstream_model) &&
+                        item.upstream_model !== item.local_model;
+                      return (
+                        <span
+                          key={`${item.provider_id}-${item.local_model}-${item.upstream_model}-${index}`}
+                          className="inline-flex items-center gap-1 rounded border border-amber-500/25 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[11px] text-amber-900 dark:text-amber-200 shadow-2xs"
+                          data-testid="api-gateway-usage-unpriced-item"
+                        >
+                          {providerLabel ? (
+                            <>
+                              <span className="font-sans font-medium text-amber-950 dark:text-amber-100">
+                                {providerLabel}
+                              </span>
+                              <span className="text-amber-600/60 dark:text-amber-400/60">/</span>
+                            </>
+                          ) : null}
+                          <span>{item.local_model}</span>
+                          {hasDifferentUpstream ? (
+                            <span
+                              className="text-[10px] text-amber-700/80 dark:text-amber-300/80"
+                              title={item.upstream_model}
+                            >
+                              ({item.upstream_model})
+                            </span>
+                          ) : null}
+                          <span className="font-sans text-[10px] text-amber-700/70 dark:text-amber-300/70">
+                            ({item.count})
+                          </span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : null}
 

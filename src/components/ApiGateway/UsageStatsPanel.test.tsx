@@ -162,9 +162,139 @@ describe("UsageStatsPanel", () => {
     expect(
       screen.getByText(/3 requests have no configured price/),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByTestId("api-gateway-usage-unpriced-hint"),
-    ).toHaveTextContent("3");
+    const hint = screen.getByTestId("api-gateway-usage-unpriced-hint");
+    expect(hint).toHaveTextContent("3");
+    // Fallback extracts from models when unpriced_items is absent
+    expect(hint).toHaveTextContent("Provider A");
+    expect(hint).toHaveTextContent("local-x");
+  });
+
+  it("未配置价格提示中展示服务商名称、模型 ID 以及上游模型和请求数", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({
+        request_count: 5,
+        unpriced_count: 5,
+        unpriced_items: [
+          {
+            provider_id: "p-openai",
+            provider_name: "OpenAI",
+            local_model: "gpt-4o",
+            upstream_model: "gpt-4o-2024-08-06",
+            count: 3,
+          },
+          {
+            provider_id: "p-deepseek",
+            provider_name: "DeepSeek",
+            local_model: "deepseek-chat",
+            upstream_model: "deepseek-chat",
+            count: 2,
+          },
+        ],
+        models: [
+          {
+            local_model: "gpt-4o",
+            request_count: 3,
+            input_tokens: 100,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 100,
+            total_tokens: 200,
+            amount: 0,
+            unpriced_count: 3,
+            providers: [
+              {
+                provider_id: "p-openai",
+                provider_name: "OpenAI",
+                request_count: 3,
+                input_tokens: 100,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 100,
+                total_tokens: 200,
+                amount: 0,
+                unpriced_count: 3,
+              },
+            ],
+          },
+          {
+            local_model: "deepseek-chat",
+            request_count: 2,
+            input_tokens: 50,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 50,
+            total_tokens: 100,
+            amount: 0,
+            unpriced_count: 2,
+            providers: [
+              {
+                provider_id: "p-deepseek",
+                provider_name: "DeepSeek",
+                request_count: 2,
+                input_tokens: 50,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 50,
+                total_tokens: 100,
+                amount: 0,
+                unpriced_count: 2,
+              },
+            ],
+          },
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+
+    const hint = await screen.findByTestId("api-gateway-usage-unpriced-hint");
+    expect(hint).toHaveTextContent("5 requests have no configured price");
+    expect(hint).toHaveTextContent("Unconfigured models:");
+
+    const items = within(hint).getAllByTestId("api-gateway-usage-unpriced-item");
+    expect(items).toHaveLength(2);
+
+    // Item 1: OpenAI / gpt-4o (gpt-4o-2024-08-06) (3)
+    expect(items[0]).toHaveTextContent("OpenAI");
+    expect(items[0]).toHaveTextContent("gpt-4o");
+    expect(items[0]).toHaveTextContent("gpt-4o-2024-08-06");
+    expect(items[0]).toHaveTextContent("(3)");
+
+    // Item 2: DeepSeek / deepseek-chat (2) (upstream matches local, no duplicate upstream displayed)
+    expect(items[1]).toHaveTextContent("DeepSeek");
+    expect(items[1]).toHaveTextContent("deepseek-chat");
+    expect(items[1]).toHaveTextContent("(2)");
+  });
+
+  it("中文环境下展示未配置价格的模型提示与服务商", async () => {
+    await i18n.changeLanguage("zh");
+    invokeMock.mockImplementation(async () => {
+      return metrics({
+        request_count: 2,
+        unpriced_count: 2,
+        unpriced_items: [
+          {
+            provider_id: "p-deepseek",
+            provider_name: "DeepSeek",
+            local_model: "deepseek-chat",
+            upstream_model: "deepseek-chat",
+            count: 2,
+          },
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+
+    const hint = await screen.findByTestId("api-gateway-usage-unpriced-hint");
+    expect(hint).toHaveTextContent("2 条请求未配置价格，未计入合计。");
+    expect(hint).toHaveTextContent("未配置价格模型：");
+    expect(hint).toHaveTextContent("DeepSeek");
+    expect(hint).toHaveTextContent("deepseek-chat");
+    expect(hint).toHaveTextContent("(2)");
   });
 
   it("模型行只展示范围内实际调用过的服务商明细", async () => {

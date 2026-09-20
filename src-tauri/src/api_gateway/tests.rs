@@ -12002,6 +12002,93 @@ fn usage_stats_unpriced_count_excludes_rows_without_upstream_model() {
         .find(|row| row.local_model == "local-unpriced")
         .expect("unpriced row");
     assert_eq!(unpriced.metrics.unpriced_count, 1);
+    assert_eq!(stats.unpriced_items.len(), 1);
+    assert_eq!(stats.unpriced_items[0].provider_id, "p1");
+    assert_eq!(stats.unpriced_items[0].provider_name, "Provider One");
+    assert_eq!(stats.unpriced_items[0].local_model, "local-unpriced");
+    assert_eq!(stats.unpriced_items[0].upstream_model, "remote-unpriced");
+    assert_eq!(stats.unpriced_items[0].count, 1);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn usage_stats_returns_unpriced_items_with_provider_and_models() {
+    let (dir, store) = usage_store("usage-unpriced-items-breakdown");
+    let base = rfc3339_millis("2026-09-16T08:00:00+08:00");
+
+    // Provider A, Model A: 2 unpriced requests
+    for i in 0..2 {
+        store
+            .append(
+                &sample_record(
+                    base + i * 1_000,
+                    "gpt-4o",
+                    "gpt-4o-2024-08-06",
+                    "p-openai",
+                    "OpenAI",
+                    UsageResult::Success,
+                    None,
+                    tokens(10, 0, 0, 5),
+                ),
+                365,
+            )
+            .unwrap();
+    }
+
+    // Provider B, Model B: 3 unpriced requests
+    for i in 0..3 {
+        store
+            .append(
+                &sample_record(
+                    base + 10_000 + i * 1_000,
+                    "deepseek-chat",
+                    "deepseek-v3",
+                    "p-deepseek",
+                    "DeepSeek",
+                    UsageResult::Success,
+                    None,
+                    tokens(10, 0, 0, 5),
+                ),
+                365,
+            )
+            .unwrap();
+    }
+
+    // Provider A, Model A with priced request (amount = Some(0.005))
+    store
+        .append(
+            &sample_record(
+                base + 20_000,
+                "gpt-4o",
+                "gpt-4o-2024-08-06",
+                "p-openai",
+                "OpenAI",
+                UsageResult::Success,
+                Some(0.005),
+                tokens(10, 0, 0, 5),
+            ),
+            365,
+        )
+        .unwrap();
+
+    let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
+    assert_eq!(stats.totals.request_count, 6);
+    assert_eq!(stats.totals.unpriced_count, 5);
+    assert_eq!(stats.unpriced_items.len(), 2);
+
+    // Sorted by count DESC: DeepSeek (3) first, then OpenAI (2)
+    assert_eq!(stats.unpriced_items[0].provider_id, "p-deepseek");
+    assert_eq!(stats.unpriced_items[0].provider_name, "DeepSeek");
+    assert_eq!(stats.unpriced_items[0].local_model, "deepseek-chat");
+    assert_eq!(stats.unpriced_items[0].upstream_model, "deepseek-v3");
+    assert_eq!(stats.unpriced_items[0].count, 3);
+
+    assert_eq!(stats.unpriced_items[1].provider_id, "p-openai");
+    assert_eq!(stats.unpriced_items[1].provider_name, "OpenAI");
+    assert_eq!(stats.unpriced_items[1].local_model, "gpt-4o");
+    assert_eq!(stats.unpriced_items[1].upstream_model, "gpt-4o-2024-08-06");
+    assert_eq!(stats.unpriced_items[1].count, 2);
 
     let _ = fs::remove_dir_all(&dir);
 }
