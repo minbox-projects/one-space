@@ -734,6 +734,100 @@ describe("UsageStatsPanel", () => {
     const providerCacheHitCell = screen.getByTestId("api-gateway-usage-provider-cache-hit");
     expect(providerCacheHitCell).toHaveTextContent("25%");
   });
+
+  it("脏数据中空服务商行不渲染，含数据的真实服务商行仍保留", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({
+        request_count: 3,
+        total_tokens: 32,
+        models: [
+          {
+            // 旧库脏数据：真实服务商行与 provider_id=''/provider_name='' 的空白行并存。
+            local_model: "local-good",
+            request_count: 2,
+            input_tokens: 10,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 20,
+            total_tokens: 30,
+            amount: 0.1,
+            unpriced_count: 0,
+            providers: [
+              {
+                provider_id: "prov-a",
+                provider_name: "Provider A",
+                request_count: 2,
+                input_tokens: 10,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 20,
+                total_tokens: 30,
+                amount: 0.1,
+                unpriced_count: 0,
+              },
+              {
+                provider_id: "",
+                provider_name: "",
+                request_count: 0,
+                input_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                amount: 0,
+                unpriced_count: 0,
+              },
+            ],
+          },
+          {
+            // 仅有空白服务商行的模型：模型行本身有数据，不能被过滤掉。
+            local_model: "local-dirty-only",
+            request_count: 1,
+            input_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 1,
+            total_tokens: 2,
+            amount: 0,
+            unpriced_count: 0,
+            providers: [
+              {
+                provider_id: "",
+                provider_name: "",
+                request_count: 1,
+                input_tokens: 1,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 1,
+                total_tokens: 2,
+                amount: 0,
+                unpriced_count: 0,
+              },
+            ],
+          },
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+
+    const modelTable = await screen.findByTestId("api-gateway-usage-models");
+    // 含数据的模型行全部保留，空白服务商行不得把它一起隐藏。
+    expect(
+      within(modelTable).getAllByTestId("api-gateway-usage-model-row"),
+    ).toHaveLength(2);
+    expect(within(modelTable).getByText("local-dirty-only")).toBeInTheDocument();
+
+    // 只保留 prov-a 这一条真实服务商行，空 provider 行不渲染。
+    const providerRows = within(modelTable).queryAllByTestId(
+      "api-gateway-usage-provider-row",
+    );
+    expect(providerRows).toHaveLength(1);
+    expect(providerRows[0]).toHaveTextContent("Provider A");
+  });
 });
 
 

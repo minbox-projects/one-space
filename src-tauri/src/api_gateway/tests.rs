@@ -8191,8 +8191,8 @@ async fn retry_cancel_disconnect_during_retry_delay_exits_without_further_upstre
             let store = default_usage_store();
             let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
             assert_eq!(
-                stats.totals.request_count, 1,
-                "the completed attempts are not inbound requests"
+                stats.totals.request_count, 0,
+                "cancelled requests and their attempts are not usage requests"
             );
             assert_eq!(stats.totals.total_tokens, 0);
             assert_eq!(stats.totals.amount, 0.0);
@@ -10604,7 +10604,10 @@ async fn downstream_cancel_records_cancelled() {
     let stats = default_usage_store()
         .usage_stats(&TimeRange::default(), false)
         .unwrap();
-    assert_eq!(stats.totals.request_count, 1, "a cancelled request counts once");
+    assert_eq!(
+        stats.totals.request_count, 0,
+        "cancelled requests are excluded from usage statistics"
+    );
     assert_eq!(stats.totals.total_tokens, 0);
     assert_eq!(stats.totals.amount, 0.0);
     assert_eq!(stats.totals.unpriced_count, 0);
@@ -11268,7 +11271,10 @@ async fn downstream_cancel_during_streaming_records_cancelled() {
     let stats = default_usage_store()
         .usage_stats(&TimeRange::default(), false)
         .unwrap();
-    assert_eq!(stats.totals.request_count, 1, "a cancelled request counts once");
+    assert_eq!(
+        stats.totals.request_count, 0,
+        "cancelled requests are excluded from usage statistics"
+    );
     assert_eq!(stats.totals.total_tokens, 0);
     assert_eq!(stats.totals.amount, 0.0);
     let grouped = default_usage_store()
@@ -11973,20 +11979,21 @@ fn usage_stats_unpriced_count_excludes_rows_without_upstream_model() {
         .unwrap();
 
     let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
-    assert_eq!(stats.totals.request_count, 2);
+    assert_eq!(
+        stats.totals.request_count, 1,
+        "only the request that reached an upstream model counts"
+    );
     assert_eq!(
         stats.totals.unpriced_count, 1,
         "only the request that reached an unpriced upstream model is unpriced"
     );
 
-    let cancelled = stats
-        .models
-        .iter()
-        .find(|row| row.local_model == "local-cancelled")
-        .expect("cancelled row");
-    assert_eq!(
-        cancelled.metrics.unpriced_count, 0,
-        "a row with no upstream model must not render as unpriced"
+    assert!(
+        !stats
+            .models
+            .iter()
+            .any(|row| row.local_model == "local-cancelled"),
+        "a cancelled row with no upstream model is excluded from model statistics"
     );
 
     let unpriced = stats
@@ -14885,10 +14892,11 @@ async fn pre_first_byte_stream_failure_switches_and_logs_both_attempts() {
 /// AC-008 / REQ-001 / REQ-002: a non-streaming attempt that completed
 /// successfully but whose response cannot be delivered because the downstream
 /// client is gone stays a non-terminal success row; the request's single
-/// terminal row is the synthetic `cancelled` row, and the statistics count one
-/// cancelled request with no tokens and no cost. The upstream body is far larger
-/// than any socket buffer, so the handler is still blocked writing when the
-/// client resets the connection.
+/// terminal row is the synthetic `cancelled` row. That cancelled terminal row is
+/// still written to the request log, but it is not counted by the usage
+/// statistics: the stats show no requests, no tokens and no cost for this
+/// disconnect. The upstream body is far larger than any socket buffer, so the
+/// handler is still blocked writing when the client resets the connection.
 #[tokio::test]
 async fn successful_attempt_cut_off_by_downstream_disconnect_stays_non_terminal() {
     let _home = isolated_temp_home("attempt-delivery-cancelled");
@@ -15014,11 +15022,229 @@ async fn successful_attempt_cut_off_by_downstream_disconnect_stays_non_terminal(
     let stats = default_usage_store()
         .usage_stats(&TimeRange::default(), false)
         .unwrap();
-    assert_eq!(stats.totals.request_count, 1, "only the terminal row counts");
+    assert_eq!(
+        stats.totals.request_count, 0,
+        "the cancelled terminal row is not a usage request"
+    );
     assert_eq!(stats.totals.total_tokens, 0);
     assert_eq!(stats.totals.amount, 0.0);
     assert_eq!(
         stats.totals.unpriced_count, 0,
         "the cancelled row never reached an upstream model"
     );
+}
+
+/// 行为规格：`usage_stats` 的 totals/buckets/models/providers 必须排除
+/// `result='cancelled'` 的合成终态行。没有候选上游的 failure 行仍然计入
+/// totals/models 的失败计数，但它绝不产生 `provider_id=''` 的空白服务商行。
+#[test]
+fn usage_stats_excludes_cancelled_and_hides_empty_provider() {
+    // (1) 同一模型下混合 success、无候选 failure 与 cancelled。
+    let (dir, store) = usage_store("usage-stats-cancelled-empty-provider");
+    let success_at = rfc3339_millis("2026-09-15T10:00:00+08:00");
+    let no_candidate_at = rfc3339_millis("2026-09-15T11:00:00+08:00");
+    let cancelled_at = rfc3339_millis("2026-09-17T10:00:00+08:00");
+    store
+        .append_batch(
+            &[
+                sample_record(
+                    success_at,
+                    "local-a",
+                    "remote-a",
+                    "prov-a",
+                    "Provider A",
+                    UsageResult::Success,
+                    Some(0.5),
+                    tokens(10, 0, 0, 5),
+                ),
+                // 没有候选上游：请求未到达任何服务商就失败，仍是终态行。
+                sample_record(
+                    no_candidate_at,
+                    "local-a",
+                    "",
+                    "",
+                    "",
+                    UsageResult::Failure,
+                    None,
+                    UsageTokens::default(),
+                ),
+                // 用户取消：合成终态行，绝不应进入用量统计。
+                sample_record(
+                    cancelled_at,
+                    "local-a",
+                    "",
+                    "",
+                    "",
+                    UsageResult::Cancelled,
+                    None,
+                    UsageTokens::default(),
+                ),
+            ],
+            365,
+        )
+        .expect("append_batch must store every row");
+    assert_eq!(store.count().unwrap(), 3);
+
+    let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
+
+    let mut failures: Vec<String> = Vec::new();
+    if stats.totals.request_count != 2 {
+        failures.push(format!(
+            "totals.request_count = {} (expected 2: success + no-candidate failure, never the cancelled row)",
+            stats.totals.request_count
+        ));
+    }
+    if stats.totals.total_tokens != 15 {
+        failures.push(format!(
+            "totals.total_tokens = {} (expected 15: only the success row carries tokens)",
+            stats.totals.total_tokens
+        ));
+    }
+    if stats.totals.amount != 0.5 {
+        failures.push(format!(
+            "totals.amount = {} (expected 0.5: only the priced success row)",
+            stats.totals.amount
+        ));
+    }
+    if stats.totals.unpriced_count != 0 {
+        failures.push(format!(
+            "totals.unpriced_count = {} (expected 0: the no-candidate failure never reached an upstream model, so it is not unpriced)",
+            stats.totals.unpriced_count
+        ));
+    }
+
+    match stats.models.iter().find(|row| row.local_model == "local-a") {
+        None => failures.push("the local-a model row is missing".to_string()),
+        Some(row) => {
+            if row.metrics.request_count != 2 {
+                failures.push(format!(
+                    "models[local-a].request_count = {} (expected 2: cancelled excluded)",
+                    row.metrics.request_count
+                ));
+            }
+            let blank: Vec<String> = row
+                .providers
+                .iter()
+                .filter(|provider| {
+                    provider.provider_id.is_empty() || provider.provider_name.is_empty()
+                })
+                .map(|provider| {
+                    format!(
+                        "id={:?} name={:?}",
+                        provider.provider_id, provider.provider_name
+                    )
+                })
+                .collect();
+            if !blank.is_empty() {
+                failures.push(format!(
+                    "blank provider rows leaked into models[local-a].providers: {blank:?}"
+                ));
+            }
+            let real: Vec<&super::UsageProviderRow> = row
+                .providers
+                .iter()
+                .filter(|provider| provider.provider_id == "prov-a")
+                .collect();
+            if real.len() != 1 {
+                failures.push(format!(
+                    "models[local-a].providers has {} rows for prov-a (expected 1)",
+                    real.len()
+                ));
+            } else if real[0].metrics.request_count != 1 {
+                failures.push(format!(
+                    "providers[prov-a].request_count = {} (expected 1: only the success row)",
+                    real[0].metrics.request_count
+                ));
+            }
+        }
+    }
+
+    if stats.buckets.iter().any(|bucket| bucket.label == "2026-09-17") {
+        failures.push(
+            "a cancelled-only UTC+8 day created a bucket (expected no 2026-09-17 bucket)"
+                .to_string(),
+        );
+    }
+    match stats
+        .buckets
+        .iter()
+        .find(|bucket| bucket.label == "2026-09-15")
+    {
+        None => failures.push("the 2026-09-15 bucket is missing".to_string()),
+        Some(bucket) => {
+            if bucket.metrics.request_count != 2 {
+                failures.push(format!(
+                    "buckets[2026-09-15].request_count = {} (expected 2: cancelled excluded)",
+                    bucket.metrics.request_count
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "usage_stats must exclude cancelled rows and blank providers:\n- {}",
+        failures.join("\n- ")
+    );
+    let _ = fs::remove_dir_all(&dir);
+
+    // (2) 只有一条 cancelled 的请求：整份统计必须完全为空。
+    let (dir, only_cancelled) = usage_store("usage-stats-cancelled-only");
+    only_cancelled
+        .append(
+            &sample_record(
+                rfc3339_millis("2026-09-18T09:00:00+08:00"),
+                "local-cancelled",
+                "",
+                "",
+                "",
+                UsageResult::Cancelled,
+                None,
+                UsageTokens::default(),
+            ),
+            365,
+        )
+        .unwrap();
+    let empty = only_cancelled
+        .usage_stats(&TimeRange::default(), false)
+        .unwrap();
+
+    let mut cancelled_only: Vec<String> = Vec::new();
+    if empty.totals.request_count != 0 {
+        cancelled_only.push(format!(
+            "totals.request_count = {} (expected 0 for a cancelled-only request)",
+            empty.totals.request_count
+        ));
+    }
+    if empty.totals.total_tokens != 0 {
+        cancelled_only.push(format!(
+            "totals.total_tokens = {} (expected 0)",
+            empty.totals.total_tokens
+        ));
+    }
+    if !empty.models.is_empty() {
+        cancelled_only.push(format!(
+            "models = {:?} (a cancelled-only request must not create a model row)",
+            empty
+                .models
+                .iter()
+                .map(|row| row.local_model.clone())
+                .collect::<Vec<_>>()
+        ));
+    }
+    if !empty.buckets.is_empty() {
+        cancelled_only.push(format!(
+            "buckets = {:?} (a cancelled-only request must not create a bucket)",
+            empty
+                .buckets
+                .iter()
+                .map(|bucket| bucket.label.clone())
+                .collect::<Vec<_>>()
+        ));
+    }
+    assert!(
+        cancelled_only.is_empty(),
+        "a cancelled-only request must be invisible to usage stats:\n- {}",
+        cancelled_only.join("\n- ")
+    );
+    let _ = fs::remove_dir_all(&dir);
 }
