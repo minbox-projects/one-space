@@ -468,7 +468,7 @@ describe("UsageStatsPanel", () => {
     const modelRow = within(modelTable).getByTestId("api-gateway-usage-model-row");
     const modelCells = within(modelRow).getAllByRole("cell");
     // [0]=Label, [1]=Requests, [2]=Input, [3]=CacheRead, [4]=CacheWrite, [5]=Output, [6]=Cost
-    expect(modelCells[1]).toHaveTextContent("50"); // 请求数不带 token 转换
+    expect(modelCells[1]).toHaveTextContent("50"); // 请求数不带 token转换
     expect(modelCells[2]).toHaveTextContent("12万");
     expect(modelCells[2]).toHaveAttribute("title", "120,000");
     expect(modelCells[3]).toHaveTextContent("3.5万");
@@ -478,4 +478,262 @@ describe("UsageStatsPanel", () => {
     expect(modelCells[5]).toHaveTextContent("800");
     expect(modelCells[5]).toHaveAttribute("title", "800");
   });
+
+  it("展示细分指标卡片（缓存命中率、Input、Output、Cache Read、Cache Write）", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({
+        request_count: 10,
+        total_tokens: 1000,
+        input_tokens: 300,
+        cache_read_tokens: 100,
+        cache_write_tokens: 50,
+        output_tokens: 550,
+        amount: 0.05,
+      });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+
+    // 平均缓存命中率: 100 / (300 + 100) = 25%
+    const cacheHitCard = await screen.findByTestId("api-gateway-usage-card-cache-hit");
+    expect(cacheHitCard).toHaveTextContent("25%");
+
+    const inputCard = screen.getByTestId("api-gateway-usage-card-input");
+    expect(inputCard).toHaveTextContent("300");
+
+    const cacheReadCard = screen.getByTestId("api-gateway-usage-card-cache-read");
+    expect(cacheReadCard).toHaveTextContent("100");
+
+    const cacheWriteCard = screen.getByTestId("api-gateway-usage-card-cache-write");
+    expect(cacheWriteCard).toHaveTextContent("50");
+
+    const outputCard = screen.getByTestId("api-gateway-usage-card-output");
+    expect(outputCard).toHaveTextContent("550");
+  });
+
+  it("渲染时间趋势柱状图并在切换维度时更新柱条", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({
+        request_count: 5,
+        total_tokens: 500,
+        amount: 0.15,
+        granularity: "day",
+        buckets: [
+          {
+            label: "2026-09-19",
+            request_count: 2,
+            input_tokens: 50,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 50,
+            total_tokens: 100,
+            amount: 0.05,
+            unpriced_count: 0,
+          },
+          {
+            label: "2026-09-20",
+            request_count: 3,
+            input_tokens: 150,
+            cache_read_tokens: 50,
+            cache_write_tokens: 0,
+            output_tokens: 200,
+            total_tokens: 400,
+            amount: 0.1,
+            unpriced_count: 0,
+          },
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+
+    const trendCard = await screen.findByTestId("api-gateway-usage-trend-card");
+    expect(trendCard).toBeInTheDocument();
+
+    // 峰值徽标应该指示最高的一天 2026-09-20
+    const peakBadge = screen.getByTestId("api-gateway-usage-peak-badge");
+    expect(peakBadge).toHaveTextContent("2026-09-20");
+
+    const bars = screen.getAllByTestId("api-gateway-usage-trend-bar");
+    expect(bars).toHaveLength(2);
+
+    // 切换到 Requests 维度
+    const requestsBtn = screen.getByTestId("api-gateway-trend-view-requests");
+    await user.click(requestsBtn);
+
+    // 切换到 Cost 维度
+    const costBtn = screen.getByTestId("api-gateway-trend-view-cost");
+    await user.click(costBtn);
+    expect(bars[1]).toHaveClass("bg-emerald-600/70");
+
+    // 切回 Tokens 维度
+    const tokensBtn = screen.getByTestId("api-gateway-trend-view-tokens");
+    await user.click(tokensBtn);
+    expect(bars[1]).toHaveClass("bg-primary/70");
+  });
+
+  it("支持展开和收起时间分布详细明细表格", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({
+        request_count: 2,
+        granularity: "day",
+        buckets: [
+          {
+            label: "2026-09-20",
+            request_count: 2,
+            input_tokens: 10,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 20,
+            total_tokens: 30,
+            amount: 0.01,
+            unpriced_count: 0,
+          },
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+
+    // 初始状态下表格可见
+    expect(await screen.findByTestId("api-gateway-usage-buckets")).toBeInTheDocument();
+
+    const toggleBtn = screen.getByTestId("api-gateway-toggle-bucket-table");
+    expect(toggleBtn).toHaveTextContent("Hide Details");
+
+    // 点击收起
+    await user.click(toggleBtn);
+    expect(screen.queryByTestId("api-gateway-usage-buckets")).not.toBeInTheDocument();
+    expect(toggleBtn).toHaveTextContent("Show Details");
+
+    // 点击再次展开
+    await user.click(toggleBtn);
+    expect(screen.getByTestId("api-gateway-usage-buckets")).toBeInTheDocument();
+  });
+
+  it("模型与服务商分析行中展示占比进度条", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({
+        request_count: 10,
+        total_tokens: 1000,
+        models: [
+          {
+            local_model: "gpt-4o",
+            request_count: 8,
+            input_tokens: 200,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 600,
+            total_tokens: 800,
+            amount: 0.4,
+            unpriced_count: 0,
+            providers: [
+              {
+                provider_id: "prov-1",
+                provider_name: "Provider 1",
+                request_count: 8,
+                input_tokens: 200,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 600,
+                total_tokens: 800,
+                amount: 0.4,
+                unpriced_count: 0,
+              },
+            ],
+          },
+          {
+            local_model: "claude-3-5",
+            request_count: 2,
+            input_tokens: 50,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 150,
+            total_tokens: 200,
+            amount: 0.1,
+            unpriced_count: 0,
+            providers: [],
+          },
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+
+    const shareBars = await screen.findAllByTestId("api-gateway-usage-share-bar");
+    // gpt-4o (80%), Provider 1 (100% of gpt-4o), claude-3-5 (20%)
+    expect(shareBars).toHaveLength(3);
+    expect(shareBars[0]).toHaveAttribute("aria-label", "80%");
+    expect(shareBars[1]).toHaveAttribute("aria-label", "100%");
+    expect(shareBars[2]).toHaveAttribute("aria-label", "20%");
+  });
+
+  it("用量分析列表中展示缓存命中率列并正确计算百分比", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({
+        request_count: 5,
+        total_tokens: 500,
+        models: [
+          {
+            local_model: "claude-3-7-sonnet",
+            request_count: 5,
+            input_tokens: 300,
+            cache_read_tokens: 100,
+            cache_write_tokens: 50,
+            output_tokens: 50,
+            total_tokens: 500,
+            amount: 0.25,
+            unpriced_count: 0,
+            providers: [
+              {
+                provider_id: "prov-anthropic",
+                provider_name: "Anthropic Direct",
+                request_count: 5,
+                input_tokens: 300,
+                cache_read_tokens: 100,
+                cache_write_tokens: 50,
+                output_tokens: 50,
+                total_tokens: 500,
+                amount: 0.25,
+                unpriced_count: 0,
+              },
+            ],
+          },
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+
+    const modelTable = await screen.findByTestId("api-gateway-usage-models");
+    // 表头包含 Cache hit
+    expect(within(modelTable).getByRole("columnheader", { name: "Cache hit" })).toBeInTheDocument();
+
+    // 模型行缓存命中率: 100 / (300 + 100) = 25%
+    const modelCacheHitCell = screen.getByTestId("api-gateway-usage-model-cache-hit");
+    expect(modelCacheHitCell).toHaveTextContent("25%");
+
+    // 提供商行缓存命中率
+    const providerCacheHitCell = screen.getByTestId("api-gateway-usage-provider-cache-hit");
+    expect(providerCacheHitCell).toHaveTextContent("25%");
+  });
 });
+
+
