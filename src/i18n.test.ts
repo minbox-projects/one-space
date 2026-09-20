@@ -120,6 +120,9 @@ const PROVIDER_TEMPLATE_KEYS = [
   "apiGatewayWeekdayFri",
   "apiGatewayWeekdaySat",
   "apiGatewayTemplateDeprecated",
+  "apiGatewayProviderTemplateAvatarTitle",
+  "apiGatewayTemplateRetiredMappings",
+  "apiGatewayTemplateRetiredMappingsTooltip",
   "apiGatewayIgnoredModels",
   "apiGatewayIgnoredModelsDesc",
   "apiGatewayRestoreModel",
@@ -154,6 +157,19 @@ describe("服务商模板国际化键", () => {
     await i18n.changeLanguage("zh");
     expect(i18n.t("apiGatewayEveryDay")).toBe("每天");
     expect(i18n.t("apiGatewayTemplateSyncing")).toBe("同步中...");
+  });
+
+  it.each([
+    ["en", "2 mapping(s) removed from template"],
+    ["zh", "2 个映射已从模板移除"],
+  ] as const)("为 %s 的退休映射提示保留 {{count}} 并正常插值", async (language, expected) => {
+    await i18n.changeLanguage(language);
+    const raw = resourceBundle(language).apiGatewayTemplateRetiredMappings;
+    expect(typeof raw).toBe("string");
+    expect(raw as string).toContain("{{count}}");
+    expect(i18n.t("apiGatewayTemplateRetiredMappings", { count: 2 })).toBe(
+      expected,
+    );
   });
 
   it.each([

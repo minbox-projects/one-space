@@ -1,9 +1,12 @@
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { UpstreamProviderList } from "./UpstreamProviderList";
-import { type GatewayUpstreamProvider } from "@/lib/apiGateway";
+import {
+  type GatewayProviderTemplateView,
+  type GatewayUpstreamProvider,
+} from "@/lib/apiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 
 function makeProvider(
@@ -268,5 +271,216 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
 
     expect(screen.queryByTestId("api-gateway-template-slot")).not.toBeInTheDocument();
     expect(screen.getByText("Provider 1")).toBeInTheDocument();
+  });
+});
+
+describe("UpstreamProviderList 模板头像与退休映射提示", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  function makeTemplateView(
+    overrides: {
+      id?: string;
+      name?: string;
+      icon?: string | null;
+      models?: string[];
+    } = {},
+  ): GatewayProviderTemplateView {
+    const {
+      id = "tpl-1",
+      name = "OpenCode Zen",
+      icon = "opencode",
+      models = ["remote-a"],
+    } = overrides;
+    return {
+      template: {
+        id,
+        name,
+        description: "Curated provider template",
+        base_url: "https://opencode.ai/zen/v1",
+        protocol: "responses",
+        source: "https://opencode.ai/zen/v1/models",
+        models_url: null,
+        models: models.map((upstream_model) => ({
+          upstream_model,
+          enabled: true,
+        })),
+        icon,
+      },
+      synced_at: null,
+      source: "https://opencode.ai/zen/v1/models",
+      from_snapshot: true,
+    };
+  }
+
+  function providerListElement(
+    providers: GatewayUpstreamProvider[],
+    templates: GatewayProviderTemplateView[],
+  ) {
+    return (
+      <UpstreamProviderList
+        providers={providers}
+        // Step 2 contract: the list accepts the loaded template views so cards
+        // can resolve `template_id` to a template icon and retired-mapping hint.
+        templates={templates}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onReenable={vi.fn()}
+        onAdd={vi.fn()}
+      />
+    );
+  }
+
+  it("AC-006 绑定模板的卡片显示模板头像，手动与无法解析模板的卡片不显示", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({
+        id: "p-bound",
+        name: "Template Bound",
+        template_id: "tpl-opencode",
+        mappings: [{ local_model: "l-a", upstream_model: "remote-a" }],
+      }),
+      makeProvider({ id: "p-manual", name: "Manual Provider" }),
+      makeProvider({
+        id: "p-unresolved",
+        name: "Unresolved Provider",
+        template_id: "tpl-missing",
+        mappings: [{ local_model: "l-b", upstream_model: "remote-b" }],
+      }),
+    ];
+    const templates = [
+      makeTemplateView({
+        id: "tpl-opencode",
+        name: "OpenCode Zen",
+        icon: "opencode",
+      }),
+    ];
+
+    renderWithProviders(providerListElement(providers, templates));
+
+    const boundIcon = screen.getByTestId(
+      "api-gateway-provider-template-icon-p-bound",
+    );
+    expect(boundIcon).toHaveAttribute(
+      "title",
+      "Created from template OpenCode Zen",
+    );
+    expect(
+      within(boundIcon).getByTestId("provider-icon-opencode"),
+    ).toBeInTheDocument();
+
+    // 手动服务商卡片不得渲染模板头像。
+    const manualCard = screen.getByTestId("api-gateway-provider-p-manual");
+    expect(
+      within(manualCard).queryByTestId(
+        "api-gateway-provider-template-icon-p-manual",
+      ),
+    ).not.toBeInTheDocument();
+
+    // 无法解析模板的服务商既不渲染头像，也不报错，名称照常展示。
+    const unresolvedCard = screen.getByTestId(
+      "api-gateway-provider-p-unresolved",
+    );
+    expect(
+      within(unresolvedCard).queryByTestId(
+        "api-gateway-provider-template-icon-p-unresolved",
+      ),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Unresolved Provider")).toBeInTheDocument();
+  });
+
+  it("AC-007 退休映射提示按 props 推导计数与 tooltip，并随 re-render 变化直至消失", () => {
+    const template = makeTemplateView({
+      id: "tpl-opencode",
+      name: "OpenCode Zen",
+      models: ["remote-a", "kept-model"],
+    });
+    const baseProvider = makeProvider({
+      id: "p-bound",
+      name: "Template Bound",
+      template_id: "tpl-opencode",
+      mappings: [
+        { local_model: "l-gone-a", upstream_model: "gone-a", enabled: false },
+        { local_model: "l-gone-b", upstream_model: "gone-b", enabled: false },
+        // 正常启用映射不得计入退休计数。
+        { local_model: "l-normal", upstream_model: "remote-a", enabled: true },
+        // 模板仍包含的禁用映射同样不得计入。
+        {
+          local_model: "l-tpl-disabled",
+          upstream_model: "kept-model",
+          enabled: false,
+        },
+      ],
+    });
+
+    const view = renderWithProviders(
+      providerListElement([baseProvider], [template]),
+    );
+
+    const hint = screen.getByTestId(
+      "api-gateway-provider-retired-mappings-p-bound",
+    );
+    expect(hint).toHaveTextContent("2 mapping(s) removed from template");
+    expect(hint).toHaveAttribute(
+      "title",
+      "Removed from the template and disabled: gone-a, gone-b",
+    );
+    expect(hint.getAttribute("title")).not.toContain("remote-a");
+    expect(hint.getAttribute("title")).not.toContain("kept-model");
+
+    // 重新启用其中一个映射：计数降为 1，tooltip 不再包含被启用模型。
+    const oneEnabled = makeProvider({
+      ...baseProvider,
+      mappings: baseProvider.mappings.map((mapping) =>
+        mapping.upstream_model === "gone-b"
+          ? { ...mapping, enabled: true }
+          : mapping,
+      ),
+    });
+    view.rerender(providerListElement([oneEnabled], [template]));
+
+    const singleHint = screen.getByTestId(
+      "api-gateway-provider-retired-mappings-p-bound",
+    );
+    expect(singleHint).toHaveTextContent("1 mapping(s) removed from template");
+    expect(singleHint).toHaveAttribute(
+      "title",
+      "Removed from the template and disabled: gone-a",
+    );
+    expect(singleHint.getAttribute("title")).not.toContain("gone-b");
+
+    // 全部重新启用后提示完全消失。
+    const allEnabled = makeProvider({
+      ...baseProvider,
+      mappings: baseProvider.mappings.map((mapping) => ({
+        ...mapping,
+        enabled: true,
+      })),
+    });
+    view.rerender(providerListElement([allEnabled], [template]));
+
+    expect(
+      screen.queryByTestId("api-gateway-provider-retired-mappings-p-bound"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("AC-007 模板仍包含的禁用映射不计入退休提示", () => {
+    const template = makeTemplateView({ models: ["kept-model"] });
+    const provider = makeProvider({
+      id: "p-bound",
+      name: "Template Bound",
+      template_id: "tpl-1",
+      mappings: [
+        { local_model: "l-kept", upstream_model: "kept-model", enabled: false },
+      ],
+    });
+
+    renderWithProviders(providerListElement([provider], [template]));
+
+    expect(
+      screen.queryByTestId("api-gateway-provider-retired-mappings-p-bound"),
+    ).not.toBeInTheDocument();
   });
 });

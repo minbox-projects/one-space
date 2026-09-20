@@ -1945,6 +1945,71 @@ describe("ApiGateway", () => {
     const editDialog = await screen.findByTestId("api-gateway-template-edit-dialog");
     expect(editDialog).toBeInTheDocument();
   });
+
+  it("gatewayProviderCardsUseLoadedTemplatesForIconAndRetiredHint", async () => {
+    const boundProvider = makeProvider({
+      id: "p-bound",
+      name: "Zone Bound",
+      template_id: "t1",
+      mappings: [
+        { local_model: "l-gone", upstream_model: "gone-model", enabled: false },
+        { local_model: "l-keep", upstream_model: "remote-a", enabled: true },
+      ],
+    });
+    const manualProvider = makeProvider({
+      id: "p-manual",
+      name: "Manual Provider",
+    });
+    const store: Store = {
+      config: makeConfig({ providers: [boundProvider, manualProvider] }),
+      status: makeStatus({ provider_count: 2 }),
+      targets: [],
+    };
+    const templates = [
+      makeTemplateView({
+        template: makeTemplate({
+          id: "t1",
+          name: "OpenCode Zen",
+          icon: "opencode",
+          models: [makeTemplateModel({ upstream_model: "remote-a" })],
+        }),
+      }),
+    ];
+    mockStoreWithTemplates(store, templates);
+
+    renderWithProviders(<ApiGateway />);
+
+    // index.tsx 必须把已加载的 templates 透传给服务商列表：绑定卡片显示模板头像。
+    const boundCard = await screen.findByTestId("api-gateway-provider-p-bound");
+    const boundIcon = within(boundCard).getByTestId(
+      "api-gateway-provider-template-icon-p-bound",
+    );
+    expect(boundIcon).toHaveAttribute(
+      "title",
+      "Created from template OpenCode Zen",
+    );
+    expect(
+      within(boundIcon).getByTestId("provider-icon-opencode"),
+    ).toBeInTheDocument();
+
+    // 手动服务商卡片不显示模板头像。
+    const manualCard = screen.getByTestId("api-gateway-provider-p-manual");
+    expect(
+      within(manualCard).queryByTestId(
+        "api-gateway-provider-template-icon-p-manual",
+      ),
+    ).not.toBeInTheDocument();
+
+    // 退休提示同样来自已加载的模板视图。
+    const hint = within(boundCard).getByTestId(
+      "api-gateway-provider-retired-mappings-p-bound",
+    );
+    expect(hint).toHaveTextContent("1 mapping(s) removed from template");
+    expect(hint).toHaveAttribute(
+      "title",
+      "Removed from the template and disabled: gone-model",
+    );
+  });
 });
 
 describe("ApiGateway 模板服务商模型维护", () => {

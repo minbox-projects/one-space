@@ -743,6 +743,7 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
         >
           <UpstreamProviderList
             providers={config.providers}
+            templates={templates}
             selectedProviderId={selectedProviderId}
             busy={busy}
             onSelect={(providerId) => {

@@ -13,8 +13,11 @@ import {
   Trash2,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
+import { ProviderTemplateAvatar } from "./ProviderTemplateIcon";
 import {
   formatGatewayTimestamp,
+  isMappingDeprecated,
+  type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
 } from "@/lib/apiGateway";
 
@@ -22,6 +25,8 @@ export type ProviderStatusFilter = "all" | "enabled" | "disabled";
 
 type UpstreamProviderListProps = {
   providers: GatewayUpstreamProvider[];
+  /** Loaded template views, used to resolve a provider's bound template icon and retired hint. */
+  templates?: GatewayProviderTemplateView[];
   selectedProviderId: string | null;
   busy: boolean;
   onSelect: (providerId: string) => void;
@@ -36,6 +41,7 @@ type UpstreamProviderListProps = {
 
 export function UpstreamProviderList({
   providers,
+  templates,
   selectedProviderId,
   busy,
   onSelect,
@@ -275,6 +281,18 @@ export function UpstreamProviderList({
             const disabledAt = formatGatewayTimestamp(provider.disabled_at);
             const mappingCount = provider.mappings?.length ?? 0;
             const isChatProtocol = provider.protocol !== "responses";
+            const templateView = provider.template_id
+              ? templates?.find(
+                  (view) => view.template.id === provider.template_id,
+                )
+              : undefined;
+            const retiredMappings = templateView
+              ? (provider.mappings ?? []).filter(
+                  (mapping) =>
+                    mapping.enabled === false &&
+                    isMappingDeprecated(mapping, templateView.template),
+                )
+              : [];
 
             return (
               <div
@@ -288,14 +306,33 @@ export function UpstreamProviderList({
                 <div>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <button
-                        type="button"
-                        onClick={() => onSelect(provider.id)}
-                        className="truncate text-left text-sm font-semibold text-foreground hover:text-primary transition-colors block w-full leading-5"
-                        title={provider.name}
-                      >
-                        {provider.name}
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        {templateView ? (
+                          <span
+                            data-testid={`api-gateway-provider-template-icon-${provider.id}`}
+                            title={t("apiGatewayProviderTemplateAvatarTitle", {
+                              name: templateView.template.name,
+                              defaultValue: `Created from template ${templateView.template.name}`,
+                            })}
+                            className="shrink-0"
+                          >
+                            <ProviderTemplateAvatar
+                              icon={templateView.template.icon}
+                              templateId={templateView.template.id}
+                              templateName={templateView.template.name}
+                              size={20}
+                            />
+                          </span>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => onSelect(provider.id)}
+                          className="truncate text-left text-sm font-semibold text-foreground hover:text-primary transition-colors block min-w-0 flex-1 leading-5"
+                          title={provider.name}
+                        >
+                          {provider.name}
+                        </button>
+                      </div>
                       <div className="mt-1 flex flex-wrap items-center gap-1.5">
                         <span
                           className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-4 ${
@@ -351,6 +388,30 @@ export function UpstreamProviderList({
                       </span>
                     </div>
                   </div>
+
+                  {/* 退休映射提示：模板同步移除模型后其派生映射被自动禁用 */}
+                  {retiredMappings.length > 0 ? (
+                    <div
+                      data-testid={`api-gateway-provider-retired-mappings-${provider.id}`}
+                      title={t("apiGatewayTemplateRetiredMappingsTooltip", {
+                        models: retiredMappings
+                          .map((mapping) => mapping.upstream_model)
+                          .join(", "),
+                        defaultValue: `Removed from the template and disabled: ${retiredMappings
+                          .map((mapping) => mapping.upstream_model)
+                          .join(", ")}`,
+                      })}
+                      className="mt-2 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                    >
+                      <AlertTriangle className="h-3 w-3 shrink-0" />
+                      <span>
+                        {t("apiGatewayTemplateRetiredMappings", {
+                          count: retiredMappings.length,
+                          defaultValue: `${retiredMappings.length} mapping(s) removed from template`,
+                        })}
+                      </span>
+                    </div>
+                  ) : null}
 
                   {/* 自动禁用警告栏 */}
                   {provider.auto_disabled ? (

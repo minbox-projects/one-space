@@ -602,6 +602,11 @@ const resources = {
       apiGatewayTemplateApiKeyRequired: "API key is required.",
       apiGatewayTemplateCreateSubmit: "Create provider",
       apiGatewayTemplateDeprecated: "Deprecated",
+      apiGatewayProviderTemplateAvatarTitle: "Created from template {{name}}",
+      apiGatewayTemplateRetiredMappings:
+        "{{count}} mapping(s) removed from template",
+      apiGatewayTemplateRetiredMappingsTooltip:
+        "Removed from the template and disabled: {{models}}",
       apiGatewaySelectProviderTemplate: "Select provider preset",
       apiGatewayAddUpstreamProviderDialogTitle: "Add Upstream Provider",
       apiGatewaySelectProviderTemplateDesc:
@@ -4225,6 +4230,10 @@ const resources = {
       apiGatewayTemplateApiKeyRequired: "请填写 API Key。",
       apiGatewayTemplateCreateSubmit: "创建服务商",
       apiGatewayTemplateDeprecated: "已弃用",
+      apiGatewayProviderTemplateAvatarTitle: "由模板 {{name}} 创建",
+      apiGatewayTemplateRetiredMappings: "{{count}} 个映射已从模板移除",
+      apiGatewayTemplateRetiredMappingsTooltip:
+        "已从模板移除并禁用：{{models}}",
       apiGatewaySelectProviderTemplate: "选择预设服务商模板",
       apiGatewayAddUpstreamProviderDialogTitle: "添加上游服务商",
       apiGatewaySelectProviderTemplateDesc:

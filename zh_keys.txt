@@ -36,6 +36,7 @@ apiGatewayMappingDetails
 apiGatewayMappingPrice
 apiGatewayModelRestored
 apiGatewayNoTemplates
+apiGatewayProviderTemplateAvatarTitle
 apiGatewayProviderTemplates
 apiGatewayProviderTemplatesDesc
 apiGatewayReasoningEffortAdd
@@ -78,6 +79,8 @@ apiGatewayTemplateProtocolChat
 apiGatewayTemplateProtocolLabel
 apiGatewayTemplateProtocolResponses
 apiGatewayTemplateProviderCreated
+apiGatewayTemplateRetiredMappings
+apiGatewayTemplateRetiredMappingsTooltip
 apiGatewayTemplatesLoadFailed
 apiGatewayTemplateSource
 apiGatewayTemplateSync
