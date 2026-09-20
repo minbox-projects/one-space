@@ -3,7 +3,8 @@ use super::{
     antigravity_conversation_bindings_from_value, antigravity_managed_launch_env,
     build_native_terminal_applescript,
     clean_terminal_app_name, collect_antigravity_sessions_from_brain_root,
-    collect_opencode_history_sessions_from_sources, command_uses_resume_semantics,
+    collect_opencode_history_sessions_from_sources, collect_opencode_usage_records_from_sources,
+    command_uses_resume_semantics,
     normalize_initial_prompt, normalize_terminal_app_key, normalize_working_dir_for_terminal,
     parse_claude_usage_file, parse_codex_usage_file, parse_opencode_message_usage_dir,
     read_antigravity_history_file, read_claude_project_file, read_codex_history_session_file,
@@ -888,6 +889,172 @@ fn opencode_db_usage_query_only_reads_requested_time_window() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].model.as_deref(), Some("selected-model"));
     assert_eq!(records[0].total_tokens, 25);
+}
+
+#[test]
+fn opencode_usage_merges_sqlite_v2_v1_and_legacy_json_per_session() {
+    let root = make_temp_dir("opencode-usage-source-priority");
+    let db_path = root.join("opencode.db");
+    let storage_root = root.join("storage");
+
+    let conn = Connection::open(&db_path).expect("create temporary opencode database");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE session (
+            id TEXT PRIMARY KEY,
+            time_archived INTEGER
+        );
+        CREATE TABLE message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );
+        CREATE TABLE session_v2 (
+            id TEXT PRIMARY KEY,
+            time_archived INTEGER
+        );
+        CREATE TABLE session_message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );
+        INSERT INTO session_v2 (id, time_archived) VALUES ('shared-all', NULL);
+        INSERT INTO session (id, time_archived) VALUES ('shared-all', NULL);
+        INSERT INTO session (id, time_archived) VALUES ('shared-v1-json', NULL);
+        "#,
+    )
+    .expect("create v1 and v2 usage schemas");
+
+    for (id, session_id, timestamp_ms, data) in [
+        (
+            "v2-first",
+            "shared-all",
+            200_i64,
+            r#"{"role":"assistant","modelID":"v2-winning-model","tokens":{"input":6,"output":5}}"#,
+        ),
+        (
+            "v2-second",
+            "shared-all",
+            300_i64,
+            r#"{"role":"assistant","modelID":"v2-winning-model","tokens":{"input":12,"output":10}}"#,
+        ),
+    ] {
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+            params![id, session_id, timestamp_ms, data],
+        )
+        .expect("insert v2 usage message");
+    }
+
+    for (id, session_id, timestamp_ms, data) in [
+        (
+            "v1-shared-all",
+            "shared-all",
+            400_i64,
+            r#"{"role":"assistant","modelID":"v1-losing-model","tokens":{"input":500,"output":500}}"#,
+        ),
+        (
+            "v1-shared-v1-json",
+            "shared-v1-json",
+            500_i64,
+            r#"{"role":"assistant","modelID":"v1-winning-model","tokens":{"input":20,"output":13}}"#,
+        ),
+    ] {
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+            params![id, session_id, timestamp_ms, data],
+        )
+        .expect("insert v1 usage message");
+    }
+    drop(conn);
+
+    for (session_id, model, total_tokens) in [
+        ("shared-all", "json-shared-all-losing-model", 2_000_u64),
+        (
+            "shared-v1-json",
+            "json-shared-v1-json-losing-model",
+            3_000_u64,
+        ),
+        ("json-only", "json-only-winning-model", 44_u64),
+    ] {
+        write_temp_file(
+            &storage_root
+                .join("session")
+                .join("project-1")
+                .join(format!("{session_id}.json")),
+            &serde_json::json!({ "id": session_id }).to_string(),
+        );
+        write_temp_file(
+            &storage_root
+                .join("message")
+                .join(session_id)
+                .join("message-1.json"),
+            &serde_json::json!({
+                "role": "assistant",
+                "modelID": model,
+                "time": { "created": 600 },
+                "tokens": { "total": total_tokens }
+            })
+            .to_string(),
+        );
+    }
+
+    let scan = collect_opencode_usage_records_from_sources(
+        &db_path,
+        std::slice::from_ref(&storage_root),
+        100,
+        1_000,
+    );
+
+    assert_eq!(scan.scanned_sessions, 3);
+    assert_eq!(scan.records.len(), 4);
+    assert_eq!(
+        scan.records
+            .iter()
+            .map(|record| record.session_id.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3
+    );
+    assert_eq!(
+        scan.records
+            .iter()
+            .map(|record| record.total_tokens)
+            .sum::<u64>(),
+        110
+    );
+
+    let shared_all = scan
+        .records
+        .iter()
+        .filter(|record| record.session_id == "shared-all")
+        .collect::<Vec<_>>();
+    assert_eq!(shared_all.len(), 2);
+    assert_eq!(
+        shared_all
+            .iter()
+            .map(|record| record.total_tokens)
+            .sum::<u64>(),
+        33
+    );
+
+    let models = scan
+        .records
+        .iter()
+        .filter_map(|record| record.model.as_deref())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        models,
+        std::collections::HashSet::from([
+            "v2-winning-model",
+            "v1-winning-model",
+            "json-only-winning-model",
+        ])
+    );
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
