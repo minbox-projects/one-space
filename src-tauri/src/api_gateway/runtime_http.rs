@@ -1365,6 +1365,8 @@ fn record_usage_log(
         total_tokens: tokens.total(),
         amount,
         duration_ms,
+        error_message: None,
+        terminal: true,
     };
     let retention = normalize_retention_days(config.usage_retention_days);
     let write = UsageLogStore::default_store().and_then(|store| store.append(&record, retention));

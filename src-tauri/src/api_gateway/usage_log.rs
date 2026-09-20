@@ -6,8 +6,8 @@
 //! a temp directory and never touch real application data.
 
 use super::{
-    ModelPrice, MAX_USAGE_RETENTION_DAYS, MIN_USAGE_RETENTION_DAYS,
-    DEFAULT_USAGE_RETENTION_DAYS,
+    default_true, ModelPrice, DEFAULT_USAGE_RETENTION_DAYS, MAX_USAGE_RETENTION_DAYS,
+    MIN_USAGE_RETENTION_DAYS,
 };
 use chrono::{Datelike, Timelike};
 use rusqlite::{params_from_iter, Connection, Row};
@@ -25,6 +25,12 @@ pub const USAGE_LOG_PAGE_SIZE: u32 = 50;
 const DAY_MS: i64 = 86_400_000;
 /// Milliseconds of the fixed UTC+8 offset (the product's reporting timezone).
 const UTC8_OFFSET_MS: i64 = 8 * 3_600_000;
+/// Maximum stored length of one sanitized upstream error message (REQ-004).
+const MAX_ERROR_MESSAGE_CHARS: usize = 4096;
+/// Marker appended when an error message had to be truncated.
+const ERROR_TRUNCATION_MARKER: char = '…';
+/// Credential-shaped runs shorter than this are left readable.
+const MIN_MASKED_CREDENTIAL_CHARS: usize = 8;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS usage_logs (
@@ -42,7 +48,9 @@ CREATE TABLE IF NOT EXISTS usage_logs (
     output_tokens INTEGER NOT NULL,
     total_tokens INTEGER NOT NULL,
     amount REAL,
-    duration_ms INTEGER NOT NULL
+    duration_ms INTEGER NOT NULL,
+    error_message TEXT,
+    terminal INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_usage_logs_timestamp ON usage_logs(timestamp_ms);
 CREATE INDEX IF NOT EXISTS idx_usage_logs_local_model ON usage_logs(local_model);
@@ -132,6 +140,14 @@ pub struct UsageLogRecord {
     /// `None` when the upstream model had no matching price row at record time.
     pub amount: Option<f64>,
     pub duration_ms: u64,
+    /// Sanitized, bounded and redacted upstream error text; `None` for a
+    /// success or a failure without readable error information (REQ-003/REQ-004).
+    #[serde(default)]
+    pub error_message: Option<String>,
+    /// Whether this row is the request's single terminal row; non-terminal rows
+    /// are the completed attempts that a later row superseded (REQ-001).
+    #[serde(default = "default_true")]
+    pub terminal: bool,
 }
 
 /// Validate a user-provided retention value: only 1-365 days are accepted.
@@ -337,6 +353,143 @@ pub(in crate::api_gateway) fn parse_usage_from_response(body: &[u8]) -> Option<U
     }
 }
 
+/// Extract the upstream's own error information from a failure body (REQ-003).
+///
+/// A standard JSON envelope yields its non-empty `error.message`; any other body
+/// yields a readable summary (lossy decode, markup removed, consecutive
+/// whitespace collapsed, trimmed). Bodies without readable text yield `None`.
+pub(in crate::api_gateway) fn extract_upstream_error_text(body: &[u8]) -> Option<String> {
+    if let Ok(value) = serde_json::from_slice::<Value>(body) {
+        let message = value
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty());
+        if let Some(message) = message {
+            return Some(message.to_string());
+        }
+    }
+    let decoded = String::from_utf8_lossy(body);
+    let summary = strip_html_markup(&decoded)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if summary.is_empty() {
+        None
+    } else {
+        Some(summary)
+    }
+}
+
+/// Drop every `<...>` markup span so only the readable text remains. An
+/// unmatched `<` is kept literally instead of swallowing the rest of the body.
+fn strip_html_markup(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('<') {
+        result.push_str(&rest[..start]);
+        match rest[start..].find('>') {
+            Some(end) => rest = &rest[start + end + 1..],
+            None => {
+                result.push_str(&rest[start..]);
+                return result;
+            }
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
+/// Redact, bound and normalize one extracted upstream error message (REQ-004).
+///
+/// The provider key is replaced verbatim with `[redacted]`, `Bearer` and `sk-`
+/// credential shapes are masked, and text longer than
+/// [`MAX_ERROR_MESSAGE_CHARS`] is truncated on a Unicode scalar boundary with a
+/// trailing `…`. Text that stays empty is stored as no message (`None`).
+pub(in crate::api_gateway) fn sanitize_error_text(text: &str, api_key: &str) -> Option<String> {
+    let redacted = if api_key.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(api_key, "[redacted]")
+    };
+    let masked = mask_credential_shapes(&redacted);
+    let trimmed = masked.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.chars().count() <= MAX_ERROR_MESSAGE_CHARS {
+        return Some(trimmed.to_string());
+    }
+    let mut bounded: String = trimmed.chars().take(MAX_ERROR_MESSAGE_CHARS - 1).collect();
+    bounded.push(ERROR_TRUNCATION_MARKER);
+    Some(bounded)
+}
+
+/// Mask `sk-` prefixed tokens and `Bearer <token>` credentials so no complete
+/// token can reach the log. Only ASCII credential characters join a token, so
+/// multi-byte text can never be split by the masking.
+fn mask_credential_shapes(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut masked = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let mut replacement_start = cursor;
+        let mut replacement_end = cursor;
+        if bytes[cursor..].starts_with(b"sk-") {
+            replacement_end = credential_run_end(bytes, cursor + 3).unwrap_or(cursor);
+        } else if starts_with_ignore_ascii_case(bytes, cursor, b"bearer") {
+            let mut token_start = cursor + b"bearer".len();
+            while token_start < bytes.len() && bytes[token_start].is_ascii_whitespace() {
+                token_start += 1;
+            }
+            if token_start > cursor + b"bearer".len() {
+                if let Some(end) = credential_run_end(bytes, token_start) {
+                    replacement_start = token_start;
+                    replacement_end = end;
+                }
+            }
+        }
+        if replacement_end > replacement_start {
+            masked.push_str(&text[copied..replacement_start]);
+            masked.push_str("[redacted]");
+            copied = replacement_end;
+            cursor = replacement_end;
+        } else {
+            cursor += 1;
+        }
+    }
+    masked.push_str(&text[copied..]);
+    masked
+}
+
+/// End of the credential-character run starting at `start`, when it is long
+/// enough to be a token rather than an ordinary word.
+fn credential_run_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut end = start;
+    while end < bytes.len() && is_credential_byte(bytes[end]) {
+        end += 1;
+    }
+    if end - start >= MIN_MASKED_CREDENTIAL_CHARS {
+        Some(end)
+    } else {
+        None
+    }
+}
+
+fn is_credential_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'
+}
+
+fn starts_with_ignore_ascii_case(bytes: &[u8], start: usize, word: &[u8]) -> bool {
+    bytes.len() - start >= word.len()
+        && bytes[start..start + word.len()]
+            .iter()
+            .zip(word)
+            .all(|(byte, expected)| byte.eq_ignore_ascii_case(expected))
+}
+
 /// Read-only SSE accumulator that extracts the last `usage` object from a
 /// forwarded stream without touching the bytes written to the caller.
 #[derive(Default)]
@@ -506,6 +659,19 @@ pub(in crate::api_gateway) struct LogFilter {
 
 const METRIC_COLUMNS: &str = "COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(amount), 0.0), COALESCE(SUM(CASE WHEN amount IS NULL AND upstream_model <> '' THEN 1 ELSE 0 END), 0)";
 
+/// Column list and placeholders shared by [`UsageLogStore::append`] and
+/// [`UsageLogStore::append_batch`].
+const INSERT_SQL: &str = "
+INSERT INTO usage_logs (
+    timestamp_ms, local_model, upstream_model, provider_id, provider_name,
+    result, status, input_tokens, cache_read_tokens, cache_write_tokens,
+    output_tokens, total_tokens, amount, duration_ms, error_message, terminal
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+";
+
+/// Column list of every record-producing `SELECT`, in [`record_from_row`] order.
+const RECORD_COLUMNS: &str = "timestamp_ms, local_model, upstream_model, provider_id, provider_name, result, status, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, total_tokens, amount, duration_ms, error_message, terminal";
+
 fn metrics_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<UsageMetrics> {
     Ok(UsageMetrics {
         request_count: row.get::<_, i64>(offset)? as u32,
@@ -536,10 +702,18 @@ fn record_from_row(row: &Row<'_>) -> rusqlite::Result<UsageLogRecord> {
         total_tokens: row.get::<_, i64>(11)? as u64,
         amount: row.get::<_, Option<f64>>(12)?,
         duration_ms: row.get::<_, i64>(13)? as u64,
+        error_message: row.get::<_, Option<String>>(14)?,
+        terminal: row.get::<_, i64>(15)? != 0,
     })
 }
 
-fn bind(range: &TimeRange, filter: &LogFilter) -> (String, Vec<rusqlite::types::Value>) {
+/// Build the `WHERE` clause shared by every log query. `terminal_only` adds the
+/// statistics/grouping filter (REQ-002); the ungrouped list keeps every row.
+fn bind(
+    range: &TimeRange,
+    filter: &LogFilter,
+    terminal_only: bool,
+) -> (String, Vec<rusqlite::types::Value>) {
     let mut clauses: Vec<&str> = Vec::new();
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
     if let Some(start) = range.start_ms {
@@ -549,6 +723,9 @@ fn bind(range: &TimeRange, filter: &LogFilter) -> (String, Vec<rusqlite::types::
     if let Some(end) = range.end_ms {
         clauses.push("timestamp_ms < ?");
         params.push(end.into());
+    }
+    if terminal_only {
+        clauses.push("terminal = 1");
     }
     if let Some(status) = filter.status {
         clauses.push("result = ?");
@@ -564,6 +741,38 @@ fn bind(range: &TimeRange, filter: &LogFilter) -> (String, Vec<rusqlite::types::
         format!(" WHERE {}", clauses.join(" AND "))
     };
     (where_sql, params)
+}
+
+/// Add the attempt/terminal columns to a database written before this change
+/// (REQ-005). The `PRAGMA table_info` inspection makes the migration idempotent:
+/// present columns are left alone, existing rows default to terminal with no
+/// message. A failure is returned so the caller swallows it like any other
+/// log-write error, and a later open retries the migration.
+fn migrate_usage_logs(connection: &Connection) -> Result<(), String> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(usage_logs)")
+        .map_err(|error| error.to_string())?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+    let has_column = |name: &str| columns.iter().any(|column| column == name);
+    if !has_column("error_message") {
+        connection
+            .execute("ALTER TABLE usage_logs ADD COLUMN error_message TEXT", [])
+            .map_err(|error| error.to_string())?;
+    }
+    if !has_column("terminal") {
+        connection
+            .execute(
+                "ALTER TABLE usage_logs ADD COLUMN terminal INTEGER NOT NULL DEFAULT 1",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// SQLite-backed usage-log storage bound to one explicit database path.
@@ -597,6 +806,7 @@ impl UsageLogStore {
         connection
             .execute_batch(SCHEMA)
             .map_err(|error| error.to_string())?;
+        migrate_usage_logs(&connection)?;
         Ok(connection)
     }
 
@@ -610,11 +820,7 @@ impl UsageLogStore {
         let connection = self.open()?;
         connection
             .execute(
-                "INSERT INTO usage_logs (
-                    timestamp_ms, local_model, upstream_model, provider_id, provider_name,
-                    result, status, input_tokens, cache_read_tokens, cache_write_tokens,
-                    output_tokens, total_tokens, amount, duration_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                INSERT_SQL,
                 rusqlite::params![
                     record.timestamp_ms,
                     record.local_model,
@@ -630,9 +836,52 @@ impl UsageLogStore {
                     record.total_tokens as i64,
                     record.amount,
                     record.duration_ms as i64,
+                    record.error_message,
+                    record.terminal,
                 ],
             )
             .map_err(|error| error.to_string())?;
+        let cutoff = now_millis() - normalize_retention_days(retention_days) as i64 * DAY_MS;
+        let _ = connection.execute("DELETE FROM usage_logs WHERE timestamp_ms < ?", [cutoff]);
+        Ok(())
+    }
+
+    /// Insert every record of one request through a single connection, in slice
+    /// order, then apply the same retention cleanup as [`Self::append`]
+    /// (REQ-005). An empty slice writes nothing.
+    pub(in crate::api_gateway) fn append_batch(
+        &self,
+        records: &[UsageLogRecord],
+        retention_days: u32,
+    ) -> Result<(), String> {
+        let connection = self.open()?;
+        {
+            let mut statement = connection
+                .prepare(INSERT_SQL)
+                .map_err(|error| error.to_string())?;
+            for record in records {
+                statement
+                    .execute(rusqlite::params![
+                        record.timestamp_ms,
+                        record.local_model,
+                        record.upstream_model,
+                        record.provider_id,
+                        record.provider_name,
+                        record.result.as_str(),
+                        record.status as i64,
+                        record.input_tokens as i64,
+                        record.cache_read_tokens as i64,
+                        record.cache_write_tokens as i64,
+                        record.output_tokens as i64,
+                        record.total_tokens as i64,
+                        record.amount,
+                        record.duration_ms as i64,
+                        record.error_message,
+                        record.terminal,
+                    ])
+                    .map_err(|error| error.to_string())?;
+            }
+        }
         let cutoff = now_millis() - normalize_retention_days(retention_days) as i64 * DAY_MS;
         let _ = connection.execute("DELETE FROM usage_logs WHERE timestamp_ms < ?", [cutoff]);
         Ok(())
@@ -653,12 +902,10 @@ impl UsageLogStore {
     pub(in crate::api_gateway) fn all_records(&self) -> Result<Vec<UsageLogRecord>, String> {
         let connection = self.open()?;
         let mut statement = connection
-            .prepare(
-                "SELECT timestamp_ms, local_model, upstream_model, provider_id, provider_name,
-                        result, status, input_tokens, cache_read_tokens, cache_write_tokens,
-                        output_tokens, total_tokens, amount, duration_ms
-                 FROM usage_logs ORDER BY timestamp_ms DESC, id DESC",
-            )
+            .prepare(&format!(
+                "SELECT {RECORD_COLUMNS}
+                 FROM usage_logs ORDER BY timestamp_ms DESC, id DESC"
+            ))
             .map_err(|error| error.to_string())?;
         let rows = statement
             .query_map([], record_from_row)
@@ -676,7 +923,7 @@ impl UsageLogStore {
         page: u32,
     ) -> Result<UsageLogsPage, String> {
         let connection = self.open()?;
-        let (where_sql, params) = bind(range, filter);
+        let (where_sql, params) = bind(range, filter, false);
         let total: i64 = connection
             .query_row(
                 &format!("SELECT COUNT(*) FROM usage_logs{where_sql}"),
@@ -690,9 +937,7 @@ impl UsageLogStore {
         let offset = (page - 1) * USAGE_LOG_PAGE_SIZE;
         let mut statement = connection
             .prepare(&format!(
-                "SELECT timestamp_ms, local_model, upstream_model, provider_id, provider_name,
-                        result, status, input_tokens, cache_read_tokens, cache_write_tokens,
-                        output_tokens, total_tokens, amount, duration_ms
+                "SELECT {RECORD_COLUMNS}
                  FROM usage_logs{where_sql}
                  ORDER BY timestamp_ms DESC, id DESC
                  LIMIT ? OFFSET ?"
@@ -712,7 +957,7 @@ impl UsageLogStore {
             status: filter.status,
             model: None,
         };
-        let (facet_where_sql, facet_params) = bind(range, &facet_filter);
+        let (facet_where_sql, facet_params) = bind(range, &facet_filter, false);
         let facet_where = if facet_where_sql.is_empty() {
             " WHERE local_model <> ''".to_string()
         } else {
@@ -751,7 +996,7 @@ impl UsageLogStore {
         group_by: &str,
     ) -> Result<Vec<UsageLogGroupRow>, String> {
         let connection = self.open()?;
-        let (where_sql, params) = bind(range, filter);
+        let (where_sql, params) = bind(range, filter, true);
         let mut groups = Vec::new();
         if group_by == "day" {
             let sql = format!(
@@ -823,7 +1068,7 @@ impl UsageLogStore {
         hour_buckets: bool,
     ) -> Result<UsageStats, String> {
         let connection = self.open()?;
-        let (where_sql, params) = bind(range, &LogFilter::default());
+        let (where_sql, params) = bind(range, &LogFilter::default(), true);
         let totals: UsageMetrics = connection
             .query_row(
                 &format!("SELECT {METRIC_COLUMNS} FROM usage_logs{where_sql}"),

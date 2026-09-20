@@ -5,8 +5,8 @@ use super::selection::{
 };
 use super::storage::{config_path, resolve_default_key_id};
 use super::{
-    compute_cost, compute_cost_at_time, is_off_peak, match_price_for_provider, normalize_retention_days, resolve_range, usage_tokens_from_value,
-    validate_retention_days, GatewayConfig, GatewayKey, GatewayUpstreamProvider, LogFilter,
+    compute_cost, compute_cost_at_time, extract_upstream_error_text, is_off_peak, match_price_for_provider, normalize_retention_days, resolve_range, usage_tokens_from_value,
+    sanitize_error_text, validate_retention_days, GatewayConfig, GatewayKey, GatewayUpstreamProvider, LogFilter,
     ModelMapping, ModelPrice, OffPeakPrice, SseUsageAccumulator, TerminalSyncRecord, TimeRange, UpstreamProtocol,
     UsageLogRecord, UsageLogStore, UsageResult, UsageTokens, DEFAULT_USAGE_RETENTION_DAYS,
     USAGE_LOG_PAGE_SIZE,
@@ -7850,6 +7850,35 @@ fn sample_record(
     amount: Option<f64>,
     token_counts: UsageTokens,
 ) -> UsageLogRecord {
+    sample_attempt_record(
+        timestamp_ms,
+        local_model,
+        upstream_model,
+        provider_id,
+        provider_name,
+        result,
+        true,
+        None,
+        amount,
+        token_counts,
+    )
+}
+
+/// One log row of a completed upstream attempt (REQ-001). `terminal` marks the
+/// request's single terminal row; `error_message` carries the already extracted,
+/// sanitized upstream failure text.
+fn sample_attempt_record(
+    timestamp_ms: i64,
+    local_model: &str,
+    upstream_model: &str,
+    provider_id: &str,
+    provider_name: &str,
+    result: UsageResult,
+    terminal: bool,
+    error_message: Option<&str>,
+    amount: Option<f64>,
+    token_counts: UsageTokens,
+) -> UsageLogRecord {
     UsageLogRecord {
         timestamp_ms,
         local_model: local_model.to_string(),
@@ -7865,6 +7894,8 @@ fn sample_record(
         total_tokens: token_counts.total(),
         amount,
         duration_ms: 5,
+        error_message: error_message.map(str::to_string),
+        terminal,
     }
 }
 
@@ -9227,11 +9258,15 @@ fn usage_store_logs_filter_group_and_paginate() {
 }
 
 /// REQ-001 / AC-001 privacy: no credential, header or body text can reach the
-/// log file or query results.
+/// log file or query results. REQ-004 (20260920-gateway-log-attempts Step 1):
+/// error text produced by the extraction and sanitization helpers from a body
+/// that echoes credentials must be redacted before it is stored.
 #[test]
 fn usage_store_never_contains_credentials_headers_or_bodies() {
     let (dir, store) = usage_store("usage-privacy");
     let secret = "sk-upstream-super-secret";
+    let bearer_token = "AbCdEf0123456789xyzXYZ";
+    let sk_token = "sk-live-1a2b3c4d5e6f7a8b";
     store
         .append(
             &sample_record(
@@ -9248,14 +9283,77 @@ fn usage_store_never_contains_credentials_headers_or_bodies() {
         )
         .unwrap();
 
+    // A stored failure row whose message came out of the real helpers, from a
+    // body that echoes the provider key and two token-shaped credentials.
+    let upstream_body = json!({
+        "error": {
+            "message": format!(
+                "upstream rejected {secret} and {sk_token} for credential Bearer {bearer_token}"
+            ),
+            "type": "authentication_error",
+        }
+    })
+    .to_string();
+    let extracted = extract_upstream_error_text(upstream_body.as_bytes())
+        .expect("a standard envelope must yield its message");
+    assert!(
+        extracted.contains(secret),
+        "the fixture body must echo the provider key: {extracted}"
+    );
+    let sanitized = sanitize_error_text(&extracted, secret).expect("sanitized text survives");
+    assert!(!sanitized.contains(secret));
+    assert!(!sanitized.contains(bearer_token));
+    assert!(!sanitized.contains(sk_token));
+    assert!(
+        sanitized.contains("[redacted]"),
+        "the provider key must be redacted: {sanitized}"
+    );
+    store
+        .append(
+            &sample_attempt_record(
+                super::now_millis(),
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Failure,
+                false,
+                Some(sanitized.as_str()),
+                None,
+                UsageTokens::default(),
+            ),
+            365,
+        )
+        .unwrap();
+    let stored_error = store
+        .all_records()
+        .unwrap()
+        .into_iter()
+        .find_map(|record| record.error_message)
+        .expect("the failure row's sanitized message must be stored");
+    assert!(!stored_error.contains(secret));
+    assert!(!stored_error.contains(bearer_token));
+    assert!(!stored_error.contains(sk_token));
+    assert!(stored_error.contains("[redacted]"));
+
     let raw = fs::read(dir.join("api_gateway_usage.db")).expect("read usage db");
     let raw_text = String::from_utf8_lossy(&raw);
     assert!(!raw_text.contains(secret));
+    assert!(
+        !raw_text.contains(bearer_token),
+        "no Bearer token may reach the log file"
+    );
+    assert!(
+        !raw_text.contains(sk_token),
+        "no sk-shaped token may reach the log file"
+    );
     assert!(!raw_text.contains("authorization"));
     assert!(!raw_text.contains("api_key"));
 
     let serialized = serde_json::to_string(&store.all_records().unwrap()).unwrap();
     assert!(!serialized.contains(secret));
+    assert!(!serialized.contains(bearer_token));
+    assert!(!serialized.contains(sk_token));
     assert!(!serialized.contains("authorization"));
     assert!(!serialized.contains("\"body\""));
     assert!(!serialized.contains("\"headers\""));
@@ -12356,4 +12454,893 @@ fn normalize_template_prices_and_efforts_populates_prices_and_efforts_and_is_ide
     assert_eq!(config.provider_templates, before_tpl, "templates must be unchanged on second normalize");
     assert_eq!(config.model_prices, before_prices, "prices must be unchanged on second normalize");
     assert_eq!(config.providers[0].mappings, before_mappings, "mappings must be unchanged on second normalize");
+}
+
+// ---------------------------------------------------------------------------
+// 20260920-gateway-log-attempts-and-upstream-errors Step 1 (RED): per-attempt
+// rows, terminal-only statistics, error-text extraction/sanitization/bounding,
+// the request-log record fields and the idempotent log-database migration
+// (REQ-002..REQ-006; AC-010, AC-011, AC-013).
+// ---------------------------------------------------------------------------
+
+/// AC-013 / REQ-002 / REQ-005: the statistics, buckets, per-model and
+/// per-provider breakdowns and the grouped counters count terminal rows only,
+/// while the ungrouped page, its total and its model facet cover attempt rows.
+#[test]
+fn usage_stats_and_groups_count_only_terminal_rows_while_logs_show_attempts() {
+    let (dir, store) = usage_store("usage-terminal-only");
+
+    let day_one_ten = rfc3339_millis("2026-09-15T10:00:00+08:00");
+    let day_one_eleven_thirty = rfc3339_millis("2026-09-15T11:30:00+08:00");
+    let day_one_attempt = rfc3339_millis("2026-09-15T12:45:00+08:00");
+    let day_two_nine_fifteen = rfc3339_millis("2026-09-16T09:15:00+08:00");
+    let day_two_attempt = rfc3339_millis("2026-09-16T09:25:00+08:00");
+
+    // Slice order is the insertion order inside one connection, so rows that
+    // share a timestamp come back by descending row id (newest first).
+    let batch = vec![
+        // Non-terminal failure whose model and provider also appear on terminal
+        // rows: it must not add a request, tokens, cost or an error.
+        sample_attempt_record(
+            day_one_attempt,
+            "local-a",
+            "remote-a",
+            "p1",
+            "Provider One",
+            UsageResult::Failure,
+            false,
+            Some("first attempt failed"),
+            Some(0.5),
+            tokens(10, 0, 0, 5),
+        ),
+        // Non-terminal failure whose model appears on no terminal row and which
+        // is unpriced: the statistics must count neither it nor its model.
+        sample_attempt_record(
+            day_two_attempt,
+            "local-attempt-only",
+            "remote-attempt",
+            "p-attempt",
+            "Provider Attempt",
+            UsageResult::Failure,
+            false,
+            Some("only attempt failed"),
+            None,
+            tokens(100, 0, 0, 100),
+        ),
+        // Non-terminal success on a model/provider that also has terminal rows.
+        sample_attempt_record(
+            day_one_ten,
+            "local-b",
+            "remote-b",
+            "p2",
+            "Provider Two",
+            UsageResult::Success,
+            false,
+            None,
+            Some(0.25),
+            tokens(7, 0, 0, 3),
+        ),
+        // Terminal rows: the only rows any aggregate may count.
+        sample_record(
+            day_one_ten,
+            "local-a",
+            "remote-a",
+            "p1",
+            "Provider One",
+            UsageResult::Success,
+            Some(1.0),
+            tokens(10, 2, 1, 5),
+        ),
+        sample_record(
+            day_one_eleven_thirty,
+            "local-a",
+            "remote-a",
+            "p2",
+            "Provider Two",
+            UsageResult::Success,
+            Some(2.0),
+            tokens(20, 3, 0, 10),
+        ),
+        sample_record(
+            day_two_nine_fifteen,
+            "local-b",
+            "remote-b",
+            "p1",
+            "Provider One",
+            UsageResult::Failure,
+            None,
+            tokens(5, 0, 4, 5),
+        ),
+    ];
+    store
+        .append_batch(&batch, 365)
+        .expect("append_batch must store every row of the slice");
+    assert_eq!(store.count().unwrap(), 6);
+
+    // --- totals, buckets and breakdowns over terminal rows only ------------
+    let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
+    assert_eq!(stats.granularity, "day");
+    assert_eq!(stats.totals.request_count, 3, "only terminal rows are requests");
+    assert_eq!(stats.totals.input_tokens, 10 + 20 + 5);
+    assert_eq!(stats.totals.cache_read_tokens, 2 + 3);
+    assert_eq!(stats.totals.cache_write_tokens, 1 + 4);
+    assert_eq!(stats.totals.output_tokens, 5 + 10 + 5);
+    assert_eq!(stats.totals.total_tokens, 18 + 33 + 14);
+    assert!((stats.totals.amount - 3.0).abs() < 1e-9);
+    assert_eq!(
+        stats.totals.unpriced_count, 1,
+        "only the unpriced terminal row may be counted, never the unpriced attempt"
+    );
+
+    assert_eq!(stats.buckets.len(), 2);
+    assert_eq!(stats.buckets[0].label, "2026-09-15");
+    assert_eq!(stats.buckets[0].metrics.request_count, 2);
+    assert_eq!(stats.buckets[0].metrics.total_tokens, 18 + 33);
+    assert!((stats.buckets[0].metrics.amount - 3.0).abs() < 1e-9);
+    assert_eq!(stats.buckets[0].metrics.unpriced_count, 0);
+    assert_eq!(stats.buckets[1].label, "2026-09-16");
+    assert_eq!(stats.buckets[1].metrics.request_count, 1);
+    assert_eq!(stats.buckets[1].metrics.total_tokens, 14);
+    assert_eq!(stats.buckets[1].metrics.unpriced_count, 1);
+
+    // The same rows bucketed by UTC+8 hour: the attempt-only hour must not
+    // appear and hours shared with attempts count terminal rows only.
+    let hourly = store.usage_stats(&TimeRange::default(), true).unwrap();
+    assert_eq!(hourly.granularity, "hour");
+    assert_eq!(
+        hourly
+            .buckets
+            .iter()
+            .map(|bucket| bucket.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["09:00", "10:00", "11:00"],
+        "the 12:45 attempt must not create a bucket"
+    );
+    let nine = hourly
+        .buckets
+        .iter()
+        .find(|bucket| bucket.label == "09:00")
+        .expect("09:00 bucket");
+    assert_eq!(nine.metrics.request_count, 1);
+    assert_eq!(nine.metrics.total_tokens, 14);
+    let ten = hourly
+        .buckets
+        .iter()
+        .find(|bucket| bucket.label == "10:00")
+        .expect("10:00 bucket");
+    assert_eq!(ten.metrics.request_count, 1);
+    assert_eq!(ten.metrics.total_tokens, 18);
+    let eleven = hourly
+        .buckets
+        .iter()
+        .find(|bucket| bucket.label == "11:00")
+        .expect("11:00 bucket");
+    assert_eq!(eleven.metrics.request_count, 1);
+    assert_eq!(eleven.metrics.total_tokens, 33);
+
+    assert_eq!(
+        stats
+            .models
+            .iter()
+            .map(|row| row.local_model.as_str())
+            .collect::<Vec<_>>(),
+        vec!["local-a", "local-b"],
+        "the attempt-only model must not appear in the statistics"
+    );
+    let local_a = stats
+        .models
+        .iter()
+        .find(|row| row.local_model == "local-a")
+        .expect("local-a row");
+    assert_eq!(local_a.metrics.request_count, 2);
+    assert_eq!(local_a.metrics.total_tokens, 18 + 33);
+    assert!((local_a.metrics.amount - 3.0).abs() < 1e-9);
+    assert_eq!(local_a.metrics.unpriced_count, 0);
+    assert_eq!(local_a.providers.len(), 2);
+    let provider_one = local_a
+        .providers
+        .iter()
+        .find(|row| row.provider_id == "p1")
+        .expect("p1 detail");
+    assert_eq!(provider_one.metrics.request_count, 1);
+    assert_eq!(provider_one.metrics.total_tokens, 18);
+    let provider_two = local_a
+        .providers
+        .iter()
+        .find(|row| row.provider_id == "p2")
+        .expect("p2 detail");
+    assert_eq!(provider_two.metrics.request_count, 1);
+    assert_eq!(provider_two.metrics.total_tokens, 33);
+    let local_b = stats
+        .models
+        .iter()
+        .find(|row| row.local_model == "local-b")
+        .expect("local-b row");
+    assert_eq!(local_b.metrics.request_count, 1);
+    assert_eq!(local_b.metrics.total_tokens, 14);
+    assert_eq!(local_b.metrics.unpriced_count, 1);
+    assert_eq!(local_b.providers.len(), 1);
+
+    // --- grouped views count terminal rows only ----------------------------
+    let by_model = store
+        .group_logs(&TimeRange::default(), &LogFilter::default(), "model")
+        .unwrap();
+    assert_eq!(
+        by_model
+            .iter()
+            .map(|group| group.group.as_str())
+            .collect::<Vec<_>>(),
+        vec!["local-b", "local-a"],
+        "the attempt-only model must not appear in grouped rows"
+    );
+    let model_b = by_model
+        .iter()
+        .find(|group| group.group == "local-b")
+        .expect("local-b group");
+    assert_eq!(model_b.request_count, 1);
+    assert_eq!(model_b.error_count, 1);
+    assert_eq!(
+        model_b.last_request_at_ms, day_two_nine_fifteen,
+        "the later attempt must not become the last request"
+    );
+    let model_a = by_model
+        .iter()
+        .find(|group| group.group == "local-a")
+        .expect("local-a group");
+    assert_eq!(model_a.request_count, 2);
+    assert_eq!(model_a.error_count, 0, "a non-terminal failure is not an error");
+    assert_eq!(model_a.last_request_at_ms, day_one_eleven_thirty);
+
+    let by_day = store
+        .group_logs(&TimeRange::default(), &LogFilter::default(), "day")
+        .unwrap();
+    assert_eq!(by_day.len(), 2);
+    let first_day = by_day
+        .iter()
+        .find(|group| group.group == "2026-09-15")
+        .expect("day one group");
+    assert_eq!(first_day.request_count, 2);
+    assert_eq!(first_day.error_count, 0, "the 12:45 attempt must not add an error");
+    assert_eq!(
+        first_day.last_request_at_ms, day_one_eleven_thirty,
+        "the later attempt must not become the last request"
+    );
+    let second_day = by_day
+        .iter()
+        .find(|group| group.group == "2026-09-16")
+        .expect("day two group");
+    assert_eq!(second_day.request_count, 1);
+    assert_eq!(second_day.error_count, 1);
+    assert_eq!(second_day.last_request_at_ms, day_two_nine_fifteen);
+
+    // --- the ungrouped list keeps every row --------------------------------
+    let page = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .unwrap();
+    assert_eq!(page.total, 6, "the ungrouped list counts every stored row");
+    assert_eq!(page.total_pages, 1);
+    assert_eq!(page.records.len(), 6);
+    let order = page
+        .records
+        .iter()
+        .map(|record| {
+            (
+                record.timestamp_ms,
+                record.provider_id.as_str(),
+                record.terminal,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        order,
+        vec![
+            (day_two_attempt, "p-attempt", false),
+            (day_two_nine_fifteen, "p1", true),
+            (day_one_attempt, "p1", false),
+            (day_one_eleven_thirty, "p2", true),
+            (day_one_ten, "p1", true),
+            (day_one_ten, "p2", false),
+        ],
+        "newest first, attempt rows visible, equal timestamps in insertion order"
+    );
+    assert_eq!(
+        page.records[0].error_message.as_deref(),
+        Some("only attempt failed")
+    );
+    assert_eq!(page.records[1].error_message, None);
+    assert_eq!(
+        page.models,
+        vec![
+            "local-a".to_string(),
+            "local-attempt-only".to_string(),
+            "local-b".to_string(),
+        ],
+        "the facet must include a model that exists only on non-terminal rows"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// REQ-005: `append_batch` writes the whole slice through one connection, treats
+/// an empty slice as a no-op and still applies the retention cleanup.
+#[test]
+fn usage_store_append_batch_handles_empty_slices_and_applies_retention() {
+    let (dir, store) = usage_store("usage-append-batch");
+    let now = super::now_millis();
+    let day = 86_400_000i64;
+
+    store
+        .append_batch(&[], 365)
+        .expect("an empty slice must succeed");
+    assert_eq!(store.count().unwrap(), 0, "an empty slice must not add rows");
+
+    store
+        .append_batch(
+            &[
+                sample_record(
+                    now - 10 * day,
+                    "local-old",
+                    "remote-a",
+                    "p1",
+                    "Provider One",
+                    UsageResult::Success,
+                    Some(0.1),
+                    tokens(1, 0, 0, 1),
+                ),
+                sample_record(
+                    now - 2 * day,
+                    "local-fresh",
+                    "remote-a",
+                    "p1",
+                    "Provider One",
+                    UsageResult::Success,
+                    Some(0.1),
+                    tokens(1, 0, 0, 1),
+                ),
+            ],
+            365,
+        )
+        .expect("a two-row batch must succeed");
+    assert_eq!(store.count().unwrap(), 2);
+
+    store
+        .append_batch(
+            &[sample_record(
+                now,
+                "local-newest",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(0.1),
+                tokens(1, 0, 0, 1),
+            )],
+            7,
+        )
+        .expect("a single-row batch must succeed");
+    let remaining = store.all_records().unwrap();
+    assert_eq!(remaining.len(), 2, "retention 7 must delete the 10-day-old row");
+    assert!(!remaining
+        .iter()
+        .any(|record| record.local_model == "local-old"));
+    assert!(remaining
+        .iter()
+        .any(|record| record.local_model == "local-newest"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-010 / REQ-003: extraction prefers a standard `error.message`, otherwise
+/// summarizes the body (lossy decode, markup removed, whitespace collapsed) and
+/// returns `None` when nothing readable remains.
+#[test]
+fn extract_upstream_error_text_prefers_error_message_and_summarizes_bodies() {
+    let envelope =
+        br#"{"error":{"message":"upstream rate limit exceeded","type":"rate_limit_error"}}"#;
+    assert_eq!(
+        extract_upstream_error_text(envelope).as_deref(),
+        Some("upstream rate limit exceeded")
+    );
+
+    // A JSON body without a usable `error.message` falls back to the body text.
+    let other_json = br#"{"error":{"message":"","code":"bad_request"}}"#;
+    assert_eq!(
+        extract_upstream_error_text(other_json).as_deref(),
+        Some(r#"{"error":{"message":"","code":"bad_request"}}"#)
+    );
+
+    let html = b"<html>\n<body>\n<h1>Bad Gateway</h1>\n<p>origin   refused\nconnection</p>\n</body>\n</html>";
+    let summary = extract_upstream_error_text(html).expect("an HTML body yields readable text");
+    assert_eq!(summary, "Bad Gateway origin refused connection");
+    assert!(
+        !summary.contains('<') && !summary.contains('>'),
+        "markup must be removed: {summary}"
+    );
+    assert!(!summary.contains("  "), "whitespace must be collapsed: {summary}");
+
+    let non_utf8 = b"\xff\xfeBad gateway \x80 from upstream";
+    let lossy = extract_upstream_error_text(non_utf8).expect("non-UTF-8 bytes still yield text");
+    assert_eq!(lossy, "\u{fffd}\u{fffd}Bad gateway \u{fffd} from upstream");
+
+    assert_eq!(
+        extract_upstream_error_text(b""),
+        None,
+        "an empty body has no readable text"
+    );
+    assert_eq!(
+        extract_upstream_error_text(b"   \n\t  "),
+        None,
+        "a whitespace-only body has no readable text"
+    );
+    assert_eq!(
+        extract_upstream_error_text(b"<html>\n<body></body>\n</html>"),
+        None,
+        "a markup-only body has no readable text"
+    );
+
+    // The lossily decoded text must still be writable: extraction feeds
+    // `error_message` and a non-UTF-8 body must never fail a log write.
+    let (dir, store) = usage_store("usage-error-text-lossy");
+    let sanitized =
+        sanitize_error_text(&lossy, "sk-unrelated").expect("the lossy summary survives sanitization");
+    store
+        .append_batch(
+            &[sample_attempt_record(
+                super::now_millis(),
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Failure,
+                false,
+                Some(sanitized.as_str()),
+                None,
+                UsageTokens::default(),
+            )],
+            365,
+        )
+        .expect("a lossy-decoded error message must be writable");
+    let stored = store.all_records().unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].error_message.as_deref(), Some(sanitized.as_str()));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-010 / REQ-004: sanitization replaces the provider key, masks credential
+/// shapes, bounds the text at 4096 characters on a Unicode boundary and returns
+/// `None` when nothing readable remains.
+#[test]
+fn sanitize_error_text_redacts_masks_and_bounds_text() {
+    // The provider key is replaced verbatim wherever it appears.
+    let api_key = "upstream-key-12345";
+    let echoed = format!("request with {api_key} was rejected; retry without {api_key}");
+    let sanitized = sanitize_error_text(&echoed, api_key).expect("text survives sanitization");
+    assert_eq!(
+        sanitized,
+        "request with [redacted] was rejected; retry without [redacted]"
+    );
+    assert!(!sanitized.contains(api_key));
+    assert_eq!(sanitized.matches("[redacted]").count(), 2);
+
+    // 4096 characters is stored unchanged, without a truncation marker.
+    let exact = "x".repeat(4096);
+    let bounded = sanitize_error_text(&exact, "unrelated-key").expect("bounded text survives");
+    assert_eq!(bounded, exact, "exactly 4096 characters must be stored unchanged");
+    assert!(!bounded.ends_with('…'), "no ellipsis without truncation");
+
+    // 4097 characters is capped at 4096 characters and marked as truncated.
+    let over = "y".repeat(4097);
+    let truncated = sanitize_error_text(&over, "unrelated-key").expect("truncated text survives");
+    assert!(
+        truncated.chars().count() <= 4096,
+        "the bound is 4096 characters, got {}",
+        truncated.chars().count()
+    );
+    assert!(truncated.ends_with('…'), "truncation must be marked: {truncated}");
+    assert!(
+        over.starts_with(truncated.trim_end_matches('…')),
+        "only a prefix of the original may survive"
+    );
+
+    // A multi-byte body must truncate on a character boundary.
+    let cjk = "错误".repeat(3000);
+    let bounded_cjk = sanitize_error_text(&cjk, "unrelated-key").expect("CJK text survives");
+    assert!(bounded_cjk.chars().count() <= 4096);
+    assert!(bounded_cjk.ends_with('…'), "CJK text must be marked as truncated");
+    let kept = bounded_cjk.trim_end_matches('…');
+    assert!(cjk.starts_with(kept), "truncation must not split a character");
+    assert!(kept.chars().all(|character| character == '错' || character == '误'));
+    assert!(std::str::from_utf8(bounded_cjk.as_bytes()).is_ok());
+
+    // Token-shaped credentials are masked so the complete token is absent.
+    let sk_token = "sk-live-1a2b3c4d5e6f7a8b";
+    let bearer_token = "AbCdEf0123456789xyzXYZ";
+    let credential_text = format!("upstream echoed {sk_token} and sent Bearer {bearer_token} back");
+    let masked = sanitize_error_text(&credential_text, "unrelated-key").expect("text survives");
+    assert!(
+        !masked.contains(sk_token),
+        "the complete sk-shaped token must be absent: {masked}"
+    );
+    assert!(
+        !masked.contains(bearer_token),
+        "the complete Bearer token must be absent: {masked}"
+    );
+
+    // Text that is empty after sanitization stores no message.
+    assert_eq!(sanitize_error_text("", "unrelated-key"), None);
+    assert_eq!(sanitize_error_text("   \n\t  ", "unrelated-key"), None);
+}
+
+/// Column names of `usage_logs` read straight from the file, independent of the
+/// store's own migration logic.
+fn usage_log_table_columns(path: &Path) -> Vec<String> {
+    let connection = rusqlite::Connection::open(path).expect("open raw sqlite connection");
+    let mut statement = connection
+        .prepare("PRAGMA table_info(usage_logs)")
+        .expect("prepare PRAGMA table_info");
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("run PRAGMA table_info")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("collect PRAGMA table_info");
+    columns
+}
+
+/// AC-011 / REQ-005 / REQ-006: an `api_gateway_usage.db` written by the previous
+/// release gains both columns idempotently, keeps its pre-migration statistics,
+/// treats historical rows as terminal with no message, and exposes the stored
+/// values of new attempt and terminal rows through the request-log command.
+#[test]
+fn usage_store_migrates_pre_upgrade_database_and_exposes_new_fields() {
+    with_temp_home("usage-migration-payload", |_home| {
+        let app_dir = crate::config::get_app_dir().expect("app dir");
+        let db_path = app_dir.join(super::USAGE_DB_FILE);
+
+        // The pre-upgrade file: the previous release's table, no new columns.
+        let legacy = rusqlite::Connection::open(&db_path).expect("create pre-upgrade db");
+        legacy
+            .execute_batch(
+                "CREATE TABLE usage_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_ms INTEGER NOT NULL,
+                    local_model TEXT NOT NULL,
+                    upstream_model TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    provider_name TEXT NOT NULL,
+                    result TEXT NOT NULL,
+                    status INTEGER NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    cache_read_tokens INTEGER NOT NULL,
+                    cache_write_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL,
+                    amount REAL,
+                    duration_ms INTEGER NOT NULL
+                );
+                CREATE INDEX idx_usage_logs_timestamp ON usage_logs(timestamp_ms);
+                CREATE INDEX idx_usage_logs_local_model ON usage_logs(local_model);",
+            )
+            .expect("create the pre-upgrade schema");
+        let legacy_success = rfc3339_millis("2026-09-15T10:00:00+08:00");
+        let legacy_failure = rfc3339_millis("2026-09-16T10:00:00+08:00");
+        legacy
+            .execute(
+                "INSERT INTO usage_logs (
+                    timestamp_ms, local_model, upstream_model, provider_id, provider_name,
+                    result, status, input_tokens, cache_read_tokens, cache_write_tokens,
+                    output_tokens, total_tokens, amount, duration_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    legacy_success,
+                    "local-a",
+                    "remote-a",
+                    "p1",
+                    "Provider One",
+                    "success",
+                    200i64,
+                    10i64,
+                    0i64,
+                    0i64,
+                    5i64,
+                    15i64,
+                    Some(0.5f64),
+                    5i64
+                ],
+            )
+            .expect("insert the pre-upgrade success row");
+        legacy
+            .execute(
+                "INSERT INTO usage_logs (
+                    timestamp_ms, local_model, upstream_model, provider_id, provider_name,
+                    result, status, input_tokens, cache_read_tokens, cache_write_tokens,
+                    output_tokens, total_tokens, amount, duration_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    legacy_failure,
+                    "local-b",
+                    "remote-b",
+                    "p2",
+                    "Provider Two",
+                    "failure",
+                    500i64,
+                    20i64,
+                    0i64,
+                    0i64,
+                    10i64,
+                    30i64,
+                    Option::<f64>::None,
+                    7i64
+                ],
+            )
+            .expect("insert the pre-upgrade failure row");
+        drop(legacy);
+
+        // Opening through any store operation migrates the file.
+        let store = UsageLogStore::at(&db_path);
+        let legacy_stats = store
+            .usage_stats(&TimeRange::default(), false)
+            .expect("statistics over the migrated rows");
+
+        let columns = usage_log_table_columns(&db_path);
+        assert_eq!(
+            columns
+                .iter()
+                .filter(|name| name.as_str() == "error_message")
+                .count(),
+            1,
+            "error_message must be added exactly once: {columns:?}"
+        );
+        assert_eq!(
+            columns
+                .iter()
+                .filter(|name| name.as_str() == "terminal")
+                .count(),
+            1,
+            "terminal must be added exactly once: {columns:?}"
+        );
+        let distinct_columns = columns.iter().collect::<HashSet<_>>();
+        assert_eq!(
+            columns.len(),
+            distinct_columns.len(),
+            "the migration must not duplicate columns: {columns:?}"
+        );
+
+        let legacy_records = store.all_records().expect("read the migrated rows");
+        assert_eq!(legacy_records.len(), 2);
+        assert!(
+            legacy_records.iter().all(|record| record.terminal),
+            "pre-upgrade rows must count as terminal: {legacy_records:?}"
+        );
+        assert!(
+            legacy_records
+                .iter()
+                .all(|record| record.error_message.is_none()),
+            "pre-upgrade rows must report no error message: {legacy_records:?}"
+        );
+
+        assert_eq!(legacy_stats.totals.request_count, 2);
+        assert_eq!(legacy_stats.totals.input_tokens, 30);
+        assert_eq!(legacy_stats.totals.cache_read_tokens, 0);
+        assert_eq!(legacy_stats.totals.cache_write_tokens, 0);
+        assert_eq!(legacy_stats.totals.output_tokens, 15);
+        assert_eq!(legacy_stats.totals.total_tokens, 45);
+        assert!((legacy_stats.totals.amount - 0.5).abs() < 1e-9);
+        assert_eq!(legacy_stats.totals.unpriced_count, 1);
+        assert_eq!(legacy_stats.buckets.len(), 2);
+        assert_eq!(legacy_stats.buckets[0].label, "2026-09-15");
+        assert_eq!(legacy_stats.buckets[0].metrics.request_count, 1);
+        assert_eq!(legacy_stats.buckets[0].metrics.total_tokens, 15);
+        assert_eq!(legacy_stats.buckets[1].label, "2026-09-16");
+        assert_eq!(legacy_stats.buckets[1].metrics.request_count, 1);
+        assert_eq!(legacy_stats.buckets[1].metrics.total_tokens, 30);
+        assert_eq!(legacy_stats.buckets[1].metrics.unpriced_count, 1);
+
+        // A second open must change neither the schema nor the rows.
+        let second_open = UsageLogStore::at(&db_path);
+        let _ = second_open
+            .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+            .expect("query through a second open");
+        assert_eq!(
+            usage_log_table_columns(&db_path),
+            columns,
+            "a second open must not duplicate columns"
+        );
+        assert_eq!(second_open.count().expect("count after the second open"), 2);
+
+        // New attempt and terminal rows expose their stored fields.
+        let attempt_at = rfc3339_millis("2026-09-17T09:00:00+08:00");
+        let terminal_at = rfc3339_millis("2026-09-17T09:00:02+08:00");
+        store
+            .append_batch(
+                &[
+                    sample_attempt_record(
+                        attempt_at,
+                        "local-a",
+                        "remote-a",
+                        "p1",
+                        "Provider One",
+                        UsageResult::Failure,
+                        false,
+                        Some("upstream 500: gateway exploded"),
+                        None,
+                        UsageTokens::default(),
+                    ),
+                    sample_record(
+                        terminal_at,
+                        "local-a",
+                        "remote-a",
+                        "p2",
+                        "Provider Two",
+                        UsageResult::Success,
+                        Some(1.5),
+                        tokens(4, 0, 0, 4),
+                    ),
+                ],
+                365,
+            )
+            .expect("append the attempt row and its terminal row");
+
+        let page = store
+            .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+            .expect("query the page");
+        assert_eq!(page.total, 4);
+        assert_eq!(page.records[0].timestamp_ms, terminal_at);
+        assert!(page.records[0].terminal);
+        assert_eq!(page.records[0].error_message, None);
+        assert_eq!(page.records[1].timestamp_ms, attempt_at);
+        assert!(!page.records[1].terminal, "the attempt row must be non-terminal");
+        assert_eq!(
+            page.records[1].error_message.as_deref(),
+            Some("upstream 500: gateway exploded")
+        );
+
+        // The request-log command payload carries both stored fields.
+        let command_page = super::commands::api_gateway_request_logs(None, None, None, None, None)
+            .expect("request-log command");
+        let payload = serde_json::to_value(&command_page).expect("serialize the command payload");
+        assert_eq!(payload["total"], json!(4));
+        let records = payload["records"].as_array().expect("records array");
+        assert_eq!(records.len(), 4);
+        assert_eq!(records[0]["terminal"], json!(true));
+        assert_eq!(
+            records[0]["error_message"],
+            Value::Null,
+            "an absent message must serialize as null"
+        );
+        assert_eq!(records[1]["terminal"], json!(false));
+        assert_eq!(
+            records[1]["error_message"],
+            json!("upstream 500: gateway exploded")
+        );
+
+        // Reopening changes nothing further.
+        let reopened = UsageLogStore::at(&db_path);
+        assert_eq!(reopened.count().expect("count after reopen"), 4);
+        assert_eq!(
+            usage_log_table_columns(&db_path),
+            columns,
+            "reopening must not change the schema"
+        );
+        let stored_attempt = reopened
+            .all_records()
+            .expect("read after reopen")
+            .into_iter()
+            .find(|record| !record.terminal && record.provider_id == "p1")
+            .expect("stored attempt row");
+        assert_eq!(
+            stored_attempt.error_message.as_deref(),
+            Some("upstream 500: gateway exploded")
+        );
+    });
+}
+
+/// AC-011 / REQ-005: a store that cannot open its file reports the failure as an
+/// `Err` from `append_batch` instead of panicking and leaves no side effect.
+#[test]
+fn usage_store_append_batch_reports_unopenable_paths_without_side_effects() {
+    let dir = make_temp_dir("usage-append-unopenable");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let db_path = dir.join("api_gateway_usage.db");
+    // A directory at the database path makes SQLite's open fail.
+    fs::create_dir_all(&db_path).expect("create a directory at the database path");
+    let store = UsageLogStore::at(&db_path);
+
+    let error = store
+        .append_batch(
+            &[sample_record(
+                super::now_millis(),
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(0.1),
+                tokens(1, 0, 0, 1),
+            )],
+            365,
+        )
+        .expect_err("a path that cannot be opened must be reported as an error");
+    assert!(!error.is_empty(), "the failure must carry a message");
+
+    assert!(
+        db_path.is_dir(),
+        "the failing store must not replace the directory"
+    );
+    assert!(
+        fs::read_dir(&db_path)
+            .expect("read the directory at the database path")
+            .next()
+            .is_none(),
+        "a failed open must not write any database file"
+    );
+    assert_eq!(
+        fs::read_dir(&dir).expect("read temp dir").count(),
+        1,
+        "the failed store must not create sibling files"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// REQ-006: a payload written before the change deserializes with the documented
+/// defaults, and new records serialize both fields with their stored values.
+#[test]
+fn usage_log_record_serde_defaults_and_round_trips_new_fields() {
+    let older = json!({
+        "timestamp_ms": 1_789_000_000_000i64,
+        "local_model": "local-a",
+        "upstream_model": "remote-a",
+        "provider_id": "p1",
+        "provider_name": "Provider One",
+        "result": "success",
+        "status": 200,
+        "input_tokens": 1,
+        "cache_read_tokens": 2,
+        "cache_write_tokens": 3,
+        "output_tokens": 4,
+        "total_tokens": 10,
+        "amount": 0.5,
+        "duration_ms": 5
+    });
+    let record: UsageLogRecord = serde_json::from_value(older).expect("older payload parses");
+    assert_eq!(record.error_message, None, "a missing message means no message");
+    assert!(
+        record.terminal,
+        "a missing terminal flag must default to terminal"
+    );
+
+    let attempt = sample_attempt_record(
+        2_000,
+        "local-a",
+        "remote-a",
+        "p1",
+        "Provider One",
+        UsageResult::Failure,
+        false,
+        Some("upstream exploded"),
+        None,
+        UsageTokens::default(),
+    );
+    let attempt_value = serde_json::to_value(&attempt).unwrap();
+    assert_eq!(attempt_value["error_message"], json!("upstream exploded"));
+    assert_eq!(attempt_value["terminal"], json!(false));
+
+    let terminal = sample_record(
+        3_000,
+        "local-b",
+        "remote-b",
+        "p2",
+        "Provider Two",
+        UsageResult::Success,
+        Some(0.5),
+        tokens(1, 0, 0, 1),
+    );
+    let terminal_value = serde_json::to_value(&terminal).unwrap();
+    assert_eq!(
+        terminal_value["error_message"],
+        Value::Null,
+        "an absent message must serialize as null"
+    );
+    assert_eq!(terminal_value["terminal"], json!(true));
+
+    let decoded: UsageLogRecord =
+        serde_json::from_value(terminal_value).expect("new payload round trips");
+    assert_eq!(decoded, terminal);
 }
