@@ -17331,3 +17331,193 @@ async fn session_affinity_headerless_and_blank_model_requests_write_no_binding()
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
 }
+
+/// Characterization test for terminal-outcome semantics (REQ-005): `settle`
+/// treats the provider holding the request's terminal outcome as the "served"
+/// provider. For an exhausted request where the binding was an eligible
+/// candidate, the binding keeps the bound provider and records at most one miss;
+/// when the binding was not eligible (REQ-004), it rebinds to the terminal
+/// outcome provider with zero misses.
+#[tokio::test]
+async fn session_affinity_exhausted_request_keeps_the_bound_provider_and_rebinds_only_when_ineligible()
+{
+    let home = temp_home("session-affinity-exhausted");
+    *affinity_lock() = super::selection::SessionAffinityStore::new();
+    let port = free_port().await;
+
+    // --- Bind phase: only provider `a` is a candidate for `local`. ---
+    let (a_bind_url, _) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "a"}))).await;
+    let (b_bind_url, _) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "b"}))).await;
+
+    let mut bind_config = config_with_key(port);
+    bind_config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &a_bind_url,
+        "sk-a",
+        Some("remote-default"),
+    ));
+    // b is not eligible: no default_model and no mapping for `local`.
+    bind_config
+        .providers
+        .push(upstream_provider("b", "Provider B", &b_bind_url, "sk-b", None));
+    super::storage::write_config(&bind_config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", "exhausted-test"),
+        ],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 200, "bind phase must succeed: {text}");
+    assert_eq!(
+        session_response_id(&text).as_deref(),
+        Some("a"),
+        "bind phase must bind to provider A: {text}"
+    );
+
+    // --- Sub-case A: bound provider `a` is eligible; both `a` and `b` fail. ---
+    let (a500_url, a500_log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "boom"}}))).await;
+    let (b500_url, b500_log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "boom"}}))).await;
+
+    let mut sub_a = config_with_key(port);
+    sub_a.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &a500_url,
+        "sk-a",
+        Some("remote-default"),
+    ));
+    sub_a.providers.push(upstream_provider(
+        "b",
+        "Provider B",
+        &b500_url,
+        "sk-b",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&sub_a).unwrap();
+
+    let before_rows = default_usage_store()
+        .all_records()
+        .unwrap_or_default()
+        .len();
+    let (status, _, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", "exhausted-test"),
+        ],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(
+        status, 502,
+        "exhausted request must return 502: {text}"
+    );
+    // The binding must keep `a` (terminal-outcome semantics: the bound
+    // provider stays bound when it was an eligible candidate, regardless of
+    // which provider held the terminal outcome).
+    // Misses is 0 when `a` held the terminal outcome, 1 when another
+    // provider did — both values are allowed.
+    wait_for_usage_logs((before_rows + 1) as u32).await;
+    match affinity_lock().lookup("exhausted-test", "local") {
+        Some(binding) => {
+            assert_eq!(
+                binding.provider_id, "a",
+                "binding must keep provider A (terminal-outcome semantics)"
+            );
+            assert!(
+                binding.misses <= 1,
+                "at most one miss when bound provider was eligible, got {}",
+                binding.misses
+            );
+        }
+        None => panic!("exhausted request with session header must leave a binding"),
+    }
+    // Both mocks must have been attempted (proving the request exhausted).
+    assert!(
+        a500_log.lock().expect("a500 log").len() >= 1,
+        "provider A must be attempted at least once"
+    );
+    assert!(
+        b500_log.lock().expect("b500 log").len() >= 1,
+        "provider B must be attempted at least once (exhausted, not no-candidate)"
+    );
+
+    // --- Sub-case B: binding ineligible (no candidates for `a`); `b` fails. ---
+    let (b500b_url, b500b_log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "boom"}}))).await;
+
+    let mut sub_b = config_with_key(port);
+    // a is not eligible: no default_model and no mapping for `local`.
+    sub_b
+        .providers
+        .push(upstream_provider("a", "Provider A", "http://127.0.0.1:1", "sk-a", None));
+    sub_b.providers.push(upstream_provider(
+        "b",
+        "Provider B",
+        &b500b_url,
+        "sk-b",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&sub_b).unwrap();
+
+    let a_before = a500_log.lock().expect("a500 log").len();
+    let (status, _, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", "exhausted-test"),
+        ],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(
+        status, 502,
+        "ineligible-binding exhausted request must return 502: {text}"
+    );
+    // Provider A must not have been attempted (REQ-004: no attempt for
+    // the former bound provider when it is not an eligible candidate).
+    assert_eq!(
+        a500_log.lock().expect("a500 log").len(),
+        a_before,
+        "ineligible former binding must produce no attempt"
+    );
+    // The binding is now `b` with zero misses (rebind to terminal outcome
+    // provider when bound provider was ineligible).
+    wait_for_usage_logs((before_rows + 2) as u32).await;
+    match affinity_lock().lookup("exhausted-test", "local") {
+        Some(binding) => {
+            assert_eq!(
+                binding.provider_id, "b",
+                "binding must be rebound to provider B (terminal outcome held B)"
+            );
+            assert_eq!(
+                binding.misses, 0,
+                "ineligible rebind must have zero misses"
+            );
+        }
+        None => panic!("ineligible-binding exhausted request must leave a rebound binding"),
+    }
+    assert!(
+        b500b_log.lock().expect("b500b log").len() >= 1,
+        "provider B must be attempted at least once"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
