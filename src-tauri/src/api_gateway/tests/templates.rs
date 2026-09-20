@@ -1191,6 +1191,8 @@ fn sync_propagates_enabled_models_and_never_writes_prices() {
 /// REQ-001 / AC-001: a sync that drops a model disables the matching mapping on
 /// every provider bound to the template, keeping the row and every other field
 /// (local model, display name, protocol, provider metadata, price row) intact.
+/// A model the previous template had already disabled is retired exactly like an
+/// enabled one when the sync removes it.
 #[test]
 fn sync_disables_mappings_for_models_removed_by_the_sync() {
     let previous = template_with_models(
@@ -1200,6 +1202,14 @@ fn sync_disables_mappings_for_models_removed_by_the_sync() {
         vec![
             template_model("A", Some("Local A"), None, true),
             template_model("M", Some("Local M"), Some(UpstreamProtocol::Responses), true),
+            // The previous template had already disabled this model while the
+            // provider mapping kept serving it; the removal still retires it.
+            template_model(
+                "disabled-gone",
+                Some("Local Disabled Gone"),
+                Some(UpstreamProtocol::Responses),
+                false,
+            ),
         ],
     );
     let mut config = GatewayConfig::default();
@@ -1207,9 +1217,16 @@ fn sync_disables_mappings_for_models_removed_by_the_sync() {
 
     let mapping_a_before = mapping_for(&previous.models[0], &previous);
     let mapping_m_before = mapping_for(&previous.models[1], &previous);
+    // The template entry is disabled, but the derived mapping is still enabled.
+    let mut mapping_disabled_gone_before = mapping_for(&previous.models[2], &previous);
+    mapping_disabled_gone_before.enabled = true;
     let provider_before = bound_provider("p", "t");
     let mut provider = provider_before.clone();
-    provider.mappings = vec![mapping_a_before.clone(), mapping_m_before.clone()];
+    provider.mappings = vec![
+        mapping_a_before.clone(),
+        mapping_m_before.clone(),
+        mapping_disabled_gone_before.clone(),
+    ];
     config.providers.push(provider);
     config.model_prices = vec![price_row("p", "A"), price_row("p", "M")];
     let prices_before = config.model_prices.clone();
@@ -1251,6 +1268,31 @@ fn sync_disables_mappings_for_models_removed_by_the_sync() {
         "retirement must only flip the enabled flag"
     );
 
+    let disabled_gone = find_mapping(provider, "disabled-gone")
+        .expect("a retired mapping for a template-disabled model must be kept");
+    assert!(
+        !disabled_gone.enabled,
+        "a template-disabled model the sync removed must still disable its mapping"
+    );
+    let mut disabled_gone_expected = mapping_disabled_gone_before.clone();
+    disabled_gone_expected.enabled = false;
+    assert_eq!(
+        disabled_gone, &disabled_gone_expected,
+        "retirement must only flip the enabled flag for a formerly template-disabled model"
+    );
+    assert_eq!(
+        disabled_gone.local_model, mapping_disabled_gone_before.local_model,
+        "retirement must not rewrite the local model of a template-disabled model"
+    );
+    assert_eq!(
+        disabled_gone.display_name, mapping_disabled_gone_before.display_name,
+        "retirement must not rewrite the display name of a template-disabled model"
+    );
+    assert_eq!(
+        disabled_gone.protocol, mapping_disabled_gone_before.protocol,
+        "retirement must not rewrite the protocol of a template-disabled model"
+    );
+
     let mut provider_after_without_mappings = provider.clone();
     provider_after_without_mappings.mappings = Vec::new();
     let mut provider_before_without_mappings = provider_before.clone();
@@ -1273,10 +1315,10 @@ fn sync_disables_mappings_for_models_removed_by_the_sync() {
 
 /// REQ-002 / AC-002 / AC-003: a sync disables the removed model's mapping on
 /// every provider bound to the template, while a manual mapping, an
-/// already-disabled mapping, a model that only exists in `ignored_models`, a
-/// manual provider, a provider bound to another template, local keys and
-/// terminal-sync records stay byte-for-byte unchanged and no ignored record is
-/// written.
+/// already-disabled mapping, an ignored model the previous template carried
+/// without a mapping, a manual provider, a provider bound to another template,
+/// local keys and terminal-sync records stay byte-for-byte unchanged and no
+/// ignored record is written.
 #[test]
 fn sync_retirement_scope_excludes_manual_disabled_and_ignored_mappings() {
     let previous = template_with_models(
@@ -1286,6 +1328,9 @@ fn sync_retirement_scope_excludes_manual_disabled_and_ignored_mappings() {
         vec![
             template_model("A", Some("Local A"), None, true),
             template_model("M", Some("Local M"), None, true),
+            // The previous template carried a model the provider ignores and has
+            // no mapping for; the sync removes it without adding a record.
+            template_model("ignored-only", Some("Ignored Only"), None, true),
         ],
     );
     let mut config = GatewayConfig::default();
@@ -1298,6 +1343,9 @@ fn sync_retirement_scope_excludes_manual_disabled_and_ignored_mappings() {
     let mapping_m = mapping_for(&previous.models[1], &previous);
     // A manual mapping whose model was never in the previous template.
     let mapping_manual = model_mapping("manual-only");
+    // The ignored set as it stands before the sync; the sync removes the model
+    // from the template but must neither add nor drop a record here.
+    let ignored_before = vec!["ignored-only".to_string()];
 
     for id in ["p1", "p2"] {
         let mut provider = bound_provider(id, "t");
@@ -1306,7 +1354,7 @@ fn sync_retirement_scope_excludes_manual_disabled_and_ignored_mappings() {
             mapping_m.clone(),
             mapping_manual.clone(),
         ];
-        provider.ignored_models = vec!["ignored-only".to_string()];
+        provider.ignored_models = ignored_before.clone();
         config.providers.push(provider);
     }
 
@@ -1389,10 +1437,13 @@ fn sync_retirement_scope_excludes_manual_disabled_and_ignored_mappings() {
             Some(&mapping_manual),
             "provider {id}: a manual mapping must stay unchanged"
         );
+        assert!(
+            find_mapping(provider, "ignored-only").is_none(),
+            "provider {id}: an ignored model the sync removed must stay mapping-free"
+        );
         assert_eq!(
-            provider.ignored_models,
-            vec!["ignored-only".to_string()],
-            "provider {id}: the sync must not add an ignored-model record"
+            provider.ignored_models, ignored_before,
+            "provider {id}: the ignored set must stay exactly as it was"
         );
     }
 

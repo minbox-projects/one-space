@@ -464,6 +464,21 @@ describe("UpstreamProviderList 模板头像与退休映射提示", () => {
     expect(
       screen.queryByTestId("api-gateway-provider-retired-mappings-p-bound"),
     ).not.toBeInTheDocument();
+
+    // 删除退役映射（而非重新启用）后提示同样消失：计数始终由当前 props 推导。
+    const retiredRemoved = makeProvider({
+      ...baseProvider,
+      mappings: baseProvider.mappings.filter(
+        (mapping) =>
+          mapping.upstream_model !== "gone-a" &&
+          mapping.upstream_model !== "gone-b",
+      ),
+    });
+    view.rerender(providerListElement([retiredRemoved], [template]));
+
+    expect(
+      screen.queryByTestId("api-gateway-provider-retired-mappings-p-bound"),
+    ).not.toBeInTheDocument();
   });
 
   it("AC-007 模板仍包含的禁用映射不计入退休提示", () => {
