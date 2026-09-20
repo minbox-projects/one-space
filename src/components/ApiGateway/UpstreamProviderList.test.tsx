@@ -370,6 +370,8 @@ describe("UpstreamProviderList 模板头像与退休映射提示", () => {
     expect(
       within(boundIcon).getByTestId("provider-icon-opencode"),
     ).toBeInTheDocument();
+    const avatarBox = boundIcon.querySelector("div");
+    expect(avatarBox).toHaveStyle({ width: "36px", height: "36px" });
 
     // 手动服务商卡片不得渲染模板头像。
     const manualCard = screen.getByTestId("api-gateway-provider-p-manual");

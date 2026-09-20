@@ -4,12 +4,14 @@ import {
   ArchiveRestore,
   ChevronDown,
   ChevronUp,
+  Clock,
   Eye,
   EyeOff,
   Info,
   Plus,
   RotateCcw,
   Server,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -24,6 +26,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import {
   draftToPriceRow,
+  formatGatewayTimestamp,
   isMappingDeprecated,
   mappedUpstreamModels,
   normalizeReasoningEfforts,
@@ -37,6 +40,7 @@ import {
   type ModelPrice,
 } from "@/lib/apiGateway";
 import { MappingPriceEditor } from "./MappingPriceEditor";
+import { ProviderTemplateAvatar } from "./ProviderTemplateIcon";
 
 type ProviderDetailDialogProps = {
   open: boolean;
@@ -152,9 +156,13 @@ export function ProviderDetailDialog({
 
   const isEditing = Boolean(provider.id);
   const isTemplateBound = Boolean(provider.template_id);
-  const boundTemplate = provider.template_id
-    ? templates?.find((view) => view.template.id === provider.template_id)?.template
+  const boundTemplateView = provider.template_id
+    ? templates?.find((view) => view.template.id === provider.template_id)
     : undefined;
+  const boundTemplate = boundTemplateView?.template;
+  const lastSyncText = boundTemplateView?.synced_at
+    ? formatGatewayTimestamp(boundTemplateView.synced_at)
+    : t("apiGatewayTemplateNotSynced", "Not synced yet");
   const ignoredModels = isTemplateBound ? provider.ignored_models ?? [] : [];
 
   const draftForModel = (model: string): GatewayPriceDraft =>
@@ -297,9 +305,19 @@ export function ProviderDetailDialog({
       >
         <DialogHeader className="pl-6 pr-14 py-4 border-b bg-card/80 backdrop-blur-sm shrink-0">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-2xs">
-              <Server className="h-4.5 w-4.5" />
-            </div>
+            {isTemplateBound ? (
+              <ProviderTemplateAvatar
+                icon={boundTemplate?.icon}
+                templateId={boundTemplate?.id ?? provider.template_id}
+                templateName={boundTemplate?.name}
+                size={36}
+                className="shrink-0"
+              />
+            ) : (
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-2xs">
+                <Server className="h-4.5 w-4.5" />
+              </div>
+            )}
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <DialogTitle className="truncate text-base font-semibold leading-5 text-foreground">
@@ -308,8 +326,22 @@ export function ProviderDetailDialog({
                     : t("apiGatewayNewProvider", "New provider")}
                 </DialogTitle>
                 {isTemplateBound ? (
-                  <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                    {t("apiGatewayTemplateTab", "Provider Templates")}
+                  <span
+                    data-testid="api-gateway-bound-template-header-badge"
+                    className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    <span>
+                      {boundTemplate
+                        ? t("apiGatewayBoundTemplateBadge", {
+                            name: boundTemplate.name,
+                            defaultValue: `Template: ${boundTemplate.name}`,
+                          })
+                        : t("apiGatewayBoundTemplateNotFound", {
+                            id: provider.template_id,
+                            defaultValue: `Template definition not found (${provider.template_id})`,
+                          })}
+                    </span>
                   </span>
                 ) : null}
               </div>
@@ -324,6 +356,84 @@ export function ProviderDetailDialog({
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          {/* 关联服务商模板紧凑展示栏（当服务商关联了服务商模板时展示，低高度且完整显示 API 地址与同步时间） */}
+          {isTemplateBound ? (
+            <div
+              data-testid="api-gateway-bound-template-banner"
+              className="rounded-xl border border-border/70 bg-muted/20 px-3.5 py-2.5 shadow-2xs space-y-1.5 transition hover:border-border"
+            >
+              {/* 第 1 行：品牌图标 + 模板名称 + 协议 + 预设模型数 + 最近同步时间 */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <ProviderTemplateAvatar
+                    icon={boundTemplate?.icon}
+                    templateId={boundTemplate?.id ?? provider.template_id}
+                    templateName={boundTemplate?.name}
+                    size={26}
+                    className="shrink-0"
+                  />
+                  <span className="font-semibold text-xs sm:text-sm text-foreground truncate">
+                    {boundTemplate?.name ??
+                      t("apiGatewayBoundTemplateNotFound", {
+                        id: provider.template_id,
+                        defaultValue: `Template definition not found (${provider.template_id})`,
+                      })}
+                  </span>
+                  {boundTemplate ? (
+                    <span
+                      className={`inline-flex items-center rounded-md px-1.5 py-0.2 text-[10px] font-medium ${
+                        boundTemplate.protocol === "responses"
+                          ? "bg-purple-500/10 text-purple-600 dark:text-purple-400"
+                          : "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                      }`}
+                    >
+                      {boundTemplate.protocol === "responses" ? "Responses" : "Chat"}
+                    </span>
+                  ) : null}
+                  {boundTemplate ? (
+                    <span className="rounded-full bg-muted/80 px-2 py-0.2 text-[10px] font-medium text-muted-foreground border border-border/50">
+                      {t("apiGatewayBoundTemplatePresetModels", {
+                        count: boundTemplate.models.length,
+                        defaultValue: `${boundTemplate.models.length} preset models`,
+                      })}
+                    </span>
+                  ) : null}
+                </div>
+
+                {boundTemplate ? (
+                  <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground shrink-0">
+                    <Clock className="h-3 w-3 opacity-60" />
+                    <span>{t("apiGatewayTemplateLastSync", "Last sync")}:</span>
+                    <span className="font-medium text-foreground">{lastSyncText}</span>
+                  </div>
+                ) : null}
+              </div>
+
+              {/* 第 2 行：完整展示模板 API 基础地址（无截断限制，允许划选复制） */}
+              {boundTemplate ? (
+                <div className="pt-1.5 border-t border-border/40 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
+                      {t("apiGatewayTemplateBaseUrlLabel", "API base URL")}:
+                    </span>
+                    <code className="font-mono text-xs text-foreground select-all break-all">
+                      {boundTemplate.base_url}
+                    </code>
+                  </div>
+                  {boundTemplate.models_url && boundTemplate.models_url !== boundTemplate.base_url ? (
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
+                        {t("apiGatewayTemplateModelsUrl", "Models URL")}:
+                      </span>
+                      <code className="font-mono text-xs text-muted-foreground select-all break-all">
+                        {boundTemplate.models_url}
+                      </code>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {/* 基础配置两列网格（使用 AI 终端服务商统一的标准 field-grid 和 field） */}
           <div className="field-grid col-2 mb-0">
             {/* 第 1 行：名称独占一行 */}
@@ -439,10 +549,21 @@ export function ProviderDetailDialog({
           <div className="space-y-2 rounded-xl border bg-muted/20 p-3.5">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-xs font-semibold text-foreground">
-                  {t("apiGatewayModelMappings", "Model mappings")}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-foreground">
+                    {t("apiGatewayModelMappings", "Model mappings")}
+                  </span>
+                  <span
+                    data-testid="api-gateway-mappings-count-badge"
+                    className="inline-flex items-center rounded-full bg-background px-2 py-0.5 text-[10px] font-semibold text-muted-foreground border border-border/70 shadow-2xs"
+                  >
+                    {t("apiGatewayConfiguredModelCount", {
+                      count: mappings.length,
+                      defaultValue: `${mappings.length} configured`,
+                    })}
+                  </span>
                 </div>
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-[11px] text-muted-foreground mt-0.5">
                   {t(
                     "apiGatewayModelMappingsDesc",
                     "Map local request model names to upstream models. Optionally set a display name shown in the gateway for each model.",

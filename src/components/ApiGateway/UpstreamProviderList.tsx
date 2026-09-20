@@ -304,57 +304,64 @@ export function UpstreamProviderList({
               >
                 {/* 头部：名称、协议徽章、启用开关 */}
                 <div>
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5">
-                        {templateView ? (
-                          <span
-                            data-testid={`api-gateway-provider-template-icon-${provider.id}`}
-                            title={t("apiGatewayProviderTemplateAvatarTitle", {
-                              name: templateView.template.name,
-                              defaultValue: `Created from template ${templateView.template.name}`,
-                            })}
-                            className="shrink-0"
-                          >
-                            <ProviderTemplateAvatar
-                              icon={templateView.template.icon}
-                              templateId={templateView.template.id}
-                              templateName={templateView.template.name}
-                              size={20}
-                            />
-                          </span>
-                        ) : null}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      {templateView ? (
+                        <span
+                          data-testid={`api-gateway-provider-template-icon-${provider.id}`}
+                          title={t("apiGatewayProviderTemplateAvatarTitle", {
+                            name: templateView.template.name,
+                            defaultValue: `Created from template ${templateView.template.name}`,
+                          })}
+                          className="shrink-0 mt-0.5"
+                        >
+                          <ProviderTemplateAvatar
+                            icon={templateView.template.icon}
+                            templateId={templateView.template.id}
+                            templateName={templateView.template.name}
+                            size={36}
+                          />
+                        </span>
+                      ) : (
+                        <div
+                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-muted/40 text-muted-foreground shadow-2xs mt-0.5"
+                          aria-hidden="true"
+                        >
+                          <Server className="h-4.5 w-4.5 opacity-70" />
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
                         <button
                           type="button"
                           onClick={() => onSelect(provider.id)}
-                          className="truncate text-left text-sm font-semibold text-foreground hover:text-primary transition-colors block min-w-0 flex-1 leading-5"
+                          className="truncate text-left text-sm font-semibold text-foreground hover:text-primary transition-colors block w-full leading-5"
                           title={provider.name}
                         >
                           {provider.name}
                         </button>
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                        <span
-                          className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-4 ${
-                            isChatProtocol
-                              ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                              : "bg-purple-500/10 text-purple-600 dark:text-purple-400"
-                          }`}
-                        >
-                          {isChatProtocol ? "Chat" : "Responses"}
-                        </span>
-                        {provider.default_model ? (
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
                           <span
-                            className="inline-flex max-w-[150px] truncate rounded-md border bg-background px-1.5 py-0.5 font-mono text-[11px] font-medium leading-4 text-muted-foreground"
-                            title={`Default model: ${provider.default_model}`}
+                            className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-4 ${
+                              isChatProtocol
+                                ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                                : "bg-purple-500/10 text-purple-600 dark:text-purple-400"
+                            }`}
                           >
-                            {provider.default_model}
+                            {isChatProtocol ? "Chat" : "Responses"}
                           </span>
-                        ) : null}
+                          {provider.default_model ? (
+                            <span
+                              className="inline-flex max-w-[150px] truncate rounded-md border bg-background px-1.5 py-0.5 font-mono text-[11px] font-medium leading-4 text-muted-foreground"
+                              title={`Default model: ${provider.default_model}`}
+                            >
+                              {provider.default_model}
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="flex items-center gap-1.5 shrink-0 pt-0.5">
                       <Switch
                         aria-label={t("apiGatewayToggleProviderAria", {
                           name: provider.name,

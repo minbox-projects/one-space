@@ -1108,4 +1108,133 @@ describe("ProviderDetailDialog 模板维护与推理档位", () => {
       screen.queryByRole("switch", { name: "Enable mapping 2" }),
     ).not.toBeInTheDocument();
   });
+
+  it("templateBoundProviderRendersAssociatedTemplateBannerAndTitleBadge", () => {
+    const provider = makeProvider({
+      id: "p1",
+      template_id: "t1",
+      mappings: [
+        { local_model: "local-a", upstream_model: "remote-a" },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+        templates={[makeTemplateView(["remote-a", "remote-b"])]}
+      />,
+    );
+
+    // 1. 表单顶部渲染关联服务商模板横幅卡片
+    const banner = screen.getByTestId("api-gateway-bound-template-banner");
+    expect(banner).toBeInTheDocument();
+    expect(within(banner).getByText("OpenCode Zen")).toBeInTheDocument();
+    expect(within(banner).getByTestId("provider-icon-opencode")).toBeInTheDocument();
+    expect(within(banner).getByText("2 preset models")).toBeInTheDocument();
+
+    // 完整显示模板 API 地址，不被截断
+    const apiUrlEl = within(banner).getByText("https://opencode.ai/zen/v1");
+    expect(apiUrlEl).toBeInTheDocument();
+    expect(apiUrlEl.className).not.toContain("truncate");
+
+    // 默认展示尚未同步文案
+    expect(within(banner).getByText(/Not synced yet/)).toBeInTheDocument();
+
+    // 2. 弹窗顶部标题徽章展示具体模板名称
+    expect(screen.getByText("Template: OpenCode Zen")).toBeInTheDocument();
+
+    // 3. 模型映射列表标题展示已配置模型数量徽章
+    const countBadge = screen.getByTestId("api-gateway-mappings-count-badge");
+    expect(countBadge).toHaveTextContent("1 configured");
+  });
+
+  it("templateBoundProviderShowsFormattedLastSyncTimeWhenSynced", () => {
+    const provider = makeProvider({
+      id: "p1",
+      template_id: "t1",
+      mappings: [],
+    });
+    const templateView = makeTemplateView(["remote-a"]);
+    templateView.synced_at = 1700000000;
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+        templates={[templateView]}
+      />,
+    );
+
+    const banner = screen.getByTestId("api-gateway-bound-template-banner");
+    // 包含时间戳转换后的格式化时间文本
+    expect(within(banner).getByText(/2023-11-15|2023\/11\/15/)).toBeInTheDocument();
+  });
+
+  it("mappingsCountBadgeUpdatesWhenAddingOrRemovingMappings", async () => {
+    const user = userEvent.setup();
+    const provider = makeProvider({
+      id: "p1",
+      mappings: [
+        { local_model: "local-a", upstream_model: "remote-a" },
+        { local_model: "local-b", upstream_model: "remote-b" },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const countBadge = screen.getByTestId("api-gateway-mappings-count-badge");
+    expect(countBadge).toHaveTextContent("2 configured");
+
+    // 点击添加映射
+    await user.click(screen.getByRole("button", { name: "Add mapping" }));
+    expect(countBadge).toHaveTextContent("3 configured");
+
+    // 删除第 1 条映射
+    await user.click(screen.getByRole("button", { name: "Remove mapping 1" }));
+    expect(countBadge).toHaveTextContent("2 configured");
+  });
+
+  it("manualProviderDoesNotRenderAssociatedTemplateBanner", () => {
+    const provider = makeProvider({
+      id: "p-manual",
+      template_id: null,
+      mappings: [],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+        templates={[makeTemplateView(["remote-a"])]}
+      />,
+    );
+
+    expect(
+      screen.queryByTestId("api-gateway-bound-template-banner"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Template:/)).not.toBeInTheDocument();
+  });
 });
+
