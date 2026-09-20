@@ -689,21 +689,27 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
                           metrics={model}
                           sharePercent={modelShare}
                         />
-                        {model.providers.map((provider) => {
-                          const providerShare =
-                            model.total_tokens > 0
-                              ? (provider.total_tokens / model.total_tokens) * 100
-                              : 0;
-                          return (
-                            <UsageAnalysisRow
-                              key={`${model.local_model}-${provider.provider_id}`}
-                              label={provider.provider_name}
-                              metrics={provider}
-                              indent
-                              sharePercent={providerShare}
-                            />
-                          );
-                        })}
+                        {model.providers
+                          .filter(
+                            (provider) =>
+                              provider.provider_id.trim() !== "" &&
+                              provider.provider_name.trim() !== "",
+                          )
+                          .map((provider) => {
+                            const providerShare =
+                              model.total_tokens > 0
+                                ? (provider.total_tokens / model.total_tokens) * 100
+                                : 0;
+                            return (
+                              <UsageAnalysisRow
+                                key={`${model.local_model}-${provider.provider_id}`}
+                                label={provider.provider_name}
+                                metrics={provider}
+                                indent
+                                sharePercent={providerShare}
+                              />
+                            );
+                          })}
                       </Fragment>
                     );
                   })}
