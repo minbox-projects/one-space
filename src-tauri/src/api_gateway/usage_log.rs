@@ -1069,9 +1069,19 @@ impl UsageLogStore {
     ) -> Result<UsageStats, String> {
         let connection = self.open()?;
         let (where_sql, params) = bind(range, &LogFilter::default(), true);
+        // Cancelled requests stay visible in the request-log views (REQ: 取消仍可见),
+        // but they are not usage statistics; exclude them from every aggregate.
+        let stats_where = if where_sql.is_empty() {
+            " WHERE result != 'cancelled'".to_string()
+        } else {
+            format!("{where_sql} AND result != 'cancelled'")
+        };
+        // A failed attempt with no candidate provider (`provider_id = ''`) still
+        // counts toward totals/models, but must not leak a blank provider row.
+        let provider_where = format!("{stats_where} AND provider_id <> ''");
         let totals: UsageMetrics = connection
             .query_row(
-                &format!("SELECT {METRIC_COLUMNS} FROM usage_logs{where_sql}"),
+                &format!("SELECT {METRIC_COLUMNS} FROM usage_logs{stats_where}"),
                 params_from_iter(params.iter()),
                 |row| metrics_from_row(row, 0),
             )
@@ -1085,7 +1095,7 @@ impl UsageLogStore {
         let mut statement = connection
             .prepare(&format!(
                 "SELECT {bucket_sql} AS bucket_key, {METRIC_COLUMNS}
-                 FROM usage_logs{where_sql}
+                 FROM usage_logs{stats_where}
                  GROUP BY bucket_key ORDER BY bucket_key ASC"
             ))
             .map_err(|error| error.to_string())?;
@@ -1109,7 +1119,7 @@ impl UsageLogStore {
         let mut model_statement = connection
             .prepare(&format!(
                 "SELECT local_model, {METRIC_COLUMNS}
-                 FROM usage_logs{where_sql}
+                 FROM usage_logs{stats_where}
                  GROUP BY local_model ORDER BY COALESCE(SUM(total_tokens), 0) DESC, local_model ASC"
             ))
             .map_err(|error| error.to_string())?;
@@ -1125,7 +1135,7 @@ impl UsageLogStore {
         let mut provider_statement = connection
             .prepare(&format!(
                 "SELECT local_model, provider_id, provider_name, {METRIC_COLUMNS}
-                 FROM usage_logs{where_sql}
+                 FROM usage_logs{provider_where}
                  GROUP BY local_model, provider_id, provider_name
                  ORDER BY local_model ASC, provider_name ASC"
             ))
