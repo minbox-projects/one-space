@@ -13561,7 +13561,7 @@ fn extract_upstream_error_text_prefers_error_message_and_summarizes_bodies() {
 #[test]
 fn sanitize_error_text_redacts_masks_and_bounds_text() {
     // The provider key is replaced verbatim wherever it appears.
-    let api_key = "upstream-key-12345";
+    let api_key = "SAFE_FIXTURE_upstream-key-12345";
     let echoed = format!("request with {api_key} was rejected; retry without {api_key}");
     let sanitized = sanitize_error_text(&echoed, api_key).expect("text survives sanitization");
     assert_eq!(
