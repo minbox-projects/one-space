@@ -1,8 +1,9 @@
 use super::forwarding::{forward_non_streaming, open_streaming_response};
 use super::selection::{
     candidate_providers, classify_failure, default_retry_delay, is_retryable_failure,
-    register_failure, register_success, resolve_model_for_protocol, retry_header_delay, shuffled_candidates,
-    FailureClass, ModelResolution, MAX_RETRIES_PER_PROVIDER,
+    register_failure, register_success, resolve_model_for_protocol, resolve_session_id,
+    retry_header_delay, session_affinity, shuffled_candidates, FailureClass, ModelResolution,
+    SessionOrder, MAX_RETRIES_PER_PROVIDER,
 };
 use super::storage::{local_base_url, read_config, write_config};
 use super::usage_log::{
@@ -1463,7 +1464,24 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
         return Ok(());
     }
 
-    let ordered = shuffled_candidates(&candidates);
+    let session_id = resolve_session_id(&request.headers);
+    // The lookup, the shuffle and a first-request binding write share one lock
+    // guard, which is released before any forwarding begins. A poisoned binding
+    // table must not take the gateway down, so recover the guard instead.
+    let SessionOrder {
+        ordered,
+        bound_provider_id,
+    } = session_affinity()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .resolve_order(session_id.as_deref(), requested.as_deref(), || {
+            shuffled_candidates(&candidates)
+        });
+    // The reorder is a no-op when the bound provider is not one of this
+    // request's eligible candidates, which forces the binding to be replaced.
+    let bound_was_eligible = bound_provider_id
+        .as_deref()
+        .is_some_and(|id| candidates.iter().any(|provider| provider.id == id));
     let (mut reader, mut writer) = stream.into_split();
     let disconnected = async {
         let mut buf = [0u8; 1024];
@@ -1528,6 +1546,22 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
     // all. Logging is best-effort and never changes the caller-visible response.
     match outcome {
         Some(Ok(capture)) if capture.result() != UsageResult::Cancelled => {
+            // Settle the binding once per request at this terminal outcome,
+            // before the best-effort usage rows are persisted so the binding
+            // is already settled when the caller observes the response. A
+            // request that reached no upstream carries an empty provider id
+            // and settles nothing; the lock is held for this call only.
+            let served = capture.provider_id.trim();
+            let served = if served.is_empty() { None } else { Some(served) };
+            session_affinity()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .settle(
+                    session_id.as_deref().unwrap_or_default(),
+                    requested.as_deref().unwrap_or_default(),
+                    bound_was_eligible,
+                    served,
+                );
             if attempts.is_empty() {
                 // No upstream attempt completed, so the request's only row is
                 // the gateway's own terminal row, like a no-candidate request
