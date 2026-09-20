@@ -36,4 +36,4 @@ Status: implemented
 - 请求日志记录类型暴露带 serde 缺省的可选 `error_message` 与 `terminal` 字段；不分组列表把失败行存储的消息显示为单行截断原因，悬停与键盘聚焦的 tooltip 展示完整消息及 HTTP 状态上下文；无消息时保留通用状态码原因，成功与取消行不显示错误消息，非终止行带轻量 attempt 标签，中英文一致。
 - 部分取代：[API Gateway Usage Stats and Request Logs](2026-09-17-ai-gateway-usage-logs.md) 保留并由本记录交叉链接，本记录只取代其每请求一行的记录粒度与不保存错误文本的边界；其 SQLite 日志、记录时价格冻结、保留、`unpriced_count`、`group_by` 契约与模型面决策仍然有效。
 - 部分取代：[Gateway Single-Candidate Fast Fail and Standard Error Responses](2026-09-18-gateway-fast-fail-and-standard-errors.md) 保留并由本记录交叉链接，本记录只取代其「请求日志失败状态语义不变」的陈述——耗尽的非流式终止行现在与流式路径一样记录最后一次观测到的上游状态——其无候选 502 规则、fallback-first 调度与标准错误信封决策仍然有效。
-- `MEMORY.md` 在同一变更中描述该粒度、仅终止行统计规则、终止行状态规则、新增列与错误文本隐私边界；没有公共符号或路径变化，因此 `navigation.json` 与 `navigation.md` 未改动。
+- `MEMORY.md` 在同一变更中描述该粒度、仅终止行统计规则、终止行状态规则、新增列与错误文本隐私边界；请求日志记录类型新增可选的 `error_message` 与 `terminal` 字段，导航索引已按交付的后端日志行为同步并据此重新生成 `navigation.md`，未新增任何索引符号名或文件路径。

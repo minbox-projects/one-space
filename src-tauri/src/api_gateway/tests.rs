@@ -10053,6 +10053,133 @@ async fn usage_log_records_failure_when_no_upstream_can_serve() {
     drop(home);
 }
 
+/// AC-011 / REQ-005: a log database that cannot be opened degrades to a
+/// swallowed log-write failure — the forwarded request still returns its normal
+/// upstream response — and a later open works again once the obstacle is gone.
+#[tokio::test]
+async fn usage_log_write_failure_is_swallowed_and_the_forwarded_request_still_succeeds() {
+    let home = temp_home("usage-log-write-swallowed");
+    let port = free_port().await;
+
+    // A directory at the database path makes every open of the log file fail,
+    // exactly like an unopenable or unmigratable store.
+    let app_dir = crate::config::get_app_dir().expect("app dir");
+    let db_path = app_dir.join(super::USAGE_DB_FILE);
+    fs::create_dir_all(&db_path).expect("create a directory at the database path");
+
+    let upstream_body = json!({
+        "id": "chatcmpl",
+        "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "prompt_tokens_details": {"cached_tokens": 2}
+        }
+    });
+    let expected_body = upstream_body.clone();
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(move |_| MockReply::Json(200, upstream_body.clone())).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider =
+        upstream_provider("p1", "Provider One", &upstream_url, "upstream-secret", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    config.usage_retention_days = 90;
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+
+    // The caller sees the completely normal forwarded response: the upstream
+    // status, the upstream JSON body and no error envelope.
+    assert_eq!(
+        status, 200,
+        "the caller still receives the upstream status: {text}"
+    );
+    assert!(
+        content_type.contains("application/json"),
+        "the forwarded content-type is unchanged: {content_type}"
+    );
+    let body: Value = serde_json::from_str(&text).expect("the forwarded body is JSON");
+    assert_eq!(
+        body, expected_body,
+        "the upstream body must reach the caller unchanged: {text}"
+    );
+    assert!(
+        body.get("error").is_none(),
+        "the swallowed log-write failure must never surface as an error envelope: {text}"
+    );
+    assert!(
+        !text.contains("usage log write failed"),
+        "the swallowed warning text must never reach the caller: {text}"
+    );
+    assert_eq!(
+        upstream_log.lock().expect("mock log").len(),
+        1,
+        "the request really was forwarded to the mock upstream"
+    );
+
+    // The handler writes its row right after the response reaches the socket;
+    // give that attempt the same bounded settling window the neighbouring log
+    // tests use so it has run and failed before the obstacle is removed.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let store = UsageLogStore::default_store().expect("default usage store path");
+    let error = store
+        .count()
+        .expect_err("the directory at the database path keeps the log unopenable");
+    assert!(
+        !error.is_empty(),
+        "the unopenable store must report a reason: {error}"
+    );
+    assert!(
+        db_path.is_dir(),
+        "the failed log write must not replace the directory"
+    );
+
+    // Retry clause (REQ-005): once the obstacle is gone, a later open works and
+    // the write succeeds; the swallowed request left no row behind.
+    fs::remove_dir(&db_path).expect("remove the directory at the database path");
+    let timestamp_ms = super::now_millis();
+    UsageLogStore::default_store()
+        .expect("default usage store after the obstacle is gone")
+        .append(
+            &sample_record(
+                timestamp_ms,
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(0.1),
+                tokens(1, 0, 0, 1),
+            ),
+            365,
+        )
+        .expect("a later open retries the write once the path is usable");
+    assert_eq!(
+        store.count().expect("count after the retry"),
+        1,
+        "the swallowed write stored no row and the retried write stored exactly one"
+    );
+    let stored = store.all_records().expect("read the retried row");
+    assert_eq!(stored.len(), 1, "exactly the retried row is readable");
+    assert_eq!(stored[0].timestamp_ms, timestamp_ms);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
 /// AC-002 / AC-009 / REQ-002 / REQ-003 / REQ-008: streaming forwards the
 /// upstream bytes verbatim and captures usage; a no-candidate streaming failure
 /// is HTTP 502 JSON (not HTTP 200 SSE) and still records one failure row.
