@@ -463,16 +463,32 @@ fn upsert_template_state(
 /// Propagate a template update to every derived provider whose `template_id`
 /// matches: provider name/base_url/protocol update only while they still equal
 /// the previous template values, and only enabled template models add or update
-/// mappings. Mapping display name/protocol update only while they equal the
-/// previous template values (`enabled` and `local_model` are never touched).
-/// Ignored models and disabled template models are skipped, retired models keep
-/// their mapping, and no price row is ever created or modified.
+/// mappings. A mapping whose model the previous template carried but the new
+/// template removed is disabled (only `false` is ever written: the mapping is
+/// never deleted and never re-enabled), so retired models stop serving. Mapping
+/// display name/protocol update only while they equal the previous template
+/// values (`local_model` is never touched). Ignored models and disabled template
+/// models are skipped, and no price row is ever created or modified.
 fn propagate_to_derived(
     config: &mut GatewayConfig,
     template_id: &str,
     previous: &ProviderTemplate,
     new_template: &ProviderTemplate,
 ) {
+    // Models the previous template carried that the new template no longer lists
+    // are retired regardless of their enabled flag in either template.
+    let retired_models: Vec<&str> = previous
+        .models
+        .iter()
+        .filter(|model| {
+            !new_template
+                .models
+                .iter()
+                .any(|candidate| candidate.upstream_model == model.upstream_model)
+        })
+        .map(|model| model.upstream_model.as_str())
+        .collect();
+
     let providers = &mut config.providers;
 
     for provider in providers
@@ -487,6 +503,15 @@ fn propagate_to_derived(
         }
         if provider.protocol == previous.protocol {
             provider.protocol = new_template.protocol;
+        }
+
+        for mapping in provider.mappings.iter_mut() {
+            if retired_models
+                .iter()
+                .any(|retired| *retired == mapping.upstream_model)
+            {
+                mapping.enabled = false;
+            }
         }
 
         for model in new_template.models.iter().filter(|model| model.enabled) {
@@ -543,11 +568,15 @@ fn propagate_to_derived(
 ///
 /// The template's model list is replaced wholesale from its `models_url`; a
 /// source-provided display name and derived protocol win while a locally owned
-/// `enabled` flag and any omitted value are kept. A blank URL and every fatal
-/// source problem (fetch error, non-JSON, missing model array, entry without an
-/// identifier, empty effective set) write nothing. The new template and every
-/// derived provider update are staged on a clone, handed to `persist`, and only
-/// committed to `config` once persistence succeeds.
+/// `enabled` flag and any omitted value are kept for models the new list still
+/// carries. A sync disables the derived mapping of every model the previous
+/// template carried but the new list removed (only `false` is ever written: the
+/// mapping is never deleted and never enabled), so a retired model stops
+/// serving. A blank URL and every fatal source problem (fetch error, non-JSON,
+/// missing model array, entry without an identifier, empty effective set) write
+/// nothing. The new template and every derived provider update are staged on a
+/// clone, handed to `persist`, and only committed to `config` once persistence
+/// succeeds.
 pub fn apply_template_sync_with(
     config: &mut GatewayConfig,
     template_id: &str,

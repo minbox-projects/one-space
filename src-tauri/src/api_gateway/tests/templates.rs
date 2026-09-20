@@ -17,8 +17,8 @@ use crate::api_gateway::templates::{
     ProviderTemplateView,
 };
 use crate::api_gateway::types_config::{
-    GatewayConfig, GatewayUpstreamProvider, ModelMapping, ModelPrice, ProviderTemplate,
-    ProviderTemplateModel, ProviderTemplateState, UpstreamProtocol,
+    GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelMapping, ModelPrice, ProviderTemplate,
+    ProviderTemplateModel, ProviderTemplateState, TerminalSyncRecord, UpstreamProtocol,
 };
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
@@ -982,11 +982,11 @@ fn sync_unknown_template_id_reports_actionable_error() {
     );
 }
 
-/// REQ-005 / AC-004: a successful sync adds enabled mappings for newly
+/// REQ-005 / AC-004 / AC-005: a successful sync adds enabled mappings for newly
 /// available enabled models only, skips ignored and disabled models, updates an
-/// untouched display name, keeps retired mappings, preserves a locally disabled
-/// mapping and a locally rewritten protocol, leaves an unrelated manual
-/// provider alone and never touches price rows.
+/// untouched display name, keeps retired mappings while disabling them, preserves
+/// a locally disabled mapping and a locally rewritten protocol, leaves an
+/// unrelated manual provider alone and never touches price rows.
 #[test]
 fn sync_propagates_enabled_models_and_never_writes_prices() {
     let previous = template_with_models(
@@ -1039,11 +1039,12 @@ fn sync_propagates_enabled_models_and_never_writes_prices() {
         &previous,
     );
     mapping_e.enabled = false;
+    let retired_mapping = model_mapping("retired");
     provider.mappings = vec![
         mapping_a,
         mapping_c,
         mapping_e,
-        model_mapping("retired"),
+        retired_mapping.clone(),
     ];
     provider.ignored_models = vec!["ignored".to_string()];
     config.providers.push(provider);
@@ -1115,9 +1116,23 @@ fn sync_propagates_enabled_models_and_never_writes_prices() {
         find_mapping(provider, "d").is_none(),
         "a disabled template model must not be added"
     );
+    let retired = find_mapping(provider, "retired")
+        .expect("a retired model's existing mapping must be kept");
     assert!(
-        find_mapping(provider, "retired").is_some(),
-        "a retired model's existing mapping must be kept"
+        !retired.enabled,
+        "a mapping for a model the sync removed must be disabled"
+    );
+    assert_eq!(
+        retired.local_model, retired_mapping.local_model,
+        "retirement must only flip the enabled flag"
+    );
+    assert_eq!(
+        retired.display_name, retired_mapping.display_name,
+        "retirement must not rewrite the display name"
+    );
+    assert_eq!(
+        retired.protocol, retired_mapping.protocol,
+        "retirement must not rewrite the protocol"
     );
 
     let a = find_mapping(provider, "a").expect("the existing mapping must remain");
@@ -1170,6 +1185,325 @@ fn sync_propagates_enabled_models_and_never_writes_prices() {
     assert_eq!(
         config.model_prices, prices_before,
         "a sync must never create or modify a price row"
+    );
+}
+
+/// REQ-001 / AC-001: a sync that drops a model disables the matching mapping on
+/// every provider bound to the template, keeping the row and every other field
+/// (local model, display name, protocol, provider metadata, price row) intact.
+#[test]
+fn sync_disables_mappings_for_models_removed_by_the_sync() {
+    let previous = template_with_models(
+        "t",
+        Some(SYNC_URL),
+        UpstreamProtocol::ChatCompletions,
+        vec![
+            template_model("A", Some("Local A"), None, true),
+            template_model("M", Some("Local M"), Some(UpstreamProtocol::Responses), true),
+        ],
+    );
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, previous.clone());
+
+    let mapping_a_before = mapping_for(&previous.models[0], &previous);
+    let mapping_m_before = mapping_for(&previous.models[1], &previous);
+    let provider_before = bound_provider("p", "t");
+    let mut provider = provider_before.clone();
+    provider.mappings = vec![mapping_a_before.clone(), mapping_m_before.clone()];
+    config.providers.push(provider);
+    config.model_prices = vec![price_row("p", "A"), price_row("p", "M")];
+    let prices_before = config.model_prices.clone();
+
+    let body = json!({"data": [{"id": "A"}]}).to_string();
+    let view = apply_template_sync_with(&mut config, "t", |_t| Ok(body.clone()), |_n| Ok(()))
+        .expect("the sync must succeed");
+
+    let ids: Vec<&str> = view
+        .template
+        .models
+        .iter()
+        .map(|model| model.upstream_model.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["A"],
+        "the removed model must leave the template list"
+    );
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p")
+        .expect("the bound provider must exist");
+
+    let a = find_mapping(provider, "A").expect("the surviving mapping must stay");
+    assert_eq!(a, &mapping_a_before, "a surviving mapping must not change");
+
+    let m = find_mapping(provider, "M").expect("the retired mapping must be kept");
+    assert!(
+        !m.enabled,
+        "a mapping for a model the sync removed must be disabled"
+    );
+    let mut mapping_m_expected = mapping_m_before.clone();
+    mapping_m_expected.enabled = false;
+    assert_eq!(
+        m, &mapping_m_expected,
+        "retirement must only flip the enabled flag"
+    );
+
+    let mut provider_after_without_mappings = provider.clone();
+    provider_after_without_mappings.mappings = Vec::new();
+    let mut provider_before_without_mappings = provider_before.clone();
+    provider_before_without_mappings.mappings = Vec::new();
+    assert_eq!(
+        serde_json::to_value(&provider_after_without_mappings).expect("encode provider after"),
+        serde_json::to_value(&provider_before_without_mappings).expect("encode provider before"),
+        "retirement must not change any provider field other than the mapping flag"
+    );
+
+    assert_eq!(
+        config.model_prices, prices_before,
+        "retirement must not create, remove or modify a price row"
+    );
+    assert!(
+        find_price_row(&config, "p", "M").is_some(),
+        "the retired model's price row must be kept"
+    );
+}
+
+/// REQ-002 / AC-002 / AC-003: a sync disables the removed model's mapping on
+/// every provider bound to the template, while a manual mapping, an
+/// already-disabled mapping, a model that only exists in `ignored_models`, a
+/// manual provider, a provider bound to another template, local keys and
+/// terminal-sync records stay byte-for-byte unchanged and no ignored record is
+/// written.
+#[test]
+fn sync_retirement_scope_excludes_manual_disabled_and_ignored_mappings() {
+    let previous = template_with_models(
+        "t",
+        Some(SYNC_URL),
+        UpstreamProtocol::ChatCompletions,
+        vec![
+            template_model("A", Some("Local A"), None, true),
+            template_model("M", Some("Local M"), None, true),
+        ],
+    );
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, previous.clone());
+
+    // An already-disabled mapping whose model still appears in the sync result.
+    let mut mapping_a = mapping_for(&previous.models[0], &previous);
+    mapping_a.enabled = false;
+    // The mapping the sync must retire.
+    let mapping_m = mapping_for(&previous.models[1], &previous);
+    // A manual mapping whose model was never in the previous template.
+    let mapping_manual = model_mapping("manual-only");
+
+    for id in ["p1", "p2"] {
+        let mut provider = bound_provider(id, "t");
+        provider.mappings = vec![
+            mapping_a.clone(),
+            mapping_m.clone(),
+            mapping_manual.clone(),
+        ];
+        provider.ignored_models = vec!["ignored-only".to_string()];
+        config.providers.push(provider);
+    }
+
+    // A manual provider (no `template_id`) that even holds the retired model
+    // must never be touched.
+    let mut manual = GatewayUpstreamProvider::default();
+    manual.id = "pm".to_string();
+    manual.name = "Manual Provider".to_string();
+    manual.base_url = "https://manual.example.com/v1".to_string();
+    manual.mappings = vec![model_mapping("M")];
+    config.providers.push(manual);
+
+    // A provider bound to another template must never be touched.
+    let mut other = bound_provider("po", "other-template");
+    other.mappings = vec![model_mapping("M")];
+    config.providers.push(other);
+
+    config.keys.push(GatewayKey {
+        id: "k1".to_string(),
+        label: "Key 1".to_string(),
+        value: "local-key".to_string(),
+        enabled: true,
+        created_at: 1,
+    });
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "p1".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:17688/v1".to_string(),
+        synced_at: 1,
+    });
+
+    let pm_index = config
+        .providers
+        .iter()
+        .position(|provider| provider.id == "pm")
+        .expect("the manual provider must exist");
+    let po_index = config
+        .providers
+        .iter()
+        .position(|provider| provider.id == "po")
+        .expect("the other-template provider must exist");
+    let pm_before = serde_json::to_value(&config.providers[pm_index]).expect("encode pm before");
+    let po_before = serde_json::to_value(&config.providers[po_index]).expect("encode po before");
+    let keys_before = serde_json::to_value(&config.keys).expect("encode keys before");
+    let terminal_before =
+        serde_json::to_value(&config.terminal_syncs).expect("encode terminal syncs before");
+
+    let body = json!({"data": [{"id": "A"}]}).to_string();
+    apply_template_sync_with(&mut config, "t", |_t| Ok(body.clone()), |_n| Ok(()))
+        .expect("the sync must succeed");
+
+    let mut expected_m = mapping_m.clone();
+    expected_m.enabled = false;
+    for id in ["p1", "p2"] {
+        let provider = config
+            .providers
+            .iter()
+            .find(|provider| provider.id == id)
+            .unwrap_or_else(|| panic!("provider {id} must exist"));
+
+        let m = find_mapping(provider, "M")
+            .unwrap_or_else(|| panic!("provider {id} must keep the retired mapping"));
+        assert!(
+            !m.enabled,
+            "provider {id}: a mapping for a model the sync removed must be disabled"
+        );
+        assert_eq!(
+            m, &expected_m,
+            "provider {id}: retirement must only flip the enabled flag"
+        );
+
+        assert_eq!(
+            find_mapping(provider, "A"),
+            Some(&mapping_a),
+            "provider {id}: an already-disabled mapping must stay unchanged"
+        );
+        assert_eq!(
+            find_mapping(provider, "manual-only"),
+            Some(&mapping_manual),
+            "provider {id}: a manual mapping must stay unchanged"
+        );
+        assert_eq!(
+            provider.ignored_models,
+            vec!["ignored-only".to_string()],
+            "provider {id}: the sync must not add an ignored-model record"
+        );
+    }
+
+    assert_eq!(
+        serde_json::to_value(&config.providers[pm_index]).expect("encode pm after"),
+        pm_before,
+        "a manual provider must be byte-for-byte unchanged"
+    );
+    assert_eq!(
+        serde_json::to_value(&config.providers[po_index]).expect("encode po after"),
+        po_before,
+        "a provider bound to another template must be byte-for-byte unchanged"
+    );
+    assert_eq!(
+        serde_json::to_value(&config.keys).expect("encode keys after"),
+        keys_before,
+        "local keys must be byte-for-byte unchanged"
+    );
+    assert_eq!(
+        serde_json::to_value(&config.terminal_syncs).expect("encode terminal syncs after"),
+        terminal_before,
+        "terminal-sync records must be byte-for-byte unchanged"
+    );
+}
+
+/// REQ-003 / AC-004: retirement is one-way. A model a sync removed stays
+/// disabled when a later sync returns it, and a mapping the operator explicitly
+/// re-enables survives later syncs that still list its model.
+#[test]
+fn retired_disabled_mappings_never_re_enable_on_return_or_later_syncs() {
+    let previous = template_with_models(
+        "t",
+        Some(SYNC_URL),
+        UpstreamProtocol::ChatCompletions,
+        vec![
+            template_model("A", Some("Local A"), None, true),
+            template_model("M", Some("Local M"), None, true),
+        ],
+    );
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, previous.clone());
+    let mut provider = bound_provider("p", "t");
+    provider.mappings = vec![
+        mapping_for(&previous.models[0], &previous),
+        mapping_for(&previous.models[1], &previous),
+    ];
+    config.providers.push(provider);
+
+    let sync = |config: &mut GatewayConfig, ids: &[&str]| {
+        let data: Vec<Value> = ids.iter().map(|id| json!({"id": id})).collect();
+        let body = json!({ "data": data }).to_string();
+        apply_template_sync_with(config, "t", |_t| Ok(body.clone()), |_n| Ok(()))
+            .expect("the sync must succeed");
+    };
+
+    // 1. The first sync removes M and disables its mapping.
+    sync(&mut config, &["A"]);
+    {
+        let provider = config
+            .providers
+            .iter()
+            .find(|provider| provider.id == "p")
+            .expect("the bound provider must exist");
+        let m = find_mapping(provider, "M").expect("the retired mapping must be kept");
+        assert!(
+            !m.enabled,
+            "the removed model's mapping must be disabled by the sync"
+        );
+    }
+
+    // 2. A later sync returning M must not re-enable it.
+    sync(&mut config, &["A", "M"]);
+    {
+        let provider = config
+            .providers
+            .iter()
+            .find(|provider| provider.id == "p")
+            .expect("the bound provider must exist");
+        let m = find_mapping(provider, "M").expect("the retired mapping must be kept");
+        assert!(
+            !m.enabled,
+            "a sync must never re-enable a mapping it retired"
+        );
+    }
+
+    // 3. The operator explicitly re-enables M through the provider dialog.
+    {
+        let provider = config
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == "p")
+            .expect("the bound provider must exist");
+        let m = provider
+            .mappings
+            .iter_mut()
+            .find(|mapping| mapping.upstream_model == "M")
+            .expect("the retired mapping must exist");
+        m.enabled = true;
+    }
+
+    // 4. A later sync still listing M must leave the user's enable in place.
+    sync(&mut config, &["A", "M"]);
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p")
+        .expect("the bound provider must exist");
+    let m = find_mapping(provider, "M").expect("the explicitly enabled mapping must be kept");
+    assert!(
+        m.enabled,
+        "a sync must not disable a mapping whose model is still in the template"
     );
 }
 
