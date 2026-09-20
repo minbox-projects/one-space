@@ -6,7 +6,8 @@ use super::selection::{
 };
 use super::storage::{local_base_url, read_config, write_config};
 use super::usage_log::{
-    compute_cost_at_time, match_price_for_provider, normalize_retention_days, now_millis, parse_usage_from_response,
+    compute_cost_at_time, extract_upstream_error_text, match_price_for_provider,
+    normalize_retention_days, now_millis, parse_usage_from_response, sanitize_error_text,
     SseUsageAccumulator, UsageLogRecord, UsageLogStore, UsageResult, UsageTokens,
 };
 use super::{now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, UpstreamProtocol};
@@ -185,6 +186,63 @@ impl ForwardCapture {
         } else {
             UsageResult::Success
         }
+    }
+}
+
+/// One completed upstream attempt of an inbound request, buffered by the
+/// connection handler until the request ends (REQ-001).
+///
+/// A `status` of 0 means the attempt never received an upstream HTTP status
+/// (network or stream failure); `result` is `Success` or `Failure` only, because
+/// a cancelled request is represented by the synthetic terminal row instead of
+/// an attempt. `error_message` is the sanitized upstream error text and must be
+/// extracted where the raw bytes are still available.
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::api_gateway) struct AttemptLog {
+    pub(in crate::api_gateway) provider_id: String,
+    pub(in crate::api_gateway) provider_name: String,
+    pub(in crate::api_gateway) upstream_model: String,
+    pub(in crate::api_gateway) status: u16,
+    pub(in crate::api_gateway) result: UsageResult,
+    pub(in crate::api_gateway) error_message: Option<String>,
+    pub(in crate::api_gateway) usage: Option<UsageTokens>,
+    pub(in crate::api_gateway) duration_ms: u64,
+}
+
+impl Default for AttemptLog {
+    fn default() -> Self {
+        Self {
+            provider_id: String::new(),
+            provider_name: String::new(),
+            upstream_model: String::new(),
+            status: 0,
+            result: UsageResult::Failure,
+            error_message: None,
+            usage: None,
+            duration_ms: 0,
+        }
+    }
+}
+
+/// Buffer one completed upstream attempt with its own elapsed time.
+fn build_attempt_log(
+    provider: &GatewayUpstreamProvider,
+    upstream_model: &str,
+    started: Instant,
+    status: u16,
+    result: UsageResult,
+    error_message: Option<String>,
+    usage: Option<UsageTokens>,
+) -> AttemptLog {
+    AttemptLog {
+        provider_id: provider.id.clone(),
+        provider_name: provider.name.clone(),
+        upstream_model: upstream_model.to_string(),
+        status,
+        result,
+        error_message,
+        usage,
+        duration_ms: started.elapsed().as_millis().max(1) as u64,
     }
 }
 
@@ -632,7 +690,8 @@ async fn attempt_candidate(
     body: &[u8],
     model: &str,
     client_headers: &HashMap<String, String>,
-) -> AttemptResult {
+) -> (AttemptResult, AttemptLog) {
+    let started = Instant::now();
     match forward_non_streaming(provider, path, body, model, client_headers).await {
         Ok(response) => {
             // Usage is only meaningful for a successful 2xx upstream response;
@@ -642,6 +701,32 @@ async fn attempt_candidate(
             } else {
                 None
             };
+            // A served 2xx is a success; every other body is a failed attempt
+            // whose error text must be extracted while the raw bytes are still
+            // available, because the retryable path below keeps only a status
+            // reason (REQ-003).
+            let served = response.status < 400 && response.parsed;
+            let error_message = if served {
+                None
+            } else {
+                sanitize_error_text(
+                    &extract_upstream_error_text(&response.body).unwrap_or_default(),
+                    &provider.api_key,
+                )
+            };
+            let log = build_attempt_log(
+                provider,
+                model,
+                started,
+                response.status,
+                if served {
+                    UsageResult::Success
+                } else {
+                    UsageResult::Failure
+                },
+                error_message,
+                usage,
+            );
             let capture = ForwardCapture {
                 status: response.status,
                 provider_id: provider.id.clone(),
@@ -650,13 +735,16 @@ async fn attempt_candidate(
                 usage,
                 ..Default::default()
             };
-            if response.status < 400 && response.parsed {
-                return AttemptResult::Success(HttpResponse {
-                    status: response.status,
-                    content_type: "application/json",
-                    body: response.body,
-                    capture: Some(capture),
-                });
+            if served {
+                return (
+                    AttemptResult::Success(HttpResponse {
+                        status: response.status,
+                        content_type: "application/json",
+                        body: response.body,
+                        capture: Some(capture),
+                    }),
+                    log,
+                );
             }
             let class = classify_failure(response.status, false, response.parsed);
             if class == FailureClass::ReturnToClient {
@@ -670,26 +758,47 @@ async fn attempt_candidate(
                     serde_json::to_vec(&upstream_error_payload(response.status, &response.body))
                         .unwrap_or_else(|_| b"{}".to_vec())
                 };
-                return AttemptResult::ReturnToClient(HttpResponse {
-                    status: response.status,
-                    content_type: "application/json",
-                    body,
-                    capture: Some(capture),
-                });
+                return (
+                    AttemptResult::ReturnToClient(HttpResponse {
+                        status: response.status,
+                        content_type: "application/json",
+                        body,
+                        capture: Some(capture),
+                    }),
+                    log,
+                );
             }
-            AttemptResult::Failure {
-                class,
-                retryable: is_retryable_failure(class, response.status),
-                reason: failure_reason(response.status, response.parsed),
-                retry_delay: retry_header_delay(&response.headers),
-            }
+            (
+                AttemptResult::Failure {
+                    class,
+                    retryable: is_retryable_failure(class, response.status),
+                    reason: failure_reason(response.status, response.parsed),
+                    retry_delay: retry_header_delay(&response.headers),
+                },
+                log,
+            )
         }
-        Err(error) => AttemptResult::Failure {
-            class: FailureClass::Retryable,
-            retryable: true,
-            reason: format!("network error: {error}"),
-            retry_delay: None,
-        },
+        Err(error) => {
+            let reason = format!("network error: {error}");
+            let log = build_attempt_log(
+                provider,
+                model,
+                started,
+                0,
+                UsageResult::Failure,
+                sanitize_error_text(&reason, &provider.api_key),
+                None,
+            );
+            (
+                AttemptResult::Failure {
+                    class: FailureClass::Retryable,
+                    retryable: true,
+                    reason,
+                    retry_delay: None,
+                },
+                log,
+            )
+        }
     }
 }
 
@@ -705,6 +814,10 @@ fn record_provider_failure(failures: &mut Vec<(String, String)>, name: &str, rea
 
 /// Try the candidates for a non-streaming request: one immediate fallback-first
 /// pass in order, then bounded retries per provider in earliest-deadline order.
+///
+/// Every completed attempt is appended to `attempts` in completion order
+/// (REQ-001); the caller owns the buffer so an attempt still in flight when the
+/// request ends is dropped without losing the completed entries.
 pub(in crate::api_gateway) async fn attempt_non_streaming(
     ordered: &[GatewayUpstreamProvider],
     path: &str,
@@ -712,6 +825,7 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
     requested: Option<&str>,
     config: &mut GatewayConfig,
     client_headers: &HashMap<String, String>,
+    attempts: &mut Vec<AttemptLog>,
 ) -> HttpResponse {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
@@ -728,7 +842,10 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
             ModelResolution::Serve(model) => model,
             ModelResolution::ProtocolMismatch(_) | ModelResolution::NoMatch => continue,
         };
-        match attempt_candidate(provider, path, body, &model, client_headers).await {
+        let (outcome, log) =
+            attempt_candidate(provider, path, body, &model, client_headers).await;
+        attempts.push(log);
+        match outcome {
             AttemptResult::Success(response) => {
                 health.record_success(&provider.id);
                 health.apply(config);
@@ -775,15 +892,16 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
             break;
         };
         let mut candidate = retries.remove(index);
-        match attempt_candidate(
+        let (outcome, log) = attempt_candidate(
             &candidate.provider,
             path,
             body,
             &candidate.model,
             client_headers,
         )
-        .await
-        {
+        .await;
+        attempts.push(log);
+        match outcome {
             AttemptResult::Success(response) => {
                 health.record_success(&candidate.provider.id);
                 health.apply(config);
@@ -852,6 +970,10 @@ fn is_sse_response_chunk(content_type: &str, first_chunk: &[u8]) -> bool {
 ///
 /// Switching is permitted only until the first byte is written to `writer`; once
 /// written, an upstream failure terminates the stream without retrying.
+///
+/// Every completed attempt is appended to `attempts` in completion order
+/// (REQ-001). An attempt whose bytes are still being forwarded when the request
+/// ends is in flight and appends nothing.
 pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     writer: &mut W,
     ordered: &[GatewayUpstreamProvider],
@@ -860,6 +982,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     requested: Option<&str>,
     config: &mut GatewayConfig,
     client_headers: &HashMap<String, String>,
+    attempts: &mut Vec<AttemptLog>,
 ) -> Result<ForwardCapture, String> {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
@@ -900,6 +1023,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         capture.provider_name = candidate.provider.name.clone();
         capture.upstream_model = candidate.model.clone();
         let provider = &candidate.provider;
+        let started = Instant::now();
         let (class, retryable, reason, retry_delay) = 'attempt: {
             let streamed = open_streaming_response(
                 provider, path, body, &candidate.model, client_headers,
@@ -909,6 +1033,15 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 Err(error) => {
                     last_failure_status = Some(0);
                     let reason = format!("network error: {error}");
+                    attempts.push(build_attempt_log(
+                        provider,
+                        &candidate.model,
+                        started,
+                        0,
+                        UsageResult::Failure,
+                        sanitize_error_text(&reason, &provider.api_key),
+                        None,
+                    ));
                     break 'attempt (FailureClass::Retryable, true, reason, None);
                 }
             };
@@ -920,9 +1053,22 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 let bytes = response.bytes().await.unwrap_or_default();
                 let parsed = serde_json::from_slice::<Value>(&bytes).is_ok();
                 let class = classify_failure(status, false, parsed);
+                let error_message = sanitize_error_text(
+                    &extract_upstream_error_text(&bytes).unwrap_or_default(),
+                    &provider.api_key,
+                );
                 if class == FailureClass::ReturnToClient {
                     health.apply(config);
                     capture.status = status;
+                    attempts.push(build_attempt_log(
+                        provider,
+                        &candidate.model,
+                        started,
+                        status,
+                        UsageResult::Failure,
+                        error_message,
+                        None,
+                    ));
                     // Byte-for-byte only when the upstream body is already a
                     // standard error; otherwise keep the status and wrap it
                     // (REQ-004/AC-006/AC-007).
@@ -947,6 +1093,15 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 }
                 last_failure_status = Some(status);
                 let reason = failure_reason(status, parsed);
+                attempts.push(build_attempt_log(
+                    provider,
+                    &candidate.model,
+                    started,
+                    status,
+                    UsageResult::Failure,
+                    error_message,
+                    None,
+                ));
                 break 'attempt (class, is_retryable_failure(class, status), reason, retry_delay);
             }
 
@@ -964,6 +1119,20 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         let reason = format!(
                             "2xx response is not a valid SSE stream (content-type: {content_type})"
                         );
+                        // The rejected 2xx body is the only readable failure
+                        // information this attempt produces (REQ-003).
+                        attempts.push(build_attempt_log(
+                            provider,
+                            &candidate.model,
+                            started,
+                            502,
+                            UsageResult::Failure,
+                            sanitize_error_text(
+                                &extract_upstream_error_text(&first).unwrap_or_default(),
+                                &provider.api_key,
+                            ),
+                            None,
+                        ));
                         break 'attempt (FailureClass::Retryable, true, reason, retry_delay);
                     }
                     if let Err(error) = write_stream_headers(writer, status).await {
@@ -1005,6 +1174,18 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     &reason,
                                 );
                                 health.apply(config);
+                                // The attempt is complete: its stream ended with
+                                // an error and keeps the usage accumulated so far
+                                // (REQ-003/REQ-005).
+                                attempts.push(build_attempt_log(
+                                    provider,
+                                    &candidate.model,
+                                    started,
+                                    502,
+                                    UsageResult::Failure,
+                                    sanitize_error_text(&reason, &provider.api_key),
+                                    usage.usage(),
+                                ));
                                 // Complete the SSE event boundary so the error
                                 // fragment parses standalone even when the last
                                 // forwarded byte is not a newline, then append one
@@ -1033,6 +1214,17 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                 health.apply(config);
                                 capture.status = status;
                                 capture.usage = usage.usage();
+                                // A normally ended stream is the served success
+                                // of this attempt (REQ-001/REQ-003).
+                                attempts.push(build_attempt_log(
+                                    provider,
+                                    &candidate.model,
+                                    started,
+                                    status,
+                                    UsageResult::Success,
+                                    None,
+                                    usage.usage(),
+                                ));
                                 return Ok(capture);
                             }
                         }
@@ -1041,11 +1233,31 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 Some(Err(error)) => {
                     last_failure_status = Some(0);
                     let reason = format!("stream failed before first byte: {error}");
+                    attempts.push(build_attempt_log(
+                        provider,
+                        &candidate.model,
+                        started,
+                        0,
+                        UsageResult::Failure,
+                        sanitize_error_text(&reason, &provider.api_key),
+                        None,
+                    ));
                     break 'attempt (FailureClass::Retryable, true, reason, retry_delay);
                 }
                 None => {
                     last_failure_status = Some(502);
                     let reason = "upstream returned an empty stream".to_string();
+                    // No readable body ever arrived, so this attempt stores no
+                    // error message (REQ-003).
+                    attempts.push(build_attempt_log(
+                        provider,
+                        &candidate.model,
+                        started,
+                        502,
+                        UsageResult::Failure,
+                        None,
+                        None,
+                    ));
                     break 'attempt (FailureClass::Retryable, true, reason, retry_delay);
                 }
             }
@@ -1235,18 +1447,18 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
             .await
             .map_err(|e| e.to_string())?;
         // A request that entered the normalized flow but had no serving
-        // upstream is a failure (REQ-007/REQ-008), never a silent no-log.
+        // upstream is a failure (REQ-007/REQ-008), never a silent no-log; it
+        // keeps the existing single synthetic terminal row and writes it
+        // through the single-row store call.
         record_usage_log(
             &config,
-            started,
-            requested.as_deref(),
-            UsageResult::Failure,
-            status,
-            ForwardCapture {
+            &synthetic_terminal_row(
+                &config,
+                requested.as_deref().unwrap_or_default(),
+                UsageResult::Failure,
                 status,
-                all_unavailable: true,
-                ..Default::default()
-            },
+                started.elapsed().as_millis().max(1) as u64,
+            ),
         );
         return Ok(());
     }
@@ -1262,6 +1474,10 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
             }
         }
     };
+    // One entry per completed upstream attempt, owned by the connection handler
+    // and borrowed by the forwarding future: dropping an in-flight attempt keeps
+    // every entry that already completed (REQ-001).
+    let mut attempts: Vec<AttemptLog> = Vec::new();
     let forward = async {
         if wants_stream {
             attempt_streaming(
@@ -1272,6 +1488,7 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                 requested.as_deref(),
                 &mut config,
                 &request.headers,
+                &mut attempts,
             )
             .await
         } else {
@@ -1282,6 +1499,7 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                 requested.as_deref(),
                 &mut config,
                 &request.headers,
+                &mut attempts,
             )
             .await;
             let status = response.status;
@@ -1301,61 +1519,154 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
         _ = disconnected => None,
         result = forward => Some(result),
     };
-    // Exactly one log row per forwarded request. Logging is best-effort and
-    // never changes the caller-visible response.
+    // Every buffered attempt becomes one row; exactly one of them is terminal on
+    // a pre-stream outcome (the successful, `ReturnToClient`, mid-stream-failure
+    // or chronologically last exhausted attempt). A request without a completed
+    // attempt writes the gateway's own single terminal row instead: the
+    // synthetic `cancelled` row for a downstream cancellation or delivery
+    // failure, and the synthetic failure row when no upstream was reached at
+    // all. Logging is best-effort and never changes the caller-visible response.
     match outcome {
-        Some(Ok(capture)) => record_usage_log(
-            &config,
-            started,
-            requested.as_deref(),
-            capture.result(),
-            capture.status,
-            capture,
-        ),
-        // A downstream disconnect (or a failed write to it) is a cancellation.
-        _ => record_usage_log(
-            &config,
-            started,
-            requested.as_deref(),
-            UsageResult::Cancelled,
-            0,
-            ForwardCapture {
-                downstream_cancelled: true,
-                ..Default::default()
-            },
-        ),
+        Some(Ok(capture)) if capture.result() != UsageResult::Cancelled => {
+            if attempts.is_empty() {
+                // No upstream attempt completed, so the request's only row is
+                // the gateway's own terminal row, like a no-candidate request
+                // (REQ-001).
+                let record = synthetic_terminal_row(
+                    &config,
+                    requested.as_deref().unwrap_or_default(),
+                    capture.result(),
+                    capture.status,
+                    started.elapsed().as_millis().max(1) as u64,
+                );
+                record_usage_log(&config, &record);
+            } else {
+                let terminal = attempts.len() - 1;
+                record_request_usage_logs(
+                    &config,
+                    started,
+                    requested.as_deref(),
+                    &attempts,
+                    Some(terminal),
+                );
+            }
+        }
+        _ => record_request_usage_logs(&config, started, requested.as_deref(), &attempts, None),
     }
     Ok(())
 }
 
-/// Persist one usage-log row for a forwarded request.
+/// Persist the request's buffered attempt rows plus exactly one terminal row.
 ///
-/// The amount is fixed at record time from the price table, so later price
-/// edits never rewrite history. Any storage failure is logged and swallowed:
-/// the response has already been produced and must not be affected.
-fn record_usage_log(
+/// `terminal_index` names the buffered attempt that is the request's terminal
+/// row: the successful, `ReturnToClient`, mid-stream-failure or chronologically
+/// last exhausted attempt. `None` means the request was cancelled or its
+/// response could not be delivered: every attempt stays non-terminal and one
+/// synthetic terminal `cancelled` row closes it (REQ-001). A request without a
+/// completed attempt has no rows to batch, so it writes only that synthetic row
+/// through the single-row store call. Otherwise all rows of one request go
+/// through one store and one batch, and any storage failure is logged and
+/// swallowed — the response has already been produced and must not be affected.
+fn record_request_usage_logs(
     config: &GatewayConfig,
     started: Instant,
     local_model: Option<&str>,
+    attempts: &[AttemptLog],
+    terminal_index: Option<usize>,
+) {
+    let local_model = local_model.unwrap_or_default();
+    if attempts.is_empty() {
+        let record = synthetic_terminal_row(
+            config,
+            local_model,
+            UsageResult::Cancelled,
+            0,
+            started.elapsed().as_millis().max(1) as u64,
+        );
+        record_usage_log(config, &record);
+        return;
+    }
+    let mut rows: Vec<UsageLogRecord> = attempts
+        .iter()
+        .enumerate()
+        .map(|(index, attempt)| {
+            build_usage_log_row(
+                config,
+                local_model,
+                &attempt.provider_id,
+                &attempt.provider_name,
+                &attempt.upstream_model,
+                attempt.result,
+                attempt.status,
+                attempt.usage,
+                attempt.duration_ms,
+                attempt.error_message.clone(),
+                Some(index) == terminal_index,
+            )
+        })
+        .collect();
+    if terminal_index.is_none() {
+        rows.push(synthetic_terminal_row(
+            config,
+            local_model,
+            UsageResult::Cancelled,
+            0,
+            started.elapsed().as_millis().max(1) as u64,
+        ));
+    }
+    write_usage_log_rows(config, rows);
+}
+
+/// The gateway's own terminal row, attributed to no provider: an empty upstream
+/// model, no usage and no error message.
+fn synthetic_terminal_row(
+    config: &GatewayConfig,
+    local_model: &str,
     result: UsageResult,
     status: u16,
-    capture: ForwardCapture,
-) {
-    let timestamp_ms = now_millis();
-    let tokens = capture.usage.unwrap_or_default();
-    let amount = match_price_for_provider(
-        &capture.provider_id,
-        &capture.upstream_model,
-        &config.model_prices,
+    duration_ms: u64,
+) -> UsageLogRecord {
+    build_usage_log_row(
+        config,
+        local_model,
+        "",
+        "",
+        "",
+        result,
+        status,
+        None,
+        duration_ms,
+        None,
+        true,
     )
-    .map(|price| compute_cost_at_time(price, &tokens, timestamp_ms));
-    let duration_ms = started.elapsed().as_millis().max(1) as u64;
-    let record = UsageLogRecord {
+}
+
+/// Build one request-log row. The amount is fixed at record time from the price
+/// table, so later price edits never rewrite history.
+#[allow(clippy::too_many_arguments)]
+fn build_usage_log_row(
+    config: &GatewayConfig,
+    local_model: &str,
+    provider_id: &str,
+    provider_name: &str,
+    upstream_model: &str,
+    result: UsageResult,
+    status: u16,
+    usage: Option<UsageTokens>,
+    duration_ms: u64,
+    error_message: Option<String>,
+    terminal: bool,
+) -> UsageLogRecord {
+    let timestamp_ms = now_millis();
+    let tokens = usage.unwrap_or_default();
+    let amount = match_price_for_provider(provider_id, upstream_model, &config.model_prices)
+        .map(|price| compute_cost_at_time(price, &tokens, timestamp_ms));
+    UsageLogRecord {
         timestamp_ms,
-        local_model: local_model.unwrap_or_default().to_string(),
-        upstream_model: capture.upstream_model,
-        provider_id: capture.provider_id,
-        provider_name: capture.provider_name,
+        local_model: local_model.to_string(),
+        upstream_model: upstream_model.to_string(),
+        provider_id: provider_id.to_string(),
+        provider_name: provider_name.to_string(),
         result,
         status,
         input_tokens: tokens.input_tokens,
@@ -1365,9 +1676,28 @@ fn record_usage_log(
         total_tokens: tokens.total(),
         amount,
         duration_ms,
-    };
+        error_message,
+        terminal,
+    }
+}
+
+/// Write one request row through a single store call; a storage failure is
+/// reported only as a swallowed log-write warning (REQ-005).
+fn record_usage_log(config: &GatewayConfig, record: &UsageLogRecord) {
     let retention = normalize_retention_days(config.usage_retention_days);
-    let write = UsageLogStore::default_store().and_then(|store| store.append(&record, retention));
+    let write =
+        UsageLogStore::default_store().and_then(|store| store.append(record, retention));
+    if let Err(error) = write {
+        log::warn!("API gateway usage log write failed: {error}");
+    }
+}
+
+/// Write every row of one request through a single store and batch; a storage
+/// failure is reported only as a swallowed log-write warning (REQ-005).
+fn write_usage_log_rows(config: &GatewayConfig, rows: Vec<UsageLogRecord>) {
+    let retention = normalize_retention_days(config.usage_retention_days);
+    let write =
+        UsageLogStore::default_store().and_then(|store| store.append_batch(&rows, retention));
     if let Err(error) = write {
         log::warn!("API gateway usage log write failed: {error}");
     }
