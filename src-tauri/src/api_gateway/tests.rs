@@ -15248,3 +15248,644 @@ fn usage_stats_excludes_cancelled_and_hides_empty_provider() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// Plan 20260920-gateway-session-affinity, Step 1 (RED): rule layer of session
+// affinity. These behavior tests are written against the frozen interface in
+// `selection.rs` (`SESSION_ID_HEADERS`, `resolve_session_id`,
+// `SessionAffinityStore`, `reorder_bound_first`, `session_affinity`) which
+// does not exist yet, so they fail to compile until the implementation step
+// adds exactly that API. Every case uses its own local store; only the final
+// boundary case touches the process-global accessor to assert it exists.
+// ---------------------------------------------------------------------------
+
+/// AC-002, AC-003, AC-004, AC-014: every accepted spelling alone resolves, the
+/// full precedence order wins with all seven present, and `session-id` beats
+/// `thread-id`.
+#[test]
+fn session_affinity_resolve_session_id_uses_precedence_order_and_every_spelling() {
+    assert_eq!(
+        super::selection::SESSION_ID_HEADERS,
+        [
+            "x-session-affinity",
+            "x-opencode-session",
+            "session-id",
+            "session_id",
+            "conversation_id",
+            "thread-id",
+            "x-session-id",
+        ]
+    );
+
+    let spellings = [
+        ("x-session-affinity", "sess-affinity"),
+        ("x-opencode-session", "sess-opencode"),
+        ("session-id", "sess-dash"),
+        ("session_id", "sess-underscore"),
+        ("conversation_id", "sess-conversation"),
+        ("thread-id", "sess-thread"),
+        ("x-session-id", "sess-x"),
+    ];
+    for (header, value) in spellings {
+        let mut headers = HashMap::new();
+        headers.insert(header.to_string(), value.to_string());
+        assert_eq!(
+            super::selection::resolve_session_id(&headers).as_deref(),
+            Some(value),
+            "header {header} alone must resolve"
+        );
+    }
+
+    // `X-Session-Id` arrives lower-cased in the inbound map.
+    let mut upper = HashMap::new();
+    upper.insert("x-session-id".to_string(), "sess-upper".to_string());
+    assert_eq!(
+        super::selection::resolve_session_id(&upper).as_deref(),
+        Some("sess-upper")
+    );
+
+    // Full precedence: all seven present carrying different values.
+    let mut all = HashMap::new();
+    all.insert("x-session-affinity".to_string(), "v-affinity".to_string());
+    all.insert("x-opencode-session".to_string(), "v-opencode".to_string());
+    all.insert("session-id".to_string(), "v-dash".to_string());
+    all.insert("session_id".to_string(), "v-underscore".to_string());
+    all.insert("conversation_id".to_string(), "v-conversation".to_string());
+    all.insert("thread-id".to_string(), "v-thread".to_string());
+    all.insert("x-session-id".to_string(), "v-x".to_string());
+    assert_eq!(
+        super::selection::resolve_session_id(&all).as_deref(),
+        Some("v-affinity"),
+        "the first header of the precedence list must win"
+    );
+
+    // `session-id` beats `thread-id` when both carry different values.
+    let mut pair = HashMap::new();
+    pair.insert("session-id".to_string(), "sess-root".to_string());
+    pair.insert("thread-id".to_string(), "thread-other".to_string());
+    assert_eq!(
+        super::selection::resolve_session_id(&pair).as_deref(),
+        Some("sess-root")
+    );
+}
+
+/// AC-005, AC-015: empty, whitespace-only and absent values resolve to `None`;
+/// an empty higher-precedence header does not block a lower one; forbidden
+/// headers never resolve, with and without a known header present.
+#[test]
+fn session_affinity_resolve_session_id_ignores_empty_values_and_forbidden_headers() {
+    assert_eq!(
+        super::selection::resolve_session_id(&HashMap::new()),
+        None,
+        "absent headers must resolve to no session"
+    );
+
+    for value in ["", "   ", "\t\n "] {
+        let mut headers = HashMap::new();
+        headers.insert("session-id".to_string(), value.to_string());
+        assert_eq!(
+            super::selection::resolve_session_id(&headers),
+            None,
+            "empty/whitespace-only value {value:?} counts as absent"
+        );
+    }
+
+    // An empty higher-precedence header does not block a lower one with a value.
+    let mut fallthrough = HashMap::new();
+    fallthrough.insert("x-session-affinity".to_string(), "   ".to_string());
+    fallthrough.insert("session-id".to_string(), "sess-fallback".to_string());
+    assert_eq!(
+        super::selection::resolve_session_id(&fallthrough).as_deref(),
+        Some("sess-fallback")
+    );
+
+    // Forbidden headers never resolve on their own.
+    for header in [
+        "x-codex-turn-state",
+        "x-codex-window-id",
+        "originator",
+        "x-parent-session-id",
+    ] {
+        let mut headers = HashMap::new();
+        headers.insert(header.to_string(), "some-value".to_string());
+        assert_eq!(
+            super::selection::resolve_session_id(&headers),
+            None,
+            "forbidden header {header} must never become the session identity"
+        );
+    }
+
+    // Forbidden headers never shadow a known header either.
+    let mut mixed = HashMap::new();
+    mixed.insert("x-codex-turn-state".to_string(), "turn-1".to_string());
+    mixed.insert("x-codex-window-id".to_string(), "win-1".to_string());
+    mixed.insert("originator".to_string(), "codex".to_string());
+    mixed.insert("x-parent-session-id".to_string(), "parent-1".to_string());
+    mixed.insert("session-id".to_string(), "sess-real".to_string());
+    assert_eq!(
+        super::selection::resolve_session_id(&mixed).as_deref(),
+        Some("sess-real")
+    );
+}
+
+/// AC-006: bindings are keyed by session plus trimmed model; two models of one
+/// session never share a binding and another session is unaffected.
+#[test]
+fn session_affinity_bindings_are_per_session_and_model() {
+    let mut store = super::selection::SessionAffinityStore::new();
+
+    let first_m1 =
+        store.resolve_order(Some("s"), Some("m1"), || vec![provider("a"), provider("b")]);
+    assert_eq!(first_m1.bound_provider_id.as_deref(), Some("a"));
+    let first_m2 =
+        store.resolve_order(Some("s"), Some("m2"), || vec![provider("b"), provider("a")]);
+    assert_eq!(first_m2.bound_provider_id.as_deref(), Some("b"));
+
+    assert_eq!(
+        store
+            .lookup("s", "m1")
+            .as_ref()
+            .map(|binding| binding.provider_id.as_str()),
+        Some("a")
+    );
+    assert_eq!(
+        store
+            .lookup("s", "m2")
+            .as_ref()
+            .map(|binding| binding.provider_id.as_str()),
+        Some("b")
+    );
+
+    // Resolving M1 again with a shuffled base that puts B first still returns A
+    // first while leaving M2's binding alone.
+    let again = store.resolve_order(Some("s"), Some("m1"), || vec![provider("b"), provider("a")]);
+    let ids: Vec<&str> = again.ordered.iter().map(|item| item.id.as_str()).collect();
+    assert_eq!(ids, vec!["a", "b"]);
+    assert_eq!(again.bound_provider_id.as_deref(), Some("a"));
+    assert_eq!(
+        store
+            .lookup("s", "m2")
+            .as_ref()
+            .map(|binding| binding.provider_id.as_str()),
+        Some("b"),
+        "reusing M1 must not disturb M2"
+    );
+
+    // A different session has no binding.
+    assert_eq!(store.lookup("other", "m1"), None);
+    let other = store.resolve_order(Some("other"), Some("m1"), || {
+        vec![provider("b"), provider("a")]
+    });
+    assert_eq!(other.bound_provider_id.as_deref(), Some("b"));
+}
+
+/// AC-007 counterexample / REQ-001: the reorder helper moves only the bound
+/// provider to the front; it never drops, adds or filters a candidate.
+#[test]
+fn session_affinity_reorder_moves_only_the_bound_provider_to_the_front() {
+    let ids_of = |ordered: &[GatewayUpstreamProvider]| {
+        ordered
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>()
+    };
+
+    // Bound C moves to the front; the remaining order is untouched.
+    let moved = super::selection::reorder_bound_first(
+        vec![provider("a"), provider("b"), provider("c")],
+        Some("s"),
+        Some("m"),
+        Some("c"),
+    );
+    assert_eq!(ids_of(&moved), vec!["c", "a", "b"]);
+
+    // Bound A leaves the list unchanged.
+    let same = super::selection::reorder_bound_first(
+        vec![provider("a"), provider("b"), provider("c")],
+        Some("s"),
+        Some("m"),
+        Some("a"),
+    );
+    assert_eq!(ids_of(&same), vec!["a", "b", "c"]);
+
+    // A bound id that is not in the list returns the list unchanged.
+    let missing = super::selection::reorder_bound_first(
+        vec![provider("a"), provider("b")],
+        Some("s"),
+        Some("m"),
+        Some("zzz"),
+    );
+    assert_eq!(ids_of(&missing), vec!["a", "b"]);
+
+    // No session, an empty or whitespace-only model, and no bound id each
+    // return the list unchanged.
+    for (session, model, bound) in [
+        (None, Some("m"), Some("b")),
+        (Some("s"), None, Some("b")),
+        (Some("s"), Some(""), Some("b")),
+        (Some("s"), Some("   "), Some("b")),
+        (Some("s"), Some("m"), None),
+    ] {
+        let unchanged = super::selection::reorder_bound_first(
+            vec![provider("a"), provider("b")],
+            session,
+            model,
+            bound,
+        );
+        assert_eq!(
+            ids_of(&unchanged),
+            vec!["a", "b"],
+            "session={session:?} model={model:?} bound={bound:?} must not reorder"
+        );
+        assert_eq!(unchanged.len(), 2, "the list must never grow or shrink");
+    }
+
+    // The list never grows or shrinks even when reordering.
+    assert_eq!(moved.len(), 3);
+}
+
+/// AC-001, REQ-006 at rule level: the first resolve binds the first shuffled
+/// candidate at selection time; the second resolve reuses it bound-first with
+/// the remaining order untouched.
+#[test]
+fn session_affinity_resolve_order_binds_first_at_selection_and_reuses_it() {
+    let mut store = super::selection::SessionAffinityStore::new();
+
+    let mut shuffle_calls = 0usize;
+    let first = store.resolve_order(Some("s"), Some("m"), || {
+        shuffle_calls += 1;
+        vec![provider("a"), provider("b"), provider("c")]
+    });
+    assert_eq!(shuffle_calls, 1, "shuffle must be called exactly once");
+    let first_ids: Vec<&str> = first.ordered.iter().map(|item| item.id.as_str()).collect();
+    assert_eq!(first_ids, vec!["a", "b", "c"]);
+    assert_eq!(first.bound_provider_id.as_deref(), Some("a"));
+    assert_eq!(
+        store
+            .lookup("s", "m")
+            .as_ref()
+            .map(|binding| binding.provider_id.as_str()),
+        Some("a")
+    );
+    assert_eq!(
+        store
+            .lookup("s", "m")
+            .as_ref()
+            .map(|binding| binding.misses),
+        Some(0)
+    );
+
+    let mut second_calls = 0usize;
+    let second = store.resolve_order(Some("s"), Some("m"), || {
+        second_calls += 1;
+        vec![provider("c"), provider("b"), provider("a")]
+    });
+    assert_eq!(second_calls, 1, "shuffle must be called exactly once");
+    let second_ids: Vec<&str> = second.ordered.iter().map(|item| item.id.as_str()).collect();
+    assert_eq!(
+        second_ids,
+        vec!["a", "c", "b"],
+        "bound first, remaining order untouched"
+    );
+    assert_eq!(second.bound_provider_id.as_deref(), Some("a"));
+}
+
+/// AC-010: two threads resolving the same session and model agree on the first
+/// provider under any interleaving, and the store holds that binding.
+#[test]
+fn session_affinity_concurrent_resolution_selects_one_first_provider() {
+    let store: Arc<Mutex<super::selection::SessionAffinityStore>> =
+        Arc::new(Mutex::new(super::selection::SessionAffinityStore::new()));
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+
+    let worker = |base: Vec<GatewayUpstreamProvider>| {
+        let store: Arc<Mutex<super::selection::SessionAffinityStore>> = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        std::thread::spawn(move || {
+            barrier.wait();
+            let mut guard = store.lock().expect("session store lock");
+            guard.resolve_order(Some("s"), Some("m"), || base)
+        })
+    };
+
+    let first_handle = worker(vec![provider("a"), provider("b")]);
+    let second_handle = worker(vec![provider("b"), provider("a")]);
+    let first = first_handle.join().expect("first worker");
+    let second = second_handle.join().expect("second worker");
+
+    let first_id = first.ordered.first().map(|item| item.id.clone());
+    let second_id = second.ordered.first().map(|item| item.id.clone());
+    assert_eq!(
+        first_id, second_id,
+        "both concurrent resolutions must return the same first provider"
+    );
+
+    let mut guard = store.lock().expect("session store lock");
+    let live = guard.lookup("s", "m").expect("a binding must exist");
+    assert_eq!(
+        Some(live.provider_id),
+        first_id,
+        "the store's live binding must be the agreed first provider"
+    );
+}
+
+/// AC-008 at rule level: one miss is recorded, and the second consecutive miss
+/// migrates the binding to the serving provider with a zero count.
+#[test]
+fn session_affinity_settle_records_one_miss_and_migrates_at_the_threshold() {
+    assert_eq!(super::selection::SESSION_BINDING_MISS_THRESHOLD, 2);
+    let mut store = super::selection::SessionAffinityStore::new();
+    let bound = store.resolve_order(Some("s"), Some("m"), || vec![provider("a"), provider("b")]);
+    assert_eq!(bound.bound_provider_id.as_deref(), Some("a"));
+
+    store.settle("s", "m", true, Some("b"));
+    let after_one = store
+        .lookup("s", "m")
+        .expect("binding must stay A after one miss");
+    assert_eq!(after_one.provider_id.as_str(), "a");
+    assert_eq!(after_one.misses, 1);
+
+    store.settle("s", "m", true, Some("b"));
+    let migrated = store
+        .lookup("s", "m")
+        .expect("binding must migrate at the threshold");
+    assert_eq!(migrated.provider_id.as_str(), "b");
+    assert_eq!(migrated.misses, 0);
+
+    // The next resolve returns B first.
+    let next = store.resolve_order(Some("s"), Some("m"), || vec![provider("a"), provider("b")]);
+    let ids: Vec<&str> = next.ordered.iter().map(|item| item.id.as_str()).collect();
+    assert_eq!(ids, vec!["b", "a"]);
+    assert_eq!(next.bound_provider_id.as_deref(), Some("b"));
+}
+
+/// AC-009 at rule level: a bound success clears the miss count, and a single
+/// later miss never migrates.
+#[test]
+fn session_affinity_settle_resets_misses_on_a_bound_success() {
+    let mut store = super::selection::SessionAffinityStore::new();
+    store.resolve_order(Some("s"), Some("m"), || vec![provider("a"), provider("b")]);
+
+    store.settle("s", "m", true, Some("b"));
+    assert_eq!(
+        store
+            .lookup("s", "m")
+            .as_ref()
+            .map(|binding| binding.misses),
+        Some(1)
+    );
+
+    store.settle("s", "m", true, Some("a"));
+    let cleared = store.lookup("s", "m").expect("binding must stay A");
+    assert_eq!(cleared.provider_id.as_str(), "a");
+    assert_eq!(
+        cleared.misses, 0,
+        "a bound success must reset the miss count"
+    );
+
+    store.settle("s", "m", true, Some("b"));
+    let one_miss = store.lookup("s", "m").expect("binding must stay A");
+    assert_eq!(one_miss.provider_id.as_str(), "a");
+    assert_eq!(
+        one_miss.misses, 1,
+        "a single later miss must never migrate the binding"
+    );
+}
+
+/// AC-007 at rule level: when the binding was not eligible, settle rebinds to
+/// the serving provider immediately with a zero miss count.
+#[test]
+fn session_affinity_settle_rebinds_when_the_binding_was_not_eligible() {
+    let mut store = super::selection::SessionAffinityStore::new();
+    store.resolve_order(Some("s"), Some("m"), || vec![provider("a"), provider("b")]);
+
+    store.settle("s", "m", false, Some("c"));
+    let rebound = store
+        .lookup("s", "m")
+        .expect("rebind must replace the binding");
+    assert_eq!(rebound.provider_id.as_str(), "c");
+    assert_eq!(rebound.misses, 0);
+}
+
+/// AC-011 at rule level: a request without a terminal outcome changes nothing,
+/// and settle never creates an absent binding.
+#[test]
+fn session_affinity_settle_ignores_a_request_without_a_terminal_outcome() {
+    let mut store = super::selection::SessionAffinityStore::new();
+    store.resolve_order(Some("s"), Some("m"), || vec![provider("a"), provider("b")]);
+    store.settle("s", "m", true, Some("b"));
+    assert_eq!(
+        store
+            .lookup("s", "m")
+            .as_ref()
+            .map(|binding| binding.misses),
+        Some(1)
+    );
+
+    // A cancelled request (no terminal upstream outcome) is a no-op.
+    store.settle("s", "m", true, None);
+    let unchanged = store
+        .lookup("s", "m")
+        .expect("binding must survive a cancelled request");
+    assert_eq!(unchanged.provider_id.as_str(), "a");
+    assert_eq!(unchanged.misses, 1);
+
+    // Settle on an absent binding creates nothing.
+    let mut fresh = super::selection::SessionAffinityStore::new();
+    fresh.settle("absent", "m", true, Some("a"));
+    assert_eq!(fresh.lookup("absent", "m"), None);
+    fresh.settle("absent", "m", false, Some("a"));
+    assert_eq!(fresh.lookup("absent", "m"), None);
+    assert_eq!(fresh.live_len(), 0);
+}
+
+/// AC-012: a binding idle for more than the timeout behaves as absent; exactly
+/// the timeout of idleness is still live.
+#[tokio::test(start_paused = true)]
+async fn session_affinity_expired_binding_behaves_as_absent() {
+    assert_eq!(
+        super::selection::SESSION_BINDING_IDLE_TIMEOUT,
+        std::time::Duration::from_secs(30 * 60)
+    );
+
+    // Boundary: exactly the timeout of idleness is still live. A separate store
+    // keeps its lookup refresh from affecting the expiry case below.
+    {
+        let mut store = super::selection::SessionAffinityStore::new();
+        let bound = store.resolve_order(Some("s-boundary"), Some("m"), || {
+            vec![provider("a"), provider("b")]
+        });
+        assert_eq!(bound.bound_provider_id.as_deref(), Some("a"));
+        tokio::time::advance(super::selection::SESSION_BINDING_IDLE_TIMEOUT).await;
+        let live = store.lookup("s-boundary", "m");
+        assert_eq!(
+            live.as_ref().map(|binding| binding.provider_id.as_str()),
+            Some("a"),
+            "exactly the idle timeout must still be live"
+        );
+    }
+
+    // Expired: timeout plus one second behaves as absent.
+    let mut store = super::selection::SessionAffinityStore::new();
+    let bound = store.resolve_order(Some("s"), Some("m"), || vec![provider("a"), provider("b")]);
+    assert_eq!(bound.bound_provider_id.as_deref(), Some("a"));
+    tokio::time::advance(
+        super::selection::SESSION_BINDING_IDLE_TIMEOUT + std::time::Duration::from_secs(1),
+    )
+    .await;
+    let mut shuffle_calls = 0usize;
+    let next = store.resolve_order(Some("s"), Some("m"), || {
+        shuffle_calls += 1;
+        vec![provider("b"), provider("a")]
+    });
+    assert_eq!(shuffle_calls, 1);
+    let ids: Vec<&str> = next.ordered.iter().map(|item| item.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["b", "a"],
+        "an expired binding must not reorder the shuffled order"
+    );
+    assert_eq!(next.bound_provider_id.as_deref(), Some("b"));
+    let live = store
+        .lookup("s", "m")
+        .expect("the new selection must bind B");
+    assert_eq!(live.provider_id.as_str(), "b");
+    assert_eq!(live.misses, 0);
+}
+
+/// AC-012: the table holds at most the capacity and evicts the least recently
+/// used entry; a refreshed entry survives while the untouched one is gone.
+#[test]
+fn session_affinity_lru_evicts_the_least_recently_used_binding() {
+    assert_eq!(super::selection::SESSION_BINDING_CAPACITY, 1024);
+    let mut store = super::selection::SessionAffinityStore::new();
+
+    for index in 0..super::selection::SESSION_BINDING_CAPACITY {
+        let session = format!("s-{index:04}");
+        let bound = store.resolve_order(Some(&session), Some("m"), || vec![provider("p")]);
+        assert_eq!(bound.bound_provider_id.as_deref(), Some("p"));
+    }
+    assert_eq!(store.live_len(), super::selection::SESSION_BINDING_CAPACITY);
+
+    // Refresh the oldest entry so it is no longer the least recently used.
+    assert!(
+        store.lookup("s-0000", "m").is_some(),
+        "the oldest entry must be live before refresh"
+    );
+
+    // One more insert evicts exactly one entry.
+    let evicting = store.resolve_order(Some("s-new"), Some("m"), || vec![provider("p")]);
+    assert_eq!(evicting.bound_provider_id.as_deref(), Some("p"));
+    assert_eq!(
+        store.live_len(),
+        super::selection::SESSION_BINDING_CAPACITY,
+        "the table must hold at most the capacity"
+    );
+
+    assert!(
+        store.lookup("s-0000", "m").is_some(),
+        "the refreshed entry must still be live"
+    );
+    assert_eq!(
+        store.lookup("s-0001", "m"),
+        None,
+        "the least recently used untouched entry must be evicted"
+    );
+    // The evicted entry behaves as absent: resolving it binds fresh.
+    let rebound = store.resolve_order(Some("s-0001"), Some("m"), || {
+        vec![provider("q"), provider("p")]
+    });
+    assert_eq!(rebound.bound_provider_id.as_deref(), Some("q"));
+    assert_eq!(
+        store
+            .lookup("s-0001", "m")
+            .as_ref()
+            .map(|binding| binding.provider_id.as_str()),
+        Some("q")
+    );
+    assert!(
+        store.lookup("s-new", "m").is_some(),
+        "the new entry must be live"
+    );
+}
+
+/// AC-005 boundary, REQ-003: absent or blank sessions/models read and write
+/// nothing; a request without a session never reuses a binding; a padded model
+/// shares its trimmed form's single binding. Also asserts the process-global
+/// accessor exists without depending on its state.
+#[test]
+fn session_affinity_ignores_models_and_headers_that_are_absent_or_blank() {
+    let mut store = super::selection::SessionAffinityStore::new();
+
+    for (session, model) in [
+        (None, Some("m")),
+        (Some("s"), None),
+        (Some("s"), Some("")),
+        (Some("s"), Some("   ")),
+    ] {
+        let mut shuffle_calls = 0usize;
+        let order = store.resolve_order(session, model, || {
+            shuffle_calls += 1;
+            vec![provider("a"), provider("b")]
+        });
+        assert_eq!(
+            shuffle_calls, 1,
+            "shuffle must still be called exactly once"
+        );
+        let ids: Vec<&str> = order.ordered.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b"]);
+        assert_eq!(
+            order.bound_provider_id, None,
+            "session={session:?} model={model:?} must not bind"
+        );
+    }
+    assert_eq!(store.live_len(), 0, "blank requests must write nothing");
+
+    // An empty shuffled list writes no binding and reports none.
+    let empty = store.resolve_order(Some("s"), Some("m"), Vec::new);
+    assert!(empty.ordered.is_empty());
+    assert_eq!(empty.bound_provider_id, None);
+    assert_eq!(store.live_len(), 0);
+
+    // A request without a session header never reuses an existing binding.
+    let bound = store.resolve_order(Some("s"), Some("m"), || vec![provider("a"), provider("b")]);
+    assert_eq!(bound.bound_provider_id.as_deref(), Some("a"));
+    let mut anonymous_calls = 0usize;
+    let anonymous = store.resolve_order(None, Some("m"), || {
+        anonymous_calls += 1;
+        vec![provider("b"), provider("a")]
+    });
+    assert_eq!(anonymous_calls, 1);
+    let anonymous_ids: Vec<&str> = anonymous
+        .ordered
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect();
+    assert_eq!(
+        anonymous_ids,
+        vec!["b", "a"],
+        "a session-less request must keep the shuffled order"
+    );
+    assert_eq!(anonymous.bound_provider_id, None);
+
+    // A whitespace-padded model resolves to the same single binding.
+    let padded = store.resolve_order(Some("s"), Some("  m  "), || {
+        vec![provider("b"), provider("a")]
+    });
+    let padded_ids: Vec<&str> = padded.ordered.iter().map(|item| item.id.as_str()).collect();
+    assert_eq!(padded_ids, vec!["a", "b"]);
+    assert_eq!(padded.bound_provider_id.as_deref(), Some("a"));
+    assert_eq!(
+        store.live_len(),
+        1,
+        "a padded model must not create a second binding"
+    );
+
+    // The process-global store accessor exists; this test never depends on its
+    // state, so it only locks and drops it.
+    drop(
+        super::selection::session_affinity()
+            .lock()
+            .expect("the process-global session affinity store must lock"),
+    );
+}
