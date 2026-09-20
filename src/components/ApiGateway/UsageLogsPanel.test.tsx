@@ -43,6 +43,26 @@ function page(overrides: Partial<UsageLogsPage> = {}): UsageLogsPage {
   };
 }
 
+const STORED_UPSTREAM_MESSAGE =
+  "upstream provider error: the requested model is temporarily overloaded on this provider, retry after a short delay";
+
+const GENERIC_502_REASON = "Bad gateway / Upstream unavailable";
+const GENERIC_502_TITLE = `HTTP 502: ${GENERIC_502_REASON}`;
+
+/** The reason line (or its wrapper) must be reachable with the keyboard to reveal the tooltip. */
+function expectKeyboardFocusable(element: HTMLElement) {
+  const focusable = element.closest<HTMLElement>(
+    "[tabindex], button, a[href], input, select, textarea",
+  );
+  expect(
+    focusable,
+    "错误原因行（或其包装元素）应可通过键盘聚焦以显示提示",
+  ).not.toBeNull();
+  if (focusable?.hasAttribute("tabindex")) {
+    expect(Number(focusable.getAttribute("tabindex"))).toBeGreaterThanOrEqual(0);
+  }
+}
+
 describe("UsageLogsPanel", () => {
   beforeEach(async () => {
     resetTauriMocks();
@@ -700,6 +720,285 @@ describe("UsageLogsPanel", () => {
     expect(tooltip).toHaveTextContent("10,000,000"); // Cache read: 10_000_000
     expect(tooltip).toHaveTextContent("500,000"); // Cache write: 500_000
     expect(tooltip).toHaveTextContent("11,850,000"); // Total: 11_850_000
+  });
+
+  it("有存储错误消息的失败记录以单行摘要展示消息，悬停或聚焦时揭示完整消息与 HTTP 状态", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          record({
+            result: "failure",
+            status: 502,
+            provider_name: "Provider A",
+            error_message: STORED_UPSTREAM_MESSAGE,
+            terminal: false,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-gateway-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("api-gateway-logs-row");
+    expect(rows).toHaveLength(1);
+
+    // 原因行展示存储的上游错误消息（单行截断），替换通用状态码文案
+    const reason = within(rows[0]).getByTestId(
+      "api-gateway-logs-status-reason",
+    );
+    expect(reason).toHaveTextContent(STORED_UPSTREAM_MESSAGE);
+    expect(reason).not.toHaveTextContent(GENERIC_502_REASON);
+    expect(reason).toHaveClass("truncate");
+
+    // 提示默认隐藏，悬停或键盘聚焦时显示，并携带完整消息与 HTTP 状态上下文
+    const tooltip = within(rows[0]).getByTestId(
+      "api-gateway-logs-error-tooltip",
+    );
+    expect(tooltip).toHaveAttribute("role", "tooltip");
+    expect(tooltip).toHaveTextContent(STORED_UPSTREAM_MESSAGE);
+    expect(tooltip).toHaveTextContent(
+      /HTTP 502:\s*Bad gateway \/ Upstream unavailable/,
+    );
+    expect(tooltip).toHaveClass("hidden");
+    expect(tooltip).toHaveClass("group-hover:flex");
+    expect(tooltip).toHaveClass("group-focus-within:flex");
+
+    expectKeyboardFocusable(reason);
+  });
+
+  it("没有存储错误消息的失败记录保留通用状态原因与标题，且不渲染错误提示", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 2,
+        records: [
+          record({
+            result: "failure",
+            status: 502,
+            local_model: "explicit-null-message",
+            error_message: null,
+          }),
+          record({
+            result: "failure",
+            status: 502,
+            local_model: "omitted-message-field",
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-gateway-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("api-gateway-logs-row");
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      const reason = within(row).getByTestId("api-gateway-logs-status-reason");
+      expect(reason).toHaveTextContent(GENERIC_502_REASON);
+      expect(reason).toHaveAttribute("title", GENERIC_502_TITLE);
+      expect(
+        within(row).queryByTestId("api-gateway-logs-error-tooltip"),
+      ).not.toBeInTheDocument();
+    }
+  });
+
+  it("非终止的失败尝试行显示尝试标签，终止记录不显示", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 2,
+        records: [
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, 4, 0),
+            result: "failure",
+            status: 502,
+            provider_name: "Terminal Provider",
+            error_message: "terminal provider failure",
+            terminal: true,
+          }),
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, 3, 0),
+            result: "failure",
+            status: 502,
+            provider_name: "Attempt Provider",
+            error_message: "attempt provider failure",
+            terminal: false,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-gateway-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("api-gateway-logs-row");
+    expect(rows).toHaveLength(2);
+    expect(
+      within(rows[0]).getByTestId("api-gateway-logs-provider-name"),
+    ).toHaveTextContent("Terminal Provider");
+    expect(
+      within(rows[0]).queryByTestId("api-gateway-logs-attempt-label"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(rows[1]).getByTestId("api-gateway-logs-provider-name"),
+    ).toHaveTextContent("Attempt Provider");
+    const attemptLabel = within(rows[1]).getByTestId(
+      "api-gateway-logs-attempt-label",
+    );
+    expect(attemptLabel.textContent?.trim()).not.toBe("");
+  });
+
+  it("成功与取消记录不显示失败原因行与错误提示", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 2,
+        records: [
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, 4, 0),
+            result: "success",
+            status: 200,
+            local_model: "gpt-4o",
+          }),
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, 3, 0),
+            result: "cancelled",
+            status: 0,
+            local_model: "gpt-4o",
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-gateway-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("api-gateway-logs-row");
+    expect(rows).toHaveLength(2);
+    expect(
+      within(rows[0]).getByTestId("api-gateway-logs-status-badge"),
+    ).toHaveTextContent("Success");
+    expect(
+      within(rows[1]).getByTestId("api-gateway-logs-status-badge"),
+    ).toHaveTextContent("Cancelled");
+    for (const row of rows) {
+      expect(
+        within(row).queryByTestId("api-gateway-logs-status-reason"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(row).queryByTestId("api-gateway-logs-error-tooltip"),
+      ).not.toBeInTheDocument();
+    }
+  });
+
+  it("同一请求的终止成功行与其失败尝试行按后端顺序（最新在前）相邻展示", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      // 后端按 timestamp_ms DESC, id DESC 返回：终止成功行最新在前，其后依次是同一请求的失败尝试行
+      return page({
+        total: 3,
+        records: [
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, 4, 0),
+            result: "success",
+            status: 200,
+            local_model: "gpt-4o",
+            provider_name: "Provider C",
+          }),
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, 3, 59),
+            result: "failure",
+            status: 500,
+            local_model: "gpt-4o",
+            provider_name: "Provider B",
+            error_message: "Provider B upstream failure",
+            terminal: false,
+          }),
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, 3, 58),
+            result: "failure",
+            status: 429,
+            local_model: "gpt-4o",
+            provider_name: "Provider A",
+            error_message: "Provider A upstream failure",
+            terminal: false,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-gateway-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("api-gateway-logs-row");
+    expect(rows).toHaveLength(3);
+    const providerOf = (row: HTMLElement) =>
+      within(row).getByTestId("api-gateway-logs-provider-name").textContent;
+
+    expect(providerOf(rows[0])).toBe("Provider C");
+    expect(
+      within(rows[0]).getByTestId("api-gateway-logs-status-badge"),
+    ).toHaveTextContent("Success");
+    expect(
+      within(rows[0]).queryByTestId("api-gateway-logs-attempt-label"),
+    ).not.toBeInTheDocument();
+
+    expect(providerOf(rows[1])).toBe("Provider B");
+    expect(
+      within(rows[1]).getByTestId("api-gateway-logs-status-badge"),
+    ).toHaveTextContent("Failure");
+    expect(
+      within(rows[1]).getByTestId("api-gateway-logs-attempt-label"),
+    ).toBeInTheDocument();
+
+    expect(providerOf(rows[2])).toBe("Provider A");
+    expect(
+      within(rows[2]).getByTestId("api-gateway-logs-status-badge"),
+    ).toHaveTextContent("Failure");
+    expect(
+      within(rows[2]).getByTestId("api-gateway-logs-attempt-label"),
+    ).toBeInTheDocument();
+  });
+
+  it("terminal 字段缺省视为终止记录，不显示尝试标签", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          record({
+            result: "failure",
+            status: 502,
+            error_message: STORED_UPSTREAM_MESSAGE,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-gateway-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("api-gateway-logs-row");
+    expect(rows).toHaveLength(1);
+    expect(
+      within(rows[0]).getByTestId("api-gateway-logs-status-reason"),
+    ).toHaveTextContent(STORED_UPSTREAM_MESSAGE);
+    expect(
+      within(rows[0]).queryByTestId("api-gateway-logs-attempt-label"),
+    ).not.toBeInTheDocument();
   });
 });
 

@@ -431,6 +431,14 @@ export interface UsageLogRecord {
   total_tokens: number;
   amount: number | null;
   duration_ms: number;
+  /** Sanitized upstream error text of a failed attempt; `null`/absent when none was recorded. */
+  error_message?: string | null;
+  /**
+   * Whether this row is the terminal row of its request. Absent means terminal,
+   * mirroring the backend serde default; only an explicit `false` marks a
+   * non-terminal attempt row.
+   */
+  terminal?: boolean;
 }
 
 export interface UsageLogGroup {

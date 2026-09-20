@@ -619,7 +619,12 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                       {(() => {
                         const style = statusBadgeStyle(item.result);
                         const isFailure = item.result === "failure";
+                        // Absent `terminal` mirrors the backend serde default: terminal.
+                        const isTerminal = item.terminal !== false;
                         const reason = isFailure ? getHttpStatusReason(item.status, t) : null;
+                        const storedErrorMessage = isFailure
+                          ? (item.error_message?.trim() ?? "")
+                          : "";
                         return (
                           <div className="flex flex-col gap-0.5">
                             <span
@@ -642,7 +647,43 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                                 </span>
                               ) : null}
                             </span>
-                            {reason ? (
+                            {!isTerminal ? (
+                              <span
+                                className="text-[10px] text-muted-foreground w-fit"
+                                data-testid="api-gateway-logs-attempt-label"
+                              >
+                                {t("apiGatewayLogsAttemptLabel", "Attempt")}
+                              </span>
+                            ) : null}
+                            {storedErrorMessage !== "" ? (
+                              <div className="relative group w-fit group-hover:z-50 focus-within:z-50">
+                                <div
+                                  className="text-[10px] text-muted-foreground truncate max-w-[200px]"
+                                  tabIndex={0}
+                                  aria-label={`${t("apiGatewayLogsUpstreamError", "Upstream error")}: ${storedErrorMessage}`}
+                                  data-testid="api-gateway-logs-status-reason"
+                                >
+                                  {storedErrorMessage}
+                                </div>
+                                <div
+                                  role="tooltip"
+                                  className="pointer-events-none absolute left-0 top-full mt-1.5 hidden group-hover:flex group-focus-within:flex flex-col gap-1 rounded-md border bg-popover p-2 text-left text-xs text-popover-foreground shadow-lg z-50 min-w-[200px] max-w-[320px]"
+                                  data-testid="api-gateway-logs-error-tooltip"
+                                >
+                                  <div className="font-semibold text-[11px] border-b pb-1 text-muted-foreground">
+                                    {t("apiGatewayLogsUpstreamError", "Upstream error")}
+                                  </div>
+                                  <div className="whitespace-pre-wrap break-words text-[11px]">
+                                    {storedErrorMessage}
+                                  </div>
+                                  {reason ? (
+                                    <div className="text-[10px] text-muted-foreground">
+                                      {reason.title}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+                            ) : reason ? (
                               <div
                                 className="text-[10px] text-muted-foreground truncate max-w-[200px]"
                                 title={reason.title}
