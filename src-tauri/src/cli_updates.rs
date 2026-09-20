@@ -264,7 +264,8 @@ enum SemverParts {
 }
 
 fn parse_semver_parts(version: &str) -> Option<SemverParts> {
-    let parts: Vec<&str> = version.splitn(2, '-').collect();
+    let without_build = version.split('+').next().unwrap_or(version);
+    let parts: Vec<&str> = without_build.splitn(2, '-').collect();
     let core = parts[0];
     let segments: Vec<&str> = core.split('.').take(3).collect();
     let major: i32 = segments.get(0).and_then(|s| s.parse().ok())?;
@@ -602,6 +603,26 @@ mod tests {
         assert_eq!(
             normalize_remote_version("v1.2.5-beta.1"),
             Ok("1.2.5-beta.1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_remote_version_accepts_build_metadata() {
+        assert_eq!(
+            normalize_remote_version("v2.0.0-beta.10+build.7"),
+            Ok("2.0.0-beta.10+build.7".to_string())
+        );
+    }
+
+    #[test]
+    fn test_compare_semver_ignores_build_metadata() {
+        assert_eq!(
+            compare_semver("2.0.0+build.7", "2.0.0+build.9"),
+            (false, "current".to_string())
+        );
+        assert_eq!(
+            compare_semver("1.9.9+ci.1", "2.0.0+release.3"),
+            (true, "update_available".to_string())
         );
     }
 

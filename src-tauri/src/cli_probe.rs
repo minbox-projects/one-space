@@ -1,4 +1,5 @@
 use regex::Regex;
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::env;
 use std::ffi::OsString;
@@ -56,23 +57,111 @@ pub fn probe_cli_version(cmd_name: &str) -> CliProbeVersion {
 }
 
 /// Extract the first semver (x.y.z) from raw CLI --version output.
-/// Handles: `v1.2.3`, `tool 1.2.3`, `1.2.3-beta.1`, plain `1.2.3`.
+/// Handles: `v1.2.3`, `tool 1.2.3`, `1.2.3-beta.1`, `1.2.3+build.7`, plain `1.2.3`.
 pub fn extract_semver(raw: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z_.-]+)?)").ok()?;
+    let re =
+        Regex::new(r"(?i)v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z_.-]+)?(?:\+[0-9A-Za-z_.-]+)?)").ok()?;
     re.captures(raw)
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
 }
 
-fn version_key(version: &str) -> Option<(u64, u64, u64, bool)> {
+#[derive(PartialEq, Eq)]
+enum PrereleaseIdentifier {
+    Numeric(u64),
+    Alphanumeric(String),
+}
+
+impl Ord for PrereleaseIdentifier {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Self::Numeric(left), Self::Numeric(right)) => left.cmp(right),
+            (Self::Numeric(_), Self::Alphanumeric(_)) => Ordering::Less,
+            (Self::Alphanumeric(_), Self::Numeric(_)) => Ordering::Greater,
+            (Self::Alphanumeric(left), Self::Alphanumeric(right)) => left.cmp(right),
+        }
+    }
+}
+
+impl PartialOrd for PrereleaseIdentifier {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(PartialEq, Eq)]
+struct VersionKey {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    prerelease: Option<Vec<PrereleaseIdentifier>>,
+}
+
+impl Ord for VersionKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.major
+            .cmp(&other.major)
+            .then_with(|| self.minor.cmp(&other.minor))
+            .then_with(|| self.patch.cmp(&other.patch))
+            .then_with(|| {
+                compare_prerelease(self.prerelease.as_deref(), other.prerelease.as_deref())
+            })
+    }
+}
+
+impl PartialOrd for VersionKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn compare_prerelease(
+    left: Option<&[PrereleaseIdentifier]>,
+    right: Option<&[PrereleaseIdentifier]>,
+) -> Ordering {
+    match (left, right) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(left), Some(right)) => {
+            for (left_identifier, right_identifier) in left.iter().zip(right.iter()) {
+                let ordering = left_identifier.cmp(right_identifier);
+                if ordering != Ordering::Equal {
+                    return ordering;
+                }
+            }
+            left.len().cmp(&right.len())
+        }
+    }
+}
+
+fn version_key(version: &str) -> Option<VersionKey> {
     let semver = extract_semver(version)?;
-    let (core, prerelease) = semver.split_once('-').unwrap_or((&semver, ""));
+    let without_build = semver.split('+').next().unwrap_or(&semver);
+    let (core, prerelease) = without_build.split_once('-').unwrap_or((without_build, ""));
+    let prerelease = if prerelease.is_empty() {
+        None
+    } else {
+        Some(
+            prerelease
+                .split('.')
+                .map(|identifier| {
+                    identifier
+                        .parse::<u64>()
+                        .map(PrereleaseIdentifier::Numeric)
+                        .unwrap_or_else(|_| {
+                            PrereleaseIdentifier::Alphanumeric(identifier.to_string())
+                        })
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
     let mut parts = core.split('.');
-    Some((
-        parts.next()?.parse().ok()?,
-        parts.next()?.parse().ok()?,
-        parts.next()?.parse().ok()?,
-        prerelease.is_empty(),
-    ))
+    Some(VersionKey {
+        major: parts.next()?.parse().ok()?,
+        minor: parts.next()?.parse().ok()?,
+        patch: parts.next()?.parse().ok()?,
+        prerelease,
+    })
 }
 
 fn command_candidates(cmd_name: &str) -> Vec<PathBuf> {
@@ -222,6 +311,29 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(unix)]
+    fn lock_path() -> std::sync::MutexGuard<'static, ()> {
+        PATH_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[cfg(unix)]
+    fn write_cli_version_fixture(dir: &Path, executable: &str, label: &str, version: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::create_dir_all(dir).expect("create CLI fixture directory");
+        let path = dir.join(executable);
+        fs::write(&path, format!("#!/bin/sh\nprintf '{label} {version}\\n'\n"))
+            .expect("write CLI fixture");
+        let mut permissions = fs::metadata(&path).expect("read CLI fixture").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).expect("make CLI fixture executable");
+    }
+
     #[test]
     fn test_extract_semver_pure() {
         assert_eq!(extract_semver("1.2.3"), Some("1.2.3".to_string()));
@@ -258,7 +370,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn probe_cli_version_uses_the_newest_installed_copy() {
-        use std::os::unix::fs::PermissionsExt;
+        let _path_lock = lock_path();
 
         let root = std::env::temp_dir().join(format!(
             "onespace-cli-probe-{}-{}",
@@ -270,19 +382,8 @@ mod tests {
         ));
         let old_dir = root.join("old");
         let new_dir = root.join("new");
-        fs::create_dir_all(&old_dir).expect("create old CLI directory");
-        fs::create_dir_all(&new_dir).expect("create new CLI directory");
-        for (dir, version) in [(&old_dir, "0.145.0"), (&new_dir, "0.149.0")] {
-            let path = dir.join("fixture-cli");
-            fs::write(
-                &path,
-                format!("#!/bin/sh\nprintf 'codex-cli {version}\\n'\n"),
-            )
-            .expect("write CLI fixture");
-            let mut permissions = fs::metadata(&path).expect("read CLI fixture").permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&path, permissions).expect("make CLI fixture executable");
-        }
+        write_cli_version_fixture(&old_dir, "fixture-cli", "codex-cli", "0.145.0");
+        write_cli_version_fixture(&new_dir, "fixture-cli", "codex-cli", "0.149.0");
 
         let path_guard = TestPath {
             previous: std::env::var_os("PATH"),
@@ -299,6 +400,129 @@ mod tests {
         drop(path_guard);
         assert!(result.installed);
         assert_eq!(result.version, "0.149.0");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_cli_version_prefers_opencode_v2_over_v1() {
+        let _path_lock = lock_path();
+
+        let root = std::env::temp_dir().join(format!(
+            "onespace-opencode-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        let v1_dir = root.join("v1");
+        let v2_dir = root.join("v2");
+        write_cli_version_fixture(&v1_dir, "fixture-opencode", "opencode", "1.9.9");
+        write_cli_version_fixture(&v2_dir, "fixture-opencode", "opencode", "2.0.0");
+
+        let path_guard = TestPath {
+            previous: std::env::var_os("PATH"),
+            root: root.clone(),
+        };
+        std::env::set_var(
+            "PATH",
+            std::env::join_paths([v1_dir.as_path(), v2_dir.as_path()])
+                .expect("build OpenCode fixture PATH"),
+        );
+
+        let result = probe_cli_version("fixture-opencode");
+
+        drop(path_guard);
+        assert!(result.installed);
+        assert_eq!(result.version, "2.0.0");
+    }
+
+    #[test]
+    fn test_extract_semver_keeps_build_metadata() {
+        assert_eq!(
+            extract_semver("opencode 2.0.0-beta.10+build.7"),
+            Some("2.0.0-beta.10+build.7".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_cli_version_orders_opencode_prerelease_identifiers_numerically() {
+        let _path_lock = lock_path();
+
+        let root = std::env::temp_dir().join(format!(
+            "onespace-opencode-prerelease-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        let beta_2_dir = root.join("beta-2");
+        let beta_10_dir = root.join("beta-10");
+        write_cli_version_fixture(&beta_2_dir, "fixture-opencode", "opencode", "2.0.0-beta.2");
+        write_cli_version_fixture(
+            &beta_10_dir,
+            "fixture-opencode",
+            "opencode",
+            "2.0.0-beta.10+build.7",
+        );
+
+        let path_guard = TestPath {
+            previous: std::env::var_os("PATH"),
+            root: root.clone(),
+        };
+        std::env::set_var(
+            "PATH",
+            std::env::join_paths([beta_2_dir.as_path(), beta_10_dir.as_path()])
+                .expect("build OpenCode fixture PATH"),
+        );
+
+        let result = probe_cli_version("fixture-opencode");
+
+        drop(path_guard);
+        assert!(result.installed);
+        assert_eq!(result.version, "2.0.0-beta.10+build.7");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_cli_version_prefers_opencode_stable_over_prerelease() {
+        let _path_lock = lock_path();
+
+        let root = std::env::temp_dir().join(format!(
+            "onespace-opencode-stable-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        let prerelease_dir = root.join("prerelease");
+        let stable_dir = root.join("stable");
+        write_cli_version_fixture(
+            &prerelease_dir,
+            "fixture-opencode",
+            "opencode",
+            "2.0.0-beta.10",
+        );
+        write_cli_version_fixture(&stable_dir, "fixture-opencode", "opencode", "2.0.0");
+
+        let path_guard = TestPath {
+            previous: std::env::var_os("PATH"),
+            root: root.clone(),
+        };
+        std::env::set_var(
+            "PATH",
+            std::env::join_paths([prerelease_dir.as_path(), stable_dir.as_path()])
+                .expect("build OpenCode fixture PATH"),
+        );
+
+        let result = probe_cli_version("fixture-opencode");
+
+        drop(path_guard);
+        assert!(result.installed);
+        assert_eq!(result.version, "2.0.0");
     }
 
     #[test]

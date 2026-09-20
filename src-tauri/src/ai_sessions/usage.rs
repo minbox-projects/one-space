@@ -127,10 +127,10 @@ struct UsageWindow {
 
 #[derive(Debug, Default)]
 pub(in crate::ai_sessions) struct ToolScan {
-    source_status: String,
-    scanned_sessions: u64,
-    records: Vec<UsageRecord>,
-    errors: Vec<String>,
+    pub(in crate::ai_sessions) source_status: String,
+    pub(in crate::ai_sessions) scanned_sessions: u64,
+    pub(in crate::ai_sessions) records: Vec<UsageRecord>,
+    pub(in crate::ai_sessions) errors: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -689,6 +689,30 @@ fn opencode_model_name(value: &Value) -> Option<String> {
     })
 }
 
+fn opencode_v2_model_name(value: &Value) -> Option<String> {
+    value
+        .get("model")
+        .and_then(|model| model.get("id"))
+        .or_else(|| {
+            value
+                .get("data")
+                .and_then(|data| data.get("model"))
+                .and_then(|model| model.get("id"))
+        })
+        .and_then(|id| json_nonempty_string(Some(id)))
+        .or_else(|| json_nonempty_string(value.get("modelID")))
+        .or_else(|| {
+            value
+                .get("data")
+                .and_then(|data| json_nonempty_string(data.get("modelID")))
+        })
+        .or_else(|| {
+            value
+                .get("model")
+                .and_then(|model| json_nonempty_string(Some(model)))
+        })
+}
+
 fn file_stem_session_id(path: &Path) -> String {
     path.file_stem()
         .and_then(|stem| stem.to_str())
@@ -921,191 +945,290 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
     Ok(out)
 }
 
-fn collect_opencode_usage_records(window: &UsageWindow, include_model_breakdown: bool) -> ToolScan {
-    if let Some(scan) = collect_opencode_usage_from_db(window, include_model_breakdown) {
-        return scan;
+fn collect_opencode_usage_records(
+    window: &UsageWindow,
+    _include_model_breakdown: bool,
+) -> ToolScan {
+    let db_path = dirs::home_dir()
+        .map(|home| {
+            home.join(".local")
+                .join("share")
+                .join("opencode")
+                .join("opencode.db")
+        })
+        .unwrap_or_default();
+    let storage_roots = candidate_opencode_storage_paths()
+        .into_iter()
+        .filter_map(|paths| paths.sessions_root.parent().map(Path::to_path_buf))
+        .collect::<Vec<_>>();
+    collect_opencode_usage_records_from_sources(
+        &db_path,
+        &storage_roots,
+        window.start_ms,
+        window.end_ms,
+    )
+}
+
+#[derive(Debug, Default)]
+struct OpenCodeUsageSource {
+    available: bool,
+    session_ids: HashSet<String>,
+    blocking_session_ids: HashSet<String>,
+    records: Vec<UsageRecord>,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OpenCodeDbUsageSchema {
+    V2,
+    V1,
+}
+
+impl OpenCodeDbUsageSchema {
+    fn session_table(self) -> &'static str {
+        match self {
+            Self::V2 => "session_v2",
+            Self::V1 => "session",
+        }
     }
-    let mut scan = ToolScan {
-        source_status: "unavailable".to_string(),
-        scanned_sessions: 0,
-        records: Vec::new(),
-        errors: Vec::new(),
-    };
-    for storage_paths in candidate_opencode_storage_paths() {
-        if !storage_paths.sessions_root.is_dir() && !storage_paths.messages_root.is_dir() {
+
+    fn message_table(self) -> &'static str {
+        match self {
+            Self::V2 => "session_message",
+            Self::V1 => "message",
+        }
+    }
+}
+
+pub(in crate::ai_sessions) fn collect_opencode_usage_records_from_sources(
+    db_path: &Path,
+    storage_roots: &[PathBuf],
+    start_ms: i64,
+    end_ms: i64,
+) -> ToolScan {
+    let mut sources = Vec::<OpenCodeUsageSource>::new();
+    let mut source_errors = Vec::<String>::new();
+
+    if db_path.is_file() {
+        match Connection::open(db_path) {
+            Ok(conn) => {
+                let mut found_supported_schema = false;
+                for schema in [OpenCodeDbUsageSchema::V2, OpenCodeDbUsageSchema::V1] {
+                    match opencode_db_schema_presence(&conn, schema) {
+                        Ok((false, false)) => {}
+                        Ok((true, true)) => {
+                            found_supported_schema = true;
+                            match read_opencode_usage_source_from_db(
+                                &conn, db_path, schema, start_ms, end_ms,
+                            ) {
+                                Ok(source) => sources.push(source),
+                                Err(error) => source_errors.push(error),
+                            }
+                        }
+                        Ok((has_session, has_message)) => {
+                            found_supported_schema = true;
+                            source_errors.push(format!(
+                                "{}: incomplete OpenCode usage schema ({}={}, {}={})",
+                                db_path.display(),
+                                schema.session_table(),
+                                has_session,
+                                schema.message_table(),
+                                has_message
+                            ));
+                        }
+                        Err(error) => {
+                            found_supported_schema = true;
+                            source_errors.push(format!("{}: {error}", db_path.display()));
+                        }
+                    }
+                }
+                if !found_supported_schema {
+                    source_errors.push(format!(
+                        "{}: no supported OpenCode usage tables",
+                        db_path.display()
+                    ));
+                }
+            }
+            Err(error) => source_errors.push(format!("{}: {error}", db_path.display())),
+        }
+    }
+
+    for storage_root in storage_roots {
+        let source = read_opencode_usage_source_from_storage_root(storage_root, start_ms, end_ms);
+        if source.available || !source.errors.is_empty() {
+            sources.push(source);
+        }
+    }
+
+    let mut available = false;
+    let mut claimed_session_ids = HashSet::<String>::new();
+    let mut blocked_session_ids = HashSet::<String>::new();
+    let mut records = Vec::<UsageRecord>::new();
+    let mut errors = source_errors;
+    for source in sources {
+        errors.extend(source.errors);
+        if !source.available {
             continue;
         }
-        scan.source_status = "available".to_string();
-        for session_id in opencode_json_session_ids(&storage_paths.sessions_root) {
-            scan.scanned_sessions += 1;
-            let messages_dir = storage_paths.messages_root.join(&session_id);
-            match parse_opencode_message_usage_dir(&messages_dir, &session_id) {
-                Ok(records) => scan.records.extend(records),
-                Err(error) => scan
-                    .errors
-                    .push(format!("{}: {error}", messages_dir.display())),
-            }
-        }
+        available = true;
+        let newly_claimed = source
+            .session_ids
+            .into_iter()
+            .filter(|session_id| !blocked_session_ids.contains(session_id))
+            .filter(|session_id| claimed_session_ids.insert(session_id.clone()))
+            .collect::<HashSet<_>>();
+        records.extend(
+            source
+                .records
+                .into_iter()
+                .filter(|record| newly_claimed.contains(&record.session_id)),
+        );
+        blocked_session_ids.extend(source.blocking_session_ids);
     }
-    scan
+
+    ToolScan {
+        source_status: if available {
+            "available"
+        } else if errors.is_empty() {
+            "unavailable"
+        } else {
+            "error"
+        }
+        .to_string(),
+        scanned_sessions: claimed_session_ids.len() as u64,
+        records,
+        errors,
+    }
 }
 
-fn collect_opencode_usage_from_db(
-    window: &UsageWindow,
-    include_model_breakdown: bool,
-) -> Option<ToolScan> {
-    let db_path = dirs::home_dir()?
-        .join(".local")
-        .join("share")
-        .join("opencode")
-        .join("opencode.db");
-    if !db_path.exists() {
-        return None;
-    }
-    let conn = match Connection::open(&db_path) {
-        Ok(conn) => conn,
-        Err(error) => {
-            return Some(ToolScan {
-                source_status: "error".to_string(),
-                scanned_sessions: 0,
-                records: Vec::new(),
-                errors: vec![format!("{}: {error}", db_path.display())],
-            });
-        }
-    };
-    if include_model_breakdown {
-        return Some(read_opencode_message_tokens_from_db(
-            &conn, &db_path, window,
-        ));
-    }
-    read_opencode_session_summary_tokens(&conn, &db_path).or_else(|| {
-        Some(read_opencode_message_tokens_from_db(
-            &conn, &db_path, window,
-        ))
-    })
+fn opencode_db_schema_presence(
+    conn: &Connection,
+    schema: OpenCodeDbUsageSchema,
+) -> Result<(bool, bool), rusqlite::Error> {
+    Ok((
+        sqlite_table_exists(conn, schema.session_table())?,
+        sqlite_table_exists(conn, schema.message_table())?,
+    ))
 }
 
-fn read_opencode_session_summary_tokens(conn: &Connection, db_path: &Path) -> Option<ToolScan> {
+fn sqlite_table_exists(conn: &Connection, table: &str) -> Result<bool, rusqlite::Error> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get(0),
+    )
+}
+
+fn read_trimmed_session_ids(
+    conn: &Connection,
+    query: &str,
+    db_path: &Path,
+    errors: &mut Vec<String>,
+) -> Result<HashSet<String>, String> {
     let mut stmt = conn
-        .prepare(
-            r#"
-            SELECT id, time_updated,
-                   COALESCE(tokens_input, 0),
-                   COALESCE(tokens_output, 0),
-                   COALESCE(tokens_cache_read, 0),
-                   COALESCE(tokens_cache_write, 0)
-            FROM session
-            WHERE time_archived IS NULL
-            "#,
-        )
-        .ok()?;
-    let mut scan = ToolScan {
-        source_status: "available".to_string(),
-        scanned_sessions: 0,
-        records: Vec::new(),
-        errors: Vec::new(),
-    };
+        .prepare(query)
+        .map_err(|error| format!("{}: {error}", db_path.display()))?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("{}: {error}", db_path.display()))?;
+
+    let mut out = HashSet::new();
+    for row in rows {
+        match row {
+            Ok(session_id) if !session_id.trim().is_empty() => {
+                out.insert(session_id.trim().to_string());
+            }
+            Ok(_) => {}
+            Err(error) => errors.push(format!("{}: {error}", db_path.display())),
+        }
+    }
+    Ok(out)
+}
+
+fn read_opencode_usage_source_from_db(
+    conn: &Connection,
+    db_path: &Path,
+    schema: OpenCodeDbUsageSchema,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<OpenCodeUsageSource, String> {
+    let session_query = match schema {
+        OpenCodeDbUsageSchema::V2 => "SELECT id FROM session_v2 WHERE time_archived IS NULL",
+        OpenCodeDbUsageSchema::V1 => "SELECT id FROM session WHERE time_archived IS NULL",
+    };
+    let blocking_session_query = match schema {
+        OpenCodeDbUsageSchema::V2 => "SELECT id FROM session_v2",
+        OpenCodeDbUsageSchema::V1 => "SELECT id FROM session",
+    };
+    let message_query = match schema {
+        OpenCodeDbUsageSchema::V2 => {
+            r#"
+            SELECT session_id, time_created, data
+            FROM session_message
+            WHERE time_created >= ?1
+              AND time_created < ?2
+            ORDER BY time_created ASC
+            "#
+        }
+        OpenCodeDbUsageSchema::V1 => {
+            r#"
+            SELECT session_id, time_created, data
+            FROM message
+            WHERE time_created >= ?1
+              AND time_created < ?2
+            ORDER BY time_created ASC
+            "#
+        }
+    };
+
+    let mut source = OpenCodeUsageSource {
+        available: true,
+        ..OpenCodeUsageSource::default()
+    };
+    source.session_ids =
+        read_trimmed_session_ids(conn, session_query, db_path, &mut source.errors)?;
+    source.blocking_session_ids =
+        read_trimmed_session_ids(conn, blocking_session_query, db_path, &mut source.errors)?;
+
+    let mut message_stmt = conn
+        .prepare(message_query)
+        .map_err(|error| format!("{}: {error}", db_path.display()))?;
+    let rows = message_stmt
+        .query_map(params![start_ms, end_ms], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, i64>(1)?,
-                row.get::<_, u64>(2)?,
-                row.get::<_, u64>(3)?,
-                row.get::<_, u64>(4)?,
-                row.get::<_, u64>(5)?,
+                row.get::<_, String>(2)?,
             ))
         })
-        .ok()?;
-    for row in rows {
-        match row {
-            Ok((session_id, updated_at, input, output, cache_read, cache_write)) => {
-                scan.scanned_sessions += 1;
-                let cache = cache_read.saturating_add(cache_write);
-                let total = input.saturating_add(output).saturating_add(cache);
-                if total == 0 {
-                    continue;
-                }
-                scan.records.push(UsageRecord {
-                    session_id,
-                    model: None,
-                    timestamp_ms: updated_at,
-                    input_tokens: input,
-                    output_tokens: output,
-                    cache_tokens: cache,
-                    cache_read_tokens: cache_read,
-                    total_tokens: total,
-                });
-            }
-            Err(error) => scan.errors.push(format!("{}: {error}", db_path.display())),
-        }
-    }
-    Some(scan)
-}
-
-fn read_opencode_message_tokens_from_db(
-    conn: &Connection,
-    db_path: &Path,
-    window: &UsageWindow,
-) -> ToolScan {
-    let mut scan = ToolScan {
-        source_status: "available".to_string(),
-        scanned_sessions: 0,
-        records: Vec::new(),
-        errors: Vec::new(),
-    };
-    let session_ids = match read_opencode_db_session_ids(conn) {
-        Ok(ids) => ids,
-        Err(error) => {
-            scan.source_status = "error".to_string();
-            scan.errors.push(format!("{}: {error}", db_path.display()));
-            return scan;
-        }
-    };
-    scan.scanned_sessions = session_ids.len() as u64;
-    let mut stmt = match conn.prepare(
-        r#"
-        SELECT session_id, time_created, data
-        FROM message
-        WHERE session_id IN (SELECT id FROM session WHERE time_archived IS NULL)
-          AND time_created >= ?1
-          AND time_created < ?2
-        ORDER BY time_created ASC
-        "#,
-    ) {
-        Ok(stmt) => stmt,
-        Err(error) => {
-            scan.source_status = "error".to_string();
-            scan.errors.push(format!("{}: {error}", db_path.display()));
-            return scan;
-        }
-    };
-    let rows = match stmt.query_map(params![window.start_ms, window.end_ms], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    }) {
-        Ok(rows) => rows,
-        Err(error) => {
-            scan.source_status = "error".to_string();
-            scan.errors.push(format!("{}: {error}", db_path.display()));
-            return scan;
-        }
-    };
+        .map_err(|error| format!("{}: {error}", db_path.display()))?;
     for row in rows {
         match row {
             Ok((session_id, timestamp_ms, data)) => {
+                let session_id = session_id.trim();
+                if session_id.is_empty() || !source.session_ids.contains(session_id) {
+                    continue;
+                }
                 let Ok(value) = serde_json::from_str::<Value>(&data) else {
+                    source.errors.push(format!(
+                        "{}: invalid OpenCode usage JSON for session {}",
+                        db_path.display(),
+                        session_id
+                    ));
                     continue;
                 };
+                let tokens = value
+                    .get("tokens")
+                    .or_else(|| value.get("data").and_then(|data| data.get("tokens")));
                 if let Some((input, output, cache, cache_read, total)) =
-                    parse_opencode_tokens_value(value.get("tokens"))
+                    parse_opencode_tokens_value(tokens)
                 {
-                    scan.records.push(UsageRecord {
-                        session_id,
-                        model: opencode_model_name(&value),
+                    source.records.push(UsageRecord {
+                        session_id: session_id.to_string(),
+                        model: match schema {
+                            OpenCodeDbUsageSchema::V2 => opencode_v2_model_name(&value),
+                            OpenCodeDbUsageSchema::V1 => opencode_model_name(&value),
+                        },
                         timestamp_ms,
                         input_tokens: input,
                         output_tokens: output,
@@ -1115,33 +1238,97 @@ fn read_opencode_message_tokens_from_db(
                     });
                 }
             }
-            Err(error) => scan.errors.push(format!("{}: {error}", db_path.display())),
+            Err(error) => source
+                .errors
+                .push(format!("{}: {error}", db_path.display())),
         }
     }
-    scan
+    Ok(source)
 }
 
-fn read_opencode_db_session_ids(conn: &Connection) -> Result<Vec<String>, rusqlite::Error> {
-    let mut stmt = conn.prepare("SELECT id FROM session WHERE time_archived IS NULL")?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
+fn read_opencode_usage_source_from_storage_root(
+    storage_root: &Path,
+    start_ms: i64,
+    end_ms: i64,
+) -> OpenCodeUsageSource {
+    let sessions_root = storage_root.join("session");
+    let messages_root = storage_root.join("message");
+    if !sessions_root.is_dir() && !messages_root.is_dir() {
+        return OpenCodeUsageSource::default();
     }
-    Ok(out)
+    let mut source = OpenCodeUsageSource {
+        available: true,
+        ..OpenCodeUsageSource::default()
+    };
+    source.session_ids = opencode_json_session_ids(&sessions_root)
+        .into_iter()
+        .collect();
+    source.blocking_session_ids = source.session_ids.clone();
+    for session_id in &source.session_ids {
+        let messages_dir = messages_root.join(session_id);
+        let (records, errors) = parse_opencode_message_usage_dir(&messages_dir, session_id);
+        source.records.extend(
+            records
+                .into_iter()
+                .filter(|record| record.timestamp_ms >= start_ms && record.timestamp_ms < end_ms),
+        );
+        source.errors.extend(errors);
+    }
+    source
+}
+
+#[cfg(test)]
+fn read_opencode_message_tokens_from_db(
+    conn: &Connection,
+    db_path: &Path,
+    window: &UsageWindow,
+) -> ToolScan {
+    match read_opencode_usage_source_from_db(
+        conn,
+        db_path,
+        OpenCodeDbUsageSchema::V1,
+        window.start_ms,
+        window.end_ms,
+    ) {
+        Ok(source) => ToolScan {
+            source_status: "available".to_string(),
+            scanned_sessions: source.session_ids.len() as u64,
+            records: source.records,
+            errors: source.errors,
+        },
+        Err(error) => ToolScan {
+            source_status: "error".to_string(),
+            scanned_sessions: 0,
+            records: Vec::new(),
+            errors: vec![error],
+        },
+    }
 }
 
 pub(in crate::ai_sessions) fn parse_opencode_message_usage_dir(
     messages_dir: &Path,
     session_id: &str,
-) -> Result<Vec<UsageRecord>, String> {
-    if !messages_dir.is_dir() {
-        return Ok(Vec::new());
-    }
+) -> (Vec<UsageRecord>, Vec<String>) {
     let mut out = Vec::new();
+    let mut errors = Vec::new();
+    if !messages_dir.is_dir() {
+        return (out, errors);
+    }
     for path in json_files_recursive(messages_dir, "json") {
-        let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        let value: Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(error) => {
+                errors.push(format!("{}: {error}", path.display()));
+                continue;
+            }
+        };
+        let value: Value = match serde_json::from_str(&content) {
+            Ok(value) => value,
+            Err(error) => {
+                errors.push(format!("{}: {error}", path.display()));
+                continue;
+            }
+        };
         let Some((input, output, cache, cache_read, total)) = parse_opencode_tokens_value(
             value
                 .get("tokens")
@@ -1166,7 +1353,7 @@ pub(in crate::ai_sessions) fn parse_opencode_message_usage_dir(
             total_tokens: total,
         });
     }
-    Ok(out)
+    (out, errors)
 }
 
 fn parse_opencode_tokens_value(tokens: Option<&Value>) -> Option<(u64, u64, u64, u64, u64)> {
