@@ -1,6 +1,6 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { Eye, EyeOff, Server } from "lucide-react";
+import { Eye, EyeOff } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -14,6 +14,7 @@ import type {
   GatewayProviderTemplate,
   GatewayUpstreamProtocol,
 } from "@/lib/apiGateway";
+import { ProviderTemplateAvatar } from "./ProviderTemplateIcon";
 
 type TemplateCreateDialogProps = {
   open: boolean;
@@ -92,9 +93,12 @@ export function TemplateCreateDialog({
       >
         <DialogHeader className="pl-6 pr-14 py-4 border-b bg-card/80 backdrop-blur-sm shrink-0">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-2xs">
-              <Server className="h-4.5 w-4.5" />
-            </div>
+            <ProviderTemplateAvatar
+              icon={template.icon}
+              templateId={template.id}
+              templateName={template.name}
+              size={40}
+            />
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <DialogTitle className="truncate text-base font-semibold leading-5 text-foreground">

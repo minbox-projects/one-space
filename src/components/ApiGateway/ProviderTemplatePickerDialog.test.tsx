@@ -178,4 +178,57 @@ describe("ProviderTemplatePickerDialog", () => {
     fireEvent.click(screen.getByTestId("template-picker-new-btn"));
     expect(onNewTemplate).toHaveBeenCalledTimes(1);
   });
+
+  it("renders corresponding provider icon for template items in list", () => {
+    const multiTemplates: GatewayProviderTemplateView[] = [
+      {
+        template: {
+          id: "tpl-zen",
+          name: "OpenCode Zen",
+          description: "OpenCode Zen",
+          base_url: "https://opencode.ai/zen/v1",
+          protocol: "chat_completions",
+          source: "",
+          models: [],
+          icon: "opencode",
+        },
+        synced_at: null,
+        from_snapshot: true,
+        source: "",
+      },
+      {
+        template: {
+          id: "tpl-cmd",
+          name: "CommandCode",
+          description: "CommandCode",
+          base_url: "https://api.commandcode.ai/provider/v1",
+          protocol: "chat_completions",
+          source: "",
+          models: [],
+          icon: "commandcode",
+        },
+        synced_at: null,
+        from_snapshot: true,
+        source: "",
+      },
+    ];
+
+    render(
+      <ProviderTemplatePickerDialog
+        open={true}
+        onOpenChange={vi.fn()}
+        templates={multiTemplates}
+        providers={[]}
+        busy={false}
+        onSelectBlank={vi.fn()}
+        onSelectTemplate={vi.fn()}
+      />,
+    );
+
+    const zenItem = screen.getByTestId("template-picker-item-tpl-zen");
+    expect(within(zenItem).getByTestId("provider-icon-opencode")).toBeInTheDocument();
+
+    const cmdItem = screen.getByTestId("template-picker-item-tpl-cmd");
+    expect(within(cmdItem).getByTestId("provider-icon-commandcode")).toBeInTheDocument();
+  });
 });

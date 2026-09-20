@@ -36,6 +36,8 @@ struct RawTemplate {
     pub models_url: Option<String>,
     #[serde(default)]
     pub models: Vec<RawTemplateModel>,
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -143,6 +145,11 @@ pub fn parse_template_snapshot(json: &str) -> Result<Vec<ProviderTemplate>, Stri
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let icon = item
+            .icon
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         templates.push(ProviderTemplate {
             id,
             name: item.name,
@@ -152,6 +159,7 @@ pub fn parse_template_snapshot(json: &str) -> Result<Vec<ProviderTemplate>, Stri
             source: item.source,
             models_url,
             models,
+            icon,
         });
     }
 
@@ -857,6 +865,10 @@ where
     if template.base_url.is_empty() {
         return Err("Template base URL is required".to_string());
     }
+    template.icon = template
+        .icon
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     config.deleted_template_ids.retain(|id| id != &template.id);
 

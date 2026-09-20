@@ -6,7 +6,6 @@ import {
   ChevronUp,
   Plus,
   Search,
-  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -31,6 +30,10 @@ import {
   type ModelPrice,
 } from "@/lib/apiGateway";
 import { MappingPriceEditor } from "./MappingPriceEditor";
+import {
+  ProviderTemplateAvatar,
+  ProviderTemplateIconPicker,
+} from "./ProviderTemplateIcon";
 
 export type ProviderTemplateEditDialogProps = {
   open: boolean;
@@ -59,6 +62,7 @@ export function ProviderTemplateEditDialog({
 
   const [id, setId] = useState("");
   const [name, setName] = useState("");
+  const [icon, setIcon] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [protocol, setProtocol] =
     useState<GatewayUpstreamProtocol>("chat_completions");
@@ -90,6 +94,7 @@ export function ProviderTemplateEditDialog({
     if (template) {
       setId(template.id);
       setName(template.name);
+      setIcon(template.icon || "");
       setBaseUrl(template.base_url);
       setProtocol(template.protocol);
       setModelsUrl(template.models_url || "");
@@ -123,6 +128,7 @@ export function ProviderTemplateEditDialog({
     } else {
       setId("");
       setName("");
+      setIcon("");
       setBaseUrl("");
       setProtocol("chat_completions");
       setModelsUrl("");
@@ -293,6 +299,7 @@ export function ProviderTemplateEditDialog({
       source: source.trim(),
       models_url: modelsUrl.trim() ? modelsUrl.trim() : null,
       models: savedModels,
+      icon: icon.trim() ? icon.trim() : null,
     };
 
     setSubmitting(true);
@@ -331,9 +338,12 @@ export function ProviderTemplateEditDialog({
       >
         <DialogHeader className="pl-6 pr-14 py-4 border-b bg-card/80 backdrop-blur-sm shrink-0">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-2xs">
-              <Sparkles className="h-4.5 w-4.5" />
-            </div>
+            <ProviderTemplateAvatar
+              icon={icon}
+              templateId={id}
+              templateName={name}
+              size={40}
+            />
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <DialogTitle className="truncate text-base font-semibold leading-5 text-foreground">
@@ -370,8 +380,8 @@ export function ProviderTemplateEditDialog({
 
           {/* 基础配置两列网格（使用与上游服务商完全一致的标准 field-grid 和 field） */}
           <div className="field-grid col-2 mb-0">
-            {/* 第 1 行：名称独占一行 */}
-            <div className="field full-span">
+            {/* 第 1 行：名称与图标并排 */}
+            <div className="field">
               <label className="required">
                 {t("apiGatewayTemplateNameLabel", "Name")}
               </label>
@@ -383,6 +393,17 @@ export function ProviderTemplateEditDialog({
                 disabled={disabled}
                 placeholder="e.g. OpenCode Zen / DeepSeek"
                 aria-label={t("apiGatewayTemplateNameLabel", "Name")}
+              />
+            </div>
+
+            <div className="field">
+              <label>{t("apiGatewayTemplateIconLabel", "Icon")}</label>
+              <ProviderTemplateIconPicker
+                value={icon}
+                onChange={setIcon}
+                templateId={id}
+                templateName={name}
+                disabled={disabled}
               />
             </div>
 

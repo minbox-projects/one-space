@@ -24,6 +24,7 @@ import {
   type GatewayProviderTemplateView,
 } from "@/lib/apiGateway";
 import { TemplateCreateDialog } from "./TemplateCreateDialog";
+import { ProviderTemplateAvatar } from "./ProviderTemplateIcon";
 
 export type ProviderTemplateSectionProps = {
   templates: GatewayProviderTemplateView[];
@@ -149,11 +150,12 @@ function ProviderTemplateCard({
       {/* 头部：品牌图标 + 标题 + 协议标签；右侧次级工具（编辑、同步） */}
       <div className="flex items-center justify-between gap-3 border-b border-border/40 bg-muted/20 px-4.5 py-3.5 sm:px-5">
         <div className="flex min-w-0 flex-1 items-center gap-3">
-          <div
-            className="flex h-8.5 w-8.5 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background text-primary shadow-2xs"
-          >
-            <Sparkles className="h-4 w-4" />
-          </div>
+          <ProviderTemplateAvatar
+            icon={template.icon}
+            templateId={template.id}
+            templateName={template.name}
+            size={36}
+          />
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <h4
               className="truncate text-sm font-semibold text-foreground leading-5 tracking-tight"

@@ -632,6 +632,11 @@ const resources = {
       apiGatewayTemplateDeleted: "Template deleted.",
       apiGatewayTemplateResetSuccess: "Built-in templates restored.",
       apiGatewayTemplateTab: "Templates",
+      apiGatewayTemplateIconLabel: "Template icon",
+      apiGatewayTemplateIconAuto: "Auto (Default)",
+      apiGatewayTemplateIconOpenCode: "OpenCode",
+      apiGatewayTemplateIconCommandCode: "CommandCode",
+      apiGatewayTemplateIconOpenAI: "OpenAI",
       apiGatewayTemplateModelsUrl: "Models URL",
       apiGatewayTemplateModelsUrlPlaceholder:
         "e.g. https://api.openai.com/v1/models (optional)",
@@ -4250,6 +4255,11 @@ const resources = {
       apiGatewayTemplateDeleted: "服务商模板已删除。",
       apiGatewayTemplateResetSuccess: "已恢复内置官方模板。",
       apiGatewayTemplateTab: "服务商模板",
+      apiGatewayTemplateIconLabel: "模板图标",
+      apiGatewayTemplateIconAuto: "自动识别（默认）",
+      apiGatewayTemplateIconOpenCode: "OpenCode",
+      apiGatewayTemplateIconCommandCode: "CommandCode",
+      apiGatewayTemplateIconOpenAI: "OpenAI",
       apiGatewayTemplateModelsUrl: "获取模型列表 URL",
       apiGatewayTemplateModelsUrlPlaceholder:
         "例如 https://api.openai.com/v1/models（选填）",

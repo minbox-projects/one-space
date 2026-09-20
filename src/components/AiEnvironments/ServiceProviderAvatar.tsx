@@ -1,4 +1,5 @@
 import { BuiltinProviderIcon, resolveBuiltinProviderIcon, ToolAvatarIcon } from './icons';
+import { cn } from '@/lib/utils';
 
 interface ServiceProviderAvatarProps {
   icon?: string;
@@ -6,6 +7,8 @@ interface ServiceProviderAvatarProps {
   id: string;
   tool?: string;
   size?: number;
+  className?: string;
+  style?: React.CSSProperties;
 }
 
 function getFallback(name: string): string {
@@ -21,6 +24,8 @@ export function ServiceProviderAvatar({
   id,
   tool,
   size = 32,
+  className,
+  style,
 }: ServiceProviderAvatarProps) {
   const fallback = icon && icon.trim().length > 0 ? icon : getFallback(name);
   const radius = Math.max(8, Math.round(size * 0.28));
@@ -29,7 +34,10 @@ export function ServiceProviderAvatar({
 
   return (
     <div
-      className="inline-flex shrink-0 items-center justify-center overflow-hidden border text-slate-800 shadow-sm"
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center overflow-hidden border text-slate-800 shadow-sm",
+        className,
+      )}
       style={{
         width: size,
         height: size,
@@ -40,6 +48,7 @@ export function ServiceProviderAvatar({
           ? 'linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%)'
           : 'linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
         boxShadow: '0 8px 20px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255,255,255,0.95)',
+        ...style,
       }}
       title={name || id}
     >

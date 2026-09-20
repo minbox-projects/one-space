@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import {
@@ -470,5 +470,19 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
     fireEvent.click(toggleAllBtn);
     expect(expand1).toHaveAttribute("aria-expanded", "false");
     expect(expand2).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("renders corresponding template icon in card header", () => {
+    const customView = makeView({
+      template: makeTemplate({
+        id: "tpl-cmd",
+        name: "CommandCode",
+        icon: "commandcode",
+      }),
+    });
+    renderSection({ templates: [customView] });
+
+    const card = screen.getByTestId("api-gateway-template-tpl-cmd");
+    expect(within(card).getByTestId("provider-icon-commandcode")).toBeInTheDocument();
   });
 });

@@ -782,6 +782,7 @@ export interface GatewayProviderTemplate {
   source: string;
   models_url?: string | null;
   models: GatewayProviderTemplateModel[];
+  icon?: string | null;
 }
 
 /** A template plus the last-sync metadata surfaced to the UI. */

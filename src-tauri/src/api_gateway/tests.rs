@@ -12304,6 +12304,7 @@ fn normalize_template_prices_and_efforts_populates_prices_and_efforts_and_is_ide
                 reasoning_efforts: Vec::new(),
             },
         ],
+        icon: None,
     };
 
     config.provider_templates.push(ProviderTemplateState {

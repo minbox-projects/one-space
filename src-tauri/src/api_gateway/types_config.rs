@@ -222,6 +222,8 @@ pub struct ProviderTemplate {
     pub models_url: Option<String>,
     #[serde(default)]
     pub models: Vec<ProviderTemplateModel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// Persisted template state: the last parsed snapshot plus sync metadata.

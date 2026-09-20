@@ -7,7 +7,8 @@
     "protocol": "chat_completions",
     "source": "https://opencode.ai/zen/v1/models",
     "models_url": "https://opencode.ai/zen/v1/models",
-    "models": []
+    "models": [],
+    "icon": "opencode"
   },
   {
     "id": "commandcode",
@@ -17,6 +18,7 @@
     "protocol": "chat_completions",
     "source": "https://api.commandcode.ai/provider/v1/models",
     "models_url": "https://api.commandcode.ai/provider/v1/models",
-    "models": []
+    "models": [],
+    "icon": "commandcode"
   }
 ]

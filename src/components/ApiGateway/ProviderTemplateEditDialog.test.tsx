@@ -405,4 +405,45 @@ describe("ProviderTemplateEditDialog", () => {
       enabled: true,
     });
   });
+
+  it("initializes icon selector with template icon and updates on change", async () => {
+    const templateWithIcon: GatewayProviderTemplate = {
+      ...baseTemplate,
+      icon: "commandcode",
+    };
+    const { onSave } = renderDialog({ template: templateWithIcon });
+
+    const iconSelect = screen.getByTestId("template-edit-icon") as HTMLSelectElement;
+    expect(iconSelect.value).toBe("commandcode");
+
+    fireEvent.change(iconSelect, { target: { value: "opencode" } });
+    expect(iconSelect.value).toBe("opencode");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("template-edit-save-btn"));
+    });
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as GatewayProviderTemplate;
+    expect(saved.icon).toBe("opencode");
+  });
+
+  it("saves null icon when auto/empty is selected", async () => {
+    const templateWithIcon: GatewayProviderTemplate = {
+      ...baseTemplate,
+      icon: "commandcode",
+    };
+    const { onSave } = renderDialog({ template: templateWithIcon });
+
+    const iconSelect = screen.getByTestId("template-edit-icon") as HTMLSelectElement;
+    fireEvent.change(iconSelect, { target: { value: "" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("template-edit-save-btn"));
+    });
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as GatewayProviderTemplate;
+    expect(saved.icon).toBeNull();
+  });
 });

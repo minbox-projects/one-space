@@ -55,6 +55,7 @@ fn template_with_models(
         source: models_url.map(str::to_string).unwrap_or_default(),
         models_url: models_url.map(str::to_string),
         models,
+        icon: None,
     }
 }
 
@@ -194,6 +195,8 @@ fn builtin_templates_are_model_free_and_declare_their_model_list_urls() {
         commandcode.source, "https://api.commandcode.ai/provider/v1/models",
         "the source must equal the model-list URL"
     );
+    assert_eq!(opencode.icon.as_deref(), Some("opencode"));
+    assert_eq!(commandcode.icon.as_deref(), Some("commandcode"));
 
     assert_eq!(
         find_builtin_template("opencode-zen")
@@ -1797,6 +1800,7 @@ fn test_template_upsert_edits_existing_and_creates_new() {
         source: String::new(),
         models_url: None,
         models: vec![],
+        icon: Some("openai".to_string()),
     };
 
     let views2 = apply_upsert_provider_template(&mut config, new_custom, |_| Ok(()))
@@ -1807,6 +1811,7 @@ fn test_template_upsert_edits_existing_and_creates_new() {
         .find(|view| view.template.id == "my-custom-tpl")
         .expect("the custom template must be present");
     assert_eq!(custom_view.template.name, "My Custom Template");
+    assert_eq!(custom_view.template.icon.as_deref(), Some("openai"));
 }
 
 #[test]

@@ -17,26 +17,19 @@ import type {
   GatewayProviderTemplateView,
   GatewayUpstreamProvider,
 } from "@/lib/apiGateway";
+import { ProviderTemplateAvatar } from "./ProviderTemplateIcon";
 
 export type ProviderTemplatePickerDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   templates: GatewayProviderTemplateView[];
-  providers: GatewayUpstreamProvider[];
+  providers?: GatewayUpstreamProvider[];
   busy: boolean;
   onSelectBlank: () => void;
   onSelectTemplate: (template: GatewayProviderTemplate) => void;
   onEditTemplate?: (template: GatewayProviderTemplate) => void;
   onNewTemplate?: () => void;
 };
-
-function brandAccent(templateId: string, name: string): string {
-  const key = `${templateId} ${name}`.toLowerCase();
-  if (key.includes("command")) {
-    return "bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20";
-  }
-  return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20";
-}
 
 function protocolBadgeClass(protocol: string): string {
   return protocol === "responses"
@@ -171,11 +164,13 @@ export function ProviderTemplatePickerDialog({
                 >
                   <div className="flex items-center justify-between gap-4">
                     <div className="flex items-start gap-3.5 min-w-0 flex-1">
-                      <div
-                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-2xs transition group-hover:scale-105 ${brandAccent(template.id, template.name)}`}
-                      >
-                        <Sparkles className="h-5 w-5" />
-                      </div>
+                      <ProviderTemplateAvatar
+                        icon={template.icon}
+                        templateId={template.id}
+                        templateName={template.name}
+                        size={42}
+                        className="transition group-hover:scale-105"
+                      />
 
                       <div className="min-w-0 flex-1 space-y-1.5">
                         <div className="flex flex-wrap items-center gap-2">
