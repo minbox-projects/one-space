@@ -692,19 +692,14 @@ describe("UsageLogsPanel", () => {
     const cacheSpan = breakdown.querySelector('span[title*="Cache"]');
     expect(cacheSpan).toHaveAttribute("title", "Cache: 10,500,000");
 
-    // Tooltip 展示
+    // Tooltip 明细展示原始精确千分位数值
     const tooltip = within(tokensCell).getByTestId("api-gateway-logs-tokens-tooltip");
-    expect(tooltip).toHaveTextContent("15万");
-    expect(tooltip).toHaveTextContent("1.2百万");
-    expect(tooltip).toHaveTextContent("1.1千万");
-    expect(tooltip).toHaveTextContent("1千万"); // Cache read: 10_000_000
-    expect(tooltip).toHaveTextContent("50万"); // Cache write: 500_000
-    expect(tooltip).toHaveTextContent("1.2千万"); // Total: 11_850_000
-
-    // Tooltip 内数值 span 的 title
-    const totalVal = tooltip.querySelector('span[title="11,850,000"]');
-    expect(totalVal).toBeInTheDocument();
-    expect(totalVal).toHaveTextContent("1.2千万");
+    expect(tooltip).toHaveTextContent("150,000");
+    expect(tooltip).toHaveTextContent("1,200,000");
+    expect(tooltip).toHaveTextContent("10,500,000");
+    expect(tooltip).toHaveTextContent("10,000,000"); // Cache read: 10_000_000
+    expect(tooltip).toHaveTextContent("500,000"); // Cache write: 500_000
+    expect(tooltip).toHaveTextContent("11,850,000"); // Total: 11_850_000
   });
 });
 

@@ -758,11 +758,8 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                                       <ArrowDown className="h-3 w-3 shrink-0" />
                                       {t("apiGatewayLogsTokensInput", "Input")}:
                                     </span>
-                                    <span
-                                      className="font-mono font-medium"
-                                      title={new Intl.NumberFormat().format(item.input_tokens)}
-                                    >
-                                      {formatGatewayTokens(item.input_tokens)}
+                                    <span className="font-mono font-medium">
+                                      {new Intl.NumberFormat().format(item.input_tokens)}
                                     </span>
                                   </div>
                                   <div className="flex items-center justify-between gap-3">
@@ -770,11 +767,8 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                                       <ArrowUp className="h-3 w-3 shrink-0" />
                                       {t("apiGatewayLogsTokensOutput", "Output")}:
                                     </span>
-                                    <span
-                                      className="font-mono font-medium"
-                                      title={new Intl.NumberFormat().format(item.output_tokens)}
-                                    >
-                                      {formatGatewayTokens(item.output_tokens)}
+                                    <span className="font-mono font-medium">
+                                      {new Intl.NumberFormat().format(item.output_tokens)}
                                     </span>
                                   </div>
                                   <div className="flex items-center justify-between gap-3">
@@ -782,11 +776,8 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                                       <Database className="h-3 w-3 shrink-0" />
                                       {t("apiGatewayLogsTokensCache", "Cache")}:
                                     </span>
-                                    <span
-                                      className="font-mono font-medium"
-                                      title={new Intl.NumberFormat().format(cacheTokens)}
-                                    >
-                                      {formatGatewayTokens(cacheTokens)}
+                                    <span className="font-mono font-medium">
+                                      {new Intl.NumberFormat().format(cacheTokens)}
                                     </span>
                                   </div>
                                   {(item.cache_read_tokens > 0 || item.cache_write_tokens > 0) && (
@@ -795,22 +786,16 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                                         <span>
                                           {t("apiGatewayLogsTokensCacheRead", "Cache read")}:
                                         </span>
-                                        <span
-                                          className="font-mono"
-                                          title={new Intl.NumberFormat().format(item.cache_read_tokens)}
-                                        >
-                                          {formatGatewayTokens(item.cache_read_tokens)}
+                                        <span className="font-mono">
+                                          {new Intl.NumberFormat().format(item.cache_read_tokens)}
                                         </span>
                                       </div>
                                       <div className="flex items-center justify-between gap-3">
                                         <span>
                                           {t("apiGatewayLogsTokensCacheWrite", "Cache write")}:
                                         </span>
-                                        <span
-                                          className="font-mono"
-                                          title={new Intl.NumberFormat().format(item.cache_write_tokens)}
-                                        >
-                                          {formatGatewayTokens(item.cache_write_tokens)}
+                                        <span className="font-mono">
+                                          {new Intl.NumberFormat().format(item.cache_write_tokens)}
                                         </span>
                                       </div>
                                     </div>
@@ -820,11 +805,8 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                                     <span>
                                       {t("apiGatewayLogsTokensTotal", "Total")}:
                                     </span>
-                                    <span
-                                      className="font-mono"
-                                      title={new Intl.NumberFormat().format(item.total_tokens)}
-                                    >
-                                      {formatGatewayTokens(item.total_tokens)}
+                                    <span className="font-mono">
+                                      {new Intl.NumberFormat().format(item.total_tokens)}
                                     </span>
                                   </div>
                                 </div>
