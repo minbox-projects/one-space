@@ -1140,6 +1140,7 @@ async fn assert_truncated_auth_non_streaming(status: u16) {
     config.providers.extend([auth.clone(), fallback.clone()]);
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
+    let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         &[auth, fallback],
         "/v1/chat/completions",
@@ -1147,6 +1148,7 @@ async fn assert_truncated_auth_non_streaming(status: u16) {
         Some("local"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await;
 
@@ -1157,6 +1159,27 @@ async fn assert_truncated_auth_non_streaming(status: u16) {
     );
     assert_eq!(auth_requests.lock().unwrap().len(), 1);
     assert_eq!(fallback_requests.lock().unwrap().len(), 1);
+    assert_eq!(
+        attempts.len(),
+        2,
+        "one entry per completed attempt of the request"
+    );
+    assert_eq!(attempts[0].provider_id, "auth");
+    assert_eq!(attempts[0].upstream_model, "remote-default");
+    assert_eq!(attempts[0].status, status);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(
+        attempts[0].error_message, None,
+        "the truncated error body is unreadable, so no upstream message is stored"
+    );
+    assert!(attempts[0].usage.is_none());
+    assert!(attempts[0].duration_ms >= 1, "each attempt times itself");
+    assert_eq!(attempts[1].provider_id, "fallback");
+    assert_eq!(attempts[1].upstream_model, "remote-default");
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
+    assert_eq!(attempts[1].error_message, None);
+    assert!(attempts[1].duration_ms >= 1);
 
     let persisted = super::storage::read_config().expect("read persisted provider state");
     let auth_provider = persisted
@@ -1220,6 +1243,7 @@ async fn assert_truncated_auth_streaming(status: u16) {
     let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
 
     let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
     super::runtime_http::attempt_streaming(
         &mut server,
         &[auth, fallback],
@@ -1228,6 +1252,7 @@ async fn assert_truncated_auth_streaming(status: u16) {
         Some("local"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await
     .expect("streaming fallback must complete");
@@ -1242,6 +1267,26 @@ async fn assert_truncated_auth_streaming(status: u16) {
     );
     assert_eq!(auth_requests.lock().unwrap().len(), 1);
     assert_eq!(fallback_requests.lock().unwrap().len(), 1);
+    assert_eq!(
+        attempts.len(),
+        2,
+        "one entry per completed streaming attempt"
+    );
+    assert_eq!(attempts[0].provider_id, "auth");
+    assert_eq!(attempts[0].upstream_model, "remote-default");
+    assert_eq!(attempts[0].status, status);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(
+        attempts[0].error_message, None,
+        "the truncated error body is unreadable, so no upstream message is stored"
+    );
+    assert!(attempts[0].duration_ms >= 1, "each attempt times itself");
+    assert_eq!(attempts[1].provider_id, "fallback");
+    assert_eq!(attempts[1].upstream_model, "remote-default");
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
+    assert_eq!(attempts[1].error_message, None);
+    assert!(attempts[1].duration_ms >= 1);
 
     let persisted = super::storage::read_config().expect("read persisted provider state");
     let auth_provider = persisted
@@ -2016,6 +2061,7 @@ async fn streaming_switches_when_first_provider_fails_before_first_byte() {
     let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
 
     let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
     super::runtime_http::attempt_streaming(
         &mut server,
         &[a, b],
@@ -2024,6 +2070,7 @@ async fn streaming_switches_when_first_provider_fails_before_first_byte() {
         Some("local"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await
     .unwrap();
@@ -2033,6 +2080,29 @@ async fn streaming_switches_when_first_provider_fails_before_first_byte() {
     let text = String::from_utf8_lossy(&out);
     assert!(text.contains("from-b"), "expected second provider stream: {text}");
     assert_eq!(stream_log.lock().unwrap().len(), 1);
+    assert_eq!(
+        attempts.len(),
+        2,
+        "the failed and the successful attempt both completed"
+    );
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].status, 0, "a closed connection has no HTTP status");
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert!(
+        attempts[0]
+            .error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("network error"),
+        "a transport failure records its network description: {:?}",
+        attempts[0].error_message
+    );
+    assert!(attempts[0].duration_ms >= 1);
+    assert_eq!(attempts[1].provider_id, "b");
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
+    assert_eq!(attempts[1].error_message, None);
+    assert!(attempts[1].duration_ms >= 1);
 }
 
 #[tokio::test]
@@ -2058,6 +2128,7 @@ async fn streaming_terminates_after_first_byte_without_switching() {
     let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
 
     let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
     super::runtime_http::attempt_streaming(
         &mut server,
         &[a, b],
@@ -2066,6 +2137,7 @@ async fn streaming_terminates_after_first_byte_without_switching() {
         Some("local"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await
     .unwrap();
@@ -2074,6 +2146,28 @@ async fn streaming_terminates_after_first_byte_without_switching() {
     client.read_to_end(&mut out).await.unwrap();
     let text = String::from_utf8_lossy(&out);
     assert!(text.contains("partial-a"), "expected first provider bytes: {text}");
+    assert_eq!(
+        attempts.len(),
+        1,
+        "the second candidate is never reached after the first byte"
+    );
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].upstream_model, "remote-default");
+    assert_eq!(
+        attempts[0].status, 502,
+        "a stream that failed after the first byte records the gateway stream failure status"
+    );
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert!(
+        attempts[0]
+            .error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("stream failed after first byte"),
+        "the mid-stream failure records its stream description: {:?}",
+        attempts[0].error_message
+    );
+    assert!(attempts[0].duration_ms >= 1);
     assert!(
         !text.contains("from-b"),
         "must not retry after bytes were written: {text}"
@@ -3391,6 +3485,7 @@ async fn non_json_upstream_response_is_retryable_and_switches() {
     let b = upstream_provider("b", "Provider B", &ok_url, "sk", Some("remote-default"));
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
+    let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         &[a, b],
         "/v1/chat/completions",
@@ -3398,12 +3493,21 @@ async fn non_json_upstream_response_is_retryable_and_switches() {
         Some("local"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await;
     assert_eq!(response.status, 200);
     assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
     assert_eq!(non_json_log.lock().unwrap().len(), 1);
     assert_eq!(ok_log.lock().unwrap().len(), 1);
+    assert_eq!(attempts.len(), 2, "both attempts completed");
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert!(attempts[0].duration_ms >= 1);
+    assert_eq!(attempts[1].provider_id, "b");
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
+    assert_eq!(attempts[1].error_message, None);
 }
 
 #[tokio::test]
@@ -3423,6 +3527,7 @@ async fn return_to_client_error_is_passed_through_without_switching_or_disabling
     config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
+    let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         &[a, b],
         "/v1/chat/completions",
@@ -3430,11 +3535,29 @@ async fn return_to_client_error_is_passed_through_without_switching_or_disabling
         Some("local"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await;
     assert_eq!(response.status, 400, "upstream client error must pass through");
     assert_eq!(bad_request_log.lock().unwrap().len(), 1);
     assert!(ok_log.lock().unwrap().is_empty(), "must not switch on 4xx");
+    assert_eq!(
+        attempts.len(),
+        1,
+        "a ReturnToClient attempt is the request's only completed attempt"
+    );
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].provider_name, "Provider A");
+    assert_eq!(attempts[0].upstream_model, "remote-default");
+    assert_eq!(attempts[0].status, 400);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(
+        attempts[0].error_message.as_deref(),
+        Some("bad request"),
+        "the standard upstream error.message is extracted"
+    );
+    assert!(attempts[0].usage.is_none());
+    assert!(attempts[0].duration_ms >= 1);
     let stored = config
         .providers
         .iter()
@@ -3528,6 +3651,7 @@ async fn end_to_end_network_failure_falls_back_and_tries_first_candidate_once() 
     config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
+    let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         &[a, b],
         "/v1/chat/completions",
@@ -3535,6 +3659,7 @@ async fn end_to_end_network_failure_falls_back_and_tries_first_candidate_once() 
         Some("local-model"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await;
 
@@ -3546,6 +3671,14 @@ async fn end_to_end_network_failure_falls_back_and_tries_first_candidate_once() 
         "first candidate must be attempted exactly once"
     );
     assert_eq!(ok_log.lock().unwrap().len(), 1, "fallback must use the second candidate");
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].status, 0, "a network failure has no HTTP status");
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert!(attempts[0].duration_ms >= 1);
+    assert_eq!(attempts[1].provider_id, "b");
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
 }
 
 #[tokio::test]
@@ -3564,6 +3697,7 @@ async fn end_to_end_5xx_falls_back_and_tries_first_candidate_once() {
     config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
+    let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         &[a, b],
         "/v1/chat/completions",
@@ -3571,6 +3705,7 @@ async fn end_to_end_5xx_falls_back_and_tries_first_candidate_once() {
         Some("local-model"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await;
 
@@ -3578,6 +3713,14 @@ async fn end_to_end_5xx_falls_back_and_tries_first_candidate_once() {
     assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
     assert_eq!(fail_log.lock().unwrap().len(), 1);
     assert_eq!(ok_log.lock().unwrap().len(), 1);
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].status, 503);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(attempts[0].error_message.as_deref(), Some("down"));
+    assert_eq!(attempts[1].provider_id, "b");
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
 
     let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
     assert_eq!(a_stored.consecutive_failures, 1);
@@ -3604,6 +3747,7 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
         config.providers.push(b.clone());
         let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
+        let mut attempts = Vec::new();
         let response = super::runtime_http::attempt_non_streaming(
             &[a, b],
             "/v1/chat/completions",
@@ -3611,6 +3755,7 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
             Some("local-model"),
             &mut config,
             &HashMap::new(),
+            &mut attempts,
         )
         .await;
 
@@ -3618,6 +3763,13 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
         assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
         assert_eq!(auth_log.lock().unwrap().len(), 1);
         assert_eq!(ok_log.lock().unwrap().len(), 1);
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].provider_id, "a");
+        assert_eq!(attempts[0].status, status);
+        assert_eq!(attempts[0].result, UsageResult::Failure);
+        assert_eq!(attempts[0].error_message.as_deref(), Some("denied"));
+        assert_eq!(attempts[1].provider_id, "b");
+        assert_eq!(attempts[1].status, 200);
 
         let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
         assert!(a_stored.auto_disabled, "status {status} must auto-disable immediately");
@@ -3724,6 +3876,7 @@ async fn end_to_end_network_errors_accumulate_and_disable() {
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
     for _ in 0..3 {
+        let mut attempts = Vec::new();
         let response = super::runtime_http::attempt_non_streaming(
             &[failed.clone(), healthy.clone()],
             "/v1/chat/completions",
@@ -3731,9 +3884,16 @@ async fn end_to_end_network_errors_accumulate_and_disable() {
             Some("local-model"),
             &mut config,
             &HashMap::new(),
+            &mut attempts,
         )
         .await;
         assert_eq!(response.status, 200, "network failure must yield to the healthy fallback");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].provider_id, "a");
+        assert_eq!(attempts[0].status, 0, "a network failure has no HTTP status");
+        assert_eq!(attempts[0].result, UsageResult::Failure);
+        assert_eq!(attempts[1].provider_id, "b");
+        assert_eq!(attempts[1].result, UsageResult::Success);
     }
 
     let stored = super::storage::read_config().unwrap();
@@ -3771,6 +3931,7 @@ async fn end_to_end_transient_429_and_404_switch_without_disabling() {
         config.providers.push(b.clone());
         let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
+        let mut attempts = Vec::new();
         let response = super::runtime_http::attempt_non_streaming(
             &[a, b],
             "/v1/chat/completions",
@@ -3778,6 +3939,7 @@ async fn end_to_end_transient_429_and_404_switch_without_disabling() {
             Some("local-model"),
             &mut config,
             &HashMap::new(),
+            &mut attempts,
         )
         .await;
 
@@ -3785,6 +3947,13 @@ async fn end_to_end_transient_429_and_404_switch_without_disabling() {
         assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
         assert_eq!(transient_log.lock().unwrap().len(), 1);
         assert_eq!(ok_log.lock().unwrap().len(), 1);
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].provider_id, "a");
+        assert_eq!(attempts[0].status, status);
+        assert_eq!(attempts[0].result, UsageResult::Failure);
+        assert_eq!(attempts[0].error_message.as_deref(), Some("transient"));
+        assert_eq!(attempts[1].provider_id, "b");
+        assert_eq!(attempts[1].result, UsageResult::Success);
 
         let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
         assert!(!a_stored.auto_disabled, "status {status} must not disable");
@@ -3813,6 +3982,7 @@ async fn end_to_end_client_4xx_returns_to_caller_without_switching_or_disabling(
         config.providers.push(b.clone());
         let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
+        let mut attempts = Vec::new();
         let response = super::runtime_http::attempt_non_streaming(
             &[a, b],
             "/v1/chat/completions",
@@ -3820,12 +3990,22 @@ async fn end_to_end_client_4xx_returns_to_caller_without_switching_or_disabling(
             Some("local-model"),
             &mut config,
             &HashMap::new(),
+            &mut attempts,
         )
         .await;
 
         assert_eq!(response.status, status, "status {status} must pass through");
         assert_eq!(bad_log.lock().unwrap().len(), 1);
         assert!(ok_log.lock().unwrap().is_empty(), "status {status} must not switch");
+        assert_eq!(
+            attempts.len(),
+            1,
+            "a ReturnToClient attempt ends the request without switching"
+        );
+        assert_eq!(attempts[0].provider_id, "a");
+        assert_eq!(attempts[0].status, status);
+        assert_eq!(attempts[0].result, UsageResult::Failure);
+        assert_eq!(attempts[0].error_message.as_deref(), Some("bad request"));
 
         let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
         assert!(!a_stored.auto_disabled, "status {status} must not disable");
@@ -3854,6 +4034,7 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
     for attempt in 1..=3u32 {
+        let mut attempts = Vec::new();
         let response = super::runtime_http::attempt_non_streaming(
             &[a.clone(), b.clone()],
             "/v1/chat/completions",
@@ -3861,9 +4042,15 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
             Some("local-model"),
             &mut config,
             &HashMap::new(),
+            &mut attempts,
         )
         .await;
         assert_eq!(response.status, 200, "attempt {attempt}");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].provider_id, "a");
+        assert_eq!(attempts[0].result, UsageResult::Failure);
+        assert_eq!(attempts[1].provider_id, "b");
+        assert_eq!(attempts[1].result, UsageResult::Success);
         assert!(
             String::from_utf8_lossy(&response.body).contains("from-b"),
             "a non-JSON 2xx must not reach the caller as success"
@@ -3894,6 +4081,7 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
     config.providers.push(a.clone());
     config.providers.push(b.clone());
 
+    let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         &[a, b],
         "/v1/chat/completions",
@@ -3901,10 +4089,22 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
         Some("local-model"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await;
     assert_eq!(response.status, 200);
     assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].status, 500);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(
+        attempts[0].error_message.as_deref(),
+        Some("upstream error"),
+        "an HTML body yields its readable text without markup"
+    );
+    assert_eq!(attempts[1].provider_id, "b");
+    assert_eq!(attempts[1].result, UsageResult::Success);
     let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
     assert_eq!(a_stored.consecutive_failures, 1);
     assert!(!a_stored.auto_disabled);
@@ -4285,6 +4485,7 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
     config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
+    let mut attempts = Vec::new();
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         super::runtime_http::attempt_non_streaming(
@@ -4294,6 +4495,7 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
             Some("local-model"),
             &mut config,
             &HashMap::new(),
+            &mut attempts,
         ),
     )
     .await
@@ -4306,6 +4508,17 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
         1,
         "fallback must use the second candidate"
     );
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert!(attempts[0].duration_ms >= 1);
+    // A direct connect timeout records status 0 with a `network error: …` text.
+    // This environment proxies TEST-NET-1 and answers a real HTTP 502 instead,
+    // so neither value is asserted here; the local-mock tests
+    // `end_to_end_network_failure_falls_back_and_tries_first_candidate_once` and
+    // `streaming_all_unavailable_network_error_logs_zero_status` pin that shape.
+    assert_eq!(attempts[1].provider_id, "b");
+    assert_eq!(attempts[1].result, UsageResult::Success);
     let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
     assert_eq!(
         a_stored.consecutive_failures, 1,
@@ -4488,6 +4701,7 @@ async fn streaming_2xx_non_json_is_retryable_and_switches_before_first_byte() {
     let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
 
     let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
     super::runtime_http::attempt_streaming(
         &mut server,
         &[a, b],
@@ -4496,6 +4710,7 @@ async fn streaming_2xx_non_json_is_retryable_and_switches_before_first_byte() {
         Some("local"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await
     .unwrap();
@@ -4504,6 +4719,27 @@ async fn streaming_2xx_non_json_is_retryable_and_switches_before_first_byte() {
     client.read_to_end(&mut out).await.unwrap();
     let text = String::from_utf8_lossy(&out);
 
+    assert_eq!(
+        attempts.len(),
+        2,
+        "the rejected 2xx stream and the served stream both completed"
+    );
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(
+        attempts[0].status, 502,
+        "a 2xx body that is not a valid SSE stream keeps the gateway stream failure status"
+    );
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(
+        attempts[0].error_message.as_deref(),
+        Some("this is not json"),
+        "the rejected body yields its readable summary"
+    );
+    assert!(attempts[0].duration_ms >= 1);
+    assert_eq!(attempts[1].provider_id, "b");
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
+    assert!(attempts[1].duration_ms >= 1);
     assert!(
         !text.contains("this is not json"),
         "a 2xx non-JSON body must not be written to the caller: {text}"
@@ -6714,6 +6950,9 @@ async fn attempt_streaming_text(
 ) -> String {
     let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
     let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    // The buffer is per request and owned by the caller; this helper only checks
+    // the transmitted text, so its own buffer stays local.
+    let mut attempts = Vec::new();
     super::runtime_http::attempt_streaming(
         &mut server,
         ordered,
@@ -6722,6 +6961,7 @@ async fn attempt_streaming_text(
         Some("local"),
         config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await
     .expect("streaming attempt");
@@ -6740,6 +6980,9 @@ async fn attempt_non_streaming_timed(
     let _ticker = spawn_paused_clock_ticker();
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
     let started = tokio::time::Instant::now();
+    // Local per-request buffer: this helper only reports the response and the
+    // paused elapsed time.
+    let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         ordered,
         "/v1/chat/completions",
@@ -6747,6 +6990,7 @@ async fn attempt_non_streaming_timed(
         Some("local"),
         config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await;
     (response, started.elapsed())
@@ -6764,6 +7008,9 @@ async fn attempt_non_streaming_paused(
 ) -> (super::runtime_http::HttpResponse, std::time::Duration) {
     let _ticker = spawn_paused_clock_ticker();
     let started = tokio::time::Instant::now();
+    // Local per-request buffer: this helper only reports the response and the
+    // paused elapsed time.
+    let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         ordered,
         path,
@@ -6771,6 +7018,7 @@ async fn attempt_non_streaming_paused(
         requested,
         config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await;
     (response, started.elapsed())
@@ -7005,6 +7253,7 @@ async fn retry_policy_initial_pass_does_not_wait_for_cooldown() {
     let mut config = GatewayConfig::default();
     config.providers = vec![a.clone(), b.clone()];
 
+    let mut attempts = Vec::new();
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         super::runtime_http::attempt_non_streaming(
@@ -7014,6 +7263,7 @@ async fn retry_policy_initial_pass_does_not_wait_for_cooldown() {
             Some("local"),
             &mut config,
             &HashMap::new(),
+            &mut attempts,
         ),
     )
     .await
@@ -7031,6 +7281,22 @@ async fn retry_policy_initial_pass_does_not_wait_for_cooldown() {
         "A must not be retried before B answers"
     );
     assert_eq!(b_requests.load(Ordering::SeqCst), 1, "B must be tried exactly once");
+    assert_eq!(
+        attempts.len(),
+        2,
+        "A's completed failure and B's success are both buffered"
+    );
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].upstream_model, "remote-default");
+    assert_eq!(attempts[0].status, 500);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(attempts[0].error_message.as_deref(), Some("busy"));
+    assert!(attempts[0].duration_ms >= 1);
+    assert_eq!(attempts[1].provider_id, "b");
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
+    assert_eq!(attempts[1].error_message, None);
+    assert!(attempts[1].duration_ms >= 1);
 }
 
 /// AC-003 / REQ-003 RED: a provider cooling down for 9s must not block a second
@@ -7194,6 +7460,7 @@ async fn single_candidate_500_non_streaming_fails_fast_without_retry() {
     config.providers = vec![a.clone()];
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
+    let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         std::slice::from_ref(&a),
         "/v1/chat/completions",
@@ -7201,6 +7468,7 @@ async fn single_candidate_500_non_streaming_fails_fast_without_retry() {
         Some("local"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await;
 
@@ -7208,6 +7476,22 @@ async fn single_candidate_500_non_streaming_fails_fast_without_retry() {
         upstream_requests.load(Ordering::SeqCst),
         1,
         "a single candidate must be attempted exactly once with no backoff retry"
+    );
+    assert_eq!(
+        attempts.len(),
+        1,
+        "one entry for the single completed failure attempt"
+    );
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].provider_name, "Provider A");
+    assert_eq!(attempts[0].upstream_model, "remote-default");
+    assert_eq!(attempts[0].status, 500);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(attempts[0].error_message.as_deref(), Some("boom"));
+    assert!(attempts[0].usage.is_none());
+    assert!(
+        attempts[0].duration_ms >= 1,
+        "the attempt measures its own elapsed time"
     );
     assert_eq!(response.status, 502, "the gateway must fail with HTTP 502");
     let parsed: Value =
@@ -7237,6 +7521,7 @@ async fn single_candidate_429_with_retry_header_non_streaming_fails_fast_without
     config.providers = vec![a.clone()];
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
+    let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         std::slice::from_ref(&a),
         "/v1/chat/completions",
@@ -7244,6 +7529,7 @@ async fn single_candidate_429_with_retry_header_non_streaming_fails_fast_without
         Some("local"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await;
 
@@ -7252,6 +7538,13 @@ async fn single_candidate_429_with_retry_header_non_streaming_fails_fast_without
         1,
         "a single 429 candidate must be attempted exactly once"
     );
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].upstream_model, "remote-default");
+    assert_eq!(attempts[0].status, 429);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(attempts[0].error_message.as_deref(), Some("slow down"));
+    assert!(attempts[0].duration_ms >= 1);
     assert_eq!(response.status, 502, "the gateway must fail with HTTP 502");
     let parsed: Value =
         serde_json::from_slice(&response.body).expect("standard JSON error envelope");
@@ -7281,6 +7574,7 @@ async fn single_candidate_429_without_retry_header_non_streaming_fails_fast_with
     config.providers = vec![a.clone()];
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
+    let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         std::slice::from_ref(&a),
         "/v1/chat/completions",
@@ -7288,6 +7582,7 @@ async fn single_candidate_429_without_retry_header_non_streaming_fails_fast_with
         Some("local"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await;
 
@@ -7296,6 +7591,12 @@ async fn single_candidate_429_without_retry_header_non_streaming_fails_fast_with
         1,
         "a single 429 candidate must be attempted exactly once even without a retry header"
     );
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].status, 429);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(attempts[0].error_message.as_deref(), Some("slow down"));
+    assert!(attempts[0].duration_ms >= 1);
     assert_eq!(response.status, 502, "the gateway must fail with HTTP 502");
     let parsed: Value =
         serde_json::from_slice(&response.body).expect("standard JSON error envelope");
@@ -7679,10 +7980,15 @@ async fn wait_for_upstream_attempts(
     .expect("upstream request must arrive");
 }
 
-/// REQ-006 / AC-006 RED: after the client has fully disconnected during a
-/// retry cooldown, the relay must leave the pending delay and must not issue a
-/// retry. This covers both JSON and SSE request modes through the real TCP
-/// handler boundary. The current handler sleeps until the cooldown expires.
+/// REQ-006 / AC-007 (extended by 20260920-gateway-log-attempts-and-upstream-errors):
+/// after the client has fully disconnected, the relay must abandon the pending
+/// work and must not issue a retry, while the log keeps every already completed
+/// failure attempt as a non-terminal row and appends exactly one terminal
+/// `cancelled` row with no provider. Both candidates answer 503 with their own
+/// message and a short retry deadline, so the fallback-first pass completes both
+/// attempts in either randomized candidate order and both retries are queued
+/// behind the delay when the disconnect arrives. This covers both JSON and SSE
+/// request modes through the real TCP handler boundary.
 #[tokio::test(start_paused = true)]
 async fn retry_cancel_disconnect_during_retry_delay_exits_without_further_upstream_attempts() {
     let _ticker = spawn_paused_clock_ticker();
@@ -7693,8 +7999,13 @@ async fn retry_cancel_disconnect_during_retry_delay_exits_without_further_upstre
         } else {
             "retry-cancel-delay-json"
         });
-        let (upstream_url, attempts) = spawn_header_sequence_mock(vec![
+        let (busy_url, busy_attempts) = spawn_header_sequence_mock(vec![
             HeaderReply::new(503, json!({"error": {"message": "busy"}}))
+                .header("retry-after-ms", "250"),
+        ])
+        .await;
+        let (waiting_url, waiting_attempts) = spawn_header_sequence_mock(vec![
+            HeaderReply::new(503, json!({"error": {"message": "waiting"}}))
                 .header("retry-after-ms", "250"),
         ])
         .await;
@@ -7702,22 +8013,39 @@ async fn retry_cancel_disconnect_during_retry_delay_exits_without_further_upstre
         config.keys.push(key_named("k1", "local-key"));
         config.providers.push(upstream_provider(
             "a",
-            "Delayed Provider",
-            &upstream_url,
+            "Busy Provider",
+            &busy_url,
+            "sk",
+            Some("remote-default"),
+        ));
+        config.providers.push(upstream_provider(
+            "b",
+            "Waiting Provider",
+            &waiting_url,
             "sk",
             Some("remote-default"),
         ));
         super::storage::write_config(&config).expect("write relay config");
 
         let (client, mut handler) = spawn_handle_connection(wants_stream).await;
-        wait_for_upstream_attempts(&attempts, 1, &mut handler).await;
+        // Both candidates fail retryably in the fallback-first pass, so each
+        // server sees exactly one request in either randomized order and both
+        // retries are queued behind the 250ms delay when the client goes away.
+        wait_for_upstream_attempts(&busy_attempts, 1, &mut handler).await;
+        wait_for_upstream_attempts(&waiting_attempts, 1, &mut handler).await;
+        // Each mock answers right after its counter reaches one, so both 503
+        // bodies are already waiting to be read. Give the relay a scheduling
+        // turn to buffer both attempts before the client goes away; the sleep
+        // stays well inside the 250ms retry deadline, so no retry has started.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         drop(client);
 
         let exited = tokio::time::timeout(std::time::Duration::from_millis(100), &mut handler).await;
         // Let a non-cancelling handler reach the retry deadline so the second
         // assertion proves the request did not continue upstream after close.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let observed_attempts = attempts.load(Ordering::SeqCst);
+        let observed_busy = busy_attempts.load(Ordering::SeqCst);
+        let observed_waiting = waiting_attempts.load(Ordering::SeqCst);
         if exited.is_err() {
             handler.abort();
             let _ = handler.await;
@@ -7728,10 +8056,91 @@ async fn retry_cancel_disconnect_during_retry_delay_exits_without_further_upstre
                 "handler remained pending during retry delay after disconnect (stream={wants_stream})"
             ));
         }
-        if observed_attempts != 1 {
+        if observed_busy != 1 || observed_waiting != 1 {
             failures.push(format!(
-                "disconnect issued {observed_attempts} upstream attempts during retry delay (stream={wants_stream})"
+                "disconnect issued further upstream attempts during retry delay (stream={wants_stream}): busy={observed_busy}, waiting={observed_waiting}"
             ));
+        }
+        if failures.is_empty() {
+            let records = wait_for_exact_usage_logs(3).await;
+            let completed: Vec<&UsageLogRecord> = records
+                .iter()
+                .filter(|record| record.result == UsageResult::Failure)
+                .collect();
+            assert_eq!(
+                completed.len(),
+                2,
+                "one non-terminal failure row per completed attempt: {records:?}"
+            );
+            for record in &completed {
+                assert!(
+                    !record.terminal,
+                    "a completed attempt is not the request's terminal row: {record:?}"
+                );
+                assert_eq!(record.local_model, "local", "the inbound request model");
+                assert_eq!(record.upstream_model, "remote-default");
+                assert_eq!(record.status, 503);
+                assert_eq!(record.total_tokens, 0);
+                assert!(record.duration_ms >= 1);
+            }
+            let busy = completed
+                .iter()
+                .find(|record| record.provider_id == "a")
+                .expect("provider a's completed attempt must keep its row");
+            assert_eq!(busy.provider_name, "Busy Provider");
+            assert_eq!(busy.error_message.as_deref(), Some("busy"));
+            let waiting = completed
+                .iter()
+                .find(|record| record.provider_id == "b")
+                .expect("provider b's completed attempt must keep its row");
+            assert_eq!(waiting.provider_name, "Waiting Provider");
+            assert_eq!(waiting.error_message.as_deref(), Some("waiting"));
+
+            let cancelled = records
+                .iter()
+                .find(|record| record.result == UsageResult::Cancelled)
+                .expect("the cancellation must write one terminal cancelled row");
+            assert!(cancelled.terminal);
+            assert_eq!(cancelled.provider_id, "", "no provider is attributed");
+            assert_eq!(cancelled.provider_name, "");
+            assert_eq!(cancelled.status, 0);
+            assert_eq!(cancelled.error_message, None);
+            assert_eq!(cancelled.local_model, "local");
+            assert_eq!(cancelled.upstream_model, "");
+            assert!(cancelled.duration_ms >= 1, "the whole request is timed");
+            assert_eq!(
+                records.len(),
+                3,
+                "only the two attempts and the cancellation row belong to this request"
+            );
+            assert_eq!(
+                records.iter().filter(|record| record.terminal).count(),
+                1,
+                "exactly one terminal row per request"
+            );
+            assert!(
+                records[0].terminal,
+                "a newest-first query lists the terminal row before the earlier attempts"
+            );
+
+            let store = default_usage_store();
+            let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
+            assert_eq!(
+                stats.totals.request_count, 1,
+                "the completed attempts are not inbound requests"
+            );
+            assert_eq!(stats.totals.total_tokens, 0);
+            assert_eq!(stats.totals.amount, 0.0);
+            assert_eq!(stats.totals.unpriced_count, 0);
+            let grouped = store
+                .group_logs(&TimeRange::default(), &LogFilter::default(), "model")
+                .unwrap();
+            assert_eq!(grouped.len(), 1);
+            assert_eq!(
+                grouped[0].request_count, 1,
+                "the cancelled request counts once"
+            );
+            assert_eq!(grouped[0].error_count, 0, "cancelled is never an error");
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("; "));
@@ -9462,6 +9871,11 @@ async fn usage_log_records_successful_non_streaming_forward_and_privacy() {
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1, "exactly one log row per forwarded request");
     let record = &records[0];
+    assert!(
+        record.terminal,
+        "a single completed attempt is the request's terminal row"
+    );
+    assert_eq!(record.error_message, None, "a success stores no error message");
     assert_eq!(record.result, UsageResult::Success);
     assert_eq!(record.local_model, "local-a");
     assert_eq!(record.upstream_model, "remote-a");
@@ -9520,6 +9934,8 @@ async fn usage_log_records_zero_tokens_when_upstream_omits_usage() {
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1, "row exists even without usage");
     let record = &records[0];
+    assert!(record.terminal, "the completed attempt is terminal");
+    assert_eq!(record.error_message, None, "a success stores no error message");
     assert_eq!(record.result, UsageResult::Success);
     assert_eq!(record.total_tokens, 0);
     assert_eq!(record.amount, Some(0.0), "priced model with zero tokens costs 0");
@@ -9562,8 +9978,17 @@ async fn usage_log_records_failure_for_upstream_error_response() {
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1);
     let record = &records[0];
+    assert!(
+        record.terminal,
+        "a single ReturnToClient attempt is the request's terminal row"
+    );
     assert_eq!(record.result, UsageResult::Failure);
     assert_eq!(record.status, 400);
+    assert_eq!(
+        record.error_message.as_deref(),
+        Some("bad request"),
+        "the upstream error.message is recorded instead of the generic status text"
+    );
     assert_eq!(record.total_tokens, 0);
     assert_eq!(record.amount, Some(0.0));
 
@@ -9600,10 +10025,29 @@ async fn usage_log_records_failure_when_no_upstream_can_serve() {
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1);
     let record = &records[0];
+    assert!(
+        record.terminal,
+        "the no-candidate row is the request's single terminal row"
+    );
     assert_eq!(record.result, UsageResult::Failure);
     assert_eq!(record.status, 502);
+    assert_eq!(
+        record.error_message, None,
+        "a request that reached no upstream records no error message"
+    );
+    assert_eq!(record.provider_id, "", "no provider is attributed");
+    assert_eq!(record.provider_name, "");
+    assert_eq!(record.local_model, "local-a");
+    assert_eq!(record.upstream_model, "");
     assert_eq!(record.total_tokens, 0);
     assert_eq!(record.amount.unwrap_or(0.0), 0.0);
+
+    let stats = default_usage_store()
+        .usage_stats(&TimeRange::default(), false)
+        .unwrap();
+    assert_eq!(stats.totals.request_count, 1);
+    assert_eq!(stats.totals.total_tokens, 0);
+    assert_eq!(stats.totals.amount, 0.0);
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
@@ -9648,6 +10092,8 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1);
     let record = &records[0];
+    assert!(record.terminal, "the completed stream is the terminal row");
+    assert_eq!(record.error_message, None, "a success stores no error message");
     assert_eq!(record.result, UsageResult::Success);
     assert_eq!(record.input_tokens, 11);
     assert_eq!(record.cache_read_tokens, 3);
@@ -9685,8 +10131,22 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
         failure.status, 502,
         "the log records the gateway failure status, not the transport status"
     );
+    assert!(
+        failure.terminal,
+        "the no-candidate row is the request's terminal row"
+    );
+    assert_eq!(
+        failure.error_message, None,
+        "a request that reached no upstream records no error message"
+    );
+    assert_eq!(failure.provider_id, "", "no provider is attributed");
     assert_eq!(failure.total_tokens, 0);
     assert_eq!(failure.amount.unwrap_or(0.0), 0.0);
+    assert_eq!(
+        records.iter().filter(|record| record.terminal).count(),
+        2,
+        "each of the two requests has exactly one terminal row"
+    );
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
@@ -9735,11 +10195,21 @@ async fn streaming_all_unavailable_logs_real_upstream_status() {
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1);
     let record = &records[0];
+    assert!(record.terminal, "the completed attempt is the terminal row");
     assert_eq!(record.result, UsageResult::Failure);
     assert_eq!(
         record.status, 503,
         "the log must show the real upstream failure status, not the transport status"
     );
+    assert_eq!(record.provider_id, "p1");
+    assert_eq!(record.local_model, "local-a");
+    assert_eq!(record.upstream_model, "remote-a");
+    assert_eq!(
+        record.error_message.as_deref(),
+        Some("upstream down"),
+        "the upstream error.message is recorded"
+    );
+    assert_eq!(record.total_tokens, 0);
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
@@ -9759,6 +10229,7 @@ async fn streaming_all_unavailable_network_error_logs_zero_status() {
     let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
 
     let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
     let capture = super::runtime_http::attempt_streaming(
         &mut server,
         std::slice::from_ref(&provider),
@@ -9767,6 +10238,7 @@ async fn streaming_all_unavailable_network_error_logs_zero_status() {
         Some("local"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await
     .expect("streaming attempt");
@@ -9794,6 +10266,26 @@ async fn streaming_all_unavailable_network_error_logs_zero_status() {
         capture.status, 0,
         "a network failure has no HTTP status and must not be logged as 200"
     );
+    assert_eq!(
+        attempts.len(),
+        1,
+        "one entry for the single completed network failure"
+    );
+    assert_eq!(attempts[0].provider_id, "p1");
+    assert_eq!(attempts[0].upstream_model, "remote-a");
+    assert_eq!(attempts[0].status, 0);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert!(
+        attempts[0]
+            .error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("network error"),
+        "a network failure records its network description: {:?}",
+        attempts[0].error_message
+    );
+    assert!(attempts[0].usage.is_none());
+    assert!(attempts[0].duration_ms >= 1);
 }
 
 /// AC-008 / REQ-007: 401, `GET /v1/models` and unknown paths/methods add no row.
@@ -9902,9 +10394,33 @@ async fn downstream_cancel_records_cancelled() {
 
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1, "cancelled request must still be recorded");
+    assert!(
+        records[0].terminal,
+        "the synthetic cancelled row is the request's terminal row"
+    );
     assert_eq!(records[0].result, UsageResult::Cancelled);
+    assert_eq!(records[0].provider_id, "", "no provider is attributed");
+    assert_eq!(records[0].provider_name, "");
+    assert_eq!(records[0].status, 0);
+    assert_eq!(records[0].error_message, None);
+    assert_eq!(records[0].local_model, "local");
+    assert_eq!(records[0].upstream_model, "");
+    assert!(records[0].duration_ms >= 1, "the whole request is timed");
     assert_eq!(records[0].total_tokens, 0);
     assert_eq!(records[0].amount.unwrap_or(0.0), 0.0);
+
+    let stats = default_usage_store()
+        .usage_stats(&TimeRange::default(), false)
+        .unwrap();
+    assert_eq!(stats.totals.request_count, 1, "a cancelled request counts once");
+    assert_eq!(stats.totals.total_tokens, 0);
+    assert_eq!(stats.totals.amount, 0.0);
+    assert_eq!(stats.totals.unpriced_count, 0);
+    let grouped = default_usage_store()
+        .group_logs(&TimeRange::default(), &LogFilter::default(), "model")
+        .unwrap();
+    assert_eq!(grouped.len(), 1);
+    assert_eq!(grouped[0].error_count, 0, "cancelled is never an error");
     drop(home);
 }
 
@@ -9947,6 +10463,8 @@ async fn unpriced_model_records_none_amount_and_excludes_it_from_totals() {
     assert_eq!(status, 200);
 
     let records = wait_for_usage_logs(1).await;
+    assert!(records[0].terminal, "the completed attempt is terminal");
+    assert_eq!(records[0].error_message, None);
     assert_eq!(records[0].amount, None, "unpriced stays None");
     assert_eq!(records[0].total_tokens, 10);
 
@@ -10256,6 +10774,8 @@ async fn usage_log_records_unversioned_responses_path() {
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1);
     let record = &records[0];
+    assert!(record.terminal, "the completed attempt is terminal");
+    assert_eq!(record.error_message, None, "a success stores no error message");
     assert_eq!(record.result, UsageResult::Success);
     assert_eq!(record.local_model, "local-r");
     assert_eq!(record.upstream_model, "remote-r");
@@ -10320,6 +10840,8 @@ async fn forwarding_records_cache_read_and_write_tiers_non_streaming() {
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1);
     let record = &records[0];
+    assert!(record.terminal, "the completed attempt is terminal");
+    assert_eq!(record.error_message, None, "a success stores no error message");
     assert_eq!(record.result, UsageResult::Success);
     assert_eq!(record.input_tokens, 100);
     assert_eq!(record.cache_read_tokens, 20);
@@ -10374,6 +10896,8 @@ async fn streaming_forward_records_cache_read_and_write_tiers_and_preserves_byte
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1);
     let record = &records[0];
+    assert!(record.terminal, "the completed stream is terminal");
+    assert_eq!(record.error_message, None, "a success stores no error message");
     assert_eq!(record.result, UsageResult::Success);
     assert_eq!(record.input_tokens, 11);
     assert_eq!(record.cache_read_tokens, 3);
@@ -10423,6 +10947,8 @@ async fn streaming_success_without_usage_records_zero_tokens() {
 
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1, "row exists even when the stream omits usage");
+    assert!(records[0].terminal, "the completed stream is terminal");
+    assert_eq!(records[0].error_message, None);
     assert_eq!(records[0].result, UsageResult::Success);
     assert_eq!(records[0].total_tokens, 0);
     assert_eq!(records[0].amount, Some(0.0));
@@ -10465,8 +10991,17 @@ async fn streaming_upstream_client_error_is_logged_failure_and_returned_unchange
 
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1);
+    assert!(
+        records[0].terminal,
+        "a single ReturnToClient attempt is the request's terminal row"
+    );
     assert_eq!(records[0].result, UsageResult::Failure);
     assert_eq!(records[0].status, 400);
+    assert_eq!(
+        records[0].error_message.as_deref(),
+        Some("rejected"),
+        "the upstream error.message is recorded"
+    );
     assert_eq!(records[0].total_tokens, 0);
     assert_eq!(records[0].amount.unwrap_or(0.0), 0.0);
 
@@ -10525,10 +11060,30 @@ async fn downstream_cancel_during_streaming_records_cancelled() {
 
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1, "cancelled streaming request must still be recorded");
+    assert!(
+        records[0].terminal,
+        "the synthetic cancelled row is the request's terminal row"
+    );
     assert_eq!(records[0].result, UsageResult::Cancelled);
     assert_eq!(records[0].status, 0);
+    assert_eq!(records[0].provider_id, "", "no provider is attributed");
+    assert_eq!(records[0].error_message, None);
+    assert_eq!(records[0].local_model, "local");
+    assert!(records[0].duration_ms >= 1, "the whole request is timed");
     assert_eq!(records[0].total_tokens, 0);
     assert_eq!(records[0].amount.unwrap_or(0.0), 0.0);
+
+    let stats = default_usage_store()
+        .usage_stats(&TimeRange::default(), false)
+        .unwrap();
+    assert_eq!(stats.totals.request_count, 1, "a cancelled request counts once");
+    assert_eq!(stats.totals.total_tokens, 0);
+    assert_eq!(stats.totals.amount, 0.0);
+    let grouped = default_usage_store()
+        .group_logs(&TimeRange::default(), &LogFilter::default(), "model")
+        .unwrap();
+    assert_eq!(grouped.len(), 1);
+    assert_eq!(grouped[0].error_count, 0, "cancelled is never an error");
     drop(home);
 }
 
@@ -10582,6 +11137,8 @@ async fn forwarded_logs_never_contain_keys_headers_or_bodies() {
 
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1);
+    assert!(records[0].terminal, "the completed attempt is terminal");
+    assert_eq!(records[0].error_message, None);
     let raw = fs::read(
         crate::config::get_app_dir()
             .expect("app dir")
@@ -10651,6 +11208,8 @@ async fn price_change_does_not_alter_historical_amounts() {
     assert_eq!(status, 200);
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1);
+    assert!(records[0].terminal, "the completed attempt is terminal");
+    assert_eq!(records[0].error_message, None);
     assert_eq!(records[0].amount, None, "unpriced at record time stays unpriced");
 
     // Adding a price later must not retroactively price the existing row, but
@@ -10714,6 +11273,10 @@ async fn price_change_does_not_alter_historical_amounts() {
     .unwrap();
     let history = default_usage_store().all_records().unwrap();
     assert_eq!(history.len(), 2);
+    assert!(
+        history.iter().all(|record| record.terminal),
+        "each single-attempt request writes one terminal row"
+    );
     assert_eq!(
         history.iter().filter(|record| record.amount.is_none()).count(),
         1,
@@ -11145,8 +11708,17 @@ async fn usage_log_zeroes_usage_for_error_response_with_usage_body() {
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1, "exactly one log row per forwarded request");
     let record = &records[0];
+    assert!(
+        record.terminal,
+        "a single ReturnToClient attempt is the request's terminal row"
+    );
     assert_eq!(record.result, UsageResult::Failure);
     assert_eq!(record.status, 400);
+    assert_eq!(
+        record.error_message.as_deref(),
+        Some("bad request"),
+        "the upstream error.message is recorded"
+    );
     assert_eq!(
         record.input_tokens, 0,
         "an error response must never contribute input tokens"
@@ -11520,6 +12092,7 @@ async fn non_streaming_upstream_html_400_is_wrapped_in_standard_envelope() {
         ("x-request-marker".to_string(), "header-secret".to_string()),
     ]);
 
+    let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         std::slice::from_ref(&provider),
         "/v1/chat/completions",
@@ -11527,6 +12100,7 @@ async fn non_streaming_upstream_html_400_is_wrapped_in_standard_envelope() {
         Some("local"),
         &mut config,
         &headers,
+        &mut attempts,
     )
     .await;
 
@@ -11536,6 +12110,28 @@ async fn non_streaming_upstream_html_400_is_wrapped_in_standard_envelope() {
         1,
         "a single candidate is attempted exactly once"
     );
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].provider_name, "Provider A");
+    assert_eq!(attempts[0].upstream_model, "remote-default");
+    assert_eq!(attempts[0].status, 400);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    let attempt_message = attempts[0]
+        .error_message
+        .as_deref()
+        .expect("an HTML failure body yields readable text");
+    assert_eq!(
+        attempt_message, "upstream rejected the payload",
+        "markup is removed and whitespace collapsed"
+    );
+    for secret in ["sk-upstream-secret", "local-secret", "header-secret"] {
+        assert!(
+            !attempt_message.contains(secret),
+            "the recorded attempt message must not leak {secret}: {attempt_message}"
+        );
+    }
+    assert!(attempts[0].usage.is_none());
+    assert!(attempts[0].duration_ms >= 1);
     let text = String::from_utf8_lossy(&response.body).into_owned();
     let envelope = assert_standard_error_envelope(&text);
     let message = envelope["error"]["message"].as_str().unwrap_or("");
@@ -11614,6 +12210,7 @@ async fn non_streaming_upstream_json_400_is_passed_through_byte_for_byte() {
     config.providers.push(provider.clone());
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
+    let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         std::slice::from_ref(&provider),
         "/v1/chat/completions",
@@ -11621,6 +12218,7 @@ async fn non_streaming_upstream_json_400_is_passed_through_byte_for_byte() {
         Some("local"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await;
 
@@ -11629,6 +12227,16 @@ async fn non_streaming_upstream_json_400_is_passed_through_byte_for_byte() {
         response.body, expected,
         "a standard upstream error body must pass through byte-for-byte"
     );
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].status, 400);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(
+        attempts[0].error_message.as_deref(),
+        Some("bad request"),
+        "the standard upstream error.message is extracted"
+    );
+    assert!(attempts[0].duration_ms >= 1);
 }
 
 /// AC-007/REQ-004: the streaming branch passes a standard upstream 4xx JSON body
@@ -11735,6 +12343,7 @@ async fn mid_stream_failure_capture_is_failure_keeps_usage_and_skips_other_candi
     let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
 
     let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
     let capture = super::runtime_http::attempt_streaming(
         &mut server,
         &[a, b],
@@ -11743,6 +12352,7 @@ async fn mid_stream_failure_capture_is_failure_keeps_usage_and_skips_other_candi
         Some("local"),
         &mut config,
         &HashMap::new(),
+        &mut attempts,
     )
     .await
     .expect("streaming attempt");
@@ -11761,6 +12371,30 @@ async fn mid_stream_failure_capture_is_failure_keeps_usage_and_skips_other_candi
         Some(tokens(7, 2, 0, 3)),
         "the accumulated usage must survive the mid-stream failure"
     );
+    assert_eq!(
+        attempts.len(),
+        1,
+        "the candidate that failed mid-stream is the request's only completed attempt"
+    );
+    assert_eq!(attempts[0].provider_id, "a");
+    assert_eq!(attempts[0].upstream_model, "remote-default");
+    assert_eq!(attempts[0].status, 502);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert!(
+        attempts[0]
+            .error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("stream failed after first byte"),
+        "the attempt records the stream failure description: {:?}",
+        attempts[0].error_message
+    );
+    assert_eq!(
+        attempts[0].usage,
+        Some(tokens(7, 2, 0, 3)),
+        "the attempt row keeps the usage accumulated before the failure"
+    );
+    assert!(attempts[0].duration_ms >= 1);
     let (_, body_text) = raw_http_status_and_body(&text);
     assert_eq!(
         sse_error_events(&body_text).len(),
@@ -11830,16 +12464,33 @@ async fn mid_stream_failure_end_to_end_logs_one_failure_with_usage() {
 
     let records = wait_for_usage_logs(1).await;
     assert_eq!(records.len(), 1, "exactly one failure row for the request");
-    assert_eq!(records[0].result, UsageResult::Failure);
-    assert_eq!(records[0].status, 502);
-    assert_eq!(records[0].input_tokens, 7, "accumulated input tokens must be kept");
+    let record = &records[0];
+    assert!(
+        record.terminal,
+        "the mid-stream failure is the request's terminal row"
+    );
+    assert_eq!(record.result, UsageResult::Failure);
+    assert_eq!(record.status, 502);
+    assert_eq!(record.provider_id, "a");
+    assert_eq!(record.local_model, "local-a");
+    assert_eq!(record.upstream_model, "remote-a");
+    let message = record
+        .error_message
+        .as_deref()
+        .expect("a mid-stream failure records its stream description");
+    assert!(
+        message.contains("stream failed after first byte"),
+        "the stored error text is the stream failure description: {message}"
+    );
+    assert!(record.duration_ms >= 1);
+    assert_eq!(record.input_tokens, 7, "accumulated input tokens must be kept");
     assert_eq!(
-        records[0].cache_read_tokens, 2,
+        record.cache_read_tokens, 2,
         "accumulated cache-read tokens must be kept"
     );
-    assert_eq!(records[0].output_tokens, 3, "accumulated output tokens must be kept");
+    assert_eq!(record.output_tokens, 3, "accumulated output tokens must be kept");
     // The row sums all four usage tiers (7 + 2 + 0 + 3).
-    assert_eq!(records[0].total_tokens, 12, "all four usage tiers are summed");
+    assert_eq!(record.total_tokens, 12, "all four usage tiers are summed");
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
@@ -13343,4 +13994,839 @@ fn usage_log_record_serde_defaults_and_round_trips_new_fields() {
     let decoded: UsageLogRecord =
         serde_json::from_value(terminal_value).expect("new payload round trips");
     assert_eq!(decoded, terminal);
+}
+
+// ---------------------------------------------------------------------------
+// 20260920-gateway-log-attempts-and-upstream-errors Step 2 (RED): per-attempt
+// logging through the forwarding path. Every completed upstream attempt of one
+// inbound request appends one buffer entry; at request end the handler writes
+// one row per entry in attempt order, stamps exactly one terminal row and
+// appends the synthetic `cancelled` row when the downstream client goes away
+// (REQ-001, REQ-002, REQ-003; AC-001..AC-009).
+// ---------------------------------------------------------------------------
+
+/// Wait until the ungrouped list holds exactly `expected` rows, so the rows of
+/// one multi-attempt request are never read half-written, then return the
+/// newest-first snapshot.
+async fn wait_for_exact_usage_logs(expected: u32) -> Vec<UsageLogRecord> {
+    let store = default_usage_store();
+    for _ in 0..400 {
+        let records = store.all_records().unwrap_or_default();
+        if records.len() as u32 == expected {
+            return records;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let records = store.all_records().unwrap_or_default();
+    panic!(
+        "expected exactly {expected} log rows, observed {}: {records:?}",
+        records.len()
+    );
+}
+
+/// Wait until the newest-first ungrouped list holds exactly `expected` rows for
+/// `local_model` and return them. Each end-to-end iteration of the
+/// randomized-order cases uses its own local model, so its rows stay isolated
+/// from the other requests of the same test.
+async fn wait_for_model_usage_logs(local_model: &str, expected: u32) -> Vec<UsageLogRecord> {
+    let store = default_usage_store();
+    let filter = LogFilter {
+        status: None,
+        model: Some(local_model.to_string()),
+    };
+    for _ in 0..400 {
+        let page = store
+            .query_logs(&TimeRange::default(), &filter, 1)
+            .unwrap_or_else(|error| panic!("query logs for {local_model}: {error}"));
+        if page.total == expected {
+            return page.records;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let page = store
+        .query_logs(&TimeRange::default(), &filter, 1)
+        .unwrap_or_else(|error| panic!("query logs for {local_model}: {error}"));
+    panic!(
+        "expected exactly {expected} log rows for {local_model}, observed {}",
+        page.total
+    );
+}
+
+/// AC-001 / REQ-001 direct boundary: with two candidates in explicit order, the
+/// failed first attempt and the successful second attempt are both buffered, in
+/// completion order, each with its own provider, upstream model, status,
+/// message, usage and per-attempt duration.
+#[tokio::test]
+async fn attempt_buffer_records_failed_then_successful_attempts_in_completion_order() {
+    let _home = isolated_temp_home("attempt-buffer-failure-then-success");
+    let (failing_url, _failing_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(500, json!({"error": {"message": "first provider exploded"}}))
+    })
+    .await;
+    let (success_url, _success_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "served",
+                "choices": [],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+            }),
+        )
+    })
+    .await;
+
+    let failing = upstream_provider(
+        "failing",
+        "Failing Provider",
+        &failing_url,
+        "sk",
+        Some("remote-failing"),
+    );
+    let success = upstream_provider(
+        "success",
+        "Success Provider",
+        &success_url,
+        "sk",
+        Some("remote-success"),
+    );
+    let mut config = GatewayConfig::default();
+    config.providers = vec![failing.clone(), success.clone()];
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &[failing, success],
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+        &HashMap::new(),
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        attempts.len(),
+        2,
+        "one entry per completed upstream attempt"
+    );
+    assert_eq!(attempts[0].provider_id, "failing");
+    assert_eq!(attempts[0].provider_name, "Failing Provider");
+    assert_eq!(attempts[0].upstream_model, "remote-failing");
+    assert_eq!(attempts[0].status, 500);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(
+        attempts[0].error_message.as_deref(),
+        Some("first provider exploded")
+    );
+    assert!(attempts[0].usage.is_none());
+    assert!(attempts[0].duration_ms >= 1);
+    assert_eq!(attempts[1].provider_id, "success");
+    assert_eq!(attempts[1].provider_name, "Success Provider");
+    assert_eq!(attempts[1].upstream_model, "remote-success");
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
+    assert_eq!(attempts[1].error_message, None);
+    assert_eq!(attempts[1].usage, Some(tokens(10, 0, 0, 5)));
+    assert!(attempts[1].duration_ms >= 1);
+}
+
+/// AC-002 / REQ-001 / REQ-002 / REQ-003: three candidates that all answer 500
+/// with distinct standard bodies are retried to their bounded caps; the log
+/// holds one row per upstream attempt the mock servers actually received, each
+/// bound to its own provider and message, exactly one terminal row records the
+/// observed upstream status instead of the transport 502, the caller still
+/// receives the unchanged 502 envelope, and the statistics count one request
+/// and one error.
+#[tokio::test]
+async fn all_candidates_failed_request_writes_one_row_per_completed_attempt() {
+    let home = temp_home("usage-one-row-per-attempt");
+    let port = free_port().await;
+    let (url_a, log_a) = spawn_mock_upstream(|_| {
+        MockReply::Json(500, json!({"error": {"message": "provider a exploded"}}))
+    })
+    .await;
+    let (url_b, log_b) = spawn_mock_upstream(|_| {
+        MockReply::Json(500, json!({"error": {"message": "provider b exploded"}}))
+    })
+    .await;
+    let (url_c, log_c) = spawn_mock_upstream(|_| {
+        MockReply::Json(500, json!({"error": {"message": "provider c exploded"}}))
+    })
+    .await;
+
+    let mut config = config_with_key(port);
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &url_a,
+        "sk-a",
+        Some("remote-a"),
+    ));
+    config.providers.push(upstream_provider(
+        "b",
+        "Provider B",
+        &url_b,
+        "sk-b",
+        Some("remote-b"),
+    ));
+    config.providers.push(upstream_provider(
+        "c",
+        "Provider C",
+        &url_c,
+        "sk-c",
+        Some("remote-c"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-all-failed"})),
+    )
+    .await;
+    assert_eq!(status, 502, "unexpected response: {text}");
+    assert!(
+        content_type.contains("application/json"),
+        "an exhausted non-streaming request answers JSON: {content_type}"
+    );
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+    let message = body["error"]["message"].as_str().unwrap_or("");
+    for name in ["Provider A", "Provider B", "Provider C"] {
+        assert!(message.contains(name), "message must name {name}: {message}");
+    }
+
+    let received_a = log_a.lock().unwrap().len() as u32;
+    let received_b = log_b.lock().unwrap().len() as u32;
+    let received_c = log_c.lock().unwrap().len() as u32;
+    assert_eq!(received_a, 6, "A is attempted once plus five bounded retries");
+    assert_eq!(received_b, 6, "B is attempted once plus five bounded retries");
+    assert_eq!(received_c, 6, "C is attempted once plus five bounded retries");
+    let expected_rows = received_a + received_b + received_c;
+
+    let records = wait_for_exact_usage_logs(expected_rows).await;
+    assert_eq!(
+        records.len(),
+        expected_rows as usize,
+        "one row per completed upstream attempt"
+    );
+    let cases = [
+        ("a", "remote-a", "provider a exploded", received_a),
+        ("b", "remote-b", "provider b exploded", received_b),
+        ("c", "remote-c", "provider c exploded", received_c),
+    ];
+    for (provider_id, upstream_model, provider_message, received) in cases {
+        let rows = records
+            .iter()
+            .filter(|record| record.provider_id == provider_id)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), received as usize, "{provider_id} row count");
+        for row in rows {
+            assert_eq!(row.local_model, "local-all-failed");
+            assert_eq!(row.upstream_model, upstream_model);
+            assert_eq!(row.status, 500);
+            assert_eq!(row.result, UsageResult::Failure);
+            assert_eq!(row.error_message.as_deref(), Some(provider_message));
+            assert_eq!(row.total_tokens, 0);
+            assert!(row.duration_ms >= 1);
+        }
+    }
+    assert_eq!(
+        records.iter().filter(|record| record.terminal).count(),
+        1,
+        "exactly one row is the request's terminal row"
+    );
+    let terminal = records
+        .iter()
+        .find(|record| record.terminal)
+        .expect("terminal row");
+    assert_eq!(
+        terminal.status, 500,
+        "the terminal row keeps the last observed upstream status, not the transport 502"
+    );
+    assert_eq!(terminal.result, UsageResult::Failure);
+    assert!(
+        ["a", "b", "c"].contains(&terminal.provider_id.as_str()),
+        "the terminal row is one of the completed attempt rows"
+    );
+
+    let store = default_usage_store();
+    let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
+    assert_eq!(
+        stats.totals.request_count, 1,
+        "one request, and the attempt rows do not count"
+    );
+    assert_eq!(stats.totals.total_tokens, 0);
+    assert_eq!(stats.totals.amount, 0.0);
+    assert_eq!(
+        stats.totals.unpriced_count, 1,
+        "only the terminal row is an unpriced request"
+    );
+    let grouped = store
+        .group_logs(&TimeRange::default(), &LogFilter::default(), "model")
+        .unwrap();
+    assert_eq!(grouped.len(), 1);
+    assert_eq!(grouped[0].request_count, 1);
+    assert_eq!(grouped[0].error_count, 1);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-003 / REQ-001 / REQ-003: exactly one serviceable candidate answering 429
+/// is attempted once with no backoff wait; its terminal row keeps the observed
+/// 429 and the upstream message, and the caller receives the standard 502.
+#[tokio::test]
+async fn single_candidate_429_failure_keeps_upstream_status_on_the_terminal_row() {
+    let home = temp_home("usage-single-429-terminal");
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(429, json!({"error": {"message": "slow down"}}))
+    })
+    .await;
+
+    let mut config = config_with_key(port);
+    let mut provider = upstream_provider("only", "Only Provider", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-429", "remote-429", None)];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let started = std::time::Instant::now();
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-429"})),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    assert_eq!(status, 502, "the gateway must fail with HTTP 502: {text}");
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+    assert_eq!(
+        log.lock().unwrap().len(),
+        1,
+        "a single candidate is attempted exactly once"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(1500),
+        "the single-candidate path must not wait for a backoff, elapsed {elapsed:?}"
+    );
+
+    let records = wait_for_exact_usage_logs(1).await;
+    let record = &records[0];
+    assert!(record.terminal);
+    assert_eq!(record.result, UsageResult::Failure);
+    assert_eq!(record.status, 429);
+    assert_eq!(record.provider_id, "only");
+    assert_eq!(record.local_model, "local-429");
+    assert_eq!(record.upstream_model, "remote-429");
+    assert_eq!(record.error_message.as_deref(), Some("slow down"));
+    assert_eq!(record.total_tokens, 0);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-004 / REQ-001 / REQ-003: a standard upstream 400 envelope reaches the
+/// caller byte-for-byte and is logged as the request's terminal failure row with
+/// the upstream status and the extracted message.
+#[tokio::test]
+async fn passed_through_client_error_is_terminal_and_keeps_the_upstream_message() {
+    let home = temp_home("usage-terminal-400");
+    let port = free_port().await;
+    let upstream_body = json!({
+        "error": {
+            "message": "bad request",
+            "type": "invalid_request_error",
+            "code": "bad_request",
+            "param": "model",
+        }
+    });
+    let expected = serde_json::to_string(&upstream_body).unwrap();
+    let for_mock = upstream_body.clone();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Json(400, for_mock.clone())).await;
+
+    let mut config = config_with_key(port);
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-400", "remote-400", None)];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-400"})),
+    )
+    .await;
+    assert_eq!(status, 400, "caller must receive the upstream status: {text}");
+    assert_eq!(
+        text, expected,
+        "a standard upstream error body must pass through byte-for-byte"
+    );
+
+    let records = wait_for_exact_usage_logs(1).await;
+    let record = &records[0];
+    assert!(
+        record.terminal,
+        "a single ReturnToClient attempt is the request's terminal row"
+    );
+    assert_eq!(record.result, UsageResult::Failure);
+    assert_eq!(record.status, 400);
+    assert_eq!(record.provider_id, "p1");
+    assert_eq!(record.upstream_model, "remote-400");
+    assert_eq!(record.error_message.as_deref(), Some("bad request"));
+    assert_eq!(record.total_tokens, 0);
+    assert_eq!(record.amount, None, "the failed attempt is unpriced");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-001 / REQ-001 / REQ-002 / REQ-003 end-to-end: the candidate order is
+/// randomized per request, so each iteration uses its own local model and the
+/// assertions follow the order the mock servers actually saw. When the failing
+/// candidate is tried first, the request writes a non-terminal failure row for
+/// it plus one terminal success row for the provider that served it; the
+/// statistics always count one request per inbound request with the successful
+/// attempt's tokens and amount only.
+#[tokio::test]
+async fn failed_then_successful_request_writes_attempt_and_terminal_rows() {
+    let home = temp_home("usage-attempt-then-terminal");
+    let port = free_port().await;
+    let (failing_url, failing_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(500, json!({"error": {"message": "first provider exploded"}}))
+    })
+    .await;
+    let (success_url, success_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "served",
+                "choices": [],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+            }),
+        )
+    })
+    .await;
+
+    let mut config = config_with_key(port);
+    config.providers.push(upstream_provider(
+        "failing",
+        "Failing Provider",
+        &failing_url,
+        "sk",
+        Some("remote-failing"),
+    ));
+    config.providers.push(upstream_provider(
+        "success",
+        "Success Provider",
+        &success_url,
+        "sk",
+        Some("remote-success"),
+    ));
+    let price = priced_with_provider("success", "remote-success", 1.0, 0.0, 0.0, 2.0);
+    let expected_amount = compute_cost(&price, &tokens(10, 0, 0, 5));
+    config.model_prices = vec![price];
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    const REQUESTS: u32 = 24;
+    let mut failed_first_observed = false;
+    for index in 0..REQUESTS {
+        let local_model = format!("local-ac001-{index}");
+        let failing_before = failing_log.lock().unwrap().len() as u32;
+        let success_before = success_log.lock().unwrap().len() as u32;
+        let (status, _content_type, text) = call_gateway(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[("authorization", "Bearer local-key")],
+            Some(json!({"model": local_model})),
+        )
+        .await;
+        assert_eq!(status, 200, "request {index} must be served: {text}");
+        let failing_attempts = failing_log.lock().unwrap().len() as u32 - failing_before;
+        let success_attempts = success_log.lock().unwrap().len() as u32 - success_before;
+        assert_eq!(success_attempts, 1, "the serving provider is contacted once");
+        assert!(
+            failing_attempts <= 1,
+            "the failing provider is never retried after the success"
+        );
+
+        let rows = wait_for_model_usage_logs(&local_model, 1 + failing_attempts).await;
+        let success_row = rows
+            .iter()
+            .find(|record| record.provider_id == "success")
+            .expect("the serving provider must own a row");
+        assert!(success_row.terminal, "the serving attempt is the terminal row");
+        assert_eq!(success_row.result, UsageResult::Success);
+        assert_eq!(success_row.status, 200);
+        assert_eq!(success_row.local_model, local_model);
+        assert_eq!(success_row.upstream_model, "remote-success");
+        assert_eq!(success_row.input_tokens, 10);
+        assert_eq!(success_row.output_tokens, 5);
+        assert_eq!(success_row.total_tokens, 15);
+        assert_eq!(success_row.error_message, None);
+        assert!((success_row.amount.expect("priced") - expected_amount).abs() < 1e-12);
+        assert!(success_row.duration_ms >= 1);
+        assert_eq!(
+            rows.iter().filter(|record| record.terminal).count(),
+            1,
+            "exactly one terminal row per request"
+        );
+
+        if failing_attempts == 1 {
+            failed_first_observed = true;
+            let failure_row = rows
+                .iter()
+                .find(|record| record.provider_id == "failing")
+                .expect("the failed attempt must own a row");
+            assert!(
+                !failure_row.terminal,
+                "the superseded failing attempt is not terminal"
+            );
+            assert_eq!(failure_row.result, UsageResult::Failure);
+            assert_eq!(failure_row.status, 500);
+            assert_eq!(failure_row.local_model, local_model);
+            assert_eq!(failure_row.upstream_model, "remote-failing");
+            assert_eq!(
+                failure_row.error_message.as_deref(),
+                Some("first provider exploded")
+            );
+            assert_eq!(failure_row.total_tokens, 0);
+            assert_eq!(failure_row.amount, None);
+            assert!(failure_row.duration_ms >= 1);
+            assert_eq!(
+                rows[0].provider_id, "success",
+                "a newest-first query lists the terminal row before the earlier attempt"
+            );
+        } else {
+            assert!(
+                !rows.iter().any(|record| record.provider_id == "failing"),
+                "the failing provider was never contacted and owns no row"
+            );
+        }
+    }
+    assert!(
+        failed_first_observed,
+        "the randomized candidate order must have tried the failing provider first at least once"
+    );
+
+    let store = default_usage_store();
+    let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
+    assert_eq!(
+        stats.totals.request_count, REQUESTS,
+        "attempt rows are not inbound requests"
+    );
+    assert_eq!(stats.totals.total_tokens, REQUESTS as u64 * 15);
+    assert!(
+        (stats.totals.amount - REQUESTS as f64 * expected_amount).abs() < 1e-9,
+        "only the successful attempts contribute cost"
+    );
+    assert_eq!(stats.totals.unpriced_count, 0);
+    let grouped = store
+        .group_logs(&TimeRange::default(), &LogFilter::default(), "day")
+        .unwrap();
+    assert_eq!(grouped.len(), 1);
+    assert_eq!(grouped[0].request_count, REQUESTS);
+    assert_eq!(grouped[0].error_count, 0, "no terminal row failed");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-005 / REQ-001 / REQ-003 end-to-end: a streaming candidate whose 2xx body
+/// is not an SSE stream fails before any byte and is superseded by the second
+/// candidate. The candidate order is randomized, so each iteration uses its own
+/// local model and asserts against the order the mock servers actually saw: the
+/// rejected attempt keeps a non-terminal failure row for its provider and the
+/// stream that answered owns the terminal success row.
+#[tokio::test]
+async fn pre_first_byte_stream_failure_switches_and_logs_both_attempts() {
+    let home = temp_home("usage-stream-pre-first-byte-attempts");
+    let port = free_port().await;
+    let (failing_url, failing_log) = spawn_mock_upstream(|_| {
+        MockReply::Raw(200, "text/plain", b"this is not json".to_vec())
+    })
+    .await;
+    let sse = "data: {\"id\":\"served\",\"choices\":[{\"delta\":{\"content\":\"from-success\"}}]}\n\n\
+               data: [DONE]\n\n"
+        .to_string();
+    let sse_for_mock = sse.clone();
+    let (success_url, success_log) =
+        spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
+
+    let mut config = config_with_key(port);
+    config.providers.push(upstream_provider(
+        "failing",
+        "Failing Provider",
+        &failing_url,
+        "sk",
+        Some("remote-failing"),
+    ));
+    config.providers.push(upstream_provider(
+        "success",
+        "Success Provider",
+        &success_url,
+        "sk",
+        Some("remote-success"),
+    ));
+    config.model_prices = vec![priced_with_provider(
+        "success",
+        "remote-success",
+        1.0,
+        0.0,
+        0.0,
+        2.0,
+    )];
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    const REQUESTS: u32 = 24;
+    let mut failed_first_observed = false;
+    for index in 0..REQUESTS {
+        let local_model = format!("local-ac005-{index}");
+        let failing_before = failing_log.lock().unwrap().len() as u32;
+        let success_before = success_log.lock().unwrap().len() as u32;
+        let (status, content_type, text) = call_gateway(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[("authorization", "Bearer local-key")],
+            Some(json!({"model": local_model, "stream": true})),
+        )
+        .await;
+        assert_eq!(status, 200, "request {index} must stream: {text}");
+        assert!(
+            content_type.contains("text/event-stream"),
+            "the served candidate must answer SSE: {content_type}"
+        );
+        assert!(
+            text.contains("from-success"),
+            "the client must receive the serving candidate's stream: {text}"
+        );
+        let failing_attempts = failing_log.lock().unwrap().len() as u32 - failing_before;
+        let success_attempts = success_log.lock().unwrap().len() as u32 - success_before;
+        assert_eq!(success_attempts, 1, "the serving provider is contacted once");
+        assert!(
+            failing_attempts <= 1,
+            "the rejected candidate is never retried after the success"
+        );
+
+        let rows = wait_for_model_usage_logs(&local_model, 1 + failing_attempts).await;
+        let success_row = rows
+            .iter()
+            .find(|record| record.provider_id == "success")
+            .expect("the serving provider must own a row");
+        assert!(success_row.terminal, "the served stream is the terminal row");
+        assert_eq!(success_row.result, UsageResult::Success);
+        assert_eq!(success_row.status, 200);
+        assert_eq!(success_row.local_model, local_model);
+        assert_eq!(success_row.upstream_model, "remote-success");
+        assert_eq!(success_row.error_message, None);
+        assert_eq!(success_row.total_tokens, 0);
+        assert_eq!(rows.iter().filter(|record| record.terminal).count(), 1);
+
+        if failing_attempts == 1 {
+            failed_first_observed = true;
+            let failure_row = rows
+                .iter()
+                .find(|record| record.provider_id == "failing")
+                .expect("the rejected stream must own a row");
+            assert!(
+                !failure_row.terminal,
+                "the rejected stream is not the request's terminal row"
+            );
+            assert_eq!(failure_row.result, UsageResult::Failure);
+            assert_eq!(
+                failure_row.status, 502,
+                "a 2xx body that is not a valid SSE stream keeps the gateway stream failure status"
+            );
+            assert_eq!(failure_row.local_model, local_model);
+            assert_eq!(failure_row.upstream_model, "remote-failing");
+            assert_eq!(
+                failure_row.error_message.as_deref(),
+                Some("this is not json"),
+                "the rejected body yields its readable summary"
+            );
+            assert_eq!(failure_row.total_tokens, 0);
+            assert!(failure_row.duration_ms >= 1);
+            assert_eq!(
+                rows[0].provider_id, "success",
+                "a newest-first query lists the terminal row before the earlier attempt"
+            );
+        } else {
+            assert!(
+                !rows.iter().any(|record| record.provider_id == "failing"),
+                "the rejected candidate was never contacted and owns no row"
+            );
+        }
+    }
+    assert!(
+        failed_first_observed,
+        "the randomized candidate order must have tried the failing provider first at least once"
+    );
+
+    let store = default_usage_store();
+    let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
+    assert_eq!(stats.totals.request_count, REQUESTS);
+    assert_eq!(stats.totals.total_tokens, 0);
+    assert_eq!(stats.totals.amount, 0.0);
+    assert_eq!(stats.totals.unpriced_count, 0);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-008 / REQ-001 / REQ-002: a non-streaming attempt that completed
+/// successfully but whose response cannot be delivered because the downstream
+/// client is gone stays a non-terminal success row; the request's single
+/// terminal row is the synthetic `cancelled` row, and the statistics count one
+/// cancelled request with no tokens and no cost. The upstream body is far larger
+/// than any socket buffer, so the handler is still blocked writing when the
+/// client resets the connection.
+#[tokio::test]
+async fn successful_attempt_cut_off_by_downstream_disconnect_stays_non_terminal() {
+    let _home = isolated_temp_home("attempt-delivery-cancelled");
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind large-body upstream");
+    let upstream_url = format!(
+        "http://{}",
+        listener.local_addr().expect("large-body upstream address")
+    );
+    let (sent_tx, sent_rx) = tokio::sync::oneshot::channel();
+    let large_body = serde_json::to_vec(&json!({
+        "id": "large-success",
+        "choices": [],
+        "filler": "x".repeat(8 * 1024 * 1024),
+        "usage": {"prompt_tokens": 4, "completion_tokens": 2}
+    }))
+    .expect("encode the large success body");
+    assert!(
+        large_body.len() > 4 * 1024 * 1024,
+        "the fixture must exceed any socket buffer, got {} bytes",
+        large_body.len()
+    );
+    let upstream = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept large-body upstream");
+        super::runtime_http::read_http_request(&mut stream)
+            .await
+            .expect("read large-body request");
+        let header = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            large_body.len()
+        );
+        let _ = stream.write_all(header.as_bytes()).await;
+        let _ = stream.write_all(&large_body).await;
+        let _ = stream.flush().await;
+        let _ = sent_tx.send(());
+        std::future::pending::<()>().await;
+    });
+
+    let mut config = GatewayConfig::default();
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(upstream_provider(
+        "p1",
+        "Large Provider",
+        &upstream_url,
+        "sk",
+        Some("remote-large"),
+    ));
+    let price = priced_with_provider("p1", "remote-large", 1.0, 0.0, 0.0, 2.0);
+    let expected_amount = compute_cost(&price, &tokens(4, 0, 0, 2));
+    config.model_prices = vec![price];
+    super::storage::write_config(&config).expect("write relay config");
+
+    let (client, mut handler) = spawn_handle_connection(false).await;
+    let sent = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::select! {
+            signal = sent_rx => signal,
+            result = &mut handler => panic!("handler exited before the upstream body was sent: {result:?}"),
+        }
+    })
+    .await
+    .expect("the large upstream body must be sent");
+    sent.expect("large body sent signal");
+    // Let the relay finish the successful attempt and block on the downstream
+    // write, which cannot complete because the client never reads.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // SO_LINGER 0 makes the close send a reset instead of a FIN, so the blocked
+    // downstream write fails immediately.
+    #[allow(deprecated)]
+    client
+        .set_linger(Some(std::time::Duration::from_secs(0)))
+        .expect("set SO_LINGER on the relay client");
+    drop(client);
+
+    let exited = tokio::time::timeout(std::time::Duration::from_secs(5), &mut handler).await;
+    assert!(
+        exited.is_ok(),
+        "the handler must exit after the downstream reset: {exited:?}"
+    );
+    upstream.abort();
+
+    let records = wait_for_exact_usage_logs(2).await;
+    let success = records
+        .iter()
+        .find(|record| record.result == UsageResult::Success)
+        .expect("the completed success attempt must keep its row");
+    assert!(
+        !success.terminal,
+        "an attempt whose response could not be delivered is not terminal"
+    );
+    assert_eq!(success.provider_id, "p1");
+    assert_eq!(success.local_model, "local");
+    assert_eq!(success.upstream_model, "remote-large");
+    assert_eq!(success.status, 200);
+    assert_eq!(success.input_tokens, 4);
+    assert_eq!(success.output_tokens, 2);
+    assert_eq!(success.total_tokens, 6);
+    assert_eq!(success.error_message, None);
+    assert!((success.amount.expect("priced") - expected_amount).abs() < 1e-12);
+    assert!(success.duration_ms >= 1);
+
+    let cancelled = records
+        .iter()
+        .find(|record| record.result == UsageResult::Cancelled)
+        .expect("the lost response must write the terminal cancelled row");
+    assert!(cancelled.terminal);
+    assert_eq!(cancelled.provider_id, "", "no provider is attributed");
+    assert_eq!(cancelled.status, 0);
+    assert_eq!(cancelled.error_message, None);
+    assert_eq!(cancelled.local_model, "local");
+    assert_eq!(cancelled.total_tokens, 0);
+    assert_eq!(cancelled.amount, None);
+    assert_eq!(
+        records.iter().filter(|record| record.terminal).count(),
+        1,
+        "exactly one terminal row per request"
+    );
+    assert!(
+        records[0].terminal,
+        "a newest-first query lists the terminal row before the earlier attempt"
+    );
+
+    let stats = default_usage_store()
+        .usage_stats(&TimeRange::default(), false)
+        .unwrap();
+    assert_eq!(stats.totals.request_count, 1, "only the terminal row counts");
+    assert_eq!(stats.totals.total_tokens, 0);
+    assert_eq!(stats.totals.amount, 0.0);
+    assert_eq!(
+        stats.totals.unpriced_count, 0,
+        "the cancelled row never reached an upstream model"
+    );
 }
