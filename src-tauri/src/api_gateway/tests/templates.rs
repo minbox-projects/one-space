@@ -99,11 +99,18 @@ fn bound_provider(id: &str, template_id: &str) -> GatewayUpstreamProvider {
 }
 
 fn mapping_for(model: &ProviderTemplateModel, template: &ProviderTemplate) -> ModelMapping {
+    let effective = model.protocol.unwrap_or(template.protocol);
     ModelMapping {
         local_model: model.upstream_model.clone(),
         upstream_model: model.upstream_model.clone(),
         enabled: model.enabled,
-        protocol: Some(model.protocol.unwrap_or(template.protocol)),
+        protocol: if effective == UpstreamProtocol::ChatCompletions {
+            // Test providers use the default `ChatCompletions` protocol, so an
+            // effective `ChatCompletions` is stored as follow-the-provider.
+            None
+        } else {
+            Some(effective)
+        },
         display_name: model.display_name.clone(),
         reasoning_efforts: Vec::new(),
     }
@@ -1099,13 +1106,15 @@ fn sync_propagates_enabled_models_and_never_writes_prices() {
     assert_eq!(b.local_model, "b");
     assert_eq!(b.upstream_model, "b");
     assert_eq!(b.display_name.as_deref(), Some("Source B"));
-    assert_eq!(b.protocol, Some(UpstreamProtocol::ChatCompletions));
+    assert_eq!(
+        b.protocol, None,
+        "a new mapping whose protocol matches the provider follows the provider"
+    );
 
     let u = find_mapping(provider, "u").expect("an unlabeled new model must be added");
     assert_eq!(
-        u.protocol,
-        Some(UpstreamProtocol::ChatCompletions),
-        "an unlabeled model inherits the template protocol"
+        u.protocol, None,
+        "an unlabeled model inherits the template protocol and follows the provider"
     );
 
     assert!(
@@ -1142,9 +1151,8 @@ fn sync_propagates_enabled_models_and_never_writes_prices() {
         "an untouched display name follows the source"
     );
     assert_eq!(
-        a.protocol,
-        Some(UpstreamProtocol::ChatCompletions),
-        "an untouched protocol follows the derived source protocol"
+        a.protocol, None,
+        "an untouched protocol matching the provider stays as follow-the-provider"
     );
     assert_eq!(a.local_model, "a", "the local model name is never touched");
     assert!(a.enabled, "a mapping's enabled flag is never touched");
@@ -1167,9 +1175,8 @@ fn sync_propagates_enabled_models_and_never_writes_prices() {
         "the sync still refreshes the display name of a disabled mapping"
     );
     assert_eq!(
-        e.protocol,
-        Some(UpstreamProtocol::ChatCompletions),
-        "the sync still refreshes the protocol of a disabled mapping"
+        e.protocol, None,
+        "the sync still refreshes the protocol of a disabled mapping, following the provider when equal"
     );
 
     assert_eq!(
@@ -1688,9 +1695,8 @@ fn create_from_template_copies_enabled_models_only_and_writes_no_prices() {
     assert_eq!(responses.protocol, Some(UpstreamProtocol::Responses));
     let inherit = find_mapping(&provider, "enabled-inherit").expect("enabled inherit mapping");
     assert_eq!(
-        inherit.protocol,
-        Some(UpstreamProtocol::ChatCompletions),
-        "a model without its own protocol inherits the template protocol"
+        inherit.protocol, None,
+        "a model matching the provider protocol stays as follow-the-provider"
     );
     assert!(
         find_mapping(&provider, "disabled-model").is_none(),

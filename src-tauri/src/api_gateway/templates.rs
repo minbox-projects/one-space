@@ -575,7 +575,9 @@ fn upsert_template_state(
 /// template removed is disabled (only `false` is ever written: the mapping is
 /// never deleted and never re-enabled), so retired models stop serving. Mapping
 /// display name/protocol update only while they equal the previous template
-/// values (`local_model` is never touched). Ignored models and disabled template
+/// values (`local_model` is never touched); a mapping whose effective protocol
+/// equals the provider protocol is stored as `None` (follow the provider)
+/// instead of an explicit value. Ignored models and disabled template
 /// models are skipped, and no price row is ever created or modified.
 fn propagate_to_derived(
     config: &mut GatewayConfig,
@@ -609,9 +611,11 @@ fn propagate_to_derived(
         if provider.base_url == previous.base_url {
             provider.base_url = new_template.base_url.clone();
         }
+        let provider_protocol_before = provider.protocol;
         if provider.protocol == previous.protocol {
             provider.protocol = new_template.protocol;
         }
+        let provider_protocol = provider.protocol;
 
         for mapping in provider.mappings.iter_mut() {
             if retired_models
@@ -635,6 +639,11 @@ fn propagate_to_derived(
                 .iter()
                 .find(|candidate| candidate.upstream_model == model.upstream_model);
             let effective_protocol = model.protocol.unwrap_or(new_template.protocol);
+            let desired_protocol = if effective_protocol == provider_protocol {
+                None
+            } else {
+                Some(effective_protocol)
+            };
 
             if let Some(mapping) = provider
                 .mappings
@@ -647,10 +656,11 @@ fn propagate_to_derived(
                 if mapping.display_name == previous_model.display_name {
                     mapping.display_name = model.display_name.clone();
                 }
-                if mapping.protocol
-                    == Some(previous_model.protocol.unwrap_or(previous.protocol))
+                let previous_effective =
+                    previous_model.protocol.unwrap_or(previous.protocol);
+                if mapping.effective_protocol(provider_protocol_before) == previous_effective
                 {
-                    mapping.protocol = Some(effective_protocol);
+                    mapping.protocol = desired_protocol;
                 }
             } else {
                 provider.mappings.push(ModelMapping {
@@ -663,7 +673,7 @@ fn propagate_to_derived(
                         .to_string(),
                     upstream_model: model.upstream_model.clone(),
                     enabled: true,
-                    protocol: Some(effective_protocol),
+                    protocol: desired_protocol,
                     display_name: model
                         .display_name
                         .as_deref()
@@ -779,13 +789,16 @@ pub(in crate::api_gateway) async fn fetch_template_models(
 /// Build the mapping a template model is created with: `local_model` equals
 /// `upstream_model` (or the template's trimmed `local_model` when present),
 /// carrying the model's enabled flag, the template's display name verbatim and
-/// the model's effective protocol. A missing or blank template display name
+/// `None` (follow the provider protocol) when the model's effective protocol
+/// equals the provider protocol. A missing or blank template display name
 /// falls back to the identifier segment transformed into display words so the
 /// new mapping never stays empty.
 fn mapping_from_template(
     template: &ProviderTemplate,
     model: &ProviderTemplateModel,
+    provider_protocol: UpstreamProtocol,
 ) -> ModelMapping {
+    let effective = model.protocol.unwrap_or(template.protocol);
     ModelMapping {
         local_model: model
             .local_model
@@ -796,7 +809,11 @@ fn mapping_from_template(
             .to_string(),
         upstream_model: model.upstream_model.clone(),
         enabled: model.enabled,
-        protocol: Some(model.protocol.unwrap_or(template.protocol)),
+        protocol: if effective == provider_protocol {
+            None
+        } else {
+            Some(effective)
+        },
         display_name: model
             .display_name
             .as_deref()
@@ -816,7 +833,8 @@ fn mapping_from_template(
 /// template's value; the protocol argument always wins. The new provider binds
 /// the template, leaves `default_model` empty, receives one mapping per enabled
 /// template model (`local_model` = `upstream_model`, official display name,
-/// effective protocol) and writes prices if defined on the template models.
+/// `None` i.e. follow-the-provider when the effective protocol equals the
+/// provider protocol) and writes prices if defined on the template models.
 /// The staged clone is handed to `persist` and only committed to `config` once persistence succeeds.
 pub fn apply_create_provider_from_template(
     config: &mut GatewayConfig,
@@ -852,7 +870,7 @@ pub fn apply_create_provider_from_template(
             .models
             .iter()
             .filter(|model| model.enabled)
-            .map(|model| mapping_from_template(&template, model))
+            .map(|model| mapping_from_template(&template, model, protocol))
             .collect(),
         ignored_models: Vec::new(),
         ..GatewayUpstreamProvider::default()
@@ -975,6 +993,7 @@ pub fn apply_restore_provider_model(
         .ok_or_else(|| {
             format!("model '{upstream_model}' is not present in template '{template_id}'")
         })?;
+    let provider_protocol = provider.protocol;
 
     let mut next = config.clone();
     {
@@ -991,7 +1010,7 @@ pub fn apply_restore_provider_model(
             .retain(|mapping| mapping.upstream_model != upstream_model);
         provider
             .mappings
-            .push(mapping_from_template(&template, &model));
+            .push(mapping_from_template(&template, &model, provider_protocol));
     }
 
     persist(&next)?;
