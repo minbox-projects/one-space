@@ -2232,3 +2232,445 @@ fn test_template_delete_succeeds_when_unused_and_reset_restores() {
         .any(|view| view.template.id == "commandcode"));
     assert!(config.deleted_template_ids.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Synced model-name completion (REQ-001, REQ-002, REQ-003, AC-001..AC-006, AC-008)
+// ---------------------------------------------------------------------------
+
+/// AC-001 / REQ-001: a source name that stops short of the upstream identifier
+/// is completed with the identifier segment's uncovered remainder, while the
+/// stored upstream identifier stays untouched.
+#[test]
+fn sync_completes_a_truncated_source_name_with_the_identifier_remainder() {
+    let models = sync_models(
+        json!({"data": [{"id": "poolside/laguna-s-2.1-free", "name": "Laguna S 2.1"}]}),
+    );
+    assert_eq!(models.len(), 1);
+    let model = &models[0];
+    assert_eq!(model.upstream_model, "poolside/laguna-s-2.1-free");
+    assert_eq!(
+        model.display_name.as_deref(),
+        Some("Laguna S 2.1 Free"),
+        "the display name must cover the identifier's trailing `free` token"
+    );
+}
+
+/// AC-002 / REQ-002: a source name that already covers its identifier segment
+/// is stored byte-identical (trimmed only): no vendor prefix is added and no
+/// word is duplicated, even when the name carries extra content.
+#[test]
+fn sync_keeps_already_complete_source_names_byte_identical() {
+    let models = sync_models(json!({"data": [
+        {"id": "gpt-5.6-sol", "name": "GPT-5.6 Sol"},
+        {"id": "Qwen/Qwen3.8-Max-0902", "name": "Qwen 3.8 Max 0902"},
+        {"id": "zai-org/GLM-5.3", "name": "GLM-5.3"},
+        {"id": "deepseek/deepseek-v4-pro", "name": "DeepSeek V4 Pro (latest)"},
+        {"id": "xiaomi/mimo-v2.5-pro", "name": "MiMo V2.5 Pro"}
+    ]}));
+    let expected = [
+        ("gpt-5.6-sol", "GPT-5.6 Sol"),
+        ("Qwen/Qwen3.8-Max-0902", "Qwen 3.8 Max 0902"),
+        ("zai-org/GLM-5.3", "GLM-5.3"),
+        ("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro (latest)"),
+        ("xiaomi/mimo-v2.5-pro", "MiMo V2.5 Pro"),
+    ];
+    assert_eq!(models.len(), expected.len());
+    for (model, (identifier, name)) in models.iter().zip(expected.iter()) {
+        assert_eq!(model.upstream_model, *identifier);
+        assert_eq!(
+            model.display_name.as_deref(),
+            Some(*name),
+            "the complete source name for {identifier} must be preserved verbatim"
+        );
+    }
+}
+
+/// AC-003 / REQ-003: a missing or blank source name completes the previously
+/// stored display name for the same identifier, and an identifier with no
+/// stored name at all is transformed from its last path segment.
+#[test]
+fn sync_completes_a_stored_name_and_transforms_bare_identifiers_for_missing_names() {
+    // An id-only entry completes the previously stored display name.
+    let mut config = seeded_config(
+        UpstreamProtocol::ChatCompletions,
+        vec![template_model(
+            "tencent/hy3-paid",
+            Some("Tencent Hy3"),
+            None,
+            true,
+        )],
+    );
+    let body = json!({"data": [{"id": "tencent/hy3-paid"}]}).to_string();
+    let view = apply_template_sync_with(&mut config, "t", |_t| Ok(body.clone()), |_n| Ok(()))
+        .expect("the id-only payload must parse");
+    let stored = view
+        .template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "tencent/hy3-paid")
+        .expect("the synced model must be present");
+    assert_eq!(
+        stored.display_name.as_deref(),
+        Some("Tencent Hy3 Paid"),
+        "the stored base name must gain the identifier's uncovered `paid` token"
+    );
+
+    // A bare identifier with no stored name is transformed on its own.
+    let bare = sync_models(json!({"data": [{"id": "hy3-paid"}]}));
+    assert_eq!(bare.len(), 1);
+    assert_eq!(
+        bare[0].display_name.as_deref(),
+        Some("Hy3 Paid"),
+        "a name-less entry without a stored name stores the transformed segment"
+    );
+
+    // A string entry with no stored name behaves the same way.
+    let string_entry = sync_models(json!({"data": ["hy3-paid"]}));
+    assert_eq!(string_entry.len(), 1);
+    assert_eq!(
+        string_entry[0].display_name.as_deref(),
+        Some("Hy3 Paid"),
+        "a string entry without a stored name stores the transformed segment"
+    );
+
+    // A whitespace-only source name counts as missing.
+    let blank = sync_models(json!({"data": [{"id": "hy3-paid", "name": "   "}]}));
+    assert_eq!(blank.len(), 1);
+    assert_eq!(
+        blank[0].display_name.as_deref(),
+        Some("Hy3 Paid"),
+        "a blank source name must fall back to the transformed segment"
+    );
+}
+
+/// AC-004 / REQ-004: a sync that changes only the display name leaves the
+/// local model id, the upstream model, the protocol, the enabled flag, the
+/// price rows and the ignored set byte-identical.
+#[test]
+fn sync_changing_only_the_display_name_leaves_every_other_field_byte_identical() {
+    let previous = ProviderTemplateModel {
+        upstream_model: "poolside/laguna-s-2.1-free".to_string(),
+        local_model: Some("laguna-local".to_string()),
+        display_name: Some("Laguna S 2.1".to_string()),
+        protocol: Some(UpstreamProtocol::Responses),
+        enabled: false,
+        ..ProviderTemplateModel::default()
+    };
+    let mut config = seeded_config(UpstreamProtocol::ChatCompletions, vec![previous.clone()]);
+    let mut provider = bound_provider("p", "t");
+    provider.mappings = vec![model_mapping("other-model")];
+    provider.ignored_models = vec!["other-model".to_string()];
+    config.providers.push(provider);
+    config.model_prices = vec![
+        price_row("p", "poolside/laguna-s-2.1-free"),
+        price_row("p", "other-model"),
+    ];
+    let prices_before = config.model_prices.clone();
+    let ignored_before = config.providers[0].ignored_models.clone();
+
+    let body = json!({"data": [{"id": "poolside/laguna-s-2.1-free", "name": "Laguna S 2.1"}]})
+        .to_string();
+    let view = apply_template_sync_with(&mut config, "t", |_t| Ok(body.clone()), |_n| Ok(()))
+        .expect("the sync must succeed");
+
+    assert_eq!(view.template.models.len(), 1);
+    let model = &view.template.models[0];
+    assert_eq!(
+        model.display_name.as_deref(),
+        Some("Laguna S 2.1 Free"),
+        "only the display name may change"
+    );
+    assert_eq!(
+        model.local_model, previous.local_model,
+        "the local model id is never touched"
+    );
+    assert_eq!(
+        model.upstream_model, previous.upstream_model,
+        "the upstream model is never touched"
+    );
+    assert_eq!(
+        model.protocol, previous.protocol,
+        "an unlabeled entry keeps the previous protocol"
+    );
+    assert_eq!(
+        model.enabled, previous.enabled,
+        "the local enabled flag always survives"
+    );
+    assert_eq!(
+        config.model_prices, prices_before,
+        "a sync must never create or modify a price row"
+    );
+    assert_eq!(
+        config.providers[0].ignored_models, ignored_before,
+        "a sync must never touch the ignored set"
+    );
+}
+
+/// AC-005 / REQ-005: the completed template name reaches a derived mapping
+/// that still equals the previous template value, while a locally renamed
+/// mapping keeps the operator's name.
+#[test]
+fn sync_completed_names_reach_only_untouched_derived_mappings() {
+    let previous = template_with_models(
+        "t",
+        Some(SYNC_URL),
+        UpstreamProtocol::ChatCompletions,
+        vec![
+            template_model(
+                "poolside/laguna-s-2.1-free",
+                Some("Laguna S 2.1"),
+                None,
+                true,
+            ),
+            template_model("tencent/hy3-paid", Some("Tencent Hy3"), None, true),
+        ],
+    );
+    let mut config = GatewayConfig::default();
+    config.provider_templates.push(ProviderTemplateState {
+        template_id: "t".to_string(),
+        template: Some(previous.clone()),
+        synced_at: Some(1),
+        source: Some(SYNC_URL.to_string()),
+    });
+
+    let mut provider = bound_provider("p", "t");
+    let mapping_a = mapping_for(&previous.models[0], &previous);
+    let mut mapping_b = mapping_for(&previous.models[1], &previous);
+    mapping_b.display_name = Some("My Hy3".to_string());
+    provider.mappings = vec![mapping_a, mapping_b];
+    config.providers.push(provider);
+
+    let body = json!({"data": [
+        {"id": "poolside/laguna-s-2.1-free", "name": "Laguna S 2.1"},
+        {"id": "tencent/hy3-paid", "name": "Tencent Hy3"}
+    ]})
+    .to_string();
+    let view = apply_template_sync_with(&mut config, "t", |_t| Ok(body.clone()), |_n| Ok(()))
+        .expect("the sync must succeed");
+
+    let template_name = |id: &str| {
+        view.template
+            .models
+            .iter()
+            .find(|model| model.upstream_model == id)
+            .unwrap_or_else(|| panic!("the template model {id} must be present"))
+            .display_name
+            .clone()
+    };
+    assert_eq!(
+        template_name("poolside/laguna-s-2.1-free").as_deref(),
+        Some("Laguna S 2.1 Free")
+    );
+    assert_eq!(
+        template_name("tencent/hy3-paid").as_deref(),
+        Some("Tencent Hy3 Paid")
+    );
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p")
+        .expect("the bound provider must exist");
+    assert_eq!(
+        find_mapping(provider, "poolside/laguna-s-2.1-free")
+            .expect("mapping A")
+            .display_name
+            .as_deref(),
+        Some("Laguna S 2.1 Free"),
+        "a mapping that still equals the previous template value takes the completed name"
+    );
+    assert_eq!(
+        find_mapping(provider, "tencent/hy3-paid")
+            .expect("mapping B")
+            .display_name
+            .as_deref(),
+        Some("My Hy3"),
+        "a locally renamed mapping keeps the operator's name"
+    );
+}
+
+/// AC-006 / REQ-006: loading a configuration written before this change
+/// rewrites no persisted name, and parsing the same model-list response twice
+/// produces byte-identical completed names (never a doubled suffix).
+#[test]
+fn persisted_names_survive_load_and_repeat_syncs_keep_completed_names_byte_identical() {
+    let persisted = json!({
+        "provider_templates": [{
+            "template_id": "t",
+            "synced_at": 1,
+            "source": SYNC_URL,
+            "template": {
+                "id": "t",
+                "name": "T",
+                "base_url": "https://tpl.example.com/v1",
+                "models": [{
+                    "upstream_model": "poolside/laguna-s-2.1-free",
+                    "display_name": "Laguna S 2.1"
+                }]
+            }
+        }]
+    });
+    let loaded: GatewayConfig =
+        serde_json::from_value(persisted).expect("an older config must load");
+    let round_tripped: GatewayConfig = serde_json::from_value(
+        serde_json::to_value(&loaded).expect("encode the loaded config"),
+    )
+    .expect("the loaded config must round-trip");
+    let stored = round_tripped
+        .provider_templates
+        .iter()
+        .find(|state| state.template_id == "t")
+        .expect("the template state must be present")
+        .template
+        .as_ref()
+        .expect("the template must be present")
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "poolside/laguna-s-2.1-free")
+        .expect("the stored model must be present");
+    assert_eq!(
+        stored.display_name.as_deref(),
+        Some("Laguna S 2.1"),
+        "loading without a sync must not rewrite a persisted name"
+    );
+
+    let mut config = seeded_config(
+        UpstreamProtocol::ChatCompletions,
+        vec![template_model(
+            "poolside/laguna-s-2.1-free",
+            Some("Laguna S 2.1"),
+            None,
+            true,
+        )],
+    );
+    let body = json!({"data": [{"id": "poolside/laguna-s-2.1-free", "name": "Laguna S 2.1"}]})
+        .to_string();
+    let sync_once = |config: &mut GatewayConfig| {
+        apply_template_sync_with(config, "t", |_t| Ok(body.clone()), |_n| Ok(()))
+            .expect("the sync must succeed")
+            .template
+            .models
+            .iter()
+            .find(|model| model.upstream_model == "poolside/laguna-s-2.1-free")
+            .expect("the synced model must be present")
+            .display_name
+            .clone()
+    };
+    let first = sync_once(&mut config);
+    let second = sync_once(&mut config);
+    assert_eq!(
+        first.as_deref(),
+        Some("Laguna S 2.1 Free"),
+        "the first sync completes the name"
+    );
+    assert_eq!(
+        second, first,
+        "parsing the same response twice must produce byte-identical names"
+    );
+    assert!(
+        second
+            .as_deref()
+            .is_none_or(|name| !name.contains("Free Free")),
+        "a repeat sync must never append the remainder twice"
+    );
+}
+
+/// AC-008 / REQ-008: the verbatim live catalog captured from
+/// `https://api.commandcode.ai/provider/v1/models` on 2026-09-20 (71 entries).
+/// Every synced display name must cover its identifier segment's
+/// alphanumerics in order, and the already-complete AC-002 names stay
+/// byte-identical.
+const LIVE_MODEL_CATALOG_2026_09_20: &str = r#"{"object":"list","data":[{"id":"claude-sonnet-5","object":"model","created":1789872913,"owned_by":"command-code","name":"Claude Sonnet 5","context_length":1000000,"supported_endpoints":["/messages"]},{"id":"claude-sonnet-4-6","object":"model","created":1789872913,"owned_by":"command-code","name":"Claude Sonnet 4.6","context_length":1000000,"supported_endpoints":["/messages"]},{"id":"claude-fable-5-1","object":"model","created":1789872913,"owned_by":"command-code","name":"Claude Fable 5.1","context_length":1000000,"supported_endpoints":["/messages"]},{"id":"claude-fable-5","object":"model","created":1789872913,"owned_by":"command-code","name":"Claude Fable 5","context_length":1000000,"supported_endpoints":["/messages"]},{"id":"claude-opus-5","object":"model","created":1789872913,"owned_by":"command-code","name":"Claude Opus 5","context_length":1000000,"supported_endpoints":["/messages"]},{"id":"claude-opus-4-8","object":"model","created":1789872913,"owned_by":"command-code","name":"Claude Opus 4.8","context_length":1000000,"supported_endpoints":["/messages"]},{"id":"claude-opus-4-7","object":"model","created":1789872913,"owned_by":"command-code","name":"Claude Opus 4.7","context_length":1000000,"supported_endpoints":["/messages"]},{"id":"claude-haiku-4-5-20251001","object":"model","created":1789872913,"owned_by":"command-code","name":"Claude Haiku 4.5","context_length":200000,"supported_endpoints":["/messages"]},{"id":"gpt-5.6-sol","object":"model","created":1789872913,"owned_by":"command-code","name":"GPT-5.6 Sol","context_length":1050000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"gpt-5.6-terra","object":"model","created":1789872913,"owned_by":"command-code","name":"GPT-5.6 Terra","context_length":1050000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"gpt-5.6-luna","object":"model","created":1789872913,"owned_by":"command-code","name":"GPT-5.6 Luna","context_length":1050000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"gpt-5.5","object":"model","created":1789872913,"owned_by":"command-code","name":"GPT-5.5","context_length":400000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"gpt-5.4","object":"model","created":1789872913,"owned_by":"command-code","name":"GPT-5.4","context_length":400000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"gpt-5.3-codex","object":"model","created":1789872913,"owned_by":"command-code","name":"GPT-5.3 Codex","context_length":400000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"gpt-5.4-mini","object":"model","created":1789872913,"owned_by":"command-code","name":"GPT-5.4 Mini","context_length":400000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"deepseek/deepseek-v4-pro","object":"model","created":1789872913,"owned_by":"command-code","name":"DeepSeek V4 Pro (latest)","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"deepseek/deepseek-v4-flash","object":"model","created":1789872913,"owned_by":"command-code","name":"DeepSeek V4 Flash (latest)","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"deepseek/deepseek-v4-flash-vision-exp","object":"model","created":1789872913,"owned_by":"command-code","name":"DeepSeek V4 Flash Vision (exp)","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"deepseek/deepseek-v4-flash-fast","object":"model","created":1789872913,"owned_by":"command-code","name":"DeepSeek V4 Flash Fast","context_length":1000000,"supported_endpoints":["/chat/completions"]},{"id":"deepseek/deepseek-v4.1-flash","object":"model","created":1789872913,"owned_by":"command-code","name":"DeepSeek V4.1 Flash","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"moonshotai/Kimi-K3","object":"model","created":1789872913,"owned_by":"command-code","name":"Kimi K3","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"moonshotai/Kimi-K2.7-Code","object":"model","created":1789872913,"owned_by":"command-code","name":"Kimi K2.7 Code","context_length":256000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"moonshotai/Kimi-K2.7-Code-Highspeed","object":"model","created":1789872913,"owned_by":"command-code","name":"Kimi K2.7 Code HighSpeed","context_length":262000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"moonshotai/Kimi-K2.6","object":"model","created":1789872913,"owned_by":"command-code","name":"Kimi K2.6","context_length":256000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"moonshotai/Kimi-K2.5","object":"model","created":1789872913,"owned_by":"command-code","name":"Kimi K2.5","context_length":256000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"z-ai/glm-5.3-flash","object":"model","created":1789872913,"owned_by":"command-code","name":"GLM-5.3 Flash","context_length":1048576,"supported_endpoints":["/chat/completions","/responses"]},{"id":"z-ai/glm-5.3-flashx","object":"model","created":1789872913,"owned_by":"command-code","name":"GLM-5.3 FlashX","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"zai-org/GLM-5.3","object":"model","created":1789872913,"owned_by":"command-code","name":"GLM-5.3","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"zai-org/GLM-5.2","object":"model","created":1789872913,"owned_by":"command-code","name":"GLM-5.2","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"zai-org/GLM-5.2-Fast","object":"model","created":1789872913,"owned_by":"command-code","name":"GLM-5.2 Fast","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"zai-org/GLM-5.1","object":"model","created":1789872913,"owned_by":"command-code","name":"GLM-5.1","context_length":200000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"zai-org/GLM-5","object":"model","created":1789872913,"owned_by":"command-code","name":"GLM-5","context_length":200000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"MiniMaxAI/MiniMax-M3","object":"model","created":1789872913,"owned_by":"command-code","name":"MiniMax M3","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"MiniMaxAI/MiniMax-M2.7","object":"model","created":1789872913,"owned_by":"command-code","name":"MiniMax M2.7","context_length":200000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"MiniMaxAI/MiniMax-M2.5","object":"model","created":1789872913,"owned_by":"command-code","name":"MiniMax M2.5","context_length":200000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"xiaomi/mimo-v2.5-pro","object":"model","created":1789872913,"owned_by":"command-code","name":"MiMo V2.5 Pro","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"xiaomi/mimo-v2.5","object":"model","created":1789872913,"owned_by":"command-code","name":"MiMo V2.5","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"Qwen/Qwen3.8-Omni-Flash","object":"model","created":1789872913,"owned_by":"command-code","name":"Qwen 3.8 Omni Flash","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"Qwen/Qwen3.8-Max-0902","object":"model","created":1789872913,"owned_by":"command-code","name":"Qwen 3.8 Max 0902","context_length":1000000,"supported_endpoints":["/chat/completions"]},{"id":"Qwen/Qwen3.8-Max","object":"model","created":1789872913,"owned_by":"command-code","name":"Qwen 3.8 Max","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"Qwen/Qwen3.8-27B","object":"model","created":1789872913,"owned_by":"command-code","name":"Qwen 3.8 27B","context_length":262144,"supported_endpoints":["/chat/completions","/responses"]},{"id":"Qwen/Qwen3.8-Flash","object":"model","created":1789872913,"owned_by":"command-code","name":"Qwen 3.8 Flash","context_length":1000000,"supported_endpoints":["/chat/completions"]},{"id":"Qwen/Qwen3.7-Max","object":"model","created":1789872913,"owned_by":"command-code","name":"Qwen 3.7 Max","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"Qwen/Qwen3.7-Plus","object":"model","created":1789872913,"owned_by":"command-code","name":"Qwen 3.7 Plus","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"Qwen/Qwen3.7-Flash","object":"model","created":1789872913,"owned_by":"command-code","name":"Qwen 3.7 Flash","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"Qwen/Qwen3.6-Max-Preview","object":"model","created":1789872913,"owned_by":"command-code","name":"Qwen 3.6 Max Preview","context_length":200000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"Qwen/Qwen3.6-Plus","object":"model","created":1789872913,"owned_by":"command-code","name":"Qwen 3.6 Plus","context_length":200000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"meituan/LongCat-2.0","object":"model","created":1789872913,"owned_by":"command-code","name":"LongCat 2.0","context_length":1048576,"supported_endpoints":["/chat/completions"]},{"id":"stepfun/Step-3.7-Flash","object":"model","created":1789872913,"owned_by":"command-code","name":"Step 3.7 Flash","context_length":256000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"stepfun/Step-3.5-Flash","object":"model","created":1789872913,"owned_by":"command-code","name":"Step 3.5 Flash","context_length":1000000,"supported_endpoints":["/chat/completions"]},{"id":"tencent/hy3-paid","object":"model","created":1789872913,"owned_by":"command-code","name":"Tencent Hy3","context_length":262144,"supported_endpoints":["/chat/completions","/responses"]},{"id":"tencent/hy4-preview","object":"model","created":1789872913,"owned_by":"command-code","name":"Tencent Hy4 Preview","context_length":1048576,"supported_endpoints":["/chat/completions"]},{"id":"google/gemini-3.8-flash","object":"model","created":1789872913,"owned_by":"command-code","name":"Gemini 3.8 Flash","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"google/gemini-3.7-flash","object":"model","created":1789872913,"owned_by":"command-code","name":"Gemini 3.7 Flash","context_length":1048576,"supported_endpoints":["/chat/completions"]},{"id":"google/gemini-3.6-flash","object":"model","created":1789872913,"owned_by":"command-code","name":"Gemini 3.6 Flash","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"google/gemini-3.5-flash","object":"model","created":1789872913,"owned_by":"command-code","name":"Gemini 3.5 Flash","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"google/gemini-3.5-flash-lite","object":"model","created":1789872913,"owned_by":"command-code","name":"Gemini 3.5 Flash Lite","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"google/gemini-3.1-flash-lite","object":"model","created":1789872913,"owned_by":"command-code","name":"Gemini 3.1 Flash Lite","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"sakana/fugu-ultra","object":"model","created":1789872913,"owned_by":"command-code","name":"Fugu Ultra","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"nvidia/nemotron-3-ultra-550b-a55b","object":"model","created":1789872913,"owned_by":"command-code","name":"Nemotron 3 Ultra","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"thinkingmachines/inkling","object":"model","created":1789872913,"owned_by":"command-code","name":"Inkling","context_length":256000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"thinkingmachines/inkling-small","object":"model","created":1789872913,"owned_by":"command-code","name":"Inkling Small","context_length":1000000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"poolside/laguna-s-2.1-free","object":"model","created":1789872913,"owned_by":"command-code","name":"Laguna S 2.1","context_length":256000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"inclusionai/ling-3.0-flash-sante:free","object":"model","created":1789872913,"owned_by":"command-code","name":"Ling 3.0 Flash Sante","context_length":262144,"supported_endpoints":["/chat/completions"]},{"id":"meta/muse-spark-1.1","object":"model","created":1789872913,"owned_by":"command-code","name":"Muse Spark 1.1","context_length":1048576,"supported_endpoints":["/chat/completions","/responses"]},{"id":"meta/muse-spark-1.2","object":"model","created":1789872913,"owned_by":"command-code","name":"Muse Spark 1.2","context_length":1048576,"supported_endpoints":["/chat/completions","/responses"]},{"id":"meta/muse-spark-1.2-contributor","object":"model","created":1789872913,"owned_by":"command-code","name":"Muse Spark 1.2 Contributor","context_length":1048576,"supported_endpoints":["/chat/completions","/responses"]},{"id":"meta/muse-spark-1.3","object":"model","created":1789872913,"owned_by":"command-code","name":"Muse Spark 1.3","context_length":1048576,"supported_endpoints":["/chat/completions","/responses"]},{"id":"meta/muse-spark-1.3-contributor","object":"model","created":1789872913,"owned_by":"command-code","name":"Muse Spark 1.3 Contributor","context_length":1048576,"supported_endpoints":["/chat/completions","/responses"]},{"id":"xai/grok-4.5","object":"model","created":1789872913,"owned_by":"command-code","name":"Grok 4.5","context_length":500000,"supported_endpoints":["/chat/completions","/responses"]},{"id":"xai/grok-4.6","object":"model","created":1789872913,"owned_by":"command-code","name":"Grok 4.6","context_length":500000,"supported_endpoints":["/chat/completions","/responses"]}]}"#;
+
+/// The coverage rule from REQ-001 restated for the test: the identifier's last
+/// `/`-separated segment (or the whole identifier when that segment is empty)
+/// is covered when its alphanumeric characters appear in the display name in
+/// order, compared case-insensitively.
+fn identifier_segment_is_covered(identifier: &str, display_name: &str) -> bool {
+    let segment = identifier.rsplit('/').next().unwrap_or(identifier);
+    let segment = if segment.is_empty() {
+        identifier
+    } else {
+        segment
+    };
+    let wanted: Vec<char> = segment
+        .chars()
+        .filter(|candidate| candidate.is_ascii_alphanumeric())
+        .map(|candidate| candidate.to_ascii_lowercase())
+        .collect();
+    let mut available = display_name
+        .chars()
+        .filter(|candidate| candidate.is_ascii_alphanumeric())
+        .map(|candidate| candidate.to_ascii_lowercase());
+    wanted
+        .iter()
+        .all(|wanted| available.any(|candidate| candidate == *wanted))
+}
+
+#[test]
+fn live_catalog_fixture_names_cover_their_identifier_segments() {
+    let payload: Value =
+        serde_json::from_str(LIVE_MODEL_CATALOG_2026_09_20).expect("the fixture must parse");
+    let entries = payload
+        .get("data")
+        .and_then(Value::as_array)
+        .expect("the fixture must carry a data array");
+    assert_eq!(
+        entries.len(),
+        71,
+        "the fixture must hold the 71-entry live payload verbatim"
+    );
+
+    let models = sync_models(serde_json::from_str(LIVE_MODEL_CATALOG_2026_09_20).expect(
+        "the fixture must parse as a sync payload",
+    ));
+    // Eight fixture entries declare only `/messages` and are dropped by the
+    // existing endpoint filter, so 63 models remain.
+    assert_eq!(
+        models.len(),
+        63,
+        "the sync keeps every fixture entry the endpoint filter allows"
+    );
+
+    for model in &models {
+        let display = model.display_name.as_deref().unwrap_or_else(|| {
+            panic!(
+                "the synced model {} must carry a display name",
+                model.upstream_model
+            )
+        });
+        assert!(
+            identifier_segment_is_covered(&model.upstream_model, display),
+            "the display name {display:?} must cover the identifier segment of {}",
+            model.upstream_model
+        );
+    }
+
+    for (identifier, name) in [
+        ("gpt-5.6-sol", "GPT-5.6 Sol"),
+        ("Qwen/Qwen3.8-Max-0902", "Qwen 3.8 Max 0902"),
+        ("zai-org/GLM-5.3", "GLM-5.3"),
+        ("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro (latest)"),
+        ("xiaomi/mimo-v2.5-pro", "MiMo V2.5 Pro"),
+    ] {
+        let model = models
+            .iter()
+            .find(|model| model.upstream_model == identifier)
+            .unwrap_or_else(|| panic!("the fixture model {identifier} must sync"));
+        assert_eq!(
+            model.display_name.as_deref(),
+            Some(name),
+            "the complete fixture name for {identifier} must stay byte-identical"
+        );
+    }
+
+    let laguna = models
+        .iter()
+        .find(|model| model.upstream_model == "poolside/laguna-s-2.1-free")
+        .expect("the laguna fixture model must sync");
+    assert_eq!(
+        laguna.display_name.as_deref(),
+        Some("Laguna S 2.1 Free"),
+        "the fixture's truncated laguna name must be completed"
+    );
+}

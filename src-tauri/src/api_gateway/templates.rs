@@ -294,11 +294,112 @@ pub fn provider_template_views(
     Ok(views)
 }
 
+/// Transform a raw identifier part into display words: runs of characters
+/// outside `[A-Za-z0-9.]` become single spaces, edge dots are trimmed, and a
+/// leading lowercase ASCII letter of each word is upper-cased. Keeping `.`
+/// inside words leaves version numbers such as `2.1` or `K2.7` intact.
+fn transform_identifier_part(raw: &str) -> String {
+    let mut words: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for candidate in raw.chars() {
+        if candidate.is_ascii_alphanumeric() || candidate == '.' {
+            current.push(candidate);
+        } else if !current.is_empty() {
+            words.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    for word in words {
+        let trimmed = word.trim_matches('.');
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut word = trimmed.to_string();
+        if let Some(first) = word.chars().next() {
+            if first.is_ascii_lowercase() {
+                word.replace_range(..first.len_utf8(), &first.to_ascii_uppercase().to_string());
+            }
+        }
+        out.push(word);
+    }
+    out.join(" ")
+}
+
+/// Complete a synced display name so it covers the upstream identifier.
+///
+/// The compared segment is the substring after the identifier's last `/` (or
+/// the whole identifier when that substring is empty); the vendor prefix is
+/// never appended. Coverage matches the segment's ASCII alphanumerics in
+/// order against the base's, case-insensitively, and the raw remainder
+/// starting right after the last consumed character is transformed and
+/// appended. A missing or blank base transforms the whole segment; a base
+/// that already covers the segment is returned trimmed and verbatim, so
+/// applying the same response twice is byte-identical.
+fn complete_model_display_name(base: Option<&str>, identifier: &str) -> Option<String> {
+    let segment = match identifier.rsplit('/').next() {
+        Some(segment) if !segment.is_empty() => segment,
+        _ => identifier,
+    };
+    let base = base.map(str::trim).filter(|base| !base.is_empty());
+    let Some(base) = base else {
+        let transformed = transform_identifier_part(segment);
+        return if transformed.is_empty() {
+            None
+        } else {
+            Some(transformed)
+        };
+    };
+    let wanted: Vec<char> = segment
+        .chars()
+        .filter(|candidate| candidate.is_ascii_alphanumeric())
+        .map(|candidate| candidate.to_ascii_lowercase())
+        .collect();
+    let mut available = base
+        .chars()
+        .filter(|candidate| candidate.is_ascii_alphanumeric())
+        .map(|candidate| candidate.to_ascii_lowercase());
+    let mut consumed = 0usize;
+    for wanted in &wanted {
+        if available.any(|candidate| candidate == *wanted) {
+            consumed += 1;
+        } else {
+            break;
+        }
+    }
+    if consumed == wanted.len() {
+        return Some(base.to_string());
+    }
+    // Byte offset in the raw segment right after the last consumed
+    // alphanumeric character (0 when nothing was consumed).
+    let mut seen = 0usize;
+    let mut offset = 0usize;
+    for (index, candidate) in segment.char_indices() {
+        if candidate.is_ascii_alphanumeric() {
+            seen += 1;
+            if seen > consumed {
+                break;
+            }
+            offset = index + candidate.len_utf8();
+        }
+    }
+    let transformed = transform_identifier_part(&segment[offset..]);
+    if transformed.is_empty() {
+        return Some(base.to_string());
+    }
+    Some(format!("{base} {transformed}"))
+}
+
 /// Parse a model-list payload and merge it over the template's current models.
 ///
 /// Accepted payload shapes are a `data` array, a `models` array, a root array
 /// and string entries. An object entry's identifier is `id` (or `name` for the
-/// `models` shape when `id` is absent) and its display name is `name`. When
+/// `models` shape when `id` is absent) and its display name is the trimmed
+/// source `name` completed with the identifier segment's uncovered remainder
+/// (a blank source name falls back to the previously stored display name, and
+/// a missing base transforms the identifier segment on its own). When
 /// `supported_endpoints` is an array the protocol is `/chat/completions` if
 /// declared, else `/responses`; an array declaring neither drops the entry,
 /// while a missing or non-array field keeps the entry with no protocol so it
@@ -343,10 +444,12 @@ fn parse_model_list_source(
                 .models
                 .iter()
                 .find(|model| model.upstream_model == identifier);
+            let display_name =
+                complete_model_display_name(previous_model.and_then(|model| model.display_name.as_deref()), identifier);
             merged.push(ProviderTemplateModel {
                 upstream_model: identifier.to_string(),
                 local_model: previous_model.and_then(|model| model.local_model.clone()),
-                display_name: previous_model.and_then(|model| model.display_name.clone()),
+                display_name,
                 protocol: previous_model.and_then(|model| model.protocol),
                 enabled: previous_model.map(|model| model.enabled).unwrap_or(true),
                 input: previous_model.map(|model| model.input).unwrap_or(0.0),
@@ -409,14 +512,19 @@ fn parse_model_list_source(
             .models
             .iter()
             .find(|model| model.upstream_model == identifier);
+        let source_name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        let display_name = complete_model_display_name(
+            source_name.or_else(|| previous_model.and_then(|model| model.display_name.as_deref())),
+            &identifier,
+        );
         merged.push(ProviderTemplateModel {
             upstream_model: identifier,
             local_model: previous_model.and_then(|model| model.local_model.clone()),
-            display_name: object
-                .get("name")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| previous_model.and_then(|model| model.display_name.clone())),
+            display_name,
             protocol: protocol.or_else(|| previous_model.and_then(|model| model.protocol)),
             enabled: previous_model.map(|model| model.enabled).unwrap_or(true),
             input: previous_model.map(|model| model.input).unwrap_or(0.0),
@@ -567,7 +675,8 @@ fn propagate_to_derived(
 /// Apply one template sync with injectable fetch and persistence seams.
 ///
 /// The template's model list is replaced wholesale from its `models_url`; a
-/// source-provided display name and derived protocol win while a locally owned
+/// source-provided display name completed with the identifier's uncovered
+/// remainder (and the derived protocol) wins while a locally owned
 /// `enabled` flag and any omitted value are kept for models the new list still
 /// carries. A sync disables the derived mapping of every model the previous
 /// template carried but the new list removed (only `false` is ever written: the
