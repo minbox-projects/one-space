@@ -15889,3 +15889,1443 @@ fn session_affinity_ignores_models_and_headers_that_are_absent_or_blank() {
             .expect("the process-global session affinity store must lock"),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Plan 20260920-gateway-session-affinity, Step 2 (RED): runtime sticky
+// selection. Task-001 delivered the rule layer in `selection.rs`; the
+// production wiring in `runtime_http.rs` does NOT exist yet:
+// `handle_connection` still orders candidates with `shuffled_candidates` and
+// never consults the binding store, and nothing settles a binding after the
+// terminal outcome. The binding assertions below therefore fail (the store
+// stays empty) while the preserved-semantics assertions already hold.
+// Every runtime case holds the serialized `temp_home` lock and uses a unique
+// session value containing the test name.
+// ---------------------------------------------------------------------------
+
+/// Send a complete request over a real loopback connection with custom inbound
+/// headers. A NEW variant of `spawn_handle_connection` (which is left
+/// untouched): the cancelled-request case needs a session header on the raw
+/// handler path.
+async fn spawn_handle_connection_with_headers(
+    extra_headers: &[(&str, &str)],
+    wants_stream: bool,
+) -> (TcpStream, tokio::task::JoinHandle<Result<(), String>>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind relay loopback");
+    let addr = listener.local_addr().expect("relay loopback address");
+    let accept = tokio::spawn(async move {
+        listener
+            .accept()
+            .await
+            .expect("accept relay loopback")
+            .0
+    });
+    let mut client = TcpStream::connect(addr)
+        .await
+        .expect("connect relay loopback");
+    let server = accept.await.expect("relay accept task");
+    let handler = tokio::spawn(super::runtime_http::handle_connection(server));
+    tokio::task::yield_now().await;
+    let body = serde_json::to_vec(&json!({"model": "local", "stream": wants_stream}))
+        .expect("encode relay request");
+    let mut request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nhost: 127.0.0.1\r\nauthorization: Bearer local-key\r\ncontent-type: application/json\r\ncontent-length: {}\r\n",
+        body.len()
+    );
+    for (name, value) in extra_headers {
+        request.push_str(&format!("{name}: {value}\r\n"));
+    }
+    request.push_str("connection: close\r\n\r\n");
+    let mut frame = request.into_bytes();
+    frame.extend_from_slice(&body);
+    client
+        .write_all(&frame)
+        .await
+        .expect("write complete relay request");
+    client.flush().await.expect("flush relay request");
+    (client, handler)
+}
+
+/// Read the mock's self-identifying `id` from a caller-visible response body.
+fn session_response_id(text: &str) -> Option<String> {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+}
+
+/// Robust lock accessor for the process-global session affinity store.
+/// Recovers from a poisoned mutex so each failing test reports its own
+/// assertion instead of a cascading PoisonError.
+fn affinity_lock() -> std::sync::MutexGuard<'static, super::selection::SessionAffinityStore> {
+    super::selection::session_affinity()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+/// AC-001, AC-002, AC-003, AC-014 at runtime level: two providers A and B are
+/// both eligible for model `local`. The first request of a session binds the
+/// shuffled-first provider; every later request of the same session and model
+/// is served by that same provider again. Each accepted spelling
+/// (`x-session-affinity`, `session-id`, `x-opencode-session`, `X-Session-Id`)
+/// establishes the binding the same way.
+#[tokio::test]
+async fn session_affinity_session_requests_reuse_the_bound_provider() {
+    let home = temp_home("session-affinity-reuse");
+    *affinity_lock() = super::selection::SessionAffinityStore::new();
+    let port = free_port().await;
+    let (a_url, _) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "a"}))).await;
+    let (b_url, _) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "b"}))).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &a_url,
+        "sk-a",
+        Some("remote-default"),
+    ));
+    config.providers.push(upstream_provider(
+        "b",
+        "Provider B",
+        &b_url,
+        "sk-b",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let mut failures: Vec<String> = Vec::new();
+    let spellings: [(&str, &str, &str); 4] = [
+        (
+            "x-session-affinity",
+            "session-affinity-reuse-affinity",
+            "AC-003 x-session-affinity",
+        ),
+        ("session-id", "session-affinity-reuse-session-id", "AC-002 session-id"),
+        (
+            "x-opencode-session",
+            "session-affinity-reuse-opencode",
+            "AC-014 x-opencode-session",
+        ),
+        (
+            "X-Session-Id",
+            "session-affinity-reuse-x-session-id",
+            "AC-003 X-Session-Id",
+        ),
+    ];
+    for (header, session, label) in spellings {
+        let (status, _, first_text) = call_gateway(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[("authorization", "Bearer local-key"), (header, session)],
+            Some(json!({"model": "local"})),
+        )
+        .await;
+        if status != 200 {
+            failures.push(format!(
+                "{label}: first request status={status} body={first_text}"
+            ));
+            continue;
+        }
+        let first_id = session_response_id(&first_text);
+        if first_id.is_none() {
+            failures.push(format!(
+                "{label}: first response carries no provider id: {first_text}"
+            ));
+            continue;
+        }
+        let mut stray = 0usize;
+        for _ in 0..8 {
+            let (status, _, text) = call_gateway(
+                port,
+                "POST",
+                "/v1/chat/completions",
+                &[("authorization", "Bearer local-key"), (header, session)],
+                Some(json!({"model": "local"})),
+            )
+            .await;
+            if status != 200 || session_response_id(&text) != first_id {
+                stray += 1;
+            }
+        }
+        if stray != 0 {
+            failures.push(format!(
+                "{label}: {stray}/8 follow-up requests left the bound provider {:?}",
+                first_id.as_deref().unwrap_or("<none>")
+            ));
+        }
+        let bound = affinity_lock().lookup(session, "local");
+        match bound {
+            Some(binding) if Some(binding.provider_id.as_str()) == first_id.as_deref() => {}
+            other => failures.push(format!(
+                "{label}: expected a live binding to {:?}, got {other:?}",
+                first_id.as_deref().unwrap_or("<none>")
+            )),
+        }
+    }
+
+    super::runtime_http::stop_server().await.unwrap();
+    assert!(
+        failures.is_empty(),
+        "session requests must reuse the bound provider:\n- {}",
+        failures.join("\n- ")
+    );
+    drop(home);
+}
+
+/// AC-007 at runtime level: session S binds to whichever provider serves
+/// request 1; that provider then stops being an eligible candidate, so request
+/// 2 is served by the other provider with no attempt on the former one, the
+/// binding is replaced, and request 3 attempts the new binding first again.
+#[tokio::test]
+async fn session_affinity_ineligible_binding_is_rebound_without_attempting_the_former_provider() {
+    let home = temp_home("session-affinity-rebind");
+    *affinity_lock() = super::selection::SessionAffinityStore::new();
+    let session = "session-affinity-rebind-no-longer-eligible";
+    let port = free_port().await;
+    let (a_url, a_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "a"}))).await;
+    let (b_url, b_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "b"}))).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &a_url,
+        "sk-a",
+        Some("remote-default"),
+    ));
+    config.providers.push(upstream_provider(
+        "b",
+        "Provider B",
+        &b_url,
+        "sk-b",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    // Request 1 binds S to whichever provider the shuffle placed first; both
+    // initial bindings are handled symmetrically below.
+    let (status, _, first_text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", session),
+        ],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 200, "request 1 must be served: {first_text}");
+    let first_id =
+        session_response_id(&first_text).expect("request 1 must identify its provider");
+    assert!(
+        first_id == "a" || first_id == "b",
+        "request 1 must be served by a known provider: {first_text}"
+    );
+    let (former_id, other_id) = if first_id == "a" { ("a", "b") } else { ("b", "a") };
+    let (former_log, other_log) = if first_id == "a" {
+        (&a_log, &b_log)
+    } else {
+        (&b_log, &a_log)
+    };
+    let former_calls = former_log.lock().expect("former log").len();
+
+    // The bound provider stops being eligible; the other one stays eligible.
+    let mut narrowed = super::storage::read_config().expect("read relay config");
+    for provider in narrowed.providers.iter_mut() {
+        if provider.id == former_id {
+            provider.enabled = false;
+        }
+    }
+    super::storage::write_config(&narrowed).unwrap();
+
+    // Request 2: the other provider serves and the former one sees no request.
+    let before_request2 = default_usage_store()
+        .all_records()
+        .unwrap_or_default()
+        .len();
+    let (status, _, second_text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", session),
+        ],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 200, "request 2 must be served: {second_text}");
+    assert_eq!(
+        session_response_id(&second_text).as_deref(),
+        Some(other_id),
+        "request 2 must be served by the remaining provider: {second_text}"
+    );
+    assert_eq!(
+        former_log.lock().expect("former log").len(),
+        former_calls,
+        "the ineligible former binding must produce no attempt"
+    );
+    // Wait for request 2's usage row so the settle side-effect has landed.
+    wait_for_usage_logs((before_request2 + 1) as u32).await;
+    let rebound = affinity_lock()
+        .lookup(session, "local")
+        .expect("the binding must be replaced by the serving provider");
+    assert_eq!(
+        rebound.provider_id.as_str(),
+        other_id,
+        "the binding must be replaced with zero misses"
+    );
+    assert_eq!(rebound.misses, 0);
+    let other_calls = other_log.lock().expect("other log").len();
+
+    // Request 3: the replaced binding is attempted first again; the former
+    // provider still sees no new request.
+    let (status, _, third_text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", session),
+        ],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 200, "request 3 must be served: {third_text}");
+    assert_eq!(
+        session_response_id(&third_text).as_deref(),
+        Some(other_id),
+        "request 3 must still be served by the rebound provider: {third_text}"
+    );
+    assert!(
+        other_log.lock().expect("other log").len() > other_calls,
+        "the rebound provider must be attempted again"
+    );
+    assert_eq!(
+        former_log.lock().expect("former log").len(),
+        former_calls,
+        "the former provider must still see no new request"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-008 at runtime level: the binding is deterministic to A first (B's
+/// mapping for `local` is disabled while request 1 binds). After B is
+/// re-enabled and A answers 429, requests 2 and 3 still attempt A first with B
+/// serving; after request 3 the binding is B, so request 4 attempts B first
+/// and A's attempt count stays exactly 2.
+#[tokio::test]
+async fn session_affinity_migrates_after_two_consecutive_misses() {
+    let home = temp_home("session-affinity-migrate");
+    *affinity_lock() = super::selection::SessionAffinityStore::new();
+    let session = "session-affinity-migrate-two-misses";
+    let port = free_port().await;
+    let (a200_url, _) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "a"}))).await;
+    let (b_url, _) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "b"}))).await;
+
+    // Phase 1: only A can serve `local`, so request 1 binds S to A.
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &a200_url,
+        "sk-a",
+        Some("remote-default"),
+    ));
+    let mut b = upstream_provider("b", "Provider B", &b_url, "sk-b", None);
+    let mut disabled = mapping("local", "remote-b", None);
+    disabled.enabled = false;
+    b.mappings = vec![disabled];
+    config.providers.push(b);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _, first_text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", session),
+        ],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 200, "request 1 must be served: {first_text}");
+    assert_eq!(
+        session_response_id(&first_text).as_deref(),
+        Some("a"),
+        "request 1 must bind S to A: {first_text}"
+    );
+
+    // Phase 2: B is re-enabled and A answers 429 (fast retry header) while B
+    // answers 200. A runs on a dedicated counting mock so request 1 is not
+    // part of the attempt count below.
+    let (a429_url, a429_count) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(429, json!({"error": {"message": "slow down"}}))
+            .header("retry-after-ms", "0"),
+    ])
+    .await;
+    let mut limited = GatewayConfig::default();
+    limited.port = port;
+    limited.keys.push(key_named("k1", "local-key"));
+    limited.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &a429_url,
+        "sk-a",
+        Some("remote-default"),
+    ));
+    limited.providers.push(upstream_provider(
+        "b",
+        "Provider B",
+        &b_url,
+        "sk-b",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&limited).unwrap();
+
+    let before_loop = default_usage_store()
+        .all_records()
+        .unwrap_or_default()
+        .len();
+    for (request_no, expected_a) in [(2u32, 1usize), (3u32, 2usize)] {
+        let (status, _, text) = call_gateway(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[
+                ("authorization", "Bearer local-key"),
+                ("x-session-affinity", session),
+            ],
+            Some(json!({"model": "local"})),
+        )
+        .await;
+        assert_eq!(status, 200, "request {request_no} must be served: {text}");
+        assert_eq!(
+            session_response_id(&text).as_deref(),
+            Some("b"),
+            "request {request_no} must be served by B: {text}"
+        );
+        assert_eq!(
+            a429_count.load(Ordering::SeqCst),
+            expected_a,
+            "request {request_no} must still attempt A first"
+        );
+    }
+    // Wait for requests 2 and 3 usage rows so the settle side-effect has landed.
+    // Each request: A fails (429) + B succeeds → 2 rows per request, 4 total.
+    wait_for_usage_logs((before_loop + 4) as u32).await;
+    let migrated = affinity_lock()
+        .lookup(session, "local")
+        .expect("a binding must exist after two misses");
+    assert_eq!(
+        migrated.provider_id.as_str(),
+        "b",
+        "the second consecutive miss must migrate the binding to B"
+    );
+    assert_eq!(migrated.misses, 0);
+
+    // Request 4 attempts B first and adds no further A request.
+    let (status, _, fourth_text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", session),
+        ],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 200, "request 4 must be served: {fourth_text}");
+    assert_eq!(
+        session_response_id(&fourth_text).as_deref(),
+        Some("b"),
+        "request 4 must be served by B: {fourth_text}"
+    );
+    assert_eq!(
+        a429_count.load(Ordering::SeqCst),
+        2,
+        "request 4 must not add another A attempt (exactly 2 for requests 2 and 3)"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-009 at runtime level: bound to A deterministically, then A fails and B
+/// serves (miss 1), A answers 200 (count resets), A fails and B serves again
+/// (miss 1, so the binding stays A), and the next request attempts A first.
+/// A's scripted reply sequence makes the per-request answers observable.
+#[tokio::test]
+async fn session_affinity_bound_success_resets_consecutive_misses() {
+    let home = temp_home("session-affinity-reset");
+    *affinity_lock() = super::selection::SessionAffinityStore::new();
+    let session = "session-affinity-reset-on-bound-success";
+    let port = free_port().await;
+    let (a200_url, _) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "a"}))).await;
+    let (b_url, _) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "b"}))).await;
+
+    // Phase 1: only A can serve `local`, so request 1 binds S to A.
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &a200_url,
+        "sk-a",
+        Some("remote-default"),
+    ));
+    let mut b = upstream_provider("b", "Provider B", &b_url, "sk-b", None);
+    let mut disabled = mapping("local", "remote-b", None);
+    disabled.enabled = false;
+    b.mappings = vec![disabled];
+    config.providers.push(b);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _, first_text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", session),
+        ],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 200, "request 1 must be served: {first_text}");
+    assert_eq!(
+        session_response_id(&first_text).as_deref(),
+        Some("a"),
+        "request 1 must bind S to A: {first_text}"
+    );
+
+    // Phase 2: A's answers change per request (429, 200, 429, then 200); B
+    // always answers 200. Both mocks count, so the observed provider and the
+    // attempt counts are asserted together.
+    let (a_seq_url, a_count) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(429, json!({"error": {"message": "slow down"}}))
+            .header("retry-after-ms", "0"),
+        HeaderReply::new(200, json!({"id": "a"})),
+        HeaderReply::new(429, json!({"error": {"message": "slow down"}}))
+            .header("retry-after-ms", "0"),
+        HeaderReply::new(200, json!({"id": "a"})),
+    ])
+    .await;
+    let (b_seq_url, b_count) =
+        spawn_header_sequence_mock(vec![HeaderReply::new(200, json!({"id": "b"}))])
+            .await;
+    let mut scripted = GatewayConfig::default();
+    scripted.port = port;
+    scripted.keys.push(key_named("k1", "local-key"));
+    scripted.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &a_seq_url,
+        "sk-a",
+        Some("remote-default"),
+    ));
+    scripted.providers.push(upstream_provider(
+        "b",
+        "Provider B",
+        &b_seq_url,
+        "sk-b",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&scripted).unwrap();
+
+    let before_requests = default_usage_store()
+        .all_records()
+        .unwrap_or_default()
+        .len();
+    // Request 2: A fails (429), B serves — miss 1.
+    let (status, _, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", session),
+        ],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 200, "request 2 must be served: {text}");
+    assert_eq!(
+        session_response_id(&text).as_deref(),
+        Some("b"),
+        "request 2 must be served by B after A answers 429: {text}"
+    );
+    assert_eq!(
+        a_count.load(Ordering::SeqCst),
+        1,
+        "request 2 must attempt A first"
+    );
+
+    // Request 3: A answers 200 — the bound success resets the count.
+    let (status, _, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", session),
+        ],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 200, "request 3 must be served: {text}");
+    assert_eq!(
+        session_response_id(&text).as_deref(),
+        Some("a"),
+        "request 3 must be served by A: {text}"
+    );
+    assert_eq!(
+        a_count.load(Ordering::SeqCst),
+        2,
+        "request 3 must attempt A first"
+    );
+
+    // Request 4: A fails again, B serves — miss 1, so the binding stays A.
+    let (status, _, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", session),
+        ],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 200, "request 4 must be served: {text}");
+    assert_eq!(
+        session_response_id(&text).as_deref(),
+        Some("b"),
+        "request 4 must be served by B after A answers 429: {text}"
+    );
+    assert_eq!(
+        a_count.load(Ordering::SeqCst),
+        3,
+        "request 4 must attempt A first"
+    );
+    // Wait for requests 2-4 usage rows so the settle side-effect has landed.
+    // Request 2: A fails + B serves (2 rows); request 3: A succeeds (1 row);
+    // request 4: A fails + B serves (2 rows) → 5 new rows.
+    wait_for_usage_logs((before_requests + 5) as u32).await;
+    let still_bound = affinity_lock()
+        .lookup(session, "local")
+        .expect("the binding must still exist after a single later miss");
+    assert_eq!(
+        still_bound.provider_id.as_str(),
+        "a",
+        "one miss after a reset must not migrate the binding"
+    );
+    assert_eq!(still_bound.misses, 1);
+
+    // Request 5: A is attempted first again.
+    let (status, _, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", session),
+        ],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 200, "request 5 must be served: {text}");
+    assert_eq!(
+        session_response_id(&text).as_deref(),
+        Some("a"),
+        "request 5 must attempt A first and be served by it: {text}"
+    );
+    assert_eq!(
+        a_count.load(Ordering::SeqCst),
+        4,
+        "A must be attempted first in requests 2, 3, 4 and 5"
+    );
+    assert_eq!(
+        b_count.load(Ordering::SeqCst),
+        2,
+        "B must serve exactly requests 2 and 4"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 at runtime level: with exactly two eligible providers and no binding
+/// yet, 8 concurrent requests for the same session and model must all be
+/// served by the same provider; the concurrent insert must not let two
+/// requests choose two providers.
+#[tokio::test]
+async fn session_affinity_concurrent_session_requests_select_one_provider() {
+    let home = temp_home("session-affinity-concurrent");
+    *affinity_lock() = super::selection::SessionAffinityStore::new();
+    let session = "session-affinity-concurrent-one-provider";
+    let port = free_port().await;
+    let (a_url, _) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "a"}))).await;
+    let (b_url, _) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "b"}))).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &a_url,
+        "sk-a",
+        Some("remote-default"),
+    ));
+    config.providers.push(upstream_provider(
+        "b",
+        "Provider B",
+        &b_url,
+        "sk-b",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let futures: Vec<_> = (0..8)
+        .map(|_| {
+            let session = session.to_string();
+            async move {
+                call_gateway(
+                    port,
+                    "POST",
+                    "/v1/chat/completions",
+                    &[
+                        ("authorization", "Bearer local-key"),
+                        ("x-session-affinity", session.as_str()),
+                    ],
+                    Some(json!({"model": "local"})),
+                )
+                .await
+            }
+        })
+        .collect();
+    let results = futures_util::future::join_all(futures).await;
+    assert_eq!(results.len(), 8);
+    for (status, _, text) in &results {
+        assert_eq!(*status, 200, "every concurrent request must be served: {text}");
+    }
+    let ids: Vec<Option<String>> = results
+        .iter()
+        .map(|(_, _, text)| session_response_id(text))
+        .collect();
+    let first = ids[0].clone();
+    assert!(
+        first.as_deref() == Some("a") || first.as_deref() == Some("b"),
+        "every response must identify its provider: {ids:?}"
+    );
+    assert!(
+        ids.iter().all(|id| *id == first),
+        "every concurrent response must be served by the same provider: {ids:?}"
+    );
+    let bound = affinity_lock()
+        .lookup(session, "local")
+        .expect("the concurrent insert must leave exactly one binding");
+    assert_eq!(
+        Some(bound.provider_id.as_str()),
+        first.as_deref(),
+        "the stored binding must be the agreed provider"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-011 at runtime level: session S is bound to A deterministically; a
+/// request driven through the raw loopback handler is cancelled while A holds
+/// it. Two follow-ups (A 429, B 200) must both attempt A first (A grows by
+/// exactly 2) before the binding migrates to B on the second one — if the
+/// cancellation had counted as a miss, A would only be attempted once.
+#[tokio::test]
+async fn session_affinity_cancelled_request_does_not_count_as_a_miss() {
+    let home = temp_home("session-affinity-cancel");
+    *affinity_lock() = super::selection::SessionAffinityStore::new();
+    let session = "session-affinity-cancel-no-miss";
+    let port = free_port().await;
+    let (a200_url, _) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "a"}))).await;
+    let (b_url, _) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "b"}))).await;
+
+    // Phase 1: only A can serve `local`, so request 1 binds S to A.
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &a200_url,
+        "sk-a",
+        Some("remote-default"),
+    ));
+    let mut b = upstream_provider("b", "Provider B", &b_url, "sk-b", None);
+    let mut disabled = mapping("local", "remote-b", None);
+    disabled.enabled = false;
+    b.mappings = vec![disabled];
+    config.providers.push(b);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _, first_text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", session),
+        ],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 200, "request 1 must be served: {first_text}");
+    assert_eq!(
+        session_response_id(&first_text).as_deref(),
+        Some("a"),
+        "request 1 must bind S to A: {first_text}"
+    );
+
+    // Phase 2: only A is eligible and its upstream holds the connection. The
+    // binding is A so A is attempted first, which is why the held upstream is
+    // A. The client disconnects while A is held, so the request is cancelled.
+    let held_listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind held upstream");
+    let held_url = format!("http://{}", held_listener.local_addr().expect("held addr"));
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let held = tokio::spawn(async move {
+        let (mut stream, _) = held_listener.accept().await.expect("accept held upstream");
+        super::runtime_http::read_http_request(&mut stream)
+            .await
+            .expect("read held upstream request");
+        let _ = entered_tx.send(());
+        let _ = release_rx.await;
+        let body = br#"{"id":"late"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.write_all(body).await;
+    });
+    let mut held_config = GatewayConfig::default();
+    held_config.port = port;
+    held_config.keys.push(key_named("k1", "local-key"));
+    held_config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &held_url,
+        "sk-a",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&held_config).unwrap();
+
+    let before_cancel = default_usage_store()
+        .all_records()
+        .unwrap_or_default()
+        .len();
+    let (client, mut handler) =
+        spawn_handle_connection_with_headers(&[("x-session-affinity", session)], false).await;
+    let entered = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::select! {
+            signal = entered_rx => signal,
+            result = &mut handler => panic!("handler exited before upstream wait: {result:?}"),
+        }
+    })
+    .await
+    .expect("upstream must begin waiting");
+    entered.expect("held upstream entry signal");
+    drop(client);
+    tokio::time::timeout(std::time::Duration::from_millis(500), &mut handler)
+        .await
+        .expect("the handler must exit after the disconnect");
+    let _ = release_tx.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), held).await;
+
+    // Wait for the cancelled request's synthetic terminal row so the binding
+    // store is consistent before the first post-cancel lookup.
+    wait_for_usage_logs((before_cancel + 1) as u32).await;
+
+    // Phase 3: A answers 429 while B answers 200. Both follow-ups must attempt
+    // A first; the second one migrates the binding to B.
+    let (a429_url, a429_count) = spawn_header_sequence_mock(vec![
+        HeaderReply::new(429, json!({"error": {"message": "slow down"}}))
+            .header("retry-after-ms", "0"),
+    ])
+    .await;
+    let mut limited = GatewayConfig::default();
+    limited.port = port;
+    limited.keys.push(key_named("k1", "local-key"));
+    limited.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &a429_url,
+        "sk-a",
+        Some("remote-default"),
+    ));
+    limited.providers.push(upstream_provider(
+        "b",
+        "Provider B",
+        &b_url,
+        "sk-b",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&limited).unwrap();
+
+    let mut failures: Vec<String> = Vec::new();
+    let after_cancel = affinity_lock().lookup(session, "local");
+    match after_cancel {
+        Some(binding) if binding.provider_id.as_str() == "a" && binding.misses == 0 => {}
+        other => failures.push(format!(
+            "the cancelled request must leave binding A with 0 misses, got {other:?}"
+        )),
+    }
+    for request_no in [2u32, 3u32] {
+        let (status, _, text) = call_gateway(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[
+                ("authorization", "Bearer local-key"),
+                ("x-session-affinity", session),
+            ],
+            Some(json!({"model": "local"})),
+        )
+        .await;
+        assert_eq!(status, 200, "request {request_no} must be served: {text}");
+        assert_eq!(
+            session_response_id(&text).as_deref(),
+            Some("b"),
+            "request {request_no} must be served by B: {text}"
+        );
+    }
+    if a429_count.load(Ordering::SeqCst) != 2 {
+        failures.push(format!(
+            "both follow-ups must attempt A first (A attempts {} != 2); a counted cancellation would migrate after the first one",
+            a429_count.load(Ordering::SeqCst)
+        ));
+    }
+    // Wait for the two follow-up requests' usage rows so the settle
+    // side-effects have landed before the second store lookup.
+    // Each follow-up: A fails (429) + B succeeds → 2 rows, 4 total.
+    wait_for_usage_logs((before_cancel + 5) as u32).await;
+    match affinity_lock().lookup(session, "local") {
+        Some(binding) if binding.provider_id.as_str() == "b" => {}
+        other => failures.push(format!(
+            "the second consecutive miss must migrate the binding to B, got {other:?}"
+        )),
+    }
+
+    super::runtime_http::stop_server().await.unwrap();
+    assert!(
+        failures.is_empty(),
+        "a cancelled request must not count as a miss:\n- {}",
+        failures.join("\n- ")
+    );
+    drop(home);
+}
+
+/// AC-013 at runtime level: requests carrying a known session header keep the
+/// existing failure semantics — (a) a first attempt answering 429 switches
+/// without counting, (b) a first attempt answering 5xx switches and counts,
+/// (c) a first attempt failing on the network switches and counts, (d) a
+/// failure after the response body started streaming terminates with one SSE
+/// error fragment and never switches. All mocks use `retry-after-ms: 0` so
+/// retry-driven phases stay fast.
+#[tokio::test]
+async fn session_affinity_session_header_failure_paths_keep_existing_semantics() {
+    let home = temp_home("session-affinity-failure-paths");
+    *affinity_lock() = super::selection::SessionAffinityStore::new();
+    let port = free_port().await;
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let mut failures: Vec<String> = Vec::new();
+
+    // (a)/(b)/(c): deterministic two-phase approach per switch phase.
+    //
+    // Phase A (priming): only `flaky` is eligible for model `local` (give it
+    // `Some("remote-default")`; give `steady` no default model and a disabled
+    // mapping). The flaky mock answers 200 with {"id": "flaky"}. One request
+    // with the session header -> assert 200 served by flaky. This writes the
+    // binding deterministically at selection time.
+    //
+    // Phase B (observed request): rewrite config so BOTH providers are eligible
+    // (both with default_model = Some("remote-default")). The flaky mock fails
+    // from its second request on. Exactly ONE request with the same session
+    // header: assert 200 served by steady, flaky attempted exactly once,
+    // steady attempted exactly once, usage rows match the per-phase error
+    // semantics, health assertions hold, and the binding has exactly one miss
+    // (below migration threshold).
+    let switch_phases: [(u16, &str, &str, &str); 3] = [
+        (429, "transient", "session-affinity-failure-429", "429"),
+        (500, "boom", "session-affinity-failure-5xx", "5xx"),
+        (0, "network error", "session-affinity-failure-drop", "network"),
+    ];
+    for (flaky_status, flaky_error, session, label) in switch_phases {
+        // --- Phase A: prime the binding with flaky as sole candidate ---
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let rc = request_count.clone();
+        let (flaky_url, flaky_log) = spawn_mock_upstream(move |_| {
+            if rc.fetch_add(1, Ordering::SeqCst) == 0 {
+                MockReply::Json(200, json!({"id": "flaky"}))
+            } else {
+                match flaky_status {
+                    429 => MockReply::Json(429, json!({"error": {"message": "transient"}})),
+                    500 => MockReply::Json(500, json!({"error": {"message": "boom"}})),
+                    _ => MockReply::Drop,
+                }
+            }
+        })
+        .await;
+        let (steady_url, _steady_log_priming) =
+            spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "steady"}))).await;
+
+        let mut priming = GatewayConfig::default();
+        priming.port = port;
+        priming.keys.push(key_named("k1", "local-key"));
+        priming.providers.push(upstream_provider(
+            "flaky",
+            "Flaky Provider",
+            &flaky_url,
+            "sk-flaky",
+            Some("remote-default"),
+        ));
+        priming.providers.push(upstream_provider(
+            "steady",
+            "Steady Provider",
+            &steady_url,
+            "sk-steady",
+            None, // no default_model -> not eligible for any model
+        ));
+        super::storage::write_config(&priming).unwrap();
+
+        let flaky_before_priming = flaky_log.lock().expect("flaky log").len();
+        let (status, _, text) = call_gateway(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[
+                ("authorization", "Bearer local-key"),
+                ("x-session-affinity", session),
+            ],
+            Some(json!({"model": "local"})),
+        )
+        .await;
+        let flaky_delta_priming =
+            flaky_log.lock().expect("flaky log").len() - flaky_before_priming;
+        assert_eq!(
+            status, 200,
+            "{label} priming: must serve the caller: {text}"
+        );
+        assert_eq!(
+            session_response_id(&text).as_deref(),
+            Some("flaky"),
+            "{label} priming: flaky must serve (sole candidate): {text}"
+        );
+        assert_eq!(
+            flaky_delta_priming, 1,
+            "{label} priming: flaky must be attempted exactly once"
+        );
+
+        // --- Phase B: rewrite config so both are eligible, observe one request ---
+        let mut both_eligible = GatewayConfig::default();
+        both_eligible.port = port;
+        both_eligible.keys.push(key_named("k1", "local-key"));
+        both_eligible.providers.push(upstream_provider(
+            "flaky",
+            "Flaky Provider",
+            &flaky_url,
+            "sk-flaky",
+            Some("remote-default"),
+        ));
+        both_eligible.providers.push(upstream_provider(
+            "steady",
+            "Steady Provider",
+            &steady_url,
+            "sk-steady",
+            Some("remote-default"),
+        ));
+        super::storage::write_config(&both_eligible).unwrap();
+
+        let before_rows = default_usage_store()
+            .all_records()
+            .unwrap_or_default()
+            .len();
+        let flaky_before = flaky_log.lock().expect("flaky log").len();
+        let (status, _, text) = call_gateway(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[
+                ("authorization", "Bearer local-key"),
+                ("x-session-affinity", session),
+            ],
+            Some(json!({"model": "local"})),
+        )
+        .await;
+        let flaky_delta = flaky_log.lock().expect("flaky log").len() - flaky_before;
+        assert_eq!(
+            status, 200,
+            "{label}: the switch must serve the caller: {text}"
+        );
+        assert_eq!(
+            session_response_id(&text).as_deref(),
+            Some("steady"),
+            "{label}: the caller must see the steady provider: {text}"
+        );
+        assert_eq!(
+            flaky_delta, 1,
+            "{label}: the flaky provider must be attempted exactly once in the observed request"
+        );
+
+        // Usage rows for the observed request: one non-terminal failure
+        // attempt plus the terminal success.
+        // The observed request already wrote its rows; wait until they are
+        // visible and take the two newest (requests run sequentially).
+        let records = wait_for_usage_logs((before_rows + 2) as u32).await;
+        let fresh: Vec<&UsageLogRecord> = records.iter().take(2).collect();
+        assert_eq!(
+            fresh.len(),
+            2,
+            "{label}: the observed request must write exactly two rows"
+        );
+        let terminal = fresh
+            .iter()
+            .find(|record| record.terminal)
+            .expect("one terminal row");
+        assert_eq!(terminal.provider_id.as_str(), "steady");
+        assert_eq!(terminal.result, UsageResult::Success);
+        assert_eq!(terminal.status, 200);
+        let attempt = fresh
+            .iter()
+            .find(|record| !record.terminal)
+            .expect("one non-terminal attempt row");
+        assert_eq!(attempt.provider_id.as_str(), "flaky");
+        assert_eq!(attempt.result, UsageResult::Failure);
+        if flaky_status == 0 {
+            assert_eq!(attempt.status, 0, "{label}: a network failure has no HTTP status");
+            assert!(
+                attempt
+                    .error_message
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains(flaky_error),
+                "{label}: the transport failure records its description: {:?}",
+                attempt.error_message
+            );
+        } else {
+            assert_eq!(
+                attempt.status, flaky_status,
+                "{label}: the attempt keeps the upstream status"
+            );
+            assert_eq!(
+                attempt.error_message.as_deref(),
+                Some(flaky_error),
+                "{label}: the upstream error.message is recorded"
+            );
+        }
+
+        // RequestHealth settlement: 429 never counts, 5xx and network failures
+        // count exactly once (exactly one flaky-first occurrence happened).
+        let stored = super::storage::read_config().expect("read relay config");
+        let flaky_stored = stored
+            .providers
+            .iter()
+            .find(|provider| provider.id == "flaky")
+            .expect("flaky provider stored");
+        if flaky_status == 429 {
+            assert_eq!(
+                flaky_stored.consecutive_failures, 0,
+                "{label}: 429 must not count toward health"
+            );
+            assert!(
+                !flaky_stored.auto_disabled,
+                "{label}: 429 must not disable"
+            );
+        } else {
+            assert_eq!(
+                flaky_stored.consecutive_failures, 1,
+                "{label}: the failure must count exactly once"
+            );
+            assert!(
+                !flaky_stored.auto_disabled,
+                "{label}: a single failure must not disable"
+            );
+        }
+
+        // The binding for this session and model must exist, must point at
+        // `flaky` (written by priming), and must have exactly one miss
+        // (below the migration threshold of two consecutive misses).
+        match affinity_lock().lookup(session, "local") {
+            Some(binding) => {
+                assert_eq!(
+                    binding.provider_id, "flaky",
+                    "{label}: the binding must still point at flaky after one miss"
+                );
+                assert_eq!(
+                    binding.misses, 1,
+                    "{label}: exactly one miss (below migration threshold)"
+                );
+            }
+            None => failures.push(format!(
+                "{label}: a request carrying a session header must leave a binding"
+            )),
+        }
+    }
+
+    // (d): a failure after the response body started streaming terminates the
+    // stream with one SSE error fragment, never switches, and counts once.
+    {
+        let session = "session-affinity-failure-mid-stream";
+        let partial = "data: {\"id\":\"partial-solo\"}\n\n";
+        let (solo_url, solo_log) = spawn_mock_upstream(move |_| {
+            MockReply::PartialStream(partial.to_string(), partial.len() + 500)
+        })
+        .await;
+        let mut phase = GatewayConfig::default();
+        phase.port = port;
+        phase.keys.push(key_named("k1", "local-key"));
+        phase.providers.push(upstream_provider(
+            "solo",
+            "Solo Provider",
+            &solo_url,
+            "sk-solo",
+            Some("remote-default"),
+        ));
+        super::storage::write_config(&phase).unwrap();
+
+        let before_rows = default_usage_store()
+            .all_records()
+            .unwrap_or_default()
+            .len();
+        let (status, content_type, text) = call_gateway(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[("authorization", "Bearer local-key"), ("x-session-affinity", session)],
+            Some(json!({"model": "local", "stream": true})),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "the stream headers are already written: {text}"
+        );
+        assert!(
+            content_type.contains("text/event-stream"),
+            "mid-stream failure keeps the SSE transport: {content_type}"
+        );
+        assert!(
+            text.contains("partial-solo"),
+            "the first provider bytes reach the caller: {text}"
+        );
+        assert!(
+            text.contains("upstream_stream_error"),
+            "exactly one standalone error fragment closes the stream: {text}"
+        );
+        assert!(
+            !text.contains("data: [DONE]"),
+            "an abnormal stream must not send [DONE]: {text}"
+        );
+        assert_eq!(
+            solo_log.lock().expect("solo log").len(),
+            1,
+            "the single candidate is attempted exactly once"
+        );
+
+        let records = wait_for_usage_logs((before_rows + 1) as u32).await;
+        let row = records.first().expect("the mid-stream failure writes one row");
+        assert!(row.terminal);
+        assert_eq!(row.result, UsageResult::Failure);
+        assert_eq!(row.status, 502);
+        assert_eq!(row.provider_id.as_str(), "solo");
+        assert!(
+            row.error_message
+                .as_deref()
+                .unwrap_or("")
+                .contains("stream failed after first byte"),
+            "the mid-stream failure records its stream description: {:?}",
+            row.error_message
+        );
+
+        let stored = super::storage::read_config().expect("read relay config");
+        let solo_stored = stored
+            .providers
+            .iter()
+            .find(|provider| provider.id == "solo")
+            .expect("solo provider stored");
+        assert_eq!(
+            solo_stored.consecutive_failures, 1,
+            "the mid-stream failure counts exactly once"
+        );
+
+        match affinity_lock().lookup(session, "local") {
+            Some(_) => {}
+            None => failures.push(
+                "mid-stream: a request carrying a session header must leave a binding"
+                    .to_string(),
+            ),
+        }
+    }
+
+    super::runtime_http::stop_server().await.unwrap();
+    assert!(
+        failures.is_empty(),
+        "session-header failure paths must settle bindings:\n- {}",
+        failures.join("\n- ")
+    );
+    drop(home);
+}
+
+/// AC-005 boundary at runtime level: (a) a request with no known session
+/// header leaves no live bindings; (b) a request carrying a known session
+/// header but a whitespace-only `model` (served via `default_model`) also
+/// leaves none; (c) a no-candidate request carrying a known session header
+/// still answers 502 with the standard `all_providers_unavailable` envelope
+/// and leaves no binding. Never asserts which provider a request picked.
+#[tokio::test]
+async fn session_affinity_headerless_and_blank_model_requests_write_no_binding() {
+    let home = temp_home("session-affinity-boundary");
+    *affinity_lock() = super::selection::SessionAffinityStore::new();
+    let port = free_port().await;
+    let (a_url, _) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "a"}))).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &a_url,
+        "sk-a",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let live_bindings = || affinity_lock().live_len();
+
+    // (a) No known session header: served, but nothing is read or written.
+    let (status, _, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local"})),
+    )
+    .await;
+    assert_eq!(status, 200, "a header-less request must still be served: {text}");
+    assert_eq!(
+        live_bindings(),
+        0,
+        "a header-less request must write no binding"
+    );
+
+    // (b) Known session header but a whitespace-only model: served through the
+    // default-model fallback, but the blank model is not a binding key.
+    let (status, _, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", "session-affinity-boundary-blank"),
+        ],
+        Some(json!({"model": "   "})),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "a blank-model request must still resolve via default_model: {text}"
+    );
+    assert_eq!(
+        live_bindings(),
+        0,
+        "a whitespace-only model must write no binding"
+    );
+
+    // (c) Known session header but no candidate: the existing 502 path with
+    // the standard envelope, and still no binding.
+    //
+    // Rewrite the config so provider `a` has NO default model and no enabled
+    // mapping for the requested model. Without the fallback, `no-such-model`
+    // has zero eligible candidates, producing the 502 path. The server
+    // re-reads the config per connection, so no restart is needed.
+    let mut no_fallback_config = GatewayConfig::default();
+    no_fallback_config.port = port;
+    no_fallback_config.keys.push(key_named("k1", "local-key"));
+    no_fallback_config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &a_url,
+        "sk-a",
+        None, // no default_model -> no fallback resolution
+    ));
+    super::storage::write_config(&no_fallback_config).unwrap();
+
+    let (status, _, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", "session-affinity-boundary-unknown"),
+        ],
+        Some(json!({"model": "no-such-model"})),
+    )
+    .await;
+    assert_eq!(status, 502, "an unknown model must be 502: {text}");
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+    assert_eq!(
+        live_bindings(),
+        0,
+        "a no-candidate request must write no binding"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
