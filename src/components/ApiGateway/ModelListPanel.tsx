@@ -16,6 +16,7 @@ import {
   aggregateModels,
   localBaseUrl,
   resolveAggregatedModelName,
+  resolveAggregatedReasoningEfforts,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
 } from "@/lib/apiGateway";
@@ -73,6 +74,7 @@ export function ModelListPanel({
         protocols: Array.from(
           new Set(entry.providers.map((upstream) => upstream.endpoint)),
         ),
+        reasoningEfforts: resolveAggregatedReasoningEfforts(entry),
       })),
     [providers],
   );
@@ -432,7 +434,7 @@ export function ModelListPanel({
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
-              {visibleRows.map(({ entry, name, protocols }) => {
+              {visibleRows.map(({ entry, name, protocols, reasoningEfforts }) => {
                 const localTargetKey = `local:${entry.model}`;
                 const isCopied = copiedTarget === localTargetKey;
                 return (
@@ -484,7 +486,7 @@ export function ModelListPanel({
                       </div>
                     </td>
 
-                    {/* 第二列：显示名称与协议徽标 */}
+                    {/* 第二列：显示名称、协议徽标与推理强度 */}
                     <td className="px-3.5 py-2.5">
                       <div className="space-y-1.5">
                         <span
@@ -498,6 +500,28 @@ export function ModelListPanel({
                             <ProtocolBadge key={proto} protocol={proto} />
                           ))}
                         </div>
+                        {reasoningEfforts.length > 0 ? (
+                          <div
+                            data-testid="api-gateway-model-list-reasoning-efforts"
+                            className="flex flex-wrap items-center gap-1 pt-0.5"
+                          >
+                            <span
+                              title={t("apiGatewayReasoningEfforts", "Reasoning efforts")}
+                              className="text-[10px] font-medium text-muted-foreground"
+                            >
+                              {t("apiGatewayReasoningEfforts", "Reasoning efforts")}:
+                            </span>
+                            {reasoningEfforts.map((effort) => (
+                              <span
+                                key={effort}
+                                data-testid={`api-gateway-model-list-effort-${effort}`}
+                                className="inline-flex items-center rounded border border-border/80 bg-muted/60 px-1.5 py-0.2 font-mono text-[10px] font-medium text-foreground/85 leading-tight shadow-2xs"
+                              >
+                                {effort}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                     </td>
 

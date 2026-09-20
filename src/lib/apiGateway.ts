@@ -178,6 +178,18 @@ export function resolveMappingPreview(
   return null;
 }
 
+/** Trim, drop blanks and deduplicate reasoning efforts preserving first-seen order. */
+export function normalizeReasoningEfforts(
+  efforts: string[] | null | undefined,
+): string[] {
+  const normalized: string[] = [];
+  for (const effort of efforts ?? []) {
+    const trimmed = effort.trim();
+    if (trimmed !== "" && !normalized.includes(trimmed)) normalized.push(trimmed);
+  }
+  return normalized;
+}
+
 /** One upstream source that can serve an aggregated local model. */
 export interface AggregatedModelProvider {
   providerId: string;
@@ -187,12 +199,16 @@ export interface AggregatedModelProvider {
   isDefault: boolean;
   /** Trimmed mapping `display_name`; absent for default-model sources or undeclared names. */
   displayName?: string;
+  /** Normalized reasoning efforts advertised by this upstream mapping; absent when empty. */
+  reasoningEfforts?: string[];
 }
 
 /** A local model name and every enabled upstream source mapped to it. */
 export interface AggregatedModel {
   model: string;
   providers: AggregatedModelProvider[];
+  /** Unified deduplicated list of reasoning efforts across all enabled upstream providers; absent when empty. */
+  reasoningEfforts?: string[];
 }
 
 /**
@@ -218,6 +234,7 @@ export function aggregateModels(
       if (!upstreamModel) return;
       const entries = groups.get(localModel) ?? [];
       const displayName = mapping.display_name?.trim();
+      const reasoningEfforts = normalizeReasoningEfforts(mapping.reasoning_efforts);
       entries.push({
         providerId: provider.id,
         providerName: provider.name,
@@ -225,19 +242,27 @@ export function aggregateModels(
         endpoint: mapping.protocol ?? provider.protocol ?? "chat_completions",
         isDefault: false,
         ...(displayName ? { displayName } : {}),
+        ...(reasoningEfforts.length > 0 ? { reasoningEfforts } : {}),
       });
       groups.set(localModel, entries);
     });
   });
 
   return Array.from(groups.entries())
-    .map(([model, entries]) => ({
-      model,
-      providers: [...entries].sort((a, b) => {
+    .map(([model, entries]) => {
+      const sortedProviders = [...entries].sort((a, b) => {
         const byName = a.providerName.localeCompare(b.providerName);
         return byName !== 0 ? byName : a.upstreamModel.localeCompare(b.upstreamModel);
-      }),
-    }))
+      });
+      const unifiedEfforts = normalizeReasoningEfforts(
+        sortedProviders.flatMap((p) => p.reasoningEfforts ?? []),
+      );
+      return {
+        model,
+        providers: sortedProviders,
+        ...(unifiedEfforts.length > 0 ? { reasoningEfforts: unifiedEfforts } : {}),
+      };
+    })
     .sort((a, b) => a.model.localeCompare(b.model));
 }
 
@@ -255,6 +280,20 @@ export function resolveAggregatedModelName(entry: AggregatedModel): string {
   }
   const source = entry.providers[0];
   return source ? source.upstreamModel.trim() : entry.model;
+}
+
+/**
+ * Resolve the aggregated list of reasoning efforts supported by an aggregated model.
+ *
+ * Returns the unified list from all enabled sources; falls back to an empty list.
+ */
+export function resolveAggregatedReasoningEfforts(entry: AggregatedModel): string[] {
+  if (entry.reasoningEfforts && entry.reasoningEfforts.length > 0) {
+    return entry.reasoningEfforts;
+  }
+  return normalizeReasoningEfforts(
+    entry.providers.flatMap((p) => p.reasoningEfforts ?? []),
+  );
 }
 
 /** Redact a secret for display while keeping head/tail recognizable. */
@@ -882,18 +921,6 @@ export function isMappingDeprecated(
   return !template.models.some(
     (model) => model.upstream_model === mapping.upstream_model,
   );
-}
-
-/** Trim, drop blanks and deduplicate reasoning efforts preserving first-seen order. */
-export function normalizeReasoningEfforts(
-  efforts: string[] | null | undefined,
-): string[] {
-  const normalized: string[] = [];
-  for (const effort of efforts ?? []) {
-    const trimmed = effort.trim();
-    if (trimmed !== "" && !normalized.includes(trimmed)) normalized.push(trimmed);
-  }
-  return normalized;
 }
 
 export function apiGatewayProviderTemplates() {

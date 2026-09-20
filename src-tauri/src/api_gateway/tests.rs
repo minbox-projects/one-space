@@ -2517,6 +2517,71 @@ fn build_gateway_provider_opencode_carries_gateway_models_and_marker() {
     );
 }
 
+/// The mapping's configured reasoning tiers are carried into the opencode model
+/// entry as `variants` (plus `reasoning: true`) so the tool offers exactly the
+/// gateway's strengths; a mapping without tiers keeps `{ "name" }` only.
+#[test]
+fn build_gateway_provider_opencode_carries_reasoning_efforts_as_variants() {
+    let mut gateway = upstream_provider("g1", "Gateway A", "https://upstream.example/v1", "sk", None);
+    let mut tiered = mapping(
+        "ds",
+        "deepseek/deepseek-v4.1-flash",
+        Some("DeepSeek V4.1 Flash"),
+    );
+    tiered.reasoning_efforts = vec!["low".to_string(), "high".to_string(), "max".to_string()];
+    let mut messy = mapping("messy", "remote-messy", None);
+    messy.reasoning_efforts = vec![" high ".to_string(), "high".to_string(), "  ".to_string()];
+    gateway.mappings = vec![tiered, messy, mapping("plain", "remote-plain", None)];
+
+    let value = build_gateway_provider(
+        "fus-oc",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[gateway.clone()],
+    )
+    .expect("opencode provider must build");
+
+    assert_eq!(
+        value["tool_config"]["models"],
+        json!({
+            "ds": {
+                "name": "DeepSeek V4.1 Flash",
+                "reasoning": true,
+                "variants": {
+                    "low": { "reasoningEffort": "low" },
+                    "high": { "reasoningEffort": "high" },
+                    "max": { "reasoningEffort": "max" },
+                },
+            },
+            "messy": {
+                "name": "remote-messy",
+                "reasoning": true,
+                "variants": { "high": { "reasoningEffort": "high" } },
+            },
+            "plain": { "name": "remote-plain" },
+        }),
+        "opencode must expose the mapping reasoning tiers as variants: {value}"
+    );
+
+    let codex = build_gateway_provider(
+        "fus-cx",
+        "codex",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[gateway],
+    )
+    .expect("codex provider must build");
+    assert_eq!(
+        codex["model"], "ds",
+        "codex keeps selecting the first enabled mapping's local model: {codex}"
+    );
+    assert!(
+        codex.get("variants").is_none(),
+        "codex must not receive opencode variants: {codex}"
+    );
+}
+
 #[test]
 fn build_gateway_provider_opencode_keeps_first_duplicate_and_falls_back_names() {
     let mut first = upstream_provider("g1", "Gateway A", "https://a.example/v1", "sk", None);
