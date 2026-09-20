@@ -1715,6 +1715,51 @@ fn create_from_template_copies_enabled_models_only_and_writes_no_prices() {
     );
 }
 
+/// Creating a provider from a template must carry the gateway display name:
+/// a missing template display name is completed from the upstream identifier
+/// so the new mapping never stays empty.
+#[test]
+fn create_from_template_completes_missing_display_name() {
+    let mut config = GatewayConfig::default();
+    seed_template(
+        &mut config,
+        template_with_models(
+            "t",
+            None,
+            UpstreamProtocol::ChatCompletions,
+            vec![
+                template_model("my-model-x", None, None, true),
+                template_model("  ", None, None, true),
+            ]
+            .into_iter()
+            .filter(|model| !model.upstream_model.trim().is_empty())
+            .collect(),
+        ),
+    );
+
+    let provider = apply_create_provider_from_template(
+        &mut config,
+        "t",
+        "My Provider",
+        "https://my.example.com/v1",
+        UpstreamProtocol::ChatCompletions,
+        "sk-secret",
+        |_next| Ok(()),
+    )
+    .expect("creation must succeed");
+
+    let mapping = provider
+        .mappings
+        .iter()
+        .find(|mapping| mapping.upstream_model == "my-model-x")
+        .expect("the enabled model must produce a mapping");
+    assert_eq!(
+        mapping.display_name.as_deref(),
+        Some("My Model X"),
+        "a missing template display name must be completed from the identifier"
+    );
+}
+
 /// REQ-006 / AC-007: an empty or whitespace-only API key rejects the creation
 /// with a readable error, leaves the config field-for-field unchanged and never
 /// calls the persistence seam.

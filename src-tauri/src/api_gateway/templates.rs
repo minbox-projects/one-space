@@ -664,7 +664,15 @@ fn propagate_to_derived(
                     upstream_model: model.upstream_model.clone(),
                     enabled: true,
                     protocol: Some(effective_protocol),
-                    display_name: model.display_name.clone(),
+                    display_name: model
+                        .display_name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string)
+                        .or_else(|| {
+                            complete_model_display_name(None, &model.upstream_model)
+                        }),
                     reasoning_efforts: model.reasoning_efforts.clone(),
                 });
             }
@@ -769,8 +777,11 @@ pub(in crate::api_gateway) async fn fetch_template_models(
 // ---------------------------------------------------------------------------
 
 /// Build the mapping a template model is created with: `local_model` equals
-/// `upstream_model`, carrying the model's enabled flag, the official display
-/// name and the model's effective protocol.
+/// `upstream_model` (or the template's trimmed `local_model` when present),
+/// carrying the model's enabled flag, the template's display name verbatim and
+/// the model's effective protocol. A missing or blank template display name
+/// falls back to the identifier segment transformed into display words so the
+/// new mapping never stays empty.
 fn mapping_from_template(
     template: &ProviderTemplate,
     model: &ProviderTemplateModel,
@@ -786,7 +797,13 @@ fn mapping_from_template(
         upstream_model: model.upstream_model.clone(),
         enabled: model.enabled,
         protocol: Some(model.protocol.unwrap_or(template.protocol)),
-        display_name: model.display_name.clone(),
+        display_name: model
+            .display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .or_else(|| complete_model_display_name(None, &model.upstream_model)),
         reasoning_efforts: model.reasoning_efforts.clone(),
     }
 }
