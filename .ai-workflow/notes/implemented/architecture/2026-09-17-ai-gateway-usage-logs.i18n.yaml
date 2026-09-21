@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (.ai-workflow/notes/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+# ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-17-ai-gateway-usage-logs.md
+2026-09-17-ai-gateway-usage-logs.md: 6d7547c31e8935a6b84f54cbf17e067a6edd2ac6
+2026-09-17-ai-gateway-usage-logs.zh.md: e718d9ccf03d4451a393e7362ce87af89471da7f

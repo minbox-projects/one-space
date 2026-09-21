@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (.ai-workflow/notes/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+# ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-09-17-api-fusion-local-key-name-dialog.md
+2026-09-17-api-fusion-local-key-name-dialog.md: 592346d8e54f98e00534872ee45d7cb12c40b977
+2026-09-17-api-fusion-local-key-name-dialog.zh.md: a18b04a34f85ce10dd16436d6cbc29f51ba4ea31

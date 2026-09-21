@@ -1,0 +1,42 @@
+# Agent Note: Gateway Single-Candidate Fast Fail and Standard Error Responses
+
+Status: implemented
+
+English | [中文](2026-09-18-gateway-fast-fail-and-standard-errors.zh.md)
+
+## Problem
+
+The relay always scheduled a retryable provider failure into the cooldown/backoff queue, even when the request had exactly one serviceable candidate. With no alternative provider to fall back to, the extra attempts only multiplied with the AI tool client's own retries and backoff waits, so a plain upstream 500 or 429 stayed hidden for a long time instead of surfacing as an error. Error responses were equally uneven: gateway-generated errors used per-site shapes (the all-unavailable payload had no `param`, the config-read failure had no `type`), a failure determined before any byte was written for a `stream: true` request was returned as HTTP 200 SSE with an error event and `[DONE]`, so an OpenAI-compatible client read a failed request as an open successful stream, a non-standard upstream 4xx body (HTML or plain text) was passed through unreadable to a client expecting `error.message`, and an upstream stream read failure after the first byte closed the stream with no signal that it had been truncated.
+
+## Decision
+
+A request that resolves to exactly one serviceable candidate makes only its single first-pass attempt. `attempt_non_streaming` and `attempt_streaming` enqueue a retryable failure only while `ordered.len() > 1`, so a single candidate never enters the cooldown/backoff queue, no `Retry-After`-driven wait is applied and the 120-second wait budget is never consumed; the failure takes the existing terminal path immediately. This holds for non-streaming and streaming alike, and the multi-candidate schedule — fallback-first pass, serial retry by earliest cooldown deadline, `Retry-After` priority, at most `MAX_RETRIES_PER_PROVIDER` (5) retries per provider and the 120-second budget — is unchanged.
+
+Every gateway-generated error now shares one envelope built by `error_envelope`, `{"error": {"message": ..., "type": ..., "code": ..., "param": null}}`, with a non-empty `message`, `type` and `code` and `param` always present as `null`. It covers request parse failure, config read failure, unknown path, unauthorized, a wrong method on `/v1/models` or on a forwarding path, an invalid request body and no serviceable candidate, where `all_unavailable_payload` keeps `code: all_providers_unavailable`.
+
+For a `stream: true` request, a failure determined before any byte is written downstream (no serviceable candidate, or every candidate exhausted) is written as HTTP 502 with `content-type: application/json` and the standard envelope instead of HTTP 200 SSE, so the transport no longer sends an error event with `[DONE]` for that case. The request-log semantics are deliberately unchanged: the no-candidate outcome still records status 502, and an exhausted stream still records the last determinable upstream status (`0` when no upstream HTTP status was determinable, for example a network error), never a fixed 502 for the transport.
+
+For an upstream 4xx classified as `ReturnToClient` by `selection::classify_failure` (for example 400, 413, 422), `is_standard_error_body` decides the body: a body that is valid JSON containing an `error` object is passed through byte-for-byte, while any other body keeps the original upstream status and is wrapped by `upstream_error_payload` into the standard envelope whose message names the upstream status and carries the readable body text, never local or upstream credentials or request headers. The non-streaming and streaming branches use the same rule.
+
+When the upstream stream read fails after the first byte has been forwarded, `attempt_streaming` first completes the SSE event boundary — prepending a newline only when the last forwarded byte is not already a newline — then appends one standalone `data: {"error": {...}}\n\n` fragment with `type: server_error` and `code: upstream_stream_error` and closes. It never sends `data: [DONE]`, never retries and never switches candidates, and the request still records exactly one failure log with status 502 and keeps the accumulated usage.
+
+## Alternatives considered
+
+- Keep retrying a single candidate: declined because a request with one candidate has no alternative upstream to fall back to, so the additional attempts only delay the error, and they multiply with the AI tool client's own retries and backoff.
+- Keep the pre-stream streaming failure as HTTP 200 SSE with an error event and `[DONE]`: declined because an OpenAI-compatible streaming client reads 200 as an open stream and cannot surface `error.message`, so a 502 JSON envelope is the signal it already understands.
+- Return every upstream 4xx body unchanged: declined because an HTML or plain-text body is unreadable to a client that expects the OpenAI error shape; only a body that already carries an `error` object is passed through.
+- Normalize every upstream 4xx body, including standard ones: declined because re-encoding a valid standard error could change its bytes and drop upstream detail, so a standard body must stay byte-for-byte.
+- Close a truncated stream silently: declined because the client cannot distinguish a normal end from a truncated stream; a standalone parseable error fragment after a completed event boundary makes the truncation visible.
+- Send `[DONE]` after the mid-stream error fragment: declined because `[DONE]` marks a successful end, and the client would record the failed stream as complete.
+- Keep the previous per-site error shapes: declined because an OpenAI-compatible client reads one envelope shape, so `param` and `type` must always exist and every gateway-generated error uses the same fields.
+
+## Consequences
+
+- A single-candidate 500 or 429 produces exactly one upstream request and an immediate standard error; the multi-candidate fallback-first schedule, `Retry-After` priority, per-provider cap and 120-second budget are unchanged, and the former single-candidate scheduling coverage was migrated to two candidates.
+- A `stream: true` request that fails before the first byte is written now returns HTTP 502 + `application/json` with `error.code == "all_providers_unavailable"`, while a request that fails after the first byte was written still returns an open SSE stream and now ends with one `type: server_error` / `code: upstream_stream_error` fragment and no `[DONE]`.
+- A standard upstream 4xx body is byte-for-byte identical to the upstream body, and a non-standard body keeps the upstream status and is wrapped in the standard envelope; neither path can leak credentials or request headers.
+- The unified envelope `{"message","type","code","param":null}` is the gateway-generated error contract, so the config-read failure now carries `type` and the all-unavailable payload now carries `param`.
+- The request-log failure-status semantics are unchanged: no serviceable candidate records 502, and an exhausted stream records the last determinable upstream status (`0` when none was determinable) and is never rewritten to a fixed 502.
+- `MEMORY.md` was updated in the same change for the failure classification, retry scheduling and error-response standards; the config schema, Tauri command signatures, `api_gateway.json` and `api_gateway_usage.db` are unchanged, so no migration is needed and a rollback reverts the behavior only.
+- Partial supersession: [API Gateway Usage Stats and Request Logs](2026-09-17-ai-gateway-usage-logs.md) is retained and cross-linked. Its recorded alternative premise that an all-unavailable streaming request returns HTTP 200 SSE no longer holds for a pre-stream failure, while its logging decision — results taken from the gateway's final outcome and recorded as `failure` with no amount — and its `unpriced_count` semantics still stand. No other active note is affected: the local-key, terminal-sync, aggregated-models and bilingual-note records are unrelated, and the terminal-independent-provider record does not describe retry or error transport.
+- Partial supersession: this record is retained and cross-linked by [Gateway Per-Attempt Request Logging and Stored Error Text](2026-09-20-gateway-per-attempt-logging-and-error-text.md), which replaces only the request-log failure-status statement above — the exhausted non-streaming terminal row now records the last observed upstream status like the streaming path — while the no-candidate 502 rule, fallback-first scheduling and standard error-envelope decisions here still stand.
