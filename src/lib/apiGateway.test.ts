@@ -25,6 +25,9 @@ import {
   clampUsagePage,
   formatGatewayTimestamp,
   formatGatewayTokens,
+  formatCacheTokensK,
+  formatGatewayDuration,
+  getGatewayDurationColorClass,
   formatUsageAmount,
   formatUsageGroupLabel,
   formatUsageRowAmount,
@@ -437,6 +440,64 @@ describe("金额格式化与未定价判定", () => {
   });
 });
 
+describe("formatGatewayDuration 耗时格式化", () => {
+  it("空值、非有限数字或负数返回破折号", () => {
+    expect(formatGatewayDuration(null)).toBe("—");
+    expect(formatGatewayDuration(undefined)).toBe("—");
+    expect(formatGatewayDuration(Number.NaN)).toBe("—");
+    expect(formatGatewayDuration(Number.POSITIVE_INFINITY)).toBe("—");
+    expect(formatGatewayDuration(-1)).toBe("—");
+  });
+
+  it("小于 1 分钟时单位为 s，且按四舍五入整秒计算", () => {
+    expect(formatGatewayDuration(0)).toBe("0s");
+    expect(formatGatewayDuration(300)).toBe("0s");
+    expect(formatGatewayDuration(500)).toBe("1s");
+    expect(formatGatewayDuration(1200)).toBe("1s");
+    expect(formatGatewayDuration(1600)).toBe("2s");
+    expect(formatGatewayDuration(2000)).toBe("2s");
+    expect(formatGatewayDuration(45200)).toBe("45s");
+    expect(formatGatewayDuration(59400)).toBe("59s");
+  });
+
+  it("达到或超过 1 分钟时单位为 1m 2s 格式", () => {
+    // 59600ms 四舍五入为 60s，即 1m 0s
+    expect(formatGatewayDuration(59600)).toBe("1m 0s");
+    expect(formatGatewayDuration(60000)).toBe("1m 0s");
+    expect(formatGatewayDuration(62000)).toBe("1m 2s");
+    expect(formatGatewayDuration(62800)).toBe("1m 3s");
+    expect(formatGatewayDuration(125000)).toBe("2m 5s");
+    expect(formatGatewayDuration(3661000)).toBe("61m 1s");
+  });
+});
+
+describe("getGatewayDurationColorClass 耗时颜色类名映射", () => {
+  it("空值、非有限数字或负数返回 text-muted-foreground", () => {
+    expect(getGatewayDurationColorClass(null)).toBe("text-muted-foreground");
+    expect(getGatewayDurationColorClass(undefined)).toBe("text-muted-foreground");
+    expect(getGatewayDurationColorClass(Number.NaN)).toBe("text-muted-foreground");
+    expect(getGatewayDurationColorClass(Number.POSITIVE_INFINITY)).toBe("text-muted-foreground");
+    expect(getGatewayDurationColorClass(-1)).toBe("text-muted-foreground");
+  });
+
+  it("小于 3 秒 (< 3000ms) 返回绿色 text-emerald-500", () => {
+    expect(getGatewayDurationColorClass(0)).toBe("text-emerald-500");
+    expect(getGatewayDurationColorClass(500)).toBe("text-emerald-500");
+    expect(getGatewayDurationColorClass(2999)).toBe("text-emerald-500");
+  });
+
+  it("3 秒至 15 秒 (3000ms <= ms <= 15000ms) 返回琥珀黄色 text-amber-500", () => {
+    expect(getGatewayDurationColorClass(3000)).toBe("text-amber-500");
+    expect(getGatewayDurationColorClass(8000)).toBe("text-amber-500");
+    expect(getGatewayDurationColorClass(15000)).toBe("text-amber-500");
+  });
+
+  it("超过 15 秒 (> 15000ms) 返回玫瑰红色 text-rose-500", () => {
+    expect(getGatewayDurationColorClass(15001)).toBe("text-rose-500");
+    expect(getGatewayDurationColorClass(60000)).toBe("text-rose-500");
+  });
+});
+
 describe("formatGatewayTokens Token格式化", () => {
   it("0或无输入时返回0", () => {
     expect(formatGatewayTokens(0)).toBe("0");
@@ -477,6 +538,32 @@ describe("formatGatewayTokens Token格式化", () => {
     expect(formatGatewayTokens(100000000)).toBe("1亿");
     expect(formatGatewayTokens(150000000)).toBe("1.5亿");
     expect(formatGatewayTokens(2300000000)).toBe("23亿");
+  });
+});
+
+describe("formatCacheTokensK 缓存Token xxK格式化", () => {
+  it("0或无输入时返回0K", () => {
+    expect(formatCacheTokensK(0)).toBe("0K");
+    expect(formatCacheTokensK(-10)).toBe("0K");
+    expect(formatCacheTokensK(null)).toBe("0K");
+    expect(formatCacheTokensK(undefined)).toBe("0K");
+    expect(formatCacheTokensK(Number.NaN)).toBe("0K");
+    expect(formatCacheTokensK(Number.POSITIVE_INFINITY)).toBe("0K");
+  });
+
+  it("小于1000的数字格式化为保留1位小数的K", () => {
+    expect(formatCacheTokensK(500)).toBe("0.5K");
+    expect(formatCacheTokensK(100)).toBe("0.1K");
+  });
+
+  it("以1000为单位格式化为xxK并最多保留1位小数", () => {
+    expect(formatCacheTokensK(1000)).toBe("1K");
+    expect(formatCacheTokensK(1500)).toBe("1.5K");
+    expect(formatCacheTokensK(10000)).toBe("10K");
+    expect(formatCacheTokensK(10100)).toBe("10.1K");
+    expect(formatCacheTokensK(10120)).toBe("10.1K");
+    expect(formatCacheTokensK(10180)).toBe("10.2K");
+    expect(formatCacheTokensK(25400)).toBe("25.4K");
   });
 });
 

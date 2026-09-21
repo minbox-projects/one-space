@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS usage_logs (
     amount REAL,
     duration_ms INTEGER NOT NULL,
     error_message TEXT,
-    terminal INTEGER NOT NULL DEFAULT 1
+    terminal INTEGER NOT NULL DEFAULT 1,
+    reasoning_effort TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_usage_logs_timestamp ON usage_logs(timestamp_ms);
 CREATE INDEX IF NOT EXISTS idx_usage_logs_local_model ON usage_logs(local_model);
@@ -148,6 +149,10 @@ pub struct UsageLogRecord {
     /// are the completed attempts that a later row superseded (REQ-001).
     #[serde(default = "default_true")]
     pub terminal: bool,
+    /// Reasoning effort level (e.g. "low", "medium", "high") requested by client;
+    /// `None` when not specified.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 /// Validate a user-provided retention value: only 1-365 days are accepted.
@@ -676,12 +681,13 @@ const INSERT_SQL: &str = "
 INSERT INTO usage_logs (
     timestamp_ms, local_model, upstream_model, provider_id, provider_name,
     result, status, input_tokens, cache_read_tokens, cache_write_tokens,
-    output_tokens, total_tokens, amount, duration_ms, error_message, terminal
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    output_tokens, total_tokens, amount, duration_ms, error_message, terminal,
+    reasoning_effort
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ";
 
 /// Column list of every record-producing `SELECT`, in [`record_from_row`] order.
-const RECORD_COLUMNS: &str = "timestamp_ms, local_model, upstream_model, provider_id, provider_name, result, status, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, total_tokens, amount, duration_ms, error_message, terminal";
+const RECORD_COLUMNS: &str = "timestamp_ms, local_model, upstream_model, provider_id, provider_name, result, status, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, total_tokens, amount, duration_ms, error_message, terminal, reasoning_effort";
 
 fn metrics_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<UsageMetrics> {
     Ok(UsageMetrics {
@@ -715,6 +721,7 @@ fn record_from_row(row: &Row<'_>) -> rusqlite::Result<UsageLogRecord> {
         duration_ms: row.get::<_, i64>(13)? as u64,
         error_message: row.get::<_, Option<String>>(14)?,
         terminal: row.get::<_, i64>(15)? != 0,
+        reasoning_effort: row.get::<_, Option<String>>(16)?,
     })
 }
 
@@ -789,6 +796,11 @@ fn migrate_usage_logs(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| error.to_string())?;
     }
+    if !has_column("reasoning_effort") {
+        connection
+            .execute("ALTER TABLE usage_logs ADD COLUMN reasoning_effort TEXT", [])
+            .map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 
@@ -855,6 +867,7 @@ impl UsageLogStore {
                     record.duration_ms as i64,
                     record.error_message,
                     record.terminal,
+                    record.reasoning_effort,
                 ],
             )
             .map_err(|error| error.to_string())?;
@@ -895,6 +908,7 @@ impl UsageLogStore {
                         record.duration_ms as i64,
                         record.error_message,
                         record.terminal,
+                        record.reasoning_effort,
                     ])
                     .map_err(|error| error.to_string())?;
             }

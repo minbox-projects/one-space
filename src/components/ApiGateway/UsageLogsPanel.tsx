@@ -2,19 +2,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
+  AlertCircle,
   ArrowDown,
   ArrowUp,
   ChevronDown,
-  Database,
   Filter,
   Info,
   RefreshCw,
+  Zap,
 } from "lucide-react";
 import { SelectDropdown } from "./SelectDropdown";
 import {
   apiGatewayRequestLogs,
   clampUsagePage,
-  formatGatewayTokens,
+  formatCacheTokensK,
+  formatGatewayDuration,
+  getGatewayDurationColorClass,
   formatUsageAmount,
   formatUsageGroupLabel,
   formatUtc8DateTime,
@@ -178,6 +181,64 @@ function getHttpStatusReason(
         title: t("apiGatewayErrorUnknown", "Request failed"),
       };
   }
+}
+
+function resolveLogActionableHint(
+  status: number,
+  errorMessage: string,
+  t: (key: string, fallback: string) => string,
+): string | null {
+  const lower = errorMessage.toLowerCase();
+  if (status === 429) {
+    const isQuota =
+      lower.includes("quota") ||
+      lower.includes("limit") ||
+      lower.includes("usage") ||
+      lower.includes("balance") ||
+      lower.includes("billing") ||
+      lower.includes("exceeded") ||
+      lower.includes("额度");
+    if (isQuota) {
+      return t(
+        "apiGatewayLogsHintQuotaExceeded",
+        "排查建议：上游服务商账户额度或周期配额已耗尽，请充值或切换备用服务商。",
+      );
+    }
+    return t(
+      "apiGatewayLogsHintRateLimited",
+      "排查建议：触发上游速率或并发限制，建议降低并发或稍后重试。",
+    );
+  }
+  if (status === 0 || lower.includes("network error")) {
+    if (
+      lower.includes("refused") ||
+      lower.includes("unreachable") ||
+      lower.includes("unable to connect") ||
+      lower.includes("failed to connect")
+    ) {
+      return t(
+        "apiGatewayLogsHintNetworkRefused",
+        "排查建议：无法连接上游地址，请检查服务商 Base URL 是否正确或网络代理配置。",
+      );
+    }
+    if (lower.includes("timed out") || lower.includes("timeout")) {
+      return t(
+        "apiGatewayLogsHintTimeout",
+        "排查建议：连接上游超时，请检查网络稳定性或代理延迟。",
+      );
+    }
+    if (lower.includes("dns") || lower.includes("resolve")) {
+      return t(
+        "apiGatewayLogsHintDns",
+        "排查建议：无法解析上游域名，请检查 Base URL 拼写及 DNS 解析配置。",
+      );
+    }
+    return t(
+      "apiGatewayLogsHintNetwork",
+      "排查建议：网络连接失败，请检查上游端点连通性及本地网络设置。",
+    );
+  }
+  return null;
 }
 
 export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
@@ -540,16 +601,16 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
             >
               <thead className="bg-muted/50 text-muted-foreground">
                 <tr>
-                  <th className="px-3 py-2 font-medium">
+                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
                     {t("apiGatewayLogsGroupColumn", "Group")}
                   </th>
-                  <th className="px-3 py-2 text-right font-medium">
+                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
                     {t("apiGatewayLogsRequestsColumn", "Requests")}
                   </th>
-                  <th className="px-3 py-2 text-right font-medium">
+                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
                     {t("apiGatewayLogsErrorsColumn", "Errors")}
                   </th>
-                  <th className="px-3 py-2 text-right font-medium">
+                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
                     {t("apiGatewayLogsLastRequestColumn", "Last request")}
                   </th>
                 </tr>
@@ -561,16 +622,16 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                     className="border-t"
                     data-testid="api-gateway-logs-group-row"
                   >
-                    <td className="px-3 py-2 font-medium">
+                    <td className="px-3 py-2 font-medium whitespace-nowrap">
                       {formatUsageGroupLabel(groupBy, group.group)}
                     </td>
-                    <td className="px-3 py-2 text-right">
+                    <td className="px-3 py-2 text-left whitespace-nowrap">
                       {new Intl.NumberFormat().format(group.request_count)}
                     </td>
-                    <td className="px-3 py-2 text-right">
+                    <td className="px-3 py-2 text-left whitespace-nowrap">
                       {new Intl.NumberFormat().format(group.error_count)}
                     </td>
-                    <td className="px-3 py-2 text-right">
+                    <td className="px-3 py-2 text-left whitespace-nowrap">
                       {formatUtc8DateTime(group.last_request_at_ms) ?? "—"}
                     </td>
                   </tr>
@@ -592,19 +653,22 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
             >
               <thead className="bg-muted/50 text-muted-foreground">
                 <tr>
-                  <th className="px-3 py-2 font-medium">
+                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
                     {t("apiGatewayLogsTimeColumn", "Time")}
                   </th>
-                  <th className="px-3 py-2 font-medium">
+                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
                     {t("apiGatewayLogsStatusColumn", "Status")}
                   </th>
-                  <th className="px-3 py-2 font-medium">
+                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
                     {t("apiGatewayLogsModelColumn", "Model")}
                   </th>
-                  <th className="px-3 py-2 text-right font-medium">
+                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
+                    {t("apiGatewayLogsDurationColumn", "Duration")}
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
                     {t("apiGatewayLogsTokensColumn", "Tokens")}
                   </th>
-                  <th className="px-3 py-2 text-right font-medium">
+                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
                     {t("apiGatewayLogsCostColumn", "Cost ($)")}
                   </th>
                 </tr>
@@ -616,10 +680,10 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                     className="border-t"
                     data-testid="api-gateway-logs-row"
                   >
-                    <td className="px-3 py-2 font-mono">
+                    <td className="px-3 py-2 font-mono whitespace-nowrap">
                       {formatUtc8DateTime(item.timestamp_ms) ?? "—"}
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-2 whitespace-nowrap">
                       {(() => {
                         const style = statusBadgeStyle(item.result);
                         const isFailure = item.result === "failure";
@@ -629,28 +693,89 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                         const storedErrorMessage = isFailure
                           ? (item.error_message?.trim() ?? "")
                           : "";
+                        const hasErrorInfo = isFailure && (storedErrorMessage !== "" || !!reason);
+                        const showAbove = index >= 4 && index >= records.length - 3;
+                        const tooltipClass = showAbove ? "bottom-full mb-1.5" : "top-full mt-1.5";
                         return (
                           <div className="flex flex-col gap-0.5">
-                            <span
-                              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium w-fit ${style.badge}`}
-                              data-testid="api-gateway-logs-status-badge"
-                              title={reason ? reason.title : undefined}
-                            >
+                            <div className="inline-flex items-center gap-1.5">
                               <span
-                                className={`h-1.5 w-1.5 rounded-full shrink-0 ${style.dot}`}
-                              />
-                              <span>
-                                {t(
-                                  usageStatusTranslationKey(item.result),
-                                  STATUS_FALLBACKS[item.result],
-                                )}
-                              </span>
-                              {isFailure && item.status > 0 ? (
-                                <span className="font-mono text-[10px] opacity-80">
-                                  {item.status}
+                                className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium w-fit ${style.badge}`}
+                                data-testid="api-gateway-logs-status-badge"
+                                title={reason ? reason.title : undefined}
+                              >
+                                <span
+                                  className={`h-1.5 w-1.5 rounded-full shrink-0 ${style.dot}`}
+                                />
+                                <span>
+                                  {t(
+                                    usageStatusTranslationKey(item.result),
+                                    STATUS_FALLBACKS[item.result],
+                                  )}
                                 </span>
+                                {isFailure && item.status > 0 ? (
+                                  <span className="font-mono text-[10px] opacity-80">
+                                    {item.status}
+                                  </span>
+                                ) : null}
+                              </span>
+                              {hasErrorInfo ? (
+                                <div className="relative group inline-flex items-center group-hover:z-50 focus-within:z-50">
+                                  <button
+                                    type="button"
+                                    className="inline-flex items-center justify-center rounded p-0.5 text-destructive hover:bg-destructive/10 focus:outline-none focus:ring-1 focus:ring-destructive/30 transition-colors cursor-pointer"
+                                    aria-label={
+                                      storedErrorMessage !== ""
+                                        ? `${t("apiGatewayLogsUpstreamError", "Upstream error")}: ${storedErrorMessage}`
+                                        : (reason?.title ?? t("apiGatewayLogsErrorDetail", "Error details"))
+                                    }
+                                    data-testid="api-gateway-logs-status-reason"
+                                  >
+                                    <AlertCircle className="h-3.5 w-3.5 text-destructive shrink-0" data-testid="api-gateway-logs-error-icon" />
+                                  </button>
+                                  <div
+                                    role="tooltip"
+                                    className={`pointer-events-none absolute left-0 ${tooltipClass} hidden group-hover:flex group-focus-within:flex flex-col gap-1 rounded-md border bg-popover p-2.5 text-left text-xs text-popover-foreground shadow-lg z-50 min-w-[220px] max-w-[360px]`}
+                                    data-testid="api-gateway-logs-error-tooltip"
+                                  >
+                                    <div className="font-semibold text-[11px] border-b pb-1 text-destructive flex items-center gap-1">
+                                      <AlertCircle className="h-3 w-3 shrink-0" />
+                                      <span>{t("apiGatewayLogsErrorDetail", "Error details")}</span>
+                                    </div>
+                                    {storedErrorMessage !== "" ? (
+                                      <div className="whitespace-pre-wrap break-words text-[11px] text-foreground">
+                                        {storedErrorMessage}
+                                      </div>
+                                    ) : null}
+                                    {reason ? (
+                                      <div
+                                        className={`text-[10px] text-muted-foreground ${
+                                          storedErrorMessage !== "" ? "pt-0.5 border-t border-border/50" : ""
+                                        }`}
+                                      >
+                                        {reason.title}
+                                      </div>
+                                    ) : null}
+                                    {(() => {
+                                      const hint = resolveLogActionableHint(
+                                        item.status,
+                                        storedErrorMessage,
+                                        t,
+                                      );
+                                      if (!hint) return null;
+                                      return (
+                                        <div
+                                          className="pt-1 mt-0.5 border-t border-border/50 text-[10px] text-amber-600 dark:text-amber-400 font-medium"
+                                          data-testid="api-gateway-logs-actionable-hint"
+                                        >
+                                          {hint}
+                                        </div>
+                                      );
+                                    })()}
+                                  </div>
+                                </div>
                               ) : null}
-                            </span>
+                            </div>
                             {!isTerminal ? (
                               <span
                                 className="text-[10px] text-muted-foreground w-fit"
@@ -659,49 +784,23 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                                 {t("apiGatewayLogsAttemptLabel", "Attempt")}
                               </span>
                             ) : null}
-                            {storedErrorMessage !== "" ? (
-                              <div className="relative group w-fit group-hover:z-50 focus-within:z-50">
-                                <div
-                                  className="text-[10px] text-muted-foreground truncate max-w-[200px]"
-                                  tabIndex={0}
-                                  aria-label={`${t("apiGatewayLogsUpstreamError", "Upstream error")}: ${storedErrorMessage}`}
-                                  data-testid="api-gateway-logs-status-reason"
-                                >
-                                  {storedErrorMessage}
-                                </div>
-                                <div
-                                  role="tooltip"
-                                  className="pointer-events-none absolute left-0 top-full mt-1.5 hidden group-hover:flex group-focus-within:flex flex-col gap-1 rounded-md border bg-popover p-2 text-left text-xs text-popover-foreground shadow-lg z-50 min-w-[200px] max-w-[320px]"
-                                  data-testid="api-gateway-logs-error-tooltip"
-                                >
-                                  <div className="font-semibold text-[11px] border-b pb-1 text-muted-foreground">
-                                    {t("apiGatewayLogsUpstreamError", "Upstream error")}
-                                  </div>
-                                  <div className="whitespace-pre-wrap break-words text-[11px]">
-                                    {storedErrorMessage}
-                                  </div>
-                                  {reason ? (
-                                    <div className="text-[10px] text-muted-foreground">
-                                      {reason.title}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              </div>
-                            ) : reason ? (
-                              <div
-                                className="text-[10px] text-muted-foreground truncate max-w-[200px]"
-                                title={reason.title}
-                                data-testid="api-gateway-logs-status-reason"
-                              >
-                                {reason.label}
-                              </div>
-                            ) : null}
                           </div>
                         );
                       })()}
                     </td>
                     <td className="px-3 py-2">
-                      <div className="font-medium whitespace-nowrap">{item.local_model}</div>
+                      <div className="flex items-center gap-1.5 whitespace-nowrap">
+                        <span className="font-medium">{item.local_model}</span>
+                        {item.reasoning_effort ? (
+                          <span
+                            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-normal leading-none bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20"
+                            data-testid="api-gateway-logs-reasoning-effort"
+                            title={`${t("reasoningEffort", "Reasoning Effort")}: ${item.reasoning_effort}`}
+                          >
+                            {item.reasoning_effort}
+                          </span>
+                        ) : null}
+                      </div>
                       {(item.provider_name || item.upstream_model) ? (
                         <div className="text-[10px] text-muted-foreground flex items-center gap-1 whitespace-nowrap">
                           {item.provider_name ? (
@@ -726,133 +825,144 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                         </div>
                       ) : null}
                     </td>
-                    <td className="px-3 py-2 text-right" data-testid="api-gateway-logs-tokens-cell">
+                    <td
+                      className={`px-3 py-2 text-left font-mono text-xs whitespace-nowrap ${getGatewayDurationColorClass(item.duration_ms)}`}
+                      data-testid="api-gateway-logs-duration-cell"
+                    >
+                      {formatGatewayDuration(item.duration_ms)}
+                    </td>
+                    <td className="px-3 py-2 text-left font-mono" data-testid="api-gateway-logs-tokens-cell">
                       {(() => {
                         const cacheTokens = item.cache_read_tokens + item.cache_write_tokens;
                         const showAbove = index >= 4 && index >= records.length - 3;
                         const tooltipClass = showAbove ? "bottom-full mb-1.5" : "top-full mt-1.5";
+                        const inputFormatted = new Intl.NumberFormat().format(item.input_tokens);
+                        const outputFormatted = new Intl.NumberFormat().format(item.output_tokens);
+                        const cacheFormatted = formatCacheTokensK(cacheTokens);
                         return (
-                          <div className="inline-flex items-center justify-end gap-1.5 font-mono text-xs">
+                          <div className="flex flex-col gap-0.5">
+                            {/* 第一行：下行与上行在同一行，显示真实原值 */}
                             <div
-                              className="flex items-center gap-1.5 text-[11px] text-muted-foreground whitespace-nowrap"
+                              className="flex items-center gap-1.5 text-xs whitespace-nowrap"
                               data-testid="api-gateway-logs-tokens-breakdown"
                             >
                               <span
                                 className="inline-flex items-center gap-0.5"
-                                title={`${t("apiGatewayLogsTokensInput", "Input")}: ${new Intl.NumberFormat().format(item.input_tokens)}`}
+                                title={`${t("apiGatewayLogsTokensInput", "Input")}: ${inputFormatted}`}
                               >
                                 <ArrowDown
-                                  className="h-3 w-3 text-muted-foreground/80 shrink-0"
+                                  className="h-3 w-3 text-emerald-500 shrink-0"
                                   aria-label={t("apiGatewayLogsTokensInput", "Input")}
                                   data-testid="api-gateway-logs-tokens-input-icon"
                                 />
                                 <span className="text-foreground font-medium">
-                                  {formatGatewayTokens(item.input_tokens)}
+                                  {inputFormatted}
                                 </span>
                               </span>
                               <span className="text-muted-foreground/40 font-sans">·</span>
                               <span
                                 className="inline-flex items-center gap-0.5"
-                                title={`${t("apiGatewayLogsTokensOutput", "Output")}: ${new Intl.NumberFormat().format(item.output_tokens)}`}
+                                title={`${t("apiGatewayLogsTokensOutput", "Output")}: ${outputFormatted}`}
                               >
                                 <ArrowUp
-                                  className="h-3 w-3 text-muted-foreground/80 shrink-0"
+                                  className="h-3 w-3 text-sky-500 shrink-0"
                                   aria-label={t("apiGatewayLogsTokensOutput", "Output")}
                                   data-testid="api-gateway-logs-tokens-output-icon"
                                 />
                                 <span className="text-foreground font-medium">
-                                  {formatGatewayTokens(item.output_tokens)}
-                                </span>
-                              </span>
-                              <span className="text-muted-foreground/40 font-sans">·</span>
-                              <span
-                                className="inline-flex items-center gap-0.5"
-                                title={`${t("apiGatewayLogsTokensCache", "Cache")}: ${new Intl.NumberFormat().format(cacheTokens)}`}
-                              >
-                                <Database
-                                  className="h-3 w-3 text-muted-foreground/80 shrink-0"
-                                  aria-label={t("apiGatewayLogsTokensCache", "Cache")}
-                                  data-testid="api-gateway-logs-tokens-cache-icon"
-                                />
-                                <span className="text-foreground font-medium">
-                                  {formatGatewayTokens(cacheTokens)}
+                                  {outputFormatted}
                                 </span>
                               </span>
                             </div>
 
-                            <div className="relative group inline-flex items-center shrink-0 group-hover:z-50 focus-within:z-50">
-                              <button
-                                type="button"
-                                className="text-muted-foreground/60 hover:text-foreground transition-colors p-0.5 rounded focus:outline-none"
-                                aria-label={t("apiGatewayLogsTokensDetail", "Tokens breakdown")}
-                                data-testid="api-gateway-logs-tokens-info-btn"
+                            {/* 第二行：缓存在一行，显示 xxK 格式，带有 Zap 图标和明细提示 */}
+                            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground whitespace-nowrap">
+                              <span
+                                className="inline-flex items-center gap-0.5"
+                                title={`${t("apiGatewayLogsTokensCache", "Cache")}: ${new Intl.NumberFormat().format(cacheTokens)}`}
                               >
-                                <Info className="h-3.5 w-3.5" />
-                              </button>
-                              <div
-                                role="tooltip"
-                                className={`pointer-events-none absolute right-0 ${tooltipClass} hidden group-hover:flex group-focus-within:flex flex-col gap-1 rounded-md border bg-popover p-2 text-left text-xs text-popover-foreground shadow-lg z-50 min-w-[170px]`}
-                                data-testid="api-gateway-logs-tokens-tooltip"
-                              >
-                                <div className="font-semibold text-[11px] border-b pb-1 text-muted-foreground">
-                                  {t("apiGatewayLogsTokensDetail", "Tokens breakdown")}
-                                </div>
-                                <div className="space-y-0.5 pt-0.5 text-[11px]">
-                                  <div className="flex items-center justify-between gap-3">
-                                    <span className="inline-flex items-center gap-1 text-muted-foreground">
-                                      <ArrowDown className="h-3 w-3 shrink-0" />
-                                      {t("apiGatewayLogsTokensInput", "Input")}:
-                                    </span>
-                                    <span className="font-mono font-medium">
-                                      {new Intl.NumberFormat().format(item.input_tokens)}
-                                    </span>
+                                <Zap
+                                  className="h-3 w-3 text-amber-500/80 shrink-0"
+                                  aria-label={t("apiGatewayLogsTokensCache", "Cache")}
+                                  data-testid="api-gateway-logs-tokens-cache-icon"
+                                />
+                                <span data-testid="api-gateway-logs-tokens-cache-value">{cacheFormatted}</span>
+                              </span>
+
+                              <div className="relative group inline-flex items-center shrink-0 group-hover:z-50 focus-within:z-50">
+                                <button
+                                  type="button"
+                                  className="text-muted-foreground/60 hover:text-foreground transition-colors p-0.5 rounded focus:outline-none cursor-pointer"
+                                  aria-label={t("apiGatewayLogsTokensDetail", "Tokens breakdown")}
+                                  data-testid="api-gateway-logs-tokens-info-btn"
+                                >
+                                  <Info className="h-3 w-3" />
+                                </button>
+                                <div
+                                  role="tooltip"
+                                  className={`pointer-events-none absolute left-0 ${tooltipClass} hidden group-hover:flex group-focus-within:flex flex-col gap-1 rounded-md border bg-popover p-2.5 text-left text-xs text-popover-foreground shadow-lg z-50 min-w-[180px]`}
+                                  data-testid="api-gateway-logs-tokens-tooltip"
+                                >
+                                  <div className="font-semibold text-[11px] border-b pb-1 text-muted-foreground">
+                                    {t("apiGatewayLogsTokensDetail", "Tokens breakdown")}
                                   </div>
-                                  <div className="flex items-center justify-between gap-3">
-                                    <span className="inline-flex items-center gap-1 text-muted-foreground">
-                                      <ArrowUp className="h-3 w-3 shrink-0" />
-                                      {t("apiGatewayLogsTokensOutput", "Output")}:
-                                    </span>
-                                    <span className="font-mono font-medium">
-                                      {new Intl.NumberFormat().format(item.output_tokens)}
-                                    </span>
-                                  </div>
-                                  <div className="flex items-center justify-between gap-3">
-                                    <span className="inline-flex items-center gap-1 text-muted-foreground">
-                                      <Database className="h-3 w-3 shrink-0" />
-                                      {t("apiGatewayLogsTokensCache", "Cache")}:
-                                    </span>
-                                    <span className="font-mono font-medium">
-                                      {new Intl.NumberFormat().format(cacheTokens)}
-                                    </span>
-                                  </div>
-                                  {(item.cache_read_tokens > 0 || item.cache_write_tokens > 0) && (
-                                    <div className="text-[10px] text-muted-foreground/70 pl-2 space-y-0.5">
-                                      <div className="flex items-center justify-between gap-3">
-                                        <span>
-                                          {t("apiGatewayLogsTokensCacheRead", "Cache read")}:
-                                        </span>
-                                        <span className="font-mono">
-                                          {new Intl.NumberFormat().format(item.cache_read_tokens)}
-                                        </span>
-                                      </div>
-                                      <div className="flex items-center justify-between gap-3">
-                                        <span>
-                                          {t("apiGatewayLogsTokensCacheWrite", "Cache write")}:
-                                        </span>
-                                        <span className="font-mono">
-                                          {new Intl.NumberFormat().format(item.cache_write_tokens)}
-                                        </span>
-                                      </div>
+                                  <div className="space-y-0.5 pt-0.5 text-[11px]">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <span className="inline-flex items-center gap-1 text-muted-foreground">
+                                        <ArrowDown className="h-3 w-3 text-emerald-500 shrink-0" />
+                                        {t("apiGatewayLogsTokensInput", "Input")}:
+                                      </span>
+                                      <span className="font-mono font-medium">
+                                        {inputFormatted}
+                                      </span>
                                     </div>
-                                  )}
-                                  <div className="border-t my-1 border-border"></div>
-                                  <div className="flex items-center justify-between gap-3 font-semibold">
-                                    <span>
-                                      {t("apiGatewayLogsTokensTotal", "Total")}:
-                                    </span>
-                                    <span className="font-mono">
-                                      {new Intl.NumberFormat().format(item.total_tokens)}
-                                    </span>
+                                    <div className="flex items-center justify-between gap-3">
+                                      <span className="inline-flex items-center gap-1 text-muted-foreground">
+                                        <ArrowUp className="h-3 w-3 text-sky-500 shrink-0" />
+                                        {t("apiGatewayLogsTokensOutput", "Output")}:
+                                      </span>
+                                      <span className="font-mono font-medium">
+                                        {outputFormatted}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-3">
+                                      <span className="inline-flex items-center gap-1 text-muted-foreground">
+                                        <Zap className="h-3 w-3 text-amber-500/80 shrink-0" />
+                                        {t("apiGatewayLogsTokensCache", "Cache")}:
+                                      </span>
+                                      <span className="font-mono font-medium">
+                                        {new Intl.NumberFormat().format(cacheTokens)}
+                                      </span>
+                                    </div>
+                                    {(item.cache_read_tokens > 0 || item.cache_write_tokens > 0) && (
+                                      <div className="text-[10px] text-muted-foreground/70 pl-2 space-y-0.5">
+                                        <div className="flex items-center justify-between gap-3">
+                                          <span>
+                                            {t("apiGatewayLogsTokensCacheRead", "Cache read")}:
+                                          </span>
+                                          <span className="font-mono">
+                                            {new Intl.NumberFormat().format(item.cache_read_tokens)}
+                                          </span>
+                                        </div>
+                                        <div className="flex items-center justify-between gap-3">
+                                          <span>
+                                            {t("apiGatewayLogsTokensCacheWrite", "Cache write")}:
+                                          </span>
+                                          <span className="font-mono">
+                                            {new Intl.NumberFormat().format(item.cache_write_tokens)}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    )}
+                                    <div className="border-t my-1 border-border"></div>
+                                    <div className="flex items-center justify-between gap-3 font-semibold">
+                                      <span>
+                                        {t("apiGatewayLogsTokensTotal", "Total")}:
+                                      </span>
+                                      <span className="font-mono">
+                                        {new Intl.NumberFormat().format(item.total_tokens)}
+                                      </span>
+                                    </div>
                                   </div>
                                 </div>
                               </div>
@@ -861,7 +971,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                         );
                       })()}
                     </td>
-                    <td className="px-3 py-2 text-right">
+                    <td className="px-3 py-2 text-left whitespace-nowrap">
                       {item.amount === null ? "—" : formatUsageAmount(item.amount)}
                     </td>
                   </tr>
