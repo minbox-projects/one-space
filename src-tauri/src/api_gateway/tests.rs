@@ -12799,7 +12799,137 @@ fn usage_stats_returns_unpriced_items_with_provider_and_models() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// AC-021 / REQ-018 (repair F3): the ungrouped page response exposes a bounded,
+/// Unpriced eligibility: only requests that reached an upstream model with no
+/// matching price row AND would incur usage-based cost count as unpriced
+/// (`amount IS NULL AND upstream_model <> '' AND (result = 'success' OR
+/// total_tokens > 0)`). Zero-usage failures cost nothing and must not trigger
+/// the "no configured price" hint; successes count even with zero recorded
+/// tokens; failures with partial usage count because real tokens were consumed.
+#[test]
+fn usage_stats_unpriced_eligibility_requires_success_or_usage() {
+    let (dir, store) = usage_store("usage-unpriced-eligibility");
+    let base = rfc3339_millis("2026-09-16T08:00:00+08:00");
+
+    // (a) Terminal failure with zero usage to an unpriced upstream model:
+    // never produced tokens, so it must NOT be counted as unpriced.
+    store
+        .append(
+            &sample_record(
+                base,
+                "local-zero-fail",
+                "remote-unpriced",
+                "p1",
+                "Provider One",
+                UsageResult::Failure,
+                None,
+                UsageTokens::default(),
+            ),
+            365,
+        )
+        .unwrap();
+    // (b) Terminal failure with recorded partial usage: real tokens were
+    // consumed, so it IS counted as unpriced.
+    store
+        .append(
+            &sample_record(
+                base + 1_000,
+                "local-partial-fail",
+                "remote-unpriced",
+                "p1",
+                "Provider One",
+                UsageResult::Failure,
+                None,
+                tokens(5, 0, 0, 0),
+            ),
+            365,
+        )
+        .unwrap();
+    // (c) Terminal success with zero recorded usage: the model was served, so
+    // it IS counted as unpriced.
+    store
+        .append(
+            &sample_record(
+                base + 2_000,
+                "local-zero-success",
+                "remote-unpriced",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                None,
+                UsageTokens::default(),
+            ),
+            365,
+        )
+        .unwrap();
+
+    let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
+    assert_eq!(
+        stats.totals.request_count, 3,
+        "every terminal row is still a request"
+    );
+    assert_eq!(
+        stats.totals.unpriced_count, 2,
+        "only the partial-usage failure and the zero-usage success are unpriced"
+    );
+
+    let unpriced_of = |local: &str| {
+        stats
+            .models
+            .iter()
+            .find(|row| row.local_model == local)
+            .unwrap_or_else(|| panic!("{local} row"))
+            .metrics
+            .unpriced_count
+    };
+    assert_eq!(unpriced_of("local-zero-fail"), 0);
+    assert_eq!(unpriced_of("local-partial-fail"), 1);
+    assert_eq!(unpriced_of("local-zero-success"), 1);
+
+    let partial = stats
+        .models
+        .iter()
+        .find(|row| row.local_model == "local-partial-fail")
+        .expect("partial-failure model row");
+    assert_eq!(partial.providers.len(), 1);
+    assert_eq!(partial.providers[0].provider_id, "p1");
+    assert_eq!(partial.providers[0].metrics.unpriced_count, 1);
+
+    assert_eq!(
+        stats.unpriced_items.len(),
+        2,
+        "the zero-usage failure must be absent from unpriced_items"
+    );
+    assert!(
+        stats
+            .unpriced_items
+            .iter()
+            .all(|item| item.upstream_model == "remote-unpriced"),
+        "every unpriced item targets the unpriced upstream model"
+    );
+    assert!(
+        !stats
+            .unpriced_items
+            .iter()
+            .any(|item| item.local_model == "local-zero-fail"),
+        "zero-usage failure must not appear in unpriced_items"
+    );
+    assert!(
+        stats
+            .unpriced_items
+            .iter()
+            .any(|item| item.local_model == "local-partial-fail" && item.count == 1),
+        "partial-usage failure appears once in unpriced_items"
+    );
+    assert!(
+        stats
+            .unpriced_items
+            .iter()
+            .any(|item| item.local_model == "local-zero-success" && item.count == 1),
+        "zero-usage success appears once in unpriced_items"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
 /// distinct, non-empty in-range model facet that is independent of the current
 /// page and of the model filter, so the frontend can offer every in-range model.
 #[test]
@@ -15335,8 +15465,8 @@ async fn all_candidates_failed_request_writes_one_row_per_completed_attempt() {
     assert_eq!(stats.totals.total_tokens, 0);
     assert_eq!(stats.totals.amount, 0.0);
     assert_eq!(
-        stats.totals.unpriced_count, 1,
-        "only the terminal row is an unpriced request"
+        stats.totals.unpriced_count, 0,
+        "every attempt in this request is a zero-usage failure, so it incurs no cost and must not be reported as an unpriced request"
     );
     let grouped = store
         .group_logs(&TimeRange::default(), &LogFilter::default(), "model")

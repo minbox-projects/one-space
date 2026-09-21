@@ -692,7 +692,7 @@ pub(in crate::api_gateway) struct LogFilter {
     pub model: Option<String>,
 }
 
-const METRIC_COLUMNS: &str = "COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(amount), 0.0), COALESCE(SUM(CASE WHEN amount IS NULL AND upstream_model <> '' THEN 1 ELSE 0 END), 0)";
+const METRIC_COLUMNS: &str = "COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(amount), 0.0), COALESCE(SUM(CASE WHEN amount IS NULL AND upstream_model <> '' AND (result = 'success' OR total_tokens > 0) THEN 1 ELSE 0 END), 0)";
 
 /// Column list and placeholders shared by [`UsageLogStore::append`] and
 /// [`UsageLogStore::append_batch`].
@@ -1218,8 +1218,8 @@ impl UsageLogStore {
         if totals.unpriced_count > 0 {
             let mut unpriced_statement = connection
                 .prepare(&format!(
-                    "SELECT provider_id, provider_name, local_model, upstream_model, COUNT(*)
-                     FROM usage_logs{stats_where} AND amount IS NULL AND upstream_model <> ''
+                     "SELECT provider_id, provider_name, local_model, upstream_model, COUNT(*)
+                      FROM usage_logs{stats_where} AND amount IS NULL AND upstream_model <> '' AND (result = 'success' OR total_tokens > 0)
                      GROUP BY provider_id, provider_name, local_model, upstream_model
                      ORDER BY COUNT(*) DESC, provider_name ASC, local_model ASC"
                 ))
