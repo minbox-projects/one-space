@@ -25,6 +25,7 @@ import {
   clampUsagePage,
   formatGatewayTimestamp,
   formatGatewayTokens,
+  formatGatewayDuration,
   formatUsageAmount,
   formatUsageGroupLabel,
   formatUsageRowAmount,
@@ -434,6 +435,37 @@ describe("金额格式化与未定价判定", () => {
         metrics({ request_count: 2, unpriced_count: 1, amount: 0.5 }),
       ),
     ).toBe("0.5000");
+  });
+});
+
+describe("formatGatewayDuration 耗时格式化", () => {
+  it("空值、非有限数字或负数返回破折号", () => {
+    expect(formatGatewayDuration(null)).toBe("—");
+    expect(formatGatewayDuration(undefined)).toBe("—");
+    expect(formatGatewayDuration(Number.NaN)).toBe("—");
+    expect(formatGatewayDuration(Number.POSITIVE_INFINITY)).toBe("—");
+    expect(formatGatewayDuration(-1)).toBe("—");
+  });
+
+  it("小于 1 分钟时单位为 s，且按四舍五入整秒计算", () => {
+    expect(formatGatewayDuration(0)).toBe("0s");
+    expect(formatGatewayDuration(300)).toBe("0s");
+    expect(formatGatewayDuration(500)).toBe("1s");
+    expect(formatGatewayDuration(1200)).toBe("1s");
+    expect(formatGatewayDuration(1600)).toBe("2s");
+    expect(formatGatewayDuration(2000)).toBe("2s");
+    expect(formatGatewayDuration(45200)).toBe("45s");
+    expect(formatGatewayDuration(59400)).toBe("59s");
+  });
+
+  it("达到或超过 1 分钟时单位为 1m 2s 格式", () => {
+    // 59600ms 四舍五入为 60s，即 1m 0s
+    expect(formatGatewayDuration(59600)).toBe("1m 0s");
+    expect(formatGatewayDuration(60000)).toBe("1m 0s");
+    expect(formatGatewayDuration(62000)).toBe("1m 2s");
+    expect(formatGatewayDuration(62800)).toBe("1m 3s");
+    expect(formatGatewayDuration(125000)).toBe("2m 5s");
+    expect(formatGatewayDuration(3661000)).toBe("61m 1s");
   });
 });
 

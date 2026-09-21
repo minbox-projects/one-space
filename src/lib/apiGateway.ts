@@ -736,6 +736,25 @@ export function formatUsageAmount(amount: number | null | undefined): string {
 }
 
 /**
+ * Format request duration in milliseconds.
+ * - Under 1 minute (< 60s): formatted with "s" unit (e.g. "0s", "2s", "59s").
+ * - 1 minute or more (>= 60s): formatted as "Xm Ys" (e.g. "1m 2s", "2m 5s").
+ * - Returns "—" for null, undefined, NaN or negative values.
+ */
+export function formatGatewayDuration(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) {
+    return "—";
+  }
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
+}
+
+/**
  * Format a token count using compact Chinese units (万, 百万, 千万, 亿),
  * matching the formatting used in AI Usage Stats.
  * Numbers below 10,000 are formatted with thousand separators.

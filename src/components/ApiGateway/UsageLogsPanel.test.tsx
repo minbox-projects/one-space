@@ -143,9 +143,21 @@ describe("UsageLogsPanel", () => {
       return page({
         total: 3,
         records: [
-          record({ timestamp_ms: Date.UTC(2026, 8, 17, 4, 0), local_model: "newest" }),
-          record({ timestamp_ms: Date.UTC(2026, 8, 17, 2, 0), local_model: "middle" }),
-          record({ timestamp_ms: Date.UTC(2026, 8, 16, 18, 0), local_model: "oldest" }),
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, 4, 0),
+            local_model: "newest",
+            duration_ms: 62000,
+          }),
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, 2, 0),
+            local_model: "middle",
+            duration_ms: 2000,
+          }),
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 16, 18, 0),
+            local_model: "oldest",
+            duration_ms: 500,
+          }),
         ],
       });
     });
@@ -155,6 +167,8 @@ describe("UsageLogsPanel", () => {
     const table = await screen.findByTestId("api-gateway-logs-ungrouped");
     expect(within(table).getByText("Time")).toBeInTheDocument();
     expect(within(table).getByText("Status")).toBeInTheDocument();
+    expect(within(table).getByText("Model")).toBeInTheDocument();
+    expect(within(table).getByText("Duration")).toBeInTheDocument();
     expect(within(table).getByText("Tokens")).toBeInTheDocument();
     expect(within(table).getByText("Cost ($)")).toBeInTheDocument();
 
@@ -165,6 +179,36 @@ describe("UsageLogsPanel", () => {
     expect(within(rows[0]).getByText("Success")).toBeInTheDocument();
     expect(within(rows[0]).getByTestId("api-gateway-logs-status-badge")).toHaveClass("bg-emerald-500/10");
     expect(within(rows[0]).getByText("newest")).toBeInTheDocument();
+    expect(
+      within(rows[0]).getByTestId("api-gateway-logs-duration-cell"),
+    ).toHaveTextContent("1m 2s");
+    expect(
+      within(rows[1]).getByTestId("api-gateway-logs-duration-cell"),
+    ).toHaveTextContent("2s");
+    expect(
+      within(rows[2]).getByTestId("api-gateway-logs-duration-cell"),
+    ).toHaveTextContent("1s");
+  });
+
+  it("中文环境下不分组表格展示中文列头耗时", async () => {
+    await i18n.changeLanguage("zh");
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 1,
+        records: [record({ duration_ms: 65000 })],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+
+    const table = await screen.findByTestId("api-gateway-logs-ungrouped");
+    expect(within(table).getByText("耗时")).toBeInTheDocument();
+    expect(
+      within(table).getByTestId("api-gateway-logs-duration-cell"),
+    ).toHaveTextContent("1m 5s");
   });
 
   it("切换为 Day（UTC+8）分组展示分组列且错误数不含 cancelled", async () => {

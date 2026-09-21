@@ -14,6 +14,7 @@ import { SelectDropdown } from "./SelectDropdown";
 import {
   apiGatewayRequestLogs,
   clampUsagePage,
+  formatGatewayDuration,
   formatGatewayTokens,
   formatUsageAmount,
   formatUsageGroupLabel,
@@ -598,6 +599,9 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                     {t("apiGatewayLogsModelColumn", "Model")}
                   </th>
                   <th className="px-3 py-2 text-right font-medium">
+                    {t("apiGatewayLogsDurationColumn", "Duration")}
+                  </th>
+                  <th className="px-3 py-2 text-right font-medium">
                     {t("apiGatewayLogsTokensColumn", "Tokens")}
                   </th>
                   <th className="px-3 py-2 text-right font-medium">
@@ -721,6 +725,12 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                           ) : null}
                         </div>
                       ) : null}
+                    </td>
+                    <td
+                      className="px-3 py-2 text-right font-mono text-xs whitespace-nowrap"
+                      data-testid="api-gateway-logs-duration-cell"
+                    >
+                      {formatGatewayDuration(item.duration_ms)}
                     </td>
                     <td className="px-3 py-2 text-right" data-testid="api-gateway-logs-tokens-cell">
                       {(() => {
