@@ -70,7 +70,6 @@ import { ProviderTemplateSection } from "./ProviderTemplateSection";
 import { ProviderTemplatePickerDialog } from "./ProviderTemplatePickerDialog";
 import { ProviderTemplateEditDialog } from "./ProviderTemplateEditDialog";
 import { TemplateCreateDialog } from "./TemplateCreateDialog";
-import { AggregatedModelsDialog } from "./AggregatedModelsDialog";
 import { LocalKeyDialog } from "./LocalKeyDialog";
 import { LocalKeyList } from "./LocalKeyList";
 import { TerminalSyncPanel } from "./TerminalSyncPanel";
@@ -119,7 +118,6 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
     useState<GatewayUpstreamProvider | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isKeyDialogOpen, setIsKeyDialogOpen] = useState(false);
-  const [isModelsDialogOpen, setIsModelsDialogOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [syncingTools, setSyncingTools] = useState<Record<string, boolean>>({});
   const [addressCopied, setAddressCopied] = useState(false);
@@ -697,7 +695,6 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
           addressCopied={addressCopied}
           targets={targets}
           onSelectTab={setActiveTab}
-          onShowModels={() => setIsModelsDialogOpen(true)}
           onStart={handleToggleService}
           onStop={handleToggleService}
           onCopyAddress={() => void handleCopyAddress()}
@@ -932,12 +929,6 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
           onSave={handleSaveKey}
         />
 
-        {/* 聚合模型列表模态弹窗 */}
-        <AggregatedModelsDialog
-          open={isModelsDialogOpen}
-          onOpenChange={setIsModelsDialogOpen}
-          providers={config.providers}
-        />
 
         {/* 预设服务商模板选择器 */}
         <ProviderTemplatePickerDialog

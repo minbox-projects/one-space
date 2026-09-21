@@ -26,8 +26,7 @@ type RuntimeStatusCardProps = {
   busy: boolean;
   addressCopied: boolean;
   targets?: GatewayTerminalTarget[];
-  onSelectTab?: (tab: "providers" | "keys" | "terminals") => void;
-  onShowModels?: () => void;
+  onSelectTab?: (tab: "providers" | "models" | "keys" | "terminals") => void;
   onStart: () => void;
   onStop: () => void;
   onCopyAddress: () => void;
@@ -40,7 +39,6 @@ export function RuntimeStatusCard({
   addressCopied,
   targets = [],
   onSelectTab,
-  onShowModels,
   onStart,
   onStop,
   onCopyAddress,
@@ -229,16 +227,16 @@ export function RuntimeStatusCard({
         {/* 指标卡 2：聚合模型数 */}
         <div
           data-testid="api-gateway-metric-models"
-          onClick={() => onShowModels?.()}
-          role={onShowModels ? "button" : undefined}
-          tabIndex={onShowModels ? 0 : undefined}
+          onClick={() => onSelectTab?.("models")}
+          role={onSelectTab ? "button" : undefined}
+          tabIndex={onSelectTab ? 0 : undefined}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
-              onShowModels?.();
+              onSelectTab?.("models");
             }
           }}
           className={`group flex flex-col justify-between rounded-lg border border-border/60 bg-muted/20 p-3 transition-colors hover:border-border hover:bg-muted/30 ${
-            onShowModels ? "cursor-pointer" : ""
+            onSelectTab ? "cursor-pointer" : ""
           }`}
         >
           <div className="flex items-center justify-between text-muted-foreground">

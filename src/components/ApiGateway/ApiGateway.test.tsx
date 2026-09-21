@@ -1326,9 +1326,15 @@ describe("ApiGateway", () => {
 
     const terminalsTab = screen.getByRole("tab", { name: /AI terminal integration/i });
     expect(terminalsTab).toHaveAttribute("aria-selected", "true");
+
+    // 6. 点击聚合模型指标卡可切换到 models Tab
+    fireEvent.click(modelsCard);
+    const modelsTab = screen.getByRole("tab", { name: /Model list|模型列表/i });
+    expect(modelsTab).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("api-gateway-model-list")).toBeInTheDocument();
   });
 
-  it("点击聚合模型指标卡打开弹框并列出有效模型及其上游服务商映射", async () => {
+  it("点击聚合模型指标卡切换到模型列表Tab并列出有效模型及其上游服务商映射", async () => {
     const provider1 = makeProvider({
       id: "p1",
       name: "Provider 1",
@@ -1364,43 +1370,32 @@ describe("ApiGateway", () => {
     const cardModelCount = Number(within(modelsCard).getByText("2").textContent);
     fireEvent.click(modelsCard);
 
-    const dialog = await screen.findByTestId("api-gateway-aggregated-models");
+    const modelsTab = screen.getByRole("tab", { name: /Model list|模型列表/i });
+    expect(modelsTab).toHaveAttribute("aria-selected", "true");
 
-    const modelNodes = within(dialog).getAllByTestId("api-gateway-aggregated-model");
+    const panel = await screen.findByTestId("api-gateway-model-list");
+
+    const modelNodes = within(panel).getAllByTestId("api-gateway-model-list-row");
     expect(modelNodes).toHaveLength(2);
     expect(modelNodes).toHaveLength(cardModelCount);
-    expect(
-      modelNodes.map((node) => node.getAttribute("data-model")).sort(),
-    ).toEqual(["claude-3-7-sonnet", "gpt-4o"]);
 
-    // 聚合模型弹框不再包含默认模型条目，上游来源全部为实际映射
-    const gptNode = modelNodes.find(
-      (node) => node.getAttribute("data-model") === "gpt-4o",
-    );
-    const claudeNode = modelNodes.find(
-      (node) => node.getAttribute("data-model") === "claude-3-7-sonnet",
-    );
-    expect(gptNode).not.toBeUndefined();
-    expect(claudeNode).not.toBeUndefined();
-    expect(
-      within(gptNode!).queryByText(/Default|默认/),
-    ).not.toBeInTheDocument();
-    expect(
-      within(claudeNode!).queryByText(/Default|默认/),
-    ).not.toBeInTheDocument();
+    const modelIds = within(panel)
+      .getAllByTestId("api-gateway-model-list-id")
+      .map((node) => node.textContent?.trim());
+    expect(modelIds.sort()).toEqual(["claude-3-7-sonnet", "gpt-4o"]);
 
     expect(
-      within(dialog).getAllByTestId("api-gateway-aggregated-model-provider"),
+      within(panel).getAllByTestId("api-gateway-model-list-upstream"),
     ).toHaveLength(2);
 
-    expect(within(dialog).getAllByText("Provider 1").length).toBeGreaterThan(0);
-    expect(within(dialog).getAllByText("gpt-4o-2024").length).toBeGreaterThan(0);
-    expect(within(dialog).getAllByText("claude-3-7").length).toBeGreaterThan(0);
-    expect(within(dialog).queryAllByText("deepseek-v3")).toHaveLength(0);
-    expect(within(dialog).queryAllByText("Provider 2")).toHaveLength(0);
+    expect(within(panel).getAllByText("Provider 1").length).toBeGreaterThan(0);
+    expect(within(panel).getAllByText("gpt-4o-2024").length).toBeGreaterThan(0);
+    expect(within(panel).getAllByText("claude-3-7").length).toBeGreaterThan(0);
+    expect(within(panel).queryAllByText("deepseek-v3")).toHaveLength(0);
+    expect(within(panel).queryAllByText("Provider 2")).toHaveLength(0);
   });
 
-  it("聚合模型弹框以路径形式展示 endpoint 而非协议枚举", async () => {
+  it("点击聚合模型指标卡切换到模型列表Tab并以路径形式展示 endpoint 而非协议枚举", async () => {
     const provider1 = makeProvider({
       id: "p1",
       name: "Provider 1",
@@ -1425,12 +1420,13 @@ describe("ApiGateway", () => {
 
     fireEvent.click(await screen.findByTestId("api-gateway-metric-models"));
 
-    const dialog = await screen.findByTestId("api-gateway-aggregated-models");
-    expect(within(dialog).getAllByText("/chat/completions")).toHaveLength(2);
-    expect(within(dialog).queryAllByText("chat_completions")).toHaveLength(0);
+    const panel = await screen.findByTestId("api-gateway-model-list");
+    // 2 个模型在第二列协议徽章与第三列上游服务商徽标各渲染 1 次，共 4 处
+    expect(within(panel).getAllByText("/chat/completions")).toHaveLength(4);
+    expect(within(panel).queryAllByText("chat_completions")).toHaveLength(0);
   });
 
-  it("在聚合模型指标卡上按 Enter 打开弹框且不切换页签", async () => {
+  it("在聚合模型指标卡上按 Enter 切换到模型列表Tab", async () => {
     const store: Store = {
       config: makeConfig({ providers: [makeProvider()] }),
       status: makeStatus({ provider_count: 1 }),
@@ -1448,13 +1444,12 @@ describe("ApiGateway", () => {
       key: "Enter",
     });
 
-    expect(
-      await screen.findByTestId("api-gateway-aggregated-models"),
-    ).toBeInTheDocument();
-    expect(keysTab).toHaveAttribute("aria-selected", "true");
+    const modelsTab = screen.getByRole("tab", { name: /Model list|模型列表/i });
+    expect(modelsTab).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByTestId("api-gateway-model-list")).toBeInTheDocument();
   });
 
-  it("在聚合模型指标卡上按空格打开弹框且不切换页签", async () => {
+  it("在聚合模型指标卡上按空格切换到模型列表Tab", async () => {
     const store: Store = {
       config: makeConfig({ providers: [makeProvider()] }),
       status: makeStatus({ provider_count: 1 }),
@@ -1472,13 +1467,12 @@ describe("ApiGateway", () => {
       key: " ",
     });
 
-    expect(
-      await screen.findByTestId("api-gateway-aggregated-models"),
-    ).toBeInTheDocument();
-    expect(keysTab).toHaveAttribute("aria-selected", "true");
+    const modelsTab = screen.getByRole("tab", { name: /Model list|模型列表/i });
+    expect(modelsTab).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByTestId("api-gateway-model-list")).toBeInTheDocument();
   });
 
-  it("没有启用服务商时聚合模型弹框展示空态且不渲染任何模型", async () => {
+  it("没有启用服务商时点击聚合模型指标卡切换到模型列表展示空态且不渲染任何模型", async () => {
     const disabledProvider = makeProvider({
       id: "p1",
       name: "Provider 1",
@@ -1499,12 +1493,12 @@ describe("ApiGateway", () => {
 
     fireEvent.click(await screen.findByTestId("api-gateway-metric-models"));
 
-    const dialog = await screen.findByTestId("api-gateway-aggregated-models");
+    const panel = await screen.findByTestId("api-gateway-model-list");
     expect(
-      within(dialog).getByTestId("api-gateway-aggregated-models-empty"),
+      within(panel).getByTestId("api-gateway-model-list-empty"),
     ).toBeInTheDocument();
     expect(
-      within(dialog).queryAllByTestId("api-gateway-aggregated-model"),
+      within(panel).queryAllByTestId("api-gateway-model-list-row"),
     ).toHaveLength(0);
   });
 
@@ -1558,7 +1552,7 @@ describe("ApiGateway", () => {
     ).toBe(false);
   });
 
-  it("聚合模型弹框排除禁用映射", async () => {
+  it("点击聚合模型指标卡切换到模型列表排除禁用映射", async () => {
     const provider1 = makeProvider({
       id: "p1",
       name: "Provider 1",
@@ -1582,15 +1576,18 @@ describe("ApiGateway", () => {
 
     fireEvent.click(await screen.findByTestId("api-gateway-metric-models"));
 
-    const dialog = await screen.findByTestId("api-gateway-aggregated-models");
-    const modelNodes = within(dialog).getAllByTestId(
-      "api-gateway-aggregated-model",
+    const panel = await screen.findByTestId("api-gateway-model-list");
+    const modelRows = within(panel).getAllByTestId(
+      "api-gateway-model-list-row",
     );
-    const modelNames = modelNodes.map((node) => node.getAttribute("data-model"));
-    expect(modelNames, "聚合模型弹框应包含启用映射 a").toContain("a");
-    expect(modelNames, "聚合模型弹框应排除未映射的默认模型 d").not.toContain("d");
-    expect(modelNames, "聚合模型弹框应排除禁用映射 b").not.toContain("b");
-    expect(within(dialog).queryByText("rb")).not.toBeInTheDocument();
+    const modelNames = modelRows.map(
+      (node) =>
+        within(node).getByTestId("api-gateway-model-list-id").textContent?.trim(),
+    );
+    expect(modelNames, "模型列表应包含启用映射 a").toContain("a");
+    expect(modelNames, "模型列表应排除未映射的默认模型 d").not.toContain("d");
+    expect(modelNames, "模型列表应排除禁用映射 b").not.toContain("b");
+    expect(within(panel).queryByText("rb")).not.toBeInTheDocument();
   });
 
   it("模型列表页签紧随上游服务商、徽标数与指标卡一致，且搜索状态在页签往返后保留", async () => {
@@ -2250,7 +2247,7 @@ describe("ApiGateway 逐行自动禁用前端计数与重新启用入口", () =>
     );
   });
 
-  it("点击聚合模型指标卡打开弹框时 auto-disabled 专属模型被排除", async () => {
+  it("点击聚合模型指标卡切换到模型列表时 auto-disabled 专属模型被排除", async () => {
     const store: Store = {
       config: makeConfig({
         providers: [
@@ -2276,9 +2273,11 @@ describe("ApiGateway 逐行自动禁用前端计数与重新启用入口", () =>
 
     fireEvent.click(await screen.findByTestId("api-gateway-metric-models"));
 
-    const dialog = await screen.findByTestId("api-gateway-aggregated-models");
-    const models = within(dialog).getAllByTestId("api-gateway-aggregated-model");
-    const modelNames = models.map((m) => m.getAttribute("data-model"));
+    const panel = await screen.findByTestId("api-gateway-model-list");
+    const models = within(panel).getAllByTestId("api-gateway-model-list-row");
+    const modelNames = models.map(
+      (m) => within(m).getByTestId("api-gateway-model-list-id").textContent?.trim(),
+    );
     expect(modelNames).toContain("keep");
     expect(modelNames).not.toContain("auto-exclude");
   });
