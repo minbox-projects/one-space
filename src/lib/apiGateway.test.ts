@@ -7,7 +7,8 @@ import {
   apiGatewayDeleteKey,
   apiGatewayDeleteProvider,
   apiGatewayGetConfig,
-  apiGatewayReenableProvider,
+  apiGatewayReenableProviderModel,
+  apiGatewayReenableProviderModels,
   apiGatewaySaveConfig,
   apiGatewaySetDefaultKey,
   apiGatewaySetProviderEnabled,
@@ -106,7 +107,6 @@ describe("apiGateway 命令封装", () => {
     await apiGatewayUpsertProvider(provider());
     await apiGatewayDeleteProvider("p1");
     await apiGatewaySetProviderEnabled("p1", false);
-    await apiGatewayReenableProvider("p1");
 
     expect(invokeMock).toHaveBeenCalledWith("api_gateway_get_config");
     expect(invokeMock).toHaveBeenCalledWith("api_gateway_save_config", {
@@ -123,9 +123,10 @@ describe("apiGateway 命令封装", () => {
       providerId: "p1",
       enabled: false,
     });
-    expect(invokeMock).toHaveBeenCalledWith("api_gateway_reenable_provider", {
-      providerId: "p1",
-    });
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "api_gateway_reenable_provider",
+      expect.anything(),
+    );
   });
 
   it("按 camelCase 参数调用 Key、启停与终端同步命令", async () => {
@@ -158,6 +159,27 @@ describe("apiGateway 命令封装", () => {
     expect(invokeMock).toHaveBeenCalledWith("api_gateway_sync_terminal", {
       targetTools: ["t-open"],
     });
+  });
+
+  it("逐行与批量重新启用命令使用新的独立包装函数", async () => {
+    await apiGatewayReenableProviderModel("p1", "gpt-4o", "gpt-4o-2024");
+    expect(invokeMock).toHaveBeenCalledWith(
+      "api_gateway_reenable_provider_model",
+      {
+        providerId: "p1",
+        localModel: "gpt-4o",
+        upstreamModel: "gpt-4o-2024",
+      },
+    );
+
+    resetTauriMocks();
+    await apiGatewayReenableProviderModels("p1");
+    expect(invokeMock).toHaveBeenCalledWith(
+      "api_gateway_reenable_provider_models",
+      {
+        providerId: "p1",
+      },
+    );
   });
 
   it("未指定目标时同步命令不携带目标载荷", async () => {
@@ -318,6 +340,59 @@ describe("resolveMappingPreview 模型解析预览", () => {
     });
     expect(resolveMappingPreview(p, "local-a")).toEqual({
       upstreamModel: "remote-a",
+      endpoint: "chat_completions",
+    });
+  });
+
+  // Step 3: auto-disabled rows block the default-model fallback (AC-007)
+  it("auto_disabled 的映射行既不成命中也不回退默认模型", () => {
+    const p = provider({
+      mappings: [
+        {
+          local_model: "local-a",
+          upstream_model: "remote-a",
+          auto_disabled: true,
+        },
+      ],
+      default_model: "remote-default",
+    });
+    expect(
+      resolveMappingPreview(p, "local-a"),
+      "auto_disabled 映射不应命中，也不应回退到默认模型",
+    ).toBeNull();
+  });
+
+  it("存在 healthy 映射时 auto_disabled 不干扰健康行的解析预览", () => {
+    const p = provider({
+      mappings: [
+        {
+          local_model: "local-a",
+          upstream_model: "remote-auto-disabled",
+          auto_disabled: true,
+        },
+        { local_model: "local-b", upstream_model: "remote-healthy" },
+      ],
+      default_model: "remote-default",
+    });
+    expect(resolveMappingPreview(p, "local-b")).toEqual({
+      upstreamModel: "remote-healthy",
+      endpoint: "chat_completions",
+    });
+  });
+
+  it("无匹配映射时依然回退到默认模型", () => {
+    const p = provider({
+      mappings: [
+        {
+          local_model: "local-a",
+          upstream_model: "remote-a",
+          auto_disabled: true,
+        },
+      ],
+      default_model: "fallback-model",
+    });
+    expect(resolveMappingPreview(p, "local-unknown")).toEqual({
+      upstreamModel: "fallback-model",
       endpoint: "chat_completions",
     });
   });
@@ -662,7 +737,7 @@ describe("用量与日志命令封装", () => {
 });
 
 describe("aggregateModels 聚合本地模型", () => {
-  it("仅统计启用且未自动禁用的服务商，去重模型并保留全部映射上游来源与解析协议，不包含默认模型", () => {
+  it("仅统计启用的服务商并跳过自动禁用的映射行，去重模型并保留全部映射上游来源与解析协议，不包含默认模型", () => {
     const providers: GatewayUpstreamProvider[] = [
       provider({
         id: "pa",
@@ -675,6 +750,11 @@ describe("aggregateModels 聚合本地模型", () => {
             local_model: "claude-3-7-sonnet",
             upstream_model: "  claude-3-7  ",
             protocol: "chat_completions",
+          },
+          {
+            local_model: "row-exclude",
+            upstream_model: "row-exclude-up",
+            auto_disabled: true,
           },
         ],
       }),
@@ -712,6 +792,18 @@ describe("aggregateModels 聚合本地模型", () => {
     ];
 
     expect(aggregateModels(providers)).toEqual([
+      {
+        model: "auto-disabled-local",
+        providers: [
+          {
+            providerId: "pd",
+            providerName: "Delta",
+            upstreamModel: "auto-disabled-upstream",
+            endpoint: "chat_completions",
+            isDefault: false,
+          },
+        ],
+      },
       {
         model: "claude-3-7-sonnet",
         providers: [
@@ -927,6 +1019,79 @@ describe("aggregateModels 聚合本地模型", () => {
         ],
       },
     ]);
+  });
+
+  // Step 3: per-model auto-disable filtering in aggregateModels
+  it("共享模型的 healthy 行保留条目，auto-disabled 专属模型消失", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "pa",
+        name: "Alpha",
+        mappings: [
+          {
+            local_model: "gpt-4o",
+            upstream_model: "gpt-4o-healthy",
+            auto_disabled: false,
+          },
+        ],
+      }),
+      provider({
+        id: "pb",
+        name: "Beta",
+        mappings: [
+          {
+            local_model: "gpt-4o",
+            upstream_model: "gpt-4o-auto-disabled",
+            auto_disabled: true,
+          },
+        ],
+      }),
+    ];
+
+    const models = aggregateModels(providers);
+    expect(models).toHaveLength(1);
+    expect(models[0].model).toBe("gpt-4o");
+    expect(models[0].providers).toHaveLength(1);
+    expect(models[0].providers[0].upstreamModel).toBe("gpt-4o-healthy");
+  });
+
+  it("仅由 auto-disabled 行提供的模型不产生聚合结果", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "pa",
+        name: "Alpha",
+        mappings: [
+          {
+            local_model: "exclusive-model",
+            upstream_model: "exclusive-upstream",
+            auto_disabled: true,
+          },
+        ],
+      }),
+    ];
+
+    expect(aggregateModels(providers)).toEqual([]);
+  });
+
+  it("provider-level auto_disabled 为 true 但存在 healthy 行时其映射仍正常产出", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "pa",
+        name: "Legacy Disabled Provider",
+        auto_disabled: true,
+        mappings: [
+          {
+            local_model: "shared-local",
+            upstream_model: "shared-upstream",
+          },
+        ],
+      }),
+    ];
+
+    const models = aggregateModels(providers);
+    expect(models).toHaveLength(1);
+    expect(models[0].model).toBe("shared-local");
+    expect(models[0].providers[0].providerId).toBe("pa");
   });
 });
 

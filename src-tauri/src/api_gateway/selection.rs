@@ -1,4 +1,4 @@
-use super::{GatewayUpstreamProvider, UpstreamProtocol, FAILURE_THRESHOLD};
+use super::{GatewayUpstreamProvider, ModelMapping, UpstreamProtocol, FAILURE_THRESHOLD};
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -35,11 +35,11 @@ pub(in crate::api_gateway) enum ModelResolution {
 /// Resolve the upstream model for a provider under the inbound `protocol`.
 ///
 /// Rows with an empty `upstream_model` are discarded and count as no match.
-/// Disabled rows never serve and never cause a protocol mismatch, but a request
-/// that matches only disabled rows is a `NoMatch` and cannot fall back to the
-/// default model. An enabled matching row is served with its own remote model
-/// only when the row's effective protocol (its own declaration, else the
-/// provider protocol) equals `protocol`; when enabled matching rows exist but
+/// Disabled and auto-disabled rows never serve and never cause a protocol
+/// mismatch, but a request that matches only such rows is a `NoMatch` and cannot
+/// fall back to the default model. An enabled matching row is served with its own
+/// remote model only when the row's effective protocol (its own declaration, else
+/// the provider protocol) equals `protocol`; when enabled matching rows exist but
 /// none matches, the request is a `ProtocolMismatch` and the default model is
 /// not used as a fallback. The default model serves an unmapped model only when
 /// the provider protocol itself matches.
@@ -55,10 +55,11 @@ pub(in crate::api_gateway) fn resolve_model_for_protocol(
         for mapping in provider.mappings.iter().filter(|mapping| {
             mapping.local_model.trim() == requested && !mapping.upstream_model.trim().is_empty()
         }) {
-            // A disabled row never serves and never produces a protocol
-            // mismatch; it only records that the requested model is mapped but
-            // switched off, which later blocks the default-model fallback.
-            if !mapping.enabled {
+            // A disabled or auto-disabled row never serves and never produces a
+            // protocol mismatch; it only records that the requested model is
+            // mapped but switched off, which later blocks the default-model
+            // fallback.
+            if !mapping.enabled || mapping.auto_disabled {
                 disabled_match = true;
                 continue;
             }
@@ -85,9 +86,11 @@ pub(in crate::api_gateway) fn resolve_model_for_protocol(
         .unwrap_or(ModelResolution::NoMatch)
 }
 
-/// Candidate set: enabled, not auto-disabled, and able to serve the request
-/// model under the inbound protocol. A provider is not filtered by its own
-/// protocol alone, because a mapping row may declare the inbound protocol.
+/// Candidate set: enabled and able to serve the request model under the inbound
+/// protocol. A provider is not filtered by its own protocol alone, because a
+/// mapping row may declare the inbound protocol. The provider-level
+/// `auto_disabled` field is legacy and never filters; only an auto-disabled row
+/// removes the model it maps.
 pub(in crate::api_gateway) fn candidate_providers<'a>(
     providers: &'a [GatewayUpstreamProvider],
     requested: Option<&str>,
@@ -97,7 +100,6 @@ pub(in crate::api_gateway) fn candidate_providers<'a>(
         .iter()
         .filter(|provider| {
             provider.enabled
-                && !provider.auto_disabled
                 && matches!(
                     resolve_model_for_protocol(provider, requested, protocol),
                     ModelResolution::Serve(_)
@@ -502,10 +504,63 @@ pub(in crate::api_gateway) fn is_retryable_failure(class: FailureClass, status: 
     }
 }
 
-/// Record a failure on a provider. Returns `true` when the provider is (or becomes)
-/// auto-disabled. `Transient` and `ReturnToClient` never count as failures.
-pub(in crate::api_gateway) fn register_failure(
+/// Identity of one mapping row: the provider it belongs to plus its trimmed
+/// `(local_model, upstream_model)` key.
+///
+/// Runtime health settles per row, so a failure of one row never touches a
+/// sibling row or the provider's own legacy state.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(in crate::api_gateway) struct MappingTarget {
+    pub(in crate::api_gateway) provider_id: String,
+    pub(in crate::api_gateway) local_model: String,
+    pub(in crate::api_gateway) upstream_model: String,
+}
+
+impl MappingTarget {
+    /// Build a target, trimming every component.
+    pub(in crate::api_gateway) fn new(
+        provider_id: &str,
+        local_model: &str,
+        upstream_model: &str,
+    ) -> Self {
+        Self {
+            provider_id: provider_id.trim().to_string(),
+            local_model: local_model.trim().to_string(),
+            upstream_model: upstream_model.trim().to_string(),
+        }
+    }
+
+    /// The row a served request settles on when it resolved through a mapping
+    /// row rather than the provider's `default_model`.
+    ///
+    /// Returns `None` unless the trimmed requested model is non-empty, matches a
+    /// row's trimmed `local_model` and that row's trimmed `upstream_model` equals
+    /// the resolved upstream model. A `default_model` attempt therefore settles
+    /// on no row and records no health outcome.
+    pub(in crate::api_gateway) fn for_request(
+        provider: &GatewayUpstreamProvider,
+        requested: Option<&str>,
+        upstream_model: &str,
+    ) -> Option<Self> {
+        let requested = requested.map(str::trim).filter(|value| !value.is_empty())?;
+        let upstream_model = upstream_model.trim();
+        provider
+            .mappings
+            .iter()
+            .find(|mapping| {
+                mapping.local_model.trim() == requested
+                    && mapping.upstream_model.trim() == upstream_model
+            })
+            .map(|_| Self::new(&provider.id, requested, upstream_model))
+    }
+}
+
+/// Record a failure on every row matching `target`'s trimmed key. Returns `true`
+/// when that key is (or becomes) auto-disabled. `Transient` and `ReturnToClient`
+/// never count as failures.
+pub(in crate::api_gateway) fn register_mapping_failure(
     provider: &mut GatewayUpstreamProvider,
+    target: &MappingTarget,
     class: FailureClass,
     reason: &str,
     at: u64,
@@ -517,31 +572,71 @@ pub(in crate::api_gateway) fn register_failure(
     if !counts {
         return false;
     }
-    provider.consecutive_failures = provider.consecutive_failures.saturating_add(1);
-    provider.last_error_at = Some(at);
-    let should_disable = class == FailureClass::DisableImmediately
-        || provider.consecutive_failures >= FAILURE_THRESHOLD;
-    if should_disable && !provider.auto_disabled {
-        provider.auto_disabled = true;
-        provider.disabled_reason = Some(reason.to_string());
-        provider.disabled_at = Some(at);
+    let mut disabled = false;
+    for mapping in provider.mappings.iter_mut().filter(|mapping| {
+        mapping_matches_key(mapping, &target.local_model, &target.upstream_model)
+    }) {
+        mapping.consecutive_failures = mapping.consecutive_failures.saturating_add(1);
+        mapping.last_error_at = Some(at);
+        let should_disable = class == FailureClass::DisableImmediately
+            || mapping.consecutive_failures >= FAILURE_THRESHOLD;
+        if should_disable && !mapping.auto_disabled {
+            mapping.auto_disabled = true;
+            mapping.disabled_reason = Some(reason.to_string());
+            mapping.disabled_at = Some(at);
+        }
+        disabled |= mapping.auto_disabled;
     }
-    should_disable
+    disabled
 }
 
-/// A successful attempt resets the consecutive failure counter.
-pub(in crate::api_gateway) fn register_success(provider: &mut GatewayUpstreamProvider) {
-    provider.consecutive_failures = 0;
-    provider.last_error_at = None;
+/// A successful attempt resets the consecutive failure counter and last-error
+/// value of every row matching `target`'s trimmed key.
+pub(in crate::api_gateway) fn register_mapping_success(
+    provider: &mut GatewayUpstreamProvider,
+    target: &MappingTarget,
+) {
+    for mapping in provider.mappings.iter_mut().filter(|mapping| {
+        mapping_matches_key(mapping, &target.local_model, &target.upstream_model)
+    }) {
+        mapping.consecutive_failures = 0;
+        mapping.last_error_at = None;
+    }
 }
 
-/// Manual re-enable clears only the auto-disabled runtime state; user intent is untouched.
+/// Clear a row's runtime health state only; the user's `enabled` intent is untouched.
+pub(in crate::api_gateway) fn clear_mapping_runtime_state(mapping: &mut ModelMapping) {
+    mapping.auto_disabled = false;
+    mapping.disabled_reason = None;
+    mapping.disabled_at = None;
+    mapping.consecutive_failures = 0;
+    mapping.last_error_at = None;
+}
+
+/// Whether a row's trimmed `(local_model, upstream_model)` equals the given key.
+pub(in crate::api_gateway) fn mapping_matches_key(
+    mapping: &ModelMapping,
+    local_model: &str,
+    upstream_model: &str,
+) -> bool {
+    mapping.local_model.trim() == local_model.trim()
+        && mapping.upstream_model.trim() == upstream_model.trim()
+}
+
+/// Manual re-enable clears the legacy provider runtime state and the runtime
+/// state of every auto-disabled row; the user's `enabled` intent is untouched
+/// and a row that is not auto-disabled keeps its counter.
 pub(in crate::api_gateway) fn manual_reenable(provider: &mut GatewayUpstreamProvider) {
     provider.auto_disabled = false;
     provider.disabled_reason = None;
     provider.disabled_at = None;
     provider.consecutive_failures = 0;
     provider.last_error_at = None;
+    for mapping in provider.mappings.iter_mut() {
+        if mapping.auto_disabled {
+            clear_mapping_runtime_state(mapping);
+        }
+    }
 }
 
 /// User toggle touches only the `enabled` intent flag.

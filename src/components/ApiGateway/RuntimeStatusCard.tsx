@@ -53,7 +53,7 @@ export function RuntimeStatusCard({
   const totalProviders = status?.provider_count ?? config.providers.length;
   const autoDisabledCount = status?.auto_disabled_count ?? 0;
   const activeProviders = useMemo(() => {
-    return config.providers.filter((p) => p.enabled && !p.auto_disabled).length;
+    return config.providers.filter((p) => p.enabled).length;
   }, [config.providers]);
 
   // 2. 聚合模型数（与聚合模型弹框内容严格一致）

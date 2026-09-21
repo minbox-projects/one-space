@@ -25,6 +25,16 @@ export interface GatewayModelMapping {
   enabled?: boolean;
   /** Reasoning-effort identifiers the model advertises. */
   reasoning_efforts?: string[];
+  /**
+   * Row-scoped runtime health state. Absent/`undefined` means healthy; the
+   * backend only sets these after a real upstream failure and clears them
+   * through an explicit row-level re-enable.
+   */
+  auto_disabled?: boolean;
+  disabled_reason?: string | null;
+  disabled_at?: number | null;
+  consecutive_failures?: number;
+  last_error_at?: number | null;
 }
 
 /** Upstream endpoint family a provider exposes; request bodies are not translated. */
@@ -142,9 +152,10 @@ export interface GatewayMappingPreview {
  * Resolve the upstream model and target endpoint for a requested local model.
  *
  * An exact, non-blank mapping match wins and may override the protocol per row;
- * disabled rows are skipped. When every matching row is disabled the request is
- * not served (no default-model fallback); otherwise the provider default model
- * is used with the provider protocol.
+ * user-disabled and auto-disabled rows are skipped. When every matching row is
+ * user-disabled or auto-disabled the request is not served (no default-model
+ * fallback); otherwise the provider default model is used with the provider
+ * protocol.
  * `null` means the provider cannot serve the requested model.
  */
 export function resolveMappingPreview(
@@ -160,7 +171,9 @@ export function resolveMappingPreview(
       entry.local_model === localModel && entry.upstream_model.trim() !== "",
   );
   if (candidates.length > 0) {
-    const mapping = candidates.find((entry) => entry.enabled !== false);
+    const mapping = candidates.find(
+      (entry) => entry.enabled !== false && !entry.auto_disabled,
+    );
     if (mapping) {
       return {
         upstreamModel: mapping.upstream_model,
@@ -212,11 +225,12 @@ export interface AggregatedModel {
 }
 
 /**
- * Aggregate the local models served by enabled, non-auto-disabled providers.
+ * Aggregate the local models served by enabled providers.
  *
- * A provider contributes every non-blank enabled local mapping. Results are
- * grouped by local model and sorted deterministically. Default models are fallback
- * targets for unmapped requests and are not listed here.
+ * A provider contributes every non-blank mapping that is not user-disabled and
+ * not auto-disabled. Results are grouped by local model and sorted
+ * deterministically. Default models are fallback targets for unmapped requests
+ * and are not listed here.
  */
 export function aggregateModels(
   providers: GatewayUpstreamProvider[],
@@ -224,10 +238,10 @@ export function aggregateModels(
   const groups = new Map<string, AggregatedModelProvider[]>();
 
   providers.forEach((provider) => {
-    if (!provider.enabled || provider.auto_disabled) return;
+    if (!provider.enabled) return;
 
     provider.mappings.forEach((mapping) => {
-      if (mapping.enabled === false) return;
+      if (mapping.enabled === false || mapping.auto_disabled) return;
       const localModel = mapping.local_model.trim();
       if (!localModel) return;
       const upstreamModel = mapping.upstream_model.trim();
@@ -345,8 +359,24 @@ export function apiGatewaySetProviderEnabled(
   });
 }
 
-export function apiGatewayReenableProvider(providerId: string) {
-  return invoke<GatewayConfig>("api_gateway_reenable_provider", { providerId });
+/** Clear the runtime state of one mapping row (`providerId`, trimmed key) and return the updated config. */
+export function apiGatewayReenableProviderModel(
+  providerId: string,
+  localModel: string,
+  upstreamModel: string,
+) {
+  return invoke<GatewayConfig>("api_gateway_reenable_provider_model", {
+    providerId,
+    localModel,
+    upstreamModel,
+  });
+}
+
+/** Clear the runtime state of every auto-disabled row of one provider and return the updated config. */
+export function apiGatewayReenableProviderModels(providerId: string) {
+  return invoke<GatewayConfig>("api_gateway_reenable_provider_models", {
+    providerId,
+  });
 }
 
 export function apiGatewayUpsertKey(key: GatewayKey) {

@@ -40,7 +40,7 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
       makeProvider({ id: "p-enabled", name: "Enabled Provider", enabled: true }),
       makeProvider({ id: "p-disabled", name: "Disabled Provider", enabled: false }),
       makeProvider({
-        id: "p-auto",
+        id: "p-auto-legacy",
         name: "Auto Disabled Provider",
         enabled: true,
         auto_disabled: true,
@@ -55,7 +55,6 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
         busy={false}
         onSelect={vi.fn()}
         onToggleEnabled={vi.fn()}
-        onReenable={vi.fn()}
         onAdd={vi.fn()}
       />,
     );
@@ -72,10 +71,14 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
     expect(disabledBadge.className).toContain("bg-rose-500/10");
     expect(disabledBadge.className).toContain("text-rose-700");
 
-    // 自动熔断服务商包含琥珀色徽章
-    const autoBadge = screen.getByTestId("api-gateway-status-badge-p-auto");
-    expect(autoBadge).toHaveTextContent("Auto-disabled");
-    expect(autoBadge.className).toContain("bg-amber-500/10");
+    // Step 3: 底栏徽章只检查 provider.enabled，provider-level auto_disabled 不再控制；
+    // enabled=true → Enabled 徽章，无琥珀色
+    const legacyAutoBadge = screen.getByTestId("api-gateway-status-badge-p-auto-legacy");
+    expect(legacyAutoBadge).toHaveTextContent("Enabled");
+    expect(legacyAutoBadge.className).toContain("bg-emerald-500/10");
+
+    // 旧的全局 "Auto-disabled" 文本不应出现在底栏中：
+    expect(screen.queryByText("Auto-disabled")).not.toBeInTheDocument();
   });
 
   it("分段状态过滤器显示全部、已启用和已禁用选项及准确计数", () => {
@@ -92,7 +95,6 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
         busy={false}
         onSelect={vi.fn()}
         onToggleEnabled={vi.fn()}
-        onReenable={vi.fn()}
         onAdd={vi.fn()}
       />,
     );
@@ -125,7 +127,6 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
         busy={false}
         onSelect={vi.fn()}
         onToggleEnabled={vi.fn()}
-        onReenable={vi.fn()}
         onAdd={vi.fn()}
       />,
     );
@@ -154,7 +155,6 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
         busy={false}
         onSelect={vi.fn()}
         onToggleEnabled={vi.fn()}
-        onReenable={vi.fn()}
         onAdd={vi.fn()}
       />,
     );
@@ -180,7 +180,6 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
         busy={false}
         onSelect={vi.fn()}
         onToggleEnabled={vi.fn()}
-        onReenable={vi.fn()}
         onAdd={vi.fn()}
       />,
     );
@@ -215,7 +214,6 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
         busy={false}
         onSelect={vi.fn()}
         onToggleEnabled={vi.fn()}
-        onReenable={vi.fn()}
         onAdd={vi.fn()}
       />,
     );
@@ -240,7 +238,6 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
         busy={false}
         onSelect={vi.fn()}
         onToggleEnabled={vi.fn()}
-        onReenable={vi.fn()}
         onAdd={vi.fn()}
         templateSection={<div data-testid="api-gateway-template-slot">Templates</div>}
       />,
@@ -264,7 +261,6 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
         busy={false}
         onSelect={vi.fn()}
         onToggleEnabled={vi.fn()}
-        onReenable={vi.fn()}
         onAdd={vi.fn()}
       />,
     );
@@ -328,7 +324,6 @@ describe("UpstreamProviderList 模板头像与退休映射提示", () => {
         busy={false}
         onSelect={vi.fn()}
         onToggleEnabled={vi.fn()}
-        onReenable={vi.fn()}
         onAdd={vi.fn()}
       />
     );
@@ -499,5 +494,141 @@ describe("UpstreamProviderList 模板头像与退休映射提示", () => {
     expect(
       screen.queryByTestId("api-gateway-provider-retired-mappings-p-bound"),
     ).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 3: per-model row-level auto-disable UI — read-only hint & footer badge
+// ---------------------------------------------------------------------------
+
+describe("UpstreamProviderList 逐行 auto-disabled 读提示", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("有 auto-disabled 行的服务商展示只读提示，含精确数量且无重启用按钮", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({
+        id: "p-hint",
+        name: "Auto-disabled Provider",
+        enabled: true,
+        mappings: [
+          {
+            local_model: "m1",
+            upstream_model: "ra",
+            enabled: true,
+          },
+          {
+            local_model: "m2",
+            upstream_model: "rb",
+            enabled: true,
+            auto_disabled: true,
+          },
+          {
+            local_model: "m3",
+            upstream_model: "rc",
+            enabled: true,
+            auto_disabled: true,
+          },
+        ],
+      }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    // 只读提示应包含 data-testid
+    const hintEl = screen.getByTestId(
+      "api-gateway-provider-auto-disabled-models-p-hint",
+    );
+    expect(hintEl).toBeInTheDocument();
+
+    // 提示文案应通过 i18n 键生成，包含 count 插值
+    expect(hintEl.textContent).toContain("2");
+
+    // 底栏徽章反映 provider.enabled 而非 auto_disabled
+    const badge = screen.getByTestId("api-gateway-status-badge-p-hint");
+    expect(badge).toHaveTextContent("Enabled");
+    expect(badge.className).toContain("bg-emerald-500/10");
+
+    // 不应有整个服务商的 re-enable 按钮
+    const reenableBtn = screen.queryByRole("button", {
+      name: /Re-enable provider|Re-enable/i,
+    });
+    expect(reenableBtn).not.toBeInTheDocument();
+  });
+
+  it("provider-level auto_disabled 为 true 但无 auto-disabled 行时不显示提示", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({
+        id: "p-legacy",
+        name: "Legacy Only Flag",
+        enabled: true,
+        auto_disabled: true,
+        mappings: [
+          { local_model: "a", upstream_model: "ra", enabled: true },
+        ],
+      }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    // 不应出现逐行 auto-disabled 提示
+    expect(
+      screen.queryByTestId("api-gateway-provider-auto-disabled-models-p-legacy"),
+    ).not.toBeInTheDocument();
+    // 底栏徽章反映 enabled=true → Enabled
+    const badge = screen.getByTestId("api-gateway-status-badge-p-legacy");
+    expect(badge).toHaveTextContent("Enabled");
+  });
+
+  it("所有行都 auto-disabled 时提示包含全量行数", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({
+        id: "p-full",
+        name: "All Auto-disabled",
+        enabled: true,
+        mappings: [
+          { local_model: "m1", upstream_model: "ra", auto_disabled: true },
+          { local_model: "m2", upstream_model: "rb", auto_disabled: true },
+        ],
+      }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    const hintEl = screen.getByTestId(
+      "api-gateway-provider-auto-disabled-models-p-full",
+    );
+    expect(hintEl.textContent).toContain("2");
+    // 底栏徽章仍然是 Enabled（enabled=true）
+    const badge = screen.getByTestId("api-gateway-status-badge-p-full");
+    expect(badge).toHaveTextContent("Enabled");
   });
 });

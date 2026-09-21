@@ -113,6 +113,11 @@ fn mapping_for(model: &ProviderTemplateModel, template: &ProviderTemplate) -> Mo
         },
         display_name: model.display_name.clone(),
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }
 }
 
@@ -124,6 +129,11 @@ fn model_mapping(upstream_model: &str) -> ModelMapping {
         protocol: None,
         display_name: None,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }
 }
 
@@ -2723,5 +2733,153 @@ fn live_catalog_fixture_names_cover_their_identifier_segments() {
         laguna.display_name.as_deref(),
         Some("Laguna S 2.1 Free"),
         "the fixture's truncated laguna name must be completed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// AC-013 clause 3: template sync and restore write no runtime state
+// ---------------------------------------------------------------------------
+
+/// AC-013 clause 3: an auto-disabled mapping row retains its runtime state
+/// (`auto_disabled`, counter, reason, timestamps) across a template sync.
+/// Newly propagated rows arrive healthy; `api_gateway_restore_provider_model`
+/// produces a healthy rebuilt row as well. A regression that copies runtime
+/// state from old to new rows on sync will fail this test.
+#[test]
+fn sync_does_not_rewrite_runtime_state_on_existing_rows_and_restores_healthy() {
+    // Build a config with a template and a derived provider carrying one
+    // auto-disabled mapping row.
+    let previous = template_with_models(
+        "tpl-sync-no-runtime",
+        Some(SYNC_URL),
+        UpstreamProtocol::ChatCompletions,
+        vec![template_model("model-x", Some("Model X"), None, true)],
+    );
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, previous.clone());
+
+    let mut provider = bound_provider("p-sync-rt", "tpl-sync-no-runtime");
+    // Set up the single mapping as auto-disabled with full runtime state.
+    let mut disabled_mapping = mapping_for(&previous.models[0], &previous);
+    disabled_mapping.auto_disabled = true;
+    disabled_mapping.disabled_reason = Some("auth failure").map(str::to_string);
+    disabled_mapping.disabled_at = Some(77777);
+    disabled_mapping.consecutive_failures = 4;
+    disabled_mapping.last_error_at = Some(77777);
+    provider.mappings = vec![disabled_mapping];
+    config.providers.push(provider);
+
+    // ---- Sync: new source adds model-y (new) but keeps model-x (existing). ----
+    let body = json!({
+        "data": [
+            {"id": "model-x", "name": "Source X Updated"},
+            {"id": "model-y", "name": "Source Y"}
+        ]
+    })
+    .to_string();
+
+    let view = apply_template_sync_with(
+        &mut config,
+        "tpl-sync-no-runtime",
+        |_t| Ok(body.clone()),
+        |_next| Ok(()),
+    )
+    .expect("sync must succeed");
+
+    // Verify template-level: model-x still carries the source display name
+    // (which may be completed by the identifier suffix).
+    let tpl_x = view
+        .template
+        .models
+        .iter()
+        .find(|m| m.upstream_model == "model-x")
+        .expect("model-x must be in synced template");
+    assert!(
+        tpl_x
+            .display_name
+            .as_ref()
+            .map(|n| n.contains("Source"))
+            .unwrap_or(false),
+        "AC-013-clause-3: template display_name must reflect the source (not retain old 'Model X')"
+    );
+
+    // Provider after sync: two mappings (model-x + model-y).
+    let prov = config
+        .providers
+        .iter()
+        .find(|p| p.id == "p-sync-rt")
+        .expect("provider must exist");
+    assert_eq!(
+        prov.mappings.len(),
+        2,
+        "sync must add the new model-y mapping"
+    );
+
+    // Existing row (model-x): runtime state MUST be preserved.
+    let x_map = find_mapping(prov, "model-x").expect("model-x mapping must exist");
+    assert!(
+        x_map.auto_disabled,
+        "AC-013-clause-3: existing row must keep auto_disabled=true after sync"
+    );
+    assert_eq!(
+        x_map.disabled_reason.as_deref(),
+        Some("auth failure"),
+        "disabled_reason must survive sync"
+    );
+    assert_eq!(x_map.disabled_at, Some(77777), "disabled_at must survive sync");
+    assert_eq!(x_map.consecutive_failures, 4, "counter must survive sync");
+    assert_eq!(x_map.last_error_at, Some(77777), "last_error_at must survive sync");
+
+    // New row (model-y): must start completely healthy.
+    let y_map = find_mapping(prov, "model-y").expect("model-y mapping must exist");
+    assert!(
+        !y_map.auto_disabled,
+        "newly propagated mapping must have auto_disabled=false"
+    );
+    assert_eq!(y_map.consecutive_failures, 0, "new row starts with counter 0");
+    assert_eq!(y_map.disabled_reason, None, "new row has no disabled_reason");
+    assert_eq!(y_map.disabled_at, None, "new row has no disabled_at");
+    assert_eq!(y_map.last_error_at, None, "new row has no last_error_at");
+
+    // ---- Restore: api_gateway_restore_provider_model rebuilds healthy. ----
+    // First, add model-x to the ignored set so we can restore it.
+    let prov = config.providers.iter_mut().find(|p| p.id == "p-sync-rt").expect("provider");
+    prov.ignored_models.push("model-x".to_string());
+
+    let restore_result = apply_restore_provider_model(
+        &mut config,
+        "p-sync-rt",
+        "model-x",
+        |_next| Ok(()),
+    );
+    // This should succeed because model-x IS in the synced template.
+    assert!(
+        restore_result.is_ok(),
+        "restore of model-x (in template) must succeed: {restore_result:#?}"
+    );
+
+    // After restore, the mapping is rebuilt from template defaults via
+    // `mapping_from_template`, which sets all runtime fields to their Default values.
+    let prov_after = config.providers.iter().find(|p| p.id == "p-sync-rt").expect("provider after restore");
+    let restored_x = find_mapping(prov_after, "model-x").expect("model-x restored");
+    assert!(
+        !restored_x.auto_disabled,
+        "AC-013-clause-3: restored mapping must be healthy (auto_disabled=false)"
+    );
+    assert_eq!(
+        restored_x.consecutive_failures, 0,
+        "restored mapping starts with counter=0"
+    );
+    assert_eq!(
+        restored_x.disabled_reason, None,
+        "restored mapping has no disabled_reason"
+    );
+    assert_eq!(
+        restored_x.disabled_at, None,
+        "restored mapping has no disabled_at"
+    );
+    assert_eq!(
+        restored_x.last_error_at, None,
+        "restored mapping has no last_error_at"
     );
 }

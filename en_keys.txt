@@ -36,6 +36,7 @@ apiGatewayMappingDetails
 apiGatewayMappingPrice
 apiGatewayModelRestored
 apiGatewayNoTemplates
+apiGatewayProviderAutoDisabledModelsHint
 apiGatewayProviderTemplateAvatarTitle
 apiGatewayProviderTemplates
 apiGatewayProviderTemplatesDesc
@@ -44,6 +45,8 @@ apiGatewayReasoningEffortPlaceholder
 apiGatewayReasoningEffortRemove
 apiGatewayReasoningEfforts
 apiGatewayReasoningEffortsDesc
+apiGatewayReenableAllMappings
+apiGatewayReenableMapping
 apiGatewayRestoreModel
 apiGatewayTemplateAddProvider
 apiGatewayTemplateApiKeyLabel

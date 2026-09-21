@@ -1,5 +1,7 @@
 use super::runtime_http::{autostart, server_status, start_server, stop_server};
-use super::selection::{manual_reenable, set_user_enabled};
+use super::selection::{
+    clear_mapping_runtime_state, manual_reenable, mapping_matches_key, set_user_enabled,
+};
 use super::storage::{
     cleanup_legacy_files, effective_default_key, find_provider_mut, local_base_url, new_key_id,
     new_key_value, new_provider_id, read_config, resolve_default_key_id, touch_key_created_at,
@@ -79,12 +81,6 @@ fn non_empty(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// A gateway contributes models only while it is active: user-enabled and not
-/// auto-disabled, the same rule used by candidate selection and `/v1/models`.
-fn gateway_is_active(gateway: &GatewayUpstreamProvider) -> bool {
-    gateway.enabled && !gateway.auto_disabled
-}
-
 /// Build the terminal provider record written by API Gateway for one tool.
 ///
 /// The record is always marked as an API Gateway gateway, carries the resolved
@@ -135,8 +131,15 @@ pub(in crate::api_gateway) fn build_gateway_provider(
         tool_config.insert("options".to_string(), Value::Object(options));
 
         let mut models = Map::new();
-        for gateway in gateways.iter().filter(|gateway| gateway_is_active(gateway)) {
-            for mapping in gateway.mappings.iter().filter(|mapping| mapping.enabled) {
+        // A gateway contributes rows only while it is user-enabled, and a row
+        // only while it is user-enabled and not auto-disabled: the provider-level
+        // legacy `auto_disabled` field never filters.
+        for gateway in gateways.iter().filter(|gateway| gateway.enabled) {
+            for mapping in gateway
+                .mappings
+                .iter()
+                .filter(|mapping| mapping.enabled && !mapping.auto_disabled)
+            {
                 let Some(local_model) = non_empty(Some(mapping.local_model.as_str())) else {
                     continue;
                 };
@@ -178,18 +181,18 @@ pub(in crate::api_gateway) fn build_gateway_provider(
         tool_config.insert("wire_api".to_string(), Value::String("chat".to_string()));
         let model = gateways
             .iter()
-            .filter(|gateway| gateway_is_active(gateway))
+            .filter(|gateway| gateway.enabled)
             .find_map(|gateway| {
                 gateway
                     .mappings
                     .iter()
-                    .filter(|mapping| mapping.enabled)
+                    .filter(|mapping| mapping.enabled && !mapping.auto_disabled)
                     .find_map(|mapping| non_empty(Some(mapping.local_model.as_str())))
             })
             .or_else(|| {
                 gateways
                     .iter()
-                    .filter(|gateway| gateway_is_active(gateway))
+                    .filter(|gateway| gateway.enabled)
                     .find_map(|gateway| non_empty(gateway.default_model.as_deref()))
             });
         if let Some(model) = model {
@@ -296,8 +299,29 @@ pub fn api_gateway_upsert_provider(
         if provider.api_key.trim().is_empty() || provider.api_key == "********" {
             provider.api_key = existing.api_key.clone();
         }
+        // Runtime health belongs to a trimmed `(local_model, upstream_model)`
+        // key: an unchanged key keeps the stored state, a new or changed key
+        // starts healthy, and a deleted row drops its state with the replacement.
+        for mapping in &mut provider.mappings {
+            match existing.mappings.iter().find(|stored| {
+                mapping_matches_key(stored, &mapping.local_model, &mapping.upstream_model)
+            }) {
+                Some(stored) => {
+                    mapping.auto_disabled = stored.auto_disabled;
+                    mapping.disabled_reason = stored.disabled_reason.clone();
+                    mapping.disabled_at = stored.disabled_at;
+                    mapping.consecutive_failures = stored.consecutive_failures;
+                    mapping.last_error_at = stored.last_error_at;
+                }
+                None => clear_mapping_runtime_state(mapping),
+            }
+        }
         *existing = provider;
     } else {
+        // A brand-new provider has no stored key, so every row starts healthy.
+        for mapping in &mut provider.mappings {
+            clear_mapping_runtime_state(mapping);
+        }
         config.providers.push(provider);
     }
     if let Some(prices) = prices {
@@ -360,9 +384,43 @@ pub fn api_gateway_set_provider_enabled(
     read_config()
 }
 
-/// Manual re-enable clears only the auto-disabled runtime state.
+/// Clear the runtime health state of the mapping row identified by the trimmed
+/// `(local_model, upstream_model)` key. Duplicate rows that share the trimmed
+/// key are cleared together, and the user's `enabled` intent is never touched.
+/// An unknown provider, or a key that matches no row (including a blank local or
+/// upstream model), is an actionable error that writes nothing.
 #[tauri::command]
-pub fn api_gateway_reenable_provider(provider_id: String) -> Result<GatewayConfig, String> {
+pub fn api_gateway_reenable_provider_model(
+    provider_id: String,
+    local_model: String,
+    upstream_model: String,
+) -> Result<GatewayConfig, String> {
+    let mut config = read_config()?;
+    let provider = find_provider_mut(&mut config, &provider_id)
+        .ok_or_else(|| format!("provider not found: {provider_id}"))?;
+    let mut matched = false;
+    for mapping in provider.mappings.iter_mut().filter(|mapping| {
+        mapping_matches_key(mapping, &local_model, &upstream_model)
+    }) {
+        clear_mapping_runtime_state(mapping);
+        matched = true;
+    }
+    if !matched {
+        return Err(format!(
+            "no mapping row matches '{local_model}' -> '{upstream_model}' for provider '{provider_id}'"
+        ));
+    }
+    write_config(&config)?;
+    read_config()
+}
+
+/// Clear the runtime health state of every auto-disabled mapping row of one
+/// provider. Each row keeps its `enabled` intent (a user-disabled row stays
+/// disabled), rows that are not auto-disabled keep their counter, and other
+/// providers are untouched. An unknown provider is an actionable error that
+/// writes nothing.
+#[tauri::command]
+pub fn api_gateway_reenable_provider_models(provider_id: String) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     let provider = find_provider_mut(&mut config, &provider_id)
         .ok_or_else(|| format!("provider not found: {provider_id}"))?;

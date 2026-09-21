@@ -1238,3 +1238,269 @@ describe("ProviderDetailDialog 模板维护与推理档位", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Step 3: per-model row-level auto-disable UI — data-auto-disabled, re-enable
+// ---------------------------------------------------------------------------
+
+describe("ProviderDetailDialog 逐行 auto-disabled 与重新启用", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("auto_disabled 映射行带 data-auto-disabled 且不与 data-disabled 冲突", () => {
+    const provider = makeProvider({
+      mappings: [
+        { local_model: "healthy", upstream_model: "ra", enabled: true },
+        {
+          local_model: "user-disabled",
+          upstream_model: "rb",
+          enabled: false,
+        },
+        {
+          local_model: "auto-disabled",
+          upstream_model: "rc",
+          enabled: true,
+          auto_disabled: true,
+        },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    // User-disabled 行：data-disabled=true，无 data-auto-disabled
+    const userDisabledSwitch = screen.getByRole("switch", {
+      name: "Enable mapping 2",
+    });
+    const userDisabledRow = userDisabledSwitch.closest("li");
+    expect(userDisabledRow!.getAttribute("data-disabled")).toBe("true");
+    expect(userDisabledRow!.getAttribute("data-auto-disabled")).toBeNull();
+
+    // Auto-disabled 行：data-auto-disabled=true；data-disabled 可能不存在（实现可省略）
+    const autoDisabledSwitch = screen.getByRole("switch", {
+      name: "Enable mapping 3",
+    });
+    const autoDisabledRow = autoDisabledSwitch.closest("li");
+    expect(autoDisabledRow!.getAttribute("data-auto-disabled")).toBe("true");
+  });
+
+  it("自动禁用行通过 data-auto-disabled 与 re-enable 控制区分用户禁用行", () => {
+    const provider = makeProvider({
+      mappings: [
+        { local_model: "ud", upstream_model: "ub", enabled: false },
+        { local_model: "ad", upstream_model: "ac", enabled: true, auto_disabled: true },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    // User-disabled 行：有 data-disabled，无 data-auto-disabled，无重新启用按钮
+    const udSwitch = screen.getByRole("switch", { name: "Enable mapping 1" });
+    const udRow = udSwitch.closest("li") as HTMLElement;
+    expect(udRow!.getAttribute("data-disabled")).toBe("true");
+    expect(udRow!.getAttribute("data-auto-disabled")).toBeNull();
+    expect(
+      within(udRow!).queryByTestId("api-gateway-reenable-mapping-ud"),
+    ).not.toBeInTheDocument();
+
+    // Auto-disabled 行：有 data-auto-disabled，且有 per-row 重新启用按钮
+    const adSwitch = screen.getByRole("switch", { name: "Enable mapping 2" });
+    const adRow = adSwitch.closest("li") as HTMLElement;
+    expect(adRow!.getAttribute("data-auto-disabled")).toBe("true");
+    // 行为层：auto-disabled 行必须包含 per-row re-enable 控件
+    expect(
+      within(adRow!).getByTestId("api-gateway-reenable-mapping-ad"),
+    ).toBeInTheDocument();
+  });
+
+  it("自动禁用映射的重新启用按钮调用 onReenableModel 而不触发 onSave", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const onReenableModel = vi.fn();
+    const provider = makeProvider({
+      mappings: [
+        {
+          local_model: "gpt-4o",
+          upstream_model: "gpt-4o-2024",
+          enabled: true,
+          auto_disabled: true,
+        },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onReenableModel={onReenableModel}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const reenableBtn = screen.getByTestId(
+      "api-gateway-reenable-mapping-gpt-4o",
+    );
+    expect(reenableBtn).toBeInTheDocument();
+    expect(reenableBtn).toHaveAccessibleName(/Re-enable|重新启用/i);
+
+    await user.click(reenableBtn);
+    expect(onReenableModel).toHaveBeenCalledTimes(1);
+    expect(onReenableModel).toHaveBeenCalledWith(
+      "p1",
+      "gpt-4o",
+      "gpt-4o-2024",
+    );
+    // Save-based re-enable must NOT be called: backend preserves stored runtime state
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("仅用户禁用的行不展示重新启用按钮", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const provider = makeProvider({
+      mappings: [
+        { local_model: "ud-only", upstream_model: "rub", enabled: false },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    // 用户禁用行不应有 api-gateway-reenable-mapping-* 按钮
+    // （只保留普通的 Enable switch）
+    const udSwitch = screen.getByRole("switch", {
+      name: "Enable mapping 1",
+    });
+    expect(udSwitch).toBeEnabled();
+    // 不应存在重新启用按钮 testid
+    expect(
+      screen.queryByTestId("api-gateway-reenable-mapping-ud-only"),
+    ).not.toBeInTheDocument();
+
+    // 点击 switch 应该 toggle
+    await user.click(udSwitch);
+    expect(udSwitch).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("健康映射行不展示任何 auto 相关 badge 或提示", () => {
+    const provider = makeProvider({
+      mappings: [
+        { local_model: "healthy-row", upstream_model: "rh" },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    // 不应出现 auto-disabled 或 re-enable 相关内容
+    expect(
+      screen.queryByTestId("api-gateway-reenable-mapping-healthy-row"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("api-gateway-provider-auto-disabled-models-p1"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("存在自动禁用映射的行触发时重新启用所有映射按钮并调用 onReenableModels", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const onReenableModels = vi.fn();
+    const provider = makeProvider({
+      mappings: [
+        {
+          local_model: "gpt-4o",
+          upstream_model: "gpt-4o-2024",
+          enabled: true,
+          auto_disabled: true,
+        },
+        { local_model: "claude-3", upstream_model: "rc", enabled: true },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onReenableModels={onReenableModels}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const reenableAllBtn = screen.getByTestId(
+      "api-gateway-reenable-models-p1",
+    );
+    expect(reenableAllBtn).toBeInTheDocument();
+    expect(reenableAllBtn).toHaveAccessibleName(/Re-enable all|重新启用所有/i);
+
+    await user.click(reenableAllBtn);
+    expect(onReenableModels).toHaveBeenCalledTimes(1);
+    expect(onReenableModels).toHaveBeenCalledWith("p1");
+    // Save-based re-enable must NOT be called
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("无自动禁用行的服务商不展示重新启用所有映射按钮", () => {
+    const provider = makeProvider({
+      mappings: [
+        { local_model: "healthy", upstream_model: "rh", enabled: true },
+        { local_model: "ud", upstream_model: "rub", enabled: false },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onReenableModels={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByTestId("api-gateway-reenable-models-p1"),
+    ).not.toBeInTheDocument();
+  });
+});
+

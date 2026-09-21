@@ -27,7 +27,8 @@ import {
   apiGatewayDeleteProviderTemplate,
   apiGatewayGetConfig,
   apiGatewayProviderTemplates,
-  apiGatewayReenableProvider,
+  apiGatewayReenableProviderModel,
+  apiGatewayReenableProviderModels,
   apiGatewayResetProviderTemplates,
   apiGatewayRestoreProviderModel,
   apiGatewaySetDefaultKey,
@@ -281,9 +282,30 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
       await applyConfig(await apiGatewaySetProviderEnabled(provider.id, enabled));
     }, t("apiGatewaySaved", "Saved."));
 
-  const handleReenableProvider = (providerId: string) =>
+  const handleReenableProviderModel = (
+    providerId: string,
+    localModel: string,
+    upstreamModel: string,
+  ) =>
     runAction(async () => {
-      await applyConfig(await apiGatewayReenableProvider(providerId));
+      const next = await apiGatewayReenableProviderModel(
+        providerId,
+        localModel,
+        upstreamModel,
+      );
+      await applyConfig(next);
+      setEditingProvider(
+        next.providers.find((provider) => provider.id === providerId) ?? null,
+      );
+    }, t("apiGatewaySaved", "Saved."));
+
+  const handleReenableProviderModels = (providerId: string) =>
+    runAction(async () => {
+      const next = await apiGatewayReenableProviderModels(providerId);
+      await applyConfig(next);
+      setEditingProvider(
+        next.providers.find((provider) => provider.id === providerId) ?? null,
+      );
     }, t("apiGatewaySaved", "Saved."));
 
   const handleSaveProvider = (
@@ -756,7 +778,6 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
             onToggleEnabled={(provider, enabled) =>
               void handleToggleProviderEnabled(provider, enabled)
             }
-            onReenable={(providerId) => void handleReenableProvider(providerId)}
             onAdd={() => setIsTemplatePickerOpen(true)}
             onDelete={(providerId) => void handleDeleteProvider(providerId)}
             onManageTemplates={() => setIsTemplateManageOpen(true)}
@@ -889,6 +910,16 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
           }
           onRestoreModel={(providerId, upstreamModel) =>
             void handleRestoreProviderModel(providerId, upstreamModel)
+          }
+          onReenableModel={(providerId, localModel, upstreamModel) =>
+            void handleReenableProviderModel(
+              providerId,
+              localModel,
+              upstreamModel,
+            )
+          }
+          onReenableModels={(providerId) =>
+            void handleReenableProviderModels(providerId)
           }
         />
 

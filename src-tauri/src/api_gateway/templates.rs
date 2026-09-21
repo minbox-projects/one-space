@@ -684,6 +684,7 @@ fn propagate_to_derived(
                             complete_model_display_name(None, &model.upstream_model)
                         }),
                     reasoning_efforts: model.reasoning_efforts.clone(),
+                    ..Default::default()
                 });
             }
         }
@@ -822,6 +823,7 @@ fn mapping_from_template(
             .map(str::to_string)
             .or_else(|| complete_model_display_name(None, &model.upstream_model)),
         reasoning_efforts: model.reasoning_efforts.clone(),
+        ..Default::default()
     }
 }
 

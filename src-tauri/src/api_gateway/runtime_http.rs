@@ -1,9 +1,9 @@
 use super::forwarding::{forward_non_streaming, open_streaming_response};
 use super::selection::{
     candidate_providers, classify_failure, default_retry_delay, is_retryable_failure,
-    register_failure, register_success, resolve_model_for_protocol, resolve_session_id,
-    retry_header_delay, session_affinity, shuffled_candidates, FailureClass, ModelResolution,
-    SessionOrder, MAX_RETRIES_PER_PROVIDER,
+    register_mapping_failure, register_mapping_success, resolve_model_for_protocol,
+    resolve_session_id, retry_header_delay, session_affinity, shuffled_candidates, FailureClass,
+    MappingTarget, ModelResolution, SessionOrder, MAX_RETRIES_PER_PROVIDER,
 };
 use super::storage::{local_base_url, read_config, write_config};
 use super::usage_log::{
@@ -48,7 +48,8 @@ pub(in crate::api_gateway) fn status_from_config(
         auto_disabled_count: config
             .providers
             .iter()
-            .filter(|provider| provider.auto_disabled)
+            .flat_map(|provider| provider.mappings.iter())
+            .filter(|mapping| mapping.auto_disabled)
             .count(),
         key_count: config.keys.iter().filter(|key| key.enabled).count(),
         default_key_id: config.default_key_id.clone(),
@@ -392,17 +393,18 @@ pub(in crate::api_gateway) fn is_authorized(request: &HttpRequest, config: &Gate
         })
 }
 
-/// Union of local model names across enabled, non-auto-disabled providers.
+/// Union of local model names across enabled providers' user-enabled,
+/// not-auto-disabled mapping rows.
 pub(in crate::api_gateway) fn local_model_names(config: &GatewayConfig) -> Vec<String> {
     let mut names: Vec<String> = config
         .providers
         .iter()
-        .filter(|provider| provider.enabled && !provider.auto_disabled)
+        .filter(|provider| provider.enabled)
         .flat_map(|provider| {
             provider
                 .mappings
                 .iter()
-                .filter(|mapping| mapping.enabled)
+                .filter(|mapping| mapping.enabled && !mapping.auto_disabled)
                 .map(|mapping| mapping.local_model.trim().to_string())
         })
         .filter(|name| !name.is_empty())
@@ -472,7 +474,7 @@ fn no_candidate_message(
     let enabled: Vec<String> = config
         .providers
         .iter()
-        .filter(|provider| provider.enabled && !provider.auto_disabled)
+        .filter(|provider| provider.enabled)
         .map(|provider| match resolve_model_for_protocol(provider, requested, protocol) {
             ModelResolution::ProtocolMismatch(configured) => format!(
                 "{} serves model '{}' via {}",
@@ -572,7 +574,7 @@ fn all_unavailable_message(failures: &[(String, String)]) -> String {
 
 fn apply_failure(
     config: &mut GatewayConfig,
-    provider: &GatewayUpstreamProvider,
+    target: &MappingTarget,
     class: FailureClass,
     reason: &str,
 ) {
@@ -580,9 +582,9 @@ fn apply_failure(
     if let Some(stored) = config
         .providers
         .iter_mut()
-        .find(|stored| stored.id == provider.id)
+        .find(|stored| stored.id == target.provider_id)
     {
-        register_failure(stored, class, reason, at);
+        register_mapping_failure(stored, target, class, reason, at);
     }
     let _ = write_config(config);
 }
@@ -638,16 +640,18 @@ enum AttemptResult {
     },
 }
 
-/// Per-request provider health accumulation.
+/// Per-request mapping-row health accumulation.
 ///
 /// Health is counted in inbound-request units, not upstream attempts: however
-/// many times a provider is tried, its outcome is applied once when the request
-/// ends normally. A final success clears the counter, a 404/429 alone never
-/// counts, and a provider that also had a network/5xx failure counts once.
+/// many times a row is tried, its outcome is applied once when the request ends
+/// normally. A final success clears the counter, a 404/429 alone never counts,
+/// and a row that also had a network/5xx failure counts once. Only mapping rows
+/// carry health: an attempt served through the provider's `default_model` has no
+/// target and records nothing.
 #[derive(Default)]
 struct RequestHealth {
-    order: Vec<String>,
-    outcomes: HashMap<String, ProviderOutcome>,
+    order: Vec<MappingTarget>,
+    outcomes: HashMap<MappingTarget, ProviderOutcome>,
 }
 
 #[derive(Default)]
@@ -659,29 +663,29 @@ struct ProviderOutcome {
 }
 
 impl RequestHealth {
-    fn entry(&mut self, provider_id: &str) -> &mut ProviderOutcome {
-        if !self.outcomes.contains_key(provider_id) {
-            self.order.push(provider_id.to_string());
+    fn entry(&mut self, target: &MappingTarget) -> &mut ProviderOutcome {
+        if !self.outcomes.contains_key(target) {
+            self.order.push(target.clone());
             self.outcomes
-                .insert(provider_id.to_string(), ProviderOutcome::default());
+                .insert(target.clone(), ProviderOutcome::default());
         }
         self.outcomes
-            .get_mut(provider_id)
+            .get_mut(target)
             .expect("health entry inserted above")
     }
 
     fn record_failure(
         &mut self,
         config: &mut GatewayConfig,
-        provider: &GatewayUpstreamProvider,
+        target: &MappingTarget,
         class: FailureClass,
         reason: &str,
     ) {
-        let entry = self.entry(&provider.id);
+        let entry = self.entry(target);
         match class {
             FailureClass::DisableImmediately => {
                 if !entry.disable_immediately {
-                    apply_failure(config, provider, class, reason);
+                    apply_failure(config, target, class, reason);
                 }
                 entry.disable_immediately = true;
                 entry.reason = reason.to_string();
@@ -698,15 +702,15 @@ impl RequestHealth {
         }
     }
 
-    fn record_success(&mut self, provider_id: &str) {
-        self.entry(provider_id).succeeded = true;
+    fn record_success(&mut self, target: &MappingTarget) {
+        self.entry(target).succeeded = true;
     }
 
     fn apply(&self, config: &mut GatewayConfig) {
         let at = now_ts();
         let mut changed = false;
-        for provider_id in &self.order {
-            let Some(outcome) = self.outcomes.get(provider_id) else {
+        for target in &self.order {
+            let Some(outcome) = self.outcomes.get(target) else {
                 continue;
             };
             if outcome.disable_immediately {
@@ -715,21 +719,57 @@ impl RequestHealth {
             let Some(stored) = config
                 .providers
                 .iter_mut()
-                .find(|stored| stored.id == *provider_id)
+                .find(|stored| stored.id == target.provider_id)
             else {
                 continue;
             };
             if outcome.succeeded {
-                register_success(stored);
+                register_mapping_success(stored, target);
                 changed = true;
             } else if outcome.health_failure {
-                register_failure(stored, FailureClass::Retryable, &outcome.reason, at);
+                register_mapping_failure(
+                    stored,
+                    target,
+                    FailureClass::Retryable,
+                    &outcome.reason,
+                    at,
+                );
                 changed = true;
             }
         }
         if changed {
             let _ = write_config(config);
         }
+    }
+}
+
+/// Settle one finished attempt on the mapping row it belongs to, if any.
+///
+/// A `default_model` attempt (or any attempt resolving to no matching row)
+/// produces no target and therefore no health outcome.
+fn settle_failure(
+    health: &mut RequestHealth,
+    config: &mut GatewayConfig,
+    provider: &GatewayUpstreamProvider,
+    requested: Option<&str>,
+    upstream_model: &str,
+    class: FailureClass,
+    reason: &str,
+) {
+    if let Some(target) = MappingTarget::for_request(provider, requested, upstream_model) {
+        health.record_failure(config, &target, class, reason);
+    }
+}
+
+/// Settle a served attempt on the mapping row it belongs to, if any.
+fn settle_success(
+    health: &mut RequestHealth,
+    provider: &GatewayUpstreamProvider,
+    requested: Option<&str>,
+    upstream_model: &str,
+) {
+    if let Some(target) = MappingTarget::for_request(provider, requested, upstream_model) {
+        health.record_success(&target);
     }
 }
 
@@ -896,7 +936,7 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
         attempts.push(log);
         match outcome {
             AttemptResult::Success(response) => {
-                health.record_success(&provider.id);
+                settle_success(&mut health, provider, requested, &model);
                 health.apply(config);
                 return response;
             }
@@ -910,7 +950,15 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
                 reason,
                 retry_delay,
             } => {
-                health.record_failure(config, provider, class, &reason);
+                settle_failure(
+                    &mut health,
+                    config,
+                    provider,
+                    requested,
+                    &model,
+                    class,
+                    &reason,
+                );
                 record_provider_failure(&mut failures, &provider.name, reason);
                 last_capture = Some(ForwardCapture {
                     provider_id: provider.id.clone(),
@@ -952,7 +1000,12 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
         attempts.push(log);
         match outcome {
             AttemptResult::Success(response) => {
-                health.record_success(&candidate.provider.id);
+                settle_success(
+                    &mut health,
+                    &candidate.provider,
+                    requested,
+                    &candidate.model,
+                );
                 health.apply(config);
                 return response;
             }
@@ -966,7 +1019,15 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
                 reason,
                 retry_delay,
             } => {
-                health.record_failure(config, &candidate.provider, class, &reason);
+                settle_failure(
+                    &mut health,
+                    config,
+                    &candidate.provider,
+                    requested,
+                    &candidate.model,
+                    class,
+                    &reason,
+                );
                 record_provider_failure(&mut failures, &candidate.provider.name, reason);
                 last_capture = Some(ForwardCapture {
                     provider_id: candidate.provider.id.clone(),
@@ -1218,8 +1279,13 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                             // Bytes already sent: terminate the stream, never switch.
                             Some(Err(error)) => {
                                 let reason = format!("stream failed after first byte: {error}");
-                                health.record_failure(
-                                    config, provider, FailureClass::Retryable,
+                                settle_failure(
+                                    &mut health,
+                                    config,
+                                    provider,
+                                    requested,
+                                    &candidate.model,
+                                    FailureClass::Retryable,
                                     &reason,
                                 );
                                 health.apply(config);
@@ -1259,7 +1325,12 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                 return Ok(capture);
                             }
                             None => {
-                                health.record_success(&provider.id);
+                                settle_success(
+                                    &mut health,
+                                    provider,
+                                    requested,
+                                    &candidate.model,
+                                );
                                 health.apply(config);
                                 capture.status = status;
                                 capture.usage = usage.usage();
@@ -1311,7 +1382,15 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 }
             }
         };
-        health.record_failure(config, provider, class, &reason);
+        settle_failure(
+            &mut health,
+            config,
+            provider,
+            requested,
+            &candidate.model,
+            class,
+            &reason,
+        );
         record_provider_failure(&mut failures, &provider.name, reason);
         candidate.attempts += 1;
         if retryable && ordered.len() > 1 && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {

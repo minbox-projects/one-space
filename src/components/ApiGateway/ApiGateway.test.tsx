@@ -2183,3 +2183,321 @@ describe("ApiGateway 模板服务商模型维护", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 3: frontend row-level state, recovery, copy and counting
+// ---------------------------------------------------------------------------
+
+describe("ApiGateway 逐行自动禁用前端计数与重新启用入口", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("运行时状态卡按 enabled 统计服务商数量，不扣除 auto_disabled", async () => {
+    const provider1 = makeProvider({
+      id: "p1",
+      name: "Healthy Provider",
+      enabled: true,
+      mappings: [{ local_model: "gpt-4o", upstream_model: "remote-a" }],
+    });
+    const provider2 = makeProvider({
+      id: "p2",
+      name: "Auto-disabled Provider",
+      enabled: true,
+      auto_disabled: true,
+      disabled_reason: "HTTP 401",
+      mappings: [{ local_model: "claude-3", upstream_model: "remote-b" }],
+    });
+    const provider3 = makeProvider({
+      id: "p3",
+      name: "User-disabled Provider",
+      enabled: false,
+      mappings: [],
+    });
+
+    const store: Store = {
+      config: makeConfig({ providers: [provider1, provider2, provider3] }),
+      status: makeStatus({ provider_count: 3 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiGateway />);
+
+    // 健康率应为 2/3：provider1(enabled) + provider2(auto_disabled but enabled=true) / total 3
+    // provider3(enabled=false) 被排除但不影响分母
+    const healthCard = await screen.findByTestId("api-gateway-metric-health");
+    expect(within(healthCard).getByText(/2\/3/)).toBeInTheDocument();
+  });
+
+  it("auto_disabled_count 从 status 读取而非从 providers 过滤推导", async () => {
+    const store: Store = {
+      config: makeConfig({ providers: [makeProvider({ id: "p1" })] }),
+      status: makeStatus({
+        provider_count: 1,
+        auto_disabled_count: 5, // 后端统计的自动禁用映射行数
+      }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiGateway />);
+
+    // footer 区域应展示来自 status 的数字
+    expect(await screen.findByTestId("api-gateway-auto-disabled-count")).toHaveTextContent(
+      "5",
+    );
+  });
+
+  it("点击聚合模型指标卡打开弹框时 auto-disabled 专属模型被排除", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [
+          makeProvider({
+            id: "p1",
+            mappings: [
+              { local_model: "keep", upstream_model: "ra" },
+              {
+                local_model: "auto-exclude",
+                upstream_model: "rb",
+                auto_disabled: true,
+              },
+            ],
+          }),
+        ],
+      }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiGateway />);
+
+    fireEvent.click(await screen.findByTestId("api-gateway-metric-models"));
+
+    const dialog = await screen.findByTestId("api-gateway-aggregated-models");
+    const models = within(dialog).getAllByTestId("api-gateway-aggregated-model");
+    const modelNames = models.map((m) => m.getAttribute("data-model"));
+    expect(modelNames).toContain("keep");
+    expect(modelNames).not.toContain("auto-exclude");
+  });
+
+  it("UI→逐行重新启用命令并刷新开放弹窗属性", async () => {
+    const p1 = makeProvider({
+      id: "p1",
+      name: "Broken Provider",
+      mappings: [
+        {
+          local_model: "gpt-4o",
+          upstream_model: "gpt-4o-2024",
+          enabled: true,
+          auto_disabled: true,
+          consecutive_failures: 3,
+        },
+        {
+          local_model: "claude-3",
+          upstream_model: "claude-3-2024",
+          enabled: true,
+        },
+      ],
+    });
+
+    const store: Store = {
+      config: makeConfig({ providers: [p1] }),
+      status: makeStatus({ provider_count: 1, auto_disabled_count: 1 }),
+      targets: [openCodeTarget()],
+    };
+    mockStore(store);
+
+    // Wrap original implementation to additionally handle the new per-row command
+    const originalImpl = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === "api_gateway_reenable_provider_model") {
+          const { providerId, localModel } = args as {
+            providerId: string;
+            localModel: string;
+          };
+          // Update the stored config — simulate backend clearing runtime state
+          const provider = store.config.providers.find(
+            (p) => p.id === providerId,
+          );
+          if (provider) {
+            const mapping = provider.mappings.find(
+              (m) => m.local_model === localModel,
+            );
+            if (mapping) {
+              (mapping as any).auto_disabled = false;
+              (mapping as any).consecutive_failures = 0;
+            }
+          }
+          return store.config;
+        }
+        return originalImpl(command, args);
+      },
+    );
+
+    renderWithProviders(<ApiGateway />);
+
+    // 打开服务商详情弹窗
+    await screen.findByTestId("api-gateway-providers");
+    const providerCard = screen.getByTestId("api-gateway-provider-p1");
+    fireEvent.click(within(providerCard).getByText("Broken Provider"));
+
+    const dialog = await screen.findByTestId("api-gateway-provider-detail");
+    expect(dialog).toBeInTheDocument();
+
+    // 逐行重新启用
+    const rowBtn = screen.getByTestId("api-gateway-reenable-mapping-gpt-4o");
+    fireEvent.click(rowBtn);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "api_gateway_reenable_provider_model",
+        {
+          providerId: "p1",
+          localModel: "gpt-4o",
+          upstreamModel: "gpt-4o-2024",
+        },
+      ),
+    );
+
+    // 成功后按钮应从仍然开放的弹窗中消失（该行的 auto_disabled 被清除，不再显示 re-enable）
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("api-gateway-reenable-mapping-gpt-4o"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // 不应出现旧的 provider-level 重新启用命令
+    const providerLevelCalls = invokeMock.mock.calls.filter(
+      ([cmd]) => cmd === "api_gateway_reenable_provider",
+    );
+    expect(providerLevelCalls).toHaveLength(0);
+  });
+
+  it("UI→批量重新启用命令并刷新开放弹窗属性", async () => {
+    const p1 = makeProvider({
+      id: "p1",
+      name: "Broken Provider",
+      mappings: [
+        {
+          local_model: "gpt-4o",
+          upstream_model: "gpt-4o-2024",
+          enabled: true,
+          auto_disabled: true,
+          consecutive_failures: 3,
+        },
+        {
+          local_model: "claude-3",
+          upstream_model: "claude-3-2024",
+          enabled: true,
+        },
+      ],
+    });
+
+    const store: Store = {
+      config: makeConfig({ providers: [p1] }),
+      status: makeStatus({ provider_count: 1, auto_disabled_count: 1 }),
+      targets: [openCodeTarget()],
+    };
+    mockStore(store);
+
+    // Wrap original implementation to additionally handle the new batch command
+    const originalImpl = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === "api_gateway_reenable_provider_models") {
+          const { providerId } = args as { providerId: string };
+          const provider = store.config.providers.find(
+            (p) => p.id === providerId,
+          );
+          if (provider) {
+            for (const m of provider.mappings) {
+              (m as any).auto_disabled = false;
+              (m as any).consecutive_failures = 0;
+            }
+          }
+          return store.config;
+        }
+        return originalImpl(command, args);
+      },
+    );
+
+    renderWithProviders(<ApiGateway />);
+
+    // 打开服务商详情弹窗
+    await screen.findByTestId("api-gateway-providers");
+    const providerCard = screen.getByTestId("api-gateway-provider-p1");
+    fireEvent.click(within(providerCard).getByText("Broken Provider"));
+
+    const dialog = await screen.findByTestId("api-gateway-provider-detail");
+    expect(dialog).toBeInTheDocument();
+
+    // 批量重新启用
+    const allBtn = screen.getByTestId("api-gateway-reenable-models-p1");
+    fireEvent.click(allBtn);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "api_gateway_reenable_provider_models",
+        { providerId: "p1" },
+      ),
+    );
+
+    // 成功后按钮应从仍然开放的弹窗中消失（所有行的 auto_disabled 被清除）
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("api-gateway-reenable-models-p1"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // 不应出现旧的 provider-level 重新启用命令
+    const providerLevelCalls = invokeMock.mock.calls.filter(
+      ([cmd]) => cmd === "api_gateway_reenable_provider",
+    );
+    expect(providerLevelCalls).toHaveLength(0);
+  });
+
+  it("服务商模板区域不再展示整个服务商的重新启用按钮", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [
+          makeProvider({
+            id: "p1",
+            name: "Broken Provider",
+            auto_disabled: true,
+            mappings: [
+              {
+                local_model: "m1",
+                upstream_model: "r1",
+                auto_disabled: true,
+              },
+            ],
+          }),
+        ],
+      }),
+      status: makeStatus({ provider_count: 1, auto_disabled_count: 1 }),
+      targets: [openCodeTarget()],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiGateway />);
+
+    const providersSection = await screen.findByTestId("api-gateway-providers");
+
+    // 不应出现整个服务商级别的 Re-enable 按钮
+    expect(
+      within(providersSection).queryByRole("button", {
+        name: /Re-enable provider|Re-enable/i,
+      }),
+    ).not.toBeInTheDocument();
+
+    // 底栏徽章仍反映 enabled
+    const badge = within(providersSection).getByTestId(
+      "api-gateway-status-badge-p1",
+    );
+    expect(badge).toHaveTextContent("Enabled");
+  });
+});
