@@ -384,9 +384,43 @@ pub fn api_gateway_set_provider_enabled(
     read_config()
 }
 
-/// Manual re-enable clears only the auto-disabled runtime state.
+/// Clear the runtime health state of the mapping row identified by the trimmed
+/// `(local_model, upstream_model)` key. Duplicate rows that share the trimmed
+/// key are cleared together, and the user's `enabled` intent is never touched.
+/// An unknown provider, or a key that matches no row (including a blank local or
+/// upstream model), is an actionable error that writes nothing.
 #[tauri::command]
-pub fn api_gateway_reenable_provider(provider_id: String) -> Result<GatewayConfig, String> {
+pub fn api_gateway_reenable_provider_model(
+    provider_id: String,
+    local_model: String,
+    upstream_model: String,
+) -> Result<GatewayConfig, String> {
+    let mut config = read_config()?;
+    let provider = find_provider_mut(&mut config, &provider_id)
+        .ok_or_else(|| format!("provider not found: {provider_id}"))?;
+    let mut matched = false;
+    for mapping in provider.mappings.iter_mut().filter(|mapping| {
+        mapping_matches_key(mapping, &local_model, &upstream_model)
+    }) {
+        clear_mapping_runtime_state(mapping);
+        matched = true;
+    }
+    if !matched {
+        return Err(format!(
+            "no mapping row matches '{local_model}' -> '{upstream_model}' for provider '{provider_id}'"
+        ));
+    }
+    write_config(&config)?;
+    read_config()
+}
+
+/// Clear the runtime health state of every auto-disabled mapping row of one
+/// provider. Each row keeps its `enabled` intent (a user-disabled row stays
+/// disabled), rows that are not auto-disabled keep their counter, and other
+/// providers are untouched. An unknown provider is an actionable error that
+/// writes nothing.
+#[tauri::command]
+pub fn api_gateway_reenable_provider_models(provider_id: String) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     let provider = find_provider_mut(&mut config, &provider_id)
         .ok_or_else(|| format!("provider not found: {provider_id}"))?;

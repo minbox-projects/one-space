@@ -2927,43 +2927,359 @@ fn terminal_sync_pending_uses_ledger_not_plaintext_key() {
     ));
 }
 
+// The obsolete reenable_clears_auto_disabled_and_preserves_user_enabled test has been
+// replaced by the following AC-009 / AC-010 behaviour tests. They carry full
+// coverage of the "re-enable must not flip enabled" boundary plus the additional
+// mixed-state, duplicate-key, unknown-provider and no-write-on-error scenarios.
+
+/// AC-009: Per-row re-enable clears only the matching row's runtime state.
+///
+/// Mixed-state setup:
+///   - p1/m1: auto-disabled, enabled=true (should be cleared)
+///   - p1/m2: healthy, enabled=true (must stay unchanged byte-for-byte)
+///   - p1/m3: user-disabled (enabled=false), auto_disabled=true (not auto‑disabled, stays untouched)
+///   - p2/m1: auto-disabled (different provider, untouched)
 #[test]
-fn reenable_clears_auto_disabled_and_preserves_user_enabled() {
-    with_temp_home("reenable-command", |_home| {
+fn ac_009_per_row_reenable_cleared_runtime_state_leaves_other_rows() {
+    with_temp_home("ac009-per-row-reenable", |_home| {
         let mut config = GatewayConfig::default();
-        let mut p = provider("p1");
-        p.enabled = true;
-        // Legacy provider-level runtime state (cleared by normalize_config on read).
-        p.auto_disabled = true;
-        p.disabled_reason = Some("auth".to_string());
-        p.consecutive_failures = 1;
-        // Row-level: mapping starts auto-disabled.
-        p.mappings = vec![mapping("l", "r", None)];
-        p.mappings[0].auto_disabled = true;
-        p.mappings[0].disabled_reason = Some("auth".to_string());
-        p.mappings[0].consecutive_failures = 3;
-        config.providers.push(p);
+
+        // --- Provider p1: mixed states ---
+        let mut p1 = provider("p1");
+        p1.enabled = true;
+
+        // m1: the row we want to re-enable (auto-disabled + enabled).
+        let mut m1 = mapping("local-a", "up-a", None);
+        m1.enabled = true;
+        m1.auto_disabled = true;
+        m1.disabled_reason = Some("auth-fail".to_string());
+        m1.disabled_at = Some(100);
+        m1.consecutive_failures = 3;
+        m1.last_error_at = Some(99);
+
+        // m2: healthy row — must remain byte-for-byte identical after re-enabling m1.
+        let m2 = mapping("local-b", "up-b", None);
+
+        // m3: user-disabled (enabled=false) — also carries stale runtime state but is
+        // NOT auto-disabled (auto_disabled=false), so its counter/lastError stay.
+        let mut m3 = mapping("local-c", "up-c", None);
+        m3.enabled = false;
+        m3.auto_disabled = false;
+        m3.consecutive_failures = 1;
+        m3.last_error_at = Some(80);
+
+        p1.mappings = vec![m1, m2, m3];
+
+        // --- Provider p2: another provider with an auto-disabled row (must stay untouched) ---
+        let mut p2 = provider("p2");
+        let mut p2m1 = mapping("remote-x", "up-x", None);
+        p2m1.auto_disabled = true;
+        p2m1.disabled_reason = Some("other".to_string());
+        p2m1.consecutive_failures = 2;
+        p2.mappings = vec![p2m1];
+
+        config.providers = vec![p1, p2];
         super::storage::write_config(&config).unwrap();
 
-        let after = super::commands::api_gateway_reenable_provider("p1".to_string()).unwrap();
-        // User intent preserved (was true, stays true).
-        assert!(after.providers[0].enabled);
-        // Provider-level legacy fields are cleared by normalize_config on write — skip asserting them.
-        // Row-level runtime state must be cleared.
-        assert!(!after.providers[0].mappings[0].auto_disabled, "row auto_disabled cleared by re-enable");
-        assert_eq!(after.providers[0].mappings[0].disabled_reason, None);
+        // ── Call the per-row re-enable command ──
+        let result = super::commands::api_gateway_reenable_provider_model(
+            "p1".to_string(),
+            "local-a".to_string(),
+            "up-a".to_string(),
+        );
+        assert!(result.is_ok(), "per-row re-enable with valid key must succeed");
+        let after = result.unwrap();
+
+        // ── Assert the target row's runtime state is cleared ──
+        assert!(
+            after.providers[0].mappings[0].enabled,
+            "target row enabled flag must be unchanged"
+        );
+        assert!(
+            !after.providers[0].mappings[0].auto_disabled,
+            "auto_disabled must be cleared"
+        );
+        assert_eq!(
+            after.providers[0].mappings[0].disabled_reason,
+            None,
+            "disabled_reason must be cleared"
+        );
+        assert_eq!(
+            after.providers[0].mappings[0].disabled_at,
+            None,
+            "disabled_at must be cleared"
+        );
+        assert_eq!(
+            after.providers[0].mappings[0].consecutive_failures,
+            0,
+            "consecutive_failures must be reset"
+        );
+        assert_eq!(
+            after.providers[0].mappings[0].last_error_at,
+            None,
+            "last_error_at must be cleared"
+        );
+
+        // ── Assert every OTHER row is byte-for-byte unchanged ──
+        // m2 (healthy, enabled): zero counter, no errors, enabled.
+        assert_eq!(after.providers[0].mappings[1].local_model, "local-b");
+        assert!(after.providers[0].mappings[1].enabled);
+        assert!(!after.providers[0].mappings[1].auto_disabled);
+        assert_eq!(after.providers[0].mappings[1].consecutive_failures, 0);
+        assert_eq!(after.providers[0].mappings[1].disabled_reason, None);
+        assert_eq!(after.providers[0].mappings[1].disabled_at, None);
+        assert_eq!(after.providers[0].mappings[1].last_error_at, None);
+
+        // m3 (user-disabled, not auto-disabled): counter must stay.
+        assert!(!after.providers[0].mappings[2].enabled, "user-disabled must stay disabled");
+        assert!(!after.providers[0].mappings[2].auto_disabled);
+        assert_eq!(
+            after.providers[0].mappings[2].consecutive_failures,
+            1,
+            "non-auto-disabled row keeps its counter"
+        );
+        assert_eq!(after.providers[0].mappings[2].last_error_at, Some(80));
+
+        // p2/m1 (another provider): untouched.
+        assert!(after.providers[1].mappings[0].auto_disabled);
+        assert_eq!(
+            after.providers[1].mappings[0].consecutive_failures,
+            2
+        );
+    });
+}
+
+/// AC-009: Unknown provider returns error and writes nothing.
+#[test]
+fn ac_009_unknown_provider_error_no_write() {
+    with_temp_home("ac009-unknown-provider", |_home| {
+        let mut p = provider("p1");
+        let mut m = mapping("local-x", "up-x", None);
+        m.auto_disabled = true;
+        m.consecutive_failures = 3;
+        p.mappings = vec![m];
+        let mut config = GatewayConfig::default();
+        config.providers = vec![p];
+        super::storage::write_config(&config).unwrap();
+
+        // Snapshot: serialize the config to a string for comparison.
+        let before_json = serde_json::to_string(&config).expect("serialize");
+
+        let result = super::commands::api_gateway_reenable_provider_model(
+            "ghost-provider".to_string(),
+            "local-x".to_string(),
+            "up-x".to_string(),
+        );
+        assert!(result.is_err(), "unknown provider must return Err");
+
+        // Re-read and assert unchanged.
+        let after = super::storage::read_config().expect("re-read after error");
+        let after_json = serde_json::to_string(&after).expect("serialize");
+        assert_eq!(before_json, after_json, "on-disk config must be unchanged after error");
+    });
+}
+
+/// AC-009: Key matches no row → error, writes nothing.
+/// Covers empty local_model, empty upstream_model, and a known provider+key combo that simply doesn't exist.
+#[test]
+fn ac_009_key_matches_no_row_error() {
+    with_temp_home("ac009-no-match", |_home| {
+        let mut config = GatewayConfig::default();
+        let mut p = provider("p1");
+        p.mappings = vec![mapping("local-a", "up-a", None)];
+        config.providers = vec![p];
+        super::storage::write_config(&config).unwrap();
+
+        let before_json = serde_json::to_string(&config).expect("serialize");
+
+        let err_empty_upstream = super::commands::api_gateway_reenable_provider_model(
+            "p1".to_string(),
+            "local-a".to_string(),
+            String::new(),
+        );
+        assert!(err_empty_upstream.is_err(), "empty upstream_model must be an error");
+
+        let err_empty_local = super::commands::api_gateway_reenable_provider_model(
+            "p1".to_string(),
+            String::new(),
+            "up-a".to_string(),
+        );
+        assert!(err_empty_local.is_err(), "empty local_model must be an error");
+
+        let err_nonexist = super::commands::api_gateway_reenable_provider_model(
+            "p1".to_string(),
+            "nonexistent".to_string(),
+            "up-a".to_string(),
+        );
+        assert!(err_nonexist.is_err(), "non-existent key must be an error");
+
+        let after = super::storage::read_config().expect("re-read after errors");
+        let after_json = serde_json::to_string(&after).expect("serialize");
+        assert_eq!(before_json, after_json, "on-disk config must be unchanged after key-not-found errors");
+    });
+}
+
+/// AC-009: Duplicate trimmed keys are cleared together; same key in another provider untouched.
+///
+/// Two rows in p1 share the same trimmed (local_model, upstream_model) — e.g. differing
+/// only by leading/trailing whitespace. Re-enabling either one should clear BOTH rows'
+/// runtime state. p2 carries the same trimmed key but must remain untouched.
+#[test]
+fn ac_009_duplicate_trimmed_keys_cleared_together() {
+    with_temp_home("ac009-duplicate-keys", |_home| {
+        let mut config = GatewayConfig::default();
+
+        // p1: two rows with the same trimmed key but different whitespace.
+        let mut p1 = provider("p1");
+        let mut m1 = mapping(" local-a ", " up-a ", None); // spaces inside the values
+        m1.auto_disabled = true;
+        m1.disabled_reason = Some("fail1".to_string());
+        m1.consecutive_failures = 3;
+        m1.last_error_at = Some(10);
+
+        let mut m2 = mapping("local-a", "up-a", None); // same key, no extra space
+        m2.auto_disabled = true;
+        m2.disabled_reason = Some("fail2".to_string());
+        m2.consecutive_failures = 2;
+        m2.last_error_at = Some(20);
+
+        p1.mappings = vec![m1, m2];
+
+        // p2: same trimmed key in another provider — must stay untouched.
+        let mut p2 = provider("p2");
+        let mut p2m = mapping(" local-a ", " up-a ", None);
+        p2m.auto_disabled = true;
+        p2m.consecutive_failures = 1;
+        p2.mappings = vec![p2m];
+
+        config.providers = vec![p1, p2];
+        super::storage::write_config(&config).unwrap();
+
+        // Re-enable one of the duplicates — both should be cleared.
+        let result = super::commands::api_gateway_reenable_provider_model(
+            "p1".to_string(),
+            " local-a ".to_string(), // match via trimmed key semantics
+            " up-a ".to_string(),
+        );
+        assert!(result.is_ok(), "duplicate-key re-enable must succeed");
+        let after = result.unwrap();
+
+        // Both p1 rows must have their runtime state cleared.
+        assert!(!after.providers[0].mappings[0].auto_disabled);
+        assert_eq!(after.providers[0].mappings[0].consecutive_failures, 0);
+        assert!(!after.providers[0].mappings[1].auto_disabled);
+        assert_eq!(after.providers[0].mappings[1].consecutive_failures, 0);
+
+        // p2's row must stay auto-disabled.
+        assert!(after.providers[1].mappings[0].auto_disabled);
+        assert_eq!(after.providers[1].mappings[0].consecutive_failures, 1);
+    });
+}
+
+/// AC-010: Provider-level re-enable-all clears runtime state of every auto-disabled row,
+/// leaves enabled values intact, does not affect another provider, and preserves counters
+/// on rows that are not auto-disabled.
+#[test]
+fn ac_010_provider_level_reenable_clears_all_auto_disabled() {
+    with_temp_home("ac010-provider-reenable-all", |_home| {
+        let mut config = GatewayConfig::default();
+
+        let mut p1 = provider("p1");
+
+        // Row A: auto-disabled + enabled (should be cleared and served again).
+        let mut mA = mapping("locA", "upA", None);
+        mA.enabled = true;
+        mA.auto_disabled = true;
+        mA.disabled_reason = Some("auth".to_string());
+        mA.consecutive_failures = 3;
+        mA.last_error_at = Some(100);
+
+        // Row B: auto-disabled + user-disabled (runtime cleared, user intent stays off).
+        let mut mB = mapping("locB", "upB", None);
+        mB.enabled = false;
+        mB.auto_disabled = true;
+        mB.disabled_reason = Some("timeout".to_string());
+        mB.consecutive_failures = 2;
+
+        // Row C: user-disabled but NOT auto-disabled (counter must stay).
+        let mut mC = mapping("locC", "upC", None);
+        mC.enabled = false;
+        mC.auto_disabled = false;
+        mC.consecutive_failures = 5;
+        mC.last_error_at = Some(50);
+
+        p1.mappings = vec![mA, mB, mC];
+
+        // p2: must be entirely unaffected.
+        let mut p2 = provider("p2");
+        let mut p2m = mapping("x", "y", None);
+        p2m.auto_disabled = true;
+        p2m.consecutive_failures = 1;
+        p2.mappings = vec![p2m];
+
+        config.providers = vec![p1, p2];
+        super::storage::write_config(&config).unwrap();
+
+        // Call the provider-level re-enable-all command.
+        let result = super::commands::api_gateway_reenable_provider_models("p1".to_string());
+        assert!(result.is_ok(), "provider-level re-enable must succeed for known provider");
+        let after = result.unwrap();
+
+        // Row A: runtime cleared, enabled stays true.
+        assert!(after.providers[0].mappings[0].enabled, "Row A enabled stays true");
+        assert!(
+            !after.providers[0].mappings[0].auto_disabled,
+            "auto-disabled row A cleared"
+        );
         assert_eq!(after.providers[0].mappings[0].consecutive_failures, 0);
 
-        // Turning user intent off must not be undone by a later manual re-enable.
-        let mut reloaded = super::storage::read_config().unwrap();
-        reloaded.providers[0].enabled = false;
-        reloaded.providers[0].mappings[0].auto_disabled = true;
-        reloaded.providers[0].mappings[0].disabled_reason = Some("boom".to_string());
-        super::storage::write_config(&reloaded).unwrap();
+        // Row B: runtime cleared, enabled stays false (user intent preserved).
+        assert!(
+            !after.providers[0].mappings[1].enabled,
+            "Row B user intent stays disabled"
+        );
+        assert!(
+            !after.providers[0].mappings[1].auto_disabled,
+            "auto-disabled row B cleared despite user disabled"
+        );
+        assert_eq!(after.providers[0].mappings[1].consecutive_failures, 0);
 
-        let after = super::commands::api_gateway_reenable_provider("p1".to_string()).unwrap();
-        assert!(!after.providers[0].enabled, "user intent must be preserved");
-        assert!(!after.providers[0].mappings[0].auto_disabled, "row auto_disabled cleared even with user intent off");
+        // Row C: NOT auto-disabled → counter stays.
+        assert!(!after.providers[0].mappings[2].enabled);
+        assert!(after.providers[0].mappings[2].auto_disabled == false);
+        assert_eq!(
+            after.providers[0].mappings[2].consecutive_failures,
+            5,
+            "non-auto-disabled row keeps its counter"
+        );
+
+        // p2 unchanged.
+        assert!(after.providers[1].mappings[0].auto_disabled);
+        assert_eq!(after.providers[1].mappings[0].consecutive_failures, 1);
+    });
+}
+
+/// AC-010: Unknown provider for re-enable-all returns actionable error and writes nothing.
+#[test]
+fn ac_010_unknown_provider_error_no_write() {
+    with_temp_home("ac010-unknown-provider", |_home| {
+        let mut p = provider("p1");
+        let mut m = mapping("local-x", "up-x", None);
+        m.auto_disabled = true;
+        m.consecutive_failures = 3;
+        p.mappings = vec![m];
+        let mut config = GatewayConfig::default();
+        config.providers = vec![p];
+        super::storage::write_config(&config).unwrap();
+
+        let before_json = serde_json::to_string(&config).expect("serialize");
+
+        let result = super::commands::api_gateway_reenable_provider_models("nonexistent".to_string());
+        assert!(result.is_err(), "unknown provider must return Err");
+
+        let after = super::storage::read_config().expect("re-read after error");
+        let after_json = serde_json::to_string(&after).expect("serialize");
+        assert_eq!(before_json, after_json, "on-disk config must be unchanged after error");
     });
 }
 
@@ -3125,7 +3441,8 @@ fn every_command_is_registered_in_the_invoke_handler() {
         "api_gateway_upsert_provider",
         "api_gateway_delete_provider",
         "api_gateway_set_provider_enabled",
-        "api_gateway_reenable_provider",
+        "api_gateway_reenable_provider_model",
+        "api_gateway_reenable_provider_models",
         "api_gateway_upsert_key",
         "api_gateway_delete_key",
         "api_gateway_set_default_key",
@@ -3195,6 +3512,18 @@ fn every_command_is_registered_in_the_invoke_handler() {
     // REQ-011: the standalone model-fetch command is removed together with its
     // frontend wrapper; its registration and export must be gone.
     for removed in ["api_gateway_fetch_models"] {
+        assert!(
+            !RUN_APP_SOURCE.contains(&format!("api_gateway::{removed},")),
+            "the removed command {removed} must not be registered in generate_handler!"
+        );
+        assert!(
+            !LIB_SOURCE.contains(removed),
+            "the removed command {removed} must not be exported from lib.rs"
+        );
+    }
+    // The obsolete provider-level re-enable was replaced by per-row and provider-level
+    // commands; its registration and export must be absent.
+    for removed in ["api_gateway_reenable_provider"] {
         assert!(
             !RUN_APP_SOURCE.contains(&format!("api_gateway::{removed},")),
             "the removed command {removed} must not be registered in generate_handler!"
