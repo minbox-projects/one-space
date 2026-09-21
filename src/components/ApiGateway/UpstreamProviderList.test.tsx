@@ -632,3 +632,64 @@ describe("UpstreamProviderList 逐行 auto-disabled 读提示", () => {
     expect(badge).toHaveTextContent("Enabled");
   });
 });
+
+describe("UpstreamProviderList 权重徽标展示 (AC-014)", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("当 provider 的 weight: 3 时渲染权重徽标且文本包含 Weight: 3，weight 未定义时默认显示 Weight: 1", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({ id: "p-weighted", name: "Weighted Provider", weight: 3 } as any),
+      makeProvider({ id: "p-default", name: "Default Provider" }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    const weightedBadge = screen.getByTestId("api-gateway-weight-badge-p-weighted");
+    expect(weightedBadge).toBeInTheDocument();
+    expect(weightedBadge).toHaveTextContent(/Weight:\s*3/i);
+
+    const defaultBadge = screen.getByTestId("api-gateway-weight-badge-p-default");
+    expect(defaultBadge).toBeInTheDocument();
+    expect(defaultBadge).toHaveTextContent(/Weight:\s*1/i);
+  });
+
+  it("中文环境下权重徽标显示 权重: 3 与默认 权重: 1", async () => {
+    await i18n.changeLanguage("zh");
+
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({ id: "p-weighted", name: "Weighted Provider", weight: 3 } as any),
+      makeProvider({ id: "p-default", name: "Default Provider" }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    const weightedBadge = screen.getByTestId("api-gateway-weight-badge-p-weighted");
+    expect(weightedBadge).toBeInTheDocument();
+    expect(weightedBadge).toHaveTextContent(/权重:\s*3/);
+
+    const defaultBadge = screen.getByTestId("api-gateway-weight-badge-p-default");
+    expect(defaultBadge).toBeInTheDocument();
+    expect(defaultBadge).toHaveTextContent(/权重:\s*1/);
+  });
+});
+

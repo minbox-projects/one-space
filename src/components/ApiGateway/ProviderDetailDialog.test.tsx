@@ -1504,3 +1504,84 @@ describe("ProviderDetailDialog 逐行 auto-disabled 与重新启用", () => {
   });
 });
 
+describe("ProviderDetailDialog 服务商路由权重 (AC-012, AC-013)", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("AC-012: 渲染权重输入框且默认值为 1，限制范围为 1-100", () => {
+    const provider = makeProvider();
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const weightInput = screen.getByTestId("api-gateway-provider-weight-input");
+    expect(weightInput).toBeInTheDocument();
+    expect(weightInput).toHaveValue(1);
+    expect(weightInput).toHaveAttribute("min", "1");
+    expect(weightInput).toHaveAttribute("max", "100");
+  });
+
+  it("AC-012: 若服务商已有 weight 配置，则初始值显示对应权重", () => {
+    const provider = makeProvider({
+      weight: 10,
+    } as any);
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const weightInput = screen.getByTestId("api-gateway-provider-weight-input");
+    expect(weightInput).toBeInTheDocument();
+    expect(weightInput).toHaveValue(10);
+  });
+
+  it("AC-013: 用户将权重修改为 5 并点击保存时，onSave 回调接收到的 provider 对象包含 weight: 5", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const provider = makeProvider();
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const weightInput = screen.getByTestId("api-gateway-provider-weight-input");
+    await user.clear(weightInput);
+    await user.type(weightInput, "5");
+
+    const saveButton = screen.getByRole("button", { name: "Save" });
+    await user.click(saveButton);
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        weight: 5,
+      }),
+      expect.anything(),
+    );
+  });
+});
+
+

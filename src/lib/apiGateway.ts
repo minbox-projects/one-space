@@ -58,6 +58,8 @@ export interface GatewayUpstreamProvider {
   template_id?: string | null;
   /** Template models the user deleted for this provider. */
   ignored_models?: string[];
+  /** Routing weight for weighted round-robin (1-100, default 1). */
+  weight?: number;
 }
 
 export interface GatewayKey {
