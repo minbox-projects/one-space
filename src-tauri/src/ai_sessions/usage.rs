@@ -1,6 +1,7 @@
 use super::{
-    candidate_home_dirs, candidate_opencode_storage_paths, collect_codex_session_files,
-    parse_rfc3339_millis, system_time_to_epoch_millis,
+    antigravity_brain_roots, candidate_home_dirs, candidate_opencode_storage_paths,
+    collect_codex_session_files, find_antigravity_transcript, parse_rfc3339_millis,
+    system_time_to_epoch_millis,
 };
 use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone};
 use rusqlite::{params, Connection};
@@ -129,6 +130,10 @@ struct UsageWindow {
 pub(in crate::ai_sessions) struct ToolScan {
     pub(in crate::ai_sessions) source_status: String,
     pub(in crate::ai_sessions) scanned_sessions: u64,
+    /// In-window `USER_INPUT` rows counted from Antigravity brain transcripts.
+    /// They carry no tokens and never become `UsageRecord`s; only the call
+    /// count surfaces, so summary/daily stay untouched.
+    pub(in crate::ai_sessions) transcript_calls: u64,
     pub(in crate::ai_sessions) records: Vec<UsageRecord>,
     pub(in crate::ai_sessions) errors: Vec<String>,
 }
@@ -340,6 +345,7 @@ fn collect_usage_records_for_tool(
         return Arc::new(ToolScan {
             source_status: "unavailable".to_string(),
             scanned_sessions: 0,
+            transcript_calls: 0,
             records: Vec::new(),
             errors: vec![format!("unsupported tool: {tool}")],
         });
@@ -350,6 +356,7 @@ fn collect_usage_records_for_tool(
         _ => ToolScan {
             source_status: "unavailable".to_string(),
             scanned_sessions: 0,
+            transcript_calls: 0,
             records: Vec::new(),
             errors: vec![format!("unsupported tool: {tool}")],
         },
@@ -520,6 +527,8 @@ fn aggregate_tool_usage(
             add_record_to_bucket(model_bucket, record);
         }
     }
+
+    scanned_calls = scanned_calls.saturating_add(scan.transcript_calls);
 
     let mut summary_sessions = HashSet::<String>::new();
     let mut summary = SessionUsageSummary::default();
@@ -744,6 +753,7 @@ fn collect_claude_usage_records(window: &UsageWindow) -> ToolScan {
     let mut scan = ToolScan {
         source_status: "available".to_string(),
         scanned_sessions: 0,
+        transcript_calls: 0,
         records: Vec::new(),
         errors: Vec::new(),
     };
@@ -819,6 +829,7 @@ fn collect_codex_usage_records(window: &UsageWindow) -> ToolScan {
     let mut scan = ToolScan {
         source_status: "unavailable".to_string(),
         scanned_sessions: 0,
+        transcript_calls: 0,
         records: Vec::new(),
         errors: Vec::new(),
     };
@@ -955,41 +966,117 @@ fn collect_antigravity_usage_records(window: &UsageWindow) -> ToolScan {
         return unavailable_scan();
     };
     let tmp_root = home.join(".gemini").join("tmp");
-    if !tmp_root.is_dir() {
-        return unavailable_scan();
-    }
     let mut scan = ToolScan {
-        source_status: "available".to_string(),
+        source_status: if tmp_root.is_dir() {
+            "available".to_string()
+        } else {
+            "unavailable".to_string()
+        },
         scanned_sessions: 0,
+        transcript_calls: 0,
         records: Vec::new(),
         errors: Vec::new(),
     };
-    let Ok(rollouts) = fs::read_dir(&tmp_root) else {
-        return unavailable_scan();
-    };
-    for rollout in rollouts.flatten() {
-        let chats_dir = rollout.path().join("chats");
-        if !chats_dir.is_dir() {
-            continue;
-        }
-        for path in antigravity_session_files(&chats_dir) {
-            if !usage_file_may_overlap_window(modified_ms(&path), window.start_ms) {
+    if let Ok(rollouts) = fs::read_dir(&tmp_root) {
+        for rollout in rollouts.flatten() {
+            let chats_dir = rollout.path().join("chats");
+            if !chats_dir.is_dir() {
                 continue;
             }
-            scan.scanned_sessions += 1;
-            let parsed =
-                if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl") {
+            for path in antigravity_session_files(&chats_dir) {
+                if !usage_file_may_overlap_window(modified_ms(&path), window.start_ms) {
+                    continue;
+                }
+                scan.scanned_sessions += 1;
+                let parsed = if path.extension().and_then(|extension| extension.to_str())
+                    == Some("jsonl")
+                {
                     parse_antigravity_jsonl_usage_file(&path)
                 } else {
                     parse_antigravity_json_usage_file(&path)
                 };
-            match parsed {
-                Ok(records) => scan.records.extend(records),
-                Err(error) => scan.errors.push(format!("{}: {error}", path.display())),
+                match parsed {
+                    Ok(records) => scan.records.extend(records),
+                    Err(error) => scan.errors.push(format!("{}: {error}", path.display())),
+                }
             }
         }
     }
+    collect_antigravity_transcript_usage(&home, window, &mut scan);
     scan
+}
+
+/// Counts in-window `USER_INPUT` rows from every brain-root transcript. These
+/// rows carry no token usage and never become `UsageRecord`s; only the call and
+/// session counters are updated.
+fn collect_antigravity_transcript_usage(
+    home: &Path,
+    window: &UsageWindow,
+    scan: &mut ToolScan,
+) {
+    for brain_root in antigravity_brain_roots(home) {
+        let Ok(entries) = fs::read_dir(&brain_root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let conversation_dir = entry.path();
+            if !conversation_dir.is_dir() {
+                continue;
+            }
+            let Some(transcript) = find_antigravity_transcript(&conversation_dir) else {
+                continue;
+            };
+            // A discovered transcript makes the source available even when all
+            // of its rows fall outside the window.
+            scan.source_status = "available".to_string();
+            if !usage_file_may_overlap_window(modified_ms(&transcript), window.start_ms) {
+                continue;
+            }
+            match parse_antigravity_transcript_calls(&transcript, window.start_ms, window.end_ms) {
+                Ok(calls) if calls > 0 => {
+                    scan.scanned_sessions += 1;
+                    scan.transcript_calls = scan.transcript_calls.saturating_add(calls);
+                }
+                Ok(_) => {}
+                Err(error) => scan.errors.push(format!("{}: {error}", transcript.display())),
+            }
+        }
+    }
+}
+
+fn parse_antigravity_transcript_calls(
+    path: &Path,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<u64, String> {
+    let file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let reader = BufReader::new(file);
+    let fallback_ms = modified_ms(path);
+    let mut calls = 0_u64;
+    for line in reader.lines() {
+        let line = line.map_err(|error| error.to_string())?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Corrupt lines are skipped; a transcript that cannot be read at all
+        // surfaces as a single error from the caller.
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) != Some("USER_INPUT") {
+            continue;
+        }
+        let timestamp_ms = value
+            .get("created_at")
+            .and_then(Value::as_str)
+            .and_then(parse_rfc3339_millis)
+            .unwrap_or(fallback_ms);
+        if timestamp_ms >= start_ms && timestamp_ms < end_ms {
+            calls += 1;
+        }
+    }
+    Ok(calls)
 }
 
 /// Resolves HOME for usage scans so tests can redirect it via the thread-local
@@ -1285,6 +1372,7 @@ pub(in crate::ai_sessions) fn collect_opencode_usage_records_from_sources(
         }
         .to_string(),
         scanned_sessions: claimed_session_ids.len() as u64,
+        transcript_calls: 0,
         records,
         errors,
     }
@@ -1482,12 +1570,14 @@ fn read_opencode_message_tokens_from_db(
         Ok(source) => ToolScan {
             source_status: "available".to_string(),
             scanned_sessions: source.session_ids.len() as u64,
+            transcript_calls: 0,
             records: source.records,
             errors: source.errors,
         },
         Err(error) => ToolScan {
             source_status: "error".to_string(),
             scanned_sessions: 0,
+            transcript_calls: 0,
             records: Vec::new(),
             errors: vec![error],
         },
@@ -1580,6 +1670,7 @@ fn unavailable_scan() -> ToolScan {
     ToolScan {
         source_status: "unavailable".to_string(),
         scanned_sessions: 0,
+        transcript_calls: 0,
         records: Vec::new(),
         errors: Vec::new(),
     }
@@ -1650,6 +1741,7 @@ pub(in crate::ai_sessions) fn aggregate_usage_for_test(
         Arc::new(ToolScan {
             source_status: "available".to_string(),
             scanned_sessions: 1,
+            transcript_calls: 0,
             records,
             errors: Vec::new(),
         }),

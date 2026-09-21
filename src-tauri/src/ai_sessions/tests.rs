@@ -2386,3 +2386,412 @@ fn antigravity_managed_launch_env_injects_gemini_api_key_and_base_url() {
 
     let _ = fs::remove_dir_all(&temp_home);
 }
+
+// ============================================================================
+// antigravity transcript usage counting — behaviour tests (slice 1b)
+// These tests assert on the public boundary:
+//   sessions_usage_tool_stats("antigravity", days=7) → SessionUsageToolStats
+// Expected layout:
+//   $HOME/.gemini/antigravity-cli/brain/<conversation-id>/transcript_full.jsonl
+//   $HOME/.gemini/antigravity/brain/<conversation-id>/transcript_full.jsonl
+// Counting rules: type=="USER_INPUT" lines with created_at in window count
+//   as calls; unique conversation directories with a window USER_INPUT count
+//   as sessions. Summary/daily stay zero (no token records). Errors survive.
+// ============================================================================
+
+/// Test 1 — tmp missing + two brain roots, each with one in-window session
+/// Hand-scaled counts:
+///   tmp files scanned:        0  (no .gemini/tmp/)
+///   transcript sessions:      2  (cli-conversation + alt-conversation)
+///   scanned_sessions total:   0 + 2 = 2
+///   tmp token records:        0
+///   transcript USER_INPUTs:   2 + 1 = 3  (within window)
+///   scanned_calls total:      0 + 3 = 3
+///   summary.calls / daily:    all zero  (transcripts carry no tokens)
+/// ============================================================================
+#[test]
+fn antigravity_transcript_scans_brain_roots_and_counts_in_window_inputs() {
+    use chrono::Duration as ChronoDuration;
+
+    let root = make_temp_dir("antigravity-transcript-brain-multi");
+    let _guard = crate::config::test_home::TestHomeGuard::set(&root);
+    sessions_usage_clear_cache();
+
+    // Build two brain-root conversations with transcripts containing
+    // `created_at` timestamps inside the current 7-day window.
+    let ts_now = Local::now();
+    let fmt_ts = |days_ago: i64| -> String {
+        let dt = (ts_now.date_naive() - ChronoDuration::days(days_ago))
+            .and_hms_opt(10, 30, 0)
+            .expect("valid timestamp");
+        dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    };
+
+    // Brain root 1 (.gemini/antigravity-cli/brain/cli-conversation):
+    //   transcript has 2 USER_INPUT rows → 2 calls.
+    let cli_root = root
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("brain")
+        .join("cli-conversation");
+    let cli_transcript = cli_root
+        .join("transcript_full.jsonl");
+    write_temp_file(
+        &cli_transcript,
+        format!(
+            "{{\"type\":\"USER_INPUT\",\"content\":\"first prompt\",\"created_at\":\"{}\"}}\n\
+             {{\"type\":\"MODEL\",\"model\":\"gemini-pro\",\"created_at\":\"{}\"}}\n\
+             {{\"type\":\"USER_INPUT\",\"content\":\"second prompt\",\"created_at\":\"{}\"}}\n\
+             {{\"type\":\"MODEL\",\"model\":\"gemini-pro\",\"created_at\":\"{}\"}}\n",
+            fmt_ts(0), // day 0 — in window
+            fmt_ts(0),
+            fmt_ts(2), // day 2 — in window
+            fmt_ts(2),
+        )
+        .as_str(),
+    );
+
+    // Brain root 2 (.gemini/antigravity/brain/alt-conversation):
+    //   transcript has 1 USER_INPUT row → 1 call.
+    let alt_root = root
+        .join(".gemini")
+        .join("antigravity")
+        .join("brain")
+        .join("alt-conversation");
+    let alt_transcript = alt_root.join("transcript_full.jsonl");
+    write_temp_file(
+        &alt_transcript,
+        format!(
+            "{{\"type\":\"USER_INPUT\",\"content\":\"hello from alt\",\
+             \"created_at\":\"{}\"}}\n\
+             {{\"type\":\"MODEL\",\"model\":\"gemini-ultra\",\"created_at\":\"{}\"}}\n",
+            fmt_ts(1), // day 1 — in window
+            fmt_ts(1),
+        )
+        .as_str(),
+    );
+
+    // No .gemini/tmp/ directory exists → tmp contribution is zero.
+
+    let stats = sessions_usage_tool_stats("antigravity".to_string(), Some(7))
+        .expect("tool stats with transcripts");
+
+    // source_status must not be "unavailable" because transcript files exist on
+    // disk. (Before slice 1b impl, this assertion intentionally exposes that
+    // the new path is not wired into collect_antigravity_usage_records.)
+    assert_ne!(
+        stats.source_status, "unavailable",
+        "transcripts are present in brain roots — status must not be unavailable \
+         (actual={})",
+        stats.source_status
+    );
+
+    // scanned_sessions = tmp_files(0) + transcript sessions(2)
+    assert_eq!(
+        stats.scanned_sessions, 2,
+        "should scan both brain-root transcript sessions \
+         (actual={})",
+        stats.scanned_sessions
+    );
+
+    // scanned_calls = tmp_token_records(0) + in-window USER_INPUTs(2+1)
+    assert_eq!(
+        stats.scanned_calls, 3,
+        "two inputs from cli + one from alt, all within 7-day window \
+         (actual={})",
+        stats.scanned_calls
+    );
+
+    // summary stays zero because transcripts do not contribute to record-based
+    // aggregation — they only increment scanned_calls / scanned_sessions.
+    assert_eq!(stats.summary.total_tokens, 0);
+    assert_eq!(stats.summary.calls, 0);
+    assert_eq!(stats.summary.sessions, 0);
+    assert_eq!(stats.daily.len(), 7);
+    for day in &stats.daily {
+        assert_eq!(day.total_tokens, 0);
+        assert_eq!(day.calls, 0);
+        assert_eq!(day.sessions, 0);
+    }
+
+    sessions_usage_clear_cache();
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Test 2 — USER_INPUT rows outside the 7-day window are excluded
+/// Hand-scaled counts:
+///   Each transcript has 3 USER_INPUT rows but all date > 30 days ago.
+///   scanned_sessions = 0  (no in-window sessions)
+///   scanned_calls = 0     (no in-window calls)
+///   source_status still != "unavailable" (files exist)
+/// ============================================================================
+#[test]
+fn antigravity_transcript_excludes_outside_window_inputs() {
+    use chrono::Duration as ChronoDuration;
+
+    let root = make_temp_dir("antigravity-transcript-outside-window");
+    let _guard = crate::config::test_home::TestHomeGuard::set(&root);
+    sessions_usage_clear_cache();
+
+    let ts_now = Local::now();
+    let fmt_ts = |days_ago: i64| -> String {
+        let dt = (ts_now.date_naive() - ChronoDuration::days(days_ago))
+            .and_hms_opt(10, 30, 0)
+            .expect("valid timestamp");
+        dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    };
+
+    // Two conversations, each with 3 USER_INPUT rows 30 days old.
+    let cli_root = root
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("brain")
+        .join("old-session-a");
+    write_temp_file(
+        &cli_root.join("transcript_full.jsonl"),
+        format!(
+            "{{\"type\":\"USER_INPUT\",\"created_at\":\"{}\"}}\n\
+             {{\"type\":\"MODEL\"}}\n\
+             {{\"type\":\"USER_INPUT\",\"created_at\":\"{}\"}}\n\
+             {{\"type\":\"MODEL\"}}\n\
+             {{\"type\":\"USER_INPUT\",\"created_at\":\"{}\"}}\n\
+             {{\"type\":\"MODEL\"}}\n",
+            fmt_ts(30), fmt_ts(25), fmt_ts(20)
+        )
+        .as_str(),
+    );
+
+    let alt_root = root
+        .join(".gemini")
+        .join("antigravity")
+        .join("brain")
+        .join("old-session-b");
+    write_temp_file(
+        &alt_root.join("transcript_full.jsonl"),
+        format!(
+            "{{\"type\":\"USER_INPUT\",\"created_at\":\"{}\"}}\n\
+             {{\"type\":\"MODEL\"}}\n\
+             {{\"type\":\"USER_INPUT\",\"created_at\":\"{}\"}}\n\
+             {{\"type\":\"MODEL\"}}\n\
+             {{\"type\":\"USER_INPUT\",\"created_at\":\"{}\"}}\n\
+             {{\"type\":\"MODEL\"}}\n",
+            fmt_ts(30), fmt_ts(28), fmt_ts(22)
+        )
+        .as_str(),
+    );
+
+    let stats = sessions_usage_tool_stats("antigravity".to_string(), Some(7))
+        .expect("tool stats with stale transcripts");
+
+    // Files exist, so status should NOT be unavailable even if all rows are
+    // outside window. (Before slice 1b impl this assertion exposes the gap.)
+    assert_ne!(
+        stats.source_status, "unavailable",
+        "transcripts are present even if outside window — \
+         status must not be unavailable (actual={})",
+        stats.source_status
+    );
+
+    // All inputs are outside the 7-day window → zero counted.
+    assert_eq!(
+        stats.scanned_sessions, 0,
+        "no in-window sessions (actual={})",
+        stats.scanned_sessions
+    );
+    assert_eq!(
+        stats.scanned_calls, 0,
+        "no in-window calls (actual={})",
+        stats.scanned_calls
+    );
+    assert_eq!(stats.summary.total_tokens, 0);
+    assert_eq!(stats.summary.calls, 0);
+
+    sessions_usage_clear_cache();
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Test 3 — Corrupted transcript: non-JSON lines mixed in + rows without
+///          `created_at`. The implementation should skip bad lines gracefully
+///          and not crash. Rows without `created_at` fall back to file mtime
+///          when that path is implemented by slice 1b.
+/// Observability assertion: either errors are recorded OR counts remain correct
+/// despite the corruption.
+/// ============================================================================
+#[test]
+fn antigravity_transcript_skips_corrupt_lines_without_crashing() {
+    use chrono::Duration as ChronoDuration;
+
+    let root = make_temp_dir("antigravity-transcript-corrupt");
+    let _guard = crate::config::test_home::TestHomeGuard::set(&root);
+    sessions_usage_clear_cache();
+
+    let ts_now = Local::now();
+    let fmt_ts = |days_ago: i64| -> String {
+        let dt = (ts_now.date_naive() - ChronoDuration::days(days_ago))
+            .and_hms_opt(10, 30, 0)
+            .expect("valid timestamp");
+        dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    };
+
+    let brain_root = root
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("brain")
+        .join("corrupt-session");
+
+    // Transcript with: 1 valid USER_INPUT + 1 corrupt line + 1 row missing
+    // `created_at` (would need mtime fallback once implemented).
+    write_temp_file(
+        &brain_root.join("transcript_full.jsonl"),
+        format!(
+            "{{\"type\":\"USER_INPUT\",\"content\":\"good\",\"created_at\":\"{}\"}}\n\
+             THIS IS COMPLETELY GARBAGE AND NOT JSON\n\
+             {{\"type\":\"MODEL\",\"model\":\"gemini-pro\"}}\n\
+             {{\"type\":\"USER_INPUT\",\"content\":\"missing-timestamp\"}}\n",
+            fmt_ts(1) // in-window, should be counted
+        )
+        .as_str(),
+    );
+
+    // Should not panic.
+    let stats = sessions_usage_tool_stats("antigravity".to_string(), Some(7));
+    let stats = match stats {
+        Ok(s) => s,
+        Err(_) => {
+            panic!(
+                "corrupt transcript should not cause the tool_stats call to error"
+            );
+        }
+    };
+
+    // At least one valid in-window input should be counted.
+    // (The second USER_INPUT lacks created_at; behavior depends on whether
+    // mtime fallback is implemented — we tolerate either outcome here.)
+    assert!(
+        stats.scanned_calls >= 1,
+        "at least the valid in-window input should be counted \
+         (scanned_calls={})",
+        stats.scanned_calls
+    );
+
+    // Either errors were recorded or counts stayed reasonable.
+    let has_errors = !stats.errors.is_empty();
+    assert!(
+        has_errors || stats.scanned_calls <= 2,
+        "either report parsing errors or keep counts bounded \
+         (errors={}, scanned_calls={})",
+        stats.errors.len(),
+        stats.scanned_calls
+    );
+
+    assert_ne!(
+        stats.source_status, "unavailable",
+        "transcript file exists on disk"
+    );
+
+    sessions_usage_clear_cache();
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Test 4 — Mixed tmp token data + transcript data: both sources present.
+/// Hand-scaled counts (using small fixtures from 1a pattern):
+///   tmp file session (rollout-mix/chats/session-mix.json):
+///     2 messages within window → 2 records
+///     total_or_sum(0, 10, 3, 0)=13, total_or_sum(0, 20, 5, 0)=25
+///     → total_tokens=38
+///   transcript session (mixed-clin/transcript_full.jsonl):
+///     1 USER_INPUT within window → 1 call from transcript
+///     (no tokens in transcript — does not enter records)
+///
+///   scanned_sessions = tmp(1) + transcript(1) = 2
+///   scanned_calls = tmp_records(2) + transcript_inputs(1) = 3
+///   summary.total_tokens = 38  (only from tmp records)
+///   summary.calls = 2          (only tmp records contribute)
+/// ============================================================================
+#[test]
+fn antigravity_transcript_mixed_with_tmp_data_aggregates_both_sources() {
+    use chrono::Duration as ChronoDuration;
+
+    let root = make_temp_dir("antigravity-transcript-mixed");
+    let _guard = crate::config::test_home::TestHomeGuard::set(&root);
+    sessions_usage_clear_cache();
+
+    let ts_now = Local::now();
+    let fmt_ts = |days_ago: i64| -> String {
+        let dt = (ts_now.date_naive() - ChronoDuration::days(days_ago))
+            .and_hms_opt(5, 9, 58)
+            .expect("valid timestamp");
+        dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    };
+
+    // ── legacy tmp fixture (reuses the same pattern as antigravity_json_* tests)
+    let chats_dir = root
+        .join(".gemini")
+        .join("tmp")
+        .join("rollout-mix")
+        .join("chats");
+    write_temp_file(
+        &chats_dir.join("session-mix.json"),
+        &format!(
+            "{{\n  \"sessionId\": \"conv-mix\",\n\
+             \"messages\": [\n\
+               {{\"tokens\":{{\"input\":10,\"output\":3,\"cached\":0,\"total\":0}},\
+                 \"model\":\"mix-model\",\"timestamp\":\"{}\"}},\n\
+               {{\"tokens\":{{\"input\":20,\"output\":5,\"cached\":0,\"total\":0}},\
+                 \"model\":\"mix-model\",\"timestamp\":\"{}\"}}\n\
+             ]\n}}"
+            , fmt_ts(0), fmt_ts(1)
+        ),
+    );
+
+    // ── transcript fixture
+    let clin_root = root
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("brain")
+        .join("mixed-clin");
+    write_temp_file(
+        &clin_root.join("transcript_full.jsonl"),
+        format!(
+            "{{\"type\":\"USER_INPUT\",\"content\":\"mixed transcript input\",\
+             \"created_at\":\"{}\"}}\n\
+             {{\"type\":\"MODEL\",\"model\":\"gemini-pro\"}}\n",
+            fmt_ts(0) // in window
+        )
+        .as_str(),
+    );
+
+    let stats = sessions_usage_tool_stats("antigravity".to_string(), Some(7))
+        .expect("tool stats with mixed tmp + transcript");
+
+    // Both sources detected → source_status != unavailable
+    assert_ne!(
+        stats.source_status, "unavailable",
+        "both tmp and transcript exist"
+    );
+
+    // scanned_sessions = tmp files(1) + transcript sessions(1) = 2
+    assert_eq!(
+        stats.scanned_sessions, 2,
+        "tmp file + transcript session"
+    );
+
+    // scanned_calls = tmp records(2) + transcript inputs(1) = 3
+    assert_eq!(
+        stats.scanned_calls, 3,
+        "2 tmp message records + 1 transcript USER_INPUT"
+    );
+
+    // summary.total_tokens comes only from tmp token records (transcripts
+    // don't contribute UsageRecords), so 13 + 25 = 38.
+    assert_eq!(
+        stats.summary.total_tokens, 38,
+        "token totals only from tmp messages"
+    );
+
+    // summary.calls also reflects only tmp records (2).
+    assert_eq!(stats.summary.calls, 2);
+
+    sessions_usage_clear_cache();
+    let _ = fs::remove_dir_all(root);
+}
