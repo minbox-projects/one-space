@@ -5,12 +5,12 @@ use super::{
     collect_antigravity_sessions_from_brain_root, collect_opencode_history_sessions_from_sources,
     collect_opencode_usage_records_from_sources, command_uses_resume_semantics,
     normalize_initial_prompt, normalize_terminal_app_key, normalize_working_dir_for_terminal,
-    parse_claude_usage_file, parse_codex_usage_file, parse_opencode_message_usage_dir,
-    read_antigravity_history_file, read_claude_project_file, read_codex_history_session_file,
-    read_opencode_history_file, read_opencode_message_tokens_for_test,
-    run_native_terminal_command_for_app_with_executor, select_antigravity_session_for_create,
-    select_antigravity_session_for_existing, sessions_usage_clear_cache,
-    sessions_usage_tool_stats, timestamp_days_ago,
+    parse_antigravity_quota_envelope, parse_claude_usage_file, parse_codex_usage_file,
+    parse_opencode_message_usage_dir, read_antigravity_history_file, read_claude_project_file,
+    read_codex_history_session_file, read_opencode_history_file,
+    read_opencode_message_tokens_for_test, run_native_terminal_command_for_app_with_executor,
+    select_antigravity_session_for_create, select_antigravity_session_for_existing,
+    sessions_usage_clear_cache, sessions_usage_tool_stats, timestamp_days_ago,
     usage_file_may_overlap_window_for_test, validate_create_command, AntigravitySessionCandidate,
     ToolScan, ToolScanCache, UsageRecord,
 };
@@ -2794,4 +2794,192 @@ fn antigravity_transcript_mixed_with_tmp_data_aggregates_both_sources() {
 
     sessions_usage_clear_cache();
     let _ = fs::remove_dir_all(root);
+}
+
+// ============================================================
+// antigravity quota envelope parsing — behaviour tests
+// These tests assert on the public boundary:
+//   parse_antigravity_quota_envelope(&serde_json::Value) → Result<AntigravityQuotaSnapshot, String>
+// Expected types:
+//   AntigravityQuotaSnapshot { groups: Vec<AntigravityQuotaGroup> }
+//   AntigravityQuotaGroup    { name, description: Option<String>, buckets: Vec<AntigravityQuotaBucket> }
+//   AntigravityQuotaBucket   { id, name, window, remaining_fraction: f64, reset_time, description: Option<String> }
+// All types derive Serialize.
+//
+// The parser is expected to:
+//   (1) Restore every field exactly from a valid envelope.
+//   (2) Return Err(status==ERROR  ∨  missing command.data.groups).
+//   (3) Return Err on missing / non-numeric remaining_fraction
+//       (whole-envelope failure to preserve snapshot completeness).
+// ============================================================
+
+/// Full envelope from `agy -p /usage --output-format json` — representative
+/// fixture used by several downstream callers.  Decimals and optional fields
+/// exercise precise float preservation and None-default handling.
+const QUOTA_ENVELOPE_SUCCESS: &str = r#"{
+  "conversation_id": "",
+  "status": "SUCCESS",
+  "response": "...",
+  "duration_seconds": 0,
+  "num_turns": 0,
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "thinking_tokens": 0,
+    "cache_read_tokens": 0,
+    "total_tokens": 0
+  },
+  "command": {
+    "name": "usage",
+    "data": {
+      "description": "groups share limits",
+      "groups": [
+        {
+          "name": "Gemini Models",
+          "description": "Models within this group: Gemini Flash, Gemini Pro",
+          "buckets": [
+            {
+              "id": "gemini-weekly",
+              "name": "Weekly Limit Remaining",
+              "description": "refresh in 1 day",
+              "window": "weekly",
+              "remaining_fraction": 0.24515248835086823,
+              "reset_time": "2026-09-23T02:30:18Z"
+            },
+            {
+              "id": "gemini-5h",
+              "name": "Five Hour Limit Remaining",
+              "description": "refresh in 3 hours",
+              "window": "5h",
+              "remaining_fraction": 0.7034577131271362,
+              "reset_time": "2026-09-21T11:02:05Z"
+            }
+          ]
+        },
+        {
+          "name": "Claude and GPT models",
+          "description": "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
+          "buckets": [
+            {
+              "id": "3p-weekly",
+              "name": "Weekly Limit Remaining",
+              "window": "weekly",
+              "remaining_fraction": 1.0,
+              "reset_time": "2026-09-28T07:54:34Z"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}"#;
+
+#[test]
+fn parse_quota_envelope_restores_groups_and_buckets_field_by_field() {
+    let value: serde_json::Value =
+        serde_json::from_str(QUOTA_ENVELOPE_SUCCESS).expect("fixture json");
+
+    // The function + types must exist before implementation lands.
+    let snap = parse_antigravity_quota_envelope(&value).expect("quota snapshot");
+
+    assert_eq!(snap.groups.len(), 2);
+
+    let g0 = &snap.groups[0];
+    assert_eq!(g0.name, "Gemini Models");
+    assert_eq!(
+        g0.description.as_deref(),
+        Some("Models within this group: Gemini Flash, Gemini Pro")
+    );
+    assert_eq!(g0.buckets.len(), 2);
+
+    let b0 = &g0.buckets[0];
+    assert_eq!(b0.id, "gemini-weekly");
+    assert_eq!(b0.name, "Weekly Limit Remaining");
+    assert_eq!(b0.description.as_deref(), Some("refresh in 1 day"));
+    assert_eq!(b0.window, "weekly");
+    assert!(
+        (b0.remaining_fraction - 0.24515248835086823_f64).abs() < f64::EPSILON,
+        "remaining_fraction should be 0.24515248835086823, got {}",
+        b0.remaining_fraction
+    );
+    assert_eq!(b0.reset_time, "2026-09-23T02:30:18Z");
+
+    let b1 = &g0.buckets[1];
+    assert_eq!(b1.id, "gemini-5h");
+    assert!(
+        (b1.remaining_fraction - 0.7034577131271362_f64).abs() < f64::EPSILON,
+        "remaining_fraction should be 0.7034577131271362, got {}",
+        b1.remaining_fraction
+    );
+    assert_eq!(b1.window, "5h");
+    assert_eq!(b1.reset_time, "2026-09-21T11:02:05Z");
+
+    // Group without optional description — parsed as None.
+    let g1 = &snap.groups[1];
+    assert_eq!(g1.name, "Claude and GPT models");
+    assert_eq!(
+        g1.description.as_deref(),
+        Some("Models within this group: Claude Opus, Claude Sonnet, GPT-OSS")
+    );
+    assert_eq!(g1.buckets.len(), 1);
+
+    let b2 = &g1.buckets[0];
+    assert_eq!(b2.id, "3p-weekly");
+    assert_eq!(b2.description, None);
+    assert!((b2.remaining_fraction - 1.0_f64).abs() < f64::EPSILON);
+}
+
+#[test]
+fn parse_quota_envelope_errors_on_status_error_or_missing_command_data() {
+    // --- status == ERROR → Err ---
+    let err_value: serde_json::Value = serde_json::from_str(
+        r#"{"status":"ERROR","command":{"name":"usage","data":{}}}"#,
+    )
+    .expect("error fixture");
+    let result = parse_antigravity_quota_envelope(&err_value);
+    assert!(result.is_err(), "expected Err when status=ERROR");
+    assert!(!result.unwrap_err().is_empty());
+
+    // --- missing command.data.groups → Err ---
+    let missing_value: serde_json::Value = serde_json::from_str(
+        r#"{"status":"SUCCESS","command":{"name":"usage","data":{"description":""}}}"#.as_ref(),
+    )
+    .expect("missing-groups fixture");
+    let result2 = parse_antigravity_quota_envelope(&missing_value);
+    assert!(
+        result2.is_err(),
+        "expected Err when command.data.groups is missing"
+    );
+    assert!(!result2.unwrap_err().is_empty());
+}
+
+#[test]
+fn parse_quota_envelope_errors_when_remaining_fraction_is_missing() {
+    // remaining_fraction absent → whole envelope Err (enforces snapshot
+    // completeness — best-effort partial snapshots lose fidelity).
+    let missing_frac: serde_json::Value = serde_json::from_str(
+        r#"{
+  "status": "SUCCESS",
+  "command": {
+    "name": "usage",
+    "data": {
+      "groups": [{
+        "name": "Test Group",
+        "buckets": [{
+          "id": "x",
+          "name": "X",
+          "window": "daily",
+          "reset_time": "2026-10-01T00:00:00Z"
+        }]
+      }]
+    }
+  }
+}"#,
+    )
+    .expect("missing-frac fixture");
+    let result = parse_antigravity_quota_envelope(&missing_frac);
+    assert!(
+        result.is_err(),
+        "expected Err when remaining_fraction is missing"
+    );
 }
