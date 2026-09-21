@@ -25,6 +25,7 @@ import {
   clampUsagePage,
   formatGatewayTimestamp,
   formatGatewayTokens,
+  formatCacheTokensK,
   formatGatewayDuration,
   formatUsageAmount,
   formatUsageGroupLabel,
@@ -509,6 +510,32 @@ describe("formatGatewayTokens Token格式化", () => {
     expect(formatGatewayTokens(100000000)).toBe("1亿");
     expect(formatGatewayTokens(150000000)).toBe("1.5亿");
     expect(formatGatewayTokens(2300000000)).toBe("23亿");
+  });
+});
+
+describe("formatCacheTokensK 缓存Token xxK格式化", () => {
+  it("0或无输入时返回0K", () => {
+    expect(formatCacheTokensK(0)).toBe("0K");
+    expect(formatCacheTokensK(-10)).toBe("0K");
+    expect(formatCacheTokensK(null)).toBe("0K");
+    expect(formatCacheTokensK(undefined)).toBe("0K");
+    expect(formatCacheTokensK(Number.NaN)).toBe("0K");
+    expect(formatCacheTokensK(Number.POSITIVE_INFINITY)).toBe("0K");
+  });
+
+  it("小于1000的数字格式化为保留1位小数的K", () => {
+    expect(formatCacheTokensK(500)).toBe("0.5K");
+    expect(formatCacheTokensK(100)).toBe("0.1K");
+  });
+
+  it("以1000为单位格式化为xxK并最多保留1位小数", () => {
+    expect(formatCacheTokensK(1000)).toBe("1K");
+    expect(formatCacheTokensK(1500)).toBe("1.5K");
+    expect(formatCacheTokensK(10000)).toBe("10K");
+    expect(formatCacheTokensK(10100)).toBe("10.1K");
+    expect(formatCacheTokensK(10120)).toBe("10.1K");
+    expect(formatCacheTokensK(10180)).toBe("10.2K");
+    expect(formatCacheTokensK(25400)).toBe("25.4K");
   });
 });
 

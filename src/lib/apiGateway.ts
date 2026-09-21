@@ -783,6 +783,22 @@ export function formatGatewayTokens(value: number | null | undefined): string {
 }
 
 /**
+ * Formats cache token counts into "xxK" format (e.g. 10100 -> "10.1K", 10000 -> "10K", 500 -> "0.5K", 0 -> "0K").
+ * Null, undefined, NaN, or non-finite values default to "0K".
+ */
+export function formatCacheTokensK(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) {
+    return "0K";
+  }
+  const inK = value / 1000;
+  const formatted = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1,
+  }).format(inK);
+  return `${formatted}K`;
+}
+
+/**
  * A row is "unpriced" only when every request in scope lacks a price row.
  * A partially priced row still shows its priced amount.
  */
