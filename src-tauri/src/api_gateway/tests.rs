@@ -18649,3 +18649,473 @@ fn ac_017_default_model_records_no_outcome() {
         "AC-017: default_model resolution must yield no MappingTarget"
     );
 }
+
+// ---------------------------------------------------------------------------
+// AC-012 first surface: /v1/models row-level auto_disabled exclusion (HTTP boundary)
+// ---------------------------------------------------------------------------
+
+/// AC-012: GET /v1/models excludes a mapping whose row has `auto_disabled=true`
+/// and where that local model appears nowhere else; a healthy shared local model
+/// still surfaces. Upstream must never be contacted. A regression that drops
+/// `!mapping.auto_disabled` from the `local_model_names` predicate will fail here.
+#[tokio::test]
+async fn models_endpoint_excludes_auto_disabled_rows_that_are_unique() {
+    let home = temp_home("models-auto-disabled-unique");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-be-called"}))).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+
+    // Provider with an auto-disabled unique row and a healthy shared row.
+    let mut p_disabled = upstream_provider("p-disabled", "Disabled", &upstream_url, "sk", None);
+    // This local model appears ONLY in this provider — it must be absent.
+    let auto_disabled_mapping = ModelMapping {
+        local_model: "auto-disabled-only".to_string(),
+        upstream_model: "remote-dd".to_string(),
+        protocol: None,
+        display_name: None,
+        enabled: true, // user intent is positive; only runtime state disables it.
+        reasoning_efforts: Vec::new(),
+        auto_disabled: true,
+        disabled_reason: Some("auth failed").map(str::to_string),
+        disabled_at: Some(12345),
+        consecutive_failures: 3,
+        last_error_at: Some(12345),
+    };
+    // Also carry a second row for the same provider's shared model.
+    p_disabled.mappings = vec![
+        auto_disabled_mapping,
+        ModelMapping {
+            local_model: "shared-healthy".to_string(),
+            upstream_model: "remote-shared".to_string(),
+            protocol: None,
+            display_name: None,
+            enabled: true,
+            reasoning_efforts: Vec::new(),
+            auto_disabled: false,
+            disabled_reason: None,
+            disabled_at: None,
+            consecutive_failures: 0,
+            last_error_at: None,
+        },
+    ];
+
+    // Second provider carries the same shared model as healthy.
+    let p_shared = upstream_provider(
+        "p-shared",
+        "Shared",
+        &format!("{upstream_url}/v1"),
+        "sk",
+        None,
+    );
+    config.providers.push(p_disabled);
+    config.providers.push(p_shared);
+
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "GET",
+        "/v1/models",
+        &[("authorization", "Bearer local-key")],
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "unexpected response: {text}");
+    let body: Value = serde_json::from_str(&text).unwrap();
+    let ids: HashSet<String> = body["data"]
+        .as_array()
+        .unwrap_or_else(|| panic!("models payload must carry a data array: {text}"))
+        .iter()
+        .map(|item| item["id"].as_str().unwrap().to_string())
+        .collect();
+
+    // The auto-disabled unique local model must be absent.
+    assert!(
+        !ids.contains("auto-disabled-only"),
+        "an auto-disabled unique row must not appear in /v1/models: {text}"
+    );
+    // The shared healthy model must be present.
+    assert!(
+        ids.contains("shared-healthy"),
+        "a shared healthy model must appear in /v1/models: {text}"
+    );
+    // Upstream must never be contacted.
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "GET /v1/models must never contact upstream"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+// ---------------------------------------------------------------------------
+// AC-013 clauses 1–2: api_gateway_upsert_provider runtime-state semantics
+// ---------------------------------------------------------------------------
+
+/// AC-013 clause 1: upserting the same trimmed key preserves runtime state
+/// (`auto_disabled`, counter, reason, timestamps). A regression that drops
+/// the preserve loop will clear these fields and fail this test.
+#[test]
+fn api_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
+    with_temp_home("upsert-preserve-runtime", |_home| {
+        // Seed a provider row keyed (local_model, upstream_model) with
+        // auto_disabled=true, reason, and consecutive_failures=3.
+        let seeded = GatewayUpstreamProvider {
+            id: "p-upsert-keep".to_string(),
+            name: "Upsert Keep".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key: "sk-seeded".to_string(),
+            default_model: None,
+            protocol: UpstreamProtocol::ChatCompletions,
+            mappings: vec![ModelMapping {
+                local_model: "local-a".to_string(),
+                upstream_model: "remote-a".to_string(),
+                protocol: None,
+                display_name: Some("Kept".to_string()),
+                enabled: true,
+                reasoning_efforts: Vec::new(),
+                auto_disabled: true,
+                disabled_reason: Some("auth failed after retries").map(str::to_string),
+                disabled_at: Some(99999),
+                consecutive_failures: 3,
+                last_error_at: Some(99999),
+            }],
+            enabled: true,
+            auto_disabled: false,
+            disabled_reason: None,
+            disabled_at: None,
+            consecutive_failures: 0,
+            last_error_at: None,
+            template_id: None,
+            ignored_models: Vec::new(),
+        };
+        let mut initial_config = GatewayConfig::default();
+        initial_config.providers.push(seeded.clone());
+        super::storage::write_config(&initial_config).expect("write seed config");
+
+        // Upsert the SAME provider but change display_name — trim key unchanged.
+        let result = super::commands::api_gateway_upsert_provider(
+            GatewayUpstreamProvider {
+                id: seeded.id.clone(),
+                name: "Upsert Keep Renamed".to_string(),
+                base_url: seeded.base_url.clone(),
+                api_key: "sk-new".to_string(),
+                default_model: None,
+                protocol: UpstreamProtocol::ChatCompletions,
+                mappings: vec![ModelMapping {
+                    local_model: "local-a".to_string(),
+                    upstream_model: "remote-a".to_string(),
+                    protocol: None,
+                    display_name: Some("Updated Name".to_string()),
+                    enabled: true,
+                    reasoning_efforts: Vec::new(),
+                    auto_disabled: false, // sender says healthy — must be overridden by stored.
+                    disabled_reason: None,
+                    disabled_at: None,
+                    consecutive_failures: 0, // sender says zero — must be overridden.
+                    last_error_at: None,
+                }],
+                enabled: true,
+                auto_disabled: false,
+                disabled_reason: None,
+                disabled_at: None,
+                consecutive_failures: 0,
+                last_error_at: None,
+                template_id: None,
+                ignored_models: Vec::new(),
+            },
+            None,
+        );
+        assert!(result.is_ok(), "upsert must succeed: {result:#?}");
+        let config = result.expect("valid result");
+
+        let provider = config
+            .providers
+            .iter()
+            .find(|p| p.id == seeded.id)
+            .expect("provider must exist");
+        assert_eq!(
+            provider.name,
+            "Upsert Keep Renamed",
+            "display_name update must apply"
+        );
+        assert_eq!(provider.api_key, "sk-new", "API key must be updated");
+
+        // Runtime state must be preserved despite sender claiming healthy.
+        let mapping = &provider.mappings[0];
+        assert!(
+            mapping.auto_disabled,
+            "AC-013-clause-1: auto_disabled must stay true after unchanged-key upsert"
+        );
+        assert_eq!(
+            mapping.disabled_reason.as_deref(),
+            Some("auth failed after retries"),
+            "disabled_reason must be preserved"
+        );
+        assert_eq!(
+            mapping.disabled_at,
+            Some(99999),
+            "disabled_at timestamp must be preserved"
+        );
+        assert_eq!(
+            mapping.consecutive_failures, 3,
+            "consecutive_failures counter must be preserved"
+        );
+        assert_eq!(
+            mapping.last_error_at,
+            Some(99999),
+            "last_error_at must be preserved"
+        );
+    });
+}
+
+/// AC-013 clause 2: upserting a DIFFERENT local/upstream pair starts healthy
+/// (`auto_disabled=false`, counter=0, no reason/timestamps). A regression that
+/// fails to reset new keys will retain stale state and fail this test.
+#[test]
+fn api_gateway_upsert_clears_runtime_state_for_changed_key() {
+    with_temp_home("upsert-clear-runtime", |_home| {
+        // Seed two rows in one provider.
+        let seeded = GatewayUpstreamProvider {
+            id: "p-upsert-reset".to_string(),
+            name: "Upsert Reset".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key: "sk-seeded".to_string(),
+            default_model: None,
+            protocol: UpstreamProtocol::ChatCompletions,
+            mappings: vec![
+                ModelMapping {
+                    local_model: "local-a".to_string(),
+                    upstream_model: "remote-a".to_string(),
+                    protocol: None,
+                    display_name: Some("Healthy Row".to_string()),
+                    enabled: true,
+                    reasoning_efforts: Vec::new(),
+                    auto_disabled: false,
+                    disabled_reason: None,
+                    disabled_at: None,
+                    consecutive_failures: 0,
+                    last_error_at: None,
+                },
+                ModelMapping {
+                    local_model: "local-b".to_string(),
+                    upstream_model: "remote-b".to_string(),
+                    protocol: None,
+                    display_name: Some("Disabled Row".to_string()),
+                    enabled: true,
+                    reasoning_efforts: Vec::new(),
+                    auto_disabled: true,
+                    disabled_reason: Some("too many failures").map(str::to_string),
+                    disabled_at: Some(88888),
+                    consecutive_failures: 5,
+                    last_error_at: Some(88888),
+                },
+            ],
+            enabled: true,
+            auto_disabled: false,
+            disabled_reason: None,
+            disabled_at: None,
+            consecutive_failures: 0,
+            last_error_at: None,
+            template_id: None,
+            ignored_models: Vec::new(),
+        };
+        let mut config = GatewayConfig::default();
+        config.providers.push(seeded.clone());
+        super::storage::write_config(&config).expect("write seed config");
+
+        // Upsert: keep local-a unchanged, replace local-b -> remote-c.
+        let result = super::commands::api_gateway_upsert_provider(
+            GatewayUpstreamProvider {
+                id: seeded.id.clone(),
+                name: "Upsert Reset Updated".to_string(),
+                base_url: seeded.base_url.clone(),
+                api_key: "sk-changed".to_string(),
+                default_model: None,
+                protocol: UpstreamProtocol::ChatCompletions,
+                mappings: vec![
+                    // Same trim key (local-a -> remote-a): runtime should be preserved.
+                    ModelMapping {
+                        local_model: "local-a".to_string(),
+                        upstream_model: "remote-a".to_string(),
+                        protocol: None,
+                        display_name: None,
+                        enabled: true,
+                        reasoning_efforts: Vec::new(),
+                        auto_disabled: false,
+                        disabled_reason: None,
+                        disabled_at: None,
+                        consecutive_failures: 0,
+                        last_error_at: None,
+                    },
+                    // New trim key (local-b -> remote-c): must start fresh.
+                    ModelMapping {
+                        local_model: "local-b".to_string(),
+                        upstream_model: "remote-c".to_string(),
+                        protocol: None,
+                        display_name: None,
+                        enabled: true,
+                        reasoning_efforts: Vec::new(),
+                        auto_disabled: false,
+                        disabled_reason: None,
+                        disabled_at: None,
+                        consecutive_failures: 0,
+                        last_error_at: None,
+                    },
+                ],
+                enabled: true,
+                auto_disabled: false,
+                disabled_reason: None,
+                disabled_at: None,
+                consecutive_failures: 0,
+                last_error_at: None,
+                template_id: None,
+                ignored_models: Vec::new(),
+            },
+            None,
+        );
+        assert!(result.is_ok(), "upsert must succeed: {result:#?}");
+        let config = result.expect("valid result");
+
+        let provider = config
+            .providers
+            .iter()
+            .find(|p| p.id == seeded.id)
+            .expect("provider must exist");
+
+        // First mapping (unchanged key): runtime preserved.
+        let kept = &provider.mappings[0];
+        assert!(
+            !kept.auto_disabled,
+            "unchanged key: auto_disabled should already be false"
+        );
+
+        // Second mapping (changed key): must start clean/healthy.
+        let new_mapping = &provider.mappings[1];
+        assert_eq!(
+            new_mapping.upstream_model, "remote-c",
+            "the changed key mapping must have the new upstream"
+        );
+        assert!(
+            !new_mapping.auto_disabled,
+            "AC-013-clause-2: changed-key mapping must start with auto_disabled=false"
+        );
+        assert_eq!(
+            new_mapping.consecutive_failures, 0,
+            "changed-key mapping must start with consecutive_failures=0"
+        );
+        assert_eq!(
+            new_mapping.disabled_reason, None,
+            "changed-key mapping must have no disabled_reason"
+        );
+        assert_eq!(
+            new_mapping.disabled_at, None,
+            "changed-key mapping must have no disabled_at"
+        );
+        assert_eq!(
+            new_mapping.last_error_at, None,
+            "changed-key mapping must have no last_error_at"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// AC-016: status count at production boundary (counts rows, not providers)
+// ---------------------------------------------------------------------------
+
+/// AC-016: `status_from_config` counts individual mapping rows with auto_disabled=true.
+/// A regression that counts providers instead of rows would return 1 (one provider)
+/// instead of 2 (two auto-disabled rows) and fail this test.
+#[test]
+fn ac_016_status_from_config_counts_rows_not_providers() {
+    let mut config = GatewayConfig::default();
+    config.enabled = true;
+    config.port = 19999;
+
+    // One provider carrying exactly two auto-disabled mapping rows.
+    let mut single_provider = GatewayUpstreamProvider {
+        id: "multi-rows".to_string(),
+        name: "Multi Rows Provider".to_string(),
+        base_url: "https://api.example.com/v1".to_string(),
+        api_key: "sk-test".to_string(),
+        default_model: None,
+        protocol: UpstreamProtocol::ChatCompletions,
+        mappings: vec![
+            ModelMapping {
+                local_model: "aa".to_string(),
+                upstream_model: "ra".to_string(),
+                protocol: None,
+                display_name: None,
+                enabled: true,
+                reasoning_efforts: Vec::new(),
+                auto_disabled: true,
+                disabled_reason: Some("auth failed").map(str::to_string),
+                disabled_at: Some(1),
+                consecutive_failures: 3,
+                last_error_at: Some(1),
+            },
+            ModelMapping {
+                local_model: "bb".to_string(),
+                upstream_model: "rb".to_string(),
+                protocol: None,
+                display_name: None,
+                enabled: true,
+                reasoning_efforts: Vec::new(),
+                auto_disabled: true,
+                disabled_reason: Some("retry exhaustion").map(str::to_string),
+                disabled_at: Some(2),
+                consecutive_failures: 5,
+                last_error_at: Some(2),
+            },
+        ],
+        enabled: true,
+        auto_disabled: false, // provider-level stays clear.
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
+        template_id: None,
+        ignored_models: Vec::new(),
+    };
+
+    // Make those rows truly auto-disabled via register.
+    {
+        use super::selection::{register_mapping_failure, FailureClass};
+        let t_a = super::selection::MappingTarget::new("multi-rows", "aa", "ra");
+        register_mapping_failure(
+            &mut single_provider,
+            &t_a,
+            FailureClass::DisableImmediately,
+            "gone",
+            1,
+        );
+        let t_b = super::selection::MappingTarget::new("multi-rows", "bb", "rb");
+        register_mapping_failure(
+            &mut single_provider,
+            &t_b,
+            FailureClass::DisableImmediately,
+            "gone",
+            1,
+        );
+    }
+
+    // A second clean provider must NOT affect the count.
+    config.providers.push(single_provider);
+    config.providers.push(provider("clean"));
+
+    let status = super::runtime_http::status_from_config(&config, true);
+    assert_eq!(
+        status.provider_count, 2,
+        "there are exactly two providers"
+    );
+    assert_eq!(
+        status.auto_disabled_count, 2,
+        "AC-016: auto_disabled_count must equal the number of auto-disabled ROWS (2), not providers (1)"
+    );
+}
