@@ -502,26 +502,74 @@ fn no_candidate_message(
     }
 }
 
-fn failure_reason(status: u16, body_parsed: bool) -> String {
-    if body_parsed {
+pub(in crate::api_gateway) fn format_network_error_reason(error: &str) -> String {
+    let lower = error.to_ascii_lowercase();
+    let detail = if lower.contains("connection refused")
+        || lower.contains("failed to connect")
+        || lower.contains("unable to connect")
+        || lower.contains("connection closed")
+    {
+        "connection refused / unreachable (请检查上游 Base URL 是否正确或网络代理设置)"
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        "connection timed out (连接超时，请检查网络稳定性或代理延迟)"
+    } else if lower.contains("dns")
+        || lower.contains("resolve")
+        || lower.contains("name resolution")
+        || lower.contains("nodename nor servname provided")
+    {
+        "DNS resolution failed (无法解析上游域名，请检查 Base URL 拼写或 DNS 设置)"
+    } else if lower.contains("certificate") || lower.contains("ssl") || lower.contains("tls") {
+        "SSL/TLS certificate error (上游 SSL 证书验证失败)"
+    } else {
+        "connection failed (网络连接失败)"
+    };
+    format!("network error: {detail} ({error})")
+}
+
+fn failure_reason(status: u16, body_parsed: bool, error_message: Option<&str>) -> String {
+    let base = if body_parsed {
         format!("HTTP {status}")
     } else {
         format!("HTTP {status} with a non-JSON body")
+    };
+    let Some(msg) = error_message.map(str::trim).filter(|m| !m.is_empty()) else {
+        return base;
+    };
+    if status == 429 {
+        let lower = msg.to_ascii_lowercase();
+        let is_quota = lower.contains("quota")
+            || lower.contains("limit")
+            || lower.contains("usage")
+            || lower.contains("balance")
+            || lower.contains("billing")
+            || lower.contains("exceeded");
+        if is_quota {
+            return format!("{base} (额度已用尽 / Quota Exceeded: {msg})");
+        } else {
+            return format!("{base} (请求频次超限 / Rate Limited: {msg})");
+        }
     }
+    format!("{base} ({msg})")
 }
 
 fn all_unavailable_message(failures: &[(String, String)]) -> String {
     if failures.is_empty() {
         return "all providers unavailable: every candidate failed".to_string();
     }
-    format!(
-        "all providers unavailable: {}",
-        failures
-            .iter()
-            .map(|(name, reason)| format!("{name}: {reason}"))
-            .collect::<Vec<_>>()
-            .join("; ")
-    )
+    let summary = failures
+        .iter()
+        .map(|(name, reason)| format!("{name}: {reason}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    let hint = if failures.iter().all(|(_, r)| r.contains("Quota Exceeded") || (r.contains("429") && r.contains("额度已用尽"))) {
+        " [提示: 所有服务商额度均已耗尽，请更换服务商或检查账户额度]"
+    } else if failures.iter().all(|(_, r)| r.contains("network error")) {
+        " [提示: 无法连接到上游服务，请检查服务商 Base URL 与网络/代理设置]"
+    } else {
+        ""
+    };
+    format!("all providers unavailable: {summary}{hint}")
 }
 
 fn apply_failure(
@@ -765,7 +813,7 @@ async fn attempt_candidate(
                 } else {
                     UsageResult::Failure
                 },
-                error_message,
+                error_message.clone(),
                 usage,
             );
             let capture = ForwardCapture {
@@ -813,14 +861,14 @@ async fn attempt_candidate(
                 AttemptResult::Failure {
                     class,
                     retryable: is_retryable_failure(class, response.status),
-                    reason: failure_reason(response.status, response.parsed),
+                    reason: failure_reason(response.status, response.parsed, error_message.as_deref()),
                     retry_delay: retry_header_delay(&response.headers),
                 },
                 log,
             )
         }
         Err(error) => {
-            let reason = format!("network error: {error}");
+            let reason = format_network_error_reason(&error);
             let log = build_attempt_log(
                 provider,
                 model,
@@ -1094,7 +1142,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 Ok(response) => response,
                 Err(error) => {
                     last_failure_status = Some(0);
-                    let reason = format!("network error: {error}");
+                    let reason = format_network_error_reason(&error);
                     attempts.push(build_attempt_log(
                         provider,
                         &candidate.model,
@@ -1154,7 +1202,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     return Ok(capture);
                 }
                 last_failure_status = Some(status);
-                let reason = failure_reason(status, parsed);
+                let reason = failure_reason(status, parsed, error_message.as_deref());
                 attempts.push(build_attempt_log(
                     provider,
                     &candidate.model,
@@ -1505,6 +1553,7 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
         .get("model")
         .and_then(|value| value.as_str())
         .map(|value| value.to_string());
+    let reasoning_effort = extract_reasoning_effort(&body_value);
     let wants_stream = body_value
         .get("stream")
         .and_then(|value| value.as_bool())
@@ -1538,6 +1587,7 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                 UsageResult::Failure,
                 status,
                 started.elapsed().as_millis().max(1) as u64,
+                reasoning_effort,
             ),
         );
         return Ok(());
@@ -1651,6 +1701,7 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                     capture.result(),
                     capture.status,
                     started.elapsed().as_millis().max(1) as u64,
+                    reasoning_effort.clone(),
                 );
                 record_usage_log(&config, &record);
             } else {
@@ -1659,14 +1710,50 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                     &config,
                     started,
                     requested.as_deref(),
+                    reasoning_effort.clone(),
                     &attempts,
                     Some(terminal),
                 );
             }
         }
-        _ => record_request_usage_logs(&config, started, requested.as_deref(), &attempts, None),
+        _ => record_request_usage_logs(
+            &config,
+            started,
+            requested.as_deref(),
+            reasoning_effort.clone(),
+            &attempts,
+            None,
+        ),
     }
     Ok(())
+}
+
+/// Extract the requested reasoning effort level from request JSON body, if any.
+/// Compatible with OpenAI `reasoning_effort`, OpenCode `reasoningEffort`, and nested `reasoning.effort`.
+fn extract_reasoning_effort(body: &Value) -> Option<String> {
+    if let Some(effort) = body.get("reasoning_effort").and_then(|v| v.as_str()) {
+        let trimmed = effort.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    if let Some(effort) = body.get("reasoningEffort").and_then(|v| v.as_str()) {
+        let trimmed = effort.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    if let Some(effort) = body
+        .get("reasoning")
+        .and_then(|v| v.get("effort"))
+        .and_then(|v| v.as_str())
+    {
+        let trimmed = effort.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
 }
 
 /// Persist the request's buffered attempt rows plus exactly one terminal row.
@@ -1684,6 +1771,7 @@ fn record_request_usage_logs(
     config: &GatewayConfig,
     started: Instant,
     local_model: Option<&str>,
+    reasoning_effort: Option<String>,
     attempts: &[AttemptLog],
     terminal_index: Option<usize>,
 ) {
@@ -1695,6 +1783,7 @@ fn record_request_usage_logs(
             UsageResult::Cancelled,
             0,
             started.elapsed().as_millis().max(1) as u64,
+            reasoning_effort,
         );
         record_usage_log(config, &record);
         return;
@@ -1715,6 +1804,7 @@ fn record_request_usage_logs(
                 attempt.duration_ms,
                 attempt.error_message.clone(),
                 Some(index) == terminal_index,
+                reasoning_effort.clone(),
             )
         })
         .collect();
@@ -1725,6 +1815,7 @@ fn record_request_usage_logs(
             UsageResult::Cancelled,
             0,
             started.elapsed().as_millis().max(1) as u64,
+            reasoning_effort,
         ));
     }
     write_usage_log_rows(config, rows);
@@ -1738,6 +1829,7 @@ fn synthetic_terminal_row(
     result: UsageResult,
     status: u16,
     duration_ms: u64,
+    reasoning_effort: Option<String>,
 ) -> UsageLogRecord {
     build_usage_log_row(
         config,
@@ -1751,6 +1843,7 @@ fn synthetic_terminal_row(
         duration_ms,
         None,
         true,
+        reasoning_effort,
     )
 }
 
@@ -1769,6 +1862,7 @@ fn build_usage_log_row(
     duration_ms: u64,
     error_message: Option<String>,
     terminal: bool,
+    reasoning_effort: Option<String>,
 ) -> UsageLogRecord {
     let timestamp_ms = now_millis();
     let tokens = usage.unwrap_or_default();
@@ -1791,6 +1885,7 @@ fn build_usage_log_row(
         duration_ms,
         error_message,
         terminal,
+        reasoning_effort,
     }
 }
 

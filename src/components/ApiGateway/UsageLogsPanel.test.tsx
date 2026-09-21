@@ -143,9 +143,21 @@ describe("UsageLogsPanel", () => {
       return page({
         total: 3,
         records: [
-          record({ timestamp_ms: Date.UTC(2026, 8, 17, 4, 0), local_model: "newest" }),
-          record({ timestamp_ms: Date.UTC(2026, 8, 17, 2, 0), local_model: "middle" }),
-          record({ timestamp_ms: Date.UTC(2026, 8, 16, 18, 0), local_model: "oldest" }),
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, 4, 0),
+            local_model: "newest",
+            duration_ms: 62000,
+          }),
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, 2, 0),
+            local_model: "middle",
+            duration_ms: 2000,
+          }),
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 16, 18, 0),
+            local_model: "oldest",
+            duration_ms: 500,
+          }),
         ],
       });
     });
@@ -155,8 +167,17 @@ describe("UsageLogsPanel", () => {
     const table = await screen.findByTestId("api-gateway-logs-ungrouped");
     expect(within(table).getByText("Time")).toBeInTheDocument();
     expect(within(table).getByText("Status")).toBeInTheDocument();
+    expect(within(table).getByText("Model")).toBeInTheDocument();
+    expect(within(table).getByText("Duration")).toBeInTheDocument();
     expect(within(table).getByText("Tokens")).toBeInTheDocument();
     expect(within(table).getByText("Cost ($)")).toBeInTheDocument();
+
+    const ths = table.querySelectorAll("th");
+    expect(ths.length).toBe(6);
+    ths.forEach((th) => {
+      expect(th).toHaveClass("text-left");
+      expect(th).toHaveClass("whitespace-nowrap");
+    });
 
     const rows = within(table).getAllByTestId("api-gateway-logs-row");
     expect(rows).toHaveLength(3);
@@ -165,6 +186,45 @@ describe("UsageLogsPanel", () => {
     expect(within(rows[0]).getByText("Success")).toBeInTheDocument();
     expect(within(rows[0]).getByTestId("api-gateway-logs-status-badge")).toHaveClass("bg-emerald-500/10");
     expect(within(rows[0]).getByText("newest")).toBeInTheDocument();
+    expect(
+      within(rows[0]).getByTestId("api-gateway-logs-duration-cell"),
+    ).toHaveTextContent("1m 2s");
+    expect(
+      within(rows[0]).getByTestId("api-gateway-logs-duration-cell"),
+    ).toHaveClass("text-rose-500");
+    expect(
+      within(rows[1]).getByTestId("api-gateway-logs-duration-cell"),
+    ).toHaveTextContent("2s");
+    expect(
+      within(rows[1]).getByTestId("api-gateway-logs-duration-cell"),
+    ).toHaveClass("text-emerald-500");
+    expect(
+      within(rows[2]).getByTestId("api-gateway-logs-duration-cell"),
+    ).toHaveTextContent("1s");
+    expect(
+      within(rows[2]).getByTestId("api-gateway-logs-duration-cell"),
+    ).toHaveClass("text-emerald-500");
+  });
+
+  it("中文环境下不分组表格展示中文列头耗时", async () => {
+    await i18n.changeLanguage("zh");
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 1,
+        records: [record({ duration_ms: 65000 })],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+
+    const table = await screen.findByTestId("api-gateway-logs-ungrouped");
+    expect(within(table).getByText("耗时")).toBeInTheDocument();
+    expect(
+      within(table).getByTestId("api-gateway-logs-duration-cell"),
+    ).toHaveTextContent("1m 5s");
   });
 
   it("切换为 Day（UTC+8）分组展示分组列且错误数不含 cancelled", async () => {
@@ -204,6 +264,13 @@ describe("UsageLogsPanel", () => {
     const grouped = await screen.findByTestId("api-gateway-logs-grouped");
     expect(within(grouped).getByText("Group")).toBeInTheDocument();
     expect(within(grouped).getByText("Errors")).toBeInTheDocument();
+
+    const groupThs = grouped.querySelectorAll("th");
+    expect(groupThs.length).toBe(4);
+    groupThs.forEach((th) => {
+      expect(th).toHaveClass("text-left");
+      expect(th).toHaveClass("whitespace-nowrap");
+    });
     const rows = within(grouped).getAllByTestId("api-gateway-logs-group-row");
     expect(rows).toHaveLength(1);
     expect(within(rows[0]).getByText("2026-09-17")).toBeInTheDocument();
@@ -484,7 +551,7 @@ describe("UsageLogsPanel", () => {
     );
   });
 
-  it("失败记录展示状态码与标准失败原因副标题，成功记录不显示失败原因", async () => {
+  it("失败记录展示状态码与红色错误图标（悬停显示全部错误信息），成功记录不显示错误图标", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
@@ -517,12 +584,16 @@ describe("UsageLogsPanel", () => {
     );
     expect(failureBadge).toHaveTextContent("Failure");
     expect(failureBadge).toHaveTextContent("502");
-    const failureReason = within(rows[0]).getByTestId(
-      "api-gateway-logs-status-reason",
+    const errorIcon = within(rows[0]).getByTestId(
+      "api-gateway-logs-error-icon",
     );
-    expect(failureReason).toHaveTextContent(
-      "Bad gateway / Upstream unavailable",
+    expect(errorIcon).toBeInTheDocument();
+    expect(errorIcon).toHaveClass("text-destructive");
+
+    const tooltip = within(rows[0]).getByTestId(
+      "api-gateway-logs-error-tooltip",
     );
+    expect(tooltip).toHaveTextContent("Bad gateway / Upstream unavailable");
 
     // 第二行：成功记录
     const successBadge = within(rows[1]).getByTestId(
@@ -530,7 +601,7 @@ describe("UsageLogsPanel", () => {
     );
     expect(successBadge).toHaveTextContent("Success");
     expect(
-      within(rows[1]).queryByTestId("api-gateway-logs-status-reason"),
+      within(rows[1]).queryByTestId("api-gateway-logs-error-icon"),
     ).not.toBeInTheDocument();
   });
 
@@ -567,15 +638,23 @@ describe("UsageLogsPanel", () => {
     expect(
       within(breakdown).getByTestId("api-gateway-logs-tokens-input-icon"),
     ).toBeInTheDocument();
+    expect(
+      within(breakdown).getByTestId("api-gateway-logs-tokens-input-icon"),
+    ).toHaveClass("text-emerald-500");
     expect(breakdown).toHaveTextContent("1,250");
     expect(
       within(breakdown).getByTestId("api-gateway-logs-tokens-output-icon"),
     ).toBeInTheDocument();
+    expect(
+      within(breakdown).getByTestId("api-gateway-logs-tokens-output-icon"),
+    ).toHaveClass("text-sky-500");
     expect(breakdown).toHaveTextContent("340");
     expect(
-      within(breakdown).getByTestId("api-gateway-logs-tokens-cache-icon"),
+      within(tokensCell).getByTestId("api-gateway-logs-tokens-cache-icon"),
     ).toBeInTheDocument();
-    expect(breakdown).toHaveTextContent("100"); // 80 + 20
+    expect(
+      within(tokensCell).getByTestId("api-gateway-logs-tokens-cache-value"),
+    ).toHaveTextContent("0.1K"); // 80 + 20 = 100 => 0.1K
 
     const infoBtn = within(tokensCell).getByTestId(
       "api-gateway-logs-tokens-info-btn",
@@ -672,7 +751,48 @@ describe("UsageLogsPanel", () => {
     ).toHaveTextContent("claude-3-7-sonnet-20250219");
   });
 
-  it("大额 Tokens 在日志行与 Tooltip 中正确转换为万/百万/千万/亿等单位并展示完整数值 title", async () => {
+  it("模型列展示推理强度徽章，无推理强度时不展示徽章", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          record({
+            local_model: "deepseek-r1",
+            upstream_model: "deepseek-reasoner",
+            provider_name: "DeepSeek Direct",
+            reasoning_effort: "high",
+          }),
+          record({
+            local_model: "gpt-4o",
+            upstream_model: "gpt-4o",
+            provider_name: "OpenAI Direct",
+            reasoning_effort: null,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-gateway-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("api-gateway-logs-row");
+    expect(rows).toHaveLength(2);
+
+    // 第一行有推理强度，显示 high 徽章
+    const effortBadge = within(rows[0]).getByTestId("api-gateway-logs-reasoning-effort");
+    expect(effortBadge).toBeInTheDocument();
+    expect(effortBadge).toHaveTextContent("high");
+    expect(effortBadge).toHaveAttribute("title", expect.stringContaining("high"));
+
+    // 第二行无推理强度，不显示徽章
+    expect(
+      within(rows[1]).queryByTestId("api-gateway-logs-reasoning-effort"),
+    ).toBeNull();
+  });
+
+  it("大额 Tokens 在日志行展示真实原值千分位，缓存展示 xxK 格式，并在 Tooltip 中展示完整数值", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
@@ -697,10 +817,13 @@ describe("UsageLogsPanel", () => {
     const tokensCell = within(rows[0]).getByTestId("api-gateway-logs-tokens-cell");
     const breakdown = within(tokensCell).getByTestId("api-gateway-logs-tokens-breakdown");
 
-    // 行内展示
-    expect(breakdown).toHaveTextContent("15万");
-    expect(breakdown).toHaveTextContent("1.2百万");
-    expect(breakdown).toHaveTextContent("1.1千万"); // 10,000,000 + 500,000 = 10,500,000 => 1.1千万
+    // 行内第一行展示下行与上行真实原值（千分位）
+    expect(breakdown).toHaveTextContent("150,000");
+    expect(breakdown).toHaveTextContent("1,200,000");
+
+    // 行内第二行展示缓存 xxK 格式
+    const cacheValue = within(tokensCell).getByTestId("api-gateway-logs-tokens-cache-value");
+    expect(cacheValue).toHaveTextContent("10,500K"); // 10,000,000 + 500,000 = 10,500,000 => 10,500K
 
     // breakdown 外层 span 的 title 提示完整精确数值
     const inputSpan = breakdown.querySelector('span[title*="Input"]');
@@ -709,7 +832,7 @@ describe("UsageLogsPanel", () => {
     const outputSpan = breakdown.querySelector('span[title*="Output"]');
     expect(outputSpan).toHaveAttribute("title", "Output: 1,200,000");
 
-    const cacheSpan = breakdown.querySelector('span[title*="Cache"]');
+    const cacheSpan = tokensCell.querySelector('span[title*="Cache"]');
     expect(cacheSpan).toHaveAttribute("title", "Cache: 10,500,000");
 
     // Tooltip 明细展示原始精确千分位数值
@@ -722,7 +845,7 @@ describe("UsageLogsPanel", () => {
     expect(tooltip).toHaveTextContent("11,850,000"); // Total: 11_850_000
   });
 
-  it("有存储错误消息的失败记录以单行摘要展示消息，悬停或聚焦时揭示完整消息与 HTTP 状态", async () => {
+  it("有存储错误消息的失败记录展示红色错误图标，悬停或聚焦时揭示完整消息与 HTTP 状态", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
@@ -746,13 +869,12 @@ describe("UsageLogsPanel", () => {
     const rows = screen.getAllByTestId("api-gateway-logs-row");
     expect(rows).toHaveLength(1);
 
-    // 原因行展示存储的上游错误消息（单行截断），替换通用状态码文案
-    const reason = within(rows[0]).getByTestId(
-      "api-gateway-logs-status-reason",
+    // 展示红色错误图标
+    const errorIcon = within(rows[0]).getByTestId(
+      "api-gateway-logs-error-icon",
     );
-    expect(reason).toHaveTextContent(STORED_UPSTREAM_MESSAGE);
-    expect(reason).not.toHaveTextContent(GENERIC_502_REASON);
-    expect(reason).toHaveClass("truncate");
+    expect(errorIcon).toBeInTheDocument();
+    expect(errorIcon).toHaveClass("text-destructive");
 
     // 提示默认隐藏，悬停或键盘聚焦时显示，并携带完整消息与 HTTP 状态上下文
     const tooltip = within(rows[0]).getByTestId(
@@ -767,10 +889,13 @@ describe("UsageLogsPanel", () => {
     expect(tooltip).toHaveClass("group-hover:flex");
     expect(tooltip).toHaveClass("group-focus-within:flex");
 
+    const reason = within(rows[0]).getByTestId(
+      "api-gateway-logs-status-reason",
+    );
     expectKeyboardFocusable(reason);
   });
 
-  it("没有存储错误消息的失败记录保留通用状态原因与标题，且不渲染错误提示", async () => {
+  it("没有存储错误消息的失败记录展示红色错误图标并在悬停时呈现通用 HTTP 状态错误提示", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
@@ -799,12 +924,12 @@ describe("UsageLogsPanel", () => {
     const rows = screen.getAllByTestId("api-gateway-logs-row");
     expect(rows).toHaveLength(2);
     for (const row of rows) {
-      const reason = within(row).getByTestId("api-gateway-logs-status-reason");
-      expect(reason).toHaveTextContent(GENERIC_502_REASON);
-      expect(reason).toHaveAttribute("title", GENERIC_502_TITLE);
-      expect(
-        within(row).queryByTestId("api-gateway-logs-error-tooltip"),
-      ).not.toBeInTheDocument();
+      const errorIcon = within(row).getByTestId("api-gateway-logs-error-icon");
+      expect(errorIcon).toBeInTheDocument();
+      expect(errorIcon).toHaveClass("text-destructive");
+
+      const tooltip = within(row).getByTestId("api-gateway-logs-error-tooltip");
+      expect(tooltip).toHaveTextContent(GENERIC_502_TITLE);
     }
   });
 
@@ -993,14 +1118,130 @@ describe("UsageLogsPanel", () => {
 
     const rows = screen.getAllByTestId("api-gateway-logs-row");
     expect(rows).toHaveLength(1);
-    expect(
-      within(rows[0]).getByTestId("api-gateway-logs-status-reason"),
-    ).toHaveTextContent(STORED_UPSTREAM_MESSAGE);
+    const tooltip = within(rows[0]).getByTestId(
+      "api-gateway-logs-error-tooltip",
+    );
+    expect(tooltip).toHaveTextContent(STORED_UPSTREAM_MESSAGE);
     expect(
       within(rows[0]).queryByTestId("api-gateway-logs-attempt-label"),
     ).not.toBeInTheDocument();
   });
+
+  it("错误行状态列设置 whitespace-nowrap 且不直接输出错误正文，仅展示红色图标并在浮层中展示全部错误信息", async () => {
+    const longErrorMessage =
+      "Request failed with error: internal proxy error timeout connecting to backend upstream service over TLS after 30000ms";
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          record({
+            result: "failure",
+            status: 504,
+            error_message: longErrorMessage,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-gateway-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("api-gateway-logs-row");
+    expect(rows).toHaveLength(1);
+
+    // 状态单元格应具备 whitespace-nowrap
+    const statusCell = rows[0].querySelectorAll("td")[1];
+    expect(statusCell).toHaveClass("whitespace-nowrap");
+
+    // 状态单元格内错误文本只存在于浮层内部，触发按钮本身不平铺文字（仅为小图标）
+    const trigger = within(statusCell).getByTestId("api-gateway-logs-status-reason");
+    expect(trigger).not.toHaveTextContent(longErrorMessage);
+
+    // 红色图标存在
+    const errorIcon = within(statusCell).getByTestId("api-gateway-logs-error-icon");
+    expect(errorIcon).toBeInTheDocument();
+    expect(errorIcon).toHaveClass("text-destructive");
+
+    // 鼠标滑过/浮层中展示全部错误信息（包含长错误文本和 HTTP 状态）
+    const tooltip = within(statusCell).getByTestId("api-gateway-logs-error-tooltip");
+    expect(tooltip).toHaveClass("hidden");
+    expect(tooltip).toHaveTextContent(longErrorMessage);
+    expect(tooltip).toHaveTextContent("HTTP 504: Gateway timeout");
+  });
+
+  it("耗时列值根据耗时区间展示不同颜色（<3s 绿，3~15s 黄，>15s 红，空值灰）", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 4,
+        records: [
+          record({ duration_ms: 1200 }),
+          record({ duration_ms: 5000 }),
+          record({ duration_ms: 20000 }),
+          record({ duration_ms: undefined as unknown as number }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+
+    const table = await screen.findByTestId("api-gateway-logs-ungrouped");
+    const rows = within(table).getAllByTestId("api-gateway-logs-row");
+    expect(rows).toHaveLength(4);
+
+    const d1 = within(rows[0]).getByTestId("api-gateway-logs-duration-cell");
+    expect(d1).toHaveTextContent("1s");
+    expect(d1).toHaveClass("text-emerald-500");
+
+    const d2 = within(rows[1]).getByTestId("api-gateway-logs-duration-cell");
+    expect(d2).toHaveTextContent("5s");
+    expect(d2).toHaveClass("text-amber-500");
+
+    const d3 = within(rows[2]).getByTestId("api-gateway-logs-duration-cell");
+    expect(d3).toHaveTextContent("20s");
+    expect(d3).toHaveClass("text-rose-500");
+
+    const d4 = within(rows[3]).getByTestId("api-gateway-logs-duration-cell");
+    expect(d4).toHaveTextContent("—");
+    expect(d4).toHaveClass("text-muted-foreground");
+  });
+
+  it("当记录为 429 额度耗尽或网络错误时在详情中展示对应排查建议", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "api_gateway_request_logs") {
+        return page({
+          total: 2,
+          records: [
+            record({
+              result: "failure",
+              status: 429,
+              error_message: "You have exceeded your current quota, please check your plan and billing details.",
+            }),
+            record({
+              result: "failure",
+              status: 0,
+              error_message: "network error: connection refused / unreachable",
+            }),
+          ],
+        });
+      }
+      return undefined;
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+
+    const table = await screen.findByTestId("api-gateway-logs-ungrouped");
+    const rows = within(table).getAllByTestId("api-gateway-logs-row");
+    expect(rows).toHaveLength(2);
+
+    const hints = within(table).getAllByTestId("api-gateway-logs-actionable-hint");
+    expect(hints).toHaveLength(2);
+    expect(hints[0]).toHaveTextContent("Suggestion: Upstream provider quota or periodic limit exhausted");
+    expect(hints[1]).toHaveTextContent("Suggestion: Unable to connect to upstream URL");
+  });
 });
-
-
 

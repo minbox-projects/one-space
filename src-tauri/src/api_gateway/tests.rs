@@ -8945,6 +8945,7 @@ fn sample_attempt_record(
         duration_ms: 5,
         error_message: error_message.map(str::to_string),
         terminal,
+        reasoning_effort: None,
     }
 }
 
@@ -14834,6 +14835,10 @@ fn usage_log_record_serde_defaults_and_round_trips_new_fields() {
         record.terminal,
         "a missing terminal flag must default to terminal"
     );
+    assert_eq!(
+        record.reasoning_effort, None,
+        "a missing reasoning_effort must deserialize as None"
+    );
 
     let attempt = sample_attempt_record(
         2_000,
@@ -14851,7 +14856,7 @@ fn usage_log_record_serde_defaults_and_round_trips_new_fields() {
     assert_eq!(attempt_value["error_message"], json!("upstream exploded"));
     assert_eq!(attempt_value["terminal"], json!(false));
 
-    let terminal = sample_record(
+    let mut terminal = sample_record(
         3_000,
         "local-b",
         "remote-b",
@@ -14861,6 +14866,7 @@ fn usage_log_record_serde_defaults_and_round_trips_new_fields() {
         Some(0.5),
         tokens(1, 0, 0, 1),
     );
+    terminal.reasoning_effort = Some("high".to_string());
     let terminal_value = serde_json::to_value(&terminal).unwrap();
     assert_eq!(
         terminal_value["error_message"],
@@ -14868,10 +14874,67 @@ fn usage_log_record_serde_defaults_and_round_trips_new_fields() {
         "an absent message must serialize as null"
     );
     assert_eq!(terminal_value["terminal"], json!(true));
+    assert_eq!(terminal_value["reasoning_effort"], json!("high"));
 
     let decoded: UsageLogRecord =
         serde_json::from_value(terminal_value).expect("new payload round trips");
     assert_eq!(decoded, terminal);
+}
+
+#[test]
+fn usage_log_store_persists_and_queries_reasoning_effort() {
+    with_temp_home("usage-reasoning-effort-persistence", |_home| {
+        let app_dir = crate::config::get_app_dir().expect("app dir");
+        let db_path = app_dir.join(super::USAGE_DB_FILE);
+        let store = UsageLogStore::at(&db_path);
+        let now = super::now_millis();
+
+        let mut record_with_effort = sample_record(
+            now - 1_000,
+            "deepseek-r1",
+            "deepseek-reasoner",
+            "p1",
+            "Provider One",
+            UsageResult::Success,
+            Some(0.2),
+            tokens(100, 50, 0, 200),
+        );
+        record_with_effort.reasoning_effort = Some("high".to_string());
+
+        let record_without_effort = sample_record(
+            now,
+            "gpt-4o",
+            "gpt-4o",
+            "p2",
+            "Provider Two",
+            UsageResult::Success,
+            Some(0.1),
+            tokens(50, 0, 0, 100),
+        );
+
+        store
+            .append(&record_with_effort, 30)
+            .expect("append record with reasoning_effort");
+        store
+            .append(&record_without_effort, 30)
+            .expect("append record without reasoning_effort");
+
+        let range = TimeRange {
+            start_ms: None,
+            end_ms: None,
+        };
+        let filter = LogFilter {
+            status: None,
+            model: None,
+        };
+        let page = store.query_logs(&range, &filter, 1).expect("query logs");
+        assert_eq!(page.records.len(), 2);
+        // Newest first: record_without_effort (2000), then record_with_effort (1000)
+        assert_eq!(page.records[0].local_model, "gpt-4o");
+        assert_eq!(page.records[0].reasoning_effort, None);
+        assert_eq!(page.records[1].local_model, "deepseek-r1");
+        assert_eq!(page.records[1].reasoning_effort, Some("high".to_string()));
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -19119,3 +19182,74 @@ fn ac_016_status_from_config_counts_rows_not_providers() {
         "AC-016: auto_disabled_count must equal the number of auto-disabled ROWS (2), not providers (1)"
     );
 }
+
+#[test]
+fn test_format_network_error_reason_diagnostics() {
+    use super::runtime_http::format_network_error_reason;
+
+    let refused = format_network_error_reason("error trying to connect: tcp connect error: Connection refused (os error 61)");
+    assert!(refused.contains("network error"), "must preserve network error prefix: {refused}");
+    assert!(refused.contains("connection refused / unreachable"), "diagnostics: {refused}");
+    assert!(refused.contains("请检查上游 Base URL"), "actionable advice: {refused}");
+
+    let timed_out = format_network_error_reason("operation timed out");
+    assert!(timed_out.contains("connection timed out"), "diagnostics: {timed_out}");
+    assert!(timed_out.contains("连接超时"), "actionable advice: {timed_out}");
+
+    let dns = format_network_error_reason("failed to lookup address information: nodename nor servname provided, or not known");
+    assert!(dns.contains("DNS resolution failed"), "diagnostics: {dns}");
+    assert!(dns.contains("无法解析上游域名"), "actionable advice: {dns}");
+
+    let cert = format_network_error_reason("invalid peer certificate: UnknownIssuer");
+    assert!(cert.contains("SSL/TLS certificate error"), "diagnostics: {cert}");
+}
+
+#[tokio::test]
+async fn test_all_providers_unavailable_429_quota_hint() {
+    let home = temp_home("all-429-quota");
+    let port = free_port().await;
+    let (url_a, _) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            429,
+            json!({
+                "error": {
+                    "message": "You've reached your weekly usage limit for your plan. Your limit resets tomorrow."
+                }
+            }),
+        )
+    })
+    .await;
+
+    let mut config = config_with_key(port);
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &url_a,
+        "sk-a",
+        Some("remote-model"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-model"})),
+    )
+    .await;
+    assert_eq!(status, 502, "unexpected response: {text}");
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("Provider A"), "message: {message}");
+    assert!(message.contains("HTTP 429"), "message: {message}");
+    assert!(message.contains("额度已用尽"), "message: {message}");
+    assert!(message.contains("Quota Exceeded"), "message: {message}");
+    assert!(message.contains("所有服务商额度均已耗尽"), "message: {message}");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+

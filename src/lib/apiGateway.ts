@@ -517,6 +517,8 @@ export interface UsageLogRecord {
    * non-terminal attempt row.
    */
   terminal?: boolean;
+  /** Reasoning effort level (e.g. "low", "medium", "high") requested by client; null/absent when none was specified. */
+  reasoning_effort?: string | null;
 }
 
 export interface UsageLogGroup {
@@ -766,6 +768,45 @@ export function formatUsageAmount(amount: number | null | undefined): string {
 }
 
 /**
+ * Format request duration in milliseconds.
+ * - Under 1 minute (< 60s): formatted with "s" unit (e.g. "0s", "2s", "59s").
+ * - 1 minute or more (>= 60s): formatted as "Xm Ys" (e.g. "1m 2s", "2m 5s").
+ * - Returns "—" for null, undefined, NaN or negative values.
+ */
+export function formatGatewayDuration(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) {
+    return "—";
+  }
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
+}
+
+/**
+ * Returns Tailwind text color classes for request duration based on latency.
+ * - < 3s (< 3000ms): green (text-emerald-500)
+ * - 3s ~ 15s (3000ms ~ 15000ms): amber/yellow (text-amber-500)
+ * - > 15s (> 15000ms): red/rose (text-rose-500)
+ * - null/undefined/negative: muted foreground (text-muted-foreground)
+ */
+export function getGatewayDurationColorClass(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) {
+    return "text-muted-foreground";
+  }
+  if (ms < 3000) {
+    return "text-emerald-500";
+  }
+  if (ms <= 15000) {
+    return "text-amber-500";
+  }
+  return "text-rose-500";
+}
+
+/**
  * Format a token count using compact Chinese units (万, 百万, 千万, 亿),
  * matching the formatting used in AI Usage Stats.
  * Numbers below 10,000 are formatted with thousand separators.
@@ -791,6 +832,22 @@ export function formatGatewayTokens(value: number | null | undefined): string {
     maximumFractionDigits: 1,
   }).format(value / unit.threshold);
   return `${formatted}${unit.suffix}`;
+}
+
+/**
+ * Formats cache token counts into "xxK" format (e.g. 10100 -> "10.1K", 10000 -> "10K", 500 -> "0.5K", 0 -> "0K").
+ * Null, undefined, NaN, or non-finite values default to "0K".
+ */
+export function formatCacheTokensK(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) {
+    return "0K";
+  }
+  const inK = value / 1000;
+  const formatted = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1,
+  }).format(inK);
+  return `${formatted}K`;
 }
 
 /**
