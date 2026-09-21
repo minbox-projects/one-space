@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-18-gateway-per-mapping-disable.md
-2026-09-18-gateway-per-mapping-disable.md: a8200affcb3d3475848724910ba49c1bd9cfe167
-2026-09-18-gateway-per-mapping-disable.zh.md: 7a7d14cb0d566db8423789236bf3ce0ca6a9050c
+2026-09-18-gateway-per-mapping-disable.md: 155b6d04f262fedf14d5a9a0ce404f7017da18d4
+2026-09-18-gateway-per-mapping-disable.zh.md: d3a90b29ee0f2d938e76c665da7a150b766fea1a

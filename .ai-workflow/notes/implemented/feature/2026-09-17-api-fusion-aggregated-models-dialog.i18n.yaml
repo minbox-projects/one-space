@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-09-17-api-fusion-aggregated-models-dialog.md
-2026-09-17-api-fusion-aggregated-models-dialog.md: 9a9d7558103b8b42e895dfb3424e5095b0edb670
-2026-09-17-api-fusion-aggregated-models-dialog.zh.md: 0d84ef1fc91e4b945705d4106265d6a234b8b841
+2026-09-17-api-fusion-aggregated-models-dialog.md: 2df55155a1ee53d2a9165306f6f8405dc8935f4a
+2026-09-17-api-fusion-aggregated-models-dialog.zh.md: eecb45fedadabe6312cdf3c94c00b32185389a97
