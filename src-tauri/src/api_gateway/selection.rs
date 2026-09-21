@@ -12,8 +12,10 @@ pub(in crate::api_gateway) enum FailureClass {
     /// Auth failures (401/403) disable the provider immediately and switch.
     DisableImmediately,
     /// Counts toward consecutive failures; switches and auto-disables at the threshold.
+    /// Quota-exhausted 429s are classified here (via
+    /// [`classify_failure_with_message`); plain rate-limit 429s stay [`FailureClass::Transient`].
     Retryable,
-    /// Switches without counting as a failure (429/404).
+    /// Switches without counting as a failure (404 / rate-limit 429).
     Transient,
     /// Returns the upstream error to the caller without switching or disabling (400/422/other 4xx).
     ReturnToClient,
@@ -509,8 +511,9 @@ pub(in crate::api_gateway) fn classify_failure(
     match status {
         401 | 403 => FailureClass::DisableImmediately,
         404 => FailureClass::Transient,
-        // 429 rate limits are retried by the scheduler but never count toward
-        // provider health; 404 and 429 share the "no health count" class.
+        // A bare 429 is a transient rate limit: retried by the scheduler but
+        // never counts toward provider health. Quota-exhausted 429s are
+        // upgraded to Retryable by classify_failure_with_message.
         429 => FailureClass::Transient,
         408 => FailureClass::Retryable,
         // 413/422 and every other client error are returned unchanged.
@@ -574,15 +577,98 @@ pub(in crate::api_gateway) fn retry_header_delay(
     delay.to_std().ok()
 }
 
-/// Whether a classified failure is worth another bounded attempt. `404` is a
-/// permanent per-request skip and `ReturnToClient`/`DisableImmediately` never
-/// retry; `429` (classified `Transient` so it skips health) is still retried.
+/// Whether an upstream 429 error message describes quota exhaustion rather than
+/// a transient rate limit.
+///
+/// Quota signals (case-insensitive): `quota`, `billing`, `insufficient`,
+/// `usage limit`, weekly/monthly period limits, or an `upgrade plan` prompt.
+/// A bare `limit`/`exceeded` (e.g. `Rate limit exceeded`) is NOT quota: it
+/// stays a transient rate limit so ordinary throttling never disables a
+/// mapping row.
+pub(in crate::api_gateway) fn is_quota_exceeded_message(message: Option<&str>) -> bool {
+    let Some(message) = message.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("quota")
+        || lower.contains("billing")
+        || lower.contains("insufficient")
+        || lower.contains("usage limit")
+        || lower.contains("usage_limit")
+        || lower.contains("weekly")
+        || lower.contains("monthly")
+        || lower.contains("upgrade your plan")
+        || lower.contains("upgrade plan")
+    {
+        return true;
+    }
+    if lower.contains("balance")
+        && (lower.contains("exceed")
+            || lower.contains("insufficient")
+            || lower.contains("limit")
+            || lower.contains("deplet")
+            || lower.contains("empty")
+            || lower.contains("zero"))
+    {
+        return true;
+    }
+    if lower.contains("plan")
+        && (lower.contains("limit")
+            || lower.contains("usage")
+            || lower.contains("reset")
+            || lower.contains("quota")
+            || lower.contains("upgrade"))
+    {
+        return true;
+    }
+    false
+}
+
+/// Classify an upstream failure with the sanitized error text available.
+///
+/// A 429 whose message matches [`is_quota_exceeded_message`] is `Retryable`
+/// (counts toward mapping health); any other 429 stays `Transient`.
+/// Everything else delegates to [`classify_failure`].
+pub(in crate::api_gateway) fn classify_failure_with_message(
+    status: u16,
+    network_error: bool,
+    body_parsed: bool,
+    error_message: Option<&str>,
+) -> FailureClass {
+    if status == 429 && !network_error && is_quota_exceeded_message(error_message) {
+        return FailureClass::Retryable;
+    }
+    classify_failure(status, network_error, body_parsed)
+}
+
+/// Whether a classified failure is worth another bounded attempt on the same
+/// provider. `404` is a permanent per-request skip and
+/// `ReturnToClient`/`DisableImmediately` never retry; a plain rate-limit 429
+/// (classified `Transient`) is still retried. A quota-exhausted 429 is
+/// classified `Retryable` for health counting but must NOT be retried on the
+/// same provider (its quota will not recover inside the request budget), so
+/// callers pass the same error text here to suppress the same-provider retry
+/// while keeping the health count.
 pub(in crate::api_gateway) fn is_retryable_failure(class: FailureClass, status: u16) -> bool {
     match class {
         FailureClass::Retryable => true,
         FailureClass::Transient => status == 429,
         FailureClass::DisableImmediately | FailureClass::ReturnToClient => false,
     }
+}
+
+/// Quota-aware variant of [`is_retryable_failure`]: quota-exhausted 429s count
+/// toward health (via their `Retryable` class) but never requeue the same
+/// provider.
+pub(in crate::api_gateway) fn is_retryable_with_message(
+    class: FailureClass,
+    status: u16,
+    error_message: Option<&str>,
+) -> bool {
+    if status == 429 && is_quota_exceeded_message(error_message) {
+        return false;
+    }
+    is_retryable_failure(class, status)
 }
 
 /// Identity of one mapping row: the provider it belongs to plus its trimmed

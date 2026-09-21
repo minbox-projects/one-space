@@ -1,7 +1,8 @@
 use super::commands::{build_gateway_provider, default_key_for_sync, terminal_sync_pending};
 use super::selection::{
-    candidate_providers, classify_failure, clear_mapping_runtime_state, mapping_matches_key,
-    pick_candidate, register_mapping_failure,
+    candidate_providers, classify_failure, classify_failure_with_message,
+    clear_mapping_runtime_state, is_quota_exceeded_message, is_retryable_with_message,
+    mapping_matches_key, pick_candidate, register_mapping_failure,
     register_mapping_success, resolve_model_for_protocol, set_user_enabled,
     FailureClass, MappingTarget, ModelResolution,
 };
@@ -441,6 +442,70 @@ fn classify_failure_matrix_matches_spec() {
     assert_eq!(classify_failure(500, false, false), FailureClass::Retryable);
     // Network errors are retryable regardless of status.
     assert_eq!(classify_failure(0, true, true), FailureClass::Retryable);
+}
+
+#[test]
+fn quota_429_counts_toward_health_but_rate_limit_429_does_not() {
+    // Bare classify_failure keeps 429 Transient (no message context).
+    assert_eq!(classify_failure(429, false, true), FailureClass::Transient);
+
+    // Quota-exhausted 429 (weekly limit) upgrades to Retryable.
+    let quota = Some("You've reached your weekly usage limit for your plan. Your limit resets at 2026-09-24T03:30:30.663Z. Please wait for the window to reset or upgrade your plan to continue.");
+    assert!(is_quota_exceeded_message(quota));
+    assert_eq!(
+        classify_failure_with_message(429, false, true, quota),
+        FailureClass::Retryable
+    );
+    // Quota 429 counts but never requeues the same provider.
+    assert!(!is_retryable_with_message(
+        FailureClass::Retryable,
+        429,
+        quota
+    ));
+
+    // Plain rate-limit 429 stays Transient and is still retried.
+    let rate = Some("Upstream model provider is temporarily unavailable. Please try again in a moment.");
+    assert!(!is_quota_exceeded_message(rate));
+    assert_eq!(
+        classify_failure_with_message(429, false, true, rate),
+        FailureClass::Transient
+    );
+    assert!(is_retryable_with_message(
+        FailureClass::Transient,
+        429,
+        rate
+    ));
+
+    // A bare "Rate limit exceeded" without quota signals stays transient.
+    let bare_limit = Some("Rate limit exceeded, please try again in 2s.");
+    assert!(!is_quota_exceeded_message(bare_limit));
+    assert_eq!(
+        classify_failure_with_message(429, false, true, bare_limit),
+        FailureClass::Transient
+    );
+
+    // Empty / missing message is never quota.
+    assert!(!is_quota_exceeded_message(None));
+    assert!(!is_quota_exceeded_message(Some("  ")));
+    assert_eq!(
+        classify_failure_with_message(429, false, true, None),
+        FailureClass::Transient
+    );
+
+    // Quota 429 accumulates to auto-disable at the threshold; rate-limit 429 never does.
+    let mut quota_provider = provider("quota-row");
+    quota_provider.mappings = vec![mapping("l", "r", None)];
+    let t_quota = MappingTarget::new("quota-row", "l", "r");
+    assert!(!register_mapping_failure(
+        &mut quota_provider, &t_quota, FailureClass::Retryable, "quota", 1
+    ));
+    assert!(!register_mapping_failure(
+        &mut quota_provider, &t_quota, FailureClass::Retryable, "quota", 2
+    ));
+    assert!(register_mapping_failure(
+        &mut quota_provider, &t_quota, FailureClass::Retryable, "quota", 3
+    ));
+    assert!(quota_provider.mappings[0].auto_disabled);
 }
 
 #[test]
@@ -4468,6 +4533,88 @@ async fn end_to_end_network_errors_accumulate_and_disable() {
         "reason must describe the network failure: {:?}",
         a_stored.mappings[0].disabled_reason
     );
+}
+
+#[tokio::test]
+async fn end_to_end_quota_429_counts_and_disables_while_rate_limit_429_does_not() {
+    // Quota-exhausted 429 (weekly usage limit) counts toward mapping health and
+    // auto-disables at the threshold even though a healthy fallback serves every
+    // request; a plain rate-limit 429 never counts.
+    for (name, message, should_disable) in [
+        (
+            "quota",
+            "You've reached your weekly usage limit for your plan. Your limit resets at 2026-09-24T03:30:30.663Z. Please wait for the window to reset or upgrade your plan to continue.",
+            true,
+        ),
+        (
+            "rate-limit",
+            "Upstream model provider is temporarily unavailable. Please try again in a moment.",
+            false,
+        ),
+    ] {
+        let _home = isolated_temp_home(&format!("e2e-429-{name}"));
+        let (limited_url, limited_log) =
+            spawn_mock_upstream(move |_| MockReply::Json(429, json!({"error": {"message": message}})))
+                .await;
+        let (healthy_url, _) =
+            spawn_json_sequence_mock(vec![(200, json!({"id": "healthy-fallback"}))]).await;
+
+        let mut config = GatewayConfig::default();
+        let mut limited = upstream_provider("a", "Limited", &limited_url, "sk", Some("remote-model"));
+        limited.mappings = vec![mapping("local-model", "remote-model", None)];
+        let mut healthy = upstream_provider("b", "Healthy", &healthy_url, "sk", Some("remote-model"));
+        healthy.mappings = vec![mapping("other-model", "remote-model", None)];
+        config.providers = vec![limited.clone(), healthy.clone()];
+        let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+
+        for _ in 0..3 {
+            let mut attempts = Vec::new();
+            // Re-resolve candidates each round so an auto-disabled row drops out.
+            let candidates: Vec<GatewayUpstreamProvider> = candidate_providers(
+                &config.providers,
+                Some("local-model"),
+                super::UpstreamProtocol::ChatCompletions,
+            )
+            .into_iter()
+            .cloned()
+            .collect();
+            let response = super::runtime_http::attempt_non_streaming(
+                &candidates,
+                "/v1/chat/completions",
+                &body,
+                Some("local-model"),
+                &mut config,
+                &HashMap::new(),
+                &mut attempts,
+            )
+            .await;
+            assert_eq!(response.status, 200, "{name}: fallback must serve");
+        }
+
+        let stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+        assert_eq!(
+            stored.mappings[0].auto_disabled, should_disable,
+            "{name}: auto_disabled mismatch"
+        );
+        assert_eq!(
+            stored.mappings[0].consecutive_failures,
+            if should_disable { 3 } else { 0 },
+            "{name}: consecutive_failures mismatch"
+        );
+        if should_disable {
+            assert_eq!(
+                limited_log.lock().unwrap().len(),
+                3,
+                "quota provider is contacted once per request until disabled"
+            );
+        } else {
+            assert_eq!(
+                limited_log.lock().unwrap().len(),
+                3,
+                "rate-limited provider keeps serving as fallback candidate"
+            );
+        }
+    }
 }
 
 #[tokio::test]

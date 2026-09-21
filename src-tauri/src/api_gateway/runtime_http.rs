@@ -1,9 +1,10 @@
 use super::forwarding::{forward_non_streaming, open_streaming_response};
 use super::selection::{
-    candidate_providers, classify_failure, default_retry_delay, is_retryable_failure,
-    register_mapping_failure, register_mapping_success, resolve_model_for_protocol,
-    resolve_session_id, retry_header_delay, session_affinity, weighted_candidates, FailureClass,
-    MappingTarget, ModelResolution, SessionOrder, MAX_RETRIES_PER_PROVIDER,
+    candidate_providers, classify_failure_with_message, default_retry_delay,
+    is_quota_exceeded_message, is_retryable_with_message, register_mapping_failure,
+    register_mapping_success, resolve_model_for_protocol, resolve_session_id, retry_header_delay,
+    session_affinity, weighted_candidates, FailureClass, MappingTarget, ModelResolution,
+    SessionOrder, MAX_RETRIES_PER_PROVIDER,
 };
 use super::storage::{local_base_url, read_config, write_config};
 use super::usage_log::{
@@ -536,14 +537,7 @@ fn failure_reason(status: u16, body_parsed: bool, error_message: Option<&str>) -
         return base;
     };
     if status == 429 {
-        let lower = msg.to_ascii_lowercase();
-        let is_quota = lower.contains("quota")
-            || lower.contains("limit")
-            || lower.contains("usage")
-            || lower.contains("balance")
-            || lower.contains("billing")
-            || lower.contains("exceeded");
-        if is_quota {
+        if is_quota_exceeded_message(error_message) {
             return format!("{base} (额度已用尽 / Quota Exceeded: {msg})");
         } else {
             return format!("{base} (请求频次超限 / Rate Limited: {msg})");
@@ -644,8 +638,9 @@ enum AttemptResult {
 ///
 /// Health is counted in inbound-request units, not upstream attempts: however
 /// many times a row is tried, its outcome is applied once when the request ends
-/// normally. A final success clears the counter, a 404/429 alone never counts,
-/// and a row that also had a network/5xx failure counts once. Only mapping rows
+/// normally. A final success clears the counter, a 404 / rate-limit 429 alone
+/// never counts, a quota-exhausted 429 counts once, and a row that also had a
+/// network/5xx failure counts once. Only mapping rows
 /// carry health: an attempt served through the provider's `default_model` has no
 /// target and records nothing.
 #[derive(Default)]
@@ -696,8 +691,9 @@ impl RequestHealth {
                     entry.reason = reason.to_string();
                 }
             }
-            // 404/429 alone never count toward health; other 4xx are returned to
-            // the caller and also do not count.
+            // 404 / rate-limit 429 alone never count toward health; other 4xx
+            // are returned to the caller and also do not count.
+            // Quota-exhausted 429s arrive as Retryable and count above.
             FailureClass::Transient | FailureClass::ReturnToClient => {}
         }
     }
@@ -835,7 +831,15 @@ async fn attempt_candidate(
                     log,
                 );
             }
-            let class = classify_failure(response.status, false, response.parsed);
+            // Quota-exhausted 429s count toward mapping health (Retryable) but
+            // never requeue the same provider; plain rate-limit 429s stay
+            // Transient and are still retried.
+            let class = classify_failure_with_message(
+                response.status,
+                false,
+                response.parsed,
+                error_message.as_deref(),
+            );
             if class == FailureClass::ReturnToClient {
                 // A standard upstream error body stays byte-for-byte; a
                 // non-standard one keeps the status but is wrapped so clients
@@ -860,7 +864,11 @@ async fn attempt_candidate(
             (
                 AttemptResult::Failure {
                     class,
-                    retryable: is_retryable_failure(class, response.status),
+                    retryable: is_retryable_with_message(
+                        class,
+                        response.status,
+                        error_message.as_deref(),
+                    ),
                     reason: failure_reason(response.status, response.parsed, error_message.as_deref()),
                     retry_delay: retry_header_delay(&response.headers),
                 },
@@ -1162,11 +1170,12 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 // status (especially immediate disabling for 401/403).
                 let bytes = response.bytes().await.unwrap_or_default();
                 let parsed = serde_json::from_slice::<Value>(&bytes).is_ok();
-                let class = classify_failure(status, false, parsed);
                 let error_message = sanitize_error_text(
                     &extract_upstream_error_text(&bytes).unwrap_or_default(),
                     &provider.api_key,
                 );
+                let class =
+                    classify_failure_with_message(status, false, parsed, error_message.as_deref());
                 if class == FailureClass::ReturnToClient {
                     health.apply(config);
                     capture.status = status;
@@ -1203,6 +1212,11 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 }
                 last_failure_status = Some(status);
                 let reason = failure_reason(status, parsed, error_message.as_deref());
+                // Quota-exhausted 429s count toward health but never requeue
+                // the same provider; compute before `error_message` is moved
+                // into the attempt log.
+                let retryable =
+                    is_retryable_with_message(class, status, error_message.as_deref());
                 attempts.push(build_attempt_log(
                     provider,
                     &candidate.model,
@@ -1212,7 +1226,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     error_message,
                     None,
                 ));
-                break 'attempt (class, is_retryable_failure(class, status), reason, retry_delay);
+                break 'attempt (class, retryable, reason, retry_delay);
             }
 
             let content_type = response
