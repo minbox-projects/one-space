@@ -10049,6 +10049,9 @@ fn usage_field_mapping_handles_provider_shapes_and_missing_fields() {
     assert_eq!(mapped, tokens(8, 3, 0, 7));
 
     // OpenAI responses shape: same subset rule for input_tokens_details.
+    // Mixed compatible write (REQ-001 table): the top-level creation value is
+    // the cache-write fallback and is deducted from the reported input, so
+    // ordinary is 20 - 5 - 6 = 9 (canonical exclusive tiers).
     let responses = serde_json::json!({
         "input_tokens": 20,
         "output_tokens": 4,
@@ -10056,7 +10059,7 @@ fn usage_field_mapping_handles_provider_shapes_and_missing_fields() {
         "cache_creation_input_tokens": 6
     });
     let mapped = usage_tokens_from_value(&responses);
-    assert_eq!(mapped, tokens(15, 5, 6, 4));
+    assert_eq!(mapped, tokens(9, 5, 6, 4));
 
     // Anthropic shape: flat tiers are separate, the input tier is untouched.
     let anthropic = serde_json::json!({
@@ -10072,6 +10075,210 @@ fn usage_field_mapping_handles_provider_shapes_and_missing_fields() {
     let partial = usage_tokens_from_value(&serde_json::json!({ "input_tokens": 3 }));
     assert_eq!(partial, tokens(3, 0, 0, 0));
     assert_eq!(partial.total(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// Plan 20260921-api-gateway-cache-hit-accounting Step 2 (RED): canonical
+// normalization. Each test compiles against the current `usage_log.rs`
+// boundary (`usage_tokens_from_value`, `UsageTokens`, `compute_cost`) and
+// fails on an observable wrong value, never on a missing symbol.
+// ---------------------------------------------------------------------------
+
+/// AC-001 / REQ-001: OpenAI Chat inclusive semantics. Reported `prompt_tokens`
+/// includes the nested cache tiers, so ordinary is checked-subtracted:
+/// 100 - 80 - 10 = 10, with no double counting.
+#[test]
+fn canonical_openai_chat_inclusive_input_subtracts_nested_cache_tiers() {
+    let usage = serde_json::json!({
+        "prompt_tokens": 100,
+        "completion_tokens": 5,
+        "prompt_tokens_details": { "cached_tokens": 80, "cache_write_tokens": 10 }
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped.input_tokens, 10, "ordinary = 100 - 80 - 10");
+    assert_eq!(mapped.cache_read_tokens, 80);
+    assert_eq!(mapped.cache_write_tokens, 10);
+    assert_eq!(mapped.output_tokens, 5);
+    assert_eq!(mapped.total(), 105, "each canonical tier is counted exactly once");
+}
+
+/// AC-001 / REQ-001: when both totals are present, `input_tokens` wins over
+/// `prompt_tokens` for the reported inclusive input.
+#[test]
+fn canonical_openai_chat_input_tokens_win_over_prompt_tokens() {
+    let usage = serde_json::json!({
+        "prompt_tokens": 999,
+        "input_tokens": 100,
+        "completion_tokens": 5,
+        "prompt_tokens_details": { "cached_tokens": 80, "cache_write_tokens": 10 }
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped.input_tokens, 10, "input_tokens wins as the inclusive total");
+    assert_eq!(mapped.cache_read_tokens, 80);
+    assert_eq!(mapped.cache_write_tokens, 10);
+    assert_eq!(mapped.total(), 105);
+}
+
+/// AC-001 / REQ-001: OpenAI Responses inclusive semantics with nested
+/// input details: ordinary is 100 - 80 - 10 = 10.
+#[test]
+fn canonical_openai_responses_inclusive_input_subtracts_nested_cache_tiers() {
+    let usage = serde_json::json!({
+        "input_tokens": 100,
+        "output_tokens": 5,
+        "input_tokens_details": { "cached_tokens": 80, "cache_write_tokens": 10 }
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped.input_tokens, 10, "ordinary = 100 - 80 - 10");
+    assert_eq!(mapped.cache_read_tokens, 80);
+    assert_eq!(mapped.cache_write_tokens, 10);
+    assert_eq!(mapped.total(), 105, "each canonical tier is counted exactly once");
+}
+
+/// AC-002 / REQ-001: Anthropic-style split (no nested cache details). The
+/// top-level input is already ordinary: 10 stays 10 alongside read 80 and
+/// write 10, matching AC-001's canonical tiers.
+#[test]
+fn canonical_anthropic_split_keeps_top_level_input_as_ordinary() {
+    let usage = serde_json::json!({
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 80,
+        "cache_creation_input_tokens": 10
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped, tokens(10, 80, 10, 5));
+    assert_eq!(mapped.total(), 105, "same canonical totals as AC-001");
+}
+
+/// AC-001/AC-002 / REQ-001: mixed compatible write. Nested cache read is
+/// present without nested cache write, so the top-level
+/// `cache_creation_input_tokens` is the cache-write fallback and is deducted
+/// from the reported inclusive input: ordinary 100 - 80 - 10 = 10.
+#[test]
+fn canonical_mixed_write_falls_back_to_top_level_creation() {
+    let usage = serde_json::json!({
+        "prompt_tokens": 100,
+        "completion_tokens": 5,
+        "prompt_tokens_details": { "cached_tokens": 80 },
+        "cache_creation_input_tokens": 10
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped.input_tokens, 10, "creation fallback is deducted");
+    assert_eq!(mapped.cache_read_tokens, 80);
+    assert_eq!(mapped.cache_write_tokens, 10);
+    assert_eq!(mapped.total(), 105);
+}
+
+/// REQ-001 precedence: existing output compatibility. `output_tokens` wins
+/// over `completion_tokens`.
+#[test]
+fn canonical_output_tokens_win_over_completion_tokens() {
+    let usage = serde_json::json!({
+        "prompt_tokens": 100,
+        "output_tokens": 9,
+        "completion_tokens": 777,
+        "prompt_tokens_details": { "cached_tokens": 80, "cache_write_tokens": 10 }
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped.output_tokens, 9, "output_tokens wins");
+    assert_eq!(mapped.input_tokens, 10);
+    assert_eq!(mapped.total(), 109);
+}
+
+/// REQ-001 precedence: nested cache write wins over the top-level creation
+/// fallback.
+#[test]
+fn canonical_nested_cache_write_wins_over_creation_fallback() {
+    let usage = serde_json::json!({
+        "input_tokens": 100,
+        "output_tokens": 5,
+        "input_tokens_details": { "cached_tokens": 80, "cache_write_tokens": 10 },
+        "cache_creation_input_tokens": 777
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped.cache_write_tokens, 10, "nested cache write wins");
+    assert_eq!(mapped.input_tokens, 10);
+    assert_eq!(mapped.total(), 105);
+}
+
+/// AC-012 / REQ-001: nested cache read coexisting with top-level
+/// `cache_read_input_tokens` is a conflicting shape and must be marked
+/// invalid, never silently merged into a valid-looking exclusive split.
+///
+/// REQ-004 conservative fallback: invalid cache tiers never participate in
+/// cache-tier pricing; the request bills the reported input once with no
+/// cache tiers (no double counting, no negative), while staying
+/// cache-statistics-ineligible at the store layer (Step 5 slice).
+#[test]
+fn canonical_conflicting_cache_read_shapes_are_rejected() {
+    let usage = serde_json::json!({
+        "prompt_tokens": 100,
+        "completion_tokens": 5,
+        "prompt_tokens_details": { "cached_tokens": 80 },
+        "cache_read_input_tokens": 80
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(
+        mapped,
+        tokens(100, 0, 0, 5),
+        "conflicting nested + top-level cache read falls back to reported input with no cache tiers"
+    );
+    assert_eq!(mapped.total(), 105);
+}
+
+/// AC-012 / REQ-001: nested OpenAI cache components exceeding the reported
+/// input are an illegal decomposition. The parser must never produce
+/// negative ordinary input or a rate outside 0..=100: with checked
+/// subtraction failing, the conservative fallback bills the reported input
+/// once with no cache tiers (no double counting, no negative).
+#[test]
+fn canonical_illegal_decomposition_never_yields_negative_ordinary() {
+    let usage = serde_json::json!({
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+        "prompt_tokens_details": { "cached_tokens": 80, "cache_write_tokens": 10 }
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(
+        mapped,
+        tokens(10, 0, 0, 5),
+        "an illegal nested decomposition falls back to reported input with no cache tiers"
+    );
+    assert_eq!(mapped.total(), 15);
+}
+
+/// AC-005 / REQ-001: with configured ordinary-input, cache-read, cache-write
+/// and output prices, total tokens include each canonical tier exactly once
+/// and the amount applies each tier's price exactly once (no duplicated
+/// input/cache charges for an inclusive OpenAI record).
+#[test]
+fn canonical_openai_record_is_priced_exactly_once_per_tier() {
+    let usage = serde_json::json!({
+        "prompt_tokens": 100,
+        "completion_tokens": 5,
+        "prompt_tokens_details": { "cached_tokens": 80, "cache_write_tokens": 10 }
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped, tokens(10, 80, 10, 5));
+    assert_eq!(mapped.total(), 105);
+
+    let price = ModelPrice {
+        provider_id: Some("p1".to_string()),
+        upstream_model: "remote-a".to_string(),
+        input: 1.0,
+        cache_read: 0.5,
+        cache_write: 2.0,
+        output: 4.0,
+        off_peaks: Vec::new(),
+        off_peak: None,
+    };
+    let expected = (10.0 * 1.0 + 80.0 * 0.5 + 10.0 * 2.0 + 5.0 * 4.0) / 1_000_000.0;
+    assert!(
+        (compute_cost(&price, &mapped) - expected).abs() < 1e-12,
+        "amount applies each tier price exactly once: got {}",
+        compute_cost(&price, &mapped)
+    );
 }
 
 /// AC-013 / REQ-011: range resolution uses UTC+8 midnight boundaries.
@@ -11702,8 +11909,9 @@ async fn usage_log_records_unversioned_responses_path() {
 // end-to-end privacy).
 // ---------------------------------------------------------------------------
 
-/// AC-001 / AC-003 / AC-004: a non-streaming response reporting both cache
-/// read and cache write tiers maps every tier, and the write tier is priced too.
+/// AC-001 / AC-003 / AC-004: a non-streaming Anthropic-style split response
+/// (no nested cache details, top-level cache tiers) maps every tier, and the
+/// write tier is priced too. REQ-001: the top-level input is already ordinary.
 #[tokio::test]
 async fn forwarding_records_cache_read_and_write_tiers_non_streaming() {
     let home = temp_home("usage-forward-cache-tiers");
@@ -11768,6 +11976,10 @@ async fn forwarding_records_cache_read_and_write_tiers_non_streaming() {
 /// AC-002 / AC-003: streaming usage carrying cache read and cache write tiers
 /// is parsed from the SSE tail, priced across all four tiers, and the bytes the
 /// caller receives stay identical to the upstream stream.
+///
+/// REQ-001 mixed compatible write: nested cache read plus a top-level
+/// `cache_creation_input_tokens` fallback is OpenAI inclusive, so the creation
+/// value is deducted from the reported input (ordinary 11 - 3 - 5 = 3).
 #[tokio::test]
 async fn streaming_forward_records_cache_read_and_write_tiers_and_preserves_bytes() {
     let home = temp_home("usage-stream-cache-tiers");
@@ -11807,13 +12019,14 @@ async fn streaming_forward_records_cache_read_and_write_tiers_and_preserves_byte
     assert!(record.terminal, "the completed stream is terminal");
     assert_eq!(record.error_message, None, "a success stores no error message");
     assert_eq!(record.result, UsageResult::Success);
-    assert_eq!(record.input_tokens, 8);
+    assert_eq!(record.input_tokens, 3);
     assert_eq!(record.cache_read_tokens, 3);
     assert_eq!(record.cache_write_tokens, 5);
     assert_eq!(record.output_tokens, 7);
-    assert_eq!(record.total_tokens, 23);
-    let expected = (8.0 * 1.0 + 3.0 * 0.5 + 5.0 * 2.0 + 7.0 * 4.0) / 1_000_000.0;
-    assert!((record.amount.expect("priced") - expected).abs() < 1e-12);
+    assert_eq!(record.total_tokens, 18);
+    let expected = (3.0 * 1.0 + 3.0 * 0.5 + 5.0 * 2.0 + 7.0 * 4.0) / 1_000_000.0;
+    assert!((record.amount.expect("priced") - expected).abs() < 1e-12,
+        "mixed compatible write deducts the top-level creation fallback from reported input");
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);

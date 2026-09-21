@@ -315,24 +315,55 @@ fn token_number(value: Option<&Value>) -> u64 {
     }
 }
 
-fn nested_number(usage: &Value, object: &str, key: &str) -> Option<Value> {
-    usage.get(object).and_then(|details| details.get(key)).cloned()
+/// A nested cache field when its key is present with a non-null value.
+/// A present field that parses to zero stays `Some(0)` so shape detection can
+/// distinguish "present" from "absent"; `null` counts as absent.
+fn nested_token(usage: &Value, object: &str, key: &str) -> Option<u64> {
+    usage
+        .get(object)
+        .and_then(|details| details.get(key))
+        .filter(|value| !value.is_null())
+        .map(|value| token_number(Some(value)))
 }
 
-/// Map an upstream `usage` object to the four token tiers (REQ-003).
+fn top_field_present(usage: &Value, key: &str) -> bool {
+    usage.get(key).is_some_and(|value| !value.is_null())
+}
+
+/// Canonical normalization result: mutually exclusive tiers plus whether the
+/// source shape was a valid decomposition.
+///
+/// Invalid shapes (nested cache read conflicting with top-level
+/// `cache_read_input_tokens`, or nested cache components exceeding the
+/// reported inclusive input) fall back to the reported input with no cache
+/// tiers so billing stays conservative (no double counting, no negative)
+/// while the store layer keeps the row cache-statistics-ineligible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::api_gateway) struct CanonicalUsage {
+    pub tokens: UsageTokens,
+    pub valid: bool,
+}
+
+/// Map an upstream `usage` object to the four exclusive token tiers (REQ-001).
 ///
 /// Missing fields become 0; the caller decides whether usage was present at all.
 ///
-/// OpenAI Chat/Responses shapes report `prompt_tokens`/`input_tokens` as the
-/// *total* input with the cached subset nested under
-/// `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens`.
-/// Those nested values must not be added on top of the total: the stored
-/// `input_tokens` tier keeps only the non-cached remainder so `total()` and
-/// `compute_cost` never bill the cached subset twice. Flat
-/// `cache_read_input_tokens` (Anthropic shape) is a separate tier and leaves
-/// the input tier untouched.
-pub(in crate::api_gateway) fn usage_tokens_from_value(usage: &Value) -> UsageTokens {
-    let input_total = usage
+/// Shape table:
+/// - OpenAI Chat/Responses report the inclusive input total (`input_tokens`
+///   wins over `prompt_tokens`) with the cached subset nested under
+///   `prompt_tokens_details` / `input_tokens_details`. The stored ordinary
+///   tier is the checked remainder `reported - read - write`; each tier is
+///   billed exactly once by `total()` and `compute_cost`.
+/// - Anthropic-style split has no nested cache details: the top-level input
+///   is already ordinary and the flat `cache_read_input_tokens` /
+///   `cache_creation_input_tokens` tiers are independent.
+/// - Mixed compatible write (nested cache read present, no nested cache
+///   write, top-level creation present) follows OpenAI inclusive semantics
+///   with the top-level creation value as the deducted cache-write fallback.
+/// - Nested cache write wins over the top-level creation fallback.
+/// - `output_tokens` wins over `completion_tokens`.
+pub(in crate::api_gateway) fn canonical_usage_from_value(usage: &Value) -> CanonicalUsage {
+    let reported = usage
         .get("input_tokens")
         .or_else(|| usage.get("prompt_tokens"))
         .map(|value| token_number(Some(value)))
@@ -342,28 +373,75 @@ pub(in crate::api_gateway) fn usage_tokens_from_value(usage: &Value) -> UsageTok
         .or_else(|| usage.get("completion_tokens"))
         .map(|value| token_number(Some(value)))
         .unwrap_or(0);
-    let nested_cached = nested_number(usage, "prompt_tokens_details", "cached_tokens")
-        .or_else(|| nested_number(usage, "input_tokens_details", "cached_tokens"))
-        .map(|value| token_number(Some(&value)));
-    let cache_read_tokens = nested_cached
-        .or_else(|| {
-            usage
-                .get("cache_read_input_tokens")
-                .map(|value| token_number(Some(value)))
-        })
-        .unwrap_or(0);
-    // Only a nested cached subset is contained in the reported input total.
-    let input_tokens = match nested_cached {
-        Some(cached) => input_total.saturating_sub(cached),
-        None => input_total,
-    };
-    let cache_write_tokens = token_number(usage.get("cache_creation_input_tokens"));
-    UsageTokens {
-        input_tokens,
-        cache_read_tokens,
-        cache_write_tokens,
-        output_tokens,
+    let nested_read = nested_token(usage, "prompt_tokens_details", "cached_tokens")
+        .or_else(|| nested_token(usage, "input_tokens_details", "cached_tokens"));
+    let nested_write = nested_token(usage, "prompt_tokens_details", "cache_write_tokens")
+        .or_else(|| nested_token(usage, "input_tokens_details", "cache_write_tokens"));
+    let has_nested = nested_read.is_some() || nested_write.is_some();
+    let has_top_read = top_field_present(usage, "cache_read_input_tokens");
+    let top_read = token_number(usage.get("cache_read_input_tokens"));
+    let top_creation = token_number(usage.get("cache_creation_input_tokens"));
+
+    // Conflicting shape: nested cache read coexists with the top-level
+    // cache-read tier. Never merge; fall back with no cache tiers.
+    if nested_read.is_some() && has_top_read {
+        return CanonicalUsage {
+            tokens: UsageTokens {
+                input_tokens: reported,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens,
+            },
+            valid: false,
+        };
     }
+
+    if has_nested {
+        let cache_read_tokens = nested_read.unwrap_or(0);
+        // Nested cache write wins; otherwise the top-level creation value is
+        // the compatible fallback deducted from the inclusive total.
+        let cache_write_tokens = nested_write.unwrap_or(top_creation);
+        match reported
+            .checked_sub(cache_read_tokens)
+            .and_then(|rest| rest.checked_sub(cache_write_tokens))
+        {
+            Some(input_tokens) => CanonicalUsage {
+                tokens: UsageTokens {
+                    input_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    output_tokens,
+                },
+                valid: true,
+            },
+            // Illegal decomposition: nested components exceed reported input.
+            // Never produce negative ordinary input via saturating subtraction.
+            None => CanonicalUsage {
+                tokens: UsageTokens {
+                    input_tokens: reported,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    output_tokens,
+                },
+                valid: false,
+            },
+        }
+    } else {
+        // Anthropic-style split: the reported input is already ordinary.
+        CanonicalUsage {
+            tokens: UsageTokens {
+                input_tokens: reported,
+                cache_read_tokens: top_read,
+                cache_write_tokens: top_creation,
+                output_tokens,
+            },
+            valid: true,
+        }
+    }
+}
+
+pub(in crate::api_gateway) fn usage_tokens_from_value(usage: &Value) -> UsageTokens {
+    canonical_usage_from_value(usage).tokens
 }
 
 /// Parse `usage` out of a complete (buffered) upstream JSON response.
