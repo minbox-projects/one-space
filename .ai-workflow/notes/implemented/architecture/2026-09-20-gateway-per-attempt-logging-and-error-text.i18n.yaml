@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-20-gateway-per-attempt-logging-and-error-text.md
-2026-09-20-gateway-per-attempt-logging-and-error-text.md: da82ee11188d7497ebe1fa59c385032846878401
-2026-09-20-gateway-per-attempt-logging-and-error-text.zh.md: a7a2fb7735152f8acb27c069f1fa67eb6e896e18
+2026-09-20-gateway-per-attempt-logging-and-error-text.md: d868ea7a405f80176865af5ab66a39ad61c79c39
+2026-09-20-gateway-per-attempt-logging-and-error-text.zh.md: 87c1e566db90b06385d84a6fda8e36d7db397384

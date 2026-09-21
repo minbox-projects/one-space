@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (.ai-workflow/notes/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+# ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/simplification/2026-09-21-gateway-cancelled-requests-are-not-logs.md
+2026-09-21-gateway-cancelled-requests-are-not-logs.md: 567acad6ab36117d2b1c6cbb809632f3a8b8d328
+2026-09-21-gateway-cancelled-requests-are-not-logs.zh.md: 6c89978c287fda3c442fb077fc3b592b09d2c8eb
