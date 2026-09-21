@@ -60,7 +60,7 @@ const GROUP_OPTIONS: Array<{
   { key: "day", labelKey: "apiGatewayGroupDay", fallback: "Day (UTC+8)" },
 ];
 
-const STATUS_OPTIONS: UsageLogResult[] = ["success", "failure", "cancelled"];
+const STATUS_OPTIONS: UsageLogResult[] = ["success", "failure"];
 
 function statusBadgeStyle(result: UsageLogResult): {
   badge: string;
@@ -260,14 +260,18 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
     void load();
   }, [isActive, load]);
 
+  // Defensively drop legacy/ cancelled rows from stale or compatibility
+  // payloads before deriving the visible table and filter options.
+  const visibleRecords = (pageData?.records ?? []).filter(
+    (item) => item.result !== "cancelled",
+  );
+
   const modelOptions = [
     ...(pageData?.models ??
-      Array.from(
-        new Set((pageData?.records ?? []).map((item) => item.local_model)),
-      )),
+      Array.from(new Set(visibleRecords.map((item) => item.local_model)))),
   ].sort();
 
-  const records = [...(pageData?.records ?? [])].sort(
+  const records = [...visibleRecords].sort(
     (first, second) => second.timestamp_ms - first.timestamp_ms,
   );
   const groups = pageData?.groups ?? [];
