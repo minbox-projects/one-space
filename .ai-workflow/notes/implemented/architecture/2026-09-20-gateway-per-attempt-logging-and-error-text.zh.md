@@ -34,7 +34,7 @@ Status: implemented
 - `error_message` 在正文是合法 JSON 错误信封时保存标准 `error.message`，否则保存可读摘要；传输与流失败保存其描述，无上游与清洗后为空的失败保存 `null`，服务商 API Key 变为 `[redacted]`，`Bearer` 与 `sk-` 形状凭据被掩蔽，文本在 Unicode 标量边界封顶 4096 字符且仅在截断时追加 `…`；请求头、请求正文与完整原始正文绝不保存。
 - `UsageLogStore::append_batch` 通过一个连接写入同一请求的全部行并执行保留清理，`append` 仍是单行路径；迁移或日志写入失败仍只是被吞掉的 `log::warn!`，由后续打开重试，绝不影响响应。
 - 请求日志记录类型暴露带 serde 缺省的可选 `error_message` 与 `terminal` 字段；不分组列表把可见失败行存储的消息显示为单行截断原因，悬停与键盘聚焦的 tooltip 展示完整消息及 HTTP 状态上下文；无消息时保留通用状态码原因，成功行不显示错误消息，非终止行带轻量 attempt 标签，中英文一致。请求日志记录类型仍保留兼容 cancelled 表示，但按取代取消语义的新决策在用户可见渲染前将其排除。
-- 部分取代：[API Gateway Usage Stats and Request Logs](2026-09-17-ai-gateway-usage-logs.md) 保留并由本记录交叉链接，本记录只取代其每请求一行的记录粒度与不保存错误文本的边界；其 SQLite 日志、记录时价格冻结、保留、`unpriced_count`、`group_by` 契约与模型面决策仍然有效。
+- 部分取代：[API Gateway Usage Stats and Request Logs](2026-09-17-ai-gateway-usage-logs.md) 保留并由本记录交叉链接，本记录只取代其每请求一行的记录粒度与不保存错误文本的边界；其 SQLite 日志、记录时价格冻结、保留、`group_by` 契约与模型面决策仍然有效，其 `unpriced_count` 资格由 [Gateway Unpriced Hint Counts Only Billable Usage](../bug-fix/2026-09-21-gateway-unpriced-billable-usage.md) 部分取代。
 - 部分取代：[Gateway Single-Candidate Fast Fail and Standard Error Responses](2026-09-18-gateway-fast-fail-and-standard-errors.md) 保留并由本记录交叉链接，本记录只取代其「请求日志失败状态语义不变」的陈述——耗尽的非流式终止行现在与流式路径一样记录最后一次观测到的上游状态——其无候选 502 规则、fallback-first 调度与标准错误信封决策仍然有效。
 - 部分取代：[Gateway Cancelled Requests Are Not Logs](../simplification/2026-09-21-gateway-cancelled-requests-are-not-logs.md) 只替换本记录的取消行为：下游 transport 关闭或响应不可交付时不再保留已完成尝试，也不写合成终止行；历史 `cancelled` 行仍保持兼容，但从所有用户可见查询与界面隐藏。正常完成的 success、failure、重试恢复与无候选请求的按尝试日志、已存错误文本、迁移缺省值与隐私边界仍然有效。
 - `MEMORY.md` 在同一变更中描述该粒度、仅终止行统计规则、终止行状态规则、新增列与错误文本隐私边界；请求日志记录类型新增可选的 `error_message` 与 `terminal` 字段，导航索引已按交付的后端日志行为同步并据此重新生成 `navigation.md`，未新增任何索引符号名或文件路径。

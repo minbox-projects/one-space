@@ -31,5 +31,5 @@ Status: implemented
 - 模板绑定服务商保留其绑定与忽略集合生命周期，但任何模板相关流程都不再触碰价格：[Provider Templates Drop Built-in Model Catalogs and Prices](2026-09-19-provider-template-manual-model-sync.md) 移除了模板价格数据与同步价格传播，因此同步、创建与恢复绝不创建或修改任何价格行，新建或恢复的模板模型在操作者输入价格前为未定价，所有服务商专属价格行都在映射对话框中手动录入；删除映射仍会移除其价格行。
 - 已记录历史保持冻结：迁移与改价绝不重算过往金额，用量 SQLite schema、记录字段与保留行为均不变。
 - 回滚：代码回退无需数据迁移，因为旧构建仍优先匹配服务商专属价格行，新构建写入的行继续为新请求计价；已被迁移或删除的全局行不会自动恢复，运营方如需未绑定行仍可用旧弹窗重建；用量历史与 SQLite schema 不受影响。
-- 部分取代：[API Gateway Usage Stats and Request Logs](2026-09-17-ai-gateway-usage-logs.md) 被保留并交叉链接；本记录只取代其价格入口与全局匹配决策，其 SQLite 日志、记录时价格冻结、保留与 `unpriced_count` 决策仍然有效。
+- 部分取代：[API Gateway Usage Stats and Request Logs](2026-09-17-ai-gateway-usage-logs.md) 被保留并交叉链接；本记录只取代其价格入口与全局匹配决策，其 SQLite 日志、记录时价格冻结与保留决策仍然有效，其 `unpriced_count` 资格由 [Gateway Unpriced Hint Counts Only Billable Usage](../bug-fix/2026-09-21-gateway-unpriced-billable-usage.md) 部分取代。
 - `MEMORY.md`、`docs/USAGE.md` 与 `navigation.json` 中的 `api-gateway` / `api-gateway-backend` 条目描述同一套入口、匹配、迁移、原子保存与默认模型行为，`navigation.md` 已按权威 JSON 重新生成。

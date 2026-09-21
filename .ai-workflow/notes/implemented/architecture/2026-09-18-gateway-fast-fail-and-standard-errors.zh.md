@@ -38,5 +38,5 @@ Status: implemented
 - 统一信封 `{"message","type","code","param":null}` 就是网关自身错误的契约，因此配置读取失败现在带 `type`，all-unavailable 载荷现在带 `param`。
 - 请求日志的失败状态语义不变：无候选记录 502，耗尽的流记录最后一个可确定的上游状态（无法确定时记 `0`），绝不改写为固定 502。
 - `MEMORY.md` 已在同一变更中更新失败分类、重试调度与错误响应标准；配置 schema、Tauri 命令签名、`api_gateway.json` 与 `api_gateway_usage.db` 均未改变，因此无需迁移，回滚只会还原行为。
-- 部分取代：[API Gateway Usage Stats and Request Logs](2026-09-17-ai-gateway-usage-logs.md) 予以保留并交叉链接。其记录的备选前提「全部上游不可用的流式请求返回 HTTP 200 SSE」对预写出失败已不再成立，而其日志决策——结果取自网关最终状态并记为 `failure` 且不计金额——及其 `unpriced_count` 语义仍然有效。其他 active note 均不受影响：本地 Key、终端同步、聚合模型与双语文档记录互不相关，terminal-independent-provider 记录也不描述重试或错误传输。
+- 部分取代：[API Gateway Usage Stats and Request Logs](2026-09-17-ai-gateway-usage-logs.md) 予以保留并交叉链接。其记录的备选前提「全部上游不可用的流式请求返回 HTTP 200 SSE」对预写出失败已不再成立，而其日志决策——结果取自网关最终状态并记为 `failure`，在未捕获用量时不产生金额贡献——仍然有效；其 `unpriced_count` 资格由 [Gateway Unpriced Hint Counts Only Billable Usage](../bug-fix/2026-09-21-gateway-unpriced-billable-usage.md) 部分取代，其余 `unpriced_count` 决策仍然有效。其他 active note 均不受影响：本地 Key、终端同步、聚合模型与双语文档记录互不相关，terminal-independent-provider 记录也不描述重试或错误传输。
 - 部分取代：本记录由 [Gateway Per-Attempt Request Logging and Stored Error Text](2026-09-20-gateway-per-attempt-logging-and-error-text.md) 保留并交叉链接，后者只取代上文的请求日志失败状态表述——耗尽的非流式终止行现在与流式路径一样记录最后一次观测到的上游状态——而本文的无候选 502 规则、fallback-first 调度与标准错误信封决策仍然有效。
