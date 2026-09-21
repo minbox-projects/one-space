@@ -745,7 +745,7 @@ fn antigravity_entry_text(value: &Value) -> Option<String> {
     value.get("USER_INPUT").and_then(value_as_text)
 }
 
-fn antigravity_entry_timestamp_ms(value: &Value) -> Option<i64> {
+pub(in crate::ai_sessions) fn antigravity_entry_timestamp_ms(value: &Value) -> Option<i64> {
     for key in [
         "timestamp",
         "createdAt",

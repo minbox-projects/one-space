@@ -674,6 +674,11 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                               <div className="truncate text-xs font-medium">
                                 {bucket.name}
                               </div>
+                              {bucket.window && (
+                                <div className="text-[11px] text-muted-foreground">
+                                  {bucket.window}
+                                </div>
+                              )}
                               {bucket.description && (
                                 <div className="text-[11px] text-muted-foreground">
                                   {bucket.description}
@@ -728,6 +733,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
             const status = toolStats?.source_status || "unavailable";
             const isUnavailable = toolStats?.source_status === "unavailable";
             const tokensUnavailableLocally =
+              tool === "antigravity" &&
               toolStats?.source_status === "empty" &&
               (toolStats?.scanned_sessions || 0) > 0 &&
               summary.calls === 0;

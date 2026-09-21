@@ -1,7 +1,7 @@
 use super::{
-    antigravity_brain_roots, candidate_home_dirs, candidate_opencode_storage_paths,
-    collect_codex_session_files, find_antigravity_transcript, parse_rfc3339_millis,
-    system_time_to_epoch_millis,
+    antigravity_brain_roots, antigravity_entry_timestamp_ms, candidate_home_dirs,
+    candidate_opencode_storage_paths, collect_codex_session_files, find_antigravity_transcript,
+    parse_rfc3339_millis, system_time_to_epoch_millis,
 };
 use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone};
 use rusqlite::{params, Connection};
@@ -337,9 +337,15 @@ fn antigravity_quota_cache() -> &'static Mutex<Option<CachedAntigravityQuota>> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
+/// Whether a cached quota snapshot collected at `cached_at` is still within the
+/// 5 minute TTL relative to `now`.
+pub fn antigravity_quota_cache_fresh(cached_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(cached_at) < ANTIGRAVITY_QUOTA_CACHE_TTL
+}
+
 /// Runs the Antigravity usage command and returns the parsed snapshot. Only a
 /// successful result is cached (5 minute TTL); failures are retried on demand.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sessions_antigravity_quota() -> Result<AntigravityQuotaSnapshot, String> {
     let cache = antigravity_quota_cache();
     {
@@ -347,7 +353,7 @@ pub fn sessions_antigravity_quota() -> Result<AntigravityQuotaSnapshot, String> 
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(cached) = guard.as_ref() {
-            if cached.collected_at.elapsed() < ANTIGRAVITY_QUOTA_CACHE_TTL {
+            if antigravity_quota_cache_fresh(cached.collected_at, Instant::now()) {
                 return Ok((*cached.snapshot).clone());
             }
         }
@@ -370,13 +376,13 @@ fn fetch_antigravity_quota() -> Result<AntigravityQuotaSnapshot, String> {
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
         return Err(
-            "Antigravity 用量查询无输出，可能未登录或 CLI 未正确安装，请重新登录后重试"
+            "Antigravity 用量查询无输出 (empty output)，可能未登录或 CLI 未正确安装，请重新登录后重试"
                 .to_string(),
         );
     }
     let value: Value = serde_json::from_str(trimmed).map_err(|error| {
         format!(
-            "Antigravity 用量输出无法解析（可能未登录或 CLI 输出异常）：{error}；stdout: {}",
+            "Antigravity 用量输出无法解析 (invalid JSON)，可能未登录或 CLI 输出异常：{error}；stdout: {}",
             truncate_for_error(trimmed)
         )
     })?;
@@ -393,7 +399,7 @@ pub fn parse_antigravity_quota_envelope(
 ) -> Result<AntigravityQuotaSnapshot, String> {
     if value.get("status").and_then(Value::as_str) != Some("SUCCESS") {
         return Err(format!(
-            "Antigravity 用量命令返回失败状态：{}",
+            "Antigravity 用量命令返回失败状态 (status != SUCCESS)：{}",
             value
                 .get("status")
                 .and_then(Value::as_str)
@@ -405,7 +411,9 @@ pub fn parse_antigravity_quota_envelope(
         .and_then(|command| command.get("data"))
         .and_then(|data| data.get("groups"))
         .and_then(Value::as_array)
-        .ok_or_else(|| "Antigravity 用量响应缺少 command.data.groups".to_string())?;
+        .ok_or_else(|| {
+            "Antigravity 用量响应缺少 command.data.groups (missing groups)".to_string()
+        })?;
 
     let mut parsed_groups = Vec::with_capacity(groups.len());
     for group in groups {
@@ -417,7 +425,8 @@ pub fn parse_antigravity_quota_envelope(
                     .get("remaining_fraction")
                     .and_then(Value::as_f64)
                     .ok_or_else(|| {
-                        "Antigravity 用量分桶缺少数字 remaining_fraction".to_string()
+                        "Antigravity 用量分桶缺少数字 remaining_fraction (invalid remaining_fraction)"
+                            .to_string()
                     })?;
                 buckets.push(AntigravityQuotaBucket {
                     id: json_nonempty_string(bucket.get("id")).unwrap_or_default(),
@@ -460,10 +469,10 @@ fn run_antigravity_quota_command() -> Result<String, String> {
 
     let mut child = command.spawn().map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => {
-            "未检测到 Antigravity CLI（agy），请先安装 Antigravity 命令行工具后再查询用量"
+            "未检测到 Antigravity CLI (agy not found)，请先安装 Antigravity 命令行工具后再查询用量"
                 .to_string()
         }
-        _ => format!("无法启动 Antigravity CLI（agy）：{error}"),
+        _ => format!("无法启动 Antigravity CLI (agy spawn failed)：{error}"),
     })?;
 
     let stdout_handle = child.stdout.take().map(spawn_pipe_reader);
@@ -480,7 +489,8 @@ fn run_antigravity_quota_command() -> Result<String, String> {
                     let _ = join_pipe_reader(stdout_handle);
                     let _ = join_pipe_reader(stderr_handle);
                     return Err(
-                        "Antigravity 用量查询超时（30 秒内未返回），请检查网络后重试".to_string(),
+                        "Antigravity 用量查询超时 (timeout, 35 秒内未返回)，请检查网络后重试"
+                            .to_string(),
                     );
                 }
                 std::thread::sleep(StdDuration::from_millis(50));
@@ -490,7 +500,7 @@ fn run_antigravity_quota_command() -> Result<String, String> {
                 let _ = child.wait();
                 let _ = join_pipe_reader(stdout_handle);
                 let _ = join_pipe_reader(stderr_handle);
-                return Err(format!("Antigravity CLI（agy）执行失败：{error}"));
+                return Err(format!("Antigravity CLI (agy) 执行失败 (exec failed)：{error}"));
             }
         }
     };
@@ -504,7 +514,7 @@ fn run_antigravity_quota_command() -> Result<String, String> {
             .map(|code| code.to_string())
             .unwrap_or_else(|| "unknown".to_string());
         return Err(format!(
-            "Antigravity 用量查询失败（退出码 {code}，可能未登录或未安装）：stderr: {}",
+            "Antigravity 用量查询失败 (exit code {code}，可能未登录或未安装)：stderr: {}",
             truncate_for_error(stderr.trim())
         ));
     }
@@ -865,7 +875,7 @@ fn aggregate_tool_usage(
 
     SessionUsageToolStats {
         tool: tool.to_string(),
-        source_status: if scan.source_status == "available" && scan.records.is_empty() {
+        source_status: if scan.source_status == "available" && scan.scanned_sessions == 0 {
             "empty".to_string()
         } else {
             scan.source_status.clone()
@@ -1224,29 +1234,19 @@ fn collect_antigravity_usage_records(window: &UsageWindow) -> ToolScan {
         records: Vec::new(),
         errors: Vec::new(),
     };
-    if let Ok(rollouts) = fs::read_dir(&tmp_root) {
-        for rollout in rollouts.flatten() {
-            let chats_dir = rollout.path().join("chats");
-            if !chats_dir.is_dir() {
-                continue;
-            }
-            for path in antigravity_session_files(&chats_dir) {
-                if !usage_file_may_overlap_window(modified_ms(&path), window.start_ms) {
-                    continue;
-                }
-                scan.scanned_sessions += 1;
-                let parsed = if path.extension().and_then(|extension| extension.to_str())
-                    == Some("jsonl")
-                {
-                    parse_antigravity_jsonl_usage_file(&path)
-                } else {
-                    parse_antigravity_json_usage_file(&path)
-                };
-                match parsed {
-                    Ok(records) => scan.records.extend(records),
-                    Err(error) => scan.errors.push(format!("{}: {error}", path.display())),
-                }
-            }
+    for path in antigravity_session_files(&tmp_root) {
+        if !usage_file_may_overlap_window(modified_ms(&path), window.start_ms) {
+            continue;
+        }
+        scan.scanned_sessions += 1;
+        let parsed = if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl") {
+            parse_antigravity_jsonl_usage_file(&path)
+        } else {
+            parse_antigravity_json_usage_file(&path)
+        };
+        match parsed {
+            Ok(records) => scan.records.extend(records),
+            Err(error) => scan.errors.push(format!("{}: {error}", path.display())),
         }
     }
     collect_antigravity_transcript_usage(&home, window, &mut scan);
@@ -1311,14 +1311,15 @@ fn parse_antigravity_transcript_calls(
         let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
             continue;
         };
-        if value.get("type").and_then(Value::as_str) != Some("USER_INPUT") {
+        if !value
+            .get("type")
+            .and_then(Value::as_str)
+            .map(|kind| kind.eq_ignore_ascii_case("USER_INPUT"))
+            .unwrap_or(false)
+        {
             continue;
         }
-        let timestamp_ms = value
-            .get("created_at")
-            .and_then(Value::as_str)
-            .and_then(parse_rfc3339_millis)
-            .unwrap_or(fallback_ms);
+        let timestamp_ms = antigravity_entry_timestamp_ms(&value).unwrap_or(fallback_ms);
         if timestamp_ms >= start_ms && timestamp_ms < end_ms {
             calls += 1;
         }
@@ -1338,23 +1339,15 @@ fn usage_home_dir() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
-fn antigravity_session_files(chats_dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(chats_dir) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if name.starts_with("session-") && (name.ends_with(".json") || name.ends_with(".jsonl")) {
-            out.push(path);
-        }
-    }
+fn antigravity_session_files(tmp_root: &Path) -> Vec<PathBuf> {
+    let mut out = json_files_recursive(tmp_root, ".json");
+    out.extend(json_files_recursive(tmp_root, ".jsonl"));
+    out.retain(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.starts_with("session-"))
+            .unwrap_or(false)
+    });
     out
 }
 
@@ -1389,9 +1382,9 @@ fn parse_antigravity_json_usage_file(path: &Path) -> Result<Vec<UsageRecord>, St
         let Some(tokens) = message.get("tokens") else { continue; };
         let input = json_u64(tokens.get("input"));
         let output = json_u64(tokens.get("output"));
-        let cached = json_u64(tokens.get("cached"));
-        let total = total_or_sum(json_u64(tokens.get("total")), input, output, cached);
-        if input == 0 && output == 0 && cached == 0 && total == 0 {
+        let cache = json_u64(tokens.get("cached")).saturating_add(json_u64(tokens.get("cache")));
+        let total = total_or_sum(json_u64(tokens.get("total")), input, output, cache);
+        if input == 0 && output == 0 && cache == 0 && total == 0 {
             continue;
         }
         let timestamp_ms = json_millis(message.get("timestamp"))
@@ -1403,11 +1396,16 @@ fn parse_antigravity_json_usage_file(path: &Path) -> Result<Vec<UsageRecord>, St
             session_id: session_id.clone(),
             model: json_nonempty_string(message.get("model"))
                 .or_else(|| json_nonempty_string(message.get("modelName")))
+                .or_else(|| {
+                    message
+                        .get("metadata")
+                        .and_then(|metadata| json_nonempty_string(metadata.get("model")))
+                })
                 .or_else(|| file_model.clone()),
             timestamp_ms,
             input_tokens: input,
             output_tokens: output,
-            cache_tokens: cached,
+            cache_tokens: cache,
             cache_read_tokens: 0,
             total_tokens: total,
         });

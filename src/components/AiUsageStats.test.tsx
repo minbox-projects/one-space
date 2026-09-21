@@ -327,6 +327,22 @@ function makeAntigravityQuotaResponse(): { groups: AntigravityQuotaGroup[] } {
             reset_time: "2026-07-08T00:00:00Z",
             description: "Reset every day at midnight UTC",
           },
+          {
+            id: "free-weekly",
+            name: "Weekly tokens",
+            window: "weekly",
+            remaining_fraction: 0.65,
+            reset_time: "2026-07-13T12:00:00Z",
+            description: null,
+          },
+          {
+            id: "free-5h",
+            name: "5-hour tokens",
+            window: "5h",
+            remaining_fraction: 0.9,
+            reset_time: "2026-07-08T05:00:00Z",
+            description: "Reset every 5 hours",
+          },
         ],
       },
       {
@@ -583,6 +599,62 @@ describe("AiUsageStats", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("non-antigravity tool with empty source + scanned sessions does not show token-unavailable locally text", async () => {
+    // R4: `tokensUnavailableLocally` branch must be scoped to tool==="antigravity".
+    // A non-antigravity tool (claude) in the same data shape
+    // (source_status:"empty" && scanned_sessions>0 && calls==0) should show
+    // only the generic "no data" UI, never the localized-inaccessible message.
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_usage_tool_stats" && args?.tool === "claude") {
+        return {
+          tool: "claude" as ToolId,
+          source_status: "empty",
+          summary: {
+            total_tokens: 0,
+            calls: 0,
+            sessions: 0,
+            cache_hit_rate: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_tokens: 0,
+          },
+          daily: Array.from({ length: 7 }, (_, i) => ({
+            date: `2026-06-${String(i + 1).padStart(2, "0")}`,
+            total_tokens: 0,
+            calls: 0,
+            sessions: 0,
+            cache_hit_rate: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_tokens: 0,
+          })),
+          peak_day: null,
+          scanned_sessions: 3,
+          scanned_calls: 0,
+          errors: [],
+        };
+      }
+      if (command === "sessions_usage_tool_stats") {
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
+      }
+      if (command === "sessions_usage_day_stats") {
+        return makeDayStats(args?.date || "");
+      }
+      if (command === "sessions_usage_clear_cache") {
+        return null;
+      }
+      throw new Error(`Unhandled command: ${command}`);
+    });
+
+    renderWithProviders(<AiUsageStats />);
+
+    // The claude panel should NOT contain the tokens-unavailable-locally text.
+    const claudePanel = screen.getByTestId("ai-usage-tool-claude");
+    expect(
+      within(claudePanel).queryByText(/Token usage locally unavailable|Token 用量暂不可用/),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders antigravity empty with scan counts and local-inaccessible message, no unavailable badge", async () => {
     // Override antigravity to be "empty" with scanned sessions but zero calls.
     let resolveAntigravity!: () => void;
@@ -747,6 +819,14 @@ describe("AiUsageStats", () => {
     ).toBeInTheDocument();
     expect(
       within(quotaPanel).getByText(/2026-08-01T00:00:00Z/),
+    ).toBeInTheDocument();
+
+    // Window bucket `window` renders its window label + remaining time.
+    expect(
+      within(quotaPanel).getByText(/weekly/),
+    ).toBeInTheDocument();
+    expect(
+      within(quotaPanel).getByText(/5h/),
     ).toBeInTheDocument();
 
     // The quota command must have been invoked with no arguments.
