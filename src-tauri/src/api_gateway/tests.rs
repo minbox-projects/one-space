@@ -19287,10 +19287,16 @@ fn provider_weight_validation_bounds() {
 // Task 2: Smooth Weighted Round Robin (SWRR) candidate scheduling (AC-003 .. AC-010)
 // ---------------------------------------------------------------------------
 
+static SWRR_TEST_LOCK: Mutex<()> = Mutex::new(());
+fn swrr_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    SWRR_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// AC-003: Provider A (weight 3) and Provider B (weight 1) selected across 4 requests
 /// yield sequence [A, A, B, A] without session affinity.
 #[test]
 fn swrr_distribution_ratio() {
+    let _lock = swrr_test_lock();
     super::selection::reset_weighted_scheduler_for_test();
     let mut p_a = provider("p_a");
     p_a.weight = 3;
@@ -19326,6 +19332,7 @@ fn swrr_distribution_ratio() {
 /// fallback sequence proceeds to provider B.
 #[test]
 fn swrr_fallback_order() {
+    let _lock = swrr_test_lock();
     super::selection::reset_weighted_scheduler_for_test();
     let mut p_a = provider("p_a");
     p_a.weight = 2;
@@ -19348,6 +19355,7 @@ fn swrr_fallback_order() {
 /// AC-005: Equal weights rotate fairly among all candidates.
 #[test]
 fn swrr_equal_weights() {
+    let _lock = swrr_test_lock();
     super::selection::reset_weighted_scheduler_for_test();
     let mut p_a = provider("p_a");
     p_a.weight = 1;
@@ -19374,6 +19382,7 @@ fn swrr_equal_weights() {
 /// and empty candidate list returns empty vector.
 #[test]
 fn swrr_single_candidate() {
+    let _lock = swrr_test_lock();
     super::selection::reset_weighted_scheduler_for_test();
     let mut p_a = provider("p_a");
     p_a.weight = 5;
@@ -19404,6 +19413,7 @@ fn swrr_single_candidate() {
 /// and remaining active candidates alternate according to their weight ratio.
 #[test]
 fn swrr_excludes_disabled_provider() {
+    let _lock = swrr_test_lock();
     super::selection::reset_weighted_scheduler_for_test();
     let mut p_a = provider("p_a");
     p_a.weight = 3;
@@ -19461,6 +19471,7 @@ fn swrr_excludes_disabled_provider() {
 /// AC-008: 50 concurrent threads calling weighted_candidates without panic or deadlock.
 #[test]
 fn swrr_concurrent_safety() {
+    let _lock = swrr_test_lock();
     super::selection::reset_weighted_scheduler_for_test();
     let mut p_a = provider("p_a");
     p_a.weight = 3;
@@ -19493,6 +19504,7 @@ fn swrr_concurrent_safety() {
 /// AC-009: 4 new sessions sending initial request bind to providers in 3:1 ratio.
 #[test]
 fn swrr_session_affinity_initial_binding_ratio() {
+    let _lock = swrr_test_lock();
     super::selection::reset_weighted_scheduler_for_test();
     let mut store = super::selection::SessionAffinityStore::new();
 
@@ -19536,6 +19548,7 @@ fn swrr_session_affinity_initial_binding_ratio() {
 /// AC-010: Existing session keeps bound provider at front, remaining candidates ordered by weighted fallback.
 #[test]
 fn swrr_session_affinity_preserves_bound_with_weighted_fallback() {
+    let _lock = swrr_test_lock();
     super::selection::reset_weighted_scheduler_for_test();
     let mut store = super::selection::SessionAffinityStore::new();
 
