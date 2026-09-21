@@ -1693,6 +1693,16 @@ function App() {
               className="w-5 h-5"
             />
             <span className="text-lg">OneSpace</span>
+            {import.meta.env.DEV ? (
+              <span
+                data-testid="app-dev-badge"
+                title="Development build"
+                aria-label="Development build"
+                className="rounded-md border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold tracking-widest text-amber-600 dark:text-amber-400"
+              >
+                DEV
+              </span>
+            ) : null}
           </div>
           <button
             type="button"

@@ -14,6 +14,7 @@ import { useToast } from "@/components/ToastProvider";
 import { SelectDropdown } from "./SelectDropdown";
 import {
   aggregateModels,
+  API_GATEWAY_DEFAULT_PORT,
   localBaseUrl,
   resolveAggregatedModelName,
   resolveAggregatedReasoningEfforts,
@@ -56,7 +57,7 @@ type ModelListPanelProps = {
 
 export function ModelListPanel({
   providers,
-  port = 17688,
+  port = API_GATEWAY_DEFAULT_PORT,
   onNavigateProviders,
 }: ModelListPanelProps) {
   const { t } = useTranslation();

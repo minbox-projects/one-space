@@ -17,6 +17,7 @@ import {
 import { useToast } from "@/components/ToastProvider";
 import { errorToMessage } from "@/lib/messages";
 import {
+  API_GATEWAY_DEFAULT_PORT,
   API_GATEWAY_STATUS_UPDATED_EVENT,
   aggregateModels,
   apiGatewayConfigureTerminal,
@@ -172,7 +173,7 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
       // 在非 Tauri 浏览器预览环境下提供默认初始配置，避免页面永久 Loading
       setConfig({
         enabled: false,
-        port: 17688,
+        port: API_GATEWAY_DEFAULT_PORT,
         providers: [],
         keys: [],
         default_key_id: null,
@@ -181,8 +182,8 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
       setStatus({
         running: false,
         enabled: false,
-        port: 17688,
-        local_base_url: "http://127.0.0.1:17688/v1",
+        port: API_GATEWAY_DEFAULT_PORT,
+        local_base_url: localBaseUrl(API_GATEWAY_DEFAULT_PORT),
         provider_count: 0,
         auto_disabled_count: 0,
         key_count: 0,

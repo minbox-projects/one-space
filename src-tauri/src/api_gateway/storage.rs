@@ -1,6 +1,6 @@
 use super::{
-    now_ts, GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelPrice, CONFIG_FILE,
-    DEFAULT_PORT, LEGACY_CONFIG_FILE_NAME, LEGACY_USAGE_DB_FILE_NAME, MAX_PROVIDER_WEIGHT,
+    default_port, now_ts, GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelPrice,
+    CONFIG_FILE, LEGACY_CONFIG_FILE_NAME, LEGACY_USAGE_DB_FILE_NAME, MAX_PROVIDER_WEIGHT,
     MIN_PROVIDER_WEIGHT,
 };
 use std::collections::HashSet;
@@ -76,7 +76,7 @@ pub(in crate::api_gateway) fn effective_default_key(
 
 pub(in crate::api_gateway) fn normalize_config(config: &mut GatewayConfig) {
     if config.port == 0 {
-        config.port = DEFAULT_PORT;
+        config.port = default_port();
     }
     for provider in &mut config.providers {
         if provider.weight < MIN_PROVIDER_WEIGHT || provider.weight > MAX_PROVIDER_WEIGHT {

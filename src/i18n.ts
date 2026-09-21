@@ -829,7 +829,7 @@ const resources = {
       apiGatewayFaqQ1:
         "Terminal shows: Cannot connect to API: Unable to connect. Is the computer able to access the url?",
       apiGatewayFaqA1:
-        "This indicates the terminal cannot reach the local gateway (127.0.0.1:17688). Steps: 1. Ensure the gateway service at the top is 'Running'; 2. Check if port 17688 is occupied; 3. Ensure an enabled local key exists in Local Keys.",
+        "This indicates the terminal cannot reach the local gateway (127.0.0.1:{{port}}). Steps: 1. Ensure the gateway service at the top is 'Running'; 2. Check if port {{port}} is occupied; 3. Ensure an enabled local key exists in Local Keys.",
       apiGatewayFaqQ2:
         "Terminal shows: all providers unavailable: 429 or quota exceeded?",
       apiGatewayFaqA2:
@@ -4512,7 +4512,7 @@ const resources = {
       apiGatewayFaqQ1:
         "终端提示 Cannot connect to API: Unable to connect. Is the computer able to access the url?",
       apiGatewayFaqA1:
-        "该错误表示终端工具无法连接到本地网关地址（127.0.0.1:17688）。排查步骤：1. 确认顶部网关服务处于“运行中”；2. 检查 17688 端口是否冲突；3. 确保本地密钥列表中有已启用的密钥。",
+        "该错误表示终端工具无法连接到本地网关地址（127.0.0.1:{{port}}）。排查步骤：1. 确认顶部网关服务处于“运行中”；2. 检查 {{port}} 端口是否冲突；3. 确保本地密钥列表中有已启用的密钥。",
       apiGatewayFaqQ2:
         "终端提示 all providers unavailable: 429 或额度用尽？",
       apiGatewayFaqA2:

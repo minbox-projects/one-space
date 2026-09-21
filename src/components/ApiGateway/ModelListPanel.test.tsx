@@ -4,6 +4,7 @@ import i18n from "@/i18n";
 import { ConfirmDialogProvider } from "@/components/ConfirmDialogProvider";
 import { ToastProvider } from "@/components/ToastProvider";
 import type { GatewayUpstreamProvider } from "@/lib/apiGateway";
+import { API_GATEWAY_DEFAULT_PORT } from "@/lib/apiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 import { resetTauriMocks } from "@/test/mocks/tauri";
 import { ModelListPanel } from "./ModelListPanel";
@@ -407,7 +408,9 @@ describe("ModelListPanel 本地模型列表", () => {
   it("展示模型列表 API 获取地址并在指定端口时正确计算 URL", () => {
     const { unmount } = renderPanel([]);
     const defaultApiUrl = screen.getByTestId("api-gateway-model-list-api-url");
-    expect(defaultApiUrl.textContent).toBe("http://127.0.0.1:17688/v1/models");
+    expect(defaultApiUrl.textContent).toBe(
+      `http://127.0.0.1:${API_GATEWAY_DEFAULT_PORT}/v1/models`,
+    );
     unmount();
 
     renderPanel([], undefined, 18888);

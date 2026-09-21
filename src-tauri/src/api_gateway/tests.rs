@@ -2447,9 +2447,18 @@ async fn server_starts_listens_and_stops() {
 fn config_defaults_to_port_17688() {
     with_temp_home("defaults", |_home| {
         let config = super::commands::api_gateway_get_config().unwrap();
-        assert_eq!(config.port, 17688);
+        assert_eq!(config.port, super::default_port());
         assert!(!config.enabled);
     });
+}
+
+#[test]
+fn default_port_release_stays_17688_and_dev_uses_17689() {
+    if cfg!(debug_assertions) {
+        assert_eq!(super::default_port(), 17689);
+    } else {
+        assert_eq!(super::default_port(), 17688);
+    }
 }
 
 #[test]

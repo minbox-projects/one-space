@@ -7,6 +7,9 @@ pub(in crate::api_gateway) const CONFIG_FILE: &str = "api_gateway.json";
 pub(in crate::api_gateway) const LEGACY_CONFIG_FILE_NAME: &str = "api_fusion.json";
 pub(in crate::api_gateway) const LEGACY_USAGE_DB_FILE_NAME: &str = "api_fusion_usage.db";
 pub(in crate::api_gateway) const DEFAULT_PORT: u16 = 17688;
+/// Dev (`debug_assertions`) default so `tauri dev` can run alongside the
+/// installed release build. Release keeps `DEFAULT_PORT`.
+pub(in crate::api_gateway) const DEV_DEFAULT_PORT: u16 = 17689;
 
 /// Default request-log retention in days for configs written before the field existed.
 pub const DEFAULT_USAGE_RETENTION_DAYS: u32 = 90;
@@ -18,7 +21,11 @@ pub const MIN_PROVIDER_WEIGHT: u32 = 1;
 pub const MAX_PROVIDER_WEIGHT: u32 = 100;
 
 pub(in crate::api_gateway) fn default_port() -> u16 {
-    DEFAULT_PORT
+    if cfg!(debug_assertions) {
+        DEV_DEFAULT_PORT
+    } else {
+        DEFAULT_PORT
+    }
 }
 
 pub(in crate::api_gateway) fn default_usage_retention_days() -> u32 {
@@ -480,7 +487,7 @@ impl Default for GatewayConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            port: DEFAULT_PORT,
+            port: default_port(),
             providers: Vec::new(),
             keys: Vec::new(),
             default_key_id: None,
