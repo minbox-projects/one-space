@@ -30,6 +30,7 @@ import {
   formatGatewayDuration,
   getGatewayDurationColorClass,
   formatUsageAmount,
+  formatUsageCurrency,
   formatUsageGroupLabel,
   formatUsageRowAmount,
   formatUtc8DateTime,
@@ -486,6 +487,13 @@ describe("金额格式化与未定价判定", () => {
   it("无金额时显示破折号", () => {
     expect(formatUsageAmount(null)).toBe("—");
     expect(formatUsageAmount(undefined)).toBe("—");
+  });
+
+  it("金额带美元货币单位格式化", () => {
+    expect(formatUsageCurrency(1.234567)).toBe("$1.2346");
+    expect(formatUsageCurrency(0)).toBe("$0.0000");
+    expect(formatUsageCurrency(null)).toBe("—");
+    expect(formatUsageCurrency(undefined)).toBe("—");
   });
 
   it("全部请求未定价时判定为未定价行", () => {

@@ -30,6 +30,7 @@ import {
   apiGatewayProviderTemplates,
   apiGatewayReenableProviderModel,
   apiGatewayReenableProviderModels,
+  apiGatewayRequestLogs,
   apiGatewayResetProviderTemplates,
   apiGatewayRestoreProviderModel,
   apiGatewaySetDefaultKey,
@@ -43,8 +44,10 @@ import {
   apiGatewayUpsertKey,
   apiGatewayUpsertProvider,
   apiGatewayUpsertProviderTemplate,
+  apiGatewayUsageStats,
   localBaseUrl,
   resolveDefaultKeyId,
+  usageRangeToDays,
   type CreateProviderFromTemplateRequest,
   type GatewayConfig,
   type GatewayKey,
@@ -54,6 +57,7 @@ import {
   type GatewayTerminalTarget,
   type GatewayUpstreamProvider,
   type ModelPrice,
+  type UsageStats,
 } from "@/lib/apiGateway";
 import {
   Dialog,
@@ -121,6 +125,10 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [syncingTools, setSyncingTools] = useState<Record<string, boolean>>({});
   const [addressCopied, setAddressCopied] = useState(false);
+  const [defaultKeyCopied, setDefaultKeyCopied] = useState(false);
+  const [todayStats, setTodayStats] = useState<UsageStats | null>(null);
+  const [todayFailedRequests, setTodayFailedRequests] = useState(0);
+  const [refreshingToday, setRefreshingToday] = useState(false);
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [templates, setTemplates] = useState<GatewayProviderTemplateView[]>([]);
@@ -191,6 +199,8 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
       setTemplates([]);
       setTemplatesLoadError(null);
       setLoadError(null);
+      setTodayStats(null);
+      setTodayFailedRequests(0);
       return;
     }
 
@@ -199,17 +209,37 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
     const templatesPromise = apiGatewayProviderTemplates()
       .then((value) => ({ ok: true as const, value: value ?? [] }))
       .catch((err: unknown) => ({ ok: false as const, error: err }));
+    const todayDays = usageRangeToDays("today");
+    const statsPromise = apiGatewayUsageStats(todayDays).catch(() => null);
+    const logsPromise = apiGatewayRequestLogs({
+      days: todayDays,
+      groupBy: "day",
+    }).catch(() => null);
     try {
-      const [nextConfig, nextStatus, nextTargets, templatesResult] =
-        await Promise.all([
-          apiGatewayGetConfig(),
-          apiGatewayStatus(),
-          apiGatewayTerminalTargets(),
-          templatesPromise,
-        ]);
+      const [
+        nextConfig,
+        nextStatus,
+        nextTargets,
+        templatesResult,
+        nextTodayStats,
+        nextTodayLogs,
+      ] = await Promise.all([
+        apiGatewayGetConfig(),
+        apiGatewayStatus(),
+        apiGatewayTerminalTargets(),
+        templatesPromise,
+        statsPromise,
+        logsPromise,
+      ]);
       setConfig(nextConfig);
       setStatus(nextStatus);
       setTargets(nextTargets ?? []);
+      setTodayStats(nextTodayStats);
+      const failedCount = (nextTodayLogs?.groups ?? []).reduce(
+        (acc, g) => acc + (g.error_count || 0),
+        0,
+      );
+      setTodayFailedRequests(failedCount);
       if (templatesResult.ok) {
         setTemplates(templatesResult.value);
       } else {
@@ -232,6 +262,64 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
     if (!isVisible) return;
     void load();
   }, [isVisible, load]);
+
+  const refreshTodayUsage = useCallback(
+    async (silent = true) => {
+      if (!isTauri) return;
+      if (!silent) {
+        setRefreshingToday(true);
+      }
+      const todayDays = usageRangeToDays("today");
+      try {
+        const [nextTodayStats, nextTodayLogs, nextStatus] = await Promise.all([
+          apiGatewayUsageStats(todayDays).catch(() => null),
+          apiGatewayRequestLogs({ days: todayDays, groupBy: "day" }).catch(() => null),
+          apiGatewayStatus().catch(() => null),
+        ]);
+        setTodayStats(nextTodayStats);
+        const failedCount = (nextTodayLogs?.groups ?? []).reduce(
+          (acc, g) => acc + (g.error_count || 0),
+          0,
+        );
+        setTodayFailedRequests(failedCount);
+        if (nextStatus) {
+          setStatus(nextStatus);
+        }
+      } catch {
+        // 静默刷新异常不干扰用户体验
+      } finally {
+        if (!silent) {
+          setRefreshingToday(false);
+        }
+      }
+    },
+    [isTauri],
+  );
+
+  const handleManualRefresh = useCallback(async () => {
+    await refreshTodayUsage(false);
+  }, [refreshTodayUsage]);
+
+  useEffect(() => {
+    if (!isVisible) return;
+    const handleFocus = () => {
+      void refreshTodayUsage(true);
+    };
+    window.addEventListener("focus", handleFocus);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, [isVisible, refreshTodayUsage]);
+
+  useEffect(() => {
+    if (!isVisible || !status?.running) return;
+    const timer = setInterval(() => {
+      void refreshTodayUsage(true);
+    }, 5000);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [isVisible, status?.running, refreshTodayUsage]);
 
   const applyConfig = useCallback(async (next: GatewayConfig) => {
     setConfig(next);
@@ -274,6 +362,7 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
       setStatus(nextStatus);
       setConfig(await apiGatewayGetConfig());
       await emit(API_GATEWAY_STATUS_UPDATED_EVENT).catch(() => {});
+      void refreshTodayUsage(true);
     }, t("apiGatewaySaved", "Saved."));
 
   const handleToggleProviderEnabled = (provider: GatewayUpstreamProvider, enabled: boolean) =>
@@ -562,6 +651,26 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
     try {
       await navigator.clipboard.writeText(localBaseUrl(config.port));
       setAddressCopied(true);
+      setTimeout(() => setAddressCopied(false), 2000);
+      pushToast({ title: t("apiGatewayCopied", "Copied to clipboard"), kind: "success" });
+    } catch (err) {
+      pushToast({
+        title: t("apiGatewayCopyFailed", "Copy failed"),
+        description: errorToMessage(err),
+        kind: "error",
+      });
+    }
+  };
+
+  const handleCopyDefaultKey = async () => {
+    if (!config) return;
+    const effectiveId = resolveDefaultKeyId(config.keys, config.default_key_id);
+    const key = config.keys.find((k) => k.id === effectiveId);
+    if (!key) return;
+    try {
+      await navigator.clipboard.writeText(key.value);
+      setDefaultKeyCopied(true);
+      setTimeout(() => setDefaultKeyCopied(false), 2000);
       pushToast({ title: t("apiGatewayCopied", "Copied to clipboard"), kind: "success" });
     } catch (err) {
       pushToast({
@@ -625,13 +734,16 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const pendingSyncCount = (targets ?? []).filter(
     (target) => target.pending_sync,
   ).length;
+  const syncedTargetsCount = (targets ?? []).filter(
+    (target) => target.synced,
+  ).length;
   const autoDisabledCount = status?.auto_disabled_count ?? 0;
 
   const tabs: Array<{
     id: ApiGatewayTab;
     label: string;
     icon: typeof Server;
-    count?: number;
+    count?: number | string;
     hasAlert?: boolean;
   }> = [
     {
@@ -657,6 +769,10 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
       id: "terminals",
       label: t("apiGatewayTerminalSync", "AI terminal integration"),
       icon: TerminalSquare,
+      count:
+        (targets ?? []).length > 0
+          ? `${syncedTargetsCount}/${targets.length}`
+          : undefined,
       hasAlert: pendingSyncCount > 0,
     },
     {
@@ -693,11 +809,16 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
           config={config}
           busy={busy}
           addressCopied={addressCopied}
-          targets={targets}
+          defaultKeyCopied={defaultKeyCopied}
+          todayStats={todayStats}
+          todayFailedRequests={todayFailedRequests}
+          refreshing={refreshingToday}
           onSelectTab={setActiveTab}
           onStart={handleToggleService}
           onStop={handleToggleService}
           onCopyAddress={() => void handleCopyAddress()}
+          onCopyDefaultKey={() => void handleCopyDefaultKey()}
+          onRefresh={() => void handleManualRefresh()}
         />
 
         {/* 工作区 Tabs 标签页导航 */}

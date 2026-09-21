@@ -1311,23 +1311,33 @@ describe("ApiGateway", () => {
     expect(within(modelsCard).getByText("2")).toBeInTheDocument();
     expect(within(modelsCard).getByText(/Aggregated models/i)).toBeInTheDocument();
 
-    // 3. 本地有效密钥：1 个有效 (共 2 个)
-    const keysCard = screen.getByTestId("api-gateway-metric-keys");
-    expect(within(keysCard).getByText("1")).toBeInTheDocument();
-    expect(within(keysCard).getByText("/ 2")).toBeInTheDocument();
+    // 3. 今日请求量指标卡（高频业务）：显示 1 次请求及失败告警 (mock 返回 error_count: 1)
+    const requestsCard = await screen.findByTestId("api-gateway-metric-requests");
+    expect(within(requestsCard).getByText("1")).toBeInTheDocument();
+    expect(within(requestsCard).getByText(/Today's requests|今日请求/i)).toBeInTheDocument();
+    expect(
+      within(requestsCard).getByTestId("api-gateway-today-failed-requests"),
+    ).toHaveTextContent(/1.*failed|1.*失败/i);
 
-    // 4. 终端同步：1/2 已同步，且有 1 个待同步提示
-    const terminalsCard = screen.getByTestId("api-gateway-metric-terminals");
-    expect(within(terminalsCard).getByText("1/2")).toBeInTheDocument();
-    expect(within(terminalsCard).getByText(/1.*pending sync/i)).toBeInTheDocument();
+    // 4. 今日消耗指标卡（高频消耗）：显示 2 Tokens
+    const tokensCard = await screen.findByTestId("api-gateway-metric-tokens");
+    expect(within(tokensCard).getByText("2")).toBeInTheDocument();
+    expect(within(tokensCard).getByText(/Today's tokens|今日消耗/i)).toBeInTheDocument();
 
-    // 5. 点击终端指标卡可切换到 terminals Tab
-    fireEvent.click(terminalsCard);
+    // 5. 顶部操作栏提供默认 Key 快捷复制入口
+    expect(screen.getByTestId("api-gateway-default-key-preview")).toBeInTheDocument();
+    expect(screen.getByTestId("api-gateway-copy-default-key")).toBeInTheDocument();
 
+    // 6. 终端同步状态转移到终端集成 Tab 徽标：展示 1/2 已同步
     const terminalsTab = screen.getByRole("tab", { name: /AI terminal integration/i });
-    expect(terminalsTab).toHaveAttribute("aria-selected", "true");
+    expect(within(terminalsTab).getByText("1/2")).toBeInTheDocument();
 
-    // 6. 点击聚合模型指标卡可切换到 models Tab
+    // 7. 点击今日请求量指标卡可切换到 usage Tab
+    fireEvent.click(requestsCard);
+    const usageTab = screen.getByRole("tab", { name: /Usage & Logs|用量与日志/i });
+    expect(usageTab).toHaveAttribute("aria-selected", "true");
+
+    // 8. 点击聚合模型指标卡可切换到 models Tab
     fireEvent.click(modelsCard);
     const modelsTab = screen.getByRole("tab", { name: /Model list|模型列表/i });
     expect(modelsTab).toHaveAttribute("aria-selected", "true");
@@ -2498,5 +2508,111 @@ describe("ApiGateway 逐行自动禁用前端计数与重新启用入口", () =>
       "api-gateway-status-badge-p1",
     );
     expect(badge).toHaveTextContent("Enabled");
+  });
+
+  it("顶部操作栏默认 API Key 点击复制调用 clipboard 并展示成功", async () => {
+    const key = {
+      id: "k1",
+      label: "My Main Key",
+      value: "sk-gateway-secret-12345",
+      enabled: true,
+      created_at: 1,
+    };
+    const store: Store = {
+      config: makeConfig({
+        keys: [key],
+        default_key_id: "k1",
+      }),
+      status: makeStatus({ running: true }),
+      targets: [],
+    };
+    mockStore(store);
+
+    const spy = vi.spyOn(navigator.clipboard, "writeText");
+
+    renderWithProviders(<ApiGateway />);
+
+    const copyBtn = await screen.findByTestId("api-gateway-copy-default-key");
+    fireEvent.click(copyBtn);
+
+    expect(spy).toHaveBeenCalledWith("sk-gateway-secret-12345");
+  });
+
+  it("顶部未配置默认 Key 时显示未配置文案且点击可直达密钥Tab", async () => {
+    const store: Store = {
+      config: makeConfig({
+        keys: [],
+        default_key_id: null,
+      }),
+      status: makeStatus({ running: true }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiGateway />);
+
+    const noKeyHint = await screen.findByText(/No key configured|未配置密钥/i);
+    expect(noKeyHint).toBeInTheDocument();
+
+    fireEvent.click(noKeyHint);
+    const keysTab = screen.getByRole("tab", { name: /API Keys|API 密钥/i });
+    expect(keysTab).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("顶部操作栏展示手动刷新按钮，点击后重新获取今日统计与日志", async () => {
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus({ running: true }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiGateway />);
+
+    const refreshBtn = await screen.findByTestId("api-gateway-refresh-btn");
+    expect(refreshBtn).toBeInTheDocument();
+    expect(refreshBtn).toHaveAttribute("title", "Refresh data");
+
+    const callsBefore = invokeMock.mock.calls.filter(
+      (call) => call[0] === "api_gateway_usage_stats",
+    ).length;
+
+    await act(async () => {
+      fireEvent.click(refreshBtn);
+    });
+
+    await waitFor(() => {
+      const callsAfter = invokeMock.mock.calls.filter(
+        (call) => call[0] === "api_gateway_usage_stats",
+      ).length;
+      expect(callsAfter).toBeGreaterThan(callsBefore);
+    });
+  });
+
+  it("窗口获得焦点时触发今日数据轻量刷新", async () => {
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus({ running: true }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiGateway />);
+    await screen.findByTestId("api-gateway-runtime");
+
+    const callsBefore = invokeMock.mock.calls.filter(
+      (call) => call[0] === "api_gateway_usage_stats",
+    ).length;
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+
+    await waitFor(() => {
+      const callsAfter = invokeMock.mock.calls.filter(
+        (call) => call[0] === "api_gateway_usage_stats",
+      ).length;
+      expect(callsAfter).toBeGreaterThan(callsBefore);
+    });
   });
 });

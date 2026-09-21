@@ -773,6 +773,12 @@ export function formatUsageAmount(amount: number | null | undefined): string {
   return amount.toFixed(4);
 }
 
+/** Format an amount with 4 decimals and USD currency symbol ($); missing amounts render as `—`. */
+export function formatUsageCurrency(amount: number | null | undefined): string {
+  const formatted = formatUsageAmount(amount);
+  return formatted === "—" ? "—" : `$${formatted}`;
+}
+
 /**
  * Format request duration in milliseconds.
  * - Under 1 minute (< 60s): formatted with "s" unit (e.g. "0s", "2s", "59s").
