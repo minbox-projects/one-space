@@ -55,6 +55,37 @@ pub struct ModelMapping {
     /// in the provider editor. Templates and template syncs neither carry nor write it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<String>,
+    /// Runtime health: whether the row was automatically disabled after failures.
+    /// Independent of `enabled` (the user's intent) and always serialized; an older
+    /// config without the field reads as healthy.
+    #[serde(default)]
+    pub auto_disabled: bool,
+    #[serde(default)]
+    pub disabled_reason: Option<String>,
+    #[serde(default)]
+    pub disabled_at: Option<u64>,
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    #[serde(default)]
+    pub last_error_at: Option<u64>,
+}
+
+impl Default for ModelMapping {
+    fn default() -> Self {
+        Self {
+            local_model: String::new(),
+            upstream_model: String::new(),
+            enabled: true,
+            protocol: None,
+            display_name: None,
+            reasoning_efforts: Vec::new(),
+            auto_disabled: false,
+            disabled_reason: None,
+            disabled_at: None,
+            consecutive_failures: 0,
+            last_error_at: None,
+        }
+    }
 }
 
 impl ModelMapping {

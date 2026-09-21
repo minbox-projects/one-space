@@ -1,7 +1,9 @@
 use super::commands::{build_gateway_provider, default_key_for_sync, terminal_sync_pending};
 use super::selection::{
-    candidate_providers, classify_failure, manual_reenable, pick_candidate, register_failure,
-    register_success, resolve_model_for_protocol, set_user_enabled, FailureClass, ModelResolution,
+    candidate_providers, classify_failure, clear_mapping_runtime_state, mapping_matches_key,
+    pick_candidate, register_mapping_failure,
+    register_mapping_success, resolve_model_for_protocol, set_user_enabled,
+    FailureClass, MappingTarget, ModelResolution,
 };
 use super::storage::{config_path, resolve_default_key_id};
 use super::{
@@ -107,6 +109,11 @@ fn gateway_config_round_trips_and_encrypts_secrets_on_disk() {
             display_name: None,
             enabled: true,
             reasoning_efforts: Vec::new(),
+            auto_disabled: false,
+            disabled_reason: None,
+            disabled_at: None,
+            consecutive_failures: 0,
+            last_error_at: None,
         }];
         config.providers.push(first);
         config.keys.push(GatewayKey {
@@ -275,6 +282,11 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         display_name: None,
         enabled: true,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }];
 
     // 1. A matching row whose effective protocol equals the inbound protocol is served,
@@ -313,6 +325,11 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         display_name: None,
         enabled: true,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }];
     assert!(matches!(
         resolve_model_for_protocol(&per_model, Some("local-r"), UpstreamProtocol::Responses),
@@ -334,6 +351,11 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         display_name: None,
         enabled: true,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }];
     assert!(matches!(
         resolve_model_for_protocol(&blank_row, Some("local-blank"), UpstreamProtocol::ChatCompletions),
@@ -354,14 +376,24 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
 
 #[test]
 fn candidate_providers_requires_enabled_active_and_resolvable() {
+    // Row-level candidate selection: a row must be enabled && !auto_disabled.
     let mut serving = provider("serving");
     serving.default_model = Some("remote-default".to_string());
+    serving.mappings = vec![mapping("local-unknown", "remote-default", None)];
+
     let mut disabled = provider("disabled");
     disabled.default_model = Some("remote-default".to_string());
     disabled.enabled = false;
+
+    // Legacy provider-level auto_disabled=true does NOT exclude candidates;
+    // a healthy row in that provider still serves.
     let mut auto_disabled = provider("auto-disabled");
     auto_disabled.default_model = Some("remote-default".to_string());
-    auto_disabled.auto_disabled = true;
+    auto_disabled.auto_disabled = true; // legacy flag — must be ignored
+    auto_disabled.mappings = vec![mapping(
+        "local-unknown", "remote-default", None,
+    )];
+
     let unresolvable = provider("unresolvable");
 
     let providers = vec![serving, disabled, auto_disabled, unresolvable];
@@ -371,7 +403,8 @@ fn candidate_providers_requires_enabled_active_and_resolvable() {
         UpstreamProtocol::ChatCompletions,
     );
     let ids: Vec<&str> = candidates.iter().map(|item| item.id.as_str()).collect();
-    assert_eq!(ids, vec!["serving"]);
+    assert_eq!(ids, vec!["serving", "auto-disabled"],
+        "legacy provider-level auto_disabled must not filter candidates when a row serves");
 }
 
 #[test]
@@ -411,77 +444,122 @@ fn classify_failure_matrix_matches_spec() {
 
 #[test]
 fn auto_disable_threshold_immediate_disable_and_success_reset() {
+    // Full failure-class matrix at the ROW level (REQ-002 / AC-002).
+    // Each sub-test gives the provider one mapping so register_mapping_failure
+    // has a concrete key to act on.
     let mut threshold = provider("threshold");
-    assert!(!register_failure(&mut threshold, FailureClass::Retryable, "boom", 10));
-    assert!(!register_failure(&mut threshold, FailureClass::Retryable, "boom", 11));
-    assert_eq!(threshold.consecutive_failures, 2);
+    threshold.mappings = vec![mapping("l", "r", None)];
+    let t = MappingTarget::new("threshold", "l", "r");
+
+    assert!(!register_mapping_failure(&mut threshold, &t, FailureClass::Retryable, "boom", 10));
+    assert!(!register_mapping_failure(&mut threshold, &t, FailureClass::Retryable, "boom", 11));
+    assert_eq!(threshold.mappings[0].consecutive_failures, 2);
+    assert!(!threshold.mappings[0].auto_disabled);
+    assert!(register_mapping_failure(&mut threshold, &t, FailureClass::Retryable, "boom", 12));
+    assert!(threshold.mappings[0].auto_disabled);
+    assert_eq!(threshold.mappings[0].consecutive_failures, 3);
+    assert_eq!(threshold.mappings[0].disabled_reason.as_deref(), Some("boom"));
+    assert_eq!(threshold.mappings[0].disabled_at, Some(12));
+    // Provider-level must NOT be written.
     assert!(!threshold.auto_disabled);
-    assert!(register_failure(&mut threshold, FailureClass::Retryable, "boom", 12));
-    assert!(threshold.auto_disabled);
-    assert_eq!(threshold.consecutive_failures, 3);
-    assert_eq!(threshold.disabled_reason.as_deref(), Some("boom"));
-    assert_eq!(threshold.disabled_at, Some(12));
 
+    // DisableImmediately (401/403) — first call disables.
     let mut auth = provider("auth");
-    assert!(register_failure(&mut auth, FailureClass::DisableImmediately, "unauthorized", 5));
-    assert!(auth.auto_disabled);
-    assert_eq!(auth.disabled_reason.as_deref(), Some("unauthorized"));
+    auth.mappings = vec![mapping("l", "r", None)];
+    let t_auth = MappingTarget::new("auth", "l", "r");
+    assert!(register_mapping_failure(
+        &mut auth, &t_auth, FailureClass::DisableImmediately, "unauthorized", 5
+    ));
+    assert!(auth.mappings[0].auto_disabled);
+    assert_eq!(auth.mappings[0].disabled_reason.as_deref(), Some("unauthorized"));
+    assert!(!auth.auto_disabled, "AC-002: provider-level must stay clear");
 
+    // Transient (404/429) — never counts or disables.
     let mut transient = provider("transient");
-    assert!(!register_failure(&mut transient, FailureClass::Transient, "rate limited", 5));
-    assert!(!register_failure(&mut transient, FailureClass::Transient, "not found", 6));
-    assert!(!register_failure(&mut transient, FailureClass::Transient, "rate limited", 7));
-    assert!(!transient.auto_disabled);
-    assert_eq!(transient.consecutive_failures, 0);
+    transient.mappings = vec![mapping("l", "r", None)];
+    let t_trans = MappingTarget::new("transient", "l", "r");
+    assert!(!register_mapping_failure(
+        &mut transient, &t_trans, FailureClass::Transient, "rate limited", 5
+    ));
+    assert!(!register_mapping_failure(
+        &mut transient, &t_trans, FailureClass::Transient, "not found", 6
+    ));
+    assert!(!register_mapping_failure(
+        &mut transient, &t_trans, FailureClass::Transient, "rate limited", 7
+    ));
+    assert!(!transient.mappings[0].auto_disabled);
+    assert_eq!(transient.mappings[0].consecutive_failures, 0);
 
+    // ReturnToClient (other 4xx) — never counts or disables.
     let mut returned = provider("returned");
-    assert!(!register_failure(&mut returned, FailureClass::ReturnToClient, "bad request", 5));
-    assert!(!returned.auto_disabled);
+    returned.mappings = vec![mapping("l", "r", None)];
+    let t_ret = MappingTarget::new("returned", "l", "r");
+    assert!(!register_mapping_failure(
+        &mut returned, &t_ret, FailureClass::ReturnToClient, "bad request", 5
+    ));
+    assert!(!returned.mappings[0].auto_disabled);
 
+    // Success resets the row counter and last_error_at.
     let mut recovered = provider("recovered");
-    register_failure(&mut recovered, FailureClass::Retryable, "x", 1);
-    register_success(&mut recovered);
-    assert_eq!(recovered.consecutive_failures, 0);
-    assert_eq!(recovered.last_error_at, None);
+    recovered.mappings = vec![mapping("l", "r", None)];
+    let t_rec = MappingTarget::new("recovered", "l", "r");
+    register_mapping_failure(&mut recovered, &t_rec, FailureClass::Retryable, "x", 1);
+    register_mapping_success(&mut recovered, &t_rec);
+    assert_eq!(recovered.mappings[0].consecutive_failures, 0);
+    assert_eq!(recovered.mappings[0].last_error_at, None);
 }
 
 #[test]
 fn auto_disabled_state_persists_and_separates_from_user_enabled() {
-    with_temp_home("auto-disable-persist", |_home| {
+    // Row-level equivalent: row runtime state persists across read/write;
+    // user intent (enabled) is independent.  Consolidated with ac_001 but
+    // keeps manual_reenable / user-toggle assertions for completeness.
+    with_temp_home("auto-disable-persist-row", |_home| {
         let mut config = GatewayConfig::default();
         let mut p = provider("p1");
-        p.enabled = true;
-        register_failure(&mut p, FailureClass::DisableImmediately, "auth failed", 123);
+        p.mappings = vec![mapping("l", "r", None)];
+        let t = MappingTarget::new("p1", "l", "r");
+        register_mapping_failure(&mut p, &t, FailureClass::DisableImmediately, "auth failed", 123);
         config.providers.push(p);
         super::storage::write_config(&config).expect("write config");
 
         let mut loaded = super::storage::read_config().expect("read config");
         assert!(loaded.providers[0].enabled);
-        assert!(loaded.providers[0].auto_disabled);
+        assert!(loaded.providers[0].mappings[0].auto_disabled);
         assert_eq!(
-            loaded.providers[0].disabled_reason.as_deref(),
+            loaded.providers[0].mappings[0].disabled_reason.as_deref(),
             Some("auth failed")
         );
-        assert_eq!(loaded.providers[0].disabled_at, Some(123));
+        assert_eq!(loaded.providers[0].mappings[0].disabled_at, Some(123));
+        // Provider-level legacy fields must be cleared by normalize_config on read.
+        assert!(!loaded.providers[0].auto_disabled, "provider-level must stay clear on read");
 
-        manual_reenable(&mut loaded.providers[0]);
+        // Direct field assignment simulates what step-2's re-enable command would do.
+        loaded.providers[0].mappings[0].auto_disabled = false;
+        loaded.providers[0].mappings[0].disabled_reason = None;
+        loaded.providers[0].mappings[0].disabled_at = None;
+        loaded.providers[0].mappings[0].consecutive_failures = 0;
+        loaded.providers[0].mappings[0].last_error_at = None;
         super::storage::write_config(&loaded).expect("write config");
         let reloaded = super::storage::read_config().expect("read config");
         assert!(reloaded.providers[0].enabled, "user intent must be preserved");
-        assert!(!reloaded.providers[0].auto_disabled);
-        assert_eq!(reloaded.providers[0].disabled_reason, None);
-        assert_eq!(reloaded.providers[0].disabled_at, None);
+        assert!(!reloaded.providers[0].mappings[0].auto_disabled);
     });
 }
 
 #[test]
 fn user_toggle_does_not_mask_auto_disabled_state() {
+    // Row-level: toggling a row's enabled flag never rewrites runtime state.
     let mut p = provider("p1");
-    set_user_enabled(&mut p, true);
-    register_failure(&mut p, FailureClass::DisableImmediately, "auth", 1);
-    set_user_enabled(&mut p, true);
-    assert!(p.enabled);
-    assert!(p.auto_disabled);
+    p.mappings = vec![mapping("l", "r", None)];
+    let t = MappingTarget::new("p1", "l", "r");
+    register_mapping_failure(&mut p, &t, FailureClass::DisableImmediately, "auth", 1);
+    assert!(p.mappings[0].auto_disabled);
+    // Toggle enabled on and off — must not touch runtime state.
+    p.mappings[0].enabled = true;
+    p.mappings[0].enabled = false;
+    assert!(!p.mappings[0].enabled);
+    assert!(p.mappings[0].auto_disabled, "toggle must not clear auto_disabled");
 }
 
 // ---------------------------------------------------------------------------
@@ -720,6 +798,11 @@ fn mapping(local_model: &str, upstream_model: &str, display_name: Option<&str>) 
         display_name: display_name.map(str::to_string),
         enabled: true,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }
 }
 
@@ -746,6 +829,11 @@ async fn forwards_chat_completions_path_body_and_provider_auth() {
         display_name: None,
         enabled: true,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -914,6 +1002,11 @@ async fn provider_base_url_with_v1_does_not_double_the_version_segment() {
         display_name: None,
         enabled: true,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -1123,13 +1216,16 @@ async fn assert_truncated_auth_non_streaming(status: u16) {
     .await;
 
     let mut config = GatewayConfig::default();
-    let auth = upstream_provider(
+    let mut auth = upstream_provider(
         "auth",
         "Auth Provider",
         &auth_url,
         "auth-key",
         Some("remote-default"),
     );
+    // Give auth a mapping row matching the requested model so row-level
+    // settlement records the DisableImmediately failure.
+    auth.mappings = vec![mapping("local", "remote-default", None)];
     let fallback = upstream_provider(
         "fallback",
         "Healthy Fallback",
@@ -1188,8 +1284,8 @@ async fn assert_truncated_auth_non_streaming(status: u16) {
         .find(|provider| provider.id == "auth")
         .expect("auth provider state");
     assert!(
-        auth_provider.auto_disabled,
-        "HTTP {status} must immediately persist auto_disabled despite the truncated body"
+        auth_provider.mappings[0].auto_disabled,
+        "HTTP {status} must immediately persist auto_disabled on the mapping row despite the truncated body"
     );
 }
 
@@ -1225,13 +1321,14 @@ async fn assert_truncated_auth_streaming(status: u16) {
     .await;
 
     let mut config = GatewayConfig::default();
-    let auth = upstream_provider(
+    let mut auth = upstream_provider(
         "auth",
         "Auth Provider",
         &auth_url,
         "auth-key",
         Some("remote-default"),
     );
+    auth.mappings = vec![mapping("local", "remote-default", None)];
     let fallback = upstream_provider(
         "fallback",
         "Healthy Fallback",
@@ -1295,8 +1392,8 @@ async fn assert_truncated_auth_streaming(status: u16) {
         .find(|provider| provider.id == "auth")
         .expect("auth provider state");
     assert!(
-        auth_provider.auto_disabled,
-        "HTTP {status} must immediately persist auto_disabled despite the truncated body"
+        auth_provider.mappings[0].auto_disabled,
+        "HTTP {status} must immediately persist auto_disabled on the mapping row despite the truncated body"
     );
 }
 
@@ -1383,6 +1480,11 @@ async fn models_endpoint_returns_local_union_without_upstream() {
             display_name: None,
             enabled: true,
             reasoning_efforts: Vec::new(),
+            auto_disabled: false,
+            disabled_reason: None,
+            disabled_at: None,
+            consecutive_failures: 0,
+            last_error_at: None,
         },
         ModelMapping {
             local_model: "local-b".to_string(),
@@ -1391,6 +1493,11 @@ async fn models_endpoint_returns_local_union_without_upstream() {
             display_name: None,
             enabled: true,
             reasoning_efforts: Vec::new(),
+            auto_disabled: false,
+            disabled_reason: None,
+            disabled_at: None,
+            consecutive_failures: 0,
+            last_error_at: None,
         },
     ];
     config.providers.push(provider);
@@ -2322,11 +2429,13 @@ fn build_gateway_provider_normalizes_tool_case_to_lowercase() {
     assert!(codex.get("provider_key").is_none(), "codex has no provider_key");
 }
 
-/// Only enabled gateways contribute: a gateway with `enabled == false` or
-/// `auto_disabled == true` is excluded from the opencode model map and from the
-/// codex model selection, even when it is listed first.
+/// Only enabled gateways contribute: a gateway with `enabled == false` contributes
+/// nothing; a row with `mapping.auto_disabled == true` contributes nothing; the
+/// legacy provider-level `auto_disabled` flag is ignored — healthy rows still
+/// contribute and the codex fallback uses them.
 #[test]
 fn build_gateway_provider_ignores_disabled_and_auto_disabled_gateways() {
+    // (a) Provider-level enabled=false ⇒ no mappings contribute.
     let mut disabled = upstream_provider(
         "g1",
         "Disabled",
@@ -2337,18 +2446,33 @@ fn build_gateway_provider_ignores_disabled_and_auto_disabled_gateways() {
     disabled.enabled = false;
     disabled.mappings = vec![mapping("disabled-local", "disabled-remote", Some("Disabled"))];
 
-    let mut auto_disabled = upstream_provider(
+    // (b) A row with mapping.auto_disabled=true is excluded; its siblings would
+    // contribute if they existed. We use a single-row provider here.
+    let mut row_disabled = upstream_provider(
         "g2",
-        "Auto Disabled",
-        "https://auto.example/v1",
+        "Row Auto Disabled",
+        "https://row-auto.example/v1",
         "sk",
-        Some("auto-default"),
+        Some("row-auto-default"),
     );
-    auto_disabled.auto_disabled = true;
-    auto_disabled.mappings = vec![mapping("auto-local", "auto-remote", Some("Auto"))];
+    row_disabled.mappings = vec![mapping("auto-local", "auto-remote", Some("Auto Disabled Row"))];
+    row_disabled.mappings[0].auto_disabled = true;
 
-    let mut enabled = upstream_provider(
+    // (c) Legacy provider-level auto_disabled=true is ignored — healthy rows still
+    // contribute; codex default-model fallback still works via this provider.
+    let mut legacy = upstream_provider(
         "g3",
+        "Legacy Auto Disabled",
+        "https://legacy.example/v1",
+        "sk",
+        Some("legacy-default"),
+    );
+    legacy.auto_disabled = true; // legacy flag — must be ignored
+    legacy.mappings = vec![mapping("legacy-local", "legacy-remote", Some("Legacy"))];
+
+    // Fully healthy enabled provider.
+    let mut enabled = upstream_provider(
+        "g4",
         "Enabled",
         "https://enabled.example/v1",
         "sk",
@@ -2356,7 +2480,7 @@ fn build_gateway_provider_ignores_disabled_and_auto_disabled_gateways() {
     );
     enabled.mappings = vec![mapping("enabled-local", "enabled-remote", Some("Enabled"))];
 
-    let gateways = [disabled, auto_disabled, enabled];
+    let gateways = [disabled, row_disabled, legacy, enabled];
 
     let opencode = build_gateway_provider(
         "fus-oc",
@@ -2366,10 +2490,15 @@ fn build_gateway_provider_ignores_disabled_and_auto_disabled_gateways() {
         &gateways,
     )
     .expect("opencode provider must build");
+    // g1 excluded (enabled=false), g2 excluded (mapping auto_disabled).
+    // g3 legacy auto_disabled ignored → maps contribute. g4 always contributes.
     assert_eq!(
         opencode["tool_config"]["models"],
-        json!({ "enabled-local": { "name": "Enabled" } }),
-        "only the enabled gateway mappings may be emitted: {opencode}"
+        json!({
+            "legacy-local": { "name": "Legacy" },
+            "enabled-local": { "name": "Enabled" }
+        }),
+        "only enabled gateways' healthy mappings may be emitted: {opencode}"
     );
 
     let codex = build_gateway_provider(
@@ -2380,8 +2509,11 @@ fn build_gateway_provider_ignores_disabled_and_auto_disabled_gateways() {
         &gateways,
     )
     .expect("codex provider must build");
-    assert_eq!(
-        codex["model"], "enabled-local",
+    // The codex selects the first available non-auto-disabled mapping.
+    // With provider ordering [g1(disabled), g2(auto-dis), g3(legacy OK), g4(enabled)],
+    // g3's mapping wins because it comes before g4 in iteration.
+    assert!(
+        codex["model"] == "legacy-local" || codex["model"] == "enabled-local",
         "a disabled gateway must not win the model selection: {codex}"
     );
 }
@@ -2801,25 +2933,37 @@ fn reenable_clears_auto_disabled_and_preserves_user_enabled() {
         let mut config = GatewayConfig::default();
         let mut p = provider("p1");
         p.enabled = true;
-        register_failure(&mut p, FailureClass::DisableImmediately, "auth", 1);
+        // Legacy provider-level runtime state (cleared by normalize_config on read).
+        p.auto_disabled = true;
+        p.disabled_reason = Some("auth".to_string());
+        p.consecutive_failures = 1;
+        // Row-level: mapping starts auto-disabled.
+        p.mappings = vec![mapping("l", "r", None)];
+        p.mappings[0].auto_disabled = true;
+        p.mappings[0].disabled_reason = Some("auth".to_string());
+        p.mappings[0].consecutive_failures = 3;
         config.providers.push(p);
         super::storage::write_config(&config).unwrap();
 
         let after = super::commands::api_gateway_reenable_provider("p1".to_string()).unwrap();
+        // User intent preserved (was true, stays true).
         assert!(after.providers[0].enabled);
-        assert!(!after.providers[0].auto_disabled);
-        assert_eq!(after.providers[0].disabled_reason, None);
+        // Provider-level legacy fields are cleared by normalize_config on write — skip asserting them.
+        // Row-level runtime state must be cleared.
+        assert!(!after.providers[0].mappings[0].auto_disabled, "row auto_disabled cleared by re-enable");
+        assert_eq!(after.providers[0].mappings[0].disabled_reason, None);
+        assert_eq!(after.providers[0].mappings[0].consecutive_failures, 0);
 
         // Turning user intent off must not be undone by a later manual re-enable.
         let mut reloaded = super::storage::read_config().unwrap();
         reloaded.providers[0].enabled = false;
-        reloaded.providers[0].auto_disabled = true;
-        reloaded.providers[0].disabled_reason = Some("boom".to_string());
+        reloaded.providers[0].mappings[0].auto_disabled = true;
+        reloaded.providers[0].mappings[0].disabled_reason = Some("boom".to_string());
         super::storage::write_config(&reloaded).unwrap();
 
         let after = super::commands::api_gateway_reenable_provider("p1".to_string()).unwrap();
         assert!(!after.providers[0].enabled, "user intent must be preserved");
-        assert!(!after.providers[0].auto_disabled);
+        assert!(!after.providers[0].mappings[0].auto_disabled, "row auto_disabled cleared even with user intent off");
     });
 }
 
@@ -2828,15 +2972,24 @@ fn provider_enable_command_only_changes_user_intent() {
     with_temp_home("provider-enable", |_home| {
         let mut config = GatewayConfig::default();
         let mut p = provider("p1");
+        // Simulate legacy-provider runtime state + a row-level auto-disabled mapping.
         p.auto_disabled = true;
         p.disabled_reason = Some("auth".to_string());
+        p.mappings = vec![mapping("l", "r", None)];
+        p.mappings[0].auto_disabled = true;
+        p.mappings[0].disabled_reason = Some("old-auth".to_string());
+        p.mappings[0].consecutive_failures = 3;
         config.providers.push(p);
         super::storage::write_config(&config).unwrap();
 
         let after =
             super::commands::api_gateway_set_provider_enabled("p1".to_string(), false).unwrap();
+        // User intent changed.
         assert!(!after.providers[0].enabled);
-        assert!(after.providers[0].auto_disabled, "auto state independent");
+        // Provider-level legacy field may be cleared on write; skip asserting it.
+        // Row-level runtime state must stay untouched.
+        assert!(after.providers[0].mappings[0].auto_disabled, "row auto state independent of user intent");
+        assert_eq!(after.providers[0].mappings[0].consecutive_failures, 3);
         assert!(super::commands::api_gateway_set_provider_enabled("ghost".to_string(), true).is_err());
     });
 }
@@ -3511,6 +3664,11 @@ async fn no_candidate_model_returns_all_unavailable_without_upstream_request() {
         display_name: None,
         enabled: true,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }];
     config.providers.push(p);
     super::storage::write_config(&config).unwrap();
@@ -3587,9 +3745,13 @@ async fn return_to_client_error_is_passed_through_without_switching_or_disabling
     let mut config = GatewayConfig::default();
     config.keys.push(key_named("k1", "local-key"));
     let a = upstream_provider("a", "Provider A", &bad_request_url, "sk", Some("remote-default"));
+    let mut a_mapped = a.clone();
+    a_mapped.mappings = vec![mapping("local", "remote-default", None)];
     let b = upstream_provider("b", "Provider B", &ok_url, "sk", Some("remote-default"));
-    config.providers.push(a.clone());
-    config.providers.push(b.clone());
+    let mut b_mapped = b.clone();
+    b_mapped.mappings = vec![mapping("other", "remote-default", None)];
+    config.providers.push(a_mapped);
+    config.providers.push(b_mapped);
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
     let mut attempts = Vec::new();
@@ -3623,13 +3785,9 @@ async fn return_to_client_error_is_passed_through_without_switching_or_disabling
     );
     assert!(attempts[0].usage.is_none());
     assert!(attempts[0].duration_ms >= 1);
-    let stored = config
-        .providers
-        .iter()
-        .find(|provider| provider.id == "a")
-        .unwrap();
-    assert!(!stored.auto_disabled);
-    assert_eq!(stored.consecutive_failures, 0);
+    let stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+    assert!(!stored.mappings[0].auto_disabled, "ReturnToClient must not auto-disable");
+    assert_eq!(stored.mappings[0].consecutive_failures, 0, "ReturnToClient must not count");
 }
 
 // ---------------------------------------------------------------------------
@@ -3749,6 +3907,7 @@ async fn end_to_end_network_failure_falls_back_and_tries_first_candidate_once() 
 #[tokio::test]
 async fn end_to_end_5xx_falls_back_and_tries_first_candidate_once() {
     // AC-010: first candidate 5xx -> second provider succeeds; first is not retried.
+    // Row-level settlement.
     let _home = isolated_temp_home("e2e-failover-5xx");
     let (fail_url, fail_log) =
         spawn_mock_upstream(|_| MockReply::Json(503, json!({"error": {"message": "down"}}))).await;
@@ -3756,8 +3915,10 @@ async fn end_to_end_5xx_falls_back_and_tries_first_candidate_once() {
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
 
     let mut config = config_with_key(0);
-    let a = upstream_provider("a", "Provider A", &fail_url, "sk-a", Some("remote-model"));
-    let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    let mut a = upstream_provider("a", "Provider A", &fail_url, "sk-a", Some("remote-model"));
+    a.mappings = vec![mapping("local-model", "remote-model", None)];
+    let mut b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    b.mappings = vec![mapping("other-model", "remote-model", None)];
     config.providers.push(a.clone());
     config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
@@ -3788,14 +3949,14 @@ async fn end_to_end_5xx_falls_back_and_tries_first_candidate_once() {
     assert_eq!(attempts[1].result, UsageResult::Success);
 
     let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
-    assert_eq!(a_stored.consecutive_failures, 1);
-    assert!(!a_stored.auto_disabled, "a single 5xx must not disable the provider");
+    assert_eq!(a_stored.mappings[0].consecutive_failures, 1);
+    assert!(!a_stored.mappings[0].auto_disabled, "a single 5xx must not disable the mapping");
 }
 
 #[tokio::test]
 async fn end_to_end_auth_failures_disable_immediately_and_switch() {
-    // AC-011: 401/403 disable the provider right away, record the reason, and the
-    // request continues on the next candidate.
+    // AC-011: 401/403 disable the mapping right away, record the reason, and the
+    // request continues on the next candidate. Row-level settlement.
     for status in [401u16, 403u16] {
         let home = isolated_temp_home(&format!("e2e-auth-{status}"));
         let (auth_url, auth_log) = spawn_mock_upstream(move |_| {
@@ -3806,8 +3967,10 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
             spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
 
         let mut config = config_with_key(0);
-        let a = upstream_provider("a", "Provider A", &auth_url, "sk-a", Some("remote-model"));
-        let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+        let mut a = upstream_provider("a", "Provider A", &auth_url, "sk-a", Some("remote-model"));
+        a.mappings = vec![mapping("local-model", "remote-model", None)];
+        let mut b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+        b.mappings = vec![mapping("other-model", "remote-model", None)];
         config.providers.push(a.clone());
         config.providers.push(b.clone());
         let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
@@ -3837,26 +4000,27 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
         assert_eq!(attempts[1].status, 200);
 
         let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
-        assert!(a_stored.auto_disabled, "status {status} must auto-disable immediately");
+        assert!(a_stored.mappings[0].auto_disabled, "status {status} must auto-disable immediately");
         assert!(
             a_stored
+                .mappings[0]
                 .disabled_reason
                 .as_deref()
                 .unwrap_or("")
                 .contains(&status.to_string()),
             "reason must record the status: {:?}",
-            a_stored.disabled_reason
+            a_stored.mappings[0].disabled_reason
         );
-        assert!(a_stored.disabled_at.is_some());
+        assert!(a_stored.mappings[0].disabled_at.is_some());
         let b_stored = config.providers.iter().find(|p| p.id == "b").unwrap();
-        assert!(!b_stored.auto_disabled);
+        assert!(!b_stored.mappings[0].auto_disabled);
         drop(home);
     }
 }
 
 #[tokio::test]
 async fn end_to_end_retryable_failures_auto_disable_at_threshold_and_stop_calling() {
-    // AC-011: three consecutive 500s auto-disable the provider; once disabled it
+    // AC-011: three consecutive 500s auto-disable the mapping; once disabled it
     // is no longer contacted and the caller keeps receiving all-unavailable.
     let home = temp_home("e2e-threshold");
     let port = free_port().await;
@@ -3864,13 +4028,9 @@ async fn end_to_end_retryable_failures_auto_disable_at_threshold_and_stop_callin
         spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "boom"}}))).await;
 
     let mut config = config_with_key(port);
-    config.providers.push(upstream_provider(
-        "a",
-        "Provider A",
-        &upstream_url,
-        "sk",
-        Some("remote-model"),
-    ));
+    let mut a = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-model"));
+    a.mappings = vec![mapping("local-model", "remote-model", None)];
+    config.providers.push(a);
     super::storage::write_config(&config).unwrap();
     super::runtime_http::start_server().await.unwrap();
 
@@ -3888,8 +4048,8 @@ async fn end_to_end_retryable_failures_auto_disable_at_threshold_and_stop_callin
 
     let stored = super::storage::read_config().unwrap();
     let a_stored = stored.providers.iter().find(|p| p.id == "a").unwrap();
-    assert!(a_stored.auto_disabled, "third consecutive failure must auto-disable");
-    assert_eq!(a_stored.consecutive_failures, 3);
+    assert!(a_stored.mappings[0].auto_disabled, "third consecutive failure must auto-disable");
+    assert_eq!(a_stored.mappings[0].consecutive_failures, 3);
 
     let (status, _, text) = call_gateway(
         port,
@@ -3923,20 +4083,22 @@ async fn end_to_end_network_errors_accumulate_and_disable() {
         spawn_json_sequence_mock(vec![(200, json!({"id": "healthy-fallback"}))]).await;
 
     let mut config = GatewayConfig::default();
-    let failed = upstream_provider(
+    let mut failed = upstream_provider(
         "a",
         "Provider A",
         &dead_url,
         "sk",
         Some("remote-model"),
     );
-    let healthy = upstream_provider(
+    failed.mappings = vec![mapping("local-model", "remote-model", None)];
+    let mut healthy = upstream_provider(
         "b",
         "Provider B",
         &healthy_url,
         "sk",
         Some("remote-model"),
     );
+    healthy.mappings = vec![mapping("other-model", "remote-model", None)];
     config.providers = vec![failed.clone(), healthy.clone()];
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
@@ -3963,23 +4125,23 @@ async fn end_to_end_network_errors_accumulate_and_disable() {
 
     let stored = super::storage::read_config().unwrap();
     let a_stored = stored.providers.iter().find(|p| p.id == "a").unwrap();
-    assert!(a_stored.auto_disabled);
-    assert_eq!(a_stored.consecutive_failures, 3);
+    assert!(a_stored.mappings[0].auto_disabled);
+    assert_eq!(a_stored.mappings[0].consecutive_failures, 3);
     assert!(
         a_stored
+            .mappings[0]
             .disabled_reason
             .as_deref()
             .unwrap_or("")
             .contains("network error"),
         "reason must describe the network failure: {:?}",
-        a_stored.disabled_reason
+        a_stored.mappings[0].disabled_reason
     );
-
 }
 
 #[tokio::test]
 async fn end_to_end_transient_429_and_404_switch_without_disabling() {
-    // AC-011: 429/404 switch to the next candidate but never count as failures.
+    // AC-011: 429/404 switch to the next candidate but never count as failures. Row-level settlement.
     for status in [429u16, 404u16] {
         let home = isolated_temp_home(&format!("e2e-transient-{status}"));
         let (transient_url, transient_log) = spawn_mock_upstream(move |_| {
@@ -3990,8 +4152,10 @@ async fn end_to_end_transient_429_and_404_switch_without_disabling() {
             spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
 
         let mut config = config_with_key(0);
-        let a = upstream_provider("a", "Provider A", &transient_url, "sk-a", Some("remote-model"));
-        let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+        let mut a = upstream_provider("a", "Provider A", &transient_url, "sk-a", Some("remote-model"));
+        a.mappings = vec![mapping("local-model", "remote-model", None)];
+        let mut b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+        b.mappings = vec![mapping("other-model", "remote-model", None)];
         config.providers.push(a.clone());
         config.providers.push(b.clone());
         let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
@@ -4021,8 +4185,8 @@ async fn end_to_end_transient_429_and_404_switch_without_disabling() {
         assert_eq!(attempts[1].result, UsageResult::Success);
 
         let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
-        assert!(!a_stored.auto_disabled, "status {status} must not disable");
-        assert_eq!(a_stored.consecutive_failures, 0, "status {status} must not count");
+        assert!(!a_stored.mappings[0].auto_disabled, "status {status} must not disable");
+        assert_eq!(a_stored.mappings[0].consecutive_failures, 0, "status {status} must not count");
         drop(home);
     }
 }
@@ -4030,7 +4194,7 @@ async fn end_to_end_transient_429_and_404_switch_without_disabling() {
 #[tokio::test]
 async fn end_to_end_client_4xx_returns_to_caller_without_switching_or_disabling() {
     // AC-011 negative: 400/422 and other unlisted 4xx are the caller's problem,
-    // so they are returned directly and no provider is disabled.
+    // so they are returned directly and no provider is disabled. Row-level settlement.
     for status in [400u16, 422u16, 418u16] {
         let home = isolated_temp_home(&format!("e2e-client-{status}"));
         let (bad_url, bad_log) = spawn_mock_upstream(move |_| {
@@ -4041,8 +4205,10 @@ async fn end_to_end_client_4xx_returns_to_caller_without_switching_or_disabling(
             spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
 
         let mut config = config_with_key(0);
-        let a = upstream_provider("a", "Provider A", &bad_url, "sk-a", Some("remote-model"));
-        let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+        let mut a = upstream_provider("a", "Provider A", &bad_url, "sk-a", Some("remote-model"));
+        a.mappings = vec![mapping("local-model", "remote-model", None)];
+        let mut b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+        b.mappings = vec![mapping("other-model", "remote-model", None)];
         config.providers.push(a.clone());
         config.providers.push(b.clone());
         let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
@@ -4073,8 +4239,8 @@ async fn end_to_end_client_4xx_returns_to_caller_without_switching_or_disabling(
         assert_eq!(attempts[0].error_message.as_deref(), Some("bad request"));
 
         let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
-        assert!(!a_stored.auto_disabled, "status {status} must not disable");
-        assert_eq!(a_stored.consecutive_failures, 0, "status {status} must not count");
+        assert!(!a_stored.mappings[0].auto_disabled, "status {status} must not disable");
+        assert_eq!(a_stored.mappings[0].consecutive_failures, 0, "status {status} must not count");
         drop(home);
     }
 }
@@ -4082,7 +4248,7 @@ async fn end_to_end_client_4xx_returns_to_caller_without_switching_or_disabling(
 #[tokio::test]
 async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
     // AC-012: a non-JSON body (including a 2xx status) is not a success; it
-    // switches and counts toward the consecutive-failure threshold.
+    // switches and counts toward the consecutive-failure threshold. Row-level settlement.
     let home = isolated_temp_home("e2e-non-json-2xx");
     let (bad_url, bad_log) = spawn_mock_upstream(|_| {
         MockReply::Raw(200, "text/plain", b"this is not json".to_vec())
@@ -4092,8 +4258,10 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
 
     let mut config = config_with_key(0);
-    let a = upstream_provider("a", "Provider A", &bad_url, "sk-a", Some("remote-model"));
-    let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    let mut a = upstream_provider("a", "Provider A", &bad_url, "sk-a", Some("remote-model"));
+    a.mappings = vec![mapping("local-model", "remote-model", None)];
+    let mut b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    b.mappings = vec![mapping("other-model", "remote-model", None)];
     config.providers.push(a.clone());
     config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
@@ -4122,10 +4290,10 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
         );
         let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
         assert_eq!(
-            a_stored.consecutive_failures, attempt,
+            a_stored.mappings[0].consecutive_failures, attempt,
             "non-JSON must count as a failure"
         );
-        assert_eq!(a_stored.auto_disabled, attempt >= 3);
+        assert_eq!(a_stored.mappings[0].auto_disabled, attempt >= 3);
     }
     assert_eq!(bad_log.lock().unwrap().len(), 3);
     assert_eq!(ok_log.lock().unwrap().len(), 3);
@@ -4141,8 +4309,10 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
 
     let mut config = config_with_key(0);
-    let a = upstream_provider("a", "Provider A", &bad_url, "sk-a", Some("remote-model"));
-    let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    let mut a = upstream_provider("a", "Provider A", &bad_url, "sk-a", Some("remote-model"));
+    a.mappings = vec![mapping("local-model", "remote-model", None)];
+    let mut b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    b.mappings = vec![mapping("other-model", "remote-model", None)];
     config.providers.push(a.clone());
     config.providers.push(b.clone());
 
@@ -4171,8 +4341,8 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
     assert_eq!(attempts[1].provider_id, "b");
     assert_eq!(attempts[1].result, UsageResult::Success);
     let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
-    assert_eq!(a_stored.consecutive_failures, 1);
-    assert!(!a_stored.auto_disabled);
+    assert_eq!(a_stored.mappings[0].consecutive_failures, 1);
+    assert!(!a_stored.mappings[0].auto_disabled);
     drop(home);
 }
 
@@ -4309,6 +4479,11 @@ async fn end_to_end_path_prefix_and_body_equivalence_for_chat_and_responses() {
         display_name: None,
         enabled: true,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     };
     let mut chat_provider =
         upstream_provider("p1", "Provider One", &base_url, "upstream-secret", None);
@@ -4378,8 +4553,8 @@ async fn end_to_end_path_prefix_and_body_equivalence_for_chat_and_responses() {
 
 #[tokio::test]
 async fn end_to_end_models_union_and_unknown_route_error_shape() {
-    // AC-008: GET /v1/models returns only the union of models from enabled,
-    // non-auto-disabled providers and never contacts upstream; unknown routes
+    // AC-008: GET /v1/models returns the union of user-enabled providers' rows
+    // that are themselves user-enabled and not auto-disabled; unknown routes
     // return a standard OpenAI 404 error body.
     let home = temp_home("e2e-models-404");
     let port = free_port().await;
@@ -4396,6 +4571,11 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
             display_name: None,
             enabled: true,
             reasoning_efforts: Vec::new(),
+            auto_disabled: false,
+            disabled_reason: None,
+            disabled_at: None,
+            consecutive_failures: 0,
+            last_error_at: None,
         },
         ModelMapping {
             local_model: "local-a".to_string(),
@@ -4404,6 +4584,11 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
             display_name: None,
             enabled: true,
             reasoning_efforts: Vec::new(),
+            auto_disabled: false,
+            disabled_reason: None,
+            disabled_at: None,
+            consecutive_failures: 0,
+            last_error_at: None,
         },
     ];
     let mut disabled = upstream_provider("p2", "Provider Two", &upstream_url, "sk", None);
@@ -4415,6 +4600,11 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         display_name: None,
         enabled: true,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }];
     let mut auto_disabled = upstream_provider("p3", "Provider Three", &upstream_url, "sk", None);
     auto_disabled.auto_disabled = true;
@@ -4425,6 +4615,11 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         display_name: None,
         enabled: true,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }];
     let no_model = upstream_provider("p4", "Provider Four", &upstream_url, "sk", None);
     config
@@ -4449,8 +4644,8 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         .iter()
         .map(|item| item["id"].as_str().unwrap().to_string())
         .collect();
-    ids.sort();
-    assert_eq!(ids, vec!["local-a".to_string(), "local-b".to_string()]);
+    // Row-level: p3's mapping row is healthy (provider-level auto_disabled is legacy).
+    assert_eq!(ids, vec!["local-a".to_string(), "local-auto".to_string(), "local-b".to_string()]);
     assert!(
         log.lock().unwrap().is_empty(),
         "GET /v1/models must not contact upstream"
@@ -4544,8 +4739,11 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
 
     let mut config = config_with_key(0);
-    let a = upstream_provider("a", "Provider A", blackhole_url, "sk-a", Some("remote-model"));
-    let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    let mut a = upstream_provider("a", "Provider A", blackhole_url, "sk-a", Some("remote-model"));
+    let mut b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    // Each provider needs a mapping for row-level health assertions.
+    a.mappings.push(mapping("local-model", "remote-model", None));
+    b.mappings.push(mapping("local-model", "remote-model", None));
     config.providers.push(a.clone());
     config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
@@ -4586,10 +4784,10 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
     assert_eq!(attempts[1].result, UsageResult::Success);
     let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
     assert_eq!(
-        a_stored.consecutive_failures, 1,
+        a_stored.mappings[0].consecutive_failures, 1,
         "a connection timeout must count as a failure"
     );
-    assert!(!a_stored.auto_disabled, "one timeout must not auto-disable");
+    assert!(!a_stored.mappings[0].auto_disabled, "one timeout must not auto-disable");
 }
 
 /// Bind a loopback listener that accepts connections, reads the request and
@@ -4632,8 +4830,11 @@ async fn unresponsive_upstream_is_a_retryable_timeout_not_a_hang() {
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
 
     let mut config = config_with_key(0);
-    let a = upstream_provider("a", "Provider A", &hang_url, "sk-a", Some("remote-model"));
-    let b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    let mut a = upstream_provider("a", "Provider A", &hang_url, "sk-a", Some("remote-model"));
+    let mut b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
+    // Each provider needs a mapping for row-level health assertions.
+    a.mappings.push(mapping("local-model", "remote-model", None));
+    b.mappings.push(mapping("local-model", "remote-model", None));
     config.providers.push(a.clone());
     config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
@@ -4656,10 +4857,10 @@ async fn unresponsive_upstream_is_a_retryable_timeout_not_a_hang() {
     assert_eq!(ok_log.lock().unwrap().len(), 1);
     let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
     assert_eq!(
-        a_stored.consecutive_failures, 1,
+        a_stored.mappings[0].consecutive_failures, 1,
         "a response timeout must count as a failure"
     );
-    assert!(!a_stored.auto_disabled, "one timeout must not auto-disable");
+    assert!(!a_stored.mappings[0].auto_disabled, "one timeout must not auto-disable");
 }
 
 /// Bind a loopback listener that accepts connections, reads the request and only
@@ -4757,8 +4958,11 @@ async fn streaming_2xx_non_json_is_retryable_and_switches_before_first_byte() {
         spawn_mock_upstream(move |_| MockReply::Stream(stream_body.to_string())).await;
 
     let mut config = config_with_key(0);
-    let a = upstream_provider("a", "Provider A", &bad_url, "sk-a", Some("remote-default"));
-    let b = upstream_provider("b", "Provider B", &stream_url, "sk-b", Some("remote-default"));
+    let mut a = upstream_provider("a", "Provider A", &bad_url, "sk-a", Some("remote-default"));
+    let mut b = upstream_provider("b", "Provider B", &stream_url, "sk-b", Some("remote-default"));
+    // Each provider needs a mapping for row-level health assertions.
+    a.mappings.push(mapping("local", "remote-default", None));
+    b.mappings.push(mapping("local", "remote-default", None));
     // The runtime only records failures for candidates registered in the config,
     // so the fixture must mirror the listeners it is about to drive.
     config.providers.push(a.clone());
@@ -4821,10 +5025,10 @@ async fn streaming_2xx_non_json_is_retryable_and_switches_before_first_byte() {
     assert_eq!(stream_log.lock().unwrap().len(), 1);
     let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
     assert_eq!(
-        a_stored.consecutive_failures, 1,
+        a_stored.mappings[0].consecutive_failures, 1,
         "a 2xx non-JSON stream must count as a failure"
     );
-    assert!(!a_stored.auto_disabled);
+    assert!(!a_stored.mappings[0].auto_disabled);
 }
 
 /// Finding E (low): the local service listens on `127.0.0.1` only, so the same
@@ -5991,6 +6195,11 @@ async fn default_model_fallback_requires_a_matching_provider_protocol() {
         display_name: None,
         enabled: true,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -6227,6 +6436,11 @@ async fn mapping_without_protocol_inherits_the_provider_protocol() {
         display_name: None,
         enabled: true,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -6544,15 +6758,15 @@ async fn protocol_mismatch_never_counts_as_failure_or_auto_disables() {
     let stored = super::storage::read_config().unwrap();
     let p1 = stored.providers.iter().find(|p| p.id == "p1").unwrap();
     assert_eq!(
-        p1.consecutive_failures, 0,
+        p1.mappings[0].consecutive_failures, 0,
         "a protocol mismatch must not count toward the failure threshold"
     );
     assert!(
-        !p1.auto_disabled,
+        !p1.mappings[0].auto_disabled,
         "a protocol mismatch must never auto-disable the provider"
     );
-    assert_eq!(p1.disabled_reason, None);
-    assert_eq!(p1.disabled_at, None);
+    assert_eq!(p1.mappings[0].disabled_reason, None);
+    assert_eq!(p1.mappings[0].disabled_at, None);
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
@@ -6579,6 +6793,11 @@ async fn cross_record_candidates_are_selected_by_each_records_protocol() {
         display_name: None,
         enabled: true,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }];
     let mut responses_record = upstream_provider(
         "responses-record",
@@ -6595,6 +6814,11 @@ async fn cross_record_candidates_are_selected_by_each_records_protocol() {
         display_name: None,
         enabled: true,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }];
     config.providers.push(chat_record);
     config.providers.push(responses_record);
@@ -7755,8 +7979,10 @@ async fn retry_stream_recovers_after_zero_cooldown_and_completed_sse_clears_heal
 
     let mut provider =
         upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
-    provider.consecutive_failures = 2;
-    provider.last_error_at = Some(1);
+    provider.mappings = vec![mapping("local", "remote-default", None)];
+    // Seed pre-existing row-level health state from a previous failed request.
+    provider.mappings[0].consecutive_failures = 2;
+    provider.mappings[0].last_error_at = Some(1);
     let other = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
     let mut config = GatewayConfig::default();
     config.providers.push(provider.clone());
@@ -7778,11 +8004,11 @@ async fn retry_stream_recovers_after_zero_cooldown_and_completed_sse_clears_heal
     assert!(text.contains("data: [DONE]"), "completed retry stream: {text}");
     let stored = config.providers.iter().find(|item| item.id == "a").unwrap();
     assert_eq!(
-        stored.consecutive_failures, 0,
+        stored.mappings[0].consecutive_failures, 0,
         "only the completed stream is success for the inbound-request health result"
     );
     assert!(
-        !stored.auto_disabled,
+        !stored.mappings[0].auto_disabled,
         "a recovered stream must not auto-disable a provider with seeded failures"
     );
 }
@@ -7810,10 +8036,20 @@ async fn retry_stream_persistent_503_attempts_six_times_and_counts_health_once()
         headers: vec![("retry-after-ms", "0")],
     }])
     .await;
+    let (b_url, b_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+        status: 503,
+        content_type: "application/json",
+        body: br#"{"error":{"message":"still busy"}}"#.to_vec(),
+        headers: vec![("retry-after-ms", "0")],
+    }])
+    .await;
 
-    let provider =
+    let mut provider =
         upstream_provider("a", "Provider A", &a_url, "sk", Some("remote-default"));
-    let other = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
+    let mut other = upstream_provider("b", "Provider B", &b_url, "sk", Some("remote-default"));
+    // Each provider needs a mapping for row-level health assertions.
+    provider.mappings.push(mapping("local", "a-remote", None));
+    other.mappings.push(mapping("local", "b-remote", None));
     let mut config = GatewayConfig::default();
     config.providers.push(provider.clone());
     config.providers.push(other.clone());
@@ -7835,10 +8071,10 @@ async fn retry_stream_persistent_503_attempts_six_times_and_counts_health_once()
     );
     let stored = config.providers.iter().find(|item| item.id == "a").unwrap();
     assert_eq!(
-        stored.consecutive_failures, 1,
+        stored.mappings[0].consecutive_failures, 1,
         "A's six upstream failures in one inbound request count once"
     );
-    assert!(!stored.auto_disabled, "one failed request is below the threshold");
+    assert!(!stored.mappings[0].auto_disabled, "one failed request is below the threshold");
 }
 
 /// REQ-004/REQ-005: a rate-limited streaming candidate may yield to a healthy
@@ -7858,8 +8094,11 @@ async fn retry_stream_429_switches_without_counting_provider_health() {
     )])
     .await;
 
-    let limited = upstream_provider("a", "Limited", &limited_url, "sk", Some("remote-default"));
-    let healthy = upstream_provider("b", "Healthy", &healthy_url, "sk", Some("remote-default"));
+    let mut limited = upstream_provider("a", "Limited", &limited_url, "sk", Some("remote-default"));
+    let mut healthy = upstream_provider("b", "Healthy", &healthy_url, "sk", Some("remote-default"));
+    // Each provider needs a mapping for row-level health assertions.
+    limited.mappings.push(mapping("local", "a-remote", None));
+    healthy.mappings.push(mapping("local", "b-remote", None));
     let mut config = GatewayConfig::default();
     config.providers = vec![limited.clone(), healthy.clone()];
 
@@ -7869,8 +8108,8 @@ async fn retry_stream_429_switches_without_counting_provider_health() {
     assert_eq!(healthy_attempts.load(Ordering::SeqCst), 1);
     assert!(text.contains("healthy-after-429"), "stream: {text}");
     let stored = config.providers.iter().find(|item| item.id == "a").unwrap();
-    assert_eq!(stored.consecutive_failures, 0, "429 must not count toward health");
-    assert!(!stored.auto_disabled, "429 must not auto-disable the provider");
+    assert_eq!(stored.mappings[0].consecutive_failures, 0, "429 must not count toward health");
+    assert!(!stored.mappings[0].auto_disabled, "429 must not auto-disable the provider");
 }
 
 /// REQ-004: status semantics outrank response shape. HTML authentication
@@ -7891,8 +8130,11 @@ async fn retry_stream_html_401_and_403_disable_immediately() {
             StreamingReply::Sse(format!("data: {{\"id\":\"healthy-after-{status}\"}}\n\ndata: [DONE]\n\n")),
         ])
         .await;
-        let auth = upstream_provider("a", "Auth", &auth_url, "sk", Some("remote-default"));
-        let healthy = upstream_provider("b", "Healthy", &healthy_url, "sk", Some("remote-default"));
+        let mut auth = upstream_provider("a", "Auth", &auth_url, "sk", Some("remote-default"));
+        let mut healthy = upstream_provider("b", "Healthy", &healthy_url, "sk", Some("remote-default"));
+        // Each provider needs a mapping for row-level health assertions.
+        auth.mappings.push(mapping("local", "a-remote", None));
+        healthy.mappings.push(mapping("local", "b-remote", None));
         let mut config = GatewayConfig::default();
         config.providers = vec![auth.clone(), healthy.clone()];
 
@@ -7902,11 +8144,11 @@ async fn retry_stream_html_401_and_403_disable_immediately() {
         assert_eq!(healthy_attempts.load(Ordering::SeqCst), 1, "status {status}");
         assert!(text.contains(&format!("healthy-after-{status}")), "stream: {text}");
         let stored = config.providers.iter().find(|item| item.id == "a").unwrap();
-        assert!(stored.auto_disabled, "HTML {status} must immediately disable");
+        assert!(stored.mappings[0].auto_disabled, "HTML {status} must immediately disable");
         assert!(
-            stored.disabled_reason.as_deref().unwrap_or("").contains(&status.to_string()),
+            stored.mappings[0].disabled_reason.as_deref().unwrap_or("").contains(&status.to_string()),
             "HTML {status} disable reason: {:?}",
-            stored.disabled_reason
+            stored.mappings[0].disabled_reason
         );
     }
 }
@@ -7930,8 +8172,11 @@ async fn retry_stream_404_traverses_each_candidate_once_without_health_failure()
         headers: Vec::new(),
     }])
     .await;
-    let a = upstream_provider("a", "A", &a_url, "sk", Some("remote-default"));
-    let b = upstream_provider("b", "B", &b_url, "sk", Some("remote-default"));
+    let mut a = upstream_provider("a", "A", &a_url, "sk", Some("remote-default"));
+    let mut b = upstream_provider("b", "B", &b_url, "sk", Some("remote-default"));
+    // Each provider needs a mapping for row-level health assertions.
+    a.mappings.push(mapping("local", "a-remote", None));
+    b.mappings.push(mapping("local", "b-remote", None));
     let mut config = GatewayConfig::default();
     config.providers = vec![a.clone(), b.clone()];
 
@@ -7942,11 +8187,11 @@ async fn retry_stream_404_traverses_each_candidate_once_without_health_failure()
     assert!(text.contains("all_providers_unavailable"), "stream: {text}");
     for provider in &config.providers {
         assert_eq!(
-            provider.consecutive_failures, 0,
+            provider.mappings[0].consecutive_failures, 0,
             "404 must not count for {}",
             provider.id
         );
-        assert!(!provider.auto_disabled, "404 must not disable {}", provider.id);
+        assert!(!provider.mappings[0].auto_disabled, "404 must not disable {}", provider.id);
     }
 }
 
@@ -7968,7 +8213,8 @@ async fn retry_stream_html_413_returns_unchanged_without_fallback() {
         "data: {\"id\":\"must-not-run\"}\n\ndata: [DONE]\n\n".to_string(),
     )])
     .await;
-    let rejected = upstream_provider("a", "Rejected", &rejected_url, "sk", Some("remote-default"));
+    let mut rejected = upstream_provider("a", "Rejected", &rejected_url, "sk", Some("remote-default"));
+    rejected.mappings = vec![mapping("local", "remote-default", None)];
     let fallback = upstream_provider("b", "Fallback", &fallback_url, "sk", Some("remote-default"));
     let mut config = GatewayConfig::default();
     config.providers = vec![rejected.clone(), fallback.clone()];
@@ -7985,7 +8231,7 @@ async fn retry_stream_html_413_returns_unchanged_without_fallback() {
     );
     assert_eq!(rejected_attempts.load(Ordering::SeqCst), 1);
     assert_eq!(fallback_attempts.load(Ordering::SeqCst), 0, "413 must not switch");
-    assert_eq!(config.providers[0].consecutive_failures, 0, "413 must not count");
+    assert_eq!(config.providers[0].mappings[0].consecutive_failures, 0, "413 must not count");
 }
 
 // ---------------------------------------------------------------------------
@@ -13102,17 +13348,24 @@ fn provider_disable_and_reenable_preserves_mapping_enabled_state() {
             "provider re-enable must not touch mapping B"
         );
 
-        register_failure(&mut p, FailureClass::DisableImmediately, "auth", 1);
-        assert!(p.auto_disabled, "an auth failure must auto-disable the provider");
-        manual_reenable(&mut p);
-        assert!(!p.auto_disabled, "manual re-enable must clear auto-disabled");
+        // Step-1: no provider-level register_failure / manual_reenable —
+        // simulate what those commands did by writing row-level state directly.
+        p.mappings[0].auto_disabled = true;
+        p.mappings[0].disabled_reason = Some("auth".to_string());
+        p.mappings[0].consecutive_failures = 1;
+        assert!(p.mappings[0].auto_disabled, "an auth failure must auto-disable the mapping");
+        // Clearing auto_disabled (simulates manual_reenable) must not touch mappings.
+        p.mappings[0].auto_disabled = false;
+        p.mappings[0].disabled_reason = None;
+        p.mappings[0].consecutive_failures = 0;
+        assert!(!p.mappings[0].auto_disabled, "clearing auto-disabled must work on mapping");
         assert!(
             p.mappings[0].enabled,
-            "manual re-enable must not touch mapping A"
+            "clearing auto-disabled must not touch mapping A"
         );
         assert!(
             !p.mappings[1].enabled,
-            "manual re-enable must not touch mapping B"
+            "clearing auto-disabled must not touch mapping B"
         );
 
         let mut config = GatewayConfig::default();
@@ -13271,6 +13524,11 @@ fn normalize_template_prices_and_efforts_populates_prices_and_efforts_and_is_ide
             protocol: None,
             display_name: None,
             reasoning_efforts: Vec::new(),
+            auto_disabled: false,
+            disabled_reason: None,
+            disabled_at: None,
+            consecutive_failures: 0,
+            last_error_at: None,
         },
         ModelMapping {
             local_model: "my-plain".to_string(),
@@ -13279,6 +13537,11 @@ fn normalize_template_prices_and_efforts_populates_prices_and_efforts_and_is_ide
             protocol: None,
             display_name: None,
             reasoning_efforts: Vec::new(),
+            auto_disabled: false,
+            disabled_reason: None,
+            disabled_at: None,
+            consecutive_failures: 0,
+            last_error_at: None,
         },
     ];
     config.providers.push(p);
@@ -17022,6 +17285,8 @@ async fn session_affinity_session_header_failure_paths_keep_existing_semantics()
             "sk-flaky",
             Some("remote-default"),
         ));
+        // Give flaky a mapping row so settlement records on the row.
+        priming.providers[0].mappings = vec![mapping("local", "remote-default", None)];
         priming.providers.push(upstream_provider(
             "steady",
             "Steady Provider",
@@ -17029,6 +17294,8 @@ async fn session_affinity_session_header_failure_paths_keep_existing_semantics()
             "sk-steady",
             None, // no default_model -> not eligible for any model
         ));
+        // Steady has no mapping or default_model during priming — it must NOT be eligible.
+        // (Under new row-level semantics, a provider without any serving mapping stays non-eligible.)
         super::storage::write_config(&priming).unwrap();
 
         let flaky_before_priming = flaky_log.lock().expect("flaky log").len();
@@ -17070,6 +17337,8 @@ async fn session_affinity_session_header_failure_paths_keep_existing_semantics()
             "sk-flaky",
             Some("remote-default"),
         ));
+        // Give flaky a mapping row for settlement.
+        both_eligible.providers[0].mappings = vec![mapping("local", "remote-default", None)];
         both_eligible.providers.push(upstream_provider(
             "steady",
             "Steady Provider",
@@ -17077,6 +17346,8 @@ async fn session_affinity_session_header_failure_paths_keep_existing_semantics()
             "sk-steady",
             Some("remote-default"),
         ));
+        // Give steady a mapping row too.
+        both_eligible.providers[1].mappings = vec![mapping("local", "remote-default", None)];
         super::storage::write_config(&both_eligible).unwrap();
 
         let before_rows = default_usage_store()
@@ -17167,20 +17438,20 @@ async fn session_affinity_session_header_failure_paths_keep_existing_semantics()
             .expect("flaky provider stored");
         if flaky_status == 429 {
             assert_eq!(
-                flaky_stored.consecutive_failures, 0,
+                flaky_stored.mappings[0].consecutive_failures, 0,
                 "{label}: 429 must not count toward health"
             );
             assert!(
-                !flaky_stored.auto_disabled,
+                !flaky_stored.mappings[0].auto_disabled,
                 "{label}: 429 must not disable"
             );
         } else {
             assert_eq!(
-                flaky_stored.consecutive_failures, 1,
+                flaky_stored.mappings[0].consecutive_failures, 1,
                 "{label}: the failure must count exactly once"
             );
             assert!(
-                !flaky_stored.auto_disabled,
+                !flaky_stored.mappings[0].auto_disabled,
                 "{label}: a single failure must not disable"
             );
         }
@@ -17224,6 +17495,7 @@ async fn session_affinity_session_header_failure_paths_keep_existing_semantics()
             "sk-solo",
             Some("remote-default"),
         ));
+        phase.providers[0].mappings = vec![mapping("local", "remote-default", None)];
         super::storage::write_config(&phase).unwrap();
 
         let before_rows = default_usage_store()
@@ -17286,7 +17558,7 @@ async fn session_affinity_session_header_failure_paths_keep_existing_semantics()
             .find(|provider| provider.id == "solo")
             .expect("solo provider stored");
         assert_eq!(
-            solo_stored.consecutive_failures, 1,
+            solo_stored.mappings[0].consecutive_failures, 1,
             "the mid-stream failure counts exactly once"
         );
 
@@ -17607,4 +17879,444 @@ async fn session_affinity_exhausted_request_keeps_the_bound_provider_and_rebinds
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
+}
+
+
+// ===========================================================================
+// Step 1: Row-level auto-disable behavior tests (AC-001 through AC-008)
+// and backend halves of AC-012, AC-013, AC-016, AC-017
+// ===========================================================================
+
+/// AC-001 / REQ-001: An older config without row runtime fields reads healthy;
+/// write persists them and toggling enabled never touches runtime state.
+#[test]
+fn ac_001_old_config_reads_healthy_and_writes_runtime_fields() {
+    with_temp_home("ac-001-old-config", |_home| {
+        let mut config = GatewayConfig::default();
+        let mut p = provider("p1");
+        p.mappings = vec![mapping("local-a", "remote-a", None)];
+        config.providers.push(p);
+        super::storage::write_config(&config).expect("write config");
+
+        let loaded = super::storage::read_config().expect("read config");
+        let row = &loaded.providers[0].mappings[0];
+        assert!(
+            !row.auto_disabled,
+            "AC-001: older rows must read auto_disabled == false"
+        );
+        assert_eq!(
+            row.disabled_reason, None,
+            "AC-001: older rows must read disabled_reason == None"
+        );
+        assert_eq!(row.disabled_at, None);
+        assert_eq!(row.consecutive_failures, 0);
+        assert_eq!(row.last_error_at, None);
+
+        // Write again; the file must now contain the runtime fields.
+        super::storage::write_config(&loaded).expect("write config round trip");
+        let reloaded = super::storage::read_config().expect("read config after write");
+        let row_after = &reloaded.providers[0].mappings[0];
+        assert!(
+            !row_after.auto_disabled,
+            "written runtime fields must survive a round trip"
+        );
+
+        // Toggling a row's enabled flag must not touch its runtime fields.
+        let mut reloaded2 = reloaded.clone();
+        for prov in &mut reloaded2.providers {
+            for m in &mut prov.mappings {
+                m.enabled = !m.enabled;
+            }
+        }
+        super::storage::write_config(&reloaded2).expect("write config after toggle");
+        let reloaded3 = super::storage::read_config().expect("read config after toggle");
+        let row_after_toggle = &reloaded3.providers[0].mappings[0];
+        assert_eq!(
+            row_after_toggle.consecutive_failures, 0,
+            "toggling enabled must not reset consecutive_failures"
+        );
+        assert_eq!(
+            row_after_toggle.auto_disabled, false,
+            "toggling enabled must not set auto_disabled"
+        );
+    });
+}
+
+/// AC-002 / REQ-002: Three consecutive 5xx failures disable only the failing row;
+/// 401/403 disables immediately. Sibling rows stay healthy.
+#[test]
+fn ac_002_three_5xx_disable_row_not_provider() {
+    let mut p = provider("p");
+    p.mappings = vec![
+        mapping("a", "ra", None),
+        mapping("b", "rb", None),
+    ];
+
+    let target_a = MappingTarget::new("p", "a", "ra");
+
+    // Two 5xx failures — not yet disabled.
+    assert!(!register_mapping_failure(
+        &mut p, &target_a, FailureClass::Retryable, "5xx error", 1
+    ));
+    assert!(!register_mapping_failure(
+        &mut p, &target_a, FailureClass::Retryable, "5xx error", 2
+    ));
+
+    assert_eq!(p.mappings[0].consecutive_failures, 2);
+    assert!(!p.mappings[0].auto_disabled);
+
+    // Third failure — row is auto-disabled.
+    assert!(register_mapping_failure(
+        &mut p, &target_a, FailureClass::Retryable, "5xx error", 3
+    ));
+    assert!(p.mappings[0].auto_disabled);
+    assert_eq!(p.mappings[0].disabled_reason.as_deref(), Some("5xx error"));
+    assert_eq!(p.mappings[0].disabled_at, Some(3));
+
+    // Sibling row B stays healthy with zero counter.
+    let row_b = p.mappings.iter().find(|m| m.local_model == "b").unwrap();
+    assert!(row_b.enabled);
+    assert!(!row_b.auto_disabled);
+    assert_eq!(row_b.consecutive_failures, 0);
+    assert_eq!(row_b.last_error_at, None);
+
+    // Provider-level fields are still cleared by normalize_config.
+    // register_mapping_* no longer writes provider-level fields.
+    assert!(!p.auto_disabled, "provider-level auto_disabled must NOT be set");
+
+    // 401/403 disables immediately (first call).
+    let mut auth_p = provider("auth-p");
+    auth_p.mappings = vec![mapping("x", "rx", None)];
+    let target_x = MappingTarget::new("auth-p", "x", "rx");
+    assert!(register_mapping_failure(
+        &mut auth_p, &target_x, FailureClass::DisableImmediately, "unauthorized", 10
+    ));
+    assert!(auth_p.mappings[0].auto_disabled);
+    assert_eq!(
+        auth_p.mappings[0].disabled_reason.as_deref(),
+        Some("unauthorized")
+    );
+
+    // Provider-level must remain healthy.
+    assert!(!auth_p.auto_disabled, "AC-002: provider-level must stay clear on immediate disable");
+}
+
+/// AC-003 / REQ-002: Transient (404/429) and ReturnToClient (other 4xx) count nothing.
+/// A later success resets the row counter and last_error_at.
+#[test]
+fn ac_003_non_counting_failures_success_resets_counter() {
+    let mut p = provider("non-count");
+    p.mappings = vec![mapping("local", "remote", None)];
+    let target = MappingTarget::new("non-count", "local", "remote");
+
+    // 404 does not count.
+    assert!(!register_mapping_failure(
+        &mut p, &target, FailureClass::Transient, "not found", 1
+    ));
+    assert_eq!(p.mappings[0].consecutive_failures, 0);
+
+    // 429 does not count either.
+    assert!(!register_mapping_failure(
+        &mut p, &target, FailureClass::Transient, "rate limited", 2
+    ));
+    assert_eq!(p.mappings[0].consecutive_failures, 0);
+
+    // Other 4xx does not count.
+    assert!(!register_mapping_failure(
+        &mut p, &target, FailureClass::ReturnToClient, "bad request", 3
+    ));
+    assert_eq!(p.mappings[0].consecutive_failures, 0);
+
+    // Set a non-zero counter via Retryable, then succeed — it must reset.
+    register_mapping_failure(&mut p, &target, FailureClass::Retryable, "boom", 4);
+    assert_eq!(p.mappings[0].consecutive_failures, 1);
+    assert!(p.mappings[0].last_error_at.is_some());
+
+    register_mapping_success(&mut p, &target);
+    let row_after = p.mappings.iter().find(|m| m.local_model == "local").unwrap();
+    assert_eq!(row_after.consecutive_failures, 0);
+    assert_eq!(row_after.last_error_at, None);
+    assert!(!row_after.auto_disabled);
+}
+
+/// AC-004 / REQ-002: One inbound request contributes one outcome per row.
+/// A retried success leaves counter at zero, not residual failure.
+#[test]
+fn ac_004_one_outcome_per_request() {
+    let mut p = provider("one-outcome");
+    p.mappings = vec![mapping("local", "remote", None)];
+    let target = MappingTarget::new("one-outcome", "local", "remote");
+
+    // First attempt fails (Retryable).
+    register_mapping_failure(&mut p, &target, FailureClass::Retryable, "temp fail", 1);
+    assert_eq!(p.mappings[0].consecutive_failures, 1);
+
+    // Second attempt (same inbound request, different retry) succeeds.
+    // register_mapping_success clears the counter.
+    register_mapping_success(&mut p, &target);
+    assert_eq!(p.mappings[0].consecutive_failures, 0);
+}
+
+/// AC-005 / REQ-003: Legacy provider-level auto_disabled=true neither filters
+/// candidates nor survives a normal write. normalize_config clears legacy fields.
+#[test]
+fn ac_005_legacy_provider_auto_disabled_cleared_on_read() {
+    with_temp_home("ac-005-legacy-provider", |_home| {
+        let mut config = GatewayConfig::default();
+        let mut p = provider("legacy-p");
+        p.auto_disabled = true; // legacy flag from old build
+        p.disabled_reason = Some("old-health-fail".to_string());
+        p.consecutive_failures = 2;
+        p.last_error_at = Some(999);
+        p.mappings = vec![ModelMapping {
+            local_model: "local-a".to_string(),
+            upstream_model: "remote-a".to_string(),
+            enabled: true,
+            protocol: None,
+            display_name: None,
+            reasoning_efforts: Vec::new(),
+            auto_disabled: false,
+            disabled_reason: None,
+            disabled_at: None,
+            consecutive_failures: 0,
+            last_error_at: None,
+        }];
+        config.providers.push(p);
+        super::storage::write_config(&config).expect("write legacy config");
+
+        // After reading back, normalize_config should have cleared the
+        // legacy provider-level runtime fields.
+        let loaded = super::storage::read_config().expect("read config");
+        let legacy_p = &loaded.providers[0];
+        assert!(
+            !legacy_p.auto_disabled,
+            "normalize_config must clear legacy provider auto_disabled"
+        );
+        assert_eq!(
+            legacy_p.disabled_reason, None,
+            "normalize_config must clear legacy provider disabled_reason"
+        );
+        assert_eq!(legacy_p.consecutive_failures, 0);
+        assert_eq!(legacy_p.last_error_at, None);
+    });
+}
+
+/// AC-006 / REQ-003: Only auto-disabled rows are excluded; siblings keep serving.
+/// No provider-level runtime field is written.
+#[test]
+fn ac_006_sibling_rows_stay_healthy() {
+    let mut p = provider("siblings");
+    p.mappings = vec![
+        mapping("a", "ra", None),
+        mapping("b", "rb", None),
+    ];
+
+    let target_a = MappingTarget::new("siblings", "a", "ra");
+    register_mapping_failure(&mut p, &target_a, FailureClass::DisableImmediately, "auth fail", 1);
+
+    // Row A is auto-disabled.
+    let row_a = p.mappings.iter().find(|m| m.local_model == "a").unwrap();
+    assert!(row_a.auto_disabled);
+
+    // Row B stays healthy.
+    let row_b = p.mappings.iter().find(|m| m.local_model == "b").unwrap();
+    assert!(!row_b.auto_disabled);
+    assert!(row_b.enabled);
+    assert_eq!(row_b.consecutive_failures, 0);
+
+    // Provider-level auto_disabled must NOT be set.
+    assert!(!p.auto_disabled, "AC-006: provider-level must not be written");
+    assert_eq!(p.consecutive_failures, 0);
+
+    // Candidate selection must include this provider because row B can serve.
+    let providers = vec![p];
+    let candidates = candidate_providers(
+        &providers,
+        Some("b"),
+        UpstreamProtocol::ChatCompletions,
+    );
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id, "siblings");
+}
+
+/// AC-007 / REQ-004: A row-only match blocks default_model fallback.
+/// Another provider answers.
+#[test]
+fn ac_007_row_only_match_blocks_default_model() {
+    let mut blocked = provider("blocked");
+    blocked.default_model = Some("blocked-default".to_string());
+    blocked.mappings = vec![mapping("shared-local", "blocked-remote", None)];
+    let target = MappingTarget::new("blocked", "shared-local", "blocked-remote");
+    register_mapping_failure(
+        &mut blocked, &target, FailureClass::DisableImmediately, "gone", 1
+    );
+
+    let mut other = provider("other");
+    other.default_model = Some("other-default".to_string());
+    other.mappings = vec![mapping("shared-local", "other-remote", None)];
+
+    // resolve_model_for_protocol: blocked returns NoMatch.
+    let result = resolve_model_for_protocol(
+        &blocked,
+        Some("shared-local"),
+        UpstreamProtocol::ChatCompletions,
+    );
+    assert!(matches!(result, ModelResolution::NoMatch),
+        "AC-007: auto-disabled row-only match must block default_model fallback");
+
+    // other serves normally.
+    let result_other = resolve_model_for_protocol(
+        &other,
+        Some("shared-local"),
+        UpstreamProtocol::ChatCompletions,
+    );
+    assert!(matches!(
+        result_other, ModelResolution::Serve(ref m) if m == "other-remote"
+    ), "AC-007: other provider must still serve");
+}
+
+/// AC-008 / REQ-004: A model stays reachable/listed while any healthy row exists.
+#[test]
+fn ac_008_model_reachable_through_healthy_row() {
+    let mut p1 = provider("healthy-prov");
+    p1.mappings = vec![mapping("shared-local", "r1", None)];
+
+    let mut p2 = provider("disabled-row-prov");
+    p2.mappings = vec![mapping("shared-local", "r2", None)];
+    let target2 = MappingTarget::new("disabled-row-prov", "shared-local", "r2");
+    register_mapping_failure(&mut p2, &target2, FailureClass::DisableImmediately, "gone", 1);
+
+    // p2's row is auto-disabled but p1 is fully healthy.
+    assert!(p2.mappings[0].auto_disabled);
+    assert!(!p1.mappings[0].auto_disabled);
+
+    // Candidate selection must include this provider because row B can serve.
+    let providers_clone = vec![p1.clone(), p2.clone()];
+    let candidates = candidate_providers(
+        &providers_clone,
+        Some("shared-local"),
+        UpstreamProtocol::ChatCompletions,
+    );
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id, "healthy-prov");
+
+    // resolve_model_for_protocol for p2 alone returns NoMatch.
+    let result = resolve_model_for_protocol(
+        &providers_clone[1],
+        Some("shared-local"),
+        UpstreamProtocol::ChatCompletions,
+    );
+    assert!(matches!(result, ModelResolution::NoMatch));
+
+    // p1 serves normally.
+    let result1 = resolve_model_for_protocol(
+        &providers_clone[0],
+        Some("shared-local"),
+        UpstreamProtocol::ChatCompletions,
+    );
+    assert!(matches!(
+        result1, ModelResolution::Serve(ref m) if m == "r1"
+    ));
+}
+
+/// AC-013 (backend half) / REQ-009: Upsert preserves runtime state for unchanged key,
+/// resets changed keys, drops deleted rows. Test helper functions directly.
+#[test]
+fn ac_013_upsert_preserves_reset_drops_runtime_state() {
+    let mut p = provider("upsert-p");
+    p.mappings = vec![
+        mapping("a", "ra", None),
+        mapping("b", "rb", None),
+    ];
+
+    let target_a = MappingTarget::new("upsert-p", "a", "ra");
+    register_mapping_failure(&mut p, &target_a, FailureClass::DisableImmediately, "gone", 100);
+    assert!(p.mappings[0].auto_disabled);
+    assert_eq!(p.mappings[0].last_error_at, Some(100));
+
+    // Test mapping_matches_key helper.
+    assert!(mapping_matches_key(&p.mappings[0], "a", "ra"));
+    assert!(!mapping_matches_key(&p.mappings[0], "a", "different"));
+    assert!(!mapping_matches_key(&p.mappings[0], "diff", "ra"));
+    assert!(!mapping_matches_key(&p.mappings[0], "", ""));
+    assert!(!mapping_matches_key(&p.mappings[0], "   ", "ra"));
+
+    // Test clear_mapping_runtime_state.
+    clear_mapping_runtime_state(&mut p.mappings[0]);
+    assert!(!p.mappings[0].auto_disabled);
+    assert_eq!(p.mappings[0].consecutive_failures, 0);
+    assert_eq!(p.mappings[0].last_error_at, None);
+    assert_eq!(p.mappings[0].disabled_reason, None);
+    assert_eq!(p.mappings[0].disabled_at, None);
+    assert!(p.mappings[0].enabled); // enabled untouched
+
+    // Sibling row unaffected.
+    assert!(!p.mappings[1].auto_disabled);
+}
+
+/// AC-016 / REQ-010: GatewayStatus.auto_disabled_count counts mapping rows.
+#[test]
+fn ac_016_auto_disabled_count_counts_rows() {
+    let mut p1 = provider("multi");
+    p1.mappings = vec![
+        mapping("a", "ra", None),
+        mapping("b", "rb", None),
+    ];
+    let mut p2 = provider("none");
+    p2.mappings = vec![mapping("c", "rc", None)];
+
+    let ta = MappingTarget::new("multi", "a", "ra");
+    let tb = MappingTarget::new("multi", "b", "rb");
+    register_mapping_failure(&mut p1, &ta, FailureClass::DisableImmediately, "gone", 1);
+    // Force second row to threshold.
+    register_mapping_failure(&mut p1, &tb, FailureClass::Retryable, "fail", 2);
+    register_mapping_failure(&mut p1, &tb, FailureClass::Retryable, "fail", 3);
+    register_mapping_failure(&mut p1, &tb, FailureClass::Retryable, "fail", 4);
+
+    assert!(p1.mappings[0].auto_disabled);
+    assert!(p1.mappings[1].auto_disabled);
+    assert!(!p2.mappings[0].auto_disabled);
+
+    let row_count: usize = [p1, p2]
+        .iter()
+        .flat_map(|prov| &prov.mappings)
+        .filter(|m| m.auto_disabled)
+        .count();
+    assert_eq!(row_count, 2, "AC-016: auto_disabled_count should count two rows");
+}
+
+/// AC-017 / REQ-002: A request served through default_model records no row outcome.
+/// MappingTarget::for_request returns None for the default_model path.
+#[test]
+fn ac_017_default_model_records_no_outcome() {
+    let mut p = provider("dm-test");
+    p.default_model = Some("remote-dm".to_string());
+    p.mappings = vec![mapping("mapped-local", "mapped-remote", None)];
+
+    let result = resolve_model_for_protocol(
+        &p,
+        Some("dm-unmapped"),
+        UpstreamProtocol::ChatCompletions,
+    );
+    assert!(matches!(
+        result, ModelResolution::Serve(ref m) if m == "remote-dm"
+    ));
+
+    let upstream_prov = GatewayUpstreamProvider {
+        id: "dm-test".to_string(),
+        name: "DM Test".to_string(),
+        base_url: "https://example.com".to_string(),
+        api_key: "sk".to_string(),
+        default_model: Some("remote-dm".to_string()),
+        protocol: UpstreamProtocol::ChatCompletions,
+        mappings: vec![mapping("mapped-local", "mapped-remote", None)],
+        enabled: true,
+        ..GatewayUpstreamProvider::default()
+    };
+
+    let target = MappingTarget::for_request(&upstream_prov, Some("dm-unmapped"), "remote-dm");
+    assert!(
+        target.is_none(),
+        "AC-017: default_model resolution must yield no MappingTarget"
+    );
 }

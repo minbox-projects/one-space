@@ -113,6 +113,11 @@ fn mapping_for(model: &ProviderTemplateModel, template: &ProviderTemplate) -> Mo
         },
         display_name: model.display_name.clone(),
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }
 }
 
@@ -124,6 +129,11 @@ fn model_mapping(upstream_model: &str) -> ModelMapping {
         protocol: None,
         display_name: None,
         reasoning_efforts: Vec::new(),
+        auto_disabled: false,
+        disabled_reason: None,
+        disabled_at: None,
+        consecutive_failures: 0,
+        last_error_at: None,
     }
 }
 

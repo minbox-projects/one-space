@@ -88,6 +88,14 @@ pub(in crate::api_gateway) fn normalize_config(config: &mut GatewayConfig) {
         provider.mappings.retain(|mapping| {
             !mapping.local_model.trim().is_empty() && !mapping.upstream_model.trim().is_empty()
         });
+        // Provider-level runtime health is legacy: automatic disabling is per
+        // mapping row now, so drop any stale provider state in memory without a
+        // dedicated write. It disappears from disk on the next normal write.
+        provider.auto_disabled = false;
+        provider.disabled_reason = None;
+        provider.disabled_at = None;
+        provider.consecutive_failures = 0;
+        provider.last_error_at = None;
     }
     config.default_key_id = resolve_default_key_id(&config.keys, config.default_key_id.as_deref());
     normalize_model_prices(config);
