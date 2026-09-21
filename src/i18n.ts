@@ -569,6 +569,11 @@ const resources = {
       apiGatewayMappingCount: "{{count}} mappings configured",
       apiGatewayNoMappingsShort: "No mappings (default routing)",
       apiGatewayDeleteProviderAria: "Delete provider {{name}}",
+      "apiGateway.provider.weight": "Weight",
+      "apiGateway.provider.weightHint":
+        "Routing weight: higher weight receives higher forwarding frequency (1-100).",
+      "apiGateway.provider.weightInvalid":
+        "Weight must be an integer between 1 and 100.",
       apiGatewayProviderTemplates: "Provider Templates",
       apiGatewayProviderTemplatesDesc:
         "Provider templates carry an optional model-list URL. Sync to refresh the model list, then add one as an upstream provider; prices stay on mapping rows.",
@@ -4252,6 +4257,11 @@ const resources = {
       apiGatewayMappingCount: "已配置 {{count}} 个映射",
       apiGatewayNoMappingsShort: "未配置映射（默认路由）",
       apiGatewayDeleteProviderAria: "删除服务商 {{name}}",
+      "apiGateway.provider.weight": "权重",
+      "apiGateway.provider.weightHint":
+        "路由权重：权重越大被转发的频次越高（1-100）。",
+      "apiGateway.provider.weightInvalid":
+        "权重必须是 1 到 100 之间的整数。",
       apiGatewayProviderTemplates: "服务商模板",
       apiGatewayProviderTemplatesDesc:
         "服务商模板携带可选模型清单 URL，可手动同步刷新模型列表后添加为上游服务商；价格仅在映射行维护。",

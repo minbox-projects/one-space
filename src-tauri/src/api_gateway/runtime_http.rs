@@ -2,7 +2,7 @@ use super::forwarding::{forward_non_streaming, open_streaming_response};
 use super::selection::{
     candidate_providers, classify_failure, default_retry_delay, is_retryable_failure,
     register_mapping_failure, register_mapping_success, resolve_model_for_protocol,
-    resolve_session_id, retry_header_delay, session_affinity, shuffled_candidates, FailureClass,
+    resolve_session_id, retry_header_delay, session_affinity, weighted_candidates, FailureClass,
     MappingTarget, ModelResolution, SessionOrder, MAX_RETRIES_PER_PROVIDER,
 };
 use super::storage::{local_base_url, read_config, write_config};
@@ -1604,7 +1604,7 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .resolve_order(session_id.as_deref(), requested.as_deref(), || {
-            shuffled_candidates(&candidates)
+            weighted_candidates(&candidates)
         });
     // The reorder is a no-op when the bound provider is not one of this
     // request's eligible candidates, which forces the binding to be replaced.

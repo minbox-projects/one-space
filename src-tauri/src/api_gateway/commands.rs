@@ -19,7 +19,8 @@ use super::usage_log::{
 };
 use super::{
     now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, ModelPrice,
-    ProviderTemplate, TerminalSyncRecord, UpstreamProtocol, UsageResult,
+    ProviderTemplate, TerminalSyncRecord, UpstreamProtocol, UsageResult, MAX_PROVIDER_WEIGHT,
+    MIN_PROVIDER_WEIGHT,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -276,6 +277,13 @@ pub async fn api_gateway_save_config(config: GatewayConfig) -> Result<GatewayCon
             }
         }
     }
+    for provider in &next.providers {
+        if provider.weight < MIN_PROVIDER_WEIGHT || provider.weight > MAX_PROVIDER_WEIGHT {
+            return Err(format!(
+                "provider weight must be between {MIN_PROVIDER_WEIGHT} and {MAX_PROVIDER_WEIGHT}"
+            ));
+        }
+    }
     write_config(&next)?;
     if next.enabled {
         api_gateway_start().await?;
@@ -290,6 +298,11 @@ pub fn api_gateway_upsert_provider(
     mut provider: GatewayUpstreamProvider,
     prices: Option<Vec<ModelPrice>>,
 ) -> Result<GatewayConfig, String> {
+    if provider.weight < MIN_PROVIDER_WEIGHT || provider.weight > MAX_PROVIDER_WEIGHT {
+        return Err(format!(
+            "provider weight must be between {MIN_PROVIDER_WEIGHT} and {MAX_PROVIDER_WEIGHT}"
+        ));
+    }
     let mut config = read_config()?;
     if provider.id.trim().is_empty() {
         provider.id = new_provider_id();

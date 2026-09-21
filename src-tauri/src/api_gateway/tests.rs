@@ -84,6 +84,7 @@ fn provider(id: &str) -> GatewayUpstreamProvider {
         default_model: None,
         protocol: UpstreamProtocol::ChatCompletions,
         mappings: Vec::new(),
+        weight: 1,
         enabled: true,
         auto_disabled: false,
         disabled_reason: None,
@@ -779,6 +780,7 @@ fn upstream_provider(
         default_model: default_model.map(str::to_string),
         protocol: UpstreamProtocol::ChatCompletions,
         mappings: Vec::new(),
+        weight: 1,
         enabled: true,
         auto_disabled: false,
         disabled_reason: None,
@@ -18780,6 +18782,7 @@ fn api_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
                 consecutive_failures: 3,
                 last_error_at: Some(99999),
             }],
+            weight: 1,
             enabled: true,
             auto_disabled: false,
             disabled_reason: None,
@@ -18815,6 +18818,7 @@ fn api_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
                     consecutive_failures: 0, // sender says zero — must be overridden.
                     last_error_at: None,
                 }],
+                weight: 1,
                 enabled: true,
                 auto_disabled: false,
                 disabled_reason: None,
@@ -18911,6 +18915,7 @@ fn api_gateway_upsert_clears_runtime_state_for_changed_key() {
                     last_error_at: Some(88888),
                 },
             ],
+            weight: 1,
             enabled: true,
             auto_disabled: false,
             disabled_reason: None,
@@ -18963,6 +18968,7 @@ fn api_gateway_upsert_clears_runtime_state_for_changed_key() {
                         last_error_at: None,
                     },
                 ],
+                weight: 1,
                 enabled: true,
                 auto_disabled: false,
                 disabled_reason: None,
@@ -19068,6 +19074,7 @@ fn ac_016_status_from_config_counts_rows_not_providers() {
                 last_error_at: Some(2),
             },
         ],
+        weight: 1,
         enabled: true,
         auto_disabled: false, // provider-level stays clear.
         disabled_reason: None,
@@ -19183,4 +19190,397 @@ async fn test_all_providers_unavailable_429_quota_hint() {
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
 }
+
+// ---------------------------------------------------------------------------
+// Task 1: Provider Weight Configuration (AC-001, AC-002)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn provider_weight_deserialization_default() {
+    // AC-001: Deserializing legacy JSON without "weight" field defaults to weight = 1
+    let legacy_json = json!({
+        "id": "p-legacy-weight",
+        "name": "Legacy Provider",
+        "base_url": "https://api.legacy.com/v1",
+        "api_key": "sk-legacy",
+        "enabled": true
+    });
+
+    let provider: GatewayUpstreamProvider = serde_json::from_value(legacy_json)
+        .expect("legacy provider JSON without weight field should deserialize successfully");
+
+    assert_eq!(provider.weight, 1, "AC-001: provider weight must default to 1");
+
+    let serialized = serde_json::to_value(&provider).expect("reserialization should succeed");
+    assert_eq!(
+        serialized.get("weight").and_then(Value::as_u64),
+        Some(1),
+        "AC-001: reserialized provider must explicitly include weight: 1"
+    );
+}
+
+#[test]
+fn provider_weight_validation_bounds() {
+    with_temp_home("provider-weight-bounds", |_home| {
+        let initial_config = GatewayConfig::default();
+        super::storage::write_config(&initial_config).expect("write initial config");
+
+        // 1. weight = 0 (below minimum 1) -> must fail and leave config unchanged
+        let mut p_invalid_zero = provider("p-weight-zero");
+        p_invalid_zero.weight = 0;
+        let err_zero = super::commands::api_gateway_upsert_provider(p_invalid_zero, None)
+            .expect_err("AC-002: saving provider with weight: 0 must return validation error");
+        assert!(
+            err_zero.to_lowercase().contains("weight")
+                && (err_zero.contains("1") && err_zero.contains("100")),
+            "AC-002: error message must be actionable and mention valid bounds [1, 100], got: {err_zero}"
+        );
+        let config_after_zero = super::storage::read_config().expect("read config");
+        assert!(
+            config_after_zero.providers.is_empty(),
+            "AC-002: configuration file must not be modified when weight is 0"
+        );
+
+        // 2. weight = 101 (above maximum 100) -> must fail and leave config unchanged
+        let mut p_invalid_overflow = provider("p-weight-101");
+        p_invalid_overflow.weight = 101;
+        let err_overflow = super::commands::api_gateway_upsert_provider(p_invalid_overflow, None)
+            .expect_err("AC-002: saving provider with weight: 101 must return validation error");
+        assert!(
+            err_overflow.to_lowercase().contains("weight")
+                && (err_overflow.contains("1") && err_overflow.contains("100")),
+            "AC-002: error message must be actionable and mention valid bounds [1, 100], got: {err_overflow}"
+        );
+        let config_after_overflow = super::storage::read_config().expect("read config");
+        assert!(
+            config_after_overflow.providers.is_empty(),
+            "AC-002: configuration file must not be modified when weight is 101"
+        );
+
+        // 3. Valid weights: 1 (min boundary), 50 (typical), 100 (max boundary) -> must succeed and persist
+        for (idx, &valid_weight) in [1, 50, 100].iter().enumerate() {
+            let pid = format!("p-valid-{idx}");
+            let mut p_valid = provider(&pid);
+            p_valid.weight = valid_weight;
+            let result = super::commands::api_gateway_upsert_provider(p_valid, None);
+            assert!(
+                result.is_ok(),
+                "AC-002: saving provider with valid weight {valid_weight} must succeed: {:?}",
+                result.err()
+            );
+
+            let loaded = super::storage::read_config().expect("read config");
+            let saved = loaded
+                .providers
+                .iter()
+                .find(|p| p.id == pid)
+                .expect("saved provider must exist in config");
+            assert_eq!(
+                saved.weight, valid_weight,
+                "AC-002: persisted provider weight must equal configured value"
+            );
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Task 2: Smooth Weighted Round Robin (SWRR) candidate scheduling (AC-003 .. AC-010)
+// ---------------------------------------------------------------------------
+
+/// AC-003: Provider A (weight 3) and Provider B (weight 1) selected across 4 requests
+/// yield sequence [A, A, B, A] without session affinity.
+#[test]
+fn swrr_distribution_ratio() {
+    super::selection::reset_weighted_scheduler_for_test();
+    let mut p_a = provider("p_a");
+    p_a.weight = 3;
+    let mut p_b = provider("p_b");
+    p_b.weight = 1;
+    let candidates = vec![p_a, p_b];
+
+    let mut first_picks = Vec::new();
+    for _ in 0..4 {
+        let selected = super::selection::weighted_candidates(&candidates);
+        assert_eq!(selected.len(), 2, "must return all candidates");
+        first_picks.push(selected[0].id.clone());
+    }
+
+    assert_eq!(
+        first_picks,
+        vec!["p_a", "p_a", "p_b", "p_a"],
+        "AC-003: 4 requests with weights 3:1 must yield sequence [A, A, B, A]"
+    );
+    assert_eq!(
+        first_picks.iter().filter(|id| *id == "p_a").count(),
+        3,
+        "AC-003: provider A must be selected 3 times"
+    );
+    assert_eq!(
+        first_picks.iter().filter(|id| *id == "p_b").count(),
+        1,
+        "AC-003: provider B must be selected 1 time"
+    );
+}
+
+/// AC-004: Provider A (weight 2) and Provider B (weight 1). When primary A fails,
+/// fallback sequence proceeds to provider B.
+#[test]
+fn swrr_fallback_order() {
+    super::selection::reset_weighted_scheduler_for_test();
+    let mut p_a = provider("p_a");
+    p_a.weight = 2;
+    let mut p_b = provider("p_b");
+    p_b.weight = 1;
+    let candidates = vec![p_a, p_b];
+
+    let ordered = super::selection::weighted_candidates(&candidates);
+    assert_eq!(ordered.len(), 2);
+    assert_eq!(ordered[0].id, "p_a", "AC-004: higher weight candidate A must be primary");
+    assert_eq!(ordered[1].id, "p_b", "AC-004: candidate B must be next in sequence as fallback");
+
+    // Simulate primary failure and fallback to next candidate
+    let primary = &ordered[0];
+    let fallback = &ordered[1];
+    assert_ne!(primary.id, fallback.id);
+    assert_eq!(fallback.id, "p_b", "AC-004: fallback attempt must target provider B");
+}
+
+/// AC-005: Equal weights rotate fairly among all candidates.
+#[test]
+fn swrr_equal_weights() {
+    super::selection::reset_weighted_scheduler_for_test();
+    let mut p_a = provider("p_a");
+    p_a.weight = 1;
+    let mut p_b = provider("p_b");
+    p_b.weight = 1;
+    let candidates = vec![p_a, p_b];
+
+    let mut first_picks = Vec::new();
+    for _ in 0..4 {
+        let selected = super::selection::weighted_candidates(&candidates);
+        first_picks.push(selected[0].id.clone());
+    }
+
+    assert_eq!(
+        first_picks,
+        vec!["p_a", "p_b", "p_a", "p_b"],
+        "AC-005: candidates with equal weight 1 must alternate smoothly"
+    );
+    assert_eq!(first_picks.iter().filter(|id| *id == "p_a").count(), 2);
+    assert_eq!(first_picks.iter().filter(|id| *id == "p_b").count(), 2);
+}
+
+/// AC-006: Single candidate pass-through returns clean single-item vector regardless of weight,
+/// and empty candidate list returns empty vector.
+#[test]
+fn swrr_single_candidate() {
+    super::selection::reset_weighted_scheduler_for_test();
+    let mut p_a = provider("p_a");
+    p_a.weight = 5;
+
+    // Single candidate with weight 5
+    let selected = super::selection::weighted_candidates(&[p_a.clone()]);
+    assert_eq!(selected.len(), 1, "AC-006: single candidate must return list with length 1");
+    assert_eq!(selected[0].id, "p_a");
+
+    // Single candidate with weight 1
+    p_a.weight = 1;
+    let selected_min = super::selection::weighted_candidates(&[p_a.clone()]);
+    assert_eq!(selected_min.len(), 1);
+    assert_eq!(selected_min[0].id, "p_a");
+
+    // Single candidate with max weight 100
+    p_a.weight = 100;
+    let selected_max = super::selection::weighted_candidates(&[p_a]);
+    assert_eq!(selected_max.len(), 1);
+
+    // Empty candidates list pass-through
+    let empty: Vec<GatewayUpstreamProvider> = Vec::new();
+    let selected_empty = super::selection::weighted_candidates(&empty);
+    assert!(selected_empty.is_empty(), "empty candidate list must return empty vector");
+}
+
+/// AC-007: Excluded auto-disabled provider does not participate in SWRR scheduling,
+/// and remaining active candidates alternate according to their weight ratio.
+#[test]
+fn swrr_excludes_disabled_provider() {
+    super::selection::reset_weighted_scheduler_for_test();
+    let mut p_a = provider("p_a");
+    p_a.weight = 3;
+    // Auto-disabled row prevents provider from serving the model
+    let mut mapping_a = mapping("gpt-4o", "remote-a", None);
+    mapping_a.auto_disabled = true;
+    p_a.mappings = vec![mapping_a];
+    p_a.auto_disabled = true;
+
+    let mut p_b = provider("p_b");
+    p_b.weight = 1;
+    p_b.mappings = vec![mapping("gpt-4o", "remote-b", None)];
+
+    let mut p_c = provider("p_c");
+    p_c.weight = 2;
+    p_c.mappings = vec![mapping("gpt-4o", "remote-c", None)];
+
+    let all_providers = vec![p_a, p_b, p_c];
+
+    // Filter eligible candidate providers through candidate_providers
+    let candidates_ref = candidate_providers(
+        &all_providers,
+        Some("gpt-4o"),
+        UpstreamProtocol::ChatCompletions,
+    );
+    let candidate_ids: Vec<&str> = candidates_ref.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(
+        candidate_ids,
+        vec!["p_b", "p_c"],
+        "AC-007: auto-disabled provider A must be excluded from candidate providers"
+    );
+
+    let candidates: Vec<GatewayUpstreamProvider> = candidates_ref.into_iter().cloned().collect();
+
+    // 3 requests with weights B:1, C:2 -> sequence [C, B, C]
+    let mut first_picks = Vec::new();
+    for _ in 0..3 {
+        let res = super::selection::weighted_candidates(&candidates);
+        first_picks.push(res[0].id.clone());
+    }
+
+    assert_eq!(
+        first_picks,
+        vec!["p_c", "p_b", "p_c"],
+        "AC-007: remaining candidates B and C must alternate according to 1:2 ratio"
+    );
+    assert_eq!(first_picks.iter().filter(|id| *id == "p_b").count(), 1);
+    assert_eq!(first_picks.iter().filter(|id| *id == "p_c").count(), 2);
+    assert!(
+        !first_picks.contains(&"p_a".to_string()),
+        "AC-007: auto-disabled provider A must never be selected"
+    );
+}
+
+/// AC-008: 50 concurrent threads calling weighted_candidates without panic or deadlock.
+#[test]
+fn swrr_concurrent_safety() {
+    super::selection::reset_weighted_scheduler_for_test();
+    let mut p_a = provider("p_a");
+    p_a.weight = 3;
+    let mut p_b = provider("p_b");
+    p_b.weight = 2;
+    let mut p_c = provider("p_c");
+    p_c.weight = 1;
+    let candidates = Arc::new(vec![p_a, p_b, p_c]);
+
+    let mut handles = Vec::new();
+    for _ in 0..50 {
+        let candidates_clone = Arc::clone(&candidates);
+        handles.push(std::thread::spawn(move || {
+            for _ in 0..20 {
+                let res = super::selection::weighted_candidates(&candidates_clone);
+                assert_eq!(res.len(), 3, "must always return all 3 candidates");
+                assert!(
+                    res[0].id == "p_a" || res[0].id == "p_b" || res[0].id == "p_c",
+                    "selected provider must be valid"
+                );
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().expect("thread should not panic or deadlock");
+    }
+}
+
+/// AC-009: 4 new sessions sending initial request bind to providers in 3:1 ratio.
+#[test]
+fn swrr_session_affinity_initial_binding_ratio() {
+    super::selection::reset_weighted_scheduler_for_test();
+    let mut store = super::selection::SessionAffinityStore::new();
+
+    let mut p_a = provider("p_a");
+    p_a.weight = 3;
+    let mut p_b = provider("p_b");
+    p_b.weight = 1;
+    let candidates = vec![p_a, p_b];
+
+    let mut initial_bindings = Vec::new();
+    for i in 1..=4 {
+        let session_id = format!("session-{i}");
+        let order = store.resolve_order(
+            Some(&session_id),
+            Some("gpt-4o"),
+            || super::selection::weighted_candidates(&candidates),
+        );
+        let bound = order
+            .bound_provider_id
+            .expect("AC-009: first request must produce a bound provider");
+        initial_bindings.push(bound);
+    }
+
+    assert_eq!(
+        initial_bindings,
+        vec!["p_a", "p_a", "p_b", "p_a"],
+        "AC-009: initial session bindings must follow 3:1 SWRR distribution"
+    );
+    assert_eq!(
+        initial_bindings.iter().filter(|id| *id == "p_a").count(),
+        3,
+        "AC-009: 3 sessions must bind to provider A"
+    );
+    assert_eq!(
+        initial_bindings.iter().filter(|id| *id == "p_b").count(),
+        1,
+        "AC-009: 1 session must bind to provider B"
+    );
+}
+
+/// AC-010: Existing session keeps bound provider at front, remaining candidates ordered by weighted fallback.
+#[test]
+fn swrr_session_affinity_preserves_bound_with_weighted_fallback() {
+    super::selection::reset_weighted_scheduler_for_test();
+    let mut store = super::selection::SessionAffinityStore::new();
+
+    let mut p_a = provider("p_a");
+    p_a.weight = 3;
+    let mut p_b = provider("p_b");
+    p_b.weight = 1;
+    let candidates = vec![p_a, p_b];
+
+    // Establish existing binding to provider B for "session-pinned"
+    let first = store.resolve_order(
+        Some("session-pinned"),
+        Some("gpt-4o"),
+        || vec![provider("p_b"), provider("p_a")],
+    );
+    assert_eq!(
+        first.bound_provider_id.as_deref(),
+        Some("p_b"),
+        "session-pinned must be initially bound to p_b"
+    );
+
+    // Subsequent request for session-pinned with weighted_candidates
+    // Even though p_a has higher weight (3 vs 1), p_b must remain first, and p_a must be fallback
+    let subsequent = store.resolve_order(
+        Some("session-pinned"),
+        Some("gpt-4o"),
+        || super::selection::weighted_candidates(&candidates),
+    );
+
+    assert_eq!(
+        subsequent.bound_provider_id.as_deref(),
+        Some("p_b"),
+        "AC-010: existing session binding must preserve provider B"
+    );
+    assert_eq!(subsequent.ordered.len(), 2);
+    assert_eq!(
+        subsequent.ordered[0].id,
+        "p_b",
+        "AC-010: bound provider B must be first in ordered candidate list"
+    );
+    assert_eq!(
+        subsequent.ordered[1].id,
+        "p_a",
+        "AC-010: higher-weighted provider A must be preserved as fallback candidate"
+    );
+}
+
 

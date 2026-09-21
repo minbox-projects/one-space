@@ -349,6 +349,12 @@ export function UpstreamProviderList({
                           >
                             {isChatProtocol ? "Chat" : "Responses"}
                           </span>
+                          <span
+                            data-testid={`api-gateway-weight-badge-${provider.id}`}
+                            className="inline-flex items-center rounded-md border bg-background px-1.5 py-0.5 text-[11px] font-medium leading-4 text-muted-foreground"
+                          >
+                            {t("apiGateway.provider.weight", "Weight")}: {provider.weight ?? 1}
+                          </span>
                           {provider.default_model ? (
                             <span
                               className="inline-flex max-w-[150px] truncate rounded-md border bg-background px-1.5 py-0.5 font-mono text-[11px] font-medium leading-4 text-muted-foreground"

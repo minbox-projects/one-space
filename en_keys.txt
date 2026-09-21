@@ -26,6 +26,9 @@ allGroups
 allowedTools
 allowedToolsDesc
 allTags
+apiGateway.provider.weight
+apiGateway.provider.weightHint
+apiGateway.provider.weightInvalid
 apiGatewayDefaultModelAutoAdded
 apiGatewayDefaultModelNone
 apiGatewayEveryDay

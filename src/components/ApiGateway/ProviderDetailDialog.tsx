@@ -95,6 +95,7 @@ export function ProviderDetailDialog({
     {},
   );
   const [effortInputs, setEffortInputs] = useState<Record<number, string>>({});
+  const [weight, setWeight] = useState<number | string>(provider?.weight ?? 1);
 
   useEffect(() => {
     if (!provider) {
@@ -109,6 +110,7 @@ export function ProviderDetailDialog({
       setRevealApiKey(false);
       setExpandedMappings({});
       setEffortInputs({});
+      setWeight(1);
       return;
     }
     const providerPrices = prices ?? [];
@@ -159,6 +161,7 @@ export function ProviderDetailDialog({
     setRevealApiKey(false);
     setExpandedMappings({});
     setEffortInputs({});
+    setWeight(provider.weight ?? 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider, open]);
 
@@ -298,6 +301,12 @@ export function ProviderDetailDialog({
         default_model: defaultModel.trim() ? defaultModel.trim() : null,
         protocol,
         mappings: savedMappings,
+        weight:
+          Number.isInteger(Number(weight)) &&
+          Number(weight) >= 1 &&
+          Number(weight) <= 100
+            ? Number(weight)
+            : 1,
       },
       submittedPrices,
     );
@@ -528,6 +537,52 @@ export function ProviderDetailDialog({
                 aria-label={t("apiGatewayBaseUrl", "API base URL")}
                 className="font-mono"
               />
+            </div>
+
+            {/* 路由权重独占一行 */}
+            <div className="field full-span">
+              <label className="inline-flex items-center gap-1.5">
+                <span>{t("apiGateway.provider.weight", "Weight")}</span>
+                <span className="relative group inline-flex items-center">
+                  <Info
+                    className="h-3.5 w-3.5 cursor-help text-muted-foreground/70 transition hover:text-foreground"
+                    aria-label={t(
+                      "apiGateway.provider.weightHint",
+                      "Higher weight forwards requests more frequently (1-100)",
+                    )}
+                  />
+                  <span
+                    role="tooltip"
+                    className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-64 rounded-md border bg-popover p-2 text-left text-xs font-normal text-popover-foreground shadow-lg group-hover:block group-focus-within:block"
+                  >
+                    {t(
+                      "apiGateway.provider.weightHint",
+                      "Higher weight forwards requests more frequently (1-100)",
+                    )}
+                  </span>
+                </span>
+              </label>
+              <input
+                data-testid="api-gateway-provider-weight-input"
+                type="number"
+                min={1}
+                max={100}
+                step={1}
+                value={weight}
+                onChange={(event) =>
+                  setWeight(
+                    event.target.value === "" ? "" : Number(event.target.value),
+                  )
+                }
+                placeholder="1"
+                aria-label={t("apiGateway.provider.weight", "Weight")}
+              />
+              <p className="text-[11px] text-muted-foreground mt-1">
+                {t(
+                  "apiGateway.provider.weightHint",
+                  "Higher weight forwards requests more frequently (1-100)",
+                )}
+              </p>
             </div>
 
             {/* 第 4 行：API Key 独占一行 */}
