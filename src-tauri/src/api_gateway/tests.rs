@@ -8370,6 +8370,7 @@ fn sample_attempt_record(
         duration_ms: 5,
         error_message: error_message.map(str::to_string),
         terminal,
+        reasoning_effort: None,
     }
 }
 
@@ -14242,6 +14243,10 @@ fn usage_log_record_serde_defaults_and_round_trips_new_fields() {
         record.terminal,
         "a missing terminal flag must default to terminal"
     );
+    assert_eq!(
+        record.reasoning_effort, None,
+        "a missing reasoning_effort must deserialize as None"
+    );
 
     let attempt = sample_attempt_record(
         2_000,
@@ -14259,7 +14264,7 @@ fn usage_log_record_serde_defaults_and_round_trips_new_fields() {
     assert_eq!(attempt_value["error_message"], json!("upstream exploded"));
     assert_eq!(attempt_value["terminal"], json!(false));
 
-    let terminal = sample_record(
+    let mut terminal = sample_record(
         3_000,
         "local-b",
         "remote-b",
@@ -14269,6 +14274,7 @@ fn usage_log_record_serde_defaults_and_round_trips_new_fields() {
         Some(0.5),
         tokens(1, 0, 0, 1),
     );
+    terminal.reasoning_effort = Some("high".to_string());
     let terminal_value = serde_json::to_value(&terminal).unwrap();
     assert_eq!(
         terminal_value["error_message"],
@@ -14276,10 +14282,67 @@ fn usage_log_record_serde_defaults_and_round_trips_new_fields() {
         "an absent message must serialize as null"
     );
     assert_eq!(terminal_value["terminal"], json!(true));
+    assert_eq!(terminal_value["reasoning_effort"], json!("high"));
 
     let decoded: UsageLogRecord =
         serde_json::from_value(terminal_value).expect("new payload round trips");
     assert_eq!(decoded, terminal);
+}
+
+#[test]
+fn usage_log_store_persists_and_queries_reasoning_effort() {
+    with_temp_home("usage-reasoning-effort-persistence", |_home| {
+        let app_dir = crate::config::get_app_dir().expect("app dir");
+        let db_path = app_dir.join(super::USAGE_DB_FILE);
+        let store = UsageLogStore::at(&db_path);
+        let now = super::now_millis();
+
+        let mut record_with_effort = sample_record(
+            now - 1_000,
+            "deepseek-r1",
+            "deepseek-reasoner",
+            "p1",
+            "Provider One",
+            UsageResult::Success,
+            Some(0.2),
+            tokens(100, 50, 0, 200),
+        );
+        record_with_effort.reasoning_effort = Some("high".to_string());
+
+        let record_without_effort = sample_record(
+            now,
+            "gpt-4o",
+            "gpt-4o",
+            "p2",
+            "Provider Two",
+            UsageResult::Success,
+            Some(0.1),
+            tokens(50, 0, 0, 100),
+        );
+
+        store
+            .append(&record_with_effort, 30)
+            .expect("append record with reasoning_effort");
+        store
+            .append(&record_without_effort, 30)
+            .expect("append record without reasoning_effort");
+
+        let range = TimeRange {
+            start_ms: None,
+            end_ms: None,
+        };
+        let filter = LogFilter {
+            status: None,
+            model: None,
+        };
+        let page = store.query_logs(&range, &filter, 1).expect("query logs");
+        assert_eq!(page.records.len(), 2);
+        // Newest first: record_without_effort (2000), then record_with_effort (1000)
+        assert_eq!(page.records[0].local_model, "gpt-4o");
+        assert_eq!(page.records[0].reasoning_effort, None);
+        assert_eq!(page.records[1].local_model, "deepseek-r1");
+        assert_eq!(page.records[1].reasoning_effort, Some("high".to_string()));
+    });
 }
 
 // ---------------------------------------------------------------------------

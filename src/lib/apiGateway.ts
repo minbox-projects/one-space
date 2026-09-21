@@ -487,6 +487,8 @@ export interface UsageLogRecord {
    * non-terminal attempt row.
    */
   terminal?: boolean;
+  /** Reasoning effort level (e.g. "low", "medium", "high") requested by client; null/absent when none was specified. */
+  reasoning_effort?: string | null;
 }
 
 export interface UsageLogGroup {

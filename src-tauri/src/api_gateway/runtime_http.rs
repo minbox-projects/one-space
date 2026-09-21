@@ -1426,6 +1426,7 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
         .get("model")
         .and_then(|value| value.as_str())
         .map(|value| value.to_string());
+    let reasoning_effort = extract_reasoning_effort(&body_value);
     let wants_stream = body_value
         .get("stream")
         .and_then(|value| value.as_bool())
@@ -1459,6 +1460,7 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                 UsageResult::Failure,
                 status,
                 started.elapsed().as_millis().max(1) as u64,
+                reasoning_effort,
             ),
         );
         return Ok(());
@@ -1572,6 +1574,7 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                     capture.result(),
                     capture.status,
                     started.elapsed().as_millis().max(1) as u64,
+                    reasoning_effort.clone(),
                 );
                 record_usage_log(&config, &record);
             } else {
@@ -1580,14 +1583,50 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                     &config,
                     started,
                     requested.as_deref(),
+                    reasoning_effort.clone(),
                     &attempts,
                     Some(terminal),
                 );
             }
         }
-        _ => record_request_usage_logs(&config, started, requested.as_deref(), &attempts, None),
+        _ => record_request_usage_logs(
+            &config,
+            started,
+            requested.as_deref(),
+            reasoning_effort.clone(),
+            &attempts,
+            None,
+        ),
     }
     Ok(())
+}
+
+/// Extract the requested reasoning effort level from request JSON body, if any.
+/// Compatible with OpenAI `reasoning_effort`, OpenCode `reasoningEffort`, and nested `reasoning.effort`.
+fn extract_reasoning_effort(body: &Value) -> Option<String> {
+    if let Some(effort) = body.get("reasoning_effort").and_then(|v| v.as_str()) {
+        let trimmed = effort.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    if let Some(effort) = body.get("reasoningEffort").and_then(|v| v.as_str()) {
+        let trimmed = effort.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    if let Some(effort) = body
+        .get("reasoning")
+        .and_then(|v| v.get("effort"))
+        .and_then(|v| v.as_str())
+    {
+        let trimmed = effort.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
 }
 
 /// Persist the request's buffered attempt rows plus exactly one terminal row.
@@ -1605,6 +1644,7 @@ fn record_request_usage_logs(
     config: &GatewayConfig,
     started: Instant,
     local_model: Option<&str>,
+    reasoning_effort: Option<String>,
     attempts: &[AttemptLog],
     terminal_index: Option<usize>,
 ) {
@@ -1616,6 +1656,7 @@ fn record_request_usage_logs(
             UsageResult::Cancelled,
             0,
             started.elapsed().as_millis().max(1) as u64,
+            reasoning_effort,
         );
         record_usage_log(config, &record);
         return;
@@ -1636,6 +1677,7 @@ fn record_request_usage_logs(
                 attempt.duration_ms,
                 attempt.error_message.clone(),
                 Some(index) == terminal_index,
+                reasoning_effort.clone(),
             )
         })
         .collect();
@@ -1646,6 +1688,7 @@ fn record_request_usage_logs(
             UsageResult::Cancelled,
             0,
             started.elapsed().as_millis().max(1) as u64,
+            reasoning_effort,
         ));
     }
     write_usage_log_rows(config, rows);
@@ -1659,6 +1702,7 @@ fn synthetic_terminal_row(
     result: UsageResult,
     status: u16,
     duration_ms: u64,
+    reasoning_effort: Option<String>,
 ) -> UsageLogRecord {
     build_usage_log_row(
         config,
@@ -1672,6 +1716,7 @@ fn synthetic_terminal_row(
         duration_ms,
         None,
         true,
+        reasoning_effort,
     )
 }
 
@@ -1690,6 +1735,7 @@ fn build_usage_log_row(
     duration_ms: u64,
     error_message: Option<String>,
     terminal: bool,
+    reasoning_effort: Option<String>,
 ) -> UsageLogRecord {
     let timestamp_ms = now_millis();
     let tokens = usage.unwrap_or_default();
@@ -1712,6 +1758,7 @@ fn build_usage_log_row(
         duration_ms,
         error_message,
         terminal,
+        reasoning_effort,
     }
 }
 

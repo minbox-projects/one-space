@@ -711,7 +711,18 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                       })()}
                     </td>
                     <td className="px-3 py-2">
-                      <div className="font-medium whitespace-nowrap">{item.local_model}</div>
+                      <div className="flex items-center gap-1.5 whitespace-nowrap">
+                        <span className="font-medium">{item.local_model}</span>
+                        {item.reasoning_effort ? (
+                          <span
+                            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-normal leading-none bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20"
+                            data-testid="api-gateway-logs-reasoning-effort"
+                            title={`${t("reasoningEffort", "Reasoning Effort")}: ${item.reasoning_effort}`}
+                          >
+                            {item.reasoning_effort}
+                          </span>
+                        ) : null}
+                      </div>
                       {(item.provider_name || item.upstream_model) ? (
                         <div className="text-[10px] text-muted-foreground flex items-center gap-1 whitespace-nowrap">
                           {item.provider_name ? (

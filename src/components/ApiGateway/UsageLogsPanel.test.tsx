@@ -751,6 +751,47 @@ describe("UsageLogsPanel", () => {
     ).toHaveTextContent("claude-3-7-sonnet-20250219");
   });
 
+  it("模型列展示推理强度徽章，无推理强度时不展示徽章", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          record({
+            local_model: "deepseek-r1",
+            upstream_model: "deepseek-reasoner",
+            provider_name: "DeepSeek Direct",
+            reasoning_effort: "high",
+          }),
+          record({
+            local_model: "gpt-4o",
+            upstream_model: "gpt-4o",
+            provider_name: "OpenAI Direct",
+            reasoning_effort: null,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-gateway-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("api-gateway-logs-row");
+    expect(rows).toHaveLength(2);
+
+    // 第一行有推理强度，显示 high 徽章
+    const effortBadge = within(rows[0]).getByTestId("api-gateway-logs-reasoning-effort");
+    expect(effortBadge).toBeInTheDocument();
+    expect(effortBadge).toHaveTextContent("high");
+    expect(effortBadge).toHaveAttribute("title", expect.stringContaining("high"));
+
+    // 第二行无推理强度，不显示徽章
+    expect(
+      within(rows[1]).queryByTestId("api-gateway-logs-reasoning-effort"),
+    ).toBeNull();
+  });
+
   it("大额 Tokens 在日志行展示真实原值千分位，缓存展示 xxK 格式，并在 Tooltip 中展示完整数值", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command !== "api_gateway_request_logs") {
