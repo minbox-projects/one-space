@@ -12930,6 +12930,8 @@ fn usage_stats_unpriced_eligibility_requires_success_or_usage() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// AC-021 / REQ-018 (repair F3): the ungrouped page response exposes a bounded,
 /// distinct, non-empty in-range model facet that is independent of the current
 /// page and of the model filter, so the frontend can offer every in-range model.
 #[test]
