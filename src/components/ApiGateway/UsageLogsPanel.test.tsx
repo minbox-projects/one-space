@@ -244,6 +244,29 @@ describe("UsageLogsPanel", () => {
     );
   });
 
+  it("过滤面板仅展示 success 与 failure 状态选项，不包含已取消", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page();
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("api-gateway-logs-ungrouped");
+
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    const panel = await screen.findByTestId("api-gateway-logs-filter-panel");
+
+    // Only success and failure status buttons must be present.
+    expect(within(panel).getByRole("button", { name: "Success" })).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Failure" })).toBeInTheDocument();
+    expect(
+      within(panel).queryByRole("button", { name: "Cancelled" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("筛选无匹配显示空状态且不报错", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string, args?: any) => {
@@ -856,11 +879,12 @@ describe("UsageLogsPanel", () => {
     expect(attemptLabel.textContent?.trim()).not.toBe("");
   });
 
-  it("成功与取消记录不显示失败原因行与错误提示", async () => {
+  it("成功记录不显示失败原因行与错误提示", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
+      // A cancelled record is defensively omitted from the rendered table.
       return page({
         total: 2,
         records: [
@@ -870,6 +894,7 @@ describe("UsageLogsPanel", () => {
             status: 200,
             local_model: "gpt-4o",
           }),
+          // Cancelled row in payload must be omitted by the panel.
           record({
             timestamp_ms: Date.UTC(2026, 8, 17, 3, 0),
             result: "cancelled",
@@ -884,13 +909,11 @@ describe("UsageLogsPanel", () => {
     await screen.findByTestId("api-gateway-logs-ungrouped");
 
     const rows = screen.getAllByTestId("api-gateway-logs-row");
-    expect(rows).toHaveLength(2);
+    // Only the success record is rendered; cancelled is omitted.
+    expect(rows).toHaveLength(1);
     expect(
       within(rows[0]).getByTestId("api-gateway-logs-status-badge"),
     ).toHaveTextContent("Success");
-    expect(
-      within(rows[1]).getByTestId("api-gateway-logs-status-badge"),
-    ).toHaveTextContent("Cancelled");
     for (const row of rows) {
       expect(
         within(row).queryByTestId("api-gateway-logs-status-reason"),

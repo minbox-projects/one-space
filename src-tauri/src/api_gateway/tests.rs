@@ -8126,87 +8126,16 @@ async fn retry_cancel_disconnect_during_retry_delay_exits_without_further_upstre
                 "disconnect issued further upstream attempts during retry delay (stream={wants_stream}): busy={observed_busy}, waiting={observed_waiting}"
             ));
         }
-        if failures.is_empty() {
-            let records = wait_for_exact_usage_logs(3).await;
-            let completed: Vec<&UsageLogRecord> = records
-                .iter()
-                .filter(|record| record.result == UsageResult::Failure)
-                .collect();
-            assert_eq!(
-                completed.len(),
-                2,
-                "one non-terminal failure row per completed attempt: {records:?}"
-            );
-            for record in &completed {
-                assert!(
-                    !record.terminal,
-                    "a completed attempt is not the request's terminal row: {record:?}"
-                );
-                assert_eq!(record.local_model, "local", "the inbound request model");
-                assert_eq!(record.upstream_model, "remote-default");
-                assert_eq!(record.status, 503);
-                assert_eq!(record.total_tokens, 0);
-                assert!(record.duration_ms >= 1);
-            }
-            let busy = completed
-                .iter()
-                .find(|record| record.provider_id == "a")
-                .expect("provider a's completed attempt must keep its row");
-            assert_eq!(busy.provider_name, "Busy Provider");
-            assert_eq!(busy.error_message.as_deref(), Some("busy"));
-            let waiting = completed
-                .iter()
-                .find(|record| record.provider_id == "b")
-                .expect("provider b's completed attempt must keep its row");
-            assert_eq!(waiting.provider_name, "Waiting Provider");
-            assert_eq!(waiting.error_message.as_deref(), Some("waiting"));
-
-            let cancelled = records
-                .iter()
-                .find(|record| record.result == UsageResult::Cancelled)
-                .expect("the cancellation must write one terminal cancelled row");
-            assert!(cancelled.terminal);
-            assert_eq!(cancelled.provider_id, "", "no provider is attributed");
-            assert_eq!(cancelled.provider_name, "");
-            assert_eq!(cancelled.status, 0);
-            assert_eq!(cancelled.error_message, None);
-            assert_eq!(cancelled.local_model, "local");
-            assert_eq!(cancelled.upstream_model, "");
-            assert!(cancelled.duration_ms >= 1, "the whole request is timed");
-            assert_eq!(
-                records.len(),
-                3,
-                "only the two attempts and the cancellation row belong to this request"
-            );
-            assert_eq!(
-                records.iter().filter(|record| record.terminal).count(),
-                1,
-                "exactly one terminal row per request"
-            );
-            assert!(
-                records[0].terminal,
-                "a newest-first query lists the terminal row before the earlier attempts"
-            );
-
-            let store = default_usage_store();
-            let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
-            assert_eq!(
-                stats.totals.request_count, 0,
-                "cancelled requests and their attempts are not usage requests"
-            );
-            assert_eq!(stats.totals.total_tokens, 0);
-            assert_eq!(stats.totals.amount, 0.0);
-            assert_eq!(stats.totals.unpriced_count, 0);
-            let grouped = store
-                .group_logs(&TimeRange::default(), &LogFilter::default(), "model")
-                .unwrap();
-            assert_eq!(grouped.len(), 1);
-            assert_eq!(
-                grouped[0].request_count, 1,
-                "the cancelled request counts once"
-            );
-            assert_eq!(grouped[0].error_count, 0, "cancelled is never an error");
-        }
+        // Cancelled inbound requests persist no rows (REQ-001 / AC-002).
+        // The two completed attempt failures and the synthetic cancelled row
+        // are all discarded when the tool connection disappears during the
+        // retry delay.
+        let records = default_usage_store().all_records().unwrap_or_default();
+        assert!(
+            records.is_empty(),
+            "a cancelled request must write zero log rows (completed attempts + synthetic terminal): {} observed",
+            records.len()
+        );
     }
     assert!(failures.is_empty(), "{}", failures.join("; "));
 }
@@ -9662,29 +9591,34 @@ fn usage_store_logs_filter_group_and_paginate() {
             .unwrap();
     }
 
+    // User-visible queries exclude cancelled rows.
+    // Raw all_records still returns all 120 physical rows.
+    let raw_all = store.all_records().unwrap_or_default();
+    assert_eq!(raw_all.len(), 120, "physical rows include cancelled");
+
     let page_one = store
         .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
         .unwrap();
     assert_eq!(USAGE_LOG_PAGE_SIZE, 50);
     assert_eq!(page_one.page_size, 50);
     assert_eq!(page_one.records.len(), 50);
-    assert_eq!(page_one.total, 120);
-    assert_eq!(page_one.total_pages, 3);
+    assert_eq!(page_one.total, 80, "cancelled excluded from total (120 - 40)");
+    assert_eq!(page_one.total_pages, 2, "80 / 50 = 2 pages");
     assert!(
         page_one.records[0].timestamp_ms > page_one.records[49].timestamp_ms,
         "newest first"
     );
 
-    let page_three = store
-        .query_logs(&TimeRange::default(), &LogFilter::default(), 3)
+    let page_two = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 2)
         .unwrap();
-    assert_eq!(page_three.page, 3);
-    assert_eq!(page_three.records.len(), 20);
+    assert_eq!(page_two.page, 2);
+    assert_eq!(page_two.records.len(), 30);
 
     let clamped = store
         .query_logs(&TimeRange::default(), &LogFilter::default(), 99)
         .unwrap();
-    assert_eq!(clamped.page, 3, "out-of-range page clamps to the last page");
+    assert_eq!(clamped.page, 2, "out-of-range page clamps to the last page");
 
     let failed = store
         .query_logs(
@@ -9715,19 +9649,20 @@ fn usage_store_logs_filter_group_and_paginate() {
         .iter()
         .all(|r| r.local_model == "local-b" && r.result == UsageResult::Failure));
 
+    // Grouped results also exclude cancelled from request_count and last_request_at.
     let grouped = store
         .group_logs(&TimeRange::default(), &LogFilter::default(), "day")
         .unwrap();
     assert_eq!(grouped.len(), 1, "all records share one UTC+8 day");
     assert_eq!(grouped[0].group, "2026-09-16");
-    assert_eq!(grouped[0].request_count, 120);
+    assert_eq!(grouped[0].request_count, 80, "cancelled excluded from grouped count");
     assert_eq!(grouped[0].error_count, 40, "cancelled is not an error");
 
     let by_model = store
         .group_logs(&TimeRange::default(), &LogFilter::default(), "model")
         .unwrap();
     assert_eq!(by_model.len(), 2);
-    assert_eq!(by_model.iter().map(|g| g.request_count).sum::<u32>(), 120);
+    assert_eq!(by_model.iter().map(|g| g.request_count).sum::<u32>(), 80);
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -10534,10 +10469,10 @@ async fn unauthorized_models_and_unknown_routes_are_not_logged() {
     drop(home);
 }
 
-/// AC-008: a downstream disconnect mid-forward is recorded as `cancelled`,
-/// never as success or an error.
+/// AC-002 / REQ-001: a downstream disconnect mid-forward discards all buffered
+/// log rows; no cancelled terminal row is written.
 #[tokio::test]
-async fn downstream_cancel_records_cancelled() {
+async fn downstream_cancel_writes_zero_rows() {
     let home = isolated_temp_home("usage-forward-cancelled");
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -10584,22 +10519,13 @@ async fn downstream_cancel_records_cancelled() {
     let _ = release_tx.send(());
     let _ = tokio::time::timeout(std::time::Duration::from_secs(1), upstream).await;
 
-    let records = wait_for_usage_logs(1).await;
-    assert_eq!(records.len(), 1, "cancelled request must still be recorded");
+    // Cancelled inbound requests persist no rows (REQ-001 / AC-002).
+    let records = default_usage_store().all_records().unwrap_or_default();
     assert!(
-        records[0].terminal,
-        "the synthetic cancelled row is the request's terminal row"
+        records.is_empty(),
+        "a cancelled request must write zero log rows: {} observed",
+        records.len()
     );
-    assert_eq!(records[0].result, UsageResult::Cancelled);
-    assert_eq!(records[0].provider_id, "", "no provider is attributed");
-    assert_eq!(records[0].provider_name, "");
-    assert_eq!(records[0].status, 0);
-    assert_eq!(records[0].error_message, None);
-    assert_eq!(records[0].local_model, "local");
-    assert_eq!(records[0].upstream_model, "");
-    assert!(records[0].duration_ms >= 1, "the whole request is timed");
-    assert_eq!(records[0].total_tokens, 0);
-    assert_eq!(records[0].amount.unwrap_or(0.0), 0.0);
 
     let stats = default_usage_store()
         .usage_stats(&TimeRange::default(), false)
@@ -10611,11 +10537,6 @@ async fn downstream_cancel_records_cancelled() {
     assert_eq!(stats.totals.total_tokens, 0);
     assert_eq!(stats.totals.amount, 0.0);
     assert_eq!(stats.totals.unpriced_count, 0);
-    let grouped = default_usage_store()
-        .group_logs(&TimeRange::default(), &LogFilter::default(), "model")
-        .unwrap();
-    assert_eq!(grouped.len(), 1);
-    assert_eq!(grouped[0].error_count, 0, "cancelled is never an error");
     drop(home);
 }
 
@@ -11204,11 +11125,10 @@ async fn streaming_upstream_client_error_is_logged_failure_and_returned_unchange
     drop(home);
 }
 
-/// AC-008: a downstream disconnect mid-forward while streaming is recorded as
-/// `cancelled` (never success or error), constructed with a raw TCP client that
-/// drops the connection, exactly like the non-streaming raw-TCP case.
+/// AC-002 / REQ-001: a downstream disconnect mid-forward while streaming
+/// discards all buffered log rows; no cancelled terminal row is written.
 #[tokio::test]
-async fn downstream_cancel_during_streaming_records_cancelled() {
+async fn downstream_cancel_during_streaming_writes_zero_rows() {
     let home = isolated_temp_home("usage-forward-cancel-stream");
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -11253,20 +11173,13 @@ async fn downstream_cancel_during_streaming_records_cancelled() {
     let _ = release_tx.send(());
     let _ = tokio::time::timeout(std::time::Duration::from_secs(1), upstream).await;
 
-    let records = wait_for_usage_logs(1).await;
-    assert_eq!(records.len(), 1, "cancelled streaming request must still be recorded");
+    // Cancelled inbound requests persist no rows (REQ-001 / AC-002).
+    let records = default_usage_store().all_records().unwrap_or_default();
     assert!(
-        records[0].terminal,
-        "the synthetic cancelled row is the request's terminal row"
+        records.is_empty(),
+        "a cancelled streaming request must write zero log rows: {} observed",
+        records.len()
     );
-    assert_eq!(records[0].result, UsageResult::Cancelled);
-    assert_eq!(records[0].status, 0);
-    assert_eq!(records[0].provider_id, "", "no provider is attributed");
-    assert_eq!(records[0].error_message, None);
-    assert_eq!(records[0].local_model, "local");
-    assert!(records[0].duration_ms >= 1, "the whole request is timed");
-    assert_eq!(records[0].total_tokens, 0);
-    assert_eq!(records[0].amount.unwrap_or(0.0), 0.0);
 
     let stats = default_usage_store()
         .usage_stats(&TimeRange::default(), false)
@@ -11277,11 +11190,6 @@ async fn downstream_cancel_during_streaming_records_cancelled() {
     );
     assert_eq!(stats.totals.total_tokens, 0);
     assert_eq!(stats.totals.amount, 0.0);
-    let grouped = default_usage_store()
-        .group_logs(&TimeRange::default(), &LogFilter::default(), "model")
-        .unwrap();
-    assert_eq!(grouped.len(), 1);
-    assert_eq!(grouped[0].error_count, 0, "cancelled is never an error");
     drop(home);
 }
 
@@ -11650,6 +11558,9 @@ fn logs_page_clamps_when_range_shrinks_and_defaults_to_first_page() {
 /// only `failure` as an error (never `cancelled`); model grouping follows the
 /// same error rule.
 #[test]
+/// AC-004 / REQ-002: grouped model/day results exclude cancelled rows from
+/// request_count, error_count and last_request_at.
+#[test]
 fn grouped_rows_exclude_cancelled_from_errors_and_report_last_request() {
     let (dir, store) = usage_store("usage-groups-errors");
     let day_one = rfc3339_millis("2026-09-15T10:00:00+08:00");
@@ -11681,16 +11592,16 @@ fn grouped_rows_exclude_cancelled_from_errors_and_report_last_request() {
         .iter()
         .find(|group| group.group == "2026-09-15")
         .expect("day one group");
-    assert_eq!(first.request_count, 3);
+    assert_eq!(first.request_count, 2, "cancelled excluded from request count");
     assert_eq!(first.error_count, 1, "cancelled is not an error");
-    assert_eq!(first.last_request_at_ms, day_one_last);
+    assert_eq!(first.last_request_at_ms, day_one + 1_000, "cancelled timestamp excluded from last_request");
     let second = days
         .iter()
         .find(|group| group.group == "2026-09-16")
         .expect("day two group");
-    assert_eq!(second.request_count, 2);
+    assert_eq!(second.request_count, 1, "cancelled excluded from request count");
     assert_eq!(second.error_count, 1);
-    assert_eq!(second.last_request_at_ms, day_two_last);
+    assert_eq!(second.last_request_at_ms, day_two_last, "non-cancelled row determines last_request");
 
     let models = store
         .group_logs(&TimeRange::default(), &LogFilter::default(), "model")
@@ -11699,21 +11610,22 @@ fn grouped_rows_exclude_cancelled_from_errors_and_report_last_request() {
         .iter()
         .find(|group| group.group == "local-a")
         .expect("local-a group");
-    assert_eq!(local_a.request_count, 3);
+    assert_eq!(local_a.request_count, 2, "cancelled excluded from request count");
     assert_eq!(local_a.error_count, 1, "cancelled is not an error");
     let local_b = models
         .iter()
         .find(|group| group.group == "local-b")
         .expect("local-b group");
-    assert_eq!(local_b.request_count, 2);
+    assert_eq!(local_b.request_count, 1, "cancelled excluded from request count");
     assert_eq!(local_b.error_count, 1);
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// AC-021 / REQ-018: status and model filters compose, including a `cancelled`
-/// status, and a non-matching combination is an empty, error-free page.
+/// AC-005 / REQ-002: a legacy `status="cancelled"` filter returns an empty page
+/// (total = 0, total_pages = 1, no records). Other filter combinations still
+/// work against non-cancelled rows.
 #[test]
-fn logs_filter_by_status_and_model_together_including_cancelled() {
+fn logs_filter_by_status_and_model_together_exclude_cancelled() {
     let (dir, store) = usage_store("usage-filter-compose");
     let base = rfc3339_millis("2026-09-16T08:00:00+08:00");
     let cases = [
@@ -11742,6 +11654,7 @@ fn logs_filter_by_status_and_model_together_including_cancelled() {
             .unwrap();
     }
 
+    // A cancelled status filter returns an empty, valid page (REQ-002 / AC-005).
     let cancelled = store
         .query_logs(
             &TimeRange::default(),
@@ -11752,11 +11665,9 @@ fn logs_filter_by_status_and_model_together_including_cancelled() {
             1,
         )
         .unwrap();
-    assert_eq!(cancelled.total, 2);
-    assert!(cancelled
-        .records
-        .iter()
-        .all(|record| record.result == UsageResult::Cancelled));
+    assert_eq!(cancelled.total, 0, "cancelled excluded from user-visible queries");
+    assert!(cancelled.records.is_empty());
+    assert_eq!(cancelled.total_pages, 1, "an empty result has one page");
 
     let cancelled_b = store
         .query_logs(
@@ -11768,9 +11679,8 @@ fn logs_filter_by_status_and_model_together_including_cancelled() {
             1,
         )
         .unwrap();
-    assert_eq!(cancelled_b.total, 1);
-    assert_eq!(cancelled_b.records[0].local_model, "local-b");
-    assert_eq!(cancelled_b.records[0].result, UsageResult::Cancelled);
+    assert_eq!(cancelled_b.total, 0);
+    assert!(cancelled_b.records.is_empty());
 
     let failed_b = store
         .query_logs(
@@ -14976,16 +14886,13 @@ async fn pre_first_byte_stream_failure_switches_and_logs_both_attempts() {
     drop(home);
 }
 
-/// AC-008 / REQ-001 / REQ-002: a non-streaming attempt that completed
-/// successfully but whose response cannot be delivered because the downstream
-/// client is gone stays a non-terminal success row; the request's single
-/// terminal row is the synthetic `cancelled` row. That cancelled terminal row is
-/// still written to the request log, but it is not counted by the usage
-/// statistics: the stats show no requests, no tokens and no cost for this
-/// disconnect. The upstream body is far larger than any socket buffer, so the
-/// handler is still blocked writing when the client resets the connection.
+/// A downstream disconnect while a successful upstream response is buffered
+/// but not yet delivered discards the entire buffered log set — no success-attempt
+/// row and no synthetic cancelled terminal row are persisted. The upstream body is
+/// far larger than any socket buffer, so the handler is still blocked writing when
+/// the client resets the connection.
 #[tokio::test]
-async fn successful_attempt_cut_off_by_downstream_disconnect_stays_non_terminal() {
+async fn attempt_buffer_discarded_on_downstream_disconnect() {
     let _home = isolated_temp_home("attempt-delivery-cancelled");
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -15065,45 +14972,14 @@ async fn successful_attempt_cut_off_by_downstream_disconnect_stays_non_terminal(
     );
     upstream.abort();
 
-    let records = wait_for_exact_usage_logs(2).await;
-    let success = records
-        .iter()
-        .find(|record| record.result == UsageResult::Success)
-        .expect("the completed success attempt must keep its row");
+    // Cancelled inbound requests persist no rows (REQ-001 / AC-002).
+    // The completed success attempt row AND the synthetic cancelled terminal row
+    // are both discarded.
+    let records = default_usage_store().all_records().unwrap_or_default();
     assert!(
-        !success.terminal,
-        "an attempt whose response could not be delivered is not terminal"
-    );
-    assert_eq!(success.provider_id, "p1");
-    assert_eq!(success.local_model, "local");
-    assert_eq!(success.upstream_model, "remote-large");
-    assert_eq!(success.status, 200);
-    assert_eq!(success.input_tokens, 4);
-    assert_eq!(success.output_tokens, 2);
-    assert_eq!(success.total_tokens, 6);
-    assert_eq!(success.error_message, None);
-    assert!((success.amount.expect("priced") - expected_amount).abs() < 1e-12);
-    assert!(success.duration_ms >= 1);
-
-    let cancelled = records
-        .iter()
-        .find(|record| record.result == UsageResult::Cancelled)
-        .expect("the lost response must write the terminal cancelled row");
-    assert!(cancelled.terminal);
-    assert_eq!(cancelled.provider_id, "", "no provider is attributed");
-    assert_eq!(cancelled.status, 0);
-    assert_eq!(cancelled.error_message, None);
-    assert_eq!(cancelled.local_model, "local");
-    assert_eq!(cancelled.total_tokens, 0);
-    assert_eq!(cancelled.amount, None);
-    assert_eq!(
-        records.iter().filter(|record| record.terminal).count(),
-        1,
-        "exactly one terminal row per request"
-    );
-    assert!(
-        records[0].terminal,
-        "a newest-first query lists the terminal row before the earlier attempt"
+        records.is_empty(),
+        "a cancelled delivery must discard all buffered log rows: {} observed",
+        records.len()
     );
 
     let stats = default_usage_store()
@@ -15111,13 +14987,13 @@ async fn successful_attempt_cut_off_by_downstream_disconnect_stays_non_terminal(
         .unwrap();
     assert_eq!(
         stats.totals.request_count, 0,
-        "the cancelled terminal row is not a usage request"
+        "cancelled requests contribute zero to usage statistics"
     );
     assert_eq!(stats.totals.total_tokens, 0);
     assert_eq!(stats.totals.amount, 0.0);
     assert_eq!(
         stats.totals.unpriced_count, 0,
-        "the cancelled row never reached an upstream model"
+        "no upstream model was reached"
     );
 }
 
@@ -16870,10 +16746,6 @@ async fn session_affinity_cancelled_request_does_not_count_as_a_miss() {
     let _ = release_tx.send(());
     let _ = tokio::time::timeout(std::time::Duration::from_secs(1), held).await;
 
-    // Wait for the cancelled request's synthetic terminal row so the binding
-    // store is consistent before the first post-cancel lookup.
-    wait_for_usage_logs((before_cancel + 1) as u32).await;
-
     // Phase 3: A answers 429 while B answers 200. Both follow-ups must attempt
     // A first; the second one migrates the binding to B.
     let (a429_url, a429_count) = spawn_header_sequence_mock(vec![
@@ -16936,7 +16808,7 @@ async fn session_affinity_cancelled_request_does_not_count_as_a_miss() {
     // Wait for the two follow-up requests' usage rows so the settle
     // side-effects have landed before the second store lookup.
     // Each follow-up: A fails (429) + B succeeds → 2 rows, 4 total.
-    wait_for_usage_logs((before_cancel + 5) as u32).await;
+    wait_for_usage_logs((before_cancel + 4) as u32).await;
     match affinity_lock().lookup(session, "local") {
         Some(binding) if binding.provider_id.as_str() == "b" => {}
         other => failures.push(format!(
