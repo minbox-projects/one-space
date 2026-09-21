@@ -53,6 +53,14 @@ type ProviderDetailDialogProps = {
   templates?: GatewayProviderTemplateView[];
   onDeleteModel?: (providerId: string, upstreamModel: string) => void;
   onRestoreModel?: (providerId: string, upstreamModel: string) => void;
+  /** Clear one auto-disabled mapping row's runtime state (no `enabled` change). */
+  onReenableModel?: (
+    providerId: string,
+    localModel: string,
+    upstreamModel: string,
+  ) => void;
+  /** Clear every auto-disabled row of this provider (no `enabled` change). */
+  onReenableModels?: (providerId: string) => void;
 };
 
 const mappingInputClass =
@@ -69,6 +77,8 @@ export function ProviderDetailDialog({
   templates,
   onDeleteModel,
   onRestoreModel,
+  onReenableModel,
+  onReenableModels,
 }: ProviderDetailDialogProps) {
   const { t } = useTranslation();
 
@@ -164,6 +174,9 @@ export function ProviderDetailDialog({
     ? formatGatewayTimestamp(boundTemplateView.synced_at)
     : t("apiGatewayTemplateNotSynced", "Not synced yet");
   const ignoredModels = isTemplateBound ? provider.ignored_models ?? [] : [];
+  const autoDisabledModels = (provider.mappings ?? []).filter(
+    (mapping) => mapping.auto_disabled === true,
+  );
 
   const draftForModel = (model: string): GatewayPriceDraft =>
     priceDrafts.find((draft) => draft.upstream_model === model) ??
@@ -570,25 +583,39 @@ export function ProviderDetailDialog({
                   )}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() =>
-                  setMappings((prev) => [
-                    ...prev,
-                    {
-                      local_model: "",
-                      upstream_model: "",
-                      display_name: "",
-                      protocol: null,
-                      enabled: true,
-                    },
-                  ])
-                }
-                className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs font-medium shadow-sm transition hover:bg-muted"
-              >
-                <Plus className="h-3 w-3" />
-                {t("apiGatewayAddMapping", "Add mapping")}
-              </button>
+              <div className="flex items-center gap-2">
+                {autoDisabledModels.length > 0 && provider.id !== "" && onReenableModels ? (
+                  <button
+                    type="button"
+                    data-testid={`api-gateway-reenable-models-${provider.id}`}
+                    onClick={() => onReenableModels(provider.id)}
+                    disabled={busy}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-500/40 bg-background px-2 text-xs font-medium text-amber-700 shadow-sm transition hover:bg-amber-500/15 disabled:opacity-50 dark:text-amber-400"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    {t("apiGatewayReenableAllMappings", "Re-enable all mappings")}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setMappings((prev) => [
+                      ...prev,
+                      {
+                        local_model: "",
+                        upstream_model: "",
+                        display_name: "",
+                        protocol: null,
+                        enabled: true,
+                      },
+                    ])
+                  }
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs font-medium shadow-sm transition hover:bg-muted"
+                >
+                  <Plus className="h-3 w-3" />
+                  {t("apiGatewayAddMapping", "Add mapping")}
+                </button>
+              </div>
             </div>
 
             {mappings.length === 0 ? (
@@ -607,13 +634,21 @@ export function ProviderDetailDialog({
                   const upstreamModel = mapping.upstream_model.trim();
                   const isAutoAdded =
                     upstreamModel !== "" && upstreamModel === autoAddedModel;
+                  const isAutoDisabled = mapping.auto_disabled === true;
                   return (
                   <li
                     key={index}
                     data-disabled={mapping.enabled === false ? "true" : undefined}
+                    data-auto-disabled={isAutoDisabled ? "true" : undefined}
                     data-deprecated={deprecated ? "true" : undefined}
                     data-auto-added={isAutoAdded ? "true" : undefined}
-                    className={`space-y-2 ${mapping.enabled === false ? "opacity-60" : ""}`}
+                    className={`space-y-2 rounded-lg ${
+                      mapping.enabled === false ? "opacity-60" : ""
+                    } ${
+                      isAutoDisabled
+                        ? "border border-amber-500/40 bg-amber-500/5 px-2 py-1.5"
+                        : ""
+                    }`}
                   >
                     <div className="flex items-center gap-2">
                       <button
@@ -729,6 +764,24 @@ export function ProviderDetailDialog({
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
+                      {isAutoDisabled && provider.id !== "" ? (
+                        <button
+                          type="button"
+                          data-testid={`api-gateway-reenable-mapping-${mapping.local_model}`}
+                          onClick={() =>
+                            onReenableModel?.(
+                              provider.id,
+                              mapping.local_model,
+                              mapping.upstream_model,
+                            )
+                          }
+                          disabled={busy}
+                          className="inline-flex h-[38px] shrink-0 items-center gap-1.5 rounded-lg border border-amber-500/40 bg-background px-2.5 text-xs font-medium text-amber-700 shadow-sm transition hover:bg-amber-500/15 disabled:opacity-50 dark:text-amber-400"
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" />
+                          {t("apiGatewayReenableMapping", "Re-enable mapping")}
+                        </button>
+                      ) : null}
                     </div>
 
                     {isAutoAdded ? (

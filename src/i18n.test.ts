@@ -316,3 +316,59 @@ describe("服务商模板快照、价格与获取模型旧键清理", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Step 3: 逐行自动禁用新增国际化键
+// ---------------------------------------------------------------------------
+
+const STEP_3_AUTO_DISABLE_KEYS = [
+  "apiGatewayProviderAutoDisabledModelsHint",
+  "apiGatewayReenableMapping",
+  "apiGatewayReenableAllMappings",
+] as const;
+
+describe("逐行自动禁用新增国际化键", () => {
+  it.each(["en", "zh"] as const)(
+    "为 %s 提供全部 Step 3 新增键的真实文案",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      const fallbacks = STEP_3_AUTO_DISABLE_KEYS.filter(
+        (key) => i18n.t(key) === key,
+      );
+      expect(fallbacks, `${language} 中回退为键名的 Step 3 键`).toEqual([]);
+    },
+  );
+
+  it("提示键支持 count 插值显示被自动禁用的映射数量", async () => {
+    await i18n.changeLanguage("en");
+    const rawEn = resourceBundle("en").apiGatewayProviderAutoDisabledModelsHint;
+    expect(typeof rawEn).toBe("string");
+    expect(rawEn as string).toContain("{{count}}");
+    expect(i18n.t("apiGatewayProviderAutoDisabledModelsHint", { count: 0 })).not.toContain("{{count}}");
+    expect(i18n.t("apiGatewayProviderAutoDisabledModelsHint", { count: 5 })).not.toContain("{{count}}");
+  });
+
+  it.each([
+    ["en", "Re-enable mapping"],
+    ["zh", "重新启用映射"],
+  ] as const)("重新启用映射按钮文案为 %s", async (language, expected) => {
+    await i18n.changeLanguage(language);
+    expect(i18n.t("apiGatewayReenableMapping")).toBe(expected);
+  });
+
+  it.each([
+    ["en", "Re-enable all mappings"],
+    ["zh", "重新启用所有映射"],
+  ] as const)("重新启用全部映射按钮文案为 %s", async (language, expected) => {
+    await i18n.changeLanguage(language);
+    expect(i18n.t("apiGatewayReenableAllMappings")).toBe(expected);
+  });
+
+  it("en 与 zh 的键路径集合仍保持一致", () => {
+    const enPaths = collectKeyPaths(resourceBundle("en"));
+    const zhPaths = collectKeyPaths(resourceBundle("zh"));
+    const onlyEn = enPaths.filter((path) => !new Set(zhPaths).has(path));
+    const onlyZh = zhPaths.filter((path) => !new Set(enPaths).has(path));
+    expect({ onlyEn, onlyZh }).toEqual({ onlyEn: [], onlyZh: [] });
+  });
+});
+

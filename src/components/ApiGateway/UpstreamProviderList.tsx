@@ -31,7 +31,6 @@ type UpstreamProviderListProps = {
   busy: boolean;
   onSelect: (providerId: string) => void;
   onToggleEnabled: (provider: GatewayUpstreamProvider, enabled: boolean) => void;
-  onReenable: (providerId: string) => void;
   onAdd: () => void;
   onDelete?: (providerId: string) => void;
   onManageTemplates?: () => void;
@@ -46,7 +45,6 @@ export function UpstreamProviderList({
   busy,
   onSelect,
   onToggleEnabled,
-  onReenable,
   onAdd,
   onDelete,
   onManageTemplates,
@@ -276,10 +274,12 @@ export function UpstreamProviderList({
         <div className="grid gap-3 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
           {filteredProviders.map((provider) => {
             const isSelected = provider.id === selectedProviderId;
-            const isAutoDisabled = Boolean(provider.auto_disabled);
             const isEnabled = provider.enabled;
             const disabledAt = formatGatewayTimestamp(provider.disabled_at);
             const mappingCount = provider.mappings?.length ?? 0;
+            const autoDisabledMappings = (provider.mappings ?? []).filter(
+              (mapping) => mapping.auto_disabled === true,
+            );
             const isChatProtocol = provider.protocol !== "responses";
             const templateView = provider.template_id
               ? templates?.find(
@@ -420,58 +420,49 @@ export function UpstreamProviderList({
                     </div>
                   ) : null}
 
-                  {/* 自动禁用警告栏 */}
-                  {provider.auto_disabled ? (
-                    <div
-                      className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400"
-                      data-testid={`api-gateway-auto-disabled-${provider.id}`}
-                    >
-                      <div className="min-w-0 space-y-0.5">
-                        <div className="flex items-center gap-1 font-medium">
-                          <AlertTriangle className="h-3 w-3 shrink-0" />
-                          <span>{t("apiGatewayAutoDisabled", "Auto-disabled")}</span>
+                  {/* 旧版服务商级运行时状态（只读）：徽章与重启用按钮已移除，仅保留原因与时间信息 */}
+                  {provider.auto_disabled &&
+                  (provider.disabled_reason || disabledAt) ? (
+                    <div className="mt-2.5 space-y-0.5 rounded-lg border border-border/60 bg-muted/20 p-2 text-[11px] text-muted-foreground">
+                      {provider.disabled_reason ? (
+                        <div className="truncate">
+                          {t("apiGatewayDisabledReason", {
+                            reason: provider.disabled_reason,
+                            defaultValue: `Reason: ${provider.disabled_reason}`,
+                          })}
                         </div>
-                        {provider.disabled_reason ? (
-                          <div className="truncate text-[10px]">
-                            {t("apiGatewayDisabledReason", {
-                              reason: provider.disabled_reason,
-                              defaultValue: `Reason: ${provider.disabled_reason}`,
-                            })}
-                          </div>
-                        ) : null}
-                        {disabledAt ? (
-                          <div className="text-[10px] opacity-80">
-                            {t("apiGatewayDisabledAt", {
-                              time: disabledAt,
-                              defaultValue: `Disabled at ${disabledAt}`,
-                            })}
-                          </div>
-                        ) : null}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => onReenable(provider.id)}
-                        disabled={busy}
-                        className="inline-flex h-6 items-center gap-1 rounded-md border border-amber-500/40 bg-background px-2 text-[10px] font-medium shadow-sm transition hover:bg-amber-500/20 disabled:opacity-50"
-                      >
-                        <RotateCcw className="h-2.5 w-2.5" />
-                        {t("apiGatewayReenable", "Re-enable")}
-                      </button>
+                      ) : null}
+                      {disabledAt ? (
+                        <div className="opacity-80">
+                          {t("apiGatewayDisabledAt", {
+                            time: disabledAt,
+                            defaultValue: `Disabled at ${disabledAt}`,
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {/* 逐行自动禁用读提示：健康失败累计后由后端按映射行自动禁用 */}
+                  {autoDisabledMappings.length > 0 ? (
+                    <div
+                      data-testid={`api-gateway-provider-auto-disabled-models-${provider.id}`}
+                      className="mt-2 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                    >
+                      <AlertTriangle className="h-3 w-3 shrink-0" />
+                      <span>
+                        {t("apiGatewayProviderAutoDisabledModelsHint", {
+                          count: autoDisabledMappings.length,
+                          defaultValue: `${autoDisabledMappings.length} mapping(s) auto-disabled`,
+                        })}
+                      </span>
                     </div>
                   ) : null}
                 </div>
 
                 {/* 卡片底栏操作按钮 */}
                 <div className="mt-3 flex items-center justify-between border-t pt-2.5">
-                  {isAutoDisabled ? (
-                    <span
-                      data-testid={`api-gateway-status-badge-${provider.id}`}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
-                    >
-                      <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                      <span>{t("apiGatewayAutoDisabled", "Auto-disabled")}</span>
-                    </span>
-                  ) : isEnabled ? (
+                  {isEnabled ? (
                     <span
                       data-testid={`api-gateway-status-badge-${provider.id}`}
                       className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300"

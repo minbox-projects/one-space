@@ -186,7 +186,7 @@ describe("ModelListPanel 本地模型列表", () => {
     expect(rowModels()).not.toContain("default-only");
   });
 
-  it("禁用服务商、自动禁用服务商与禁用映射都不产生行", () => {
+  it("启用且未自动禁用的映射才产生行", () => {
     renderPanel([
       makeProvider({
         id: "p-disabled",
@@ -210,6 +210,7 @@ describe("ModelListPanel 本地模型列表", () => {
         default_model: null,
         mappings: [
           { local_model: "keep", upstream_model: "up-keep" },
+          { local_model: "auto-row", upstream_model: "up-auto-row", auto_disabled: true },
           {
             local_model: "disabled-only",
             upstream_model: "up-disabled-only",
@@ -219,7 +220,8 @@ describe("ModelListPanel 本地模型列表", () => {
       }),
     ]);
 
-    expect(rowModels()).toEqual(["keep"]);
+    // p-disabled（服务商禁用）不产出行；p-auto（仅提供商级 auto_disabled，provider.enabled）产出行；p-keep 的 auto 行被跳过
+    expect(rowModels()).toEqual(["auto-mapping", "keep"]);
     expect(screen.queryByTestId("api-gateway-model-list-empty")).not.toBeInTheDocument();
   });
 
