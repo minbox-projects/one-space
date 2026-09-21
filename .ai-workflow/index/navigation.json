@@ -2880,40 +2880,33 @@
       "owner_role": "documentation-maintainer",
       "responsibility": "使用手册、CLI / MCP / Skills 文档与应用内 Documentation 页面",
       "entries": [
+        "docs/USAGE.md"
+      ],
+      "related_files": [
         "docs/CLI.md",
         "docs/MCP.md",
         "docs/SKILLS.md",
-        "docs/USAGE.md",
         "docs/ai-assistant-roadmap.md",
         "docs/ai-provider-refactor.md",
         "docs/ai-terminal-env-refactor.md",
         "docs/claude-multi-profile.md",
-        "docs/prototypes/ai-provider-list-preview.html",
-        "docs/prototypes/claude-multi-env-ui.html",
-        "docs/reports/20260601/claude-profile-layout-c-refined.html",
-        "docs/reports/20260601/claude-profile-layout-c-tools.html",
-        "docs/reports/20260601/claude-profile-layout-decision-matrix.html",
-        "docs/reports/20260601/claude-profile-layout-redesign.html"
+        "README.md",
+        "src/components/Documentation.tsx"
       ],
-      "related_files": [],
       "tests": [],
       "symbols": [],
       "depends_on": [],
       "read_scope": [
+        "docs/USAGE.md",
         "docs/CLI.md",
         "docs/MCP.md",
         "docs/SKILLS.md",
-        "docs/USAGE.md",
         "docs/ai-assistant-roadmap.md",
         "docs/ai-provider-refactor.md",
         "docs/ai-terminal-env-refactor.md",
         "docs/claude-multi-profile.md",
-        "docs/prototypes/ai-provider-list-preview.html",
-        "docs/prototypes/claude-multi-env-ui.html",
-        "docs/reports/20260601/claude-profile-layout-c-refined.html",
-        "docs/reports/20260601/claude-profile-layout-c-tools.html",
-        "docs/reports/20260601/claude-profile-layout-decision-matrix.html",
-        "docs/reports/20260601/claude-profile-layout-redesign.html"
+        "README.md",
+        "src/components/Documentation.tsx"
       ],
       "relations": [],
       "shared_entry": false
