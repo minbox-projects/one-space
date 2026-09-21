@@ -333,9 +333,8 @@ fn collect_usage_records_for_tool(
             include_model_breakdown,
         ));
     }
-    // Antigravity does not persist token usage on disk; never parse its transcripts.
     if tool == "antigravity" {
-        return Arc::new(unavailable_scan());
+        return Arc::new(collect_antigravity_usage_records(window));
     }
     let Some(cache) = usage_scan_caches().for_tool(tool) else {
         return Arc::new(ToolScan {
@@ -610,7 +609,7 @@ fn aggregate_tool_usage(
 
     SessionUsageToolStats {
         tool: tool.to_string(),
-        source_status: if scan.source_status == "available" && scan.scanned_sessions == 0 {
+        source_status: if scan.source_status == "available" && scan.records.is_empty() {
             "empty".to_string()
         } else {
             scan.source_status.clone()
@@ -945,6 +944,190 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
             output_tokens: output,
             cache_tokens: cache,
             cache_read_tokens: cache_read,
+            total_tokens: total,
+        });
+    }
+    Ok(out)
+}
+
+fn collect_antigravity_usage_records(window: &UsageWindow) -> ToolScan {
+    let Some(home) = usage_home_dir() else {
+        return unavailable_scan();
+    };
+    let tmp_root = home.join(".gemini").join("tmp");
+    if !tmp_root.is_dir() {
+        return unavailable_scan();
+    }
+    let mut scan = ToolScan {
+        source_status: "available".to_string(),
+        scanned_sessions: 0,
+        records: Vec::new(),
+        errors: Vec::new(),
+    };
+    let Ok(rollouts) = fs::read_dir(&tmp_root) else {
+        return unavailable_scan();
+    };
+    for rollout in rollouts.flatten() {
+        let chats_dir = rollout.path().join("chats");
+        if !chats_dir.is_dir() {
+            continue;
+        }
+        for path in antigravity_session_files(&chats_dir) {
+            if !usage_file_may_overlap_window(modified_ms(&path), window.start_ms) {
+                continue;
+            }
+            scan.scanned_sessions += 1;
+            let parsed =
+                if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl") {
+                    parse_antigravity_jsonl_usage_file(&path)
+                } else {
+                    parse_antigravity_json_usage_file(&path)
+                };
+            match parsed {
+                Ok(records) => scan.records.extend(records),
+                Err(error) => scan.errors.push(format!("{}: {error}", path.display())),
+            }
+        }
+    }
+    scan
+}
+
+/// Resolves HOME for usage scans so tests can redirect it via the thread-local
+/// override without mutating the process environment.
+fn usage_home_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        if let Some(home) = crate::config::test_home::test_home_override() {
+            return Some(home);
+        }
+    }
+    dirs::home_dir()
+}
+
+fn antigravity_session_files(chats_dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(chats_dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with("session-") && (name.ends_with(".json") || name.ends_with(".jsonl")) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+fn json_millis(value: Option<&Value>) -> Option<i64> {
+    match value? {
+        Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_f64().map(|value| value as i64)),
+        Value::String(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                return None;
+            }
+            parse_rfc3339_millis(text).or_else(|| text.parse::<i64>().ok())
+        }
+        _ => None,
+    }
+}
+
+fn parse_antigravity_json_usage_file(path: &Path) -> Result<Vec<UsageRecord>, String> {
+    let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let value: Value = serde_json::from_str(&content).map_err(|error| error.to_string())?;
+    let session_id = json_nonempty_string(value.get("sessionId"))
+        .unwrap_or_else(|| file_stem_session_id(path));
+    let file_model = json_nonempty_string(value.get("model"))
+        .or_else(|| json_nonempty_string(value.get("modelName")));
+    let mut out = Vec::new();
+    let Some(messages) = value.get("messages").and_then(Value::as_array) else {
+        return Ok(out);
+    };
+    for message in messages {
+        let Some(tokens) = message.get("tokens") else { continue; };
+        let input = json_u64(tokens.get("input"));
+        let output = json_u64(tokens.get("output"));
+        let cached = json_u64(tokens.get("cached"));
+        let total = total_or_sum(json_u64(tokens.get("total")), input, output, cached);
+        if input == 0 && output == 0 && cached == 0 && total == 0 {
+            continue;
+        }
+        let timestamp_ms = json_millis(message.get("timestamp"))
+            .or_else(|| json_millis(message.get("time")))
+            .or_else(|| json_millis(value.get("lastUpdated")))
+            .or_else(|| json_millis(value.get("startTime")))
+            .unwrap_or_else(|| modified_ms(path));
+        out.push(UsageRecord {
+            session_id: session_id.clone(),
+            model: json_nonempty_string(message.get("model"))
+                .or_else(|| json_nonempty_string(message.get("modelName")))
+                .or_else(|| file_model.clone()),
+            timestamp_ms,
+            input_tokens: input,
+            output_tokens: output,
+            cache_tokens: cached,
+            cache_read_tokens: 0,
+            total_tokens: total,
+        });
+    }
+    Ok(out)
+}
+
+fn parse_antigravity_jsonl_usage_file(path: &Path) -> Result<Vec<UsageRecord>, String> {
+    let file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let reader = BufReader::new(file);
+    let fallback_session_id = file_stem_session_id(path);
+    let mut session_id = String::new();
+    let mut out = Vec::new();
+    for line in reader.lines() {
+        let line = line.map_err(|error| error.to_string())?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(trimmed).map_err(|error| error.to_string())?;
+        if value.get("$set").is_some() {
+            continue;
+        }
+        if session_id.is_empty() {
+            if let Some(id) = json_nonempty_string(value.get("sessionId")) {
+                session_id = id;
+            }
+        }
+        let Some(tokens) = value.get("tokens") else {
+            continue;
+        };
+        let input = json_u64(tokens.get("input"));
+        let output = json_u64(tokens.get("output"));
+        let cached = json_u64(tokens.get("cached"));
+        let total = total_or_sum(json_u64(tokens.get("total")), input, output, cached);
+        if input == 0 && output == 0 && cached == 0 && total == 0 {
+            continue;
+        }
+        let timestamp_ms = json_millis(value.get("timestamp"))
+            .or_else(|| json_millis(value.get("time")))
+            .unwrap_or_else(|| modified_ms(path));
+        out.push(UsageRecord {
+            session_id: if session_id.is_empty() {
+                fallback_session_id.clone()
+            } else {
+                session_id.clone()
+            },
+            model: json_nonempty_string(value.get("model"))
+                .or_else(|| json_nonempty_string(value.get("modelName"))),
+            timestamp_ms,
+            input_tokens: input,
+            output_tokens: output,
+            cache_tokens: cached,
+            cache_read_tokens: 0,
             total_tokens: total,
         });
     }
