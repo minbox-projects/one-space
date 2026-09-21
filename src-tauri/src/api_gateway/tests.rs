@@ -8047,9 +8047,9 @@ async fn wait_for_upstream_attempts(
 
 /// REQ-006 / AC-007 (extended by 20260920-gateway-log-attempts-and-upstream-errors):
 /// after the client has fully disconnected, the relay must abandon the pending
-/// work and must not issue a retry, while the log keeps every already completed
-/// failure attempt as a non-terminal row and appends exactly one terminal
-/// `cancelled` row with no provider. Both candidates answer 503 with their own
+/// work and must not issue a retry, while the log discards the entire buffered
+/// set — both completed-attempt rows and any synthetic terminal row vanish when
+/// the tool connection disappears. Both candidates answer 503 with their own
 /// message and a short retry deadline, so the fallback-first pass completes both
 /// attempts in either randomized candidate order and both retries are queued
 /// behind the delay when the disconnect arrives. This covers both JSON and SSE
@@ -9591,10 +9591,32 @@ fn usage_store_logs_filter_group_and_paginate() {
             .unwrap();
     }
 
+    // A cancelled-only row with a unique local_model must remain physically
+    // readable while being excluded from every user-visible facet.
+    store
+        .append(
+            &sample_record(
+                base + 200_000,
+                "cancelled-only-model",
+                "remote-canc",
+                "p1",
+                "Provider One",
+                UsageResult::Cancelled,
+                Some(0.1),
+                tokens(1, 0, 0, 1),
+            ),
+            365,
+        )
+        .unwrap();
+
     // User-visible queries exclude cancelled rows.
-    // Raw all_records still returns all 120 physical rows.
+    // Raw all_records still returns all 121 physical rows.
     let raw_all = store.all_records().unwrap_or_default();
-    assert_eq!(raw_all.len(), 120, "physical rows include cancelled");
+    assert_eq!(raw_all.len(), 121, "physical rows include cancelled");
+    assert!(
+        raw_all.iter().any(|r| r.local_model == "cancelled-only-model"),
+        "raw reader can see cancelled physical row"
+    );
 
     let page_one = store
         .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
@@ -9607,6 +9629,20 @@ fn usage_store_logs_filter_group_and_paginate() {
     assert!(
         page_one.records[0].timestamp_ms > page_one.records[49].timestamp_ms,
         "newest first"
+    );
+
+    // The models facet excludes cancelled-only model; only success/failure models appear.
+    assert!(
+        page_one.models.contains(&"local-a".to_string()),
+        "success/failure local-a must be in models facet"
+    );
+    assert!(
+        page_one.models.contains(&"local-b".to_string()),
+        "success/failure local-b must be in models facet"
+    );
+    assert!(
+        !page_one.models.contains(&"cancelled-only-model".to_string()),
+        "cancelled-only local_model must not leak into user-visible models facet"
     );
 
     let page_two = store
@@ -9663,6 +9699,11 @@ fn usage_store_logs_filter_group_and_paginate() {
         .unwrap();
     assert_eq!(by_model.len(), 2);
     assert_eq!(by_model.iter().map(|g| g.request_count).sum::<u32>(), 80);
+    // Models facet includes only success/failure models (not cancelled-only).
+    assert!(
+        !page_one.models.contains(&"cancelled-only-model".to_string()),
+        "cancelled-only local_model must not leak into user-visible models facet"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -9767,6 +9808,19 @@ fn usage_store_never_contains_credentials_headers_or_bodies() {
     assert!(!serialized.contains("\"body\""));
     assert!(!serialized.contains("\"headers\""));
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// REQ-002 / AC-005 COMPAT: the legacy string→enum parser must accept
+/// "cancelled" so that commands which read user-input strings still construct
+/// `UsageResult::Cancelled` instead of failing. The existing query predicate
+/// (`result != 'cancelled'`) ensures this parsed value yields an empty page.
+#[test]
+fn usage_result_parse_cancelled_returns_some() {
+    assert_eq!(UsageResult::parse("success"), Some(UsageResult::Success));
+    assert_eq!(UsageResult::parse("failure"), Some(UsageResult::Failure));
+    assert_eq!(UsageResult::parse("cancelled"), Some(UsageResult::Cancelled));
+    assert_eq!(UsageResult::parse("unknown"), None);
+    assert_eq!(UsageResult::parse(""), None);
 }
 
 // ---------------------------------------------------------------------------
@@ -11554,12 +11608,10 @@ fn logs_page_clamps_when_range_shrinks_and_defaults_to_first_page() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// AC-020 / REQ-017: per-day grouping reports the last request time and counts
-/// only `failure` as an error (never `cancelled`); model grouping follows the
-/// same error rule.
-#[test]
-/// AC-004 / REQ-002: grouped model/day results exclude cancelled rows from
-/// request_count, error_count and last_request_at.
+/// AC-020 / REQ-017 / AC-004 / REQ-002: per-day grouping reports the last request
+/// time and counts only `failure` as an error (never `cancelled`); model grouping
+/// follows the same error rule. Cancelled rows are excluded from request_count,
+/// error_count and last_request_at in both groupings.
 #[test]
 fn grouped_rows_exclude_cancelled_from_errors_and_report_last_request() {
     let (dir, store) = usage_store("usage-groups-errors");
@@ -11618,6 +11670,11 @@ fn grouped_rows_exclude_cancelled_from_errors_and_report_last_request() {
         .expect("local-b group");
     assert_eq!(local_b.request_count, 1, "cancelled excluded from request count");
     assert_eq!(local_b.error_count, 1);
+    // Model groups are sorted by MAX(timestamp_ms) DESC, local_model ASC.
+    // local-b (day_two + 2_000 > day_one + 1_000) has a later non-cancelled
+    // maximum, so it appears first.
+    assert_eq!(models[0].group, "local-b");
+    assert_eq!(models[1].group, "local-a", "model groups in stable descending-timestamp order");
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -11666,8 +11723,9 @@ fn logs_filter_by_status_and_model_together_exclude_cancelled() {
         )
         .unwrap();
     assert_eq!(cancelled.total, 0, "cancelled excluded from user-visible queries");
-    assert!(cancelled.records.is_empty());
     assert_eq!(cancelled.total_pages, 1, "an empty result has one page");
+    assert!(cancelled.records.is_empty());
+    assert!(cancelled.models.is_empty(), "cancelled filter must yield no models facet");
 
     let cancelled_b = store
         .query_logs(
@@ -14939,9 +14997,10 @@ async fn attempt_buffer_discarded_on_downstream_disconnect() {
         "sk",
         Some("remote-large"),
     ));
-    let price = priced_with_provider("p1", "remote-large", 1.0, 0.0, 0.0, 2.0);
-    let expected_amount = compute_cost(&price, &tokens(4, 0, 0, 2));
-    config.model_prices = vec![price];
+    // Price row retained only to prove that fully-priced attempts (non-None amount)
+    // produce zero log rows when the inbound request is cancelled before delivery.
+    let price_fixture = priced_with_provider("p1", "remote-large", 1.0, 0.0, 0.0, 2.0);
+    config.model_prices = vec![price_fixture];
     super::storage::write_config(&config).expect("write relay config");
 
     let (client, mut handler) = spawn_handle_connection(false).await;
