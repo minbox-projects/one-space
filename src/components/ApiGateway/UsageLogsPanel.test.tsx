@@ -1266,5 +1266,63 @@ describe("UsageLogsPanel", () => {
     expect(hints[0]).toHaveTextContent("Suggestion: Upstream provider quota or periodic limit exhausted");
     expect(hints[1]).toHaveTextContent("Suggestion: Unable to connect to upstream URL");
   });
+
+  it("不分组表格底部分页栏展示当前查询条件下的日志总条数（英文及千分位格式化）", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({ total: 1280, total_pages: 26 });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+
+    const totalCount = await screen.findByTestId("api-gateway-logs-total-count");
+    expect(totalCount).toHaveTextContent("Total 1,280 requests");
+    expect(screen.getByText("Page 1 / 26")).toBeInTheDocument();
+  });
+
+  it("中文环境下底部分页栏展示当前查询条件下的日志总条数", async () => {
+    await i18n.changeLanguage("zh");
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({ total: 256, total_pages: 6 });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+
+    const totalCount = await screen.findByTestId("api-gateway-logs-total-count");
+    expect(totalCount).toHaveTextContent("共 256 条");
+    expect(screen.getByText("第 1 / 6 页")).toBeInTheDocument();
+  });
+
+  it("筛选条件变更后，底部分页栏日志总条数同步更新", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string, args: Record<string, unknown> = {}) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      if (args.status === "failure") {
+        return page({ total: 15, total_pages: 1 });
+      }
+      return page({ total: 100, total_pages: 2 });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+
+    const totalCount = await screen.findByTestId("api-gateway-logs-total-count");
+    expect(totalCount).toHaveTextContent("Total 100 requests");
+
+    // 打开筛选面板并选择 failure 状态
+    await user.click(screen.getByTestId("api-gateway-logs-filter-trigger"));
+    await user.click(screen.getByRole("button", { name: /Failure/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("api-gateway-logs-total-count")).toHaveTextContent("Total 15 requests");
+    });
+  });
 });
+
 

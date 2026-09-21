@@ -980,30 +980,39 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
             </table>
           </div>
 
-          <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
-            <button
-              type="button"
-              onClick={() => setPage((prev) => Math.max(1, prev - 1))}
-              disabled={page <= 1}
-              className="rounded-md border bg-background px-2.5 py-1 font-medium transition hover:bg-muted disabled:opacity-50"
-            >
-              {t("apiGatewayLogsPagePrev", "Previous")}
-            </button>
-            <span>
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span data-testid="api-gateway-logs-total-count">
               {t(
-                "apiGatewayLogsPageSummary",
-                "Page {{page}} / {{total}}",
-                { page: pageData.page, total: Math.max(1, totalPages) },
+                "apiGatewayLogsTotalCount",
+                "Total {{total}} requests",
+                { total: new Intl.NumberFormat().format(pageData.total) },
               )}
             </span>
-            <button
-              type="button"
-              onClick={() => setPage((prev) => prev + 1)}
-              disabled={totalPages < 1 || page >= totalPages}
-              className="rounded-md border bg-background px-2.5 py-1 font-medium transition hover:bg-muted disabled:opacity-50"
-            >
-              {t("apiGatewayLogsPageNext", "Next")}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+                disabled={page <= 1}
+                className="rounded-md border bg-background px-2.5 py-1 font-medium transition hover:bg-muted disabled:opacity-50"
+              >
+                {t("apiGatewayLogsPagePrev", "Previous")}
+              </button>
+              <span>
+                {t(
+                  "apiGatewayLogsPageSummary",
+                  "Page {{page}} / {{total}}",
+                  { page: pageData.page, total: Math.max(1, totalPages) },
+                )}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((prev) => prev + 1)}
+                disabled={totalPages < 1 || page >= totalPages}
+                className="rounded-md border bg-background px-2.5 py-1 font-medium transition hover:bg-muted disabled:opacity-50"
+              >
+                {t("apiGatewayLogsPageNext", "Next")}
+              </button>
+            </div>
           </div>
         </div>
       )}
