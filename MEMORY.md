@@ -40,6 +40,7 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 - CLI 探测与版本：`cli_probe.rs`、`cli_updates.rs`、`version_detect.rs`。
 - OpenCode CLI 探测按完整 semver 优先级解析并比较版本，兼容 1.x 与 2.x：prerelease 的纯数字标识低于字母数字标识、stable 高于 prerelease，build metadata 保留在显示文本中但不参与优先级比较；检测到多个安装时选择最高版本，更新检查同样容忍 build metadata。
 - OpenCode 会话历史与用量同时读取 legacy JSON、SQLite v1（`session` / `message`）和 SQLite v2（`session_v2` / `session_message`）。trim 后相同的 session ID 固定按 v2 > v1 > JSON 选择来源，低优先级来源只补充独有 session；用量在选中来源内保留该 session 的全部 message，以 message 级 token 数据兼容早期 v1 并匹配 v2，跨来源不重复累计。Tauri schema、前端与 resolver 保持不变；原因与取舍见 [OpenCode session storage compatibility](.ai-workflow/notes/implemented/bug-fix/2026-09-20-opencode-session-storage-compatibility.md)。
+- Antigravity 用量三来源：legacy `~/.gemini/tmp` 下 `session-` 前缀 `.json`/`.jsonl` 按迁移前 gemini 口径解析 token（`.json` 的 `cached+cache` 求和、`message.metadata.model` 回退）并产出 `UsageRecord`；新格式 brain transcript（两处 brain 根下 `transcript_full.jsonl`，`USER_INPUT` 大小写不敏感）只计 `scanned_sessions`/`scanned_calls`，不进 token 聚合；额度经 `sessions_antigravity_quota` 直读 `agy -p /usage --output-format json`（成功结果 5 分钟 TTL、失败不缓存），不走扫描缓存。`empty` 契约：`available` 且 `scanned_sessions==0` 即 `empty`，有源无 token 时前端显示 Antigravity 专属 token 不可用说明。原因与取舍见 [Antigravity Usage and Quota](.ai-workflow/notes/implemented/architecture/2026-09-21-antigravity-usage-and-quota.md)。
 
 ## Skills 统一目录与兼容
 

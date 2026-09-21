@@ -379,6 +379,7 @@ pub fn run() {
             ai_sessions::sessions_usage_clear_cache,
             ai_sessions::sessions_usage_tool_stats,
             ai_sessions::sessions_usage_day_stats,
+            ai_sessions::sessions_antigravity_quota,
             app_store::claude_profile_list,
             app_store::claude_profile_resolve,
             app_store::claude_profile_set_default,

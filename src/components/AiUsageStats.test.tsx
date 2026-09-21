@@ -13,6 +13,54 @@ interface InvokeArgs {
   date?: string;
 }
 
+interface AntigravityQuotaBucket {
+  id: string;
+  name: string;
+  window: string;
+  remaining_fraction: number;
+  reset_time: string;
+  description: string | null;
+}
+
+interface AntigravityQuotaGroup {
+  name: string;
+  description: string | null;
+  buckets: AntigravityQuotaBucket[];
+}
+
+// Local type mirroring the unexported product interface shape so the helper's
+// return type is known.  Product file intentionally does not export it, per
+// scope rules.
+interface AiUsageToolStats {
+  tool: ToolId;
+  source_status: string;
+  summary: {
+    total_tokens: number;
+    calls: number;
+    sessions: number;
+    cache_hit_rate: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_tokens: number;
+  };
+  daily: AiUsageDailyItem[];
+  peak_day: { date: string; total_tokens: number; calls: number } | null;
+  scanned_sessions: number;
+  scanned_calls: number;
+  errors: string[];
+}
+
+interface AiUsageDailyItem {
+  date: string;
+  total_tokens: number;
+  calls: number;
+  sessions: number;
+  cache_hit_rate: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_tokens: number;
+}
+
 interface AiUsageDayBreakdown {
   tool: ToolId;
   total_tokens: number;
@@ -208,15 +256,110 @@ function makeToolStats(tool: ToolId, days: 7 | 15 | 30) {
     };
   }
 
+  if (tool === "opencode") {
+    return {
+      tool,
+      source_status: "error",
+      summary: emptySummary,
+      daily: emptyDaily,
+      peak_day: null,
+      scanned_sessions: 0,
+      scanned_calls: 0,
+      errors: ["broken source"],
+    };
+  }
+
+  // Default antigravity — "unavailable" with no scanned sessions.
   return {
     tool,
-    source_status: tool === "opencode" ? "error" : tool === "antigravity" ? "unavailable" : "empty",
+    source_status: "unavailable",
     summary: emptySummary,
     daily: emptyDaily,
     peak_day: null,
     scanned_sessions: 0,
     scanned_calls: 0,
-    errors: tool === "opencode" ? ["broken source"] : [],
+    errors: [],
+  };
+}
+
+function makeToolStatsAntigravityEmpty(): AiUsageToolStats {
+  const dates = Array.from({ length: 7 }, (_, index) => {
+    const day = String(index + 1).padStart(2, "0");
+    return `2026-06-${day}`;
+  });
+  const emptySummary = {
+    total_tokens: 0,
+    calls: 0,
+    sessions: 0,
+    cache_hit_rate: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_tokens: 0,
+  };
+  const emptyDaily = dates.map((date) => ({
+    date,
+    ...emptySummary,
+  }));
+  return {
+    tool: "antigravity",
+    source_status: "empty",
+    summary: emptySummary,
+    daily: emptyDaily,
+    peak_day: null,
+    scanned_sessions: 2,
+    scanned_calls: 3,
+    errors: [],
+  };
+}
+
+function makeAntigravityQuotaResponse(): { groups: AntigravityQuotaGroup[] } {
+  return {
+    groups: [
+      {
+        name: "Free tier",
+        description: "Default free usage bucket",
+        buckets: [
+          {
+            id: "free-daily",
+            name: "Daily requests",
+            window: "daily",
+            remaining_fraction: 0.245,
+            reset_time: "2026-07-08T00:00:00Z",
+            description: "Reset every day at midnight UTC",
+          },
+          {
+            id: "free-weekly",
+            name: "Weekly tokens",
+            window: "weekly",
+            remaining_fraction: 0.65,
+            reset_time: "2026-07-13T12:00:00Z",
+            description: null,
+          },
+          {
+            id: "free-5h",
+            name: "5-hour tokens",
+            window: "5h",
+            remaining_fraction: 0.9,
+            reset_time: "2026-07-08T05:00:00Z",
+            description: "Reset every 5 hours",
+          },
+        ],
+      },
+      {
+        name: "Pro tier",
+        description: null,
+        buckets: [
+          {
+            id: "pro-monthly",
+            name: "Monthly tokens",
+            window: "monthly",
+            remaining_fraction: 0.875,
+            reset_time: "2026-08-01T00:00:00Z",
+            description: "End-of-month reset",
+          },
+        ],
+      },
+    ],
   };
 }
 
@@ -438,6 +581,7 @@ describe("AiUsageStats", () => {
   });
 
   it("renders Antigravity usage as one unavailable state without numeric token values", async () => {
+    // source_status:"unavailable" + scanned_sessions==0 → still show unavailable panel
     renderWithProviders(<AiUsageStats />);
 
     const panel = await screen.findByTestId("ai-usage-tool-antigravity");
@@ -453,6 +597,277 @@ describe("AiUsageStats", () => {
     expect(
       within(panel).queryByText(/Total Tokens|Token 总量/),
     ).not.toBeInTheDocument();
+  });
+
+  it("non-antigravity tool with empty source + scanned sessions does not show token-unavailable locally text", async () => {
+    // R4: `tokensUnavailableLocally` branch must be scoped to tool==="antigravity".
+    // A non-antigravity tool (claude) in the same data shape
+    // (source_status:"empty" && scanned_sessions>0 && calls==0) should show
+    // only the generic "no data" UI, never the localized-inaccessible message.
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_usage_tool_stats" && args?.tool === "claude") {
+        return {
+          tool: "claude" as ToolId,
+          source_status: "empty",
+          summary: {
+            total_tokens: 0,
+            calls: 0,
+            sessions: 0,
+            cache_hit_rate: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_tokens: 0,
+          },
+          daily: Array.from({ length: 7 }, (_, i) => ({
+            date: `2026-06-${String(i + 1).padStart(2, "0")}`,
+            total_tokens: 0,
+            calls: 0,
+            sessions: 0,
+            cache_hit_rate: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_tokens: 0,
+          })),
+          peak_day: null,
+          scanned_sessions: 3,
+          scanned_calls: 0,
+          errors: [],
+        };
+      }
+      if (command === "sessions_usage_tool_stats") {
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
+      }
+      if (command === "sessions_usage_day_stats") {
+        return makeDayStats(args?.date || "");
+      }
+      if (command === "sessions_usage_clear_cache") {
+        return null;
+      }
+      throw new Error(`Unhandled command: ${command}`);
+    });
+
+    renderWithProviders(<AiUsageStats />);
+
+    // The claude panel should NOT contain the tokens-unavailable-locally text.
+    const claudePanel = screen.getByTestId("ai-usage-tool-claude");
+    expect(
+      within(claudePanel).queryByText(/Token usage locally unavailable|Token 用量暂不可用/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders antigravity empty with scan counts and local-inaccessible message, no unavailable badge", async () => {
+    // Override antigravity to be "empty" with scanned sessions but zero calls.
+    let resolveAntigravity!: () => void;
+    const antigravityGate = new Promise<void>((resolve) => {
+      resolveAntigravity = resolve;
+    });
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_usage_tool_stats" && args?.tool === "antigravity") {
+        await antigravityGate;
+        return makeToolStatsAntigravityEmpty();
+      }
+      if (command === "sessions_usage_tool_stats") {
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
+      }
+      if (command === "sessions_usage_day_stats") {
+        return makeDayStats(args?.date || "");
+      }
+      if (command === "sessions_usage_clear_cache") {
+        return null;
+      }
+      throw new Error(`Unhandled command: ${command}`);
+    });
+
+    renderWithProviders(<AiUsageStats />);
+
+    // Wait for claude day-stats number so we know the component mounted.
+    const daySection = await screen.findByTestId("ai-usage-day-stats");
+    expect(await within(daySection).findByText("12M")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveAntigravity();
+    });
+
+    const panel = await screen.findByTestId("ai-usage-tool-antigravity");
+
+    // Should NOT render the unavailable badge element.
+    expect(
+      within(panel).queryByTestId("ai-usage-unavailable-antigravity"),
+    ).not.toBeInTheDocument();
+
+    // Should display scan session/call count.
+    expect(
+      within(panel).getByText(/2 sessions.*3 calls|2 个会话.*3 次调用/),
+    ).toBeInTheDocument();
+
+    // Should display the local-inaccessible message (English or Chinese).
+    expect(
+      within(panel).getByText(/Token usage locally unavailable|Token 用量暂不可用/),
+    ).toBeInTheDocument();
+
+    // Must not render a numeric Total Tokens cell.
+    expect(
+      within(panel).queryByText(/Total Tokens|Token 总量/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders antigravity with tokens same-shape numeric grid when calls > 0", async () => {
+    let resolveAntigravity!: () => void;
+    const antigravityGate = new Promise<void>((resolve) => {
+      resolveAntigravity = resolve;
+    });
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_usage_tool_stats" && args?.tool === "antigravity") {
+        await antigravityGate;
+        return {
+          ...makeToolStatsAntigravityEmpty(),
+          source_status: "available",
+          summary: {
+            total_tokens: 500000,
+            calls: 2,
+            sessions: 1,
+            cache_hit_rate: 30,
+            input_tokens: 350000,
+            output_tokens: 100000,
+            cache_tokens: 80000,
+          },
+          daily: makeToolStatsAntigravityEmpty().daily.map((d: AiUsageDailyItem, i: number) =>
+            i === 0 ? { ...d, total_tokens: 500000, calls: 2, sessions: 1, cache_hit_rate: 30, input_tokens: 350000, output_tokens: 100000, cache_tokens: 80000 } : d,
+          ),
+          peak_day: { date: "2026-06-01", total_tokens: 500000, calls: 2 },
+          scanned_sessions: 1,
+          scanned_calls: 2,
+        };
+      }
+      if (command === "sessions_usage_tool_stats") {
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
+      }
+      if (command === "sessions_usage_day_stats") {
+        return makeDayStats(args?.date || "");
+      }
+      if (command === "sessions_usage_clear_cache") {
+        return null;
+      }
+      throw new Error(`Unhandled command: ${command}`);
+    });
+
+    renderWithProviders(<AiUsageStats />);
+
+    // Wait for day stats section to confirm component mounted.
+    const daySection = await screen.findByTestId("ai-usage-day-stats");
+    expect(await within(daySection).findByText("12M")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveAntigravity();
+    });
+
+    const panel = await screen.findByTestId("ai-usage-tool-antigravity");
+
+    // When calls > 0, should render the numeric grid (like claude).
+    // Peak day cell proves the data path rendered (not empty/unavailable).
+    expect(within(panel).getByText(/Peak Day|最高消耗日/)).toBeInTheDocument();
+    expect(
+      within(panel).queryByTestId("ai-usage-unavailable-antigravity"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders quota card with group names, rounded percentages, reset times and invokes command with no args", async () => {
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_usage_tool_stats") {
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
+      }
+      if (command === "sessions_usage_day_stats") {
+        return makeDayStats(args?.date || "");
+      }
+      if (command === "sessions_usage_clear_cache") {
+        return null;
+      }
+      if (command === "sessions_antigravity_quota") {
+        if (args !== undefined && args !== null) {
+          throw new Error("sessions_antigravity_quota should be called with no arguments");
+        }
+        return makeAntigravityQuotaResponse();
+      }
+      throw new Error(`Unhandled command: ${command}`);
+    });
+
+    renderWithProviders(<AiUsageStats />);
+
+    const quotaPanel = await screen.findByTestId("ai-usage-quota-card");
+    expect(quotaPanel).toBeInTheDocument();
+
+    // Group names should appear.
+    expect(
+      within(quotaPanel).getByText(/Free tier/),
+    ).toBeInTheDocument();
+    expect(
+      within(quotaPanel).getByText(/Pro tier/),
+    ).toBeInTheDocument();
+
+    // Buckets: remaining_fraction rounded to nearest integer percentage.
+    // 0.245 → 25%, 0.875 → 88%
+    expect(
+      within(quotaPanel).getByText(/\b25\b%/),
+    ).toBeInTheDocument();
+    expect(
+      within(quotaPanel).getByText(/\b88\b%/),
+    ).toBeInTheDocument();
+
+    // Reset times should be in plain text (original ISO-like strings).
+    expect(
+      within(quotaPanel).getByText(/2026-07-08T00:00:00Z/),
+    ).toBeInTheDocument();
+    expect(
+      within(quotaPanel).getByText(/2026-08-01T00:00:00Z/),
+    ).toBeInTheDocument();
+
+    // Window bucket `window` renders its window label + remaining time.
+    expect(
+      within(quotaPanel).getByText(/weekly/),
+    ).toBeInTheDocument();
+    expect(
+      within(quotaPanel).getByText(/5h/),
+    ).toBeInTheDocument();
+
+    // The quota command must have been invoked with no arguments.
+    expect(invokeMock).toHaveBeenCalledWith("sessions_antigravity_quota");
+    const quotaCalls = invokeMock.mock.calls.filter(
+      ([cmd]) => cmd === "sessions_antigravity_quota",
+    );
+    expect(quotaCalls.length).toBeGreaterThanOrEqual(1);
+    expect(quotaCalls[0][1]).toBeUndefined();
+  });
+
+  it("shows quota error without blocking tool cards rendering", async () => {
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_usage_tool_stats") {
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
+      }
+      if (command === "sessions_usage_day_stats") {
+        return makeDayStats(args?.date || "");
+      }
+      if (command === "sessions_usage_clear_cache") {
+        return null;
+      }
+      if (command === "sessions_antigravity_quota") {
+        throw new Error("quota service unavailable");
+      }
+      throw new Error(`Unhandled command: ${command}`);
+    });
+
+    renderWithProviders(<AiUsageStats />);
+
+    // Tool cards must render normally — claude day-stats number confirms mount.
+    const daySection = await screen.findByTestId("ai-usage-day-stats");
+    expect(await within(daySection).findByText("12M")).toBeInTheDocument();
+    expect(screen.getByText("2.2K")).toBeInTheDocument();
+
+    // Quota panel shows an error message.
+    const quotaPanel = await screen.findByTestId("ai-usage-quota-card");
+    expect(quotaPanel).toBeInTheDocument();
+    expect(
+      within(quotaPanel).getByText(/quota service unavailable/),
+    ).toBeInTheDocument();
   });
 
   it("renders empty state, trend, daily table, peak day, and scan stats", async () => {

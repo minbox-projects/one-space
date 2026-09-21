@@ -1929,7 +1929,14 @@
       "tests": [
         "src-tauri/src/ai_sessions/tests.rs"
       ],
-      "symbols": [],
+      "symbols": [
+        {
+          "file": "src-tauri/src/ai_sessions/usage.rs",
+          "name": "sessions_antigravity_quota",
+          "kind": "command",
+          "visibility": "public"
+        }
+      ],
       "depends_on": [],
       "read_scope": [
         "src-tauri/src/ai_sessions.rs",
