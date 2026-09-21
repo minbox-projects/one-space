@@ -910,7 +910,13 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
         let input = json_u64(usage.get("input_tokens"));
         let output = json_u64(usage.get("output_tokens"));
         let cache = cache_read;
-        let total = total_or_sum(json_u64(usage.get("total_tokens")), input, output, cache);
+        // Codex reports cached input as part of input_tokens (see
+        // cache_hit_rate_percent), so the no-total fallback must not add the
+        // cache tier on top of the input tier.
+        let total = match json_u64(usage.get("total_tokens")) {
+            0 => input.saturating_add(output),
+            total => total,
+        };
         if input == 0 && output == 0 && cache == 0 && total == 0 {
             continue;
         }

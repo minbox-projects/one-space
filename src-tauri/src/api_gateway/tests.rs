@@ -10029,14 +10029,17 @@ fn retention_validation_accepts_one_and_365_and_rejects_zero_and_400() {
 /// Anthropic-style cache fields; missing fields become 0.
 #[test]
 fn usage_field_mapping_handles_provider_shapes_and_missing_fields() {
+    // OpenAI chat shape: prompt_tokens is the total input, the nested cached
+    // subset must not be added on top of it.
     let chat = serde_json::json!({
         "prompt_tokens": 11,
         "completion_tokens": 7,
         "prompt_tokens_details": { "cached_tokens": 3 }
     });
     let mapped = usage_tokens_from_value(&chat);
-    assert_eq!(mapped, tokens(11, 3, 0, 7));
+    assert_eq!(mapped, tokens(8, 3, 0, 7));
 
+    // OpenAI responses shape: same subset rule for input_tokens_details.
     let responses = serde_json::json!({
         "input_tokens": 20,
         "output_tokens": 4,
@@ -10044,8 +10047,9 @@ fn usage_field_mapping_handles_provider_shapes_and_missing_fields() {
         "cache_creation_input_tokens": 6
     });
     let mapped = usage_tokens_from_value(&responses);
-    assert_eq!(mapped, tokens(20, 5, 6, 4));
+    assert_eq!(mapped, tokens(15, 5, 6, 4));
 
+    // Anthropic shape: flat tiers are separate, the input tier is untouched.
     let anthropic = serde_json::json!({
         "prompt_tokens": 9,
         "completion_tokens": 1,
@@ -10110,7 +10114,7 @@ fn sse_usage_accumulator_parses_usage_across_chunk_boundaries() {
     assert_eq!(accumulator.usage(), None);
     accumulator.feed(b"data: {\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,");
     accumulator.feed(b"\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\ndata: [DONE]\n\n");
-    assert_eq!(accumulator.usage(), Some(tokens(11, 3, 0, 7)));
+    assert_eq!(accumulator.usage(), Some(tokens(8, 3, 0, 7)));
 }
 
 fn usage_store(name: &str) -> (PathBuf, UsageLogStore) {
@@ -10661,14 +10665,14 @@ async fn usage_log_records_successful_non_streaming_forward_and_privacy() {
     assert_eq!(record.provider_id, "p1");
     assert_eq!(record.provider_name, "Provider One");
     assert_eq!(record.status, 200);
-    assert_eq!(record.input_tokens, 10);
+    assert_eq!(record.input_tokens, 8);
     assert_eq!(record.cache_read_tokens, 2);
     assert_eq!(record.cache_write_tokens, 0);
     assert_eq!(record.output_tokens, 5);
-    assert_eq!(record.total_tokens, 17);
+    assert_eq!(record.total_tokens, 15);
     let expected = compute_cost(
         &priced("remote-a", 1.0, 0.5, 2.0, 4.0),
-        &tokens(10, 2, 0, 5),
+        &tokens(8, 2, 0, 5),
     );
     assert!((record.amount.expect("priced") - expected).abs() < 1e-12);
     assert!(record.duration_ms >= 1, "duration must be positive");
@@ -11001,10 +11005,10 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
     assert!(record.terminal, "the completed stream is the terminal row");
     assert_eq!(record.error_message, None, "a success stores no error message");
     assert_eq!(record.result, UsageResult::Success);
-    assert_eq!(record.input_tokens, 11);
+    assert_eq!(record.input_tokens, 8);
     assert_eq!(record.cache_read_tokens, 3);
     assert_eq!(record.output_tokens, 7);
-    let expected = compute_cost(&priced("remote-a", 1.0, 0.5, 2.0, 4.0), &tokens(11, 3, 0, 7));
+    let expected = compute_cost(&priced("remote-a", 1.0, 0.5, 2.0, 4.0), &tokens(8, 3, 0, 7));
     assert!((record.amount.expect("priced") - expected).abs() < 1e-12);
 
     // Streaming with no serving upstream: HTTP 502 JSON envelope is failure.
@@ -11674,7 +11678,7 @@ async fn usage_log_records_unversioned_responses_path() {
     assert_eq!(record.result, UsageResult::Success);
     assert_eq!(record.local_model, "local-r");
     assert_eq!(record.upstream_model, "remote-r");
-    assert_eq!(record.input_tokens, 4);
+    assert_eq!(record.input_tokens, 3);
     assert_eq!(record.cache_read_tokens, 1);
     assert_eq!(record.output_tokens, 6);
 
@@ -11794,12 +11798,12 @@ async fn streaming_forward_records_cache_read_and_write_tiers_and_preserves_byte
     assert!(record.terminal, "the completed stream is terminal");
     assert_eq!(record.error_message, None, "a success stores no error message");
     assert_eq!(record.result, UsageResult::Success);
-    assert_eq!(record.input_tokens, 11);
+    assert_eq!(record.input_tokens, 8);
     assert_eq!(record.cache_read_tokens, 3);
     assert_eq!(record.cache_write_tokens, 5);
     assert_eq!(record.output_tokens, 7);
-    assert_eq!(record.total_tokens, 26);
-    let expected = (11.0 * 1.0 + 3.0 * 0.5 + 5.0 * 2.0 + 7.0 * 4.0) / 1_000_000.0;
+    assert_eq!(record.total_tokens, 23);
+    let expected = (8.0 * 1.0 + 3.0 * 0.5 + 5.0 * 2.0 + 7.0 * 4.0) / 1_000_000.0;
     assert!((record.amount.expect("priced") - expected).abs() < 1e-12);
 
     super::runtime_http::stop_server().await.unwrap();
@@ -13347,7 +13351,7 @@ async fn mid_stream_failure_capture_is_failure_keeps_usage_and_skips_other_candi
     );
     assert_eq!(
         capture.usage,
-        Some(tokens(7, 2, 0, 3)),
+        Some(tokens(5, 2, 0, 3)),
         "the accumulated usage must survive the mid-stream failure"
     );
     assert_eq!(
@@ -13370,7 +13374,7 @@ async fn mid_stream_failure_capture_is_failure_keeps_usage_and_skips_other_candi
     );
     assert_eq!(
         attempts[0].usage,
-        Some(tokens(7, 2, 0, 3)),
+        Some(tokens(5, 2, 0, 3)),
         "the attempt row keeps the usage accumulated before the failure"
     );
     assert!(attempts[0].duration_ms >= 1);
@@ -13462,14 +13466,14 @@ async fn mid_stream_failure_end_to_end_logs_one_failure_with_usage() {
         "the stored error text is the stream failure description: {message}"
     );
     assert!(record.duration_ms >= 1);
-    assert_eq!(record.input_tokens, 7, "accumulated input tokens must be kept");
+    assert_eq!(record.input_tokens, 5, "accumulated input tokens must be kept");
     assert_eq!(
         record.cache_read_tokens, 2,
         "accumulated cache-read tokens must be kept"
     );
     assert_eq!(record.output_tokens, 3, "accumulated output tokens must be kept");
-    // The row sums all four usage tiers (7 + 2 + 0 + 3).
-    assert_eq!(record.total_tokens, 12, "all four usage tiers are summed");
+    // The row sums all four usage tiers (5 + 2 + 0 + 3).
+    assert_eq!(record.total_tokens, 10, "all four usage tiers are summed");
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);

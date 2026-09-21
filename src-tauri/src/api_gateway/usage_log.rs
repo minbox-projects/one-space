@@ -322,8 +322,17 @@ fn nested_number(usage: &Value, object: &str, key: &str) -> Option<Value> {
 /// Map an upstream `usage` object to the four token tiers (REQ-003).
 ///
 /// Missing fields become 0; the caller decides whether usage was present at all.
+///
+/// OpenAI Chat/Responses shapes report `prompt_tokens`/`input_tokens` as the
+/// *total* input with the cached subset nested under
+/// `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens`.
+/// Those nested values must not be added on top of the total: the stored
+/// `input_tokens` tier keeps only the non-cached remainder so `total()` and
+/// `compute_cost` never bill the cached subset twice. Flat
+/// `cache_read_input_tokens` (Anthropic shape) is a separate tier and leaves
+/// the input tier untouched.
 pub(in crate::api_gateway) fn usage_tokens_from_value(usage: &Value) -> UsageTokens {
-    let input_tokens = usage
+    let input_total = usage
         .get("input_tokens")
         .or_else(|| usage.get("prompt_tokens"))
         .map(|value| token_number(Some(value)))
@@ -333,11 +342,21 @@ pub(in crate::api_gateway) fn usage_tokens_from_value(usage: &Value) -> UsageTok
         .or_else(|| usage.get("completion_tokens"))
         .map(|value| token_number(Some(value)))
         .unwrap_or(0);
-    let cache_read_tokens = nested_number(usage, "prompt_tokens_details", "cached_tokens")
+    let nested_cached = nested_number(usage, "prompt_tokens_details", "cached_tokens")
         .or_else(|| nested_number(usage, "input_tokens_details", "cached_tokens"))
-        .or_else(|| usage.get("cache_read_input_tokens").cloned())
-        .map(|value| token_number(Some(&value)))
+        .map(|value| token_number(Some(&value)));
+    let cache_read_tokens = nested_cached
+        .or_else(|| {
+            usage
+                .get("cache_read_input_tokens")
+                .map(|value| token_number(Some(value)))
+        })
         .unwrap_or(0);
+    // Only a nested cached subset is contained in the reported input total.
+    let input_tokens = match nested_cached {
+        Some(cached) => input_total.saturating_sub(cached),
+        None => input_total,
+    };
     let cache_write_tokens = token_number(usage.get("cache_creation_input_tokens"));
     UsageTokens {
         input_tokens,
