@@ -804,6 +804,9 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
           <TerminalSyncPanel
             targets={targets}
             config={config}
+            gatewayRunning={Boolean(status?.running)}
+            onStartGateway={handleToggleService}
+            startingGateway={busy}
             syncingTools={syncingTools}
             onConfigureTool={(tool) => handleConfigureTool(tool)}
             onSyncTool={(tool) => handleSyncTool(tool)}

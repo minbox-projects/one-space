@@ -812,6 +812,31 @@ const resources = {
       apiGatewayError504: "Gateway timeout",
       apiGatewayErrorNetwork: "Network error / Connection failed",
       apiGatewayErrorUnknown: "Request failed",
+      apiGatewayTerminalStoppedTitle: "Local API Gateway is stopped",
+      apiGatewayTerminalStoppedDesc:
+        "The local gateway is not running. Calling configured tools in the terminal will fail with: Cannot connect to API: Unable to connect. Is the computer able to access the url? Please start the gateway service.",
+      apiGatewayStartServiceNow: "Start service",
+      apiGatewayTerminalFaqTitle: "Terminal connection troubleshooting",
+      apiGatewayFaqQ1:
+        "Terminal shows: Cannot connect to API: Unable to connect. Is the computer able to access the url?",
+      apiGatewayFaqA1:
+        "This indicates the terminal cannot reach the local gateway (127.0.0.1:17688). Steps: 1. Ensure the gateway service at the top is 'Running'; 2. Check if port 17688 is occupied; 3. Ensure an enabled local key exists in Local Keys.",
+      apiGatewayFaqQ2:
+        "Terminal shows: all providers unavailable: 429 or quota exceeded?",
+      apiGatewayFaqA2:
+        "This means all candidate upstream providers hit rate limits or ran out of quota. Steps: 1. Check your upstream account balance or periodic quota; 2. Add fallback providers in 'Upstream providers' for automatic failover.",
+      apiGatewayLogsHintQuotaExceeded:
+        "Suggestion: Upstream provider quota or periodic limit exhausted. Please recharge or switch to a fallback provider.",
+      apiGatewayLogsHintRateLimited:
+        "Suggestion: Upstream rate or concurrency limit reached. Please reduce concurrency or retry later.",
+      apiGatewayLogsHintNetworkRefused:
+        "Suggestion: Unable to connect to upstream URL. Please check Base URL and network/proxy settings.",
+      apiGatewayLogsHintTimeout:
+        "Suggestion: Upstream connection timed out. Please check network stability or proxy latency.",
+      apiGatewayLogsHintDns:
+        "Suggestion: Upstream domain resolution failed. Please check domain spelling and DNS configuration.",
+      apiGatewayLogsHintNetwork:
+        "Suggestion: Network connection failed. Please check endpoint reachability and local network settings.",
       aiGatewaySettings: "AI Gateway",
       aiGatewaySettingsDesc:
         "Configure how long API Gateway request logs are retained. Prices and usage live in the AI Gateway workspace.",
@@ -4462,6 +4487,31 @@ const resources = {
       apiGatewayError504: "上游网关响应超时",
       apiGatewayErrorNetwork: "网络连接失败",
       apiGatewayErrorUnknown: "请求执行失败",
+      apiGatewayTerminalStoppedTitle: "本地 API 网关未启动",
+      apiGatewayTerminalStoppedDesc:
+        "当前网关处于停止状态。在终端调用已配置的工具时，将报错：Cannot connect to API: Unable to connect. Is the computer able to access the url? 请先启动网关保持运行。",
+      apiGatewayStartServiceNow: "立即启动服务",
+      apiGatewayTerminalFaqTitle: "终端调用常见报错排查",
+      apiGatewayFaqQ1:
+        "终端提示 Cannot connect to API: Unable to connect. Is the computer able to access the url?",
+      apiGatewayFaqA1:
+        "该错误表示终端工具无法连接到本地网关地址（127.0.0.1:17688）。排查步骤：1. 确认顶部网关服务处于“运行中”；2. 检查 17688 端口是否冲突；3. 确保本地密钥列表中有已启用的密钥。",
+      apiGatewayFaqQ2:
+        "终端提示 all providers unavailable: 429 或额度用尽？",
+      apiGatewayFaqA2:
+        "表示所有能处理该请求的上游服务商均触发限流或额度已用尽。排查步骤：1. 检查上游服务商账户余额/周期配额；2. 在“上游服务商”列表配置备用服务商以实现自动故障转移。",
+      apiGatewayLogsHintQuotaExceeded:
+        "排查建议：上游服务商账户额度或周期配额已耗尽，请充值或切换备用服务商。",
+      apiGatewayLogsHintRateLimited:
+        "排查建议：触发上游速率或并发限制，建议降低并发或稍后重试。",
+      apiGatewayLogsHintNetworkRefused:
+        "排查建议：无法连接上游地址，请检查服务商 Base URL 是否正确或网络代理配置。",
+      apiGatewayLogsHintTimeout:
+        "排查建议：连接上游超时，请检查网络稳定性或代理延迟。",
+      apiGatewayLogsHintDns:
+        "排查建议：无法解析上游域名，请检查 Base URL 拼写及 DNS 解析配置。",
+      apiGatewayLogsHintNetwork:
+        "排查建议：网络连接失败，请检查上游端点连通性及本地网络设置。",
       aiGatewaySettings: "AI 网关",
       aiGatewaySettingsDesc:
         "配置 API 网关请求日志的保留时长。价格与用量请在 AI 网关工作区中管理。",

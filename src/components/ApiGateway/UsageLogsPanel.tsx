@@ -183,6 +183,64 @@ function getHttpStatusReason(
   }
 }
 
+function resolveLogActionableHint(
+  status: number,
+  errorMessage: string,
+  t: (key: string, fallback: string) => string,
+): string | null {
+  const lower = errorMessage.toLowerCase();
+  if (status === 429) {
+    const isQuota =
+      lower.includes("quota") ||
+      lower.includes("limit") ||
+      lower.includes("usage") ||
+      lower.includes("balance") ||
+      lower.includes("billing") ||
+      lower.includes("exceeded") ||
+      lower.includes("额度");
+    if (isQuota) {
+      return t(
+        "apiGatewayLogsHintQuotaExceeded",
+        "排查建议：上游服务商账户额度或周期配额已耗尽，请充值或切换备用服务商。",
+      );
+    }
+    return t(
+      "apiGatewayLogsHintRateLimited",
+      "排查建议：触发上游速率或并发限制，建议降低并发或稍后重试。",
+    );
+  }
+  if (status === 0 || lower.includes("network error")) {
+    if (
+      lower.includes("refused") ||
+      lower.includes("unreachable") ||
+      lower.includes("unable to connect") ||
+      lower.includes("failed to connect")
+    ) {
+      return t(
+        "apiGatewayLogsHintNetworkRefused",
+        "排查建议：无法连接上游地址，请检查服务商 Base URL 是否正确或网络代理配置。",
+      );
+    }
+    if (lower.includes("timed out") || lower.includes("timeout")) {
+      return t(
+        "apiGatewayLogsHintTimeout",
+        "排查建议：连接上游超时，请检查网络稳定性或代理延迟。",
+      );
+    }
+    if (lower.includes("dns") || lower.includes("resolve")) {
+      return t(
+        "apiGatewayLogsHintDns",
+        "排查建议：无法解析上游域名，请检查 Base URL 拼写及 DNS 解析配置。",
+      );
+    }
+    return t(
+      "apiGatewayLogsHintNetwork",
+      "排查建议：网络连接失败，请检查上游端点连通性及本地网络设置。",
+    );
+  }
+  return null;
+}
+
 export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
   const { t } = useTranslation();
   const [range, setRange] = useState<UsageRangeKey>("today");
@@ -694,6 +752,22 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                                         {reason.title}
                                       </div>
                                     ) : null}
+                                    {(() => {
+                                      const hint = resolveLogActionableHint(
+                                        item.status,
+                                        storedErrorMessage,
+                                        t,
+                                      );
+                                      if (!hint) return null;
+                                      return (
+                                        <div
+                                          className="pt-1 mt-0.5 border-t border-border/50 text-[10px] text-amber-600 dark:text-amber-400 font-medium"
+                                          data-testid="api-gateway-logs-actionable-hint"
+                                        >
+                                          {hint}
+                                        </div>
+                                      );
+                                    })()}
                                   </div>
                                 </div>
                               ) : null}

@@ -1,8 +1,12 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   Clock,
+  HelpCircle,
+  Play,
   RefreshCw,
   TerminalSquare,
   Wand2,
@@ -19,6 +23,9 @@ type TerminalSyncPanelProps = {
   targets: GatewayTerminalTarget[];
   config: GatewayConfig;
   syncingTools: Record<string, boolean>;
+  gatewayRunning?: boolean;
+  onStartGateway?: () => void;
+  startingGateway?: boolean;
   onConfigureTool: (tool: string) => void;
   onSyncTool: (tool: string) => void;
 };
@@ -27,10 +34,14 @@ export function TerminalSyncPanel({
   targets,
   config,
   syncingTools,
+  gatewayRunning,
+  onStartGateway,
+  startingGateway,
   onConfigureTool,
   onSyncTool,
 }: TerminalSyncPanelProps) {
   const { t } = useTranslation();
+  const [showFaq, setShowFaq] = useState(false);
   const defaultKeyId = resolveDefaultKeyId(config.keys, config.default_key_id);
   const defaultKeyMissing = !defaultKeyId;
   const supportedTargets = targets.filter((target) =>
@@ -40,7 +51,7 @@ export function TerminalSyncPanel({
   );
 
   return (
-    <section className="space-y-3.5" data-testid="api-gateway-terminals">
+    <div className="space-y-3.5">
       {/* 头部：标题与说明 */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-0.5">
@@ -84,8 +95,51 @@ export function TerminalSyncPanel({
         </div>
       ) : null}
 
+      {/* 网关未启动即时告警 */}
+      {gatewayRunning === false ? (
+        <div
+          className="flex flex-col gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300"
+          data-testid="api-gateway-terminal-stopped-warning"
+          role="alert"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5 min-w-0 flex-1">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <div>
+                <div className="font-semibold text-xs text-amber-900 dark:text-amber-200">
+                  {t("apiGatewayTerminalStoppedTitle", "本地 API 网关服务未启动")}
+                </div>
+                <div className="mt-0.5 text-[11px] leading-relaxed text-amber-800/90 dark:text-amber-300/90">
+                  {t(
+                    "apiGatewayTerminalStoppedDesc",
+                    "当前网关处于停止状态。在终端调用已配置的工具时，将报错：Cannot connect to API: Unable to connect. Is the computer able to access the url? 请先启动网关保持运行。",
+                  )}
+                </div>
+              </div>
+            </div>
+            {onStartGateway ? (
+              <button
+                type="button"
+                onClick={onStartGateway}
+                disabled={startingGateway}
+                data-testid="api-gateway-start-from-terminals"
+                className="shrink-0 inline-flex h-7 items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-2.5 text-xs font-medium text-emerald-700 hover:bg-emerald-500/25 active:bg-emerald-500/30 dark:text-emerald-300 transition shadow-xs disabled:opacity-50"
+              >
+                {startingGateway ? (
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Play className="h-3 w-3 fill-current translate-x-0.2" />
+                )}
+                <span>{t("apiGatewayStartServiceNow", "立即启动服务")}</span>
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
       {/* 目标列表 */}
-      {supportedTargets.length === 0 ? (
+      <section data-testid="api-gateway-terminals">
+        {supportedTargets.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/50 px-6 py-10 text-center">
           <div className="rounded-full bg-muted/60 p-2.5 text-muted-foreground">
             <TerminalSquare className="h-5 w-5" />
@@ -205,6 +259,57 @@ export function TerminalSyncPanel({
           })}
         </div>
       )}
-    </section>
+      </section>
+
+      {/* 终端连接常见问题排查指引 */}
+      <div className="rounded-xl border bg-muted/20 p-3 text-xs" data-testid="api-gateway-terminal-faq">
+        <button
+          type="button"
+          onClick={() => setShowFaq((prev) => !prev)}
+          className="flex w-full items-center justify-between font-semibold text-foreground hover:text-primary transition"
+          aria-expanded={showFaq}
+          data-testid="api-gateway-terminal-faq-toggle"
+        >
+          <div className="flex items-center gap-2">
+            <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" />
+            <span>{t("apiGatewayTerminalFaqTitle", "终端调用常见报错排查")}</span>
+          </div>
+          <ChevronDown
+            className={`h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 ${
+              showFaq ? "rotate-180" : ""
+            }`}
+          />
+        </button>
+        {showFaq ? (
+          <div
+            className="mt-2.5 space-y-2.5 pt-2.5 border-t border-border/50 text-[11px] text-muted-foreground leading-relaxed animate-in fade-in-0 duration-200"
+            data-testid="api-gateway-terminal-faq-content"
+          >
+            <div className="space-y-0.5">
+              <div className="font-medium text-foreground">
+                Q: {t("apiGatewayFaqQ1", "终端提示 Cannot connect to API: Unable to connect. Is the computer able to access the url?")}
+              </div>
+              <p>
+                {t(
+                  "apiGatewayFaqA1",
+                  "该错误表示终端工具无法连接到本地网关地址（127.0.0.1:17688）。排查步骤：1. 确认顶部网关服务处于“运行中”；2. 检查 17688 端口是否冲突；3. 确保本地密钥列表中有已启用的密钥。",
+                )}
+              </p>
+            </div>
+            <div className="space-y-0.5">
+              <div className="font-medium text-foreground">
+                Q: {t("apiGatewayFaqQ2", "终端提示 all providers unavailable: 429 或额度用尽？")}
+              </div>
+              <p>
+                {t(
+                  "apiGatewayFaqA2",
+                  "表示所有能处理该请求的上游服务商均触发限流或额度已用尽。排查步骤：1. 检查上游服务商账户余额/周期配额；2. 在“上游服务商”列表配置备用服务商以实现自动故障转移。",
+                )}
+              </p>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }

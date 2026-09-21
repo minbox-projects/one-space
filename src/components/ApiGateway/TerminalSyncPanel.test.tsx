@@ -170,4 +170,57 @@ describe("TerminalSyncPanel 终端同步面板与最后同步时间展示", () =
     await user.click(screen.getByTestId("api-gateway-sync-codex"));
     expect(handleConfigure).toHaveBeenCalledWith("codex");
   });
+
+  it("当 gatewayRunning 为 false 时展示服务停止警告，并支持点击一键启动", async () => {
+    const user = userEvent.setup();
+    const handleStart = vi.fn();
+
+    renderWithProviders(
+      <TerminalSyncPanel
+        targets={[]}
+        config={makeConfig()}
+        gatewayRunning={false}
+        onStartGateway={handleStart}
+        syncingTools={{}}
+        onConfigureTool={vi.fn()}
+        onSyncTool={vi.fn()}
+      />,
+    );
+
+    const warning = screen.getByTestId("api-gateway-terminal-stopped-warning");
+    expect(warning).toHaveTextContent("Local API Gateway is stopped");
+    expect(warning).toHaveTextContent("Cannot connect to API: Unable to connect");
+
+    const startBtn = screen.getByTestId("api-gateway-start-from-terminals");
+    await user.click(startBtn);
+    expect(handleStart).toHaveBeenCalledTimes(1);
+  });
+
+  it("支持展开终端调用常见报错排查指引并展示 FAQ 详情", async () => {
+    const user = userEvent.setup();
+
+    renderWithProviders(
+      <TerminalSyncPanel
+        targets={[]}
+        config={makeConfig()}
+        gatewayRunning={true}
+        syncingTools={{}}
+        onConfigureTool={vi.fn()}
+        onSyncTool={vi.fn()}
+      />,
+    );
+
+    // 默认收起
+    expect(screen.queryByTestId("api-gateway-terminal-faq-content")).not.toBeInTheDocument();
+
+    // 点击展开
+    const toggle = screen.getByTestId("api-gateway-terminal-faq-toggle");
+    await user.click(toggle);
+
+    const content = screen.getByTestId("api-gateway-terminal-faq-content");
+    expect(content).toBeInTheDocument();
+    expect(content).toHaveTextContent("Cannot connect to API: Unable to connect. Is the computer able to access the url?");
+    expect(content).toHaveTextContent("all providers unavailable: 429");
+  });
 });
+

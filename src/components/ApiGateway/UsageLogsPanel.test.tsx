@@ -1209,4 +1209,39 @@ describe("UsageLogsPanel", () => {
     expect(d4).toHaveTextContent("—");
     expect(d4).toHaveClass("text-muted-foreground");
   });
+
+  it("当记录为 429 额度耗尽或网络错误时在详情中展示对应排查建议", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "api_gateway_request_logs") {
+        return page({
+          total: 2,
+          records: [
+            record({
+              result: "failure",
+              status: 429,
+              error_message: "You have exceeded your current quota, please check your plan and billing details.",
+            }),
+            record({
+              result: "failure",
+              status: 0,
+              error_message: "network error: connection refused / unreachable",
+            }),
+          ],
+        });
+      }
+      return undefined;
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+
+    const table = await screen.findByTestId("api-gateway-logs-ungrouped");
+    const rows = within(table).getAllByTestId("api-gateway-logs-row");
+    expect(rows).toHaveLength(2);
+
+    const hints = within(table).getAllByTestId("api-gateway-logs-actionable-hint");
+    expect(hints).toHaveLength(2);
+    expect(hints[0]).toHaveTextContent("Suggestion: Upstream provider quota or periodic limit exhausted");
+    expect(hints[1]).toHaveTextContent("Suggestion: Unable to connect to upstream URL");
+  });
 });
+

@@ -17671,3 +17671,74 @@ async fn session_affinity_exhausted_request_keeps_the_bound_provider_and_rebinds
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
 }
+
+#[test]
+fn test_format_network_error_reason_diagnostics() {
+    use super::runtime_http::format_network_error_reason;
+
+    let refused = format_network_error_reason("error trying to connect: tcp connect error: Connection refused (os error 61)");
+    assert!(refused.contains("network error"), "must preserve network error prefix: {refused}");
+    assert!(refused.contains("connection refused / unreachable"), "diagnostics: {refused}");
+    assert!(refused.contains("请检查上游 Base URL"), "actionable advice: {refused}");
+
+    let timed_out = format_network_error_reason("operation timed out");
+    assert!(timed_out.contains("connection timed out"), "diagnostics: {timed_out}");
+    assert!(timed_out.contains("连接超时"), "actionable advice: {timed_out}");
+
+    let dns = format_network_error_reason("failed to lookup address information: nodename nor servname provided, or not known");
+    assert!(dns.contains("DNS resolution failed"), "diagnostics: {dns}");
+    assert!(dns.contains("无法解析上游域名"), "actionable advice: {dns}");
+
+    let cert = format_network_error_reason("invalid peer certificate: UnknownIssuer");
+    assert!(cert.contains("SSL/TLS certificate error"), "diagnostics: {cert}");
+}
+
+#[tokio::test]
+async fn test_all_providers_unavailable_429_quota_hint() {
+    let home = temp_home("all-429-quota");
+    let port = free_port().await;
+    let (url_a, _) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            429,
+            json!({
+                "error": {
+                    "message": "You've reached your weekly usage limit for your plan. Your limit resets tomorrow."
+                }
+            }),
+        )
+    })
+    .await;
+
+    let mut config = config_with_key(port);
+    config.providers.push(upstream_provider(
+        "a",
+        "Provider A",
+        &url_a,
+        "sk-a",
+        Some("remote-model"),
+    ));
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-model"})),
+    )
+    .await;
+    assert_eq!(status, 502, "unexpected response: {text}");
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("Provider A"), "message: {message}");
+    assert!(message.contains("HTTP 429"), "message: {message}");
+    assert!(message.contains("额度已用尽"), "message: {message}");
+    assert!(message.contains("Quota Exceeded"), "message: {message}");
+    assert!(message.contains("所有服务商额度均已耗尽"), "message: {message}");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
