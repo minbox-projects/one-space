@@ -690,6 +690,8 @@ export function ProviderDetailDialog({
                   const isAutoAdded =
                     upstreamModel !== "" && upstreamModel === autoAddedModel;
                   const isAutoDisabled = mapping.auto_disabled === true;
+                  const isEffectiveEnabled =
+                    mapping.enabled !== false && !isAutoDisabled;
                   return (
                   <li
                     key={index}
@@ -730,10 +732,28 @@ export function ProviderDetailDialog({
                           index: index + 1,
                           defaultValue: `Enable mapping ${index + 1}`,
                         })}
-                        checked={mapping.enabled !== false}
-                        onCheckedChange={(checked) =>
-                          updateMapping(index, { enabled: checked })
-                        }
+                        checked={isEffectiveEnabled}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            updateMapping(index, {
+                              enabled: true,
+                              auto_disabled: false,
+                            });
+                            if (
+                              isAutoDisabled &&
+                              provider.id !== "" &&
+                              onReenableModel
+                            ) {
+                              onReenableModel(
+                                provider.id,
+                                mapping.local_model,
+                                mapping.upstream_model,
+                              );
+                            }
+                          } else {
+                            updateMapping(index, { enabled: false });
+                          }
+                        }}
                       />
                       <input
                         type="text"

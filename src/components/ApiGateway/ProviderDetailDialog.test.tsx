@@ -1330,6 +1330,42 @@ describe("ProviderDetailDialog 逐行 auto-disabled 与重新启用", () => {
     ).toBeInTheDocument();
   });
 
+  it("自动禁用映射行的第一列开关按钮显示为关闭，且点击开关可触发重新启用", async () => {
+    const user = userEvent.setup();
+    const onReenableModel = vi.fn();
+    const provider = makeProvider({
+      mappings: [
+        { local_model: "healthy", upstream_model: "rh", enabled: true },
+        { local_model: "auto-off", upstream_model: "ra", enabled: true, auto_disabled: true },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+        onReenableModel={onReenableModel}
+      />,
+    );
+
+    const healthySwitch = screen.getByRole("switch", { name: "Enable mapping 1" });
+    const autoDisabledSwitch = screen.getByRole("switch", { name: "Enable mapping 2" });
+
+    // 状态层断言：健康行开关开启，自动禁用行开关关闭
+    expect(healthySwitch).toHaveAttribute("aria-checked", "true");
+    expect(autoDisabledSwitch).toHaveAttribute("aria-checked", "false");
+
+    // 行为层断言：点击自动禁用行的开关，应触发 onReenableModel，并且开关状态变为开启
+    await user.click(autoDisabledSwitch);
+    expect(onReenableModel).toHaveBeenCalledTimes(1);
+    expect(onReenableModel).toHaveBeenCalledWith("p1", "auto-off", "ra");
+    expect(autoDisabledSwitch).toHaveAttribute("aria-checked", "true");
+  });
+
   it("自动禁用映射的重新启用按钮调用 onReenableModel 而不触发 onSave", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
