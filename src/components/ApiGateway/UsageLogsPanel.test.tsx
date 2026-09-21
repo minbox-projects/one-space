@@ -190,11 +190,20 @@ describe("UsageLogsPanel", () => {
       within(rows[0]).getByTestId("api-gateway-logs-duration-cell"),
     ).toHaveTextContent("1m 2s");
     expect(
+      within(rows[0]).getByTestId("api-gateway-logs-duration-cell"),
+    ).toHaveClass("text-rose-500");
+    expect(
       within(rows[1]).getByTestId("api-gateway-logs-duration-cell"),
     ).toHaveTextContent("2s");
     expect(
+      within(rows[1]).getByTestId("api-gateway-logs-duration-cell"),
+    ).toHaveClass("text-emerald-500");
+    expect(
       within(rows[2]).getByTestId("api-gateway-logs-duration-cell"),
     ).toHaveTextContent("1s");
+    expect(
+      within(rows[2]).getByTestId("api-gateway-logs-duration-cell"),
+    ).toHaveClass("text-emerald-500");
   });
 
   it("中文环境下不分组表格展示中文列头耗时", async () => {
@@ -1120,7 +1129,43 @@ describe("UsageLogsPanel", () => {
     expect(tooltip).toHaveTextContent(longErrorMessage);
     expect(tooltip).toHaveTextContent("HTTP 504: Gateway timeout");
   });
+
+  it("耗时列值根据耗时区间展示不同颜色（<3s 绿，3~15s 黄，>15s 红，空值灰）", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 4,
+        records: [
+          record({ duration_ms: 1200 }),
+          record({ duration_ms: 5000 }),
+          record({ duration_ms: 20000 }),
+          record({ duration_ms: undefined as unknown as number }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+
+    const table = await screen.findByTestId("api-gateway-logs-ungrouped");
+    const rows = within(table).getAllByTestId("api-gateway-logs-row");
+    expect(rows).toHaveLength(4);
+
+    const d1 = within(rows[0]).getByTestId("api-gateway-logs-duration-cell");
+    expect(d1).toHaveTextContent("1s");
+    expect(d1).toHaveClass("text-emerald-500");
+
+    const d2 = within(rows[1]).getByTestId("api-gateway-logs-duration-cell");
+    expect(d2).toHaveTextContent("5s");
+    expect(d2).toHaveClass("text-amber-500");
+
+    const d3 = within(rows[2]).getByTestId("api-gateway-logs-duration-cell");
+    expect(d3).toHaveTextContent("20s");
+    expect(d3).toHaveClass("text-rose-500");
+
+    const d4 = within(rows[3]).getByTestId("api-gateway-logs-duration-cell");
+    expect(d4).toHaveTextContent("—");
+    expect(d4).toHaveClass("text-muted-foreground");
+  });
 });
-
-
-

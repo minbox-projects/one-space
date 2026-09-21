@@ -17,6 +17,7 @@ import {
   clampUsagePage,
   formatCacheTokensK,
   formatGatewayDuration,
+  getGatewayDurationColorClass,
   formatUsageAmount,
   formatUsageGroupLabel,
   formatUtc8DateTime,
@@ -736,7 +737,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                       ) : null}
                     </td>
                     <td
-                      className="px-3 py-2 text-left font-mono text-xs whitespace-nowrap"
+                      className={`px-3 py-2 text-left font-mono text-xs whitespace-nowrap ${getGatewayDurationColorClass(item.duration_ms)}`}
                       data-testid="api-gateway-logs-duration-cell"
                     >
                       {formatGatewayDuration(item.duration_ms)}

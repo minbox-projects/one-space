@@ -27,6 +27,7 @@ import {
   formatGatewayTokens,
   formatCacheTokensK,
   formatGatewayDuration,
+  getGatewayDurationColorClass,
   formatUsageAmount,
   formatUsageGroupLabel,
   formatUsageRowAmount,
@@ -467,6 +468,33 @@ describe("formatGatewayDuration 耗时格式化", () => {
     expect(formatGatewayDuration(62800)).toBe("1m 3s");
     expect(formatGatewayDuration(125000)).toBe("2m 5s");
     expect(formatGatewayDuration(3661000)).toBe("61m 1s");
+  });
+});
+
+describe("getGatewayDurationColorClass 耗时颜色类名映射", () => {
+  it("空值、非有限数字或负数返回 text-muted-foreground", () => {
+    expect(getGatewayDurationColorClass(null)).toBe("text-muted-foreground");
+    expect(getGatewayDurationColorClass(undefined)).toBe("text-muted-foreground");
+    expect(getGatewayDurationColorClass(Number.NaN)).toBe("text-muted-foreground");
+    expect(getGatewayDurationColorClass(Number.POSITIVE_INFINITY)).toBe("text-muted-foreground");
+    expect(getGatewayDurationColorClass(-1)).toBe("text-muted-foreground");
+  });
+
+  it("小于 3 秒 (< 3000ms) 返回绿色 text-emerald-500", () => {
+    expect(getGatewayDurationColorClass(0)).toBe("text-emerald-500");
+    expect(getGatewayDurationColorClass(500)).toBe("text-emerald-500");
+    expect(getGatewayDurationColorClass(2999)).toBe("text-emerald-500");
+  });
+
+  it("3 秒至 15 秒 (3000ms <= ms <= 15000ms) 返回琥珀黄色 text-amber-500", () => {
+    expect(getGatewayDurationColorClass(3000)).toBe("text-amber-500");
+    expect(getGatewayDurationColorClass(8000)).toBe("text-amber-500");
+    expect(getGatewayDurationColorClass(15000)).toBe("text-amber-500");
+  });
+
+  it("超过 15 秒 (> 15000ms) 返回玫瑰红色 text-rose-500", () => {
+    expect(getGatewayDurationColorClass(15001)).toBe("text-rose-500");
+    expect(getGatewayDurationColorClass(60000)).toBe("text-rose-500");
   });
 });
 

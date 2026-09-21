@@ -755,6 +755,26 @@ export function formatGatewayDuration(ms: number | null | undefined): string {
 }
 
 /**
+ * Returns Tailwind text color classes for request duration based on latency.
+ * - < 3s (< 3000ms): green (text-emerald-500)
+ * - 3s ~ 15s (3000ms ~ 15000ms): amber/yellow (text-amber-500)
+ * - > 15s (> 15000ms): red/rose (text-rose-500)
+ * - null/undefined/negative: muted foreground (text-muted-foreground)
+ */
+export function getGatewayDurationColorClass(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) {
+    return "text-muted-foreground";
+  }
+  if (ms < 3000) {
+    return "text-emerald-500";
+  }
+  if (ms <= 15000) {
+    return "text-amber-500";
+  }
+  return "text-rose-500";
+}
+
+/**
  * Format a token count using compact Chinese units (万, 百万, 千万, 亿),
  * matching the formatting used in AI Usage Stats.
  * Numbers below 10,000 are formatted with thousand separators.
