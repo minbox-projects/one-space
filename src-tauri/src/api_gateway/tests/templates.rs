@@ -2883,3 +2883,54 @@ fn sync_does_not_rewrite_runtime_state_on_existing_rows_and_restores_healthy() {
         "restored mapping has no last_error_at"
     );
 }
+
+/// A template sync must never reset a derived provider's configured routing
+/// weight: weight is a provider-local setting that templates neither carry
+/// nor propagate, so it survives added, updated and retired models alike.
+#[test]
+fn sync_preserves_derived_provider_weight() {
+    let previous = template_with_models(
+        "t",
+        Some(SYNC_URL),
+        UpstreamProtocol::ChatCompletions,
+        vec![
+            template_model("a", Some("A"), None, true),
+            template_model("retired", Some("Retired"), None, true),
+        ],
+    );
+    let mut config = GatewayConfig::default();
+    config.provider_templates.push(ProviderTemplateState {
+        template_id: "t".to_string(),
+        template: Some(previous),
+        synced_at: Some(1),
+        source: Some(SYNC_URL.to_string()),
+    });
+    let mut provider = bound_provider("p", "t");
+    provider.weight = 7;
+    provider.mappings = vec![model_mapping("a"), model_mapping("retired")];
+    config.providers.push(provider);
+
+    let body = json!({"data": [{"id": "a", "name": "A"}, {"id": "b", "name": "B"}]}).to_string();
+    apply_template_sync_with(&mut config, "t", |_t| Ok(body.clone()), |_n| Ok(()))
+        .expect("sync must succeed");
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|p| p.id == "p")
+        .expect("the bound provider must exist");
+    assert_eq!(
+        provider.weight, 7,
+        "a template sync must preserve the derived provider's configured weight"
+    );
+    assert!(
+        find_mapping(provider, "b").is_some(),
+        "a newly synced model must still be added"
+    );
+    assert!(
+        !find_mapping(provider, "retired")
+            .expect("a retired model's mapping must be kept")
+            .enabled,
+        "a retired model must still be disabled without touching the weight"
+    );
+}
