@@ -84,6 +84,7 @@ fn provider(id: &str) -> GatewayUpstreamProvider {
         default_model: None,
         protocol: UpstreamProtocol::ChatCompletions,
         mappings: Vec::new(),
+        weight: 1,
         enabled: true,
         auto_disabled: false,
         disabled_reason: None,
@@ -779,6 +780,7 @@ fn upstream_provider(
         default_model: default_model.map(str::to_string),
         protocol: UpstreamProtocol::ChatCompletions,
         mappings: Vec::new(),
+        weight: 1,
         enabled: true,
         auto_disabled: false,
         disabled_reason: None,
@@ -18780,6 +18782,7 @@ fn api_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
                 consecutive_failures: 3,
                 last_error_at: Some(99999),
             }],
+            weight: 1,
             enabled: true,
             auto_disabled: false,
             disabled_reason: None,
@@ -18815,6 +18818,7 @@ fn api_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
                     consecutive_failures: 0, // sender says zero — must be overridden.
                     last_error_at: None,
                 }],
+                weight: 1,
                 enabled: true,
                 auto_disabled: false,
                 disabled_reason: None,
@@ -18911,6 +18915,7 @@ fn api_gateway_upsert_clears_runtime_state_for_changed_key() {
                     last_error_at: Some(88888),
                 },
             ],
+            weight: 1,
             enabled: true,
             auto_disabled: false,
             disabled_reason: None,
@@ -18963,6 +18968,7 @@ fn api_gateway_upsert_clears_runtime_state_for_changed_key() {
                         last_error_at: None,
                     },
                 ],
+                weight: 1,
                 enabled: true,
                 auto_disabled: false,
                 disabled_reason: None,
@@ -19068,6 +19074,7 @@ fn ac_016_status_from_config_counts_rows_not_providers() {
                 last_error_at: Some(2),
             },
         ],
+        weight: 1,
         enabled: true,
         auto_disabled: false, // provider-level stays clear.
         disabled_reason: None,
@@ -19182,5 +19189,97 @@ async fn test_all_providers_unavailable_429_quota_hint() {
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
+}
+
+// ---------------------------------------------------------------------------
+// Task 1: Provider Weight Configuration (AC-001, AC-002)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn provider_weight_deserialization_default() {
+    // AC-001: Deserializing legacy JSON without "weight" field defaults to weight = 1
+    let legacy_json = json!({
+        "id": "p-legacy-weight",
+        "name": "Legacy Provider",
+        "base_url": "https://api.legacy.com/v1",
+        "api_key": "sk-legacy",
+        "enabled": true
+    });
+
+    let provider: GatewayUpstreamProvider = serde_json::from_value(legacy_json)
+        .expect("legacy provider JSON without weight field should deserialize successfully");
+
+    assert_eq!(provider.weight, 1, "AC-001: provider weight must default to 1");
+
+    let serialized = serde_json::to_value(&provider).expect("reserialization should succeed");
+    assert_eq!(
+        serialized.get("weight").and_then(Value::as_u64),
+        Some(1),
+        "AC-001: reserialized provider must explicitly include weight: 1"
+    );
+}
+
+#[test]
+fn provider_weight_validation_bounds() {
+    with_temp_home("provider-weight-bounds", |_home| {
+        let initial_config = GatewayConfig::default();
+        super::storage::write_config(&initial_config).expect("write initial config");
+
+        // 1. weight = 0 (below minimum 1) -> must fail and leave config unchanged
+        let mut p_invalid_zero = provider("p-weight-zero");
+        p_invalid_zero.weight = 0;
+        let err_zero = super::commands::api_gateway_upsert_provider(p_invalid_zero, None)
+            .expect_err("AC-002: saving provider with weight: 0 must return validation error");
+        assert!(
+            err_zero.to_lowercase().contains("weight")
+                && (err_zero.contains("1") && err_zero.contains("100")),
+            "AC-002: error message must be actionable and mention valid bounds [1, 100], got: {err_zero}"
+        );
+        let config_after_zero = super::storage::read_config().expect("read config");
+        assert!(
+            config_after_zero.providers.is_empty(),
+            "AC-002: configuration file must not be modified when weight is 0"
+        );
+
+        // 2. weight = 101 (above maximum 100) -> must fail and leave config unchanged
+        let mut p_invalid_overflow = provider("p-weight-101");
+        p_invalid_overflow.weight = 101;
+        let err_overflow = super::commands::api_gateway_upsert_provider(p_invalid_overflow, None)
+            .expect_err("AC-002: saving provider with weight: 101 must return validation error");
+        assert!(
+            err_overflow.to_lowercase().contains("weight")
+                && (err_overflow.contains("1") && err_overflow.contains("100")),
+            "AC-002: error message must be actionable and mention valid bounds [1, 100], got: {err_overflow}"
+        );
+        let config_after_overflow = super::storage::read_config().expect("read config");
+        assert!(
+            config_after_overflow.providers.is_empty(),
+            "AC-002: configuration file must not be modified when weight is 101"
+        );
+
+        // 3. Valid weights: 1 (min boundary), 50 (typical), 100 (max boundary) -> must succeed and persist
+        for (idx, &valid_weight) in [1, 50, 100].iter().enumerate() {
+            let pid = format!("p-valid-{idx}");
+            let mut p_valid = provider(&pid);
+            p_valid.weight = valid_weight;
+            let result = super::commands::api_gateway_upsert_provider(p_valid, None);
+            assert!(
+                result.is_ok(),
+                "AC-002: saving provider with valid weight {valid_weight} must succeed: {:?}",
+                result.err()
+            );
+
+            let loaded = super::storage::read_config().expect("read config");
+            let saved = loaded
+                .providers
+                .iter()
+                .find(|p| p.id == pid)
+                .expect("saved provider must exist in config");
+            assert_eq!(
+                saved.weight, valid_weight,
+                "AC-002: persisted provider weight must equal configured value"
+            );
+        }
+    });
 }
 

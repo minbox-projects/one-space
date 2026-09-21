@@ -14,12 +14,19 @@ pub const DEFAULT_USAGE_RETENTION_DAYS: u32 = 90;
 pub const MIN_USAGE_RETENTION_DAYS: u32 = 1;
 pub const MAX_USAGE_RETENTION_DAYS: u32 = 365;
 
+pub const MIN_PROVIDER_WEIGHT: u32 = 1;
+pub const MAX_PROVIDER_WEIGHT: u32 = 100;
+
 pub(in crate::api_gateway) fn default_port() -> u16 {
     DEFAULT_PORT
 }
 
 pub(in crate::api_gateway) fn default_usage_retention_days() -> u32 {
     DEFAULT_USAGE_RETENTION_DAYS
+}
+
+pub(in crate::api_gateway) fn default_provider_weight() -> u32 {
+    1
 }
 
 pub(in crate::api_gateway) fn default_true() -> bool {
@@ -158,6 +165,8 @@ pub struct GatewayUpstreamProvider {
     /// must not resurrect them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ignored_models: Vec<String>,
+    #[serde(default = "default_provider_weight")]
+    pub weight: u32,
 }
 
 impl Default for GatewayUpstreamProvider {
@@ -178,6 +187,7 @@ impl Default for GatewayUpstreamProvider {
             last_error_at: None,
             template_id: None,
             ignored_models: Vec::new(),
+            weight: 1,
         }
     }
 }
