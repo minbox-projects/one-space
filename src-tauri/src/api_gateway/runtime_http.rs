@@ -172,7 +172,7 @@ pub(in crate::api_gateway) struct ForwardCapture {
     /// The upstream stream failed after bytes had already reached the caller.
     pub(in crate::api_gateway) upstream_error: bool,
     /// The downstream client went away mid-forward, so the request is neither
-    /// a success nor an error.
+    /// a success nor an error and its whole log buffer is discarded.
     pub(in crate::api_gateway) downstream_cancelled: bool,
 }
 
@@ -195,9 +195,9 @@ impl ForwardCapture {
 ///
 /// A `status` of 0 means the attempt never received an upstream HTTP status
 /// (network or stream failure); `result` is `Success` or `Failure` only, because
-/// a cancelled request is represented by the synthetic terminal row instead of
-/// an attempt. `error_message` is the sanitized upstream error text and must be
-/// extracted where the raw bytes are still available.
+/// a downstream-cancelled or undeliverable request discards its whole buffer
+/// without writing any row. `error_message` is the sanitized upstream error text
+/// and must be extracted where the raw bytes are still available.
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::api_gateway) struct AttemptLog {
     pub(in crate::api_gateway) provider_id: String,
@@ -1537,13 +1537,13 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
         _ = disconnected => None,
         result = forward => Some(result),
     };
-    // Every buffered attempt becomes one row; exactly one of them is terminal on
-    // a pre-stream outcome (the successful, `ReturnToClient`, mid-stream-failure
-    // or chronologically last exhausted attempt). A request without a completed
-    // attempt writes the gateway's own single terminal row instead: the
-    // synthetic `cancelled` row for a downstream cancellation or delivery
-    // failure, and the synthetic failure row when no upstream was reached at
-    // all. Logging is best-effort and never changes the caller-visible response.
+    // A completed business outcome persists its buffered attempts with exactly
+    // one terminal row (the successful, `ReturnToClient`, mid-stream-failure or
+    // chronologically last exhausted attempt). A request without a completed
+    // attempt writes the gateway's own synthetic failure terminal row instead.
+    // A downstream cancellation or undeliverable response persists nothing: the
+    // whole buffer, including completed attempts, is discarded. Logging is
+    // best-effort and never changes the caller-visible response.
     match outcome {
         Some(Ok(capture)) if capture.result() != UsageResult::Cancelled => {
             // Settle the binding once per request at this terminal outcome,
@@ -1576,51 +1576,36 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                 record_usage_log(&config, &record);
             } else {
                 let terminal = attempts.len() - 1;
-                record_request_usage_logs(
-                    &config,
-                    started,
-                    requested.as_deref(),
-                    &attempts,
-                    Some(terminal),
-                );
+                record_request_usage_logs(&config, requested.as_deref(), &attempts, terminal);
             }
         }
-        _ => record_request_usage_logs(&config, started, requested.as_deref(), &attempts, None),
+        // A downstream cancellation or an undeliverable response is an internal
+        // transport lifecycle event, not a business outcome: discard the entire
+        // buffered log set so this inbound request writes no row at all.
+        _ => {}
     }
     Ok(())
 }
 
-/// Persist the request's buffered attempt rows plus exactly one terminal row.
+/// Persist the request's buffered attempt rows with exactly one terminal row.
 ///
 /// `terminal_index` names the buffered attempt that is the request's terminal
 /// row: the successful, `ReturnToClient`, mid-stream-failure or chronologically
-/// last exhausted attempt. `None` means the request was cancelled or its
-/// response could not be delivered: every attempt stays non-terminal and one
-/// synthetic terminal `cancelled` row closes it (REQ-001). A request without a
-/// completed attempt has no rows to batch, so it writes only that synthetic row
-/// through the single-row store call. Otherwise all rows of one request go
-/// through one store and one batch, and any storage failure is logged and
-/// swallowed — the response has already been produced and must not be affected.
+/// last exhausted attempt. The caller only reaches this helper for a completed
+/// business outcome with at least one buffered attempt; a downstream-cancelled
+/// or undeliverable request discards its whole buffer before logging, and a
+/// request without a completed attempt writes the gateway's own synthetic
+/// terminal row instead. All rows of one request go through one store and one
+/// batch, and any storage failure is logged and swallowed — the response has
+/// already been produced and must not be affected.
 fn record_request_usage_logs(
     config: &GatewayConfig,
-    started: Instant,
     local_model: Option<&str>,
     attempts: &[AttemptLog],
-    terminal_index: Option<usize>,
+    terminal_index: usize,
 ) {
     let local_model = local_model.unwrap_or_default();
-    if attempts.is_empty() {
-        let record = synthetic_terminal_row(
-            config,
-            local_model,
-            UsageResult::Cancelled,
-            0,
-            started.elapsed().as_millis().max(1) as u64,
-        );
-        record_usage_log(config, &record);
-        return;
-    }
-    let mut rows: Vec<UsageLogRecord> = attempts
+    let rows: Vec<UsageLogRecord> = attempts
         .iter()
         .enumerate()
         .map(|(index, attempt)| {
@@ -1635,19 +1620,10 @@ fn record_request_usage_logs(
                 attempt.usage,
                 attempt.duration_ms,
                 attempt.error_message.clone(),
-                Some(index) == terminal_index,
+                index == terminal_index,
             )
         })
         .collect();
-    if terminal_index.is_none() {
-        rows.push(synthetic_terminal_row(
-            config,
-            local_model,
-            UsageResult::Cancelled,
-            0,
-            started.elapsed().as_millis().max(1) as u64,
-        ));
-    }
     write_usage_log_rows(config, rows);
 }
 

@@ -718,14 +718,20 @@ fn record_from_row(row: &Row<'_>) -> rusqlite::Result<UsageLogRecord> {
     })
 }
 
-/// Build the `WHERE` clause shared by every log query. `terminal_only` adds the
-/// statistics/grouping filter (REQ-002); the ungrouped list keeps every row.
+/// Build the `WHERE` clause shared by every user-visible log query.
+///
+/// Every query excludes historical `result = 'cancelled'` rows: a downstream
+/// cancellation is a transport lifecycle event rather than a business outcome,
+/// so those physically retained rows stay readable only through raw test readers
+/// (REQ-002). A parsed `status = cancelled` filter therefore yields a valid
+/// empty page instead of matching them. `terminal_only` adds the
+/// statistics/grouping filter; the ungrouped list keeps every non-cancelled row.
 fn bind(
     range: &TimeRange,
     filter: &LogFilter,
     terminal_only: bool,
 ) -> (String, Vec<rusqlite::types::Value>) {
-    let mut clauses: Vec<&str> = Vec::new();
+    let mut clauses: Vec<&str> = vec!["result != 'cancelled'"];
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
     if let Some(start) = range.start_ms {
         clauses.push("timestamp_ms >= ?");
@@ -998,8 +1004,8 @@ impl UsageLogStore {
         })
     }
 
-    /// Grouped rows by `"model"` or `"day"` (UTC+8). `error_count` counts only
-    /// `failure` rows; `cancelled` is never an error.
+    /// Grouped rows by `"model"` or `"day"` (UTC+8). Historical `cancelled` rows
+    /// are excluded from the groups, and `error_count` counts only `failure` rows.
     pub(in crate::api_gateway) fn group_logs(
         &self,
         range: &TimeRange,
@@ -1079,14 +1085,9 @@ impl UsageLogStore {
         hour_buckets: bool,
     ) -> Result<UsageStats, String> {
         let connection = self.open()?;
-        let (where_sql, params) = bind(range, &LogFilter::default(), true);
-        // Cancelled requests stay visible in the request-log views (REQ: 取消仍可见),
-        // but they are not usage statistics; exclude them from every aggregate.
-        let stats_where = if where_sql.is_empty() {
-            " WHERE result != 'cancelled'".to_string()
-        } else {
-            format!("{where_sql} AND result != 'cancelled'")
-        };
+        // `bind` already excludes historical `cancelled` rows alongside the
+        // terminal filter, so every aggregate below shares that one rule.
+        let (stats_where, params) = bind(range, &LogFilter::default(), true);
         // A failed attempt with no candidate provider (`provider_id = ''`) still
         // counts toward totals/models, but must not leak a blank provider row.
         let provider_where = format!("{stats_where} AND provider_id <> ''");
