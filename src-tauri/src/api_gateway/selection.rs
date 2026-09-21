@@ -1,5 +1,6 @@
 use super::{GatewayUpstreamProvider, ModelMapping, UpstreamProtocol, FAILURE_THRESHOLD};
 use rand::seq::SliceRandom;
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -116,6 +117,86 @@ pub(in crate::api_gateway) fn shuffled_candidates(
     ordered.shuffle(&mut rand::thread_rng());
     ordered
 }
+
+static WEIGHTED_SCHEDULER: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
+
+fn weighted_scheduler() -> &'static Mutex<HashMap<String, i64>> {
+    WEIGHTED_SCHEDULER.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Reset the global weighted round-robin scheduler state for tests.
+pub(in crate::api_gateway) fn reset_weighted_scheduler_for_test() {
+    let mut map = weighted_scheduler().lock().unwrap_or_else(|e| e.into_inner());
+    map.clear();
+}
+
+/// Smooth Weighted Round-Robin (SWRR) candidate scheduling.
+///
+/// Returns all candidates ordered with the SWRR primary candidate at index 0,
+/// followed by remaining candidates sorted descending by updated current_weight
+/// (with provider ID ascending as tie-breaker).
+pub(in crate::api_gateway) fn weighted_candidates(
+    candidates: &[GatewayUpstreamProvider],
+) -> Vec<GatewayUpstreamProvider> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    if candidates.len() == 1 {
+        return candidates.to_vec();
+    }
+    let mut map = weighted_scheduler().lock().unwrap_or_else(|e| e.into_inner());
+    let total_weight: i64 = candidates.iter().map(|c| c.weight.max(1) as i64).sum();
+
+    // 1. current_weight += effective_weight
+    for c in candidates {
+        let cw = map.entry(c.id.clone()).or_insert(0);
+        *cw += c.weight.max(1) as i64;
+    }
+
+    // 2. 选择 current_weight 最大的候选，平手按 provider.id 升序决胜
+    let mut best_idx = 0;
+    let mut best_val = (
+        map.get(&candidates[0].id).copied().unwrap_or(0),
+        Reverse(&candidates[0].id),
+    );
+    for (idx, c) in candidates.iter().enumerate().skip(1) {
+        let val = (
+            map.get(&c.id).copied().unwrap_or(0),
+            Reverse(&c.id),
+        );
+        if val > best_val {
+            best_val = val;
+            best_idx = idx;
+        }
+    }
+
+    // 3. 扣减选中者的 total_weight
+    if let Some(cw) = map.get_mut(&candidates[best_idx].id) {
+        *cw -= total_weight;
+    }
+
+    // 4. 剩余候选按更新后的 current_weight 降序排列（平手按 id 升序）
+    let mut remaining: Vec<(usize, &GatewayUpstreamProvider)> = candidates
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| *idx != best_idx)
+        .collect();
+
+    remaining.sort_by(|(_, a), (_, b)| {
+        let wa = map.get(&a.id).copied().unwrap_or(0);
+        let wb = map.get(&b.id).copied().unwrap_or(0);
+        wb.cmp(&wa).then_with(|| a.id.cmp(&b.id))
+    });
+
+    // 5. 组合主选 + 降序降级序列
+    let mut result = Vec::with_capacity(candidates.len());
+    result.push(candidates[best_idx].clone());
+    for (_, c) in remaining {
+        result.push((*c).clone());
+    }
+    result
+}
+
 
 /// Client headers that may carry a session identity, highest precedence first.
 /// The inbound header map is already lower-cased before it is looked up.
