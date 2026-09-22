@@ -727,6 +727,69 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       ).not.toBeInTheDocument();
     });
   });
+
+  describe("状态层：激活标记、选中标记与方案计数", () => {
+    it("无激活方案时 active-profile-badge 展示未激活占位文案", async () => {
+      invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+        const payload = args as Record<string, unknown> | undefined;
+        if (command === "ai_workflow_list_profiles") {
+          return [
+            { name: "onespace-api-gateway", active: false },
+            { name: "baibai-40", active: false },
+          ];
+        }
+        if (command === "ai_workflow_get_profile_matrix") {
+          if (payload?.name === "baibai-40") return mockBaibaiMatrix;
+          return mockGatewayMatrix;
+        }
+        if (command === "ai_workflow_get_model_sources") {
+          return mockModelSources;
+        }
+        return null;
+      });
+
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      const badge = await screen.findByTestId("active-profile-badge");
+      expect(badge).toHaveTextContent(/未激活任何方案|No active profile/);
+      expect(badge).toHaveTextContent(/当前激活|Active/);
+    });
+
+    it("激活与选中状态通过方案芯片的 data 属性暴露", async () => {
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      const activeChip = await screen.findByRole("button", {
+        name: /onespace-api-gateway/,
+      });
+      expect(activeChip).toHaveAttribute("data-active", "true");
+      expect(activeChip).toHaveAttribute("data-selected", "true");
+
+      const inactiveChip = screen.getByRole("button", { name: /baibai-40/ });
+      expect(inactiveChip).toHaveAttribute("data-active", "false");
+      expect(inactiveChip).toHaveAttribute("data-selected", "false");
+    });
+
+    it("展示方案总数标签", async () => {
+      const manyProfiles: ProfileSummary[] = Array.from(
+        { length: 12 },
+        (_, index) => ({ name: `plan-${index + 1}`, active: index === 0 }),
+      );
+      invokeMock.mockImplementation(async (command: string) => {
+        if (command === "ai_workflow_list_profiles") return manyProfiles;
+        if (command === "ai_workflow_get_profile_matrix") {
+          return mockGatewayMatrix;
+        }
+        if (command === "ai_workflow_get_model_sources") {
+          return mockModelSources;
+        }
+        return null;
+      });
+
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      expect(await screen.findByText("共 12 个方案")).toBeInTheDocument();
+    });
+  });
 });
 
 

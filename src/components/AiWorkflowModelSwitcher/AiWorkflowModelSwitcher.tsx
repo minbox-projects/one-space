@@ -28,6 +28,7 @@ import {
   type ModelSourcesResult,
   type ProfileActivationReport,
   type ProfileSummary,
+  type SupportedRole,
   type SupportedTool,
   type ValidEffort,
 } from "@/lib/aiWorkflowProfiles";
@@ -47,6 +48,59 @@ import { SearchableModelCombobox } from "./SearchableModelCombobox";
 export interface AiWorkflowModelSwitcherProps {
   homeOverride?: string;
 }
+
+const ROLE_BADGE_STYLES: Record<SupportedRole, { badge: string; dot: string }> =
+  {
+    backend: {
+      badge: "border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-400",
+      dot: "bg-sky-500",
+    },
+    frontend: {
+      badge:
+        "border-violet-500/25 bg-violet-500/10 text-violet-700 dark:text-violet-400",
+      dot: "bg-violet-500",
+    },
+    test: {
+      badge:
+        "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+      dot: "bg-emerald-500",
+    },
+    "documentation-maintainer": {
+      badge:
+        "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+      dot: "bg-amber-500",
+    },
+    "file-explorer": {
+      badge: "border-cyan-500/25 bg-cyan-500/10 text-cyan-700 dark:text-cyan-400",
+      dot: "bg-cyan-500",
+    },
+    "git-operator": {
+      badge: "border-rose-500/25 bg-rose-500/10 text-rose-700 dark:text-rose-400",
+      dot: "bg-rose-500",
+    },
+    researcher: {
+      badge:
+        "border-indigo-500/25 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400",
+      dot: "bg-indigo-500",
+    },
+    "spec-review": {
+      badge: "border-teal-500/25 bg-teal-500/10 text-teal-700 dark:text-teal-400",
+      dot: "bg-teal-500",
+    },
+    "standards-review": {
+      badge:
+        "border-fuchsia-500/25 bg-fuchsia-500/10 text-fuchsia-700 dark:text-fuchsia-400",
+      dot: "bg-fuchsia-500",
+    },
+  };
+
+const ROLE_BADGE_FALLBACK = {
+  badge: "border-border bg-muted text-muted-foreground",
+  dot: "bg-muted-foreground",
+};
+
+const getRoleStyle = (role: string) =>
+  ROLE_BADGE_STYLES[role as SupportedRole] ?? ROLE_BADGE_FALLBACK;
 
 export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
   homeOverride,
@@ -473,43 +527,148 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
       </div>
 
       {/* 2. 方案选择与控制栏 */}
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border bg-card p-4 shadow-sm">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2">
+      <div className="rounded-xl border bg-card p-4 shadow-sm">
+        {/* 状态层：标题与当前激活状态 */}
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-4">
+          <div className="flex items-start gap-2">
             <Layers className="h-5 w-5 text-primary" />
-            <span className="text-sm font-semibold">
-              {t("aiWorkflow.selectProfile", "配置方案")}:
-            </span>
+            <div>
+              <h3 className="text-sm font-semibold">
+                {t("aiWorkflow.selectProfile", "配置方案")}
+              </h3>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {t("aiWorkflow.selectProfileHint", "选择要查看和编辑的方案")}
+                {profiles.length > 0 ? (
+                  <>
+                    <span className="mx-1.5">·</span>
+                    <span>
+                      {t("aiWorkflow.profilesCount", {
+                        count: profiles.length,
+                        defaultValue: `共 ${profiles.length} 个方案`,
+                      })}
+                    </span>
+                  </>
+                ) : null}
+              </p>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5">
-            {profiles.map((p) => {
-              const isSelected = p.name === selectedProfile;
-              return (
-                <button
-                  key={p.name}
-                  type="button"
-                  onClick={() => void handleSelectProfile(p.name)}
-                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
-                    isSelected
-                      ? "border-primary bg-primary text-primary-foreground shadow-sm"
-                      : "border-border bg-background hover:bg-muted"
-                  }`}
+          {activeProfile ? (
+            <div
+              data-testid="active-profile-badge"
+              role="status"
+              aria-live="polite"
+              className="flex items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 shadow-sm"
+            >
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500 text-white">
+                <CheckCircle2 className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-emerald-600/80 dark:text-emerald-400/80">
+                  {t("aiWorkflow.activeProfile", "当前激活")}
+                </div>
+                <div
+                  title={activeProfile}
+                  className="truncate font-mono text-sm font-semibold text-emerald-700 dark:text-emerald-300"
                 >
-                  <span>{p.name}</span>
-                  {p.error ? (
-                    <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
-                  ) : null}
-                </button>
-              );
-            })}
+                  {activeProfile}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div
+              data-testid="active-profile-badge"
+              role="status"
+              aria-live="polite"
+              className="flex items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 shadow-sm"
+            >
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500 text-white">
+                <AlertTriangle className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400">
+                  {t("aiWorkflow.activeProfile", "当前激活")}
+                </div>
+                <div className="truncate font-mono text-sm font-semibold text-amber-600 dark:text-amber-400">
+                  {t("aiWorkflow.noActiveProfile", "未激活任何方案")}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
 
+        {/* Row A：方案芯片 */}
+        <div
+          role="group"
+          aria-label={t("aiWorkflow.selectProfile", "配置方案")}
+          className="flex flex-wrap items-center gap-2 pt-4"
+        >
+          {profiles.map((p) => {
+            const isSelected = p.name === selectedProfile;
+            const isActive = p.name === activeProfile;
+            return (
+              <button
+                key={p.name}
+                type="button"
+                data-profile-name={p.name}
+                data-active={isActive}
+                data-selected={isSelected}
+                aria-pressed={isSelected}
+                onClick={() => void handleSelectProfile(p.name)}
+                title={p.name}
+                className={`inline-flex max-w-[16rem] shrink-0 items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                  isSelected
+                    ? "border-primary bg-primary text-primary-foreground shadow-sm hover:bg-primary/90"
+                    : isActive
+                      ? "border-emerald-500/40 bg-emerald-500/5 text-foreground hover:bg-emerald-500/10"
+                      : "border-border bg-background text-foreground hover:bg-muted/60"
+                }`}
+              >
+                {isActive ? (
+                  <CheckCircle2
+                    className={`h-3.5 w-3.5 shrink-0 ${isSelected ? "" : "text-emerald-500"}`}
+                  />
+                ) : null}
+                <span className="truncate">{p.name}</span>
+                {p.error ? (
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+                ) : null}
+                {isActive ? (
+                  <span
+                    className={
+                      isSelected
+                        ? "shrink-0 rounded-full bg-white/20 px-1.5 py-0.5 text-[11px] font-medium"
+                        : "shrink-0 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-400"
+                    }
+                  >
+                    {t("aiWorkflow.profileActiveTag", "已生效")}
+                  </span>
+                ) : isSelected && isDirty ? (
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-white/20 px-1.5 py-0.5 text-[11px] font-medium">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                    {t("aiWorkflow.profileEditingTag", "编辑中")}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+
+          {profiles.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              {t("aiWorkflow.noProfiles", "未找到可用配置方案")}
+            </p>
+          ) : null}
+        </div>
+
+        {/* Row B：操作按钮 */}
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t pt-3">
+          <div className="flex flex-wrap items-center gap-2">
             {/* 新建方案按钮 */}
             <button
               type="button"
               data-testid="create-profile-trigger"
               onClick={handleOpenCreateDialog}
-              className="inline-flex items-center gap-1 rounded-lg border border-dashed border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
+              className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-dashed border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
               title={t("aiWorkflow.newProfile", "新建方案")}
             >
               <Plus className="h-3.5 w-3.5" />
@@ -535,7 +694,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                       )
                     : t("aiWorkflow.deleteProfile", "删除方案")
                 }
-                className="inline-flex items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-background"
+                className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-background"
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 <span>{t("aiWorkflow.deleteProfile", "删除方案")}</span>
@@ -543,116 +702,112 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
             ) : null}
           </div>
 
-          {activeProfile ? (
-            <span
-              data-testid="active-profile-badge"
-              className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400"
-            >
-              <CheckCircle2 className="h-3.5 w-3.5" />
-              <span>
-                {t("aiWorkflow.activeProfile", "当前激活")}: {activeProfile}
-              </span>
-            </span>
-          ) : null}
-
-          {isDirty ? (
-            <span
-              data-testid="matrix-dirty-indicator"
-              className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-600 dark:text-amber-400"
-            >
-              <span className="h-2 w-2 rounded-full bg-amber-500" />
-              {t("aiWorkflow.unsavedChanges", "未保存修改")}
-            </span>
-          ) : null}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {/* 批量应用 Reasoning Effort */}
-          <div className="relative">
-            <button
-              type="button"
-              data-testid="batch-apply-effort-trigger"
-              onClick={() => setIsEffortDropdownOpen((prev) => !prev)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
-            >
-              <Sliders className="h-3.5 w-3.5" />
-              <span>
-                {t("aiWorkflow.batchApplyEffort", "批量调整推理强度")}
-              </span>
-              <ChevronDown className="h-3 w-3 opacity-60" />
-            </button>
-
-            {isEffortDropdownOpen ? (
-              <div
-                role="listbox"
-                className="absolute right-0 top-full z-20 mt-1 w-44 rounded-lg border bg-popover p-1.5 shadow-lg"
+          <div className="flex flex-wrap items-center gap-2">
+            {isDirty ? (
+              <span
+                data-testid="matrix-dirty-indicator"
+                className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-600 dark:text-amber-400"
               >
-                <div className="mb-1 px-2 py-1 text-[11px] font-semibold text-muted-foreground">
+                <span className="h-2 w-2 rounded-full bg-amber-500" />
+                {t("aiWorkflow.unsavedChanges", "未保存修改")}
+              </span>
+            ) : null}
+
+            {/* 批量应用 Reasoning Effort */}
+            <div className="relative">
+              <button
+                type="button"
+                data-testid="batch-apply-effort-trigger"
+                onClick={() => setIsEffortDropdownOpen((prev) => !prev)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
+              >
+                <Sliders className="h-3.5 w-3.5" />
+                <span>
+                  {t("aiWorkflow.batchApplyEffort", "批量调整推理强度")}
+                </span>
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </button>
+
+              {isEffortDropdownOpen ? (
+                <div
+                  role="listbox"
+                  className="absolute right-0 top-full z-20 mt-1 w-44 rounded-lg border bg-popover p-1.5 shadow-lg"
+                >
+                <div className="mb-1 px-2 py-1 text-[11px] font-medium text-muted-foreground">
                   {t("aiWorkflow.reasoningEffort", "推理强度")}
                 </div>
-                {VALID_EFFORTS.map((effort) => (
-                  <button
-                    key={effort}
-                    role="option"
-                    aria-selected={selectedEffort === effort}
-                    onClick={() => setSelectedEffort(effort)}
-                    className={`flex w-full items-center justify-between rounded px-2 py-1 text-xs transition-colors ${
-                      selectedEffort === effort
-                        ? "bg-primary text-primary-foreground font-medium"
-                        : "hover:bg-muted"
-                    }`}
-                  >
-                    <span>{effort}</span>
-                    {selectedEffort === effort ? (
-                      <CheckCircle2 className="h-3.5 w-3.5" />
-                    ) : null}
-                  </button>
-                ))}
-                <div className="mt-2 border-t pt-1.5">
-                  <button
-                    type="button"
-                    data-testid="batch-apply-effort-submit"
-                    onClick={handleApplyEffortBatch}
-                    className="w-full rounded bg-primary py-1 text-center text-xs font-medium text-primary-foreground hover:bg-primary/90"
-                  >
-                    {t("aiWorkflow.apply", "应用")}
-                  </button>
+                  {VALID_EFFORTS.map((effort) => (
+                    <button
+                      key={effort}
+                      role="option"
+                      aria-selected={selectedEffort === effort}
+                      onClick={() => setSelectedEffort(effort)}
+                      className={`flex w-full items-center justify-between rounded px-2 py-1 text-xs transition-colors ${
+                        selectedEffort === effort
+                          ? "bg-primary text-primary-foreground font-medium"
+                          : "hover:bg-muted"
+                      }`}
+                    >
+                      <span>{effort}</span>
+                      {selectedEffort === effort ? (
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                      ) : null}
+                    </button>
+                  ))}
+                  <div className="mt-2 border-t pt-1.5">
+                    <button
+                      type="button"
+                      data-testid="batch-apply-effort-submit"
+                      onClick={handleApplyEffortBatch}
+                      className="w-full rounded bg-primary py-1 text-center text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                    >
+                      {t("aiWorkflow.apply", "应用")}
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ) : null}
+              ) : null}
+            </div>
+
+            <button
+              type="button"
+              aria-label="Reset"
+              onClick={handleReset}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              {t("aiWorkflow.resetChanges", "重置")}
+            </button>
+
+            <button
+              type="button"
+              aria-label="Direct Activate"
+              disabled={isActivating || !selectedProfile}
+              title={
+                isDirty
+                  ? t(
+                      "aiWorkflow.directActivateWarning",
+                      "将忽略未保存的修改，激活已保存的磁盘版本",
+                    )
+                  : undefined
+              }
+              onClick={() => void handleDirectActivate()}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground shadow-sm hover:bg-muted disabled:opacity-50"
+            >
+              <Zap className="h-3.5 w-3.5 text-primary" />
+              {t("aiWorkflow.directActivate", "直接激活")}
+            </button>
+
+            <button
+              type="button"
+              aria-label="Save and Activate"
+              disabled={isActivating || !selectedProfile}
+              onClick={() => void handleSaveAndActivate()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-50"
+            >
+              <Save className="h-3.5 w-3.5" />
+              {t("aiWorkflow.saveAndActivate", "保存并激活")}
+            </button>
           </div>
-
-          <button
-            type="button"
-            aria-label="Reset"
-            onClick={handleReset}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            {t("aiWorkflow.resetChanges", "重置")}
-          </button>
-
-          <button
-            type="button"
-            aria-label="Direct Activate"
-            disabled={isActivating || !selectedProfile}
-            onClick={() => void handleDirectActivate()}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground shadow-sm hover:bg-muted disabled:opacity-50"
-          >
-            <Zap className="h-3.5 w-3.5 text-primary" />
-            {t("aiWorkflow.directActivate", "直接激活")}
-          </button>
-
-          <button
-            type="button"
-            aria-label="Save and Activate"
-            disabled={isActivating || !selectedProfile}
-            onClick={() => void handleSaveAndActivate()}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-50"
-          >
-            <Save className="h-3.5 w-3.5" />
-            {t("aiWorkflow.saveAndActivate", "保存并激活")}
-          </button>
         </div>
       </div>
 
@@ -725,7 +880,12 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                             key={agent.name}
                             className="flex items-center justify-between rounded border bg-card px-2 py-1"
                           >
-                            <span className="font-semibold text-foreground">
+                            <span
+                              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium ${getRoleStyle(agent.name).badge}`}
+                            >
+                              <span
+                                className={`h-1.5 w-1.5 rounded-full ${getRoleStyle(agent.name).dot}`}
+                              />
                               {agent.name}
                             </span>
                             <span className="font-mono text-muted-foreground">
@@ -747,10 +907,10 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
       {matrix.length > 0 ? (
         <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
           <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left text-sm">
+            <table className="w-full border-collapse text-xs">
               <thead>
-                <tr className="border-b bg-muted/50">
-                  <th className="w-48 p-3.5 font-semibold text-foreground">
+                <tr className="border-b bg-muted/40 text-left text-muted-foreground">
+                  <th className="w-48 px-3.5 py-2.5 font-medium">
                     {t("aiWorkflow.role", "角色")}
                   </th>
                   {SUPPORTED_TOOLS.map((tool) => {
@@ -762,7 +922,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                       <th
                         key={tool}
                         data-testid={`column-header-${tool}`}
-                        className="p-3.5 font-semibold text-foreground"
+                        className="px-3.5 py-2.5 font-medium"
                       >
                         <div className="flex flex-col gap-1.5">
                           <div className="flex items-center justify-between gap-2">
@@ -776,7 +936,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                                 setBatchColumnTool(isBatchActive ? null : tool);
                                 setBatchColumnValue("");
                               }}
-                              className="rounded border bg-background px-2 py-0.5 text-[11px] font-normal text-muted-foreground hover:bg-muted hover:text-foreground"
+                              className="shrink-0 whitespace-nowrap rounded border bg-background px-2 py-0.5 text-[11px] font-normal text-muted-foreground hover:bg-muted hover:text-foreground"
                             >
                               {t("aiWorkflow.batchFillColumn", "整列填充")}
                             </button>
@@ -857,7 +1017,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                   })}
                 </tr>
               </thead>
-              <tbody className="divide-y">
+              <tbody className="divide-y divide-border/60">
                 {SUPPORTED_ROLES.map((role) => {
                   const row = matrix.find((r) => r.role === role);
                   const isRowBatchActive = batchRowRole === role;
@@ -868,10 +1028,15 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                       data-testid={`matrix-row-role-${role}`}
                       className="transition-colors hover:bg-muted/20"
                     >
-                      <td className="p-3.5 align-top">
+                      <td className="px-3.5 py-2.5 align-top">
                         <div className="flex flex-col gap-1.5">
                           <div className="flex items-center justify-between gap-1">
-                            <span className="font-medium text-foreground">
+                            <span
+                              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium ${ROLE_BADGE_STYLES[role].badge}`}
+                            >
+                              <span
+                                className={`h-1.5 w-1.5 rounded-full ${ROLE_BADGE_STYLES[role].dot}`}
+                              />
                               {role}
                             </span>
                             <button
@@ -881,7 +1046,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                                 setBatchRowRole(isRowBatchActive ? null : role);
                                 setBatchRowValue("");
                               }}
-                              className="rounded border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                              className="shrink-0 whitespace-nowrap rounded border bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
                             >
                               {t("aiWorkflow.batchFillRow", "整行填充")}
                             </button>
@@ -971,7 +1136,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                               setEditingCell({ role, tool });
                               setCellSearchFilter("");
                             }}
-                            className={`p-3 align-top transition-colors ${
+                            className={`px-3.5 py-2.5 align-top transition-colors ${
                               isCellDirty
                                 ? "bg-amber-500/10 dark:bg-amber-500/15"
                                 : ""
@@ -981,7 +1146,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                               {/* 当前值摘要文本，确保 textContent 始终包含 model 与 effort */}
                               <div className="flex flex-wrap items-center gap-1.5">
                                 {cellData?.model ? (
-                                  <span className="font-mono text-xs font-semibold text-foreground">
+                                  <span className="font-mono font-medium text-foreground">
                                     {cellData.model}
                                   </span>
                                 ) : (
@@ -991,7 +1156,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                                 )}
 
                                 {cellData?.reasoning_effort ? (
-                                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                  <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
                                     {cellData.reasoning_effort}
                                   </span>
                                 ) : null}
@@ -1003,8 +1168,11 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                                   className="mt-1 space-y-2 rounded-lg border bg-background p-2.5 shadow-sm"
                                   onClick={(e) => e.stopPropagation()}
                                 >
-                                  <div className="flex items-center justify-between border-b pb-1 text-[11px] font-semibold text-muted-foreground">
-                                    <span>
+                                  <div className="flex items-center justify-between border-b pb-1 text-[11px] font-medium text-muted-foreground">
+                                    <span className="inline-flex items-center gap-1.5">
+                                      <span
+                                        className={`h-1.5 w-1.5 rounded-full ${getRoleStyle(role).dot}`}
+                                      />
                                       {role} · {tool}
                                     </span>
                                     <button
@@ -1072,7 +1240,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                                       <div className="mb-1 flex items-center justify-between text-[11px] font-medium text-muted-foreground">
                                         <span>Candidates</span>
                                         {cellSearchFilter.trim() ? (
-                                          <span className="text-[10px] text-primary">
+                                          <span className="text-[11px] text-primary">
                                             过滤中
                                           </span>
                                         ) : null}
@@ -1121,7 +1289,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                                                 .toLowerCase(),
                                             ),
                                         ).length === 0 ? (
-                                          <div className="py-2 text-center text-[10px] text-muted-foreground">
+                                          <div className="py-2 text-center text-[11px] text-muted-foreground">
                                             {t(
                                               "aiWorkflow.noMatchingModels",
                                               "无匹配候选（支持自定义输入）",
