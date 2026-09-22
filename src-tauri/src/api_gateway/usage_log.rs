@@ -344,6 +344,27 @@ pub(in crate::api_gateway) struct CanonicalUsage {
     pub valid: bool,
 }
 
+/// Persisted usage classification of one new request-log row (REQ-004).
+///
+/// `present` means the upstream response carried a `usage` object at all;
+/// `valid` means its decomposition into the four exclusive tiers succeeded.
+/// Rows written by [`UsageLogStore::append`] / [`UsageLogStore::append_batch`]
+/// always carry the canonical contract, while the accounting-aware insert path
+/// persists the parser's real classification.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::api_gateway) struct UsageAccounting {
+    pub present: bool,
+    pub valid: bool,
+}
+
+impl UsageAccounting {
+    /// The classification written by the request-log contract path.
+    pub(in crate::api_gateway) const CANONICAL: Self = Self {
+        present: true,
+        valid: true,
+    };
+}
+
 /// Map an upstream `usage` object to the four exclusive token tiers (REQ-001).
 ///
 /// Missing fields become 0; the caller decides whether usage was present at all.
@@ -444,12 +465,13 @@ pub(in crate::api_gateway) fn usage_tokens_from_value(usage: &Value) -> UsageTok
     canonical_usage_from_value(usage).tokens
 }
 
-/// Parse `usage` out of a complete (buffered) upstream JSON response.
-pub(in crate::api_gateway) fn parse_usage_from_response(body: &[u8]) -> Option<UsageTokens> {
+/// Parse `usage` out of a complete (buffered) upstream JSON response, keeping
+/// the canonical validity classification so the store can persist it.
+pub(in crate::api_gateway) fn parse_usage_from_response(body: &[u8]) -> Option<CanonicalUsage> {
     let value: Value = serde_json::from_slice(body).ok()?;
     let usage = value.get("usage")?;
     if usage.is_object() {
-        Some(usage_tokens_from_value(usage))
+        Some(canonical_usage_from_value(usage))
     } else {
         None
     }
@@ -597,7 +619,7 @@ fn starts_with_ignore_ascii_case(bytes: &[u8], start: usize, word: &[u8]) -> boo
 #[derive(Default)]
 pub(in crate::api_gateway) struct SseUsageAccumulator {
     buffer: String,
-    usage: Option<UsageTokens>,
+    usage: Option<CanonicalUsage>,
 }
 
 impl SseUsageAccumulator {
@@ -627,12 +649,17 @@ impl SseUsageAccumulator {
         };
         if let Some(usage) = value.get("usage") {
             if usage.is_object() {
-                self.usage = Some(usage_tokens_from_value(usage));
+                self.usage = Some(canonical_usage_from_value(usage));
             }
         }
     }
 
     pub(in crate::api_gateway) fn usage(&self) -> Option<UsageTokens> {
+        self.usage.map(|canonical| canonical.tokens)
+    }
+
+    /// The last valid usage object with its canonical validity classification.
+    pub(in crate::api_gateway) fn canonical_usage(&self) -> Option<CanonicalUsage> {
         self.usage
     }
 }
@@ -693,6 +720,17 @@ pub struct UsageMetrics {
     pub total_tokens: u64,
     pub amount: f64,
     pub unpriced_count: u32,
+    /// Sum of `cache_read_tokens` over cache-eligible rows (REQ-002).
+    pub cache_hit_tokens: u64,
+    /// Sum of `ordinary + cache_read + cache_write` over cache-eligible rows.
+    pub cache_eligible_tokens: u64,
+    /// Token-weighted `cache_hit_tokens / cache_eligible_tokens` as a 0..=100
+    /// percentage; `None` when no eligible positive denominator exists.
+    pub cache_hit_rate_percent: Option<f64>,
+    /// Number of cache-eligible rows in this aggregation.
+    pub cache_rate_eligible_count: u32,
+    /// Number of in-range successful terminal rows, eligible or not.
+    pub successful_request_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -733,6 +771,11 @@ pub struct UsageStats {
     pub granularity: String,
     #[serde(flatten)]
     pub totals: UsageMetrics,
+    /// Additive nested mirror of [`Self::totals`], serialized under a `totals`
+    /// key while the flattened fields above stay unchanged for existing
+    /// clients. Both views always carry the same aggregation.
+    #[serde(rename = "totals", default, skip_deserializing)]
+    totals_view: UsageMetrics,
     pub buckets: Vec<UsageBucketRow>,
     pub models: Vec<UsageModelRow>,
     #[serde(default)]
@@ -770,23 +813,62 @@ pub(in crate::api_gateway) struct LogFilter {
     pub model: Option<String>,
 }
 
-const METRIC_COLUMNS: &str = "COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(amount), 0.0), COALESCE(SUM(CASE WHEN amount IS NULL AND upstream_model <> '' AND (result = 'success' OR total_tokens > 0) THEN 1 ELSE 0 END), 0)";
+/// SQL predicate selecting a cache-eligible row (REQ-002/REQ-004): an in-range
+/// successful terminal row with a present, valid canonical decomposition and a
+/// positive cache denominator. Totals, buckets, models and providers all reuse
+/// this one predicate so no level can drift from another.
+const ELIGIBLE_ROW_SQL: &str = "result = 'success' \
+    AND usage_semantics = 'canonical_v1' \
+    AND usage_present = 1 \
+    AND cache_accounting_valid = 1 \
+    AND (input_tokens + cache_read_tokens + cache_write_tokens) > 0";
 
-/// Column list and placeholders shared by [`UsageLogStore::append`] and
-/// [`UsageLogStore::append_batch`].
+/// The shared metric projection, in [`metrics_from_row`] order. The final four
+/// aggregates are the additive cache fields; the percentage is derived from the
+/// two sums in Rust so every level uses the same token weighting.
+fn metric_columns() -> String {
+    format!(
+        "COUNT(*), \
+         COALESCE(SUM(input_tokens), 0), \
+         COALESCE(SUM(cache_read_tokens), 0), \
+         COALESCE(SUM(cache_write_tokens), 0), \
+         COALESCE(SUM(output_tokens), 0), \
+         COALESCE(SUM(total_tokens), 0), \
+         COALESCE(SUM(amount), 0.0), \
+         COALESCE(SUM(CASE WHEN amount IS NULL AND upstream_model <> '' AND (result = 'success' OR total_tokens > 0) THEN 1 ELSE 0 END), 0), \
+         COALESCE(SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END), 0), \
+         COALESCE(SUM(CASE WHEN {ELIGIBLE_ROW_SQL} THEN cache_read_tokens ELSE 0 END), 0), \
+         COALESCE(SUM(CASE WHEN {ELIGIBLE_ROW_SQL} THEN input_tokens + cache_read_tokens + cache_write_tokens ELSE 0 END), 0), \
+         COALESCE(SUM(CASE WHEN {ELIGIBLE_ROW_SQL} THEN 1 ELSE 0 END), 0)"
+    )
+}
+
+/// Column list and placeholders shared by every usage-log insert path. New rows
+/// always carry the canonical semantics marker; presence and accounting
+/// validity vary per row.
 const INSERT_SQL: &str = "
 INSERT INTO usage_logs (
     timestamp_ms, local_model, upstream_model, provider_id, provider_name,
     result, status, input_tokens, cache_read_tokens, cache_write_tokens,
     output_tokens, total_tokens, amount, duration_ms, error_message, terminal,
-    reasoning_effort
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    reasoning_effort, usage_semantics, usage_present, cache_accounting_valid
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ";
+
+/// Semantics marker persisted for every newly written row (REQ-004).
+const CANONICAL_USAGE_SEMANTICS: &str = "canonical_v1";
 
 /// Column list of every record-producing `SELECT`, in [`record_from_row`] order.
 const RECORD_COLUMNS: &str = "timestamp_ms, local_model, upstream_model, provider_id, provider_name, result, status, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, total_tokens, amount, duration_ms, error_message, terminal, reasoning_effort";
 
 fn metrics_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<UsageMetrics> {
+    let cache_hit_tokens = row.get::<_, i64>(offset + 9)? as u64;
+    let cache_eligible_tokens = row.get::<_, i64>(offset + 10)? as u64;
+    let cache_hit_rate_percent = if cache_eligible_tokens > 0 {
+        Some(cache_hit_tokens as f64 * 100.0 / cache_eligible_tokens as f64)
+    } else {
+        None
+    };
     Ok(UsageMetrics {
         request_count: row.get::<_, i64>(offset)? as u32,
         input_tokens: row.get::<_, i64>(offset + 1)? as u64,
@@ -796,6 +878,11 @@ fn metrics_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<UsageMetri
         total_tokens: row.get::<_, i64>(offset + 5)? as u64,
         amount: row.get::<_, f64>(offset + 6)?,
         unpriced_count: row.get::<_, i64>(offset + 7)? as u32,
+        successful_request_count: row.get::<_, i64>(offset + 8)? as u32,
+        cache_hit_tokens,
+        cache_eligible_tokens,
+        cache_hit_rate_percent,
+        cache_rate_eligible_count: row.get::<_, i64>(offset + 11)? as u32,
     })
 }
 
@@ -898,7 +985,82 @@ fn migrate_usage_logs(connection: &Connection) -> Result<(), String> {
             .execute("ALTER TABLE usage_logs ADD COLUMN reasoning_effort TEXT", [])
             .map_err(|error| error.to_string())?;
     }
+    // Additive usage-accounting columns (REQ-004). Pre-existing rows default to
+    // legacy semantics with no present/valid usage and stay excluded from the
+    // new cache numerator/denominator; original tokens, totals, amounts and log
+    // fields are never rewritten.
+    if !has_column("usage_semantics") {
+        connection
+            .execute(
+                "ALTER TABLE usage_logs ADD COLUMN usage_semantics TEXT NOT NULL DEFAULT 'legacy'",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    if !has_column("usage_present") {
+        connection
+            .execute(
+                "ALTER TABLE usage_logs ADD COLUMN usage_present INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    if !has_column("cache_accounting_valid") {
+        connection
+            .execute(
+                "ALTER TABLE usage_logs ADD COLUMN cache_accounting_valid INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+    }
     Ok(())
+}
+
+/// One persistable row: its request-log record plus the real usage
+/// classification captured while parsing the upstream response (REQ-004).
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::api_gateway) struct UsageLogEntry {
+    pub record: UsageLogRecord,
+    pub accounting: UsageAccounting,
+}
+
+/// Bind one record and its classification into a prepared [`INSERT_SQL`].
+fn insert_record(
+    statement: &mut rusqlite::Statement<'_>,
+    record: &UsageLogRecord,
+    accounting: UsageAccounting,
+) -> Result<(), String> {
+    statement
+        .execute(rusqlite::params![
+            record.timestamp_ms,
+            record.local_model,
+            record.upstream_model,
+            record.provider_id,
+            record.provider_name,
+            record.result.as_str(),
+            record.status as i64,
+            record.input_tokens as i64,
+            record.cache_read_tokens as i64,
+            record.cache_write_tokens as i64,
+            record.output_tokens as i64,
+            record.total_tokens as i64,
+            record.amount,
+            record.duration_ms as i64,
+            record.error_message,
+            record.terminal,
+            record.reasoning_effort,
+            CANONICAL_USAGE_SEMANTICS,
+            accounting.present as i64,
+            accounting.valid as i64,
+        ])
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// Permanently delete rows older than the retention window (REQ-009).
+fn apply_retention(connection: &Connection, retention_days: u32) {
+    let cutoff = now_millis() - normalize_retention_days(retention_days) as i64 * DAY_MS;
+    let _ = connection.execute("DELETE FROM usage_logs WHERE timestamp_ms < ?", [cutoff]);
 }
 
 /// SQLite-backed usage-log storage bound to one explicit database path.
@@ -936,49 +1098,23 @@ impl UsageLogStore {
         Ok(connection)
     }
 
-    /// Insert one record, then permanently delete records older than the
-    /// retention window (REQ-009).
+    /// Insert one record with the canonical request-log classification
+    /// (`canonical_v1`, usage present and accounting valid), then permanently
+    /// delete records older than the retention window (REQ-004/REQ-009).
     pub(in crate::api_gateway) fn append(
         &self,
         record: &UsageLogRecord,
         retention_days: u32,
     ) -> Result<(), String> {
-        let connection = self.open()?;
-        connection
-            .execute(
-                INSERT_SQL,
-                rusqlite::params![
-                    record.timestamp_ms,
-                    record.local_model,
-                    record.upstream_model,
-                    record.provider_id,
-                    record.provider_name,
-                    record.result.as_str(),
-                    record.status as i64,
-                    record.input_tokens as i64,
-                    record.cache_read_tokens as i64,
-                    record.cache_write_tokens as i64,
-                    record.output_tokens as i64,
-                    record.total_tokens as i64,
-                    record.amount,
-                    record.duration_ms as i64,
-                    record.error_message,
-                    record.terminal,
-                    record.reasoning_effort,
-                ],
-            )
-            .map_err(|error| error.to_string())?;
-        let cutoff = now_millis() - normalize_retention_days(retention_days) as i64 * DAY_MS;
-        let _ = connection.execute("DELETE FROM usage_logs WHERE timestamp_ms < ?", [cutoff]);
-        Ok(())
+        self.append_with_accounting(record, UsageAccounting::CANONICAL, retention_days)
     }
 
-    /// Insert every record of one request through a single connection, in slice
-    /// order, then apply the same retention cleanup as [`Self::append`]
-    /// (REQ-005). An empty slice writes nothing.
-    pub(in crate::api_gateway) fn append_batch(
+    /// Insert one record carrying the parser's real usage classification. Used
+    /// by the request runtime so missing or invalid usage is persisted as such.
+    pub(in crate::api_gateway) fn append_with_accounting(
         &self,
-        records: &[UsageLogRecord],
+        record: &UsageLogRecord,
+        accounting: UsageAccounting,
         retention_days: u32,
     ) -> Result<(), String> {
         let connection = self.open()?;
@@ -986,32 +1122,50 @@ impl UsageLogStore {
             let mut statement = connection
                 .prepare(INSERT_SQL)
                 .map_err(|error| error.to_string())?;
-            for record in records {
-                statement
-                    .execute(rusqlite::params![
-                        record.timestamp_ms,
-                        record.local_model,
-                        record.upstream_model,
-                        record.provider_id,
-                        record.provider_name,
-                        record.result.as_str(),
-                        record.status as i64,
-                        record.input_tokens as i64,
-                        record.cache_read_tokens as i64,
-                        record.cache_write_tokens as i64,
-                        record.output_tokens as i64,
-                        record.total_tokens as i64,
-                        record.amount,
-                        record.duration_ms as i64,
-                        record.error_message,
-                        record.terminal,
-                        record.reasoning_effort,
-                    ])
-                    .map_err(|error| error.to_string())?;
+            insert_record(&mut statement, record, accounting)?;
+        }
+        apply_retention(&connection, retention_days);
+        Ok(())
+    }
+
+    /// Insert every record of one request through a single connection, in slice
+    /// order, then apply the same retention cleanup as [`Self::append`]
+    /// (REQ-005). Each record carries the canonical request-log classification.
+    /// An empty slice writes nothing.
+    pub(in crate::api_gateway) fn append_batch(
+        &self,
+        records: &[UsageLogRecord],
+        retention_days: u32,
+    ) -> Result<(), String> {
+        let entries: Vec<UsageLogEntry> = records
+            .iter()
+            .cloned()
+            .map(|record| UsageLogEntry {
+                record,
+                accounting: UsageAccounting::CANONICAL,
+            })
+            .collect();
+        self.append_batch_with_accounting(&entries, retention_days)
+    }
+
+    /// Insert every entry of one request through a single connection, in slice
+    /// order, then apply the same retention cleanup as [`Self::append`]
+    /// (REQ-005). An empty slice writes nothing.
+    pub(in crate::api_gateway) fn append_batch_with_accounting(
+        &self,
+        entries: &[UsageLogEntry],
+        retention_days: u32,
+    ) -> Result<(), String> {
+        let connection = self.open()?;
+        {
+            let mut statement = connection
+                .prepare(INSERT_SQL)
+                .map_err(|error| error.to_string())?;
+            for entry in entries {
+                insert_record(&mut statement, &entry.record, entry.accounting)?;
             }
         }
-        let cutoff = now_millis() - normalize_retention_days(retention_days) as i64 * DAY_MS;
-        let _ = connection.execute("DELETE FROM usage_logs WHERE timestamp_ms < ?", [cutoff]);
+        apply_retention(&connection, retention_days);
         Ok(())
     }
 
@@ -1204,7 +1358,7 @@ impl UsageLogStore {
         let provider_where = format!("{stats_where} AND provider_id <> ''");
         let totals: UsageMetrics = connection
             .query_row(
-                &format!("SELECT {METRIC_COLUMNS} FROM usage_logs{stats_where}"),
+                &format!("SELECT {} FROM usage_logs{stats_where}", metric_columns()),
                 params_from_iter(params.iter()),
                 |row| metrics_from_row(row, 0),
             )
@@ -1217,9 +1371,10 @@ impl UsageLogStore {
         };
         let mut statement = connection
             .prepare(&format!(
-                "SELECT {bucket_sql} AS bucket_key, {METRIC_COLUMNS}
+                "SELECT {bucket_sql} AS bucket_key, {}
                  FROM usage_logs{stats_where}
-                 GROUP BY bucket_key ORDER BY bucket_key ASC"
+                 GROUP BY bucket_key ORDER BY bucket_key ASC",
+                metric_columns()
             ))
             .map_err(|error| error.to_string())?;
         let mut buckets = Vec::new();
@@ -1241,9 +1396,10 @@ impl UsageLogStore {
 
         let mut model_statement = connection
             .prepare(&format!(
-                "SELECT local_model, {METRIC_COLUMNS}
+                "SELECT local_model, {}
                  FROM usage_logs{stats_where}
-                 GROUP BY local_model ORDER BY COALESCE(SUM(total_tokens), 0) DESC, local_model ASC"
+                 GROUP BY local_model ORDER BY COALESCE(SUM(total_tokens), 0) DESC, local_model ASC",
+                metric_columns()
             ))
             .map_err(|error| error.to_string())?;
         let model_rows = model_statement
@@ -1257,10 +1413,11 @@ impl UsageLogStore {
 
         let mut provider_statement = connection
             .prepare(&format!(
-                "SELECT local_model, provider_id, provider_name, {METRIC_COLUMNS}
+                "SELECT local_model, provider_id, provider_name, {}
                  FROM usage_logs{provider_where}
                  GROUP BY local_model, provider_id, provider_name
-                 ORDER BY local_model ASC, provider_name ASC"
+                 ORDER BY local_model ASC, provider_name ASC",
+                metric_columns()
             ))
             .map_err(|error| error.to_string())?;
         let provider_rows = provider_statement
@@ -1321,6 +1478,7 @@ impl UsageLogStore {
         Ok(UsageStats {
             granularity: if hour_buckets { "hour" } else { "day" }.to_string(),
             totals,
+            totals_view: totals,
             buckets,
             models,
             unpriced_items,

@@ -10,7 +10,8 @@ use super::storage::{local_base_url, read_config, write_config};
 use super::usage_log::{
     compute_cost_at_time, extract_upstream_error_text, match_price_for_provider,
     normalize_retention_days, now_millis, parse_usage_from_response, sanitize_error_text,
-    SseUsageAccumulator, UsageLogRecord, UsageLogStore, UsageResult, UsageTokens,
+    CanonicalUsage, SseUsageAccumulator, UsageAccounting, UsageLogEntry, UsageLogRecord,
+    UsageLogStore, UsageResult, UsageTokens,
 };
 use super::{now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, UpstreamProtocol};
 use futures_util::StreamExt;
@@ -209,6 +210,9 @@ pub(in crate::api_gateway) struct AttemptLog {
     pub(in crate::api_gateway) result: UsageResult,
     pub(in crate::api_gateway) error_message: Option<String>,
     pub(in crate::api_gateway) usage: Option<UsageTokens>,
+    /// Whether the captured usage object decomposed into valid canonical tiers
+    /// (`false` for a missing or invalid/conflicting usage object).
+    pub(in crate::api_gateway) usage_valid: bool,
     pub(in crate::api_gateway) duration_ms: u64,
 }
 
@@ -222,12 +226,14 @@ impl Default for AttemptLog {
             result: UsageResult::Failure,
             error_message: None,
             usage: None,
+            usage_valid: false,
             duration_ms: 0,
         }
     }
 }
 
-/// Buffer one completed upstream attempt with its own elapsed time.
+/// Buffer one completed upstream attempt with its own elapsed time. The parsed
+/// canonical usage carries both the persisted tiers and their validity.
 fn build_attempt_log(
     provider: &GatewayUpstreamProvider,
     upstream_model: &str,
@@ -235,7 +241,7 @@ fn build_attempt_log(
     status: u16,
     result: UsageResult,
     error_message: Option<String>,
-    usage: Option<UsageTokens>,
+    usage: Option<CanonicalUsage>,
 ) -> AttemptLog {
     AttemptLog {
         provider_id: provider.id.clone(),
@@ -244,7 +250,8 @@ fn build_attempt_log(
         status,
         result,
         error_message,
-        usage,
+        usage: usage.map(|canonical| canonical.tokens),
+        usage_valid: usage.is_some_and(|canonical| canonical.valid),
         duration_ms: started.elapsed().as_millis().max(1) as u64,
     }
 }
@@ -817,7 +824,7 @@ async fn attempt_candidate(
                 provider_id: provider.id.clone(),
                 provider_name: provider.name.clone(),
                 upstream_model: model.to_string(),
-                usage,
+                usage: usage.map(|canonical| canonical.tokens),
                 ..Default::default()
             };
             if served {
@@ -1313,7 +1320,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     502,
                                     UsageResult::Failure,
                                     sanitize_error_text(&reason, &provider.api_key),
-                                    usage.usage(),
+                                    usage.canonical_usage(),
                                 ));
                                 // Complete the SSE event boundary so the error
                                 // fragment parses standalone even when the last
@@ -1357,7 +1364,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     status,
                                     UsageResult::Success,
                                     None,
-                                    usage.usage(),
+                                    usage.canonical_usage(),
                                 ));
                                 return Ok(capture);
                             }
@@ -1784,11 +1791,11 @@ fn record_request_usage_logs(
     terminal_index: usize,
 ) {
     let local_model = local_model.unwrap_or_default();
-    let rows: Vec<UsageLogRecord> = attempts
+    let entries: Vec<UsageLogEntry> = attempts
         .iter()
         .enumerate()
-        .map(|(index, attempt)| {
-            build_usage_log_row(
+        .map(|(index, attempt)| UsageLogEntry {
+            record: build_usage_log_row(
                 config,
                 local_model,
                 &attempt.provider_id,
@@ -1801,10 +1808,14 @@ fn record_request_usage_logs(
                 attempt.error_message.clone(),
                 index == terminal_index,
                 reasoning_effort.clone(),
-            )
+            ),
+            accounting: UsageAccounting {
+                present: attempt.usage.is_some(),
+                valid: attempt.usage_valid,
+            },
         })
         .collect();
-    write_usage_log_rows(config, rows);
+    write_usage_log_entries(config, entries);
 }
 
 /// The gateway's own terminal row, attributed to no provider: an empty upstream
@@ -1876,22 +1887,27 @@ fn build_usage_log_row(
 }
 
 /// Write one request row through a single store call; a storage failure is
-/// reported only as a swallowed log-write warning (REQ-005).
+/// reported only as a swallowed log-write warning (REQ-005). A synthetic
+/// gateway row carries no upstream usage object.
 fn record_usage_log(config: &GatewayConfig, record: &UsageLogRecord) {
     let retention = normalize_retention_days(config.usage_retention_days);
-    let write =
-        UsageLogStore::default_store().and_then(|store| store.append(record, retention));
+    let accounting = UsageAccounting {
+        present: false,
+        valid: false,
+    };
+    let write = UsageLogStore::default_store()
+        .and_then(|store| store.append_with_accounting(record, accounting, retention));
     if let Err(error) = write {
         log::warn!("API gateway usage log write failed: {error}");
     }
 }
 
-/// Write every row of one request through a single store and batch; a storage
+/// Write every entry of one request through a single store and batch; a storage
 /// failure is reported only as a swallowed log-write warning (REQ-005).
-fn write_usage_log_rows(config: &GatewayConfig, rows: Vec<UsageLogRecord>) {
+fn write_usage_log_entries(config: &GatewayConfig, entries: Vec<UsageLogEntry>) {
     let retention = normalize_retention_days(config.usage_retention_days);
-    let write =
-        UsageLogStore::default_store().and_then(|store| store.append_batch(&rows, retention));
+    let write = UsageLogStore::default_store()
+        .and_then(|store| store.append_batch_with_accounting(&entries, retention));
     if let Err(error) = write {
         log::warn!("API gateway usage log write failed: {error}");
     }
