@@ -3309,7 +3309,7 @@ fn sessions_antigravity_quota_with_fake_agy_in_test_path() {
     // Try to fetch quota via `sessions_antigravity_quota()`.
     // The child process inherits the modified PATH, so our fake agy should be
     // found — BUT only if augmented_path() respects test-time PATH changes.
-    let result = sessions_antigravity_quota();
+    let result = sessions_antigravity_quota(None);
 
     // Restore old PATH.
     std::env::set_var("PATH", old_path);
@@ -3332,6 +3332,216 @@ fn sessions_antigravity_quota_with_fake_agy_in_test_path() {
             panic!("unexpected quota error: {}", err);
         }
     }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+fn encode_test_varint(val: u64, out: &mut Vec<u8>) {
+    let mut v = val;
+    loop {
+        let b = (v & 0x7F) as u8;
+        v >>= 7;
+        if v > 0 {
+            out.push(b | 0x80);
+        } else {
+            out.push(b);
+            break;
+        }
+    }
+}
+
+fn encode_test_varint_field(fnum: u32, val: u64, out: &mut Vec<u8>) {
+    encode_test_varint(((fnum << 3) | 0) as u64, out);
+    encode_test_varint(val, out);
+}
+
+fn encode_test_bytes_field(fnum: u32, bytes: &[u8], out: &mut Vec<u8>) {
+    encode_test_varint(((fnum << 3) | 2) as u64, out);
+    encode_test_varint(bytes.len() as u64, out);
+    out.extend_from_slice(bytes);
+}
+
+fn encode_test_step_metadata(sec: i64, input: u64, output: u64, cache: u64) -> Vec<u8> {
+    let mut ts_sub = Vec::new();
+    encode_test_varint_field(1, sec as u64, &mut ts_sub);
+    encode_test_varint_field(2, 0, &mut ts_sub);
+
+    let mut tok_sub = Vec::new();
+    encode_test_varint_field(2, input, &mut tok_sub);
+    encode_test_varint_field(3, output, &mut tok_sub);
+    encode_test_varint_field(5, cache, &mut tok_sub);
+
+    let mut metadata = Vec::new();
+    encode_test_bytes_field(1, &ts_sub, &mut metadata);
+    encode_test_bytes_field(9, &tok_sub, &mut metadata);
+    metadata
+}
+
+fn encode_test_gen_metadata(model: &str, last_step_index: i64) -> Vec<u8> {
+    let mut kv = Vec::new();
+    encode_test_bytes_field(1, b"last_step_index", &mut kv);
+    let lsi_str = last_step_index.to_string();
+    encode_test_bytes_field(2, lsi_str.as_bytes(), &mut kv);
+
+    let mut f1 = Vec::new();
+    encode_test_bytes_field(19, model.as_bytes(), &mut f1);
+    encode_test_bytes_field(20, &kv, &mut f1);
+
+    let mut data = Vec::new();
+    encode_test_bytes_field(1, &f1, &mut data);
+    data
+}
+
+#[test]
+fn antigravity_sqlite_database_scans_tokens_and_aggregates_into_tool_stats() {
+    let root = make_temp_dir("antigravity-sqlite-tokens");
+    let _guard = crate::config::test_home::TestHomeGuard::set(&root);
+    sessions_usage_clear_cache();
+
+    let conv_dir = root
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("conversations");
+    fs::create_dir_all(&conv_dir).expect("create conversations dir");
+
+    let db_path = conv_dir.join("conv-sqlite-001.db");
+    let conn = rusqlite::Connection::open(&db_path).expect("open test db");
+    conn.execute_batch(
+        "CREATE TABLE steps (idx integer, step_type integer, metadata blob);
+         CREATE TABLE gen_metadata (idx integer, data blob);",
+    )
+    .expect("create tables");
+
+    let now_sec = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let step_meta = encode_test_step_metadata(now_sec, 1200, 300, 500);
+    let gen_data = encode_test_gen_metadata("gemini-3.8-flash", 0);
+
+    conn.execute(
+        "INSERT INTO gen_metadata (idx, data) VALUES (0, ?1)",
+        rusqlite::params![gen_data],
+    )
+    .expect("insert gen_metadata");
+
+    conn.execute(
+        "INSERT INTO steps (idx, step_type, metadata) VALUES (1, 15, ?1)",
+        rusqlite::params![step_meta],
+    )
+    .expect("insert step");
+
+    drop(conn);
+
+    let stats = sessions_usage_tool_stats("antigravity".to_string(), Some(7))
+        .expect("tool stats from antigravity sqlite db");
+
+    assert_eq!(stats.source_status, "available");
+    assert_eq!(stats.scanned_sessions, 1);
+    assert_eq!(stats.scanned_calls, 1);
+    assert_eq!(stats.summary.calls, 1);
+    assert_eq!(stats.summary.input_tokens, 1200);
+    assert_eq!(stats.summary.output_tokens, 300);
+    assert_eq!(stats.summary.cache_tokens, 500);
+    assert_eq!(stats.summary.total_tokens, 2000);
+    assert_eq!(stats.summary.sessions, 1);
+
+    // Verify daily breakdown has 2000 total tokens on today
+    let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today_stat = stats
+        .daily
+        .iter()
+        .find(|d| d.date == today_str)
+        .expect("today in daily breakdown");
+    assert_eq!(today_stat.calls, 1);
+    assert_eq!(today_stat.total_tokens, 2000);
+    assert_eq!(today_stat.input_tokens, 1200);
+    assert_eq!(today_stat.output_tokens, 300);
+    assert_eq!(today_stat.cache_tokens, 500);
+
+    // Verify models breakdown in day stats contains gemini-3.8-flash
+    let day_stats = sessions_usage_day_stats(today_str)
+        .expect("day stats for today");
+    let ag_breakdown = day_stats
+        .breakdown
+        .iter()
+        .find(|b| b.tool == "antigravity")
+        .expect("antigravity in day stats breakdown");
+    assert_eq!(ag_breakdown.calls, 1);
+    assert_eq!(ag_breakdown.total_tokens, 2000);
+    assert_eq!(ag_breakdown.input_tokens, 1200);
+    assert_eq!(ag_breakdown.output_tokens, 300);
+    assert_eq!(ag_breakdown.cache_tokens, 500);
+
+    let gemini_model = ag_breakdown
+        .models
+        .iter()
+        .find(|m| m.model == "gemini-3.8-flash")
+        .expect("gemini-3.8-flash in models breakdown");
+    assert_eq!(gemini_model.calls, 1);
+    assert_eq!(gemini_model.total_tokens, 2000);
+    assert_eq!(gemini_model.input_tokens, 1200);
+    assert_eq!(gemini_model.output_tokens, 300);
+    assert_eq!(gemini_model.cache_tokens, 500);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn antigravity_sqlite_database_prevents_duplicate_calls_from_brain_transcript() {
+    let root = make_temp_dir("antigravity-sqlite-dedup");
+    let _guard = crate::config::test_home::TestHomeGuard::set(&root);
+    sessions_usage_clear_cache();
+
+    let conv_dir = root
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("conversations");
+    fs::create_dir_all(&conv_dir).expect("create conversations dir");
+
+    let db_path = conv_dir.join("conv-dedup-001.db");
+    let conn = rusqlite::Connection::open(&db_path).expect("open test db");
+    conn.execute_batch(
+        "CREATE TABLE steps (idx integer, step_type integer, metadata blob);
+         CREATE TABLE gen_metadata (idx integer, data blob);",
+    )
+    .expect("create tables");
+
+    let now_sec = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let step_meta = encode_test_step_metadata(now_sec, 800, 200, 100);
+    conn.execute(
+        "INSERT INTO steps (idx, step_type, metadata) VALUES (1, 15, ?1)",
+        rusqlite::params![step_meta],
+    )
+    .expect("insert step");
+    drop(conn);
+
+    // Also write a brain transcript for the same session ID:
+    let brain_dir = root
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("brain")
+        .join("conv-dedup-001");
+    let transcript = brain_dir.join("transcript_full.jsonl");
+    let fmt_now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    write_temp_file(
+        &transcript,
+        &format!("{{\"type\":\"USER_INPUT\",\"created_at\":\"{}\"}}\n", fmt_now),
+    );
+
+    let stats = sessions_usage_tool_stats("antigravity".to_string(), Some(7))
+        .expect("tool stats with both db and brain transcript");
+
+    // Must have exactly 1 call and 1 session (not 2 calls from duplicate counting)
+    assert_eq!(stats.scanned_sessions, 1);
+    assert_eq!(stats.scanned_calls, 1);
+    assert_eq!(stats.summary.calls, 1);
+    assert_eq!(stats.summary.total_tokens, 1100);
 
     let _ = fs::remove_dir_all(root);
 }

@@ -419,6 +419,13 @@ pub(in crate::ai_sessions) fn antigravity_brain_roots(home: &Path) -> Vec<PathBu
     ]
 }
 
+pub(in crate::ai_sessions) fn antigravity_conversations_roots(home: &Path) -> Vec<PathBuf> {
+    vec![
+        home.join(".gemini").join("antigravity-cli").join("conversations"),
+        home.join(".gemini").join("antigravity").join("conversations"),
+    ]
+}
+
 pub(in crate::ai_sessions) fn antigravity_bindings_path(home: &Path) -> PathBuf {
     home.join(".gemini")
         .join("antigravity-cli")
@@ -612,6 +619,7 @@ pub(in crate::ai_sessions) fn find_antigravity_transcript(
     if !conversation_dir.is_dir() {
         return None;
     }
+    let mut fallback = None;
     let mut stack = vec![conversation_dir.to_path_buf()];
     while let Some(current) = stack.pop() {
         let Ok(entries) = fs::read_dir(&current) else {
@@ -623,17 +631,17 @@ pub(in crate::ai_sessions) fn find_antigravity_transcript(
                 stack.push(path);
                 continue;
             }
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name == "transcript_full.jsonl")
-                .unwrap_or(false)
-            {
-                return Some(path);
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name == "transcript_full.jsonl" {
+                    return Some(path);
+                }
+                if name == "transcript.jsonl" && fallback.is_none() {
+                    fallback = Some(path);
+                }
             }
         }
     }
-    None
+    fallback
 }
 
 pub(in crate::ai_sessions) fn find_antigravity_transcript_for_conversation(

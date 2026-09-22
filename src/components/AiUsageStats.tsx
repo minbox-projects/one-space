@@ -189,6 +189,82 @@ function formatDailyTooltip(day: AiUsageDaily, t: ReturnType<typeof useTranslati
   ].join("\n");
 }
 
+function localizeQuotaGroupName(
+  name: string,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  const lower = name.toLowerCase();
+  if (lower.includes("gemini")) {
+    return t("aiUsageQuotaGroup_googleModels", name);
+  }
+  if (lower.includes("claude") || lower.includes("gpt")) {
+    return t("aiUsageQuotaGroup_claudeGptModels", name);
+  }
+  return name;
+}
+
+function localizeQuotaGroupDesc(
+  name: string,
+  desc: string | null,
+  t: ReturnType<typeof useTranslation>["t"],
+): string | null {
+  if (!desc) return null;
+  const lower = name.toLowerCase();
+  if (lower.includes("gemini")) {
+    return t("aiUsageQuotaGroupDesc_googleModels", desc);
+  }
+  if (lower.includes("claude") || lower.includes("gpt")) {
+    return t("aiUsageQuotaGroupDesc_claudeGptModels", desc);
+  }
+  return desc;
+}
+
+function localizeQuotaBucketName(
+  name: string,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  const lower = name.toLowerCase();
+  if (lower.includes("weekly")) {
+    return t("aiUsageQuotaBucket_weekly", name);
+  }
+  if (
+    lower.includes("five hour") ||
+    lower.includes("5-hour") ||
+    lower.includes("5h") ||
+    lower.includes("5 hour")
+  ) {
+    return t("aiUsageQuotaBucket_5h", name);
+  }
+  return name;
+}
+
+function localizeQuotaWindow(
+  window: string,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  const lower = window.toLowerCase();
+  if (lower === "weekly" || lower.includes("week")) {
+    return t("aiUsageQuotaWindow_weekly", window);
+  }
+  if (lower === "5h" || lower.includes("5h") || lower.includes("five")) {
+    return t("aiUsageQuotaWindow_5h", window);
+  }
+  return window;
+}
+
+function formatQuotaResetTime(resetTime: string): string {
+  const parsed = new Date(resetTime);
+  if (Number.isNaN(parsed.getTime())) return resetTime;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(parsed);
+}
+
 export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const [days, setDays] = useState<AiUsageWindowDays>(7);
@@ -215,6 +291,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
     data: null,
     error: "",
   });
+  const [isQuotaRefreshing, setIsQuotaRefreshing] = useState(false);
 
   const queryDayStats = (date: string) => {
     if (!date) return;
@@ -280,9 +357,19 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
     return Promise.all(requests).then(() => undefined);
   };
 
-  const loadQuota = () => {
-    setQuotaState({ status: "loading", data: null, error: "" });
-    return invoke<AntigravityQuota>("sessions_antigravity_quota")
+  const loadQuota = (force = false) => {
+    if (force) {
+      setIsQuotaRefreshing(true);
+    } else {
+      setQuotaState({ status: "loading", data: null, error: "" });
+    }
+    const invokePromise = force
+      ? invoke<AntigravityQuota>("sessions_antigravity_quota", {
+          forceRefresh: true,
+        })
+      : invoke<AntigravityQuota>("sessions_antigravity_quota");
+
+    return invokePromise
       .then((data) => {
         setQuotaState({ status: "ready", data, error: "" });
       })
@@ -292,6 +379,11 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
           data: null,
           error: errorToMessage(error),
         });
+      })
+      .finally(() => {
+        if (force) {
+          setIsQuotaRefreshing(false);
+        }
       });
   };
 
@@ -635,85 +727,6 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
           )}
         </div>
 
-        <div className="rounded-xl border bg-background p-4">
-          <h2 className="text-sm font-semibold">
-            {t("aiUsageQuotaTitle", "Antigravity Quota")}
-          </h2>
-          {quotaState.status === "loading" ? (
-            <div className="mt-4 rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground">
-              {t("aiUsageQuotaLoading", "Loading quota...")}
-            </div>
-          ) : (
-            <div className="mt-4" data-testid="ai-usage-quota-card">
-              {quotaState.status === "error" ? (
-                <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-                  {t("aiUsageQuotaLoadFailed", "Quota unavailable: {{error}}", {
-                    error: quotaState.error,
-                  })}
-                </div>
-              ) : (quotaState.data?.groups.length || 0) > 0 ? (
-                <div className="space-y-3">
-                  {quotaState.data?.groups.map((group) => (
-                    <div
-                      key={`ai-usage-quota-${group.name}`}
-                      className="rounded-lg border bg-card p-3"
-                    >
-                      <div className="text-sm font-medium">{group.name}</div>
-                      {group.description && (
-                        <div className="text-xs text-muted-foreground">
-                          {group.description}
-                        </div>
-                      )}
-                      <div className="mt-2 space-y-2">
-                        {group.buckets.map((bucket) => (
-                          <div
-                            key={`ai-usage-quota-${group.name}-${bucket.id}`}
-                            className="flex items-start justify-between gap-3"
-                          >
-                            <div className="min-w-0">
-                              <div className="truncate text-xs font-medium">
-                                {bucket.name}
-                              </div>
-                              {bucket.window && (
-                                <div className="text-[11px] text-muted-foreground">
-                                  {bucket.window}
-                                </div>
-                              )}
-                              {bucket.description && (
-                                <div className="text-[11px] text-muted-foreground">
-                                  {bucket.description}
-                                </div>
-                              )}
-                            </div>
-                            <div className="shrink-0 text-right">
-                              <div className="text-xs font-semibold">
-                                {t("aiUsageQuotaRemaining", "{{percent}} remaining", {
-                                  percent: formatPercent(
-                                    bucket.remaining_fraction * 100,
-                                  ),
-                                })}
-                              </div>
-                              <div className="text-[11px] text-muted-foreground">
-                                {t("aiUsageQuotaResetTime", "Resets at {{time}}", {
-                                  time: bucket.reset_time,
-                                })}
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground">
-                  {t("aiUsageQuotaEmpty", "No quota information reported.")}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
         <div className="space-y-4">
           {AI_USAGE_TOOLS.map((tool) => {
             const option = toolOptionMap.get(tool);
@@ -732,11 +745,142 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
             const noUsage = summary.calls === 0;
             const status = toolStats?.source_status || "unavailable";
             const isUnavailable = toolStats?.source_status === "unavailable";
+            const isAntigravity = tool === "antigravity";
             const tokensUnavailableLocally =
-              tool === "antigravity" &&
+              isAntigravity &&
               toolStats?.source_status === "empty" &&
               (toolStats?.scanned_sessions || 0) > 0 &&
               summary.calls === 0;
+
+            const renderAntigravityQuota = () => (
+              <div className="mt-4" data-testid="ai-usage-quota-card">
+                <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      {t("aiUsageQuotaTitle", "Antigravity Quota")}
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => void loadQuota(true)}
+                      disabled={isQuotaRefreshing || quotaState.status === "loading"}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                      title={t("aiUsageRefreshQuota", "Refresh Quota")}
+                      aria-label={t("aiUsageRefreshQuota", "Refresh Quota")}
+                      data-testid="ai-usage-refresh-quota-btn"
+                    >
+                      <RefreshCw
+                        className={`h-3 w-3 ${
+                          isQuotaRefreshing || quotaState.status === "loading"
+                            ? "animate-spin"
+                            : ""
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    {t(
+                      "aiUsageQuotaDesc",
+                      "Antigravity manages usage via cloud quota pools. Local history records sessions and call frequency.",
+                    )}
+                  </p>
+                </div>
+                {quotaState.status === "loading" ? (
+                  <div className="rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground">
+                    {t("aiUsageQuotaLoading", "Loading quota...")}
+                  </div>
+                ) : quotaState.status === "error" ? (
+                  <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                    {t("aiUsageQuotaLoadFailed", "Quota unavailable: {{error}}", {
+                      error: quotaState.error,
+                    })}
+                  </div>
+                ) : (quotaState.data?.groups.length || 0) > 0 ? (
+                  <div className="space-y-3">
+                    {quotaState.data?.groups.map((group) => (
+                      <div
+                        key={`ai-usage-quota-${group.name}`}
+                        className="rounded-lg border bg-card p-3"
+                      >
+                        <div className="text-sm font-medium">
+                          {localizeQuotaGroupName(group.name, t)}
+                        </div>
+                        {group.description && (
+                          <div className="text-xs text-muted-foreground">
+                            {localizeQuotaGroupDesc(group.name, group.description, t)}
+                          </div>
+                        )}
+                        <div className="mt-2 space-y-2.5">
+                          {group.buckets.map((bucket) => {
+                            const remainingPercent = Math.round(bucket.remaining_fraction * 100);
+                            const isLow = bucket.remaining_fraction < 0.2;
+                            const isMedium = bucket.remaining_fraction < 0.5;
+                            return (
+                              <div
+                                key={`ai-usage-quota-${group.name}-${bucket.id}`}
+                                className="rounded-md border bg-background/50 p-2.5"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <span className="truncate text-xs font-medium">
+                                        {localizeQuotaBucketName(bucket.name, t)}
+                                      </span>
+                                      {bucket.window && (
+                                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                          {localizeQuotaWindow(bucket.window, t)}
+                                        </span>
+                                      )}
+                                    </div>
+                                    {bucket.description && (
+                                      <div className="mt-0.5 text-[11px] text-muted-foreground">
+                                        {bucket.description}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="shrink-0 text-right">
+                                    <div className="text-xs font-semibold">
+                                      {t("aiUsageQuotaRemaining", "{{percent}} remaining", {
+                                        percent: formatPercent(
+                                          bucket.remaining_fraction * 100,
+                                        ),
+                                      })}
+                                    </div>
+                                    <div className="text-[11px] text-muted-foreground">
+                                      {t("aiUsageQuotaResetTime", "Resets at {{time}}", {
+                                        time: bucket.reset_time,
+                                      })}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                                  <div
+                                    className={`h-full rounded-full transition-all ${
+                                      isLow
+                                        ? "bg-destructive"
+                                        : isMedium
+                                          ? "bg-amber-500"
+                                          : "bg-primary"
+                                    }`}
+                                    style={{
+                                      width: `${Math.min(100, Math.max(0, remainingPercent))}%`,
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground">
+                    {t("aiUsageQuotaEmpty", "No quota information reported.")}
+                  </div>
+                )}
+              </div>
+            );
+
             return (
               <div
                 key={`ai-usage-${tool}`}
@@ -785,24 +929,59 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                   </div>
                 )}
 
-                {state.status === "loading" && !toolStats ? (
+                {state.status === "loading" && !toolStats && (!isAntigravity || quotaState.status === "loading") ? (
                   <div className="mt-4 rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground">
                     {t("aiUsageLoading", "Loading...")}
                   </div>
                 ) : isUnavailable ? (
-                  <div
-                    className="mt-4 rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground"
-                    data-testid={`ai-usage-unavailable-${tool}`}
-                  >
-                    {t("aiUsageStatus_unavailable", "Unavailable")}
-                  </div>
+                  <>
+                    <div
+                      className="mt-4 rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground"
+                      data-testid={`ai-usage-unavailable-${tool}`}
+                    >
+                      {t("aiUsageStatus_unavailable", "Unavailable")}
+                    </div>
+                    {isAntigravity && renderAntigravityQuota()}
+                  </>
                 ) : tokensUnavailableLocally ? (
-                  <div className="mt-4 rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground">
-                    {t(
-                      "aiUsageTokenUnavailableLocally",
-                      "Token usage locally unavailable",
+                  <>
+                    <div className="mt-4 rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground">
+                      {t(
+                        "aiUsageTokenUnavailableLocally",
+                        "Token usage locally unavailable",
+                      )}
+                    </div>
+                    {renderAntigravityQuota()}
+                  </>
+                ) : isAntigravity && noUsage ? (
+                  <>
+                    {renderAntigravityQuota()}
+                    {((toolStats?.scanned_sessions || 0) > 0 || (toolStats?.scanned_calls || 0) > 0) && (
+                      <div className="mt-4 rounded-lg border bg-card p-3">
+                        <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                          {t("aiUsageQuotaLocalActivity", "Local Session Activity")}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="rounded-lg border bg-background px-3 py-2">
+                            <div className="text-[11px] font-medium uppercase text-muted-foreground">
+                              {t("aiUsageCalls", "Calls")}
+                            </div>
+                            <div className="mt-1 truncate text-base font-semibold">
+                              {formatWholeNumber(toolStats?.scanned_calls || 0)}
+                            </div>
+                          </div>
+                          <div className="rounded-lg border bg-background px-3 py-2">
+                            <div className="text-[11px] font-medium uppercase text-muted-foreground">
+                              {t("aiUsageSessions", "Sessions")}
+                            </div>
+                            <div className="mt-1 truncate text-base font-semibold">
+                              {formatWholeNumber(toolStats?.scanned_sessions || 0)}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                     )}
-                  </div>
+                  </>
                 ) : noUsage ? (
                   <div className="mt-4 rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground">
                     {t(
@@ -812,6 +991,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                   </div>
                 ) : (
                   <>
+                    {isAntigravity && renderAntigravityQuota()}
                     <div className="mt-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
                       {[
                         {

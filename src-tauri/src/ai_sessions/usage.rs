@@ -1,7 +1,7 @@
 use super::{
-    antigravity_brain_roots, antigravity_entry_timestamp_ms, candidate_home_dirs,
-    candidate_opencode_storage_paths, collect_codex_session_files, find_antigravity_transcript,
-    parse_rfc3339_millis, system_time_to_epoch_millis,
+    antigravity_brain_roots, antigravity_conversations_roots, antigravity_entry_timestamp_ms,
+    candidate_home_dirs, candidate_opencode_storage_paths, collect_codex_session_files,
+    find_antigravity_transcript, parse_rfc3339_millis, system_time_to_epoch_millis,
 };
 use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone};
 use rusqlite::{params, Connection};
@@ -285,6 +285,11 @@ pub fn sessions_usage_stats(days: Option<u16>) -> Result<SessionUsageStatsRespon
 #[tauri::command]
 pub fn sessions_usage_clear_cache() {
     usage_scan_caches().clear();
+    let cache = antigravity_quota_cache();
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = None;
 }
 
 #[tauri::command]
@@ -345,10 +350,13 @@ pub fn antigravity_quota_cache_fresh(cached_at: Instant, now: Instant) -> bool {
 
 /// Runs the Antigravity usage command and returns the parsed snapshot. Only a
 /// successful result is cached (5 minute TTL); failures are retried on demand.
+/// When `force_refresh` is true, the 5-minute cache is bypassed and refreshed.
 #[tauri::command(async)]
-pub fn sessions_antigravity_quota() -> Result<AntigravityQuotaSnapshot, String> {
+pub fn sessions_antigravity_quota(
+    force_refresh: Option<bool>,
+) -> Result<AntigravityQuotaSnapshot, String> {
     let cache = antigravity_quota_cache();
-    {
+    if !force_refresh.unwrap_or(false) {
         let guard = cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1218,13 +1226,373 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
     Ok(out)
 }
 
+fn read_protobuf_varint(data: &[u8], pos: &mut usize) -> Option<u64> {
+    let mut val = 0u64;
+    let mut shift = 0;
+    while *pos < data.len() {
+        let b = data[*pos];
+        *pos += 1;
+        val |= ((b & 0x7F) as u64) << shift;
+        if (b & 0x80) == 0 {
+            return Some(val);
+        }
+        shift += 7;
+        if shift >= 64 {
+            return None;
+        }
+    }
+    None
+}
+
+fn skip_protobuf_field(data: &[u8], pos: &mut usize, wire_type: u8) -> bool {
+    match wire_type {
+        0 => read_protobuf_varint(data, pos).is_some(),
+        1 => {
+            if *pos + 8 <= data.len() {
+                *pos += 8;
+                true
+            } else {
+                false
+            }
+        }
+        2 => {
+            if let Some(len) = read_protobuf_varint(data, pos) {
+                let len = len as usize;
+                if *pos + len <= data.len() {
+                    *pos += len;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        5 => {
+            if *pos + 4 <= data.len() {
+                *pos += 4;
+                true
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+struct AntigravityStepTokens {
+    timestamp_ms: i64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_tokens: u64,
+}
+
+fn parse_antigravity_step_tokens(data: &[u8]) -> Option<AntigravityStepTokens> {
+    let mut pos = 0;
+    let mut timestamp_ms = 0i64;
+    let mut input_tokens = 0u64;
+    let mut output_tokens = 0u64;
+    let mut cache_tokens = 0u64;
+    let mut has_tokens = false;
+
+    while pos < data.len() {
+        let tag = read_protobuf_varint(data, &mut pos)?;
+        let fnum = tag >> 3;
+        let wtype = (tag & 0x7) as u8;
+
+        if wtype == 2 {
+            let len = read_protobuf_varint(data, &mut pos)? as usize;
+            if pos + len > data.len() {
+                return None;
+            }
+            let sub = &data[pos..pos + len];
+            pos += len;
+
+            if fnum == 1 {
+                // Timestamp { int64 seconds = 1; int32 nanos = 2; }
+                let mut spos = 0;
+                let mut sec = 0i64;
+                let mut nano = 0i64;
+                while spos < sub.len() {
+                    if let Some(stag) = read_protobuf_varint(sub, &mut spos) {
+                        let sfnum = stag >> 3;
+                        let swtype = (stag & 0x7) as u8;
+                        if swtype == 0 {
+                            if let Some(sval) = read_protobuf_varint(sub, &mut spos) {
+                                if sfnum == 1 {
+                                    sec = sval as i64;
+                                } else if sfnum == 2 {
+                                    nano = sval as i64;
+                                }
+                            }
+                        } else if !skip_protobuf_field(sub, &mut spos, swtype) {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                timestamp_ms = sec.saturating_mul(1000).saturating_add(nano / 1_000_000);
+            } else if fnum == 9 {
+                // Tokens info
+                let mut spos = 0;
+                while spos < sub.len() {
+                    if let Some(stag) = read_protobuf_varint(sub, &mut spos) {
+                        let sfnum = stag >> 3;
+                        let swtype = (stag & 0x7) as u8;
+                        if swtype == 0 {
+                            if let Some(sval) = read_protobuf_varint(sub, &mut spos) {
+                                if sfnum == 2 {
+                                    input_tokens = sval;
+                                    has_tokens = true;
+                                } else if sfnum == 3 {
+                                    output_tokens = sval;
+                                    has_tokens = true;
+                                } else if sfnum == 5 {
+                                    cache_tokens = sval;
+                                    has_tokens = true;
+                                }
+                            }
+                        } else if !skip_protobuf_field(sub, &mut spos, swtype) {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+        } else if !skip_protobuf_field(data, &mut pos, wtype) {
+            return None;
+        }
+    }
+
+    if has_tokens && (input_tokens > 0 || output_tokens > 0 || cache_tokens > 0) {
+        Some(AntigravityStepTokens {
+            timestamp_ms,
+            input_tokens,
+            output_tokens,
+            cache_tokens,
+        })
+    } else {
+        None
+    }
+}
+
+fn parse_antigravity_gen_metadata(data: &[u8]) -> Option<(String, Option<i64>)> {
+    let mut pos = 0;
+    let mut model = None::<String>;
+    let mut last_step_index = None::<i64>;
+
+    while pos < data.len() {
+        let tag = read_protobuf_varint(data, &mut pos)?;
+        let fnum = tag >> 3;
+        let wtype = (tag & 0x7) as u8;
+
+        if fnum == 1 && wtype == 2 {
+            let len = read_protobuf_varint(data, &mut pos)? as usize;
+            if pos + len > data.len() {
+                return None;
+            }
+            let sub = &data[pos..pos + len];
+            pos += len;
+            let mut spos = 0;
+            while spos < sub.len() {
+                if let Some(stag) = read_protobuf_varint(sub, &mut spos) {
+                    let sfnum = stag >> 3;
+                    let swtype = (stag & 0x7) as u8;
+                    if sfnum == 19 && swtype == 2 {
+                        if let Some(slen) = read_protobuf_varint(sub, &mut spos) {
+                            let slen = slen as usize;
+                            if spos + slen <= sub.len() {
+                                if let Ok(s) = std::str::from_utf8(&sub[spos..spos + slen]) {
+                                    model = Some(s.to_string());
+                                }
+                                spos += slen;
+                            }
+                        }
+                    } else if sfnum == 20 && swtype == 2 {
+                        if let Some(slen) = read_protobuf_varint(sub, &mut spos) {
+                            let slen = slen as usize;
+                            if spos + slen <= sub.len() {
+                                let kv_sub = &sub[spos..spos + slen];
+                                spos += slen;
+                                let mut kpos = 0;
+                                let mut k = None::<String>;
+                                let mut v = None::<String>;
+                                while kpos < kv_sub.len() {
+                                    if let Some(ktag) = read_protobuf_varint(kv_sub, &mut kpos) {
+                                        let kfnum = ktag >> 3;
+                                        let kwtype = (ktag & 0x7) as u8;
+                                        if kwtype == 2 {
+                                            if let Some(klen) = read_protobuf_varint(kv_sub, &mut kpos) {
+                                                let klen = klen as usize;
+                                                if kpos + klen <= kv_sub.len() {
+                                                    if let Ok(s) = std::str::from_utf8(&kv_sub[kpos..kpos + klen]) {
+                                                        if kfnum == 1 {
+                                                            k = Some(s.to_string());
+                                                        } else if kfnum == 2 {
+                                                            v = Some(s.to_string());
+                                                        }
+                                                    }
+                                                    kpos += klen;
+                                                }
+                                            }
+                                        } else if !skip_protobuf_field(kv_sub, &mut kpos, kwtype) {
+                                            break;
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                if k.as_deref() == Some("last_step_index") {
+                                    if let Some(v_str) = v {
+                                        last_step_index = v_str.parse::<i64>().ok();
+                                    }
+                                }
+                            }
+                        }
+                    } else if !skip_protobuf_field(sub, &mut spos, swtype) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        } else if !skip_protobuf_field(data, &mut pos, wtype) {
+            return None;
+        }
+    }
+
+    model.map(|m| (m, last_step_index))
+}
+
+fn read_antigravity_db_tokens(
+    db_path: &Path,
+    session_id: &str,
+    window: &UsageWindow,
+) -> Result<Vec<UsageRecord>, String> {
+    let conn = Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| e.to_string())?;
+
+    if !sqlite_table_exists(&conn, "steps").unwrap_or(false) {
+        return Ok(Vec::new());
+    }
+
+    let file_mtime = modified_ms(db_path);
+    let mut step_models = HashMap::<i64, String>::new();
+    let mut fallback_model = "gemini-3.8-flash".to_string();
+
+    if sqlite_table_exists(&conn, "gen_metadata").unwrap_or(false) {
+        if let Ok(mut stmt) = conn.prepare("SELECT data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx ASC") {
+            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0)) {
+                for data in rows.flatten() {
+                    if let Some((m, last_step_idx)) = parse_antigravity_gen_metadata(&data) {
+                        fallback_model = m.clone();
+                        if let Some(lsi) = last_step_idx {
+                            step_models.insert(lsi + 1, m);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT idx, metadata FROM steps WHERE metadata IS NOT NULL")
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            let idx: i64 = row.get(0)?;
+            let metadata: Vec<u8> = row.get(1)?;
+            Ok((idx, metadata))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        let (idx, metadata) = match row {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if let Some(step_tokens) = parse_antigravity_step_tokens(&metadata) {
+            let ts = if step_tokens.timestamp_ms > 0 {
+                step_tokens.timestamp_ms
+            } else {
+                file_mtime
+            };
+            if ts < window.start_ms || ts >= window.end_ms {
+                continue;
+            }
+            let model = step_models
+                .get(&idx)
+                .cloned()
+                .unwrap_or_else(|| fallback_model.clone());
+            let total = total_or_sum(
+                0,
+                step_tokens.input_tokens,
+                step_tokens.output_tokens,
+                step_tokens.cache_tokens,
+            );
+            records.push(UsageRecord {
+                session_id: session_id.to_string(),
+                model: Some(model),
+                timestamp_ms: ts,
+                input_tokens: step_tokens.input_tokens,
+                output_tokens: step_tokens.output_tokens,
+                cache_tokens: step_tokens.cache_tokens,
+                cache_read_tokens: step_tokens.cache_tokens,
+                total_tokens: total,
+            });
+        }
+    }
+    Ok(records)
+}
+
+fn collect_antigravity_db_usage(
+    home: &Path,
+    window: &UsageWindow,
+    scan: &mut ToolScan,
+    seen_session_ids: &mut HashSet<String>,
+) {
+    for conv_root in antigravity_conversations_roots(home) {
+        let Ok(entries) = fs::read_dir(&conv_root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("db") {
+                continue;
+            }
+            let session_id = file_stem_session_id(&path);
+            scan.source_status = "available".to_string();
+            seen_session_ids.insert(session_id.clone());
+            if !usage_file_may_overlap_window(modified_ms(&path), window.start_ms) {
+                continue;
+            }
+            scan.scanned_sessions += 1;
+            match read_antigravity_db_tokens(&path, &session_id, window) {
+                Ok(records) => {
+                    scan.records.extend(records);
+                }
+                Err(error) => scan.errors.push(format!("{}: {error}", path.display())),
+            }
+        }
+    }
+}
+
 fn collect_antigravity_usage_records(window: &UsageWindow) -> ToolScan {
     let Some(home) = usage_home_dir() else {
         return unavailable_scan();
     };
     let tmp_root = home.join(".gemini").join("tmp");
+    let has_brain_root = antigravity_brain_roots(&home).iter().any(|p| p.is_dir());
+    let has_conversations_root = antigravity_conversations_roots(&home).iter().any(|p| p.is_dir());
     let mut scan = ToolScan {
-        source_status: if tmp_root.is_dir() {
+        source_status: if tmp_root.is_dir() || has_brain_root || has_conversations_root {
             "available".to_string()
         } else {
             "unavailable".to_string()
@@ -1234,6 +1602,9 @@ fn collect_antigravity_usage_records(window: &UsageWindow) -> ToolScan {
         records: Vec::new(),
         errors: Vec::new(),
     };
+    let mut seen_session_ids = HashSet::new();
+    collect_antigravity_db_usage(&home, window, &mut scan, &mut seen_session_ids);
+
     for path in antigravity_session_files(&tmp_root) {
         if !usage_file_may_overlap_window(modified_ms(&path), window.start_ms) {
             continue;
@@ -1245,21 +1616,26 @@ fn collect_antigravity_usage_records(window: &UsageWindow) -> ToolScan {
             parse_antigravity_json_usage_file(&path)
         };
         match parsed {
-            Ok(records) => scan.records.extend(records),
+            Ok(records) => {
+                for r in &records {
+                    seen_session_ids.insert(r.session_id.clone());
+                }
+                scan.records.extend(records);
+            }
             Err(error) => scan.errors.push(format!("{}: {error}", path.display())),
         }
     }
-    collect_antigravity_transcript_usage(&home, window, &mut scan);
+    collect_antigravity_transcript_usage(&home, window, &mut scan, &seen_session_ids);
     scan
 }
 
-/// Counts in-window `USER_INPUT` rows from every brain-root transcript. These
-/// rows carry no token usage and never become `UsageRecord`s; only the call and
-/// session counters are updated.
+/// Counts in-window `USER_INPUT` rows from brain-root transcripts that are not
+/// already covered by conversation databases or tmp session files.
 fn collect_antigravity_transcript_usage(
     home: &Path,
     window: &UsageWindow,
     scan: &mut ToolScan,
+    seen_session_ids: &HashSet<String>,
 ) {
     for brain_root in antigravity_brain_roots(home) {
         let Ok(entries) = fs::read_dir(&brain_root) else {
@@ -1268,6 +1644,10 @@ fn collect_antigravity_transcript_usage(
         for entry in entries.flatten() {
             let conversation_dir = entry.path();
             if !conversation_dir.is_dir() {
+                continue;
+            }
+            let session_id = file_stem_session_id(&conversation_dir);
+            if seen_session_ids.contains(&session_id) {
                 continue;
             }
             let Some(transcript) = find_antigravity_transcript(&conversation_dir) else {

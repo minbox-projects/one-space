@@ -11,6 +11,7 @@ interface InvokeArgs {
   tool?: ToolId;
   days?: 7 | 15 | 30;
   date?: string;
+  forceRefresh?: boolean;
 }
 
 interface AntigravityQuotaBucket {
@@ -440,7 +441,7 @@ describe("AiUsageStats", () => {
 
     await waitFor(() => expect(screen.getByText("2.2K")).toBeInTheDocument());
     invokeMock.mockClear();
-    await user.click(screen.getByRole("button", { name: /Refresh|刷新/ }));
+    await user.click(screen.getByRole("button", { name: /^(Refresh|刷新)$/ }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("sessions_usage_clear_cache");
@@ -534,7 +535,7 @@ describe("AiUsageStats", () => {
       throw new Error(`Unhandled command: ${command}`);
     });
 
-    await user.click(screen.getByRole("button", { name: /Refresh|刷新/ }));
+    await user.click(screen.getByRole("button", { name: /^(Refresh|刷新)$/ }));
     fireEvent.change(screen.getByLabelText(/Select Date|选择日期/), {
       target: { value: "2026-06-07" },
     });
@@ -823,11 +824,11 @@ describe("AiUsageStats", () => {
 
     // Window bucket `window` renders its window label + remaining time.
     expect(
-      within(quotaPanel).getByText(/weekly/),
-    ).toBeInTheDocument();
+      within(quotaPanel).getAllByText(/weekly|每周/).length,
+    ).toBeGreaterThanOrEqual(1);
     expect(
-      within(quotaPanel).getByText(/5h/),
-    ).toBeInTheDocument();
+      within(quotaPanel).getAllByText(/5h|5 小时/).length,
+    ).toBeGreaterThanOrEqual(1);
 
     // The quota command must have been invoked with no arguments.
     expect(invokeMock).toHaveBeenCalledWith("sessions_antigravity_quota");
@@ -1011,5 +1012,207 @@ describe("AiUsageStats", () => {
     expect(within(section).getByText("deepseek-v4")).toBeInTheDocument();
     expect(within(section).queryByText(/gemini-3/i)).not.toBeInTheDocument();
     expect(within(section).getByText("75%")).toBeInTheDocument();
+  });
+
+  it("merges Antigravity quota inside the Antigravity tool card without standalone top card", async () => {
+    renderWithProviders(<AiUsageStats />);
+
+    const antigravityPanel = await screen.findByTestId("ai-usage-tool-antigravity");
+    const quotaInsideAntigravity = within(antigravityPanel).getByTestId("ai-usage-quota-card");
+    expect(quotaInsideAntigravity).toBeInTheDocument();
+
+    // Verify there is only one quota card in the entire document, embedded in Antigravity.
+    const allQuotaCards = screen.getAllByTestId("ai-usage-quota-card");
+    expect(allQuotaCards).toHaveLength(1);
+    expect(allQuotaCards[0]).toBe(quotaInsideAntigravity);
+  });
+
+  it("renders Antigravity quota with localized group and bucket labels", async () => {
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_antigravity_quota") {
+        return {
+          groups: [
+            {
+              name: "Gemini Models",
+              description: "Models within this group: Gemini Flash, Gemini Pro",
+              buckets: [
+                {
+                  id: "gemini-weekly",
+                  name: "Weekly Limit Remaining",
+                  window: "weekly",
+                  remaining_fraction: 0.85,
+                  reset_time: "2026-09-23T02:30:18Z",
+                  description: "Weekly reset description",
+                },
+              ],
+            },
+            {
+              name: "Claude and GPT models",
+              description: "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
+              buckets: [
+                {
+                  id: "3p-5h",
+                  name: "Five Hour Limit Remaining",
+                  window: "5h",
+                  remaining_fraction: 0.95,
+                  reset_time: "2026-09-22T05:34:42Z",
+                  description: null,
+                },
+              ],
+            },
+          ],
+        };
+      }
+      if (command === "sessions_usage_tool_stats") {
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
+      }
+      if (command === "sessions_usage_day_stats") {
+        return makeDayStats(args?.date || "");
+      }
+      if (command === "sessions_usage_clear_cache") {
+        return null;
+      }
+      throw new Error(`Unhandled command: ${command}`);
+    });
+
+    renderWithProviders(<AiUsageStats />);
+
+    const panel = await screen.findByTestId("ai-usage-tool-antigravity");
+    const quota = within(panel).getByTestId("ai-usage-quota-card");
+
+    // Localized or fallback group names
+    expect(
+      within(quota).getByText(/Gemini 模型|Gemini Models/),
+    ).toBeInTheDocument();
+    expect(
+      within(quota).getByText(/Claude 与 GPT 模型|Claude and GPT models/),
+    ).toBeInTheDocument();
+
+    // Localized bucket names
+    expect(
+      within(quota).getByText(/每周额度剩余|Weekly Limit Remaining/),
+    ).toBeInTheDocument();
+    expect(
+      within(quota).getByText(/5 小时额度剩余|5-Hour Limit Remaining/),
+    ).toBeInTheDocument();
+
+    // Percentages
+    expect(within(quota).getByText(/85% remaining|剩余 85%/)).toBeInTheDocument();
+    expect(within(quota).getByText(/95% remaining|剩余 95%/)).toBeInTheDocument();
+  });
+
+  it("renders Antigravity with quota and local activity when calls is zero, avoiding empty message", async () => {
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_usage_tool_stats" && args?.tool === "antigravity") {
+        return {
+          ...makeToolStatsAntigravityEmpty(),
+          source_status: "available",
+          summary: {
+            total_tokens: 0,
+            calls: 0,
+            sessions: 0,
+            cache_hit_rate: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_tokens: 0,
+          },
+          scanned_sessions: 5,
+          scanned_calls: 18,
+        };
+      }
+      if (command === "sessions_usage_tool_stats") {
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
+      }
+      if (command === "sessions_usage_day_stats") {
+        return makeDayStats(args?.date || "");
+      }
+      if (command === "sessions_usage_clear_cache") {
+        return null;
+      }
+      if (command === "sessions_antigravity_quota") {
+        return makeAntigravityQuotaResponse();
+      }
+      throw new Error(`Unhandled command: ${command}`);
+    });
+
+    renderWithProviders(<AiUsageStats />);
+
+    const panel = await screen.findByTestId("ai-usage-tool-antigravity");
+
+    // Must NOT show the generic empty message
+    expect(
+      within(panel).queryByText(/No token usage records found in this window|当前时间窗口内未找到 Token 用量记录/),
+    ).not.toBeInTheDocument();
+
+    // Must render the quota card inside Antigravity
+    expect(within(panel).getByTestId("ai-usage-quota-card")).toBeInTheDocument();
+
+    // Must display local activity overview
+    expect(
+      within(panel).getByText(/Local Session Activity|本地会话活跃度/),
+    ).toBeInTheDocument();
+    expect(within(panel).getByText("18")).toBeInTheDocument();
+    expect(within(panel).getByText("5")).toBeInTheDocument();
+  });
+
+  it("refreshes Antigravity quota with forceRefresh: true when clicking the quota refresh button", async () => {
+    let quotaFetchCount = 0;
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_usage_tool_stats") {
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
+      }
+      if (command === "sessions_usage_day_stats") {
+        return makeDayStats(args?.date || "");
+      }
+      if (command === "sessions_usage_clear_cache") {
+        return null;
+      }
+      if (command === "sessions_antigravity_quota") {
+        quotaFetchCount++;
+        if (quotaFetchCount === 1) {
+          return makeAntigravityQuotaResponse();
+        }
+        return {
+          collected_at: "2026-09-22T09:00:00Z",
+          groups: [
+            {
+              name: "Google Gemini Models",
+              description: "Gemini models daily/weekly quota",
+              buckets: [
+                {
+                  id: "gemini-pro",
+                  name: "Weekly Limit Remaining",
+                  window: "weekly",
+                  remaining_fraction: 0.42,
+                  reset_time: "2026-09-29T00:00:00Z",
+                  description: "Gemini Pro quota",
+                },
+              ],
+            },
+          ],
+        };
+      }
+      throw new Error(`Unhandled command: ${command}`);
+    });
+
+    renderWithProviders(<AiUsageStats />);
+
+    const quotaCard = await screen.findByTestId("ai-usage-quota-card");
+    expect(within(quotaCard).getByText(/90% remaining|剩余 90%/)).toBeInTheDocument();
+
+    const refreshBtn = screen.getByTestId("ai-usage-refresh-quota-btn");
+    expect(refreshBtn).toBeInTheDocument();
+
+    await userEvent.click(refreshBtn);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("sessions_antigravity_quota", {
+        forceRefresh: true,
+      });
+    });
+
+    await waitFor(() => {
+      expect(within(quotaCard).getByText(/42% remaining|剩余 42%/)).toBeInTheDocument();
+    });
   });
 });
