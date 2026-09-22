@@ -61,3 +61,14 @@ describe("JT/T data parser navigation", () => {
     });
   });
 });
+
+describe("AI Workflow model switcher navigation", () => {
+  it("resolves the ai-workflow-model-switcher target to its More Tools detail", () => {
+    expect(resolveNavigationTarget("ai-workflow-model-switcher")).toEqual({
+      tab: "more-tools",
+      moreToolsSection: "ai-workflow-model-switcher",
+    });
+    expect(isMoreToolsTab("ai-workflow-model-switcher")).toBe(true);
+  });
+});
+

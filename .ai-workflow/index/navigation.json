@@ -1869,6 +1869,74 @@
       "shared_entry": false
     },
     {
+      "id": "ai-workflow-model-switcher",
+      "name": "AI Workflow Model Switcher",
+      "aliases": [
+        "ai-workflow-switcher",
+        "model-switcher"
+      ],
+      "module_root": "frontend",
+      "owner_role": "frontend",
+      "responsibility": "AI Workflow subagent 角色模型切换工具箱工具：9×3 矩阵编辑、自动模型源候选、手动输入降级与 profile 激活",
+      "entries": [
+        "src/components/AiWorkflowModelSwitcher/index.ts"
+      ],
+      "related_files": [
+        "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.tsx",
+        "src/lib/aiWorkflowProfiles.ts"
+      ],
+      "tests": [
+        "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx"
+      ],
+      "symbols": [
+        {
+          "file": "src/components/AiWorkflowModelSwitcher/index.ts",
+          "name": "AiWorkflowModelSwitcher",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "listProfiles",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "getProfileMatrix",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "getModelSources",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "saveAndActivateProfile",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "activateProfile",
+          "kind": "function",
+          "visibility": "public"
+        }
+      ],
+      "depends_on": [],
+      "read_scope": [
+        "src/components/AiWorkflowModelSwitcher/index.ts",
+        "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.tsx",
+        "src/lib/aiWorkflowProfiles.ts",
+        "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx"
+      ],
+      "relations": [],
+      "shared_entry": false
+    },
+    {
       "id": "ai-env-backend",
       "name": "AI Env Backend",
       "aliases": [

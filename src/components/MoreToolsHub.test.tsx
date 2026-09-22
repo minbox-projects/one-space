@@ -49,6 +49,10 @@ vi.mock("./JttDataParserTool", () => ({
     </div>
   ),
 }));
+vi.mock("./AiWorkflowModelSwitcher", () => ({
+  AiWorkflowModelSwitcher: () => <div>AI Workflow Model Switcher detail</div>,
+}));
+
 
 describe("MoreToolsHub", () => {
   beforeEach(() => {
@@ -157,6 +161,38 @@ describe("MoreToolsHub", () => {
     );
     expect(onBack).toHaveBeenCalledOnce();
   });
+
+  it("显示 AI Workflow 模型切换卡片并分发详情组件", async () => {
+    const user = userEvent.setup();
+    const onSelectTool = vi.fn();
+    const onBack = vi.fn();
+    const { rerender } = renderWithProviders(
+      <MoreToolsHub
+        activeTool={null}
+        onSelectTool={onSelectTool}
+        onBack={onBack}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", {
+        name: /AI Workflow 模型切换|AI Workflow Model Switcher/,
+      }),
+    );
+    expect(onSelectTool).toHaveBeenCalledWith("ai-workflow-model-switcher");
+
+    rerender(
+      <MoreToolsHub
+        activeTool={"ai-workflow-model-switcher" as any}
+        onSelectTool={onSelectTool}
+        onBack={onBack}
+      />,
+    );
+    expect(
+      screen.getByText("AI Workflow Model Switcher detail"),
+    ).toBeInTheDocument();
+  });
+
 
   it("按 md5Encryption 可见性隐藏 MD5 卡片但保留直接详情入口", () => {
     localStorage.setItem(
@@ -482,6 +518,7 @@ describe("MoreToolsHub", () => {
         "short-link",
         "file-sharing",
         "jtt-data-parser",
+        "ai-workflow-model-switcher",
       ]);
 
       fireEvent.pointerUp(window, { pointerId: 1 });

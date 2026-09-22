@@ -20,7 +20,8 @@ export type MoreToolsSection =
   | "md5-encryption"
   | "short-link"
   | "file-sharing"
-  | "jtt-data-parser";
+  | "jtt-data-parser"
+  | "ai-workflow-model-switcher";
 
 export type ResolvedNavigationTarget = {
   tab: string;
@@ -49,6 +50,7 @@ const MORE_TOOLS_ALIAS_MAP: Record<string, MoreToolsSection> = {
   ["short-link"]: "short-link",
   ["file-sharing"]: "file-sharing",
   ["jtt-data-parser"]: "jtt-data-parser",
+  ["ai-workflow-model-switcher"]: "ai-workflow-model-switcher",
 };
 
 const JTT_DATA_PARSER_ALIAS_TABS: Record<string, JttParserTab> = {

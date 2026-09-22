@@ -130,6 +130,11 @@ const INTERNAL_TARGETS: Array<{
   { id: "mail", labelKey: "mail", fallback: "Mail" },
   { id: "settings", labelKey: "settings", fallback: "Settings" },
   { id: "documentation", labelKey: "usageDocs", fallback: "Documentation" },
+  {
+    id: "ai-workflow-model-switcher",
+    labelKey: "aiWorkflowModelSwitcher",
+    fallback: "AI Workflow Model Switcher",
+  },
 ];
 
 async function safelyUnlisten(
@@ -790,6 +795,18 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         statusBadge: null,
         visible: toolVisibility["jtt-data-parser"],
         aliasOnly: true,
+      },
+      {
+        id: "quick-ai-workflow-model-switcher",
+        name: t("aiWorkflowModelSwitcher", "AI Workflow Model Switcher"),
+        description: t(
+          "aiWorkflowModelSwitcherDesc",
+          "Manage and switch AI agent models and reasoning effort across tools.",
+        ),
+        target: "ai-workflow-model-switcher",
+        ...getMoreToolPresentation("ai-workflow-model-switcher"),
+        statusBadge: null,
+        visible: toolVisibility["ai-workflow-model-switcher"],
       },
     ];
 

@@ -27,14 +27,14 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 
 - `src/App.tsx` 是外壳与总控：侧边栏、页面切换、全局状态与快捷键；`src/lib/navigation.ts` 负责旧标签到新导航目标的解析（`resolveNavigationTarget`）。
 - 每个业务域是一个 `src/components/<Domain>/` 目录或同名组件；每个组件目录通常包含 `index.tsx`、子组件、`*.test.tsx`，复杂域再拆分 `components/`、`hooks/`、`helpers/`、`types.ts`（参见 `Workspaces/`）。
-- 命令封装与领域类型放在 `src/lib/`，按域一文件（如 `workflows.ts`、`skills.ts`、`subagents.ts`、`sshTunnels.ts`、`fileSharing.ts`、`shortLink.ts`、`aiAssistant.ts`、`apiGateway.ts`）。
+- 命令封装与领域类型放在 `src/lib/`，按域一文件（如 `workflows.ts`、`skills.ts`、`subagents.ts`、`sshTunnels.ts`、`fileSharing.ts`、`shortLink.ts`、`aiAssistant.ts`、`apiGateway.ts`、`aiWorkflowProfiles.ts`）。
 - 文案统一走 `src/i18n.ts`，新增界面文本必须同时提供中英文；`en_keys.txt` / `zh_keys.txt` 为键清单。
 - 共享基础组件在 `src/components/ui/`，Provider（主题、Toast、确认框、错误边界）在 `src/components/` 顶层。
 
 ## 后端架构（`src-tauri/src/`）
 
 - `lib.rs` 声明模块并由 `app_runtime::run` 启动；`app_runtime/` 负责窗口、托盘、全局快捷键、CLI 入口与 OAuth。
-- 每个业务域一个根文件加同名子目录（如 `ai_sessions.rs` + `ai_sessions/`、`skills.rs` + `skills/`、`protocol_router.rs` + `protocol_router/`）。子目录按 `commands`、`types`、`runtime`、`tests` 等拆分。
+- 每个业务域一个根文件加同名子目录（如 `ai_sessions.rs` + `ai_sessions/`、`skills.rs` + `skills/`、`protocol_router.rs` + `protocol_router/`、`ai_workflow_profiles.rs` + `ai_workflow_profiles/`）。子目录按 `commands`、`types`、`runtime`、`tests` 等拆分。
 - `app_store/` 是统一存储与迁移核心：`storage_engine.rs`、`migration.rs`、`provider_projection/`、`sync.rs`、`types/`；会话、provider 与 launcher 命令都在此汇聚。
 - 配置与密钥：`config.rs`、`runtime_profiles.rs`、`claude_profiles.rs`、`secrets.rs`、`crypto.rs`。
 - CLI 探测与版本：`cli_probe.rs`、`cli_updates.rs`、`version_detect.rs`。
@@ -74,6 +74,14 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 - `runtime_http::RequestHealth` 按入站请求汇总各映射行（`MappingTarget`：服务商 id 加 trim 后本地/上游模型名）最终结果，在请求正常结束时各应用一次：A 行失败而 B 行成功仍给 A 记一次，同一行重试恢复则清零；仅 404 / 临时限流 429 不累计健康失败，额度耗尽 429 计一次，期间另有网络/408/5xx 等健康失败则记一次；401/403 即时禁用该映射行且结算不重复计数。同一映射键（trim 后 `(local_model, upstream_model)`）的行共享计数，连续 3 个失败请求自动禁用该行（`FAILURE_THRESHOLD = 3`）；由服务商 `default_model` 服务的尝试没有映射行目标、不产生任何健康结算。流式仅在上游正常读完后成功清零；写出首字节后上游读取失败时，先补全 SSE 事件边界（最后一个转发字节非换行时补一个换行），再追加一个独立 `data: {"error":{...}}` 分片（type `server_error`、code `upstream_stream_error`）并关闭，绝不发送 `[DONE]`、绝不重试或切换候选，随后记一次失败（状态 502）并保留已累积 usage；下游取消不额外计为上游故障。映射行 `enabled` 表示用户意图、`auto_disabled` 表示运行状态，二者独立持久化，手动重新启用只清理运行状态而不改 `enabled`；`GatewayStatus.auto_disabled_count` 统计配置中 `auto_disabled` 为真的映射行数。
 - `runtime_http::handle_connection` 在转发期间检测下游连接关闭或读取错误，取消未完成上游请求、退避等待及后续尝试；下游写错误亦停止。开始向下游写出响应头/体后禁止切换或透明重放；取消支持普通完整 HTTP 客户端断开，不增加半关闭协议支持。
 - 上述架构决策的由来见本地 ADR 历史（`.ai-workflow/adr/`）；ADR 已停止新增，不再由 `ai-workflow` 子命令维护或读取，不要扫描目录或维护独立索引。
+
+## AI Workflow 模型切换工具与规范
+
+- 工具箱独立工具，固定 id 为 `ai-workflow-model-switcher`（feature 归属模块根 `frontend`，owner 为 `frontend`，显示名称「AI Workflow 模型切换」/「AI Workflow Model Switcher」），遵循独立工具六点布线规范：`src/lib/navigation.ts`（`MoreToolsSection` 枚举与 `MORE_TOOLS_ALIAS_MAP` 解析）、`src/lib/moreToolPresentation.ts`（卡片图标 `Sliders`、标题、描述与配色）、`src/lib/launcherToolVisibility.ts`（Launcher 工具可见性定义，默认可见）、`src/components/MoreToolsHub.tsx`（工具箱卡片入口）、`src/components/Launcher.tsx`（启动器搜索与跳转集成）、`src/App.tsx`（应用内 Tab 路由分发），缺少任一点均视为不可达缺陷。
+- 9×3 矩阵编辑：前端以 `src/components/AiWorkflowModelSwitcher/` 为主体，按 schema 规范覆盖 9 个 subagent 角色枚举（`backend`、`documentation-maintainer`、`file-explorer`、`frontend`、`git-operator`、`researcher`、`spec-review`、`standards-review`、`test`）与 3 个 host（`codex`、`claude`、`opencode`）。单元格编辑 `model` 与 `reasoning_effort`；推理强度严格限定在 6 个预定义档位（`low`、`medium`、`high`、`xhigh`、`max`、`ultra`），非法档位前端阻断输入且后端拒绝落盘。支持按 Host 列、按 Role 行以及全矩阵（Apply all）批量应用，具备未保存脏状态提示与重载清除机制；profile 文件中缺失的角色展现为空并不强制输入，保存时静默省略而非报错。
+- 模型源自动聚合与分列降级：后端从各工具本地配置聚合并去重排序候选模型（`opencode` 取 `opencode.json` 的 `provider.models` 并保留如 `command/deepseek/...` 三段格式；`codex` 取 `config.toml` 顶层 `model`、`[profiles.*].model` 及已有 profile yaml 的 `codex.model` 并集，`model_providers` 名称仅作分组标签绝不作为模型值；`claude` 取 `settings.json` env 中的 4 个具名键 `ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_OPUS_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL`、`ANTHROPIC_DEFAULT_HAIKU_MODEL` 及已有 profile yaml 的 `claude.model` 并集，显式排除 `*_MODEL_NAME` 与 `CLAUDE_CODE_EFFORT_LEVEL`）。单列本地配置缺失或损坏时仅当前列报错降级，其余列候选保持可用且降级列始终允许手动输入非空模型字符串。
+- 后端模块与 Tauri 命令：后端位于 `src-tauri/src/ai_workflow_profiles.rs` 及同名目录 `src-tauri/src/ai_workflow_profiles/`，注册 5 个核心命令：`ai_workflow_list_profiles`（枚举 `~/.config/ai-workflow/profiles/` 下 `*.yaml`，读取 settings 标记 `active` 状态与加载错误）、`ai_workflow_get_profile_matrix`（按 9 角色枚举规范化返回指定 profile 矩阵）、`ai_workflow_get_model_sources`（返回三列模型候选列表及各列独立错误状态）、`ai_workflow_activate_profile`（直接激活跳过写盘，执行 `ai-workflow profile activate <name>`）与 `ai_workflow_save_and_activate_profile`（保存并激活）。
+- 快照原子保存与回滚语义：保存激活必须执行严格 schema 校验（`version: 1.0.0`、成对 model/effort 且 effort 在六值内、合法 profile 名称 `/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/i`）；写盘前先读取并备份目标 profile yaml 原始字节，随后原子写入同名 yaml 并执行 CLI 激活；若激活失败（如 CLI 路径缺失、托管 agent 被手工篡改产生 conflict 等），后端必须立即从快照字节恢复原文件并原样回显 CLI 错误信息，保证磁盘不残留脏 yaml 且 `active_profile` 保持不变。后端是 profile yaml 的唯一写入者与 CLI 激活的唯一执行者，前端绝不直写配置；所有接口与日志绝不记录或持久化 API 密钥。
 
 ## 数据与存储不变量
 
