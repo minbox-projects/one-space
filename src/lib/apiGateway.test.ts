@@ -440,6 +440,11 @@ function metrics(overrides: Partial<UsageMetrics> = {}): UsageMetrics {
     total_tokens: 0,
     amount: 0,
     unpriced_count: 0,
+    cache_hit_tokens: 0,
+    cache_eligible_tokens: 0,
+    cache_hit_rate_percent: null,
+    cache_rate_eligible_count: 0,
+    successful_request_count: 0,
     ...overrides,
   };
 }

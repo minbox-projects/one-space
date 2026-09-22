@@ -467,6 +467,16 @@ export interface UsageMetrics {
   amount: number;
   /** Records with no matching price row in scope. */
   unpriced_count: number;
+  /** Backend-owned cache hit numerator in scope. */
+  cache_hit_tokens: number;
+  /** Backend-owned cache rate denominator in scope. */
+  cache_eligible_tokens: number;
+  /** Backend-owned token cache hit rate in `0..=100`; `null` when there is no valid positive denominator. */
+  cache_hit_rate_percent: number | null;
+  /** Successful requests with a valid positive cache denominator in scope. */
+  cache_rate_eligible_count: number;
+  /** Successful terminal requests in scope (coverage denominator). */
+  successful_request_count: number;
 }
 
 export interface UsageBucket extends UsageMetrics {

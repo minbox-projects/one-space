@@ -8,7 +8,7 @@ use super::selection::{
 };
 use super::storage::{config_path, resolve_default_key_id};
 use super::{
-    compute_cost, compute_cost_at_time, extract_upstream_error_text, is_off_peak, match_price_for_provider, normalize_retention_days, resolve_range, usage_tokens_from_value,
+    canonical_usage_from_value, compute_cost, compute_cost_at_time, extract_upstream_error_text, is_off_peak, match_price_for_provider, normalize_retention_days, resolve_range, usage_tokens_from_value,
     sanitize_error_text, validate_retention_days, GatewayConfig, GatewayKey, GatewayUpstreamProvider, LogFilter,
     ModelMapping, ModelPrice, OffPeakPrice, SseUsageAccumulator, TerminalSyncRecord, TimeRange, UpstreamProtocol,
     UsageLogRecord, UsageLogStore, UsageResult, UsageTokens, DEFAULT_USAGE_RETENTION_DAYS,
@@ -10049,6 +10049,9 @@ fn usage_field_mapping_handles_provider_shapes_and_missing_fields() {
     assert_eq!(mapped, tokens(8, 3, 0, 7));
 
     // OpenAI responses shape: same subset rule for input_tokens_details.
+    // Mixed compatible write (REQ-001 table): the top-level creation value is
+    // the cache-write fallback and is deducted from the reported input, so
+    // ordinary is 20 - 5 - 6 = 9 (canonical exclusive tiers).
     let responses = serde_json::json!({
         "input_tokens": 20,
         "output_tokens": 4,
@@ -10056,7 +10059,7 @@ fn usage_field_mapping_handles_provider_shapes_and_missing_fields() {
         "cache_creation_input_tokens": 6
     });
     let mapped = usage_tokens_from_value(&responses);
-    assert_eq!(mapped, tokens(15, 5, 6, 4));
+    assert_eq!(mapped, tokens(9, 5, 6, 4));
 
     // Anthropic shape: flat tiers are separate, the input tier is untouched.
     let anthropic = serde_json::json!({
@@ -10072,6 +10075,244 @@ fn usage_field_mapping_handles_provider_shapes_and_missing_fields() {
     let partial = usage_tokens_from_value(&serde_json::json!({ "input_tokens": 3 }));
     assert_eq!(partial, tokens(3, 0, 0, 0));
     assert_eq!(partial.total(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// Plan 20260921-api-gateway-cache-hit-accounting Step 2 (RED): canonical
+// normalization. Each test compiles against the current `usage_log.rs`
+// boundary (`usage_tokens_from_value`, `UsageTokens`, `compute_cost`) and
+// fails on an observable wrong value, never on a missing symbol.
+// ---------------------------------------------------------------------------
+
+/// AC-001 / REQ-001: OpenAI Chat inclusive semantics. Reported `prompt_tokens`
+/// includes the nested cache tiers, so ordinary is checked-subtracted:
+/// 100 - 80 - 10 = 10, with no double counting.
+#[test]
+fn canonical_openai_chat_inclusive_input_subtracts_nested_cache_tiers() {
+    let usage = serde_json::json!({
+        "prompt_tokens": 100,
+        "completion_tokens": 5,
+        "prompt_tokens_details": { "cached_tokens": 80, "cache_write_tokens": 10 }
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped.input_tokens, 10, "ordinary = 100 - 80 - 10");
+    assert_eq!(mapped.cache_read_tokens, 80);
+    assert_eq!(mapped.cache_write_tokens, 10);
+    assert_eq!(mapped.output_tokens, 5);
+    assert_eq!(mapped.total(), 105, "each canonical tier is counted exactly once");
+}
+
+/// AC-001 / REQ-001: when both totals are present, `input_tokens` wins over
+/// `prompt_tokens` for the reported inclusive input.
+#[test]
+fn canonical_openai_chat_input_tokens_win_over_prompt_tokens() {
+    let usage = serde_json::json!({
+        "prompt_tokens": 999,
+        "input_tokens": 100,
+        "completion_tokens": 5,
+        "prompt_tokens_details": { "cached_tokens": 80, "cache_write_tokens": 10 }
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped.input_tokens, 10, "input_tokens wins as the inclusive total");
+    assert_eq!(mapped.cache_read_tokens, 80);
+    assert_eq!(mapped.cache_write_tokens, 10);
+    assert_eq!(mapped.total(), 105);
+}
+
+/// AC-001 / REQ-001: OpenAI Responses inclusive semantics with nested
+/// input details: ordinary is 100 - 80 - 10 = 10.
+#[test]
+fn canonical_openai_responses_inclusive_input_subtracts_nested_cache_tiers() {
+    let usage = serde_json::json!({
+        "input_tokens": 100,
+        "output_tokens": 5,
+        "input_tokens_details": { "cached_tokens": 80, "cache_write_tokens": 10 }
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped.input_tokens, 10, "ordinary = 100 - 80 - 10");
+    assert_eq!(mapped.cache_read_tokens, 80);
+    assert_eq!(mapped.cache_write_tokens, 10);
+    assert_eq!(mapped.total(), 105, "each canonical tier is counted exactly once");
+}
+
+/// AC-002 / REQ-001: Anthropic-style split (no nested cache details). The
+/// top-level input is already ordinary: 10 stays 10 alongside read 80 and
+/// write 10, matching AC-001's canonical tiers.
+#[test]
+fn canonical_anthropic_split_keeps_top_level_input_as_ordinary() {
+    let usage = serde_json::json!({
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 80,
+        "cache_creation_input_tokens": 10
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped, tokens(10, 80, 10, 5));
+    assert_eq!(mapped.total(), 105, "same canonical totals as AC-001");
+    // AC-012 boundary: the compatible Anthropic split stays valid.
+    assert!(
+        canonical_usage_from_value(&usage).valid,
+        "the two-tier Anthropic split is a valid canonical shape"
+    );
+}
+
+/// AC-001/AC-002 / REQ-001: mixed compatible write. Nested cache read is
+/// present without nested cache write, so the top-level
+/// `cache_creation_input_tokens` is the cache-write fallback and is deducted
+/// from the reported inclusive input: ordinary 100 - 80 - 10 = 10.
+#[test]
+fn canonical_mixed_write_falls_back_to_top_level_creation() {
+    let usage = serde_json::json!({
+        "prompt_tokens": 100,
+        "completion_tokens": 5,
+        "prompt_tokens_details": { "cached_tokens": 80 },
+        "cache_creation_input_tokens": 10
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped.input_tokens, 10, "creation fallback is deducted");
+    assert_eq!(mapped.cache_read_tokens, 80);
+    assert_eq!(mapped.cache_write_tokens, 10);
+    assert_eq!(mapped.total(), 105);
+}
+
+/// REQ-001 precedence: existing output compatibility. `output_tokens` wins
+/// over `completion_tokens`.
+#[test]
+fn canonical_output_tokens_win_over_completion_tokens() {
+    let usage = serde_json::json!({
+        "prompt_tokens": 100,
+        "output_tokens": 9,
+        "completion_tokens": 777,
+        "prompt_tokens_details": { "cached_tokens": 80, "cache_write_tokens": 10 }
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped.output_tokens, 9, "output_tokens wins");
+    assert_eq!(mapped.input_tokens, 10);
+    assert_eq!(mapped.total(), 109);
+}
+
+/// REQ-001 precedence: nested cache write wins over the top-level creation
+/// fallback.
+#[test]
+fn canonical_nested_cache_write_wins_over_creation_fallback() {
+    let usage = serde_json::json!({
+        "input_tokens": 100,
+        "output_tokens": 5,
+        "input_tokens_details": { "cached_tokens": 80, "cache_write_tokens": 10 },
+        "cache_creation_input_tokens": 777
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped.cache_write_tokens, 10, "nested cache write wins");
+    assert_eq!(mapped.input_tokens, 10);
+    assert_eq!(mapped.total(), 105);
+}
+
+/// AC-012 / REQ-001: nested cache read coexisting with top-level
+/// `cache_read_input_tokens` is a conflicting shape and must be marked
+/// invalid, never silently merged into a valid-looking exclusive split.
+///
+/// REQ-004 conservative fallback: invalid cache tiers never participate in
+/// cache-tier pricing; the request bills the reported input once with no
+/// cache tiers (no double counting, no negative), while staying
+/// cache-statistics-ineligible at the store layer (Step 5 slice).
+#[test]
+fn canonical_conflicting_cache_read_shapes_are_rejected() {
+    let usage = serde_json::json!({
+        "prompt_tokens": 100,
+        "completion_tokens": 5,
+        "prompt_tokens_details": { "cached_tokens": 80 },
+        "cache_read_input_tokens": 80
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(
+        mapped,
+        tokens(100, 0, 0, 5),
+        "conflicting nested + top-level cache read falls back to reported input with no cache tiers"
+    );
+    assert_eq!(mapped.total(), 105);
+    // AC-012: the parser classifies the shape itself as invalid, so the store
+    // layer can persist `cache_accounting_valid = false` and keep the row out
+    // of the cache numerator/denominator.
+    let classified = canonical_usage_from_value(&usage);
+    assert!(
+        !classified.valid,
+        "a conflicting nested + top-level cache read must be marked invalid"
+    );
+    assert_eq!(
+        classified.tokens, mapped,
+        "the invalid classification keeps the same conservative fallback tokens"
+    );
+}
+
+/// AC-012 / REQ-001: nested OpenAI cache components exceeding the reported
+/// input are an illegal decomposition. The parser must never produce
+/// negative ordinary input or a rate outside 0..=100: with checked
+/// subtraction failing, the conservative fallback bills the reported input
+/// once with no cache tiers (no double counting, no negative).
+#[test]
+fn canonical_illegal_decomposition_never_yields_negative_ordinary() {
+    let usage = serde_json::json!({
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+        "prompt_tokens_details": { "cached_tokens": 80, "cache_write_tokens": 10 }
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(
+        mapped,
+        tokens(10, 0, 0, 5),
+        "an illegal nested decomposition falls back to reported input with no cache tiers"
+    );
+    assert_eq!(mapped.total(), 15);
+    // AC-012: an illegal decomposition is classified invalid, never a valid
+    // negative or zero-ordinary split.
+    let classified = canonical_usage_from_value(&usage);
+    assert!(
+        !classified.valid,
+        "nested cache components exceeding the reported input must be marked invalid"
+    );
+    assert_eq!(
+        classified.tokens, mapped,
+        "the invalid classification keeps the same conservative fallback tokens"
+    );
+}
+
+/// AC-005 / REQ-001: with configured ordinary-input, cache-read, cache-write
+/// and output prices, total tokens include each canonical tier exactly once
+/// and the amount applies each tier's price exactly once (no duplicated
+/// input/cache charges for an inclusive OpenAI record).
+#[test]
+fn canonical_openai_record_is_priced_exactly_once_per_tier() {
+    let usage = serde_json::json!({
+        "prompt_tokens": 100,
+        "completion_tokens": 5,
+        "prompt_tokens_details": { "cached_tokens": 80, "cache_write_tokens": 10 }
+    });
+    let mapped = usage_tokens_from_value(&usage);
+    assert_eq!(mapped, tokens(10, 80, 10, 5));
+    assert_eq!(mapped.total(), 105);
+    // AC-012 boundary: the inclusive OpenAI shape with nested cache tiers is
+    // a valid canonical decomposition.
+    assert!(
+        canonical_usage_from_value(&usage).valid,
+        "the canonical OpenAI inclusive shape is valid"
+    );
+
+    let price = ModelPrice {
+        provider_id: Some("p1".to_string()),
+        upstream_model: "remote-a".to_string(),
+        input: 1.0,
+        cache_read: 0.5,
+        cache_write: 2.0,
+        output: 4.0,
+        off_peaks: Vec::new(),
+        off_peak: None,
+    };
+    let expected = (10.0 * 1.0 + 80.0 * 0.5 + 10.0 * 2.0 + 5.0 * 4.0) / 1_000_000.0;
+    assert!(
+        (compute_cost(&price, &mapped) - expected).abs() < 1e-12,
+        "amount applies each tier price exactly once: got {}",
+        compute_cost(&price, &mapped)
+    );
 }
 
 /// AC-013 / REQ-011: range resolution uses UTC+8 midnight boundaries.
@@ -10690,6 +10931,14 @@ async fn usage_log_records_successful_non_streaming_forward_and_privacy() {
     assert!(!serialized.contains("local-key"));
     assert!(!serialized.contains("upstream-secret"));
 
+    // REQ-004: the persisted classification columns are asserted at the raw
+    // SQLite boundary (UsageLogRecord intentionally omits them).
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), true, true)],
+        "a canonical non-streaming success stores usage_semantics=canonical_v1, usage_present=1, cache_accounting_valid=1"
+    );
+
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
 }
@@ -10731,6 +10980,14 @@ async fn usage_log_records_zero_tokens_when_upstream_omits_usage() {
     assert_eq!(record.result, UsageResult::Success);
     assert_eq!(record.total_tokens, 0);
     assert_eq!(record.amount, Some(0.0), "priced model with zero tokens costs 0");
+
+    // REQ-004: canonical semantics with no upstream usage object is present=0,
+    // valid=0, so the row can never enter the cache numerator/denominator.
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), false, false)],
+        "an omitted upstream usage stores usage_semantics=canonical_v1, usage_present=0, cache_accounting_valid=0"
+    );
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
@@ -11702,8 +11959,9 @@ async fn usage_log_records_unversioned_responses_path() {
 // end-to-end privacy).
 // ---------------------------------------------------------------------------
 
-/// AC-001 / AC-003 / AC-004: a non-streaming response reporting both cache
-/// read and cache write tiers maps every tier, and the write tier is priced too.
+/// AC-001 / AC-003 / AC-004: a non-streaming Anthropic-style split response
+/// (no nested cache details, top-level cache tiers) maps every tier, and the
+/// write tier is priced too. REQ-001: the top-level input is already ordinary.
 #[tokio::test]
 async fn forwarding_records_cache_read_and_write_tiers_non_streaming() {
     let home = temp_home("usage-forward-cache-tiers");
@@ -11768,6 +12026,10 @@ async fn forwarding_records_cache_read_and_write_tiers_non_streaming() {
 /// AC-002 / AC-003: streaming usage carrying cache read and cache write tiers
 /// is parsed from the SSE tail, priced across all four tiers, and the bytes the
 /// caller receives stay identical to the upstream stream.
+///
+/// REQ-001 mixed compatible write: nested cache read plus a top-level
+/// `cache_creation_input_tokens` fallback is OpenAI inclusive, so the creation
+/// value is deducted from the reported input (ordinary 11 - 3 - 5 = 3).
 #[tokio::test]
 async fn streaming_forward_records_cache_read_and_write_tiers_and_preserves_bytes() {
     let home = temp_home("usage-stream-cache-tiers");
@@ -11807,13 +12069,14 @@ async fn streaming_forward_records_cache_read_and_write_tiers_and_preserves_byte
     assert!(record.terminal, "the completed stream is terminal");
     assert_eq!(record.error_message, None, "a success stores no error message");
     assert_eq!(record.result, UsageResult::Success);
-    assert_eq!(record.input_tokens, 8);
+    assert_eq!(record.input_tokens, 3);
     assert_eq!(record.cache_read_tokens, 3);
     assert_eq!(record.cache_write_tokens, 5);
     assert_eq!(record.output_tokens, 7);
-    assert_eq!(record.total_tokens, 23);
-    let expected = (8.0 * 1.0 + 3.0 * 0.5 + 5.0 * 2.0 + 7.0 * 4.0) / 1_000_000.0;
-    assert!((record.amount.expect("priced") - expected).abs() < 1e-12);
+    assert_eq!(record.total_tokens, 18);
+    let expected = (3.0 * 1.0 + 3.0 * 0.5 + 5.0 * 2.0 + 7.0 * 4.0) / 1_000_000.0;
+    assert!((record.amount.expect("priced") - expected).abs() < 1e-12,
+        "mixed compatible write deducts the top-level creation fallback from reported input");
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
@@ -19886,6 +20149,1307 @@ fn swrr_session_affinity_preserves_bound_with_weighted_fallback() {
         "p_a",
         "AC-010: higher-weighted provider A must be preserved as fallback candidate"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Plan 20260921-api-gateway-cache-hit-accounting Step 5 (RED): storage,
+// coverage and cross-provider aggregation. Every test compiles against the
+// CURRENT boundary (raw `PRAGMA table_info`, existing `UsageLogStore` /
+// `sample_record` helpers, serialized `usage_stats` JSON) and fails on an
+// observable behavior (absent columns, absent/wrong aggregate fields, wrong
+// coverage counts, wrong combined rate), never on a missing Rust symbol.
+// ---------------------------------------------------------------------------
+
+/// Raw-seed one usage row with an explicit classification.
+///
+/// `UsageLogStore::append` can only persist canonical rows (`canonical_v1`,
+/// usage present, accounting valid), so legacy, missing-usage and
+/// invalid/conflicting rows cannot be distinguished through it and must be
+/// written with explicit `usage_semantics` / `usage_present` /
+/// `cache_accounting_valid` values through raw SQL against the same database
+/// file. `terminal`, `error_message` and `reasoning_effort` are fixed to
+/// `1` / `NULL` / `NULL`; every other stored field mirrors `record`.
+///
+/// The store is opened first so the production migration has materialized the
+/// classification columns. This keeps the test honest: while the migration is
+/// absent the insert fails on the missing columns instead of silently
+/// succeeding, so the RED failure is an error message rather than a weakened
+/// assertion.
+fn seed_classified_usage_row(
+    dir: &Path,
+    record: &UsageLogRecord,
+    usage_semantics: &str,
+    usage_present: bool,
+    cache_accounting_valid: bool,
+) {
+    let db_path = dir.join("api_gateway_usage.db");
+    // Run the production schema/migration through the store boundary without
+    // writing a canonical row of our own.
+    let _ = UsageLogStore::at(&db_path)
+        .usage_stats(&TimeRange::default(), false)
+        .expect("open the store before raw seeding");
+    let connection = rusqlite::Connection::open(&db_path).expect("open raw sqlite connection");
+    connection
+        .execute(
+            "INSERT INTO usage_logs (
+                timestamp_ms, local_model, upstream_model, provider_id, provider_name,
+                result, status, input_tokens, cache_read_tokens, cache_write_tokens,
+                output_tokens, total_tokens, amount, duration_ms, error_message,
+                terminal, reasoning_effort, usage_semantics, usage_present,
+                cache_accounting_valid
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, NULL, ?, ?, ?)",
+            rusqlite::params![
+                record.timestamp_ms,
+                record.local_model,
+                record.upstream_model,
+                record.provider_id,
+                record.provider_name,
+                record.result.as_str(),
+                record.status as i64,
+                record.input_tokens as i64,
+                record.cache_read_tokens as i64,
+                record.cache_write_tokens as i64,
+                record.output_tokens as i64,
+                record.total_tokens as i64,
+                record.amount,
+                record.duration_ms as i64,
+                usage_semantics,
+                usage_present as i64,
+                cache_accounting_valid as i64,
+            ],
+        )
+        .expect("raw-insert the classified usage row");
+}
+
+/// AC-006 / REQ-004: idempotent additive migration. New columns
+/// `usage_semantics`, `usage_present`, `cache_accounting_valid` are added
+/// exactly once across repeated opens; pre-existing rows default to
+/// `usage_semantics='legacy'`, keep original token/total/amount/log fields,
+/// and are excluded from the new cache numerator/denominator. New rows use
+/// `canonical_v1`.
+#[test]
+fn cachehit_storage_migration_adds_semantics_columns_idempotently_and_preserves_legacy_rows() {
+    let dir = make_temp_dir("cachehit-migration");
+    fs::create_dir_all(&dir).expect("create temp dir for pre-upgrade db");
+    let db_path = dir.join("api_gateway_usage.db");
+    // Pre-upgrade file: previous release schema without the new semantics
+    // columns (and without the already-shipped attempt columns).
+    let legacy = rusqlite::Connection::open(&db_path).expect("create pre-upgrade db");
+    legacy
+        .execute_batch(
+            "CREATE TABLE usage_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_ms INTEGER NOT NULL,
+                local_model TEXT NOT NULL,
+                upstream_model TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                result TEXT NOT NULL,
+                status INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL,
+                cache_write_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                amount REAL,
+                duration_ms INTEGER NOT NULL
+            );",
+        )
+        .expect("create the pre-upgrade schema");
+    let legacy_at = rfc3339_millis("2026-09-15T10:00:00+08:00");
+    legacy
+        .execute(
+            "INSERT INTO usage_logs (
+                timestamp_ms, local_model, upstream_model, provider_id, provider_name,
+                result, status, input_tokens, cache_read_tokens, cache_write_tokens,
+                output_tokens, total_tokens, amount, duration_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![
+                legacy_at,
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                "success",
+                200i64,
+                10i64,
+                0i64,
+                0i64,
+                5i64,
+                15i64,
+                Some(0.5f64),
+                5i64
+            ],
+        )
+        .expect("insert the pre-upgrade success row");
+    drop(legacy);
+
+    // Opening through the store migrates the file.
+    let store = UsageLogStore::at(&db_path);
+    let migrated = store.all_records().expect("read the migrated rows");
+    assert_eq!(migrated.len(), 1, "migration must not duplicate rows");
+    // Original token/total/amount/log fields stay byte-for-value.
+    assert_eq!(migrated[0].input_tokens, 10);
+    assert_eq!(migrated[0].cache_read_tokens, 0);
+    assert_eq!(migrated[0].cache_write_tokens, 0);
+    assert_eq!(migrated[0].output_tokens, 5);
+    assert_eq!(migrated[0].total_tokens, 15);
+    assert_eq!(migrated[0].amount, Some(0.5));
+
+    // New columns exist exactly once via raw PRAGMA inspection.
+    let columns = usage_log_table_columns(&db_path);
+    for required in ["usage_semantics", "usage_present", "cache_accounting_valid"] {
+        assert_eq!(
+            columns.iter().filter(|name| name.as_str() == required).count(),
+            1,
+            "column {required} must be added exactly once: {columns:?}"
+        );
+    }
+    let distinct: HashSet<&String> = columns.iter().collect();
+    assert_eq!(
+        columns.len(),
+        distinct.len(),
+        "the migration must not duplicate columns: {columns:?}"
+    );
+
+    // Pre-existing rows default to legacy semantics through raw SQL.
+    let raw = rusqlite::Connection::open(&db_path).expect("reopen raw db");
+    let semantics: String = raw
+        .query_row(
+            "SELECT usage_semantics FROM usage_logs WHERE local_model = 'local-a'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("legacy rows default to usage_semantics");
+    assert_eq!(semantics, "legacy");
+    // New rows use canonical_v1.
+    store
+        .append(
+            &sample_record(
+                rfc3339_millis("2026-09-15T11:00:00+08:00"),
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(0.5),
+                tokens(10, 80, 10, 5),
+            ),
+            365,
+        )
+        .expect("append a new canonical row");
+    let newest_semantics: String = raw
+        .query_row(
+            "SELECT usage_semantics FROM usage_logs ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("new rows carry usage_semantics");
+    assert_eq!(newest_semantics, "canonical_v1");
+
+    // Legacy rows are excluded from the new cache numerator/denominator.
+    let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
+    let payload = serde_json::to_value(&stats).expect("serialize stats");
+    assert_eq!(
+        payload["cache_hit_tokens"],
+        json!(80),
+        "only the new canonical row contributes to the hit numerator"
+    );
+    assert_eq!(
+        payload["cache_eligible_tokens"],
+        json!(100),
+        "only the new canonical row contributes to the eligible denominator"
+    );
+
+    // A second open changes neither schema nor rows.
+    let second = UsageLogStore::at(&db_path);
+    let _ = second
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .expect("query through a second open");
+    assert_eq!(
+        usage_log_table_columns(&db_path),
+        columns,
+        "a second open must not duplicate columns"
+    );
+    assert_eq!(second.count().expect("count after second open"), 2);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-007 / REQ-004 table: legacy success, new success without usage,
+/// zero-denominator success, invalid/conflicting success, valid
+/// positive-denominator success, and one failure. All five successes
+/// contribute to `successful_request_count`; only the valid row contributes
+/// to `cache_rate_eligible_count`; failures contribute to neither.
+#[test]
+fn cachehit_storage_coverage_counts_only_valid_positive_denominator_success() {
+    let (dir, store) = usage_store("cachehit-coverage");
+    let base = rfc3339_millis("2026-09-15T10:00:00+08:00");
+    // Legacy success with plausible tokens (must stay ineligible, never
+    // heuristically reclassified).
+    seed_classified_usage_row(
+        &dir,
+        &sample_record(
+            base,
+            "local-a",
+            "remote-a",
+            "p1",
+            "Provider One",
+            UsageResult::Success,
+            Some(0.5),
+            tokens(10, 0, 0, 5),
+        ),
+        "legacy",
+        false,
+        false,
+    );
+    // New success without usage (zero tokens, no usage object).
+    seed_classified_usage_row(
+        &dir,
+        &sample_record(
+            base + 1_000,
+            "local-a",
+            "remote-a",
+            "p1",
+            "Provider One",
+            UsageResult::Success,
+            Some(0.1),
+            UsageTokens::default(),
+        ),
+        "canonical_v1",
+        false,
+        false,
+    );
+    // New success with zero denominator (present usage, all recognized
+    // fields zero).
+    seed_classified_usage_row(
+        &dir,
+        &sample_record(
+            base + 2_000,
+            "local-a",
+            "remote-a",
+            "p1",
+            "Provider One",
+            UsageResult::Success,
+            Some(0.1),
+            tokens(0, 0, 0, 0),
+        ),
+        "canonical_v1",
+        true,
+        true,
+    );
+    // New success with invalid/conflicting usage (conservative fallback:
+    // reported input once, no cache tiers, stays ineligible).
+    seed_classified_usage_row(
+        &dir,
+        &sample_record(
+            base + 3_000,
+            "local-a",
+            "remote-a",
+            "p1",
+            "Provider One",
+            UsageResult::Success,
+            Some(0.1),
+            tokens(100, 0, 0, 5),
+        ),
+        "canonical_v1",
+        true,
+        false,
+    );
+    // The single valid positive-denominator success: ordinary 10 + read 80
+    // + write 10.
+    store
+        .append(
+            &sample_record(
+                base + 4_000,
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(0.5),
+                tokens(10, 80, 10, 5),
+            ),
+            365,
+        )
+        .unwrap();
+    // Failure with usage never reduces the coverage ratio.
+    store
+        .append(
+            &sample_record(
+                base + 5_000,
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Failure,
+                Some(0.5),
+                tokens(10, 80, 10, 5),
+            ),
+            365,
+        )
+        .unwrap();
+
+    let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
+    let payload = serde_json::to_value(&stats).expect("serialize stats");
+    assert_eq!(
+        payload["successful_request_count"],
+        json!(5),
+        "all five in-range success terminal rows are coverage candidates"
+    );
+    assert_eq!(
+        payload["cache_rate_eligible_count"],
+        json!(1),
+        "only the valid positive-denominator row is eligible"
+    );
+    assert_eq!(
+        payload["cache_hit_tokens"],
+        json!(80),
+        "hit numerator comes only from the valid row"
+    );
+    assert_eq!(
+        payload["cache_eligible_tokens"],
+        json!(100),
+        "eligible denominator is ordinary + read + write of the valid row"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// REQ-002 / AC-011 backend half: `UsageMetrics` exposes five
+/// ALWAYS-serialized additive fields at EVERY flattened aggregation level
+/// (totals, buckets, models, providers). Existing fields keep names/types
+/// and the command name `api_gateway_usage_stats` is unchanged.
+#[test]
+fn cachehit_metrics_expose_five_additive_fields_at_every_level() {
+    let (dir, store) = usage_store("cachehit-contract");
+    let day = rfc3339_millis("2026-09-15T10:00:00+08:00");
+    store
+        .append(
+            &sample_record(
+                day,
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(0.5),
+                tokens(10, 80, 10, 5),
+            ),
+            365,
+        )
+        .unwrap();
+    store
+        .append(
+            &sample_record(
+                day + 3_600_000,
+                "local-b",
+                "remote-b",
+                "p2",
+                "Provider Two",
+                UsageResult::Success,
+                Some(0.5),
+                tokens(10, 0, 0, 5),
+            ),
+            365,
+        )
+        .unwrap();
+
+    let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
+    let payload = serde_json::to_value(&stats).expect("serialize stats");
+    let required = [
+        "cache_hit_tokens",
+        "cache_eligible_tokens",
+        "cache_hit_rate_percent",
+        "cache_rate_eligible_count",
+        "successful_request_count",
+    ];
+    for field in required {
+        assert!(
+            payload.get(field).is_some(),
+            "totals must always serialize {field}: {payload}"
+        );
+    }
+    // Existing fields keep names/types at the same boundary.
+    assert!(payload.get("request_count").is_some());
+    assert!(payload.get("total_tokens").is_some());
+    assert!(payload.get("amount").is_some());
+    assert!(payload.get("unpriced_count").is_some());
+
+    let buckets = payload["buckets"].as_array().expect("buckets array");
+    assert!(!buckets.is_empty(), "fixture must produce a bucket");
+    for bucket in buckets {
+        for field in required {
+            assert!(
+                bucket.get(field).is_some(),
+                "every bucket must always serialize {field}: {bucket}"
+            );
+        }
+    }
+    let models = payload["models"].as_array().expect("models array");
+    assert!(!models.is_empty(), "fixture must produce a model row");
+    for model in models {
+        for field in required {
+            assert!(
+                model.get(field).is_some(),
+                "every model row must always serialize {field}: {model}"
+            );
+        }
+        let providers = model["providers"].as_array().expect("providers array");
+        assert!(!providers.is_empty(), "each model must carry provider rows");
+        for provider in providers {
+            for field in required {
+                assert!(
+                    provider.get(field).is_some(),
+                    "every provider row must always serialize {field}: {provider}"
+                );
+            }
+            assert!(
+                provider.get("provider_id").is_some(),
+                "provider rows keep separated provider ids: {provider}"
+            );
+        }
+    }
+    // The Tauri command name is unchanged and returns the same contract.
+    let command_stats = with_temp_home("cachehit-command-contract", |_| {
+        // Touch the command boundary only for its name/type; the isolated
+        // fixture above already proves the payload shape.
+        let _ = super::commands::api_gateway_usage_stats as fn(Option<i64>) -> Result<super::UsageStats, String>;
+    });
+    let _ = command_stats;
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-008 backend half + boundary cases: `cache_hit_rate_percent` is a
+/// 0..=100 percentage, `null` with no valid positive denominator. A
+/// legitimate uncached canonical request with positive ordinary input
+/// returns `0.0` (not null). Zero-denominator, missing-usage and legacy
+/// successes each yield `null` with the correct coverage counts.
+#[test]
+fn cachehit_rate_null_vs_zero_distinguishes_missing_from_uncached() {
+    // No valid positive denominator: zero-denominator success only.
+    let (dir_zero, zero) = usage_store("cachehit-rate-null-zero");
+    seed_classified_usage_row(
+        &dir_zero,
+        &sample_record(
+            rfc3339_millis("2026-09-15T10:00:00+08:00"),
+            "local-a",
+            "remote-a",
+            "p1",
+            "Provider One",
+            UsageResult::Success,
+            Some(0.1),
+            tokens(0, 0, 0, 0),
+        ),
+        "canonical_v1",
+        true,
+        true,
+    );
+    let zero_payload =
+        serde_json::to_value(&zero.usage_stats(&TimeRange::default(), false).unwrap())
+            .expect("serialize zero-denominator stats");
+    assert!(
+        zero_payload["cache_hit_rate_percent"].is_null(),
+        "zero denominator must be null, not 0%: {zero_payload}"
+    );
+    assert_eq!(zero_payload["successful_request_count"], json!(1));
+    assert_eq!(zero_payload["cache_rate_eligible_count"], json!(0));
+    let _ = fs::remove_dir_all(&dir_zero);
+
+    // Missing usage (no tokens at all) is also null, not 0%.
+    let (dir_missing, missing) = usage_store("cachehit-rate-null-missing");
+    seed_classified_usage_row(
+        &dir_missing,
+        &sample_record(
+            rfc3339_millis("2026-09-15T10:00:00+08:00"),
+            "local-a",
+            "remote-a",
+            "p1",
+            "Provider One",
+            UsageResult::Success,
+            Some(0.1),
+            UsageTokens::default(),
+        ),
+        "canonical_v1",
+        false,
+        false,
+    );
+    let missing_payload =
+        serde_json::to_value(&missing.usage_stats(&TimeRange::default(), false).unwrap())
+            .expect("serialize missing-usage stats");
+    assert!(
+        missing_payload["cache_hit_rate_percent"].is_null(),
+        "missing usage must be null, not 0%: {missing_payload}"
+    );
+    assert_eq!(missing_payload["successful_request_count"], json!(1));
+    assert_eq!(missing_payload["cache_rate_eligible_count"], json!(0));
+    let _ = fs::remove_dir_all(&dir_missing);
+
+    // Legitimate uncached canonical request: positive ordinary input, zero
+    // cache read, eligible denominator > 0, so the rate is exactly 0.0.
+    let (dir_uncached, uncached) = usage_store("cachehit-rate-zero");
+    uncached
+        .append(
+            &sample_record(
+                rfc3339_millis("2026-09-15T10:00:00+08:00"),
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(0.1),
+                tokens(10, 0, 0, 5),
+            ),
+            365,
+        )
+        .unwrap();
+    let uncached_payload =
+        serde_json::to_value(&uncached.usage_stats(&TimeRange::default(), false).unwrap())
+            .expect("serialize uncached stats");
+    assert_eq!(
+        uncached_payload["cache_hit_rate_percent"],
+        json!(0.0),
+        "a valid uncached request with positive ordinary input is 0.0, not null: {uncached_payload}"
+    );
+    assert_eq!(uncached_payload["successful_request_count"], json!(1));
+    assert_eq!(uncached_payload["cache_rate_eligible_count"], json!(1));
+    assert_eq!(uncached_payload["cache_hit_tokens"], json!(0));
+    assert_eq!(uncached_payload["cache_eligible_tokens"], json!(10));
+    let _ = fs::remove_dir_all(&dir_uncached);
+}
+
+/// AC-003: denominator is `ordinary + cache_read + cache_write`, numerator
+/// is `cache_read`. The canonical AC-001 tiers (10 / 80 / 10) yield 80%.
+#[test]
+fn cachehit_denominator_includes_cache_write_and_numerator_is_cache_read() {
+    let (dir, store) = usage_store("cachehit-denominator");
+    store
+        .append(
+            &sample_record(
+                rfc3339_millis("2026-09-15T10:00:00+08:00"),
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(0.5),
+                tokens(10, 80, 10, 5),
+            ),
+            365,
+        )
+        .unwrap();
+    let payload =
+        serde_json::to_value(&store.usage_stats(&TimeRange::default(), false).unwrap())
+            .expect("serialize stats");
+    assert_eq!(payload["cache_hit_tokens"], json!(80));
+    assert_eq!(
+        payload["cache_eligible_tokens"],
+        json!(100),
+        "denominator must include cache write: 10 + 80 + 10"
+    );
+    assert_eq!(payload["cache_hit_rate_percent"], json!(80.0));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-004 / REQ-003 / AC-011: same-local-model cross-provider aggregation.
+/// One local model with one valid 80% OpenAI request and one valid 80%
+/// Anthropic-style request with EQUAL canonical input totals: each provider
+/// row AND the combined model row report 80% via summed
+/// numerator/denominator, never an arithmetic mean of percentages. Provider
+/// ids remain separated in provider rows.
+#[test]
+fn cachehit_same_model_cross_provider_aggregates_by_token_weight_not_mean() {
+    let (dir, store) = usage_store("cachehit-cross-provider");
+    let base = rfc3339_millis("2026-09-15T10:00:00+08:00");
+    // OpenAI-shape canonical tiers: ordinary 10, read 80, write 10.
+    store
+        .append(
+            &sample_record(
+                base,
+                "local-shared",
+                "remote-openai",
+                "p-openai",
+                "OpenAI Provider",
+                UsageResult::Success,
+                Some(0.5),
+                tokens(10, 80, 10, 5),
+            ),
+            365,
+        )
+        .unwrap();
+    // Anthropic-style canonical tiers with the same totals: ordinary 10,
+    // read 80, write 10 (AC-002 matches AC-001).
+    store
+        .append(
+            &sample_record(
+                base + 1_000,
+                "local-shared",
+                "remote-anthropic",
+                "p-anthropic",
+                "Anthropic Provider",
+                UsageResult::Success,
+                Some(0.5),
+                tokens(10, 80, 10, 5),
+            ),
+            365,
+        )
+        .unwrap();
+
+    let payload =
+        serde_json::to_value(&store.usage_stats(&TimeRange::default(), false).unwrap())
+            .expect("serialize stats");
+    // Totals sum first: 160 / 200 = 80%.
+    assert_eq!(payload["cache_hit_tokens"], json!(160));
+    assert_eq!(payload["cache_eligible_tokens"], json!(200));
+    assert_eq!(payload["cache_hit_rate_percent"], json!(80.0));
+
+    let models = payload["models"].as_array().expect("models array");
+    let shared = models
+        .iter()
+        .find(|row| row["local_model"] == json!("local-shared"))
+        .expect("combined model row");
+    assert_eq!(shared["cache_hit_tokens"], json!(160));
+    assert_eq!(shared["cache_eligible_tokens"], json!(200));
+    assert_eq!(
+        shared["cache_hit_rate_percent"],
+        json!(80.0),
+        "the combined model row must be token-weighted 80%, not a mean of percentages"
+    );
+    let providers = shared["providers"].as_array().expect("provider rows");
+    assert_eq!(providers.len(), 2, "provider ids remain separated");
+    for provider in providers {
+        assert_eq!(
+            provider["cache_hit_rate_percent"],
+            json!(80.0),
+            "each provider row reports its own 80%: {provider}"
+        );
+    }
+    let ids: Vec<&str> = providers
+        .iter()
+        .filter_map(|row| row["provider_id"].as_str())
+        .collect();
+    assert!(ids.contains(&"p-openai"), "OpenAI provider row kept: {ids:?}");
+    assert!(
+        ids.contains(&"p-anthropic"),
+        "Anthropic provider row kept: {ids:?}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-004 / REQ-003: token weighting under UNEQUAL per-provider rates and
+/// UNEQUAL token volumes. Provider A is 90/100 = 90% and provider B is
+/// 50/300 ≈ 16.67%; the combined model and totals must be the summed
+/// numerator/denominator 140/400 = 35%, never the arithmetic mean ≈ 53.33%.
+#[test]
+fn cachehit_cross_provider_unequal_rates_use_token_weighting_not_arithmetic_mean() {
+    let (dir, store) = usage_store("cachehit-cross-provider-unequal");
+    let base = rfc3339_millis("2026-09-15T10:00:00+08:00");
+    // Provider A: ordinary 10 + read 90 = denominator 100 -> 90%.
+    store
+        .append(
+            &sample_record(
+                base,
+                "local-shared",
+                "remote-a",
+                "p-a",
+                "Provider A",
+                UsageResult::Success,
+                Some(0.5),
+                tokens(10, 90, 0, 5),
+            ),
+            365,
+        )
+        .unwrap();
+    // Provider B: ordinary 250 + read 50 = denominator 300 -> ~16.67%.
+    store
+        .append(
+            &sample_record(
+                base + 1_000,
+                "local-shared",
+                "remote-b",
+                "p-b",
+                "Provider B",
+                UsageResult::Success,
+                Some(0.5),
+                tokens(250, 50, 0, 5),
+            ),
+            365,
+        )
+        .unwrap();
+
+    let payload =
+        serde_json::to_value(&store.usage_stats(&TimeRange::default(), false).unwrap())
+            .expect("serialize stats");
+    // Totals: summed numerator/denominator, 140 / 400 = 35%.
+    assert_eq!(payload["cache_hit_tokens"], json!(140));
+    assert_eq!(payload["cache_eligible_tokens"], json!(400));
+    assert_eq!(
+        payload["cache_hit_rate_percent"],
+        json!(35.0),
+        "totals must be token-weighted 35%, not the arithmetic mean 53.33%"
+    );
+
+    let models = payload["models"].as_array().expect("models array");
+    let shared = models
+        .iter()
+        .find(|row| row["local_model"] == json!("local-shared"))
+        .expect("combined model row");
+    assert_eq!(shared["cache_hit_tokens"], json!(140));
+    assert_eq!(shared["cache_eligible_tokens"], json!(400));
+    let combined_rate = shared["cache_hit_rate_percent"]
+        .as_f64()
+        .expect("combined model rate");
+    assert!(
+        (combined_rate - 35.0).abs() < 1e-9,
+        "the combined model row must be token-weighted 35%, got {combined_rate}"
+    );
+    assert!(
+        (combined_rate - 53.333_333).abs() > 1.0,
+        "the combined model row must not be the arithmetic mean of 90% and 16.67%, got {combined_rate}"
+    );
+
+    let providers = shared["providers"].as_array().expect("provider rows");
+    assert_eq!(providers.len(), 2, "provider ids remain separated");
+    let provider_a = providers
+        .iter()
+        .find(|row| row["provider_id"] == json!("p-a"))
+        .expect("provider A row");
+    assert_eq!(provider_a["cache_hit_tokens"], json!(90));
+    assert_eq!(provider_a["cache_eligible_tokens"], json!(100));
+    assert!(
+        (provider_a["cache_hit_rate_percent"].as_f64().unwrap() - 90.0).abs() < 1e-9,
+        "provider A keeps its own 90%: {provider_a}"
+    );
+    let provider_b = providers
+        .iter()
+        .find(|row| row["provider_id"] == json!("p-b"))
+        .expect("provider B row");
+    assert_eq!(provider_b["cache_hit_tokens"], json!(50));
+    assert_eq!(provider_b["cache_eligible_tokens"], json!(300));
+    let expected_b = 50.0 / 300.0 * 100.0;
+    assert!(
+        (provider_b["cache_hit_rate_percent"].as_f64().unwrap() - expected_b).abs() < 1e-9,
+        "provider B keeps its own {expected_b}%: {provider_b}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-012 backend half: an invalid/conflicting usage row is marked invalid,
+/// contributes only to successful coverage candidates, produces no negative
+/// ordinary input and no rate below 0% or above 100%.
+#[test]
+fn cachehit_invalid_usage_stays_success_only_without_impossible_rates() {
+    let (dir, store) = usage_store("cachehit-invalid");
+    let base = rfc3339_millis("2026-09-15T10:00:00+08:00");
+    // Invalid/conflicting shape stored with the conservative fallback
+    // (reported input once, no cache tiers): never negative, never eligible.
+    seed_classified_usage_row(
+        &dir,
+        &sample_record(
+            base,
+            "local-a",
+            "remote-a",
+            "p1",
+            "Provider One",
+            UsageResult::Success,
+            Some(0.1),
+            tokens(100, 0, 0, 5),
+        ),
+        "canonical_v1",
+        true,
+        false,
+    );
+    // One valid row so the aggregate rate stays defined.
+    store
+        .append(
+            &sample_record(
+                base + 1_000,
+                "local-a",
+                "remote-a",
+                "p1",
+                "Provider One",
+                UsageResult::Success,
+                Some(0.5),
+                tokens(10, 80, 10, 5),
+            ),
+            365,
+        )
+        .unwrap();
+
+    // No stored row may carry a negative ordinary input.
+    for record in store.all_records().expect("read rows") {
+        assert!(
+            record.input_tokens as i64 >= 0,
+            "ordinary input must never be negative: {record:?}"
+        );
+    }
+    let payload =
+        serde_json::to_value(&store.usage_stats(&TimeRange::default(), false).unwrap())
+            .expect("serialize stats");
+    assert_eq!(
+        payload["successful_request_count"],
+        json!(2),
+        "the invalid row is still a successful coverage candidate"
+    );
+    assert_eq!(
+        payload["cache_rate_eligible_count"],
+        json!(1),
+        "the invalid row never becomes eligible"
+    );
+    assert_eq!(payload["cache_hit_tokens"], json!(80));
+    assert_eq!(payload["cache_eligible_tokens"], json!(100));
+    let rate = payload["cache_hit_rate_percent"]
+        .as_f64()
+        .expect("a valid denominator yields a numeric rate");
+    assert!(
+        (0.0..=100.0).contains(&rate),
+        "no cache hit rate below 0% or above 100%: {rate}"
+    );
+    assert_eq!(payload["cache_hit_rate_percent"], json!(80.0));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-012 forwarding boundary: an invalid/conflicting upstream `usage` shape is
+/// classified invalid by the real non-streaming path, persisted with
+/// `usage_present = 1` / `cache_accounting_valid = 0`, and excluded from the
+/// cache numerator/denominator while remaining a successful row.
+#[tokio::test]
+async fn cachehit_invalid_upstream_usage_is_persisted_invalid_and_cache_ineligible() {
+    let home = temp_home("cachehit-invalid-forward");
+    let port = free_port().await;
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "chatcmpl",
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 5,
+                    "prompt_tokens_details": {"cached_tokens": 80},
+                    "cache_read_input_tokens": 80
+                }
+            }),
+        )
+    })
+    .await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, _text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1, "exactly one terminal row");
+    let record = &records[0];
+    assert_eq!(record.result, UsageResult::Success);
+    // Conservative fallback: the reported inclusive input once, no cache tiers.
+    assert_eq!(record.input_tokens, 100);
+    assert_eq!(record.cache_read_tokens, 0);
+    assert_eq!(record.cache_write_tokens, 0);
+
+    // Raw classification columns show the parser's real verdict: present but
+    // invalid.
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), true, false)],
+        "an invalid upstream usage shape persists usage_present=1, cache_accounting_valid=0"
+    );
+
+    // ...and stays out of the cache numerator/denominator at the stats boundary.
+    let payload = serde_json::to_value(
+        &default_usage_store()
+            .usage_stats(&TimeRange::default(), false)
+            .expect("stats"),
+    )
+    .expect("serialize stats");
+    assert_eq!(payload["successful_request_count"], json!(1));
+    assert_eq!(payload["cache_rate_eligible_count"], json!(0));
+    assert_eq!(payload["cache_hit_tokens"], json!(0));
+    assert_eq!(payload["cache_eligible_tokens"], json!(0));
+    assert!(
+        payload["cache_hit_rate_percent"].is_null(),
+        "no eligible denominator yields a null rate: {payload}"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+// ---------------------------------------------------------------------------
+// Plan 20260921-api-gateway-cache-hit-accounting Step 8 (RED): streaming usage
+// locations and no-mutation forwarding.
+//
+// Every case drives a real streaming request through the loopback mock
+// upstream and asserts the persisted terminal row through `all_records()` plus
+// the raw migrated `usage_present` / `usage_semantics` / `cache_accounting_valid`
+// columns, which `UsageLogRecord` intentionally does not expose. The nested
+// Responses `response.completed.response.usage` case is the RED behavior: the
+// current accumulator reads only a top-level `usage`, so that row is stored
+// with `usage_present = 0` and zero tokens until Step 9 parses the nested
+// object. The no-`stream_options`-injection / missing-usage cases already pass
+// and stay as regression guards.
+// ---------------------------------------------------------------------------
+
+/// Raw `(usage_semantics, usage_present, cache_accounting_valid)` of every
+/// stored row, newest first, read straight from the migrated database file.
+///
+/// `UsageLogRecord` deliberately omits these classification columns, so the
+/// streaming slice cannot infer presence from token values and must read them
+/// at the SQLite boundary after the production migration has run.
+fn raw_row_accounting(db_path: &Path) -> Vec<(String, bool, bool)> {
+    let connection = rusqlite::Connection::open(db_path).expect("open raw usage db");
+    let mut statement = connection
+        .prepare(
+            "SELECT usage_semantics, usage_present, cache_accounting_valid \
+             FROM usage_logs ORDER BY id DESC",
+        )
+        .expect("prepare accounting select");
+    statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)? != 0,
+                row.get::<_, i64>(2)? != 0,
+            ))
+        })
+        .expect("run accounting select")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("collect accounting rows")
+}
+
+/// Path of the default usage database for the currently isolated `HOME`.
+fn usage_db_path() -> PathBuf {
+    crate::config::get_app_dir()
+        .expect("app dir")
+        .join(super::USAGE_DB_FILE)
+}
+
+/// AC-009 / REQ-005: a Chat Completions stream whose final chunk carries a
+/// top-level `usage` object is captured and normalized onto the persisted
+/// terminal row (ordinary/read/write/output tiers), with bytes forwarded
+/// unchanged.
+#[tokio::test]
+async fn streaming_chat_top_level_usage_is_normalized_onto_terminal_row() {
+    let home = temp_home("cachehit-stream-chat-usage");
+    let port = free_port().await;
+    let sse = "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+               data: {\"id\":\"x\",\"choices\":[{\"delta\":{}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\n\
+               data: [DONE]\n\n"
+        .to_string();
+    let sse_for_mock = sse.clone();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a", "stream": true})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(text, sse, "forwarded bytes must be identical to upstream");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert!(record.terminal, "the completed stream is the terminal row");
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(record.input_tokens, 8, "ordinary input is the checked remainder");
+    assert_eq!(record.cache_read_tokens, 3);
+    assert_eq!(record.cache_write_tokens, 0);
+    assert_eq!(record.output_tokens, 7);
+    assert_eq!(record.total_tokens, 18);
+
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), true, true)],
+        "a captured top-level Chat usage is persisted present and valid"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-009 / REQ-005 (RED): a Responses stream whose `response.completed` event
+/// carries a NESTED `response.usage` object must be captured and normalized
+/// onto the persisted terminal row.
+///
+/// The current accumulator only reads a top-level `usage`, so the nested
+/// object is invisible and the row is stored with `usage_present = 0` and zero
+/// tiers until Step 9 parses `response.usage`.
+#[tokio::test]
+async fn streaming_responses_nested_usage_is_normalized_onto_terminal_row() {
+    let home = temp_home("cachehit-stream-responses-usage");
+    let port = free_port().await;
+    let sse = "event: response.created\n\
+               data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n\
+               event: response.completed\n\
+               data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[],\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":3}}}}\n\n"
+        .to_string();
+    let sse_for_mock = sse.clone();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.protocol = UpstreamProtocol::Responses;
+    provider.mappings = vec![mapping("local-r", "remote-r", None)];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-r", "stream": true})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(text, sse, "forwarded bytes must be identical to upstream");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert!(record.terminal, "the completed stream is the terminal row");
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), true, true)],
+        "nested response.usage is persisted present and valid"
+    );
+    assert_eq!(
+        record.input_tokens, 8,
+        "nested response.usage input is normalized to ordinary input"
+    );
+    assert_eq!(record.cache_read_tokens, 3);
+    assert_eq!(record.cache_write_tokens, 0);
+    assert_eq!(record.output_tokens, 7);
+    assert_eq!(record.total_tokens, 18);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// REQ-005: the accumulator keeps the last valid usage object. A later
+/// non-object `usage` payload (JSON null, string or number) must never
+/// overwrite it, so the persisted terminal row keeps the earlier valid tiers.
+#[tokio::test]
+async fn streaming_chat_keeps_last_valid_usage_when_later_payload_is_not_an_object() {
+    let home = temp_home("cachehit-stream-last-valid");
+    let port = free_port().await;
+    let sse = "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\n\
+               data: {\"id\":\"x\",\"choices\":[],\"usage\":null}\n\n\
+               data: {\"id\":\"x\",\"choices\":[],\"usage\":\"not-an-object\"}\n\n\
+               data: {\"id\":\"x\",\"choices\":[],\"usage\":123}\n\n\
+               data: [DONE]\n\n"
+        .to_string();
+    let sse_for_mock = sse.clone();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a", "stream": true})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(text, sse, "forwarded bytes must be identical to upstream");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert!(record.terminal, "the completed stream is the terminal row");
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(
+        (
+            record.input_tokens,
+            record.cache_read_tokens,
+            record.cache_write_tokens,
+            record.output_tokens,
+        ),
+        (8, 3, 0, 7),
+        "a later non-object usage payload must not replace the last valid object"
+    );
+    assert_eq!(record.total_tokens, 18);
+
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), true, true)],
+        "the retained usage stays present and valid"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-005: a Chat streaming request that neither asks for nor
+/// receives a usage chunk forwards byte-equivalently. The upstream request body
+/// differs from the client body only by the model rewrite, gains no injected
+/// `stream_options`, the downstream SSE bytes stay identical, and the row
+/// records `usage_present = false` instead of fabricated zero usage.
+#[tokio::test]
+async fn streaming_chat_without_usage_injects_no_stream_options_and_records_absent_usage() {
+    let home = temp_home("cachehit-stream-chat-no-usage");
+    let port = free_port().await;
+    let sse = "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+               data: [DONE]\n\n"
+        .to_string();
+    let sse_for_mock = sse.clone();
+    let (upstream_url, log) =
+        spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let client_body = json!({
+        "model": "local-a",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": true
+    });
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(client_body.clone()),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(text, sse, "the downstream SSE bytes must be unchanged");
+
+    let captured = log.lock().expect("mock log").clone();
+    assert_eq!(captured.len(), 1);
+    let sent: Value = serde_json::from_slice(&captured[0].body).expect("forwarded body is JSON");
+    assert!(
+        sent.get("stream_options").is_none(),
+        "the gateway must never inject stream_options: {sent}"
+    );
+    assert_eq!(sent["model"], "remote-a");
+    let mut sent_rest = sent.clone();
+    sent_rest.as_object_mut().unwrap().remove("model");
+    let mut expected_rest = client_body.clone();
+    expected_rest.as_object_mut().unwrap().remove("model");
+    assert_eq!(
+        sent_rest, expected_rest,
+        "only the model may change on /v1/chat/completions; no field may be added or dropped"
+    );
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert!(record.terminal, "the completed stream is the terminal row");
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(record.total_tokens, 0, "no usage chunk means no fabricated tokens");
+
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), false, false)],
+        "missing usage is persisted as not present, not as zero-token usage"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-005: a Responses stream that never emits `response.usage`
+/// behaves like missing Chat usage: the bytes are forwarded untouched and the
+/// row records `usage_present = false`.
+#[tokio::test]
+async fn streaming_responses_without_usage_is_forwarded_untouched_and_records_absent_usage() {
+    let home = temp_home("cachehit-stream-responses-no-usage");
+    let port = free_port().await;
+    let sse = "event: response.created\n\
+               data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-2\"}}\n\n\
+               event: response.completed\n\
+               data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-2\",\"output\":[]}}\n\n"
+        .to_string();
+    let sse_for_mock = sse.clone();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.protocol = UpstreamProtocol::Responses;
+    provider.mappings = vec![mapping("local-r", "remote-r", None)];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-r", "stream": true})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(text, sse, "the downstream SSE bytes must be unchanged");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert!(record.terminal, "the completed stream is the terminal row");
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(record.total_tokens, 0);
+
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), false, false)],
+        "a Responses stream without response.usage is persisted as not present"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
 }
 
 

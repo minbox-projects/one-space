@@ -10,7 +10,7 @@ Status: implemented
 
 ## Decision
 
-仅当以下三条同时成立时请求才算未定价：存储的 `amount` 为 `NULL`（没有匹配价格行）、`upstream_model` 非空（请求到达了上游模型），且请求会产生用量成本——`result = 'success'`，或记录的 `total_tokens > 0`。相同的谓词 `amount IS NULL AND upstream_model <> '' AND (result = 'success' OR total_tokens > 0)` 在 `src-tauri/src/api_gateway/usage_log.rs` 的两处 SQL 中一致应用：为 totals、时间分桶、按模型行与按服务商行提供数据的 `METRIC_COLUMNS` 未定价聚合，以及列出受影响模型与服务商行的 `unpriced_items` 查询。
+仅当以下三条同时成立时请求才算未定价：存储的 `amount` 为 `NULL`（没有匹配价格行）、`upstream_model` 非空（请求到达了上游模型），且请求会产生用量成本——`result = 'success'`，或记录的 `total_tokens > 0`。相同的谓词 `amount IS NULL AND upstream_model <> '' AND (result = 'success' OR total_tokens > 0)` 在 `src-tauri/src/api_gateway/usage_log.rs` 的两处 SQL 中一致应用：为 totals、时间分桶、按模型行与按服务商行提供数据的共享 `metric_columns()` 投影中的未定价聚合，以及列出受影响模型与服务商行的 `unpriced_items` 查询。
 
 口径分层是有意为之。请求数仍覆盖全部终止行，tokens 与金额仍累加各行实际记录的值，包括保留部分用量的失败；只有未定价提示收窄为真正会产生花费的行。零用量失败与无上游失败仍保留未定价行的 `None` 金额，但按 0 成本处理、不再计入未定价。行为覆盖：`usage_stats_unpriced_eligibility_requires_success_or_usage` 断言零用量失败被排除、部分用量失败被计入、零用量成功被计入；`all_candidates_failed_request_writes_one_row_per_completed_attempt` 期望未定价数为 0，因为该请求的每次尝试都是零用量失败。
 

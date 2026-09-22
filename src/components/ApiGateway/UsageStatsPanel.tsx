@@ -35,6 +35,17 @@ function formatCount(value: number): string {
   return new Intl.NumberFormat().format(value);
 }
 
+/** Render the backend-owned rate as-is; a missing (null) rate shows an em dash. */
+function formatCacheHitRate(rate: number | null): string {
+  if (rate === null) return "—";
+  return `${Math.round(rate)}%`;
+}
+
+/** Coverage is eligible requests / successful requests. */
+function formatCacheCoverage(eligible: number, successful: number): string {
+  return `${formatCount(eligible)} / ${formatCount(successful)}`;
+}
+
 const RANGE_LABEL_KEYS: Record<UsageRangeKey, string> = {
   today: "apiGatewayRangeToday",
   "7d": "apiGatewayRange7d",
@@ -96,9 +107,11 @@ function UsageAnalysisRow({
   sharePercent?: number;
 }) {
   const { t } = useTranslation();
-  const cacheBase = metrics.input_tokens + metrics.cache_read_tokens;
-  const cacheHitRate = cacheBase > 0 ? (metrics.cache_read_tokens / cacheBase) * 100 : 0;
-  const cacheHitText = metrics.request_count > 0 ? `${Math.round(cacheHitRate)}%` : "-";
+  const cacheHitText = formatCacheHitRate(metrics.cache_hit_rate_percent);
+  const coverageText = formatCacheCoverage(
+    metrics.cache_rate_eligible_count,
+    metrics.successful_request_count,
+  );
 
   return (
     <tr
@@ -143,13 +156,14 @@ function UsageAnalysisRow({
       <td
         className="px-3 py-2 text-right"
         title={
-          cacheBase > 0
-            ? `${formatGatewayTokens(metrics.cache_read_tokens)} / ${formatGatewayTokens(cacheBase)}`
+          metrics.cache_eligible_tokens > 0
+            ? `${formatGatewayTokens(metrics.cache_hit_tokens)} / ${formatGatewayTokens(metrics.cache_eligible_tokens)}`
             : undefined
         }
         data-testid={indent ? "api-gateway-usage-provider-cache-hit" : "api-gateway-usage-model-cache-hit"}
       >
-        {cacheHitText}
+        <span className="font-medium">{cacheHitText}</span>
+        <span className="ml-1 text-[10px] text-muted-foreground">{coverageText}</span>
       </td>
       <td className="px-3 py-2 text-right">{formatUsageRowAmount(metrics)}</td>
     </tr>
@@ -274,12 +288,6 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
     return items;
   }, [stats]);
 
-  const cacheHitRate = useMemo(() => {
-    if (!stats) return 0;
-    const base = stats.input_tokens + stats.cache_read_tokens;
-    return base > 0 ? (stats.cache_read_tokens / base) * 100 : 0;
-  }, [stats]);
-
   return (
     <div className="rounded-2xl border bg-card p-5" data-testid="api-gateway-usage-stats">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -392,12 +400,23 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
             >
               <div className="flex items-center justify-between text-muted-foreground">
                 <span className="text-[11px] font-medium uppercase tracking-wider">
-                  {t("apiGatewayUsageAvgCacheHit", "Avg Cache Hit")}
+                  {t("apiGatewayUsageCacheHit", "Token Cache Hit Rate")}
                 </span>
                 <Gauge className="h-3.5 w-3.5 text-muted-foreground/60 transition-colors group-hover:text-foreground" />
               </div>
-              <div className="mt-1.5 text-lg font-bold tracking-tight text-foreground">
-                {`${Math.round(cacheHitRate)}%`}
+              <div className="mt-1.5 flex items-baseline gap-1.5">
+                <span
+                  className="text-lg font-bold tracking-tight text-foreground"
+                  data-testid="api-gateway-usage-card-cache-hit-rate"
+                >
+                  {formatCacheHitRate(stats.cache_hit_rate_percent)}
+                </span>
+                <span className="text-[11px] font-medium text-muted-foreground">
+                  {formatCacheCoverage(
+                    stats.cache_rate_eligible_count,
+                    stats.successful_request_count,
+                  )}
+                </span>
               </div>
             </div>
             <div
@@ -763,7 +782,7 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
                       {t("apiGatewayUsageOutput", "Output")}
                     </th>
                     <th className="px-3 py-2 text-right font-medium">
-                      {t("apiGatewayUsageCacheHit", "Cache hit")}
+                      {t("apiGatewayUsageCacheHit", "Token Cache Hit Rate")}
                     </th>
                     <th className="px-3 py-2 text-right font-medium">
                       {t("apiGatewayUsageCostColumn", "Cost ($)")}
