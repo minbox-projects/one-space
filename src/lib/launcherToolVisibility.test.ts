@@ -109,4 +109,25 @@ describe("launcherToolVisibility", () => {
     });
   });
 
+  it("新安装默认显示 AI Workflow 模型切换工具", () => {
+    expect(
+      readLauncherToolVisibility()["ai-workflow-model-switcher"],
+    ).toBe(true);
+    expect(
+      isLauncherToolVisible("ai-workflow-model-switcher"),
+    ).toBe(true);
+  });
+
+  it("允许显式隐藏并重新显示 AI Workflow 模型切换工具", () => {
+    setLauncherToolVisible("ai-workflow-model-switcher", false);
+    expect(
+      isLauncherToolVisible("ai-workflow-model-switcher"),
+    ).toBe(false);
+
+    setLauncherToolVisible("ai-workflow-model-switcher", true);
+    expect(
+      isLauncherToolVisible("ai-workflow-model-switcher"),
+    ).toBe(true);
+  });
 });
+

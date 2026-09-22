@@ -12,6 +12,7 @@ import { Md5EncryptionTool } from "./Md5EncryptionTool";
 import { ShortLinkTool } from "./ShortLinkTool";
 import { FileSharingTool } from "./FileSharingTool";
 import { JttDataParserTool } from "./JttDataParserTool";
+import { AiWorkflowModelSwitcher } from "./AiWorkflowModelSwitcher";
 import { Switch } from "./ui/switch";
 import type { JttParserTab, MoreToolsSection } from "@/lib/navigation";
 import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
@@ -163,6 +164,15 @@ export function MoreToolsHub({
             : "Parse JT/T 808, 809, 1078 packets and convert hex locally.",
         launcherToolId: "jtt-data-parser" as LauncherToolId,
       },
+      {
+        id: "ai-workflow-model-switcher" as const,
+        label: t("aiWorkflowModelSwitcher", "AI Workflow Model Switcher"),
+        description: t(
+          "aiWorkflowModelSwitcherDesc",
+          "Manage and switch AI agent models and reasoning effort across tools.",
+        ),
+        launcherToolId: "ai-workflow-model-switcher" as LauncherToolId,
+      },
     ],
     [i18n.language, t],
   );
@@ -234,6 +244,9 @@ export function MoreToolsHub({
               key={jttParserTab ?? "jt808"}
               initialTab={jttParserTab}
             />
+          ) : null}
+          {activeTool === "ai-workflow-model-switcher" ? (
+            <AiWorkflowModelSwitcher />
           ) : null}
         </div>
       </div>

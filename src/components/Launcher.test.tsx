@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Launcher } from "@/components/Launcher";
@@ -409,7 +409,20 @@ describe("Launcher", () => {
     expect(screen.getByText("Current Launcher")).toBeInTheDocument();
   });
 
+  it("默认渲染 AI Workflow 模型切换内部工具卡片", async () => {
+    renderWithProviders(<Launcher />);
+
+    const card = await screen.findByTestId(
+      "launcher-internal-tool-card-quick-ai-workflow-model-switcher",
+    );
+    expect(card).toBeInTheDocument();
+    expect(
+      within(card).getByText(/AI Workflow 模型切换|AI Workflow Model Switcher/),
+    ).toBeInTheDocument();
+  });
+
   describe("内部工具卡片拖拽整理", () => {
+
     afterEach(() => {
       vi.useRealTimers();
     });
@@ -502,6 +515,7 @@ describe("Launcher", () => {
         "quick-short-link",
         "quick-file-sharing",
         "quick-jtt-data-parser",
+        "quick-ai-workflow-model-switcher",
       ]);
 
       fireEvent.pointerUp(window, { pointerId: 1 });
