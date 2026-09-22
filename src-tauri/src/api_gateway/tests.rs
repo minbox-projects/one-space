@@ -20859,4 +20859,367 @@ fn cachehit_invalid_usage_stays_success_only_without_impossible_rates() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+// ---------------------------------------------------------------------------
+// Plan 20260921-api-gateway-cache-hit-accounting Step 8 (RED): streaming usage
+// locations and no-mutation forwarding.
+//
+// Every case drives a real streaming request through the loopback mock
+// upstream and asserts the persisted terminal row through `all_records()` plus
+// the raw migrated `usage_present` / `usage_semantics` / `cache_accounting_valid`
+// columns, which `UsageLogRecord` intentionally does not expose. The nested
+// Responses `response.completed.response.usage` case is the RED behavior: the
+// current accumulator reads only a top-level `usage`, so that row is stored
+// with `usage_present = 0` and zero tokens until Step 9 parses the nested
+// object. The no-`stream_options`-injection / missing-usage cases already pass
+// and stay as regression guards.
+// ---------------------------------------------------------------------------
+
+/// Raw `(usage_semantics, usage_present, cache_accounting_valid)` of every
+/// stored row, newest first, read straight from the migrated database file.
+///
+/// `UsageLogRecord` deliberately omits these classification columns, so the
+/// streaming slice cannot infer presence from token values and must read them
+/// at the SQLite boundary after the production migration has run.
+fn raw_row_accounting(db_path: &Path) -> Vec<(String, bool, bool)> {
+    let connection = rusqlite::Connection::open(db_path).expect("open raw usage db");
+    let mut statement = connection
+        .prepare(
+            "SELECT usage_semantics, usage_present, cache_accounting_valid \
+             FROM usage_logs ORDER BY id DESC",
+        )
+        .expect("prepare accounting select");
+    statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)? != 0,
+                row.get::<_, i64>(2)? != 0,
+            ))
+        })
+        .expect("run accounting select")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("collect accounting rows")
+}
+
+/// Path of the default usage database for the currently isolated `HOME`.
+fn usage_db_path() -> PathBuf {
+    crate::config::get_app_dir()
+        .expect("app dir")
+        .join(super::USAGE_DB_FILE)
+}
+
+/// AC-009 / REQ-005: a Chat Completions stream whose final chunk carries a
+/// top-level `usage` object is captured and normalized onto the persisted
+/// terminal row (ordinary/read/write/output tiers), with bytes forwarded
+/// unchanged.
+#[tokio::test]
+async fn streaming_chat_top_level_usage_is_normalized_onto_terminal_row() {
+    let home = temp_home("cachehit-stream-chat-usage");
+    let port = free_port().await;
+    let sse = "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+               data: {\"id\":\"x\",\"choices\":[{\"delta\":{}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\n\
+               data: [DONE]\n\n"
+        .to_string();
+    let sse_for_mock = sse.clone();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a", "stream": true})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(text, sse, "forwarded bytes must be identical to upstream");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert!(record.terminal, "the completed stream is the terminal row");
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(record.input_tokens, 8, "ordinary input is the checked remainder");
+    assert_eq!(record.cache_read_tokens, 3);
+    assert_eq!(record.cache_write_tokens, 0);
+    assert_eq!(record.output_tokens, 7);
+    assert_eq!(record.total_tokens, 18);
+
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), true, true)],
+        "a captured top-level Chat usage is persisted present and valid"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-009 / REQ-005 (RED): a Responses stream whose `response.completed` event
+/// carries a NESTED `response.usage` object must be captured and normalized
+/// onto the persisted terminal row.
+///
+/// The current accumulator only reads a top-level `usage`, so the nested
+/// object is invisible and the row is stored with `usage_present = 0` and zero
+/// tiers until Step 9 parses `response.usage`.
+#[tokio::test]
+async fn streaming_responses_nested_usage_is_normalized_onto_terminal_row() {
+    let home = temp_home("cachehit-stream-responses-usage");
+    let port = free_port().await;
+    let sse = "event: response.created\n\
+               data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n\
+               event: response.completed\n\
+               data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[],\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":3}}}}\n\n"
+        .to_string();
+    let sse_for_mock = sse.clone();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.protocol = UpstreamProtocol::Responses;
+    provider.mappings = vec![mapping("local-r", "remote-r", None)];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-r", "stream": true})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(text, sse, "forwarded bytes must be identical to upstream");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert!(record.terminal, "the completed stream is the terminal row");
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), true, true)],
+        "nested response.usage is persisted present and valid"
+    );
+    assert_eq!(
+        record.input_tokens, 8,
+        "nested response.usage input is normalized to ordinary input"
+    );
+    assert_eq!(record.cache_read_tokens, 3);
+    assert_eq!(record.cache_write_tokens, 0);
+    assert_eq!(record.output_tokens, 7);
+    assert_eq!(record.total_tokens, 18);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// REQ-005: the accumulator keeps the last valid usage object. A later
+/// non-object `usage` payload (JSON null, string or number) must never
+/// overwrite it, so the persisted terminal row keeps the earlier valid tiers.
+#[tokio::test]
+async fn streaming_chat_keeps_last_valid_usage_when_later_payload_is_not_an_object() {
+    let home = temp_home("cachehit-stream-last-valid");
+    let port = free_port().await;
+    let sse = "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\n\
+               data: {\"id\":\"x\",\"choices\":[],\"usage\":null}\n\n\
+               data: {\"id\":\"x\",\"choices\":[],\"usage\":\"not-an-object\"}\n\n\
+               data: {\"id\":\"x\",\"choices\":[],\"usage\":123}\n\n\
+               data: [DONE]\n\n"
+        .to_string();
+    let sse_for_mock = sse.clone();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a", "stream": true})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(text, sse, "forwarded bytes must be identical to upstream");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert!(record.terminal, "the completed stream is the terminal row");
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(
+        (
+            record.input_tokens,
+            record.cache_read_tokens,
+            record.cache_write_tokens,
+            record.output_tokens,
+        ),
+        (8, 3, 0, 7),
+        "a later non-object usage payload must not replace the last valid object"
+    );
+    assert_eq!(record.total_tokens, 18);
+
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), true, true)],
+        "the retained usage stays present and valid"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-005: a Chat streaming request that neither asks for nor
+/// receives a usage chunk forwards byte-equivalently. The upstream request body
+/// differs from the client body only by the model rewrite, gains no injected
+/// `stream_options`, the downstream SSE bytes stay identical, and the row
+/// records `usage_present = false` instead of fabricated zero usage.
+#[tokio::test]
+async fn streaming_chat_without_usage_injects_no_stream_options_and_records_absent_usage() {
+    let home = temp_home("cachehit-stream-chat-no-usage");
+    let port = free_port().await;
+    let sse = "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+               data: [DONE]\n\n"
+        .to_string();
+    let sse_for_mock = sse.clone();
+    let (upstream_url, log) =
+        spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let client_body = json!({
+        "model": "local-a",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": true
+    });
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(client_body.clone()),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(text, sse, "the downstream SSE bytes must be unchanged");
+
+    let captured = log.lock().expect("mock log").clone();
+    assert_eq!(captured.len(), 1);
+    let sent: Value = serde_json::from_slice(&captured[0].body).expect("forwarded body is JSON");
+    assert!(
+        sent.get("stream_options").is_none(),
+        "the gateway must never inject stream_options: {sent}"
+    );
+    assert_eq!(sent["model"], "remote-a");
+    let mut sent_rest = sent.clone();
+    sent_rest.as_object_mut().unwrap().remove("model");
+    let mut expected_rest = client_body.clone();
+    expected_rest.as_object_mut().unwrap().remove("model");
+    assert_eq!(
+        sent_rest, expected_rest,
+        "only the model may change on /v1/chat/completions; no field may be added or dropped"
+    );
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert!(record.terminal, "the completed stream is the terminal row");
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(record.total_tokens, 0, "no usage chunk means no fabricated tokens");
+
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), false, false)],
+        "missing usage is persisted as not present, not as zero-token usage"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-010 / REQ-005: a Responses stream that never emits `response.usage`
+/// behaves like missing Chat usage: the bytes are forwarded untouched and the
+/// row records `usage_present = false`.
+#[tokio::test]
+async fn streaming_responses_without_usage_is_forwarded_untouched_and_records_absent_usage() {
+    let home = temp_home("cachehit-stream-responses-no-usage");
+    let port = free_port().await;
+    let sse = "event: response.created\n\
+               data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-2\"}}\n\n\
+               event: response.completed\n\
+               data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-2\",\"output\":[]}}\n\n"
+        .to_string();
+    let sse_for_mock = sse.clone();
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Stream(sse_for_mock.clone())).await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.protocol = UpstreamProtocol::Responses;
+    provider.mappings = vec![mapping("local-r", "remote-r", None)];
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-r", "stream": true})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(text, sse, "the downstream SSE bytes must be unchanged");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert!(record.terminal, "the completed stream is the terminal row");
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(record.total_tokens, 0);
+
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), false, false)],
+        "a Responses stream without response.usage is persisted as not present"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
 

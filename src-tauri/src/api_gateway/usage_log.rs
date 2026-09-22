@@ -614,8 +614,14 @@ fn starts_with_ignore_ascii_case(bytes: &[u8], start: usize, word: &[u8]) -> boo
             .all(|(byte, expected)| byte.eq_ignore_ascii_case(expected))
 }
 
-/// Read-only SSE accumulator that extracts the last `usage` object from a
+/// Read-only SSE accumulator that extracts the last valid `usage` object from a
 /// forwarded stream without touching the bytes written to the caller.
+///
+/// Both locations are recognized: Chat Completions carries `usage` at the event
+/// top level, while Responses carries it nested under the completed response
+/// (`response.completed` -> `response.usage`). Only a JSON object replaces the
+/// last accumulated object, so a later `null`, string or number payload can
+/// never overwrite it.
 #[derive(Default)]
 pub(in crate::api_gateway) struct SseUsageAccumulator {
     buffer: String,
@@ -647,7 +653,13 @@ impl SseUsageAccumulator {
         let Ok(value) = serde_json::from_str::<Value>(data) else {
             return;
         };
-        if let Some(usage) = value.get("usage") {
+        // Chat Completions reports usage at the event top level; Responses
+        // reports it nested under the response. A non-object payload (`null`,
+        // string, number) never replaces the last valid object.
+        let usage = value
+            .get("usage")
+            .or_else(|| value.get("response").and_then(|response| response.get("usage")));
+        if let Some(usage) = usage {
             if usage.is_object() {
                 self.usage = Some(canonical_usage_from_value(usage));
             }
