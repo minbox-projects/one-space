@@ -847,7 +847,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                                     </div>
                                     <div className="text-[11px] text-muted-foreground">
                                       {t("aiUsageQuotaResetTime", "Resets at {{time}}", {
-                                        time: bucket.reset_time,
+                                        time: formatQuotaResetTime(bucket.reset_time),
                                       })}
                                     </div>
                                   </div>

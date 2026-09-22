@@ -814,13 +814,32 @@ describe("AiUsageStats", () => {
       within(quotaPanel).getByText(/\b88\b%/),
     ).toBeInTheDocument();
 
-    // Reset times should be in plain text (original ISO-like strings).
+    // Reset times should be formatted in local timezone, not raw ISO strings.
+    const formatExpectedReset = (iso: string) =>
+      new Intl.DateTimeFormat(undefined, {
+        month: "numeric",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(new Date(iso));
     expect(
-      within(quotaPanel).getByText(/2026-07-08T00:00:00Z/),
+      within(quotaPanel).getByText(formatExpectedReset("2026-07-08T00:00:00Z"), {
+        exact: false,
+      }),
     ).toBeInTheDocument();
     expect(
-      within(quotaPanel).getByText(/2026-08-01T00:00:00Z/),
+      within(quotaPanel).getByText(formatExpectedReset("2026-08-01T00:00:00Z"), {
+        exact: false,
+      }),
     ).toBeInTheDocument();
+    expect(
+      within(quotaPanel).queryByText(/2026-07-08T00:00:00Z/),
+    ).not.toBeInTheDocument();
+    expect(
+      within(quotaPanel).queryByText(/2026-08-01T00:00:00Z/),
+    ).not.toBeInTheDocument();
 
     // Window bucket `window` renders its window label + remaining time.
     expect(
