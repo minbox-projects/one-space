@@ -6,7 +6,7 @@ Status: implemented
 
 ## Problem
 
-中继对每个请求都重新洗牌候选（`selection::shuffled_candidates`），因此有 N 个可用上游时某个账号被选中的概率是 1/N，同一客户端会话的连续请求会落在不同账号上，也没有账号能保持热前缀。服务商侧的提示缓存只有在同一账号持续服务同一会话前缀时才有收益，所以在纯每请求洗牌下，该前缀会在随机选中的账号上被重写而不是被复用。两个终端客户端本就发送会话标识：由于网关以 provider key `apigateway` 注册、并不以 `opencode` 为前缀，OpenCode 发送 `x-session-affinity` 与 `X-Session-Id`；Codex 在当前版本发送 `session-id`，在更早版本发送 `session_id` 或 `conversation_id`——但此前没有任何选择规则使用这些头。
+中继对每个请求都重新洗牌候选（`selection::shuffled_candidates`），因此有 N 个可用上游时某个账号被选中的概率是 1/N，同一客户端会话的连续请求会落在不同账号上，也没有账号能保持热前缀。服务商侧的提示缓存只有在同一账号持续服务同一会话前缀时才有收益，所以在纯每请求洗牌下，该前缀会在随机选中的账号上被重写而不是被复用。两个终端客户端本就发送会话标识：由于网关以 provider key `gateway` 注册、并不以 `opencode` 为前缀，OpenCode 发送 `x-session-affinity` 与 `X-Session-Id`；Codex 在当前版本发送 `session-id`，在更早版本发送 `session_id` 或 `conversation_id`——但此前没有任何选择规则使用这些头。
 
 ## Decision
 

@@ -2497,7 +2497,7 @@ fn build_gateway_provider_normalizes_tool_case_to_lowercase() {
     )
     .expect("mixed-case opencode must build");
     assert_eq!(opencode["tool"], "opencode", "emitted tool must be lowercase: {opencode}");
-    assert_eq!(opencode["provider_key"], "apigateway");
+    assert_eq!(opencode["provider_key"], "gateway");
     assert_eq!(opencode["tool_config"]["npm"], "@ai-sdk/openai-compatible");
 
     let codex = build_gateway_provider(
@@ -2716,7 +2716,7 @@ fn build_gateway_provider_opencode_carries_gateway_models_and_marker() {
     assert!(value.get("active").is_none(), "must never auto-activate: {value}");
     assert!(value.get("is_active").is_none(), "must never auto-activate: {value}");
 
-    assert_eq!(value["provider_key"], "apigateway");
+    assert_eq!(value["provider_key"], "gateway");
     assert_eq!(value["tool_config"]["npm"], "@ai-sdk/openai-compatible");
     assert_eq!(
         value["tool_config"]["options"]["baseURL"],
@@ -5888,7 +5888,7 @@ async fn terminal_sync_with_seam_creates_one_gateway_provider_per_tool() {
     assert_eq!(opencode["base_url"], local_base_url.as_str());
     assert_eq!(opencode["api_key"], "local-key-123");
     assert_eq!(opencode["tool_config"]["api_gateway_gateway"], true);
-    assert_eq!(opencode["provider_key"], "apigateway");
+    assert_eq!(opencode["provider_key"], "gateway");
     assert_eq!(
         opencode["tool_config"]["options"]["baseURL"],
         local_base_url.as_str()

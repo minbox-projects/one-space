@@ -30,7 +30,7 @@ pub(in crate::api_gateway) const SUPPORTED_TERMINAL_TOOLS: [&str; 2] = ["opencod
 
 /// Display name and provider key of the managed API Gateway gateway record.
 const GATEWAY_PROVIDER_NAME: &str = "API Gateway";
-const GATEWAY_PROVIDER_KEY: &str = "apigateway";
+const GATEWAY_PROVIDER_KEY: &str = "gateway";
 /// Stable marker identifying a provider record written by API Gateway.
 const GATEWAY_MARKER_KEY: &str = "api_gateway_gateway";
 
