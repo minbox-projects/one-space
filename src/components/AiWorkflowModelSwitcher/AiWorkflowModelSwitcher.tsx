@@ -528,7 +528,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
 
       {/* 2. 方案选择与控制栏 */}
       <div className="rounded-xl border bg-card p-4 shadow-sm">
-        {/* 状态层：标题与当前激活状态 */}
+        {/* 状态层：标题与方案计数 */}
         <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-4">
           <div className="flex items-start gap-2">
             <Layers className="h-5 w-5 text-primary" />
@@ -552,49 +552,6 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
               </p>
             </div>
           </div>
-
-          {activeProfile ? (
-            <div
-              data-testid="active-profile-badge"
-              role="status"
-              aria-live="polite"
-              className="flex items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 shadow-sm"
-            >
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500 text-white">
-                <CheckCircle2 className="h-4 w-4" />
-              </div>
-              <div className="min-w-0">
-                <div className="text-[11px] font-medium uppercase tracking-wide text-emerald-600/80 dark:text-emerald-400/80">
-                  {t("aiWorkflow.activeProfile", "当前激活")}
-                </div>
-                <div
-                  title={activeProfile}
-                  className="truncate font-mono text-sm font-semibold text-emerald-700 dark:text-emerald-300"
-                >
-                  {activeProfile}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div
-              data-testid="active-profile-badge"
-              role="status"
-              aria-live="polite"
-              className="flex items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 shadow-sm"
-            >
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500 text-white">
-                <AlertTriangle className="h-4 w-4" />
-              </div>
-              <div className="min-w-0">
-                <div className="text-[11px] font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400">
-                  {t("aiWorkflow.activeProfile", "当前激活")}
-                </div>
-                <div className="truncate font-mono text-sm font-semibold text-amber-600 dark:text-amber-400">
-                  {t("aiWorkflow.noActiveProfile", "未激活任何方案")}
-                </div>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* Row A：方案芯片 */}

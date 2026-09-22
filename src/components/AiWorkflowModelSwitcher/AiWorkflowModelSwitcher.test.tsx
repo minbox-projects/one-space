@@ -127,9 +127,10 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       ).toBeInTheDocument();
 
       // 验证 onespace-api-gateway 标记为当前激活
-      const activeBadge = screen.getByTestId("active-profile-badge");
-      expect(activeBadge).toBeInTheDocument();
-      expect(activeBadge).toHaveTextContent(/onespace-api-gateway|当前激活|Active/);
+      const activeChip = screen.getByRole("button", {
+        name: /onespace-api-gateway/,
+      });
+      expect(activeChip).toHaveAttribute("data-active", "true");
 
       // 验证 9 个角色枚举完整渲染在行头中
       for (const role of SUPPORTED_ROLES) {
@@ -729,7 +730,7 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
   });
 
   describe("状态层：激活标记、选中标记与方案计数", () => {
-    it("无激活方案时 active-profile-badge 展示未激活占位文案", async () => {
+    it("无激活方案时不渲染激活卡片，且没有任何芯片带激活标记", async () => {
       invokeMock.mockImplementation(async (command: string, args?: unknown) => {
         const payload = args as Record<string, unknown> | undefined;
         if (command === "ai_workflow_list_profiles") {
@@ -750,9 +751,19 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
 
       renderWithProviders(<AiWorkflowModelSwitcher />);
 
-      const badge = await screen.findByTestId("active-profile-badge");
-      expect(badge).toHaveTextContent(/未激活任何方案|No active profile/);
-      expect(badge).toHaveTextContent(/当前激活|Active/);
+      const gatewayChip = await screen.findByRole("button", {
+        name: /onespace-api-gateway/,
+      });
+      expect(gatewayChip).toHaveAttribute("data-active", "false");
+      expect(
+        screen.getByRole("button", { name: /baibai-40/ }),
+      ).toHaveAttribute("data-active", "false");
+      expect(
+        screen.queryByTestId("active-profile-badge"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/未激活任何方案|No active profile/),
+      ).not.toBeInTheDocument();
     });
 
     it("激活与选中状态通过方案芯片的 data 属性暴露", async () => {
