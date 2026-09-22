@@ -18,7 +18,7 @@ Status: implemented
 
 空闲超过 30 分钟的绑定视为不存在，绑定表最多保存 1024 条，超出时逐出最近最少使用的一条。绑定只存在于进程内存：绝不落盘，重启后从无绑定开始，且头名列表、其优先级、两次未命中阈值、空闲过期与条目上限都是常量——`api_gateway.json` 保持 schema 不变、无需迁移。
 
-缓存收益在上线后按同一模型与上线前对比衡量：用量分析中按服务商的 Cache read 命中率与请求数占比，取上线后第一周与之前一周对比。`UsageStatsPanel.tsx` 低估 OpenAI 系服务商的命中率，因为 `prompt_tokens` 已包含缓存命中的部分，而面板计算的是 `cache_read / (input_tokens + cache_read)`；该偏差在每个上游上稳定，且本次明确不修正，因此依据是同一上游上线前后的趋势。
+缓存收益在上线后按同一模型与上线前对比衡量：用量分析中按服务商的 Cache read 命中率与请求数占比，取上线后第一周与之前一周对比。`UsageStatsPanel.tsx` 直接渲染后端持有的规范 `cache_hit_rate_percent`，因此显示的命中率是后端按 token 加权的结果，而不是前端估算；在该衡量口径确定时，面板仍在前端按 `cache_read / (input_tokens + cache_read)` 计算并低估 OpenAI 系服务商的命中率（其 `prompt_tokens` 已包含缓存命中的部分），该历史偏差在每个上游上稳定，因此依据仍是同一上游上线前后的趋势。
 
 ## Alternatives considered
 

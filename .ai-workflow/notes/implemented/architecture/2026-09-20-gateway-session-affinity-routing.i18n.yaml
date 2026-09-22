@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-20-gateway-session-affinity-routing.md
-2026-09-20-gateway-session-affinity-routing.md: 70a7a5f5a67aaedcbdf7bf627224e70b0f963d42
-2026-09-20-gateway-session-affinity-routing.zh.md: 95019cc02408e28bc091adf81ffb32d30ca89f55
+2026-09-20-gateway-session-affinity-routing.md: 799c4a51dc4c1fb41260910847d61b7f1dca4308
+2026-09-20-gateway-session-affinity-routing.zh.md: 294d0cb975fb90cf7bb5ed7cf9b372f363508b88

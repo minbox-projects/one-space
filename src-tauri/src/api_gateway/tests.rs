@@ -8,7 +8,7 @@ use super::selection::{
 };
 use super::storage::{config_path, resolve_default_key_id};
 use super::{
-    compute_cost, compute_cost_at_time, extract_upstream_error_text, is_off_peak, match_price_for_provider, normalize_retention_days, resolve_range, usage_tokens_from_value,
+    canonical_usage_from_value, compute_cost, compute_cost_at_time, extract_upstream_error_text, is_off_peak, match_price_for_provider, normalize_retention_days, resolve_range, usage_tokens_from_value,
     sanitize_error_text, validate_retention_days, GatewayConfig, GatewayKey, GatewayUpstreamProvider, LogFilter,
     ModelMapping, ModelPrice, OffPeakPrice, SseUsageAccumulator, TerminalSyncRecord, TimeRange, UpstreamProtocol,
     UsageLogRecord, UsageLogStore, UsageResult, UsageTokens, DEFAULT_USAGE_RETENTION_DAYS,
@@ -10149,6 +10149,11 @@ fn canonical_anthropic_split_keeps_top_level_input_as_ordinary() {
     let mapped = usage_tokens_from_value(&usage);
     assert_eq!(mapped, tokens(10, 80, 10, 5));
     assert_eq!(mapped.total(), 105, "same canonical totals as AC-001");
+    // AC-012 boundary: the compatible Anthropic split stays valid.
+    assert!(
+        canonical_usage_from_value(&usage).valid,
+        "the two-tier Anthropic split is a valid canonical shape"
+    );
 }
 
 /// AC-001/AC-002 / REQ-001: mixed compatible write. Nested cache read is
@@ -10225,6 +10230,18 @@ fn canonical_conflicting_cache_read_shapes_are_rejected() {
         "conflicting nested + top-level cache read falls back to reported input with no cache tiers"
     );
     assert_eq!(mapped.total(), 105);
+    // AC-012: the parser classifies the shape itself as invalid, so the store
+    // layer can persist `cache_accounting_valid = false` and keep the row out
+    // of the cache numerator/denominator.
+    let classified = canonical_usage_from_value(&usage);
+    assert!(
+        !classified.valid,
+        "a conflicting nested + top-level cache read must be marked invalid"
+    );
+    assert_eq!(
+        classified.tokens, mapped,
+        "the invalid classification keeps the same conservative fallback tokens"
+    );
 }
 
 /// AC-012 / REQ-001: nested OpenAI cache components exceeding the reported
@@ -10246,6 +10263,17 @@ fn canonical_illegal_decomposition_never_yields_negative_ordinary() {
         "an illegal nested decomposition falls back to reported input with no cache tiers"
     );
     assert_eq!(mapped.total(), 15);
+    // AC-012: an illegal decomposition is classified invalid, never a valid
+    // negative or zero-ordinary split.
+    let classified = canonical_usage_from_value(&usage);
+    assert!(
+        !classified.valid,
+        "nested cache components exceeding the reported input must be marked invalid"
+    );
+    assert_eq!(
+        classified.tokens, mapped,
+        "the invalid classification keeps the same conservative fallback tokens"
+    );
 }
 
 /// AC-005 / REQ-001: with configured ordinary-input, cache-read, cache-write
@@ -10262,6 +10290,12 @@ fn canonical_openai_record_is_priced_exactly_once_per_tier() {
     let mapped = usage_tokens_from_value(&usage);
     assert_eq!(mapped, tokens(10, 80, 10, 5));
     assert_eq!(mapped.total(), 105);
+    // AC-012 boundary: the inclusive OpenAI shape with nested cache tiers is
+    // a valid canonical decomposition.
+    assert!(
+        canonical_usage_from_value(&usage).valid,
+        "the canonical OpenAI inclusive shape is valid"
+    );
 
     let price = ModelPrice {
         provider_id: Some("p1".to_string()),
@@ -10897,6 +10931,14 @@ async fn usage_log_records_successful_non_streaming_forward_and_privacy() {
     assert!(!serialized.contains("local-key"));
     assert!(!serialized.contains("upstream-secret"));
 
+    // REQ-004: the persisted classification columns are asserted at the raw
+    // SQLite boundary (UsageLogRecord intentionally omits them).
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), true, true)],
+        "a canonical non-streaming success stores usage_semantics=canonical_v1, usage_present=1, cache_accounting_valid=1"
+    );
+
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
 }
@@ -10938,6 +10980,14 @@ async fn usage_log_records_zero_tokens_when_upstream_omits_usage() {
     assert_eq!(record.result, UsageResult::Success);
     assert_eq!(record.total_tokens, 0);
     assert_eq!(record.amount, Some(0.0), "priced model with zero tokens costs 0");
+
+    // REQ-004: canonical semantics with no upstream usage object is present=0,
+    // valid=0, so the row can never enter the cache numerator/denominator.
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), false, false)],
+        "an omitted upstream usage stores usage_semantics=canonical_v1, usage_present=0, cache_accounting_valid=0"
+    );
 
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
@@ -20301,12 +20351,12 @@ fn cachehit_storage_migration_adds_semantics_columns_idempotently_and_preserves_
     let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
     let payload = serde_json::to_value(&stats).expect("serialize stats");
     assert_eq!(
-        payload["totals"]["cache_hit_tokens"],
+        payload["cache_hit_tokens"],
         json!(80),
         "only the new canonical row contributes to the hit numerator"
     );
     assert_eq!(
-        payload["totals"]["cache_eligible_tokens"],
+        payload["cache_eligible_tokens"],
         json!(100),
         "only the new canonical row contributes to the eligible denominator"
     );
@@ -20442,22 +20492,22 @@ fn cachehit_storage_coverage_counts_only_valid_positive_denominator_success() {
     let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
     let payload = serde_json::to_value(&stats).expect("serialize stats");
     assert_eq!(
-        payload["totals"]["successful_request_count"],
+        payload["successful_request_count"],
         json!(5),
         "all five in-range success terminal rows are coverage candidates"
     );
     assert_eq!(
-        payload["totals"]["cache_rate_eligible_count"],
+        payload["cache_rate_eligible_count"],
         json!(1),
         "only the valid positive-denominator row is eligible"
     );
     assert_eq!(
-        payload["totals"]["cache_hit_tokens"],
+        payload["cache_hit_tokens"],
         json!(80),
         "hit numerator comes only from the valid row"
     );
     assert_eq!(
-        payload["totals"]["cache_eligible_tokens"],
+        payload["cache_eligible_tokens"],
         json!(100),
         "eligible denominator is ordinary + read + write of the valid row"
     );
@@ -20514,15 +20564,15 @@ fn cachehit_metrics_expose_five_additive_fields_at_every_level() {
     ];
     for field in required {
         assert!(
-            payload["totals"].get(field).is_some(),
+            payload.get(field).is_some(),
             "totals must always serialize {field}: {payload}"
         );
     }
     // Existing fields keep names/types at the same boundary.
-    assert!(payload["totals"].get("request_count").is_some());
-    assert!(payload["totals"].get("total_tokens").is_some());
-    assert!(payload["totals"].get("amount").is_some());
-    assert!(payload["totals"].get("unpriced_count").is_some());
+    assert!(payload.get("request_count").is_some());
+    assert!(payload.get("total_tokens").is_some());
+    assert!(payload.get("amount").is_some());
+    assert!(payload.get("unpriced_count").is_some());
 
     let buckets = payload["buckets"].as_array().expect("buckets array");
     assert!(!buckets.is_empty(), "fixture must produce a bucket");
@@ -20597,11 +20647,11 @@ fn cachehit_rate_null_vs_zero_distinguishes_missing_from_uncached() {
         serde_json::to_value(&zero.usage_stats(&TimeRange::default(), false).unwrap())
             .expect("serialize zero-denominator stats");
     assert!(
-        zero_payload["totals"]["cache_hit_rate_percent"].is_null(),
+        zero_payload["cache_hit_rate_percent"].is_null(),
         "zero denominator must be null, not 0%: {zero_payload}"
     );
-    assert_eq!(zero_payload["totals"]["successful_request_count"], json!(1));
-    assert_eq!(zero_payload["totals"]["cache_rate_eligible_count"], json!(0));
+    assert_eq!(zero_payload["successful_request_count"], json!(1));
+    assert_eq!(zero_payload["cache_rate_eligible_count"], json!(0));
     let _ = fs::remove_dir_all(&dir_zero);
 
     // Missing usage (no tokens at all) is also null, not 0%.
@@ -20626,11 +20676,11 @@ fn cachehit_rate_null_vs_zero_distinguishes_missing_from_uncached() {
         serde_json::to_value(&missing.usage_stats(&TimeRange::default(), false).unwrap())
             .expect("serialize missing-usage stats");
     assert!(
-        missing_payload["totals"]["cache_hit_rate_percent"].is_null(),
+        missing_payload["cache_hit_rate_percent"].is_null(),
         "missing usage must be null, not 0%: {missing_payload}"
     );
-    assert_eq!(missing_payload["totals"]["successful_request_count"], json!(1));
-    assert_eq!(missing_payload["totals"]["cache_rate_eligible_count"], json!(0));
+    assert_eq!(missing_payload["successful_request_count"], json!(1));
+    assert_eq!(missing_payload["cache_rate_eligible_count"], json!(0));
     let _ = fs::remove_dir_all(&dir_missing);
 
     // Legitimate uncached canonical request: positive ordinary input, zero
@@ -20655,14 +20705,14 @@ fn cachehit_rate_null_vs_zero_distinguishes_missing_from_uncached() {
         serde_json::to_value(&uncached.usage_stats(&TimeRange::default(), false).unwrap())
             .expect("serialize uncached stats");
     assert_eq!(
-        uncached_payload["totals"]["cache_hit_rate_percent"],
+        uncached_payload["cache_hit_rate_percent"],
         json!(0.0),
         "a valid uncached request with positive ordinary input is 0.0, not null: {uncached_payload}"
     );
-    assert_eq!(uncached_payload["totals"]["successful_request_count"], json!(1));
-    assert_eq!(uncached_payload["totals"]["cache_rate_eligible_count"], json!(1));
-    assert_eq!(uncached_payload["totals"]["cache_hit_tokens"], json!(0));
-    assert_eq!(uncached_payload["totals"]["cache_eligible_tokens"], json!(10));
+    assert_eq!(uncached_payload["successful_request_count"], json!(1));
+    assert_eq!(uncached_payload["cache_rate_eligible_count"], json!(1));
+    assert_eq!(uncached_payload["cache_hit_tokens"], json!(0));
+    assert_eq!(uncached_payload["cache_eligible_tokens"], json!(10));
     let _ = fs::remove_dir_all(&dir_uncached);
 }
 
@@ -20689,13 +20739,13 @@ fn cachehit_denominator_includes_cache_write_and_numerator_is_cache_read() {
     let payload =
         serde_json::to_value(&store.usage_stats(&TimeRange::default(), false).unwrap())
             .expect("serialize stats");
-    assert_eq!(payload["totals"]["cache_hit_tokens"], json!(80));
+    assert_eq!(payload["cache_hit_tokens"], json!(80));
     assert_eq!(
-        payload["totals"]["cache_eligible_tokens"],
+        payload["cache_eligible_tokens"],
         json!(100),
         "denominator must include cache write: 10 + 80 + 10"
     );
-    assert_eq!(payload["totals"]["cache_hit_rate_percent"], json!(80.0));
+    assert_eq!(payload["cache_hit_rate_percent"], json!(80.0));
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -20747,9 +20797,9 @@ fn cachehit_same_model_cross_provider_aggregates_by_token_weight_not_mean() {
         serde_json::to_value(&store.usage_stats(&TimeRange::default(), false).unwrap())
             .expect("serialize stats");
     // Totals sum first: 160 / 200 = 80%.
-    assert_eq!(payload["totals"]["cache_hit_tokens"], json!(160));
-    assert_eq!(payload["totals"]["cache_eligible_tokens"], json!(200));
-    assert_eq!(payload["totals"]["cache_hit_rate_percent"], json!(80.0));
+    assert_eq!(payload["cache_hit_tokens"], json!(160));
+    assert_eq!(payload["cache_eligible_tokens"], json!(200));
+    assert_eq!(payload["cache_hit_rate_percent"], json!(80.0));
 
     let models = payload["models"].as_array().expect("models array");
     let shared = models
@@ -20780,6 +20830,104 @@ fn cachehit_same_model_cross_provider_aggregates_by_token_weight_not_mean() {
     assert!(
         ids.contains(&"p-anthropic"),
         "Anthropic provider row kept: {ids:?}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-004 / REQ-003: token weighting under UNEQUAL per-provider rates and
+/// UNEQUAL token volumes. Provider A is 90/100 = 90% and provider B is
+/// 50/300 ≈ 16.67%; the combined model and totals must be the summed
+/// numerator/denominator 140/400 = 35%, never the arithmetic mean ≈ 53.33%.
+#[test]
+fn cachehit_cross_provider_unequal_rates_use_token_weighting_not_arithmetic_mean() {
+    let (dir, store) = usage_store("cachehit-cross-provider-unequal");
+    let base = rfc3339_millis("2026-09-15T10:00:00+08:00");
+    // Provider A: ordinary 10 + read 90 = denominator 100 -> 90%.
+    store
+        .append(
+            &sample_record(
+                base,
+                "local-shared",
+                "remote-a",
+                "p-a",
+                "Provider A",
+                UsageResult::Success,
+                Some(0.5),
+                tokens(10, 90, 0, 5),
+            ),
+            365,
+        )
+        .unwrap();
+    // Provider B: ordinary 250 + read 50 = denominator 300 -> ~16.67%.
+    store
+        .append(
+            &sample_record(
+                base + 1_000,
+                "local-shared",
+                "remote-b",
+                "p-b",
+                "Provider B",
+                UsageResult::Success,
+                Some(0.5),
+                tokens(250, 50, 0, 5),
+            ),
+            365,
+        )
+        .unwrap();
+
+    let payload =
+        serde_json::to_value(&store.usage_stats(&TimeRange::default(), false).unwrap())
+            .expect("serialize stats");
+    // Totals: summed numerator/denominator, 140 / 400 = 35%.
+    assert_eq!(payload["cache_hit_tokens"], json!(140));
+    assert_eq!(payload["cache_eligible_tokens"], json!(400));
+    assert_eq!(
+        payload["cache_hit_rate_percent"],
+        json!(35.0),
+        "totals must be token-weighted 35%, not the arithmetic mean 53.33%"
+    );
+
+    let models = payload["models"].as_array().expect("models array");
+    let shared = models
+        .iter()
+        .find(|row| row["local_model"] == json!("local-shared"))
+        .expect("combined model row");
+    assert_eq!(shared["cache_hit_tokens"], json!(140));
+    assert_eq!(shared["cache_eligible_tokens"], json!(400));
+    let combined_rate = shared["cache_hit_rate_percent"]
+        .as_f64()
+        .expect("combined model rate");
+    assert!(
+        (combined_rate - 35.0).abs() < 1e-9,
+        "the combined model row must be token-weighted 35%, got {combined_rate}"
+    );
+    assert!(
+        (combined_rate - 53.333_333).abs() > 1.0,
+        "the combined model row must not be the arithmetic mean of 90% and 16.67%, got {combined_rate}"
+    );
+
+    let providers = shared["providers"].as_array().expect("provider rows");
+    assert_eq!(providers.len(), 2, "provider ids remain separated");
+    let provider_a = providers
+        .iter()
+        .find(|row| row["provider_id"] == json!("p-a"))
+        .expect("provider A row");
+    assert_eq!(provider_a["cache_hit_tokens"], json!(90));
+    assert_eq!(provider_a["cache_eligible_tokens"], json!(100));
+    assert!(
+        (provider_a["cache_hit_rate_percent"].as_f64().unwrap() - 90.0).abs() < 1e-9,
+        "provider A keeps its own 90%: {provider_a}"
+    );
+    let provider_b = providers
+        .iter()
+        .find(|row| row["provider_id"] == json!("p-b"))
+        .expect("provider B row");
+    assert_eq!(provider_b["cache_hit_tokens"], json!(50));
+    assert_eq!(provider_b["cache_eligible_tokens"], json!(300));
+    let expected_b = 50.0 / 300.0 * 100.0;
+    assert!(
+        (provider_b["cache_hit_rate_percent"].as_f64().unwrap() - expected_b).abs() < 1e-9,
+        "provider B keeps its own {expected_b}%: {provider_b}"
     );
     let _ = fs::remove_dir_all(&dir);
 }
@@ -20837,26 +20985,108 @@ fn cachehit_invalid_usage_stays_success_only_without_impossible_rates() {
         serde_json::to_value(&store.usage_stats(&TimeRange::default(), false).unwrap())
             .expect("serialize stats");
     assert_eq!(
-        payload["totals"]["successful_request_count"],
+        payload["successful_request_count"],
         json!(2),
         "the invalid row is still a successful coverage candidate"
     );
     assert_eq!(
-        payload["totals"]["cache_rate_eligible_count"],
+        payload["cache_rate_eligible_count"],
         json!(1),
         "the invalid row never becomes eligible"
     );
-    assert_eq!(payload["totals"]["cache_hit_tokens"], json!(80));
-    assert_eq!(payload["totals"]["cache_eligible_tokens"], json!(100));
-    let rate = payload["totals"]["cache_hit_rate_percent"]
+    assert_eq!(payload["cache_hit_tokens"], json!(80));
+    assert_eq!(payload["cache_eligible_tokens"], json!(100));
+    let rate = payload["cache_hit_rate_percent"]
         .as_f64()
         .expect("a valid denominator yields a numeric rate");
     assert!(
         (0.0..=100.0).contains(&rate),
         "no cache hit rate below 0% or above 100%: {rate}"
     );
-    assert_eq!(payload["totals"]["cache_hit_rate_percent"], json!(80.0));
+    assert_eq!(payload["cache_hit_rate_percent"], json!(80.0));
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-012 forwarding boundary: an invalid/conflicting upstream `usage` shape is
+/// classified invalid by the real non-streaming path, persisted with
+/// `usage_present = 1` / `cache_accounting_valid = 0`, and excluded from the
+/// cache numerator/denominator while remaining a successful row.
+#[tokio::test]
+async fn cachehit_invalid_upstream_usage_is_persisted_invalid_and_cache_ineligible() {
+    let home = temp_home("cachehit-invalid-forward");
+    let port = free_port().await;
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "chatcmpl",
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 5,
+                    "prompt_tokens_details": {"cached_tokens": 80},
+                    "cache_read_input_tokens": 80
+                }
+            }),
+        )
+    })
+    .await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, _text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1, "exactly one terminal row");
+    let record = &records[0];
+    assert_eq!(record.result, UsageResult::Success);
+    // Conservative fallback: the reported inclusive input once, no cache tiers.
+    assert_eq!(record.input_tokens, 100);
+    assert_eq!(record.cache_read_tokens, 0);
+    assert_eq!(record.cache_write_tokens, 0);
+
+    // Raw classification columns show the parser's real verdict: present but
+    // invalid.
+    assert_eq!(
+        raw_row_accounting(&usage_db_path()),
+        vec![("canonical_v1".to_string(), true, false)],
+        "an invalid upstream usage shape persists usage_present=1, cache_accounting_valid=0"
+    );
+
+    // ...and stays out of the cache numerator/denominator at the stats boundary.
+    let payload = serde_json::to_value(
+        &default_usage_store()
+            .usage_stats(&TimeRange::default(), false)
+            .expect("stats"),
+    )
+    .expect("serialize stats");
+    assert_eq!(payload["successful_request_count"], json!(1));
+    assert_eq!(payload["cache_rate_eligible_count"], json!(0));
+    assert_eq!(payload["cache_hit_tokens"], json!(0));
+    assert_eq!(payload["cache_eligible_tokens"], json!(0));
+    assert!(
+        payload["cache_hit_rate_percent"].is_null(),
+        "no eligible denominator yields a null rate: {payload}"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
 }
 
 // ---------------------------------------------------------------------------

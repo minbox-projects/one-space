@@ -23,7 +23,7 @@ Status: implemented
 
 存储以幂等、只追加的方式迁移。`PRAGMA table_info` 追加 `usage_semantics`（既有行默认为 `legacy`，新行为 `canonical_v1`）、`usage_present` 与 `cache_accounting_valid`；原有 token、total、amount 与日志字段绝不改写，legacy 行被排除在新分子与分母之外。
 
-`UsageMetrics` 在 totals、时间分桶、模型与服务商四个层级新增五个始终序列化的附加字段：`cache_hit_tokens`、`cache_eligible_tokens`、`cache_hit_rate_percent`（`0..=100` 的百分数或 `null`）、`cache_rate_eligible_count` 与 `successful_request_count`。命令名 `api_gateway_usage_stats` 及其既有字段不变，`UsageStats` 另序列化同一组值的嵌套 `totals` 镜像。分子为 `cache_read` 求和，分母为 `ordinary + cache_read + cache_write` 求和；所有层级共用同一合格谓词（终止、`result='success'`、`usage_semantics='canonical_v1'`、`usage_present=1`、`cache_accounting_valid=1`、分母大于 0），因此同一本地模型跨服务商时先分别求和分子与分母、再计算一次 token 加权命中率，而服务商明细仍按 `local_model + provider_id + provider_name` 分离。`successful_request_count` 统计范围内成功终止行，`cache_rate_eligible_count` 只统计合格行：legacy、缺失、零分母与非法成功计入成功但不合格，失败、取消与无候选行两者都不计。
+`UsageMetrics` 在 totals、时间分桶、模型与服务商四个层级新增五个始终序列化的附加字段：`cache_hit_tokens`、`cache_eligible_tokens`、`cache_hit_rate_percent`（`0..=100` 的百分数或 `null`）、`cache_rate_eligible_count` 与 `successful_request_count`。命令名 `api_gateway_usage_stats` 及其既有字段不变。分子为 `cache_read` 求和，分母为 `ordinary + cache_read + cache_write` 求和；所有层级共用同一合格谓词（终止、`result='success'`、`usage_semantics='canonical_v1'`、`usage_present=1`、`cache_accounting_valid=1`、分母大于 0），因此同一本地模型跨服务商时先分别求和分子与分母、再计算一次 token 加权命中率，而服务商明细仍按 `local_model + provider_id + provider_name` 分离。`successful_request_count` 统计范围内成功终止行，`cache_rate_eligible_count` 只统计合格行：legacy、缺失、零分母与非法成功计入成功但不合格，失败、取消与无候选行两者都不计。
 
 `SseUsageAccumulator` 同时接受 Chat Completions 顶层 `usage` 与 Responses 的 `response.completed.response.usage`，保留最后一个有效对象，并只以有界透传读取转发字节；网关绝不注入 `stream_options.include_usage`，缺失的 usage 对象记 `usage_present = false`。不修改任何请求或响应字节，`forwarding.rs` 保持不变。用量面板直接渲染后端 `cache_hit_rate_percent`（`null` 显示 `—`、真实的 `0.0` 显示 `0%`），在总览、模型与服务商层级把覆盖显示为合格数/成功数，并把指标名固定为中文“Token 缓存命中率”、英文“Token Cache Hit Rate”。
 
@@ -39,7 +39,7 @@ Status: implemented
 ## Consequences
 
 - totals、时间分桶、模型行与服务商行共用同一个后端持有的 token 加权缓存命中率，因此同一本地模型由 OpenAI 风格与 Anthropic 风格服务商服务时也能正确聚合。
-- `api_gateway_usage_stats` 保留命令名与既有字段；五个附加字段在每个层级都始终序列化，且 `UsageStats` 携带同一组值的嵌套 `totals` 镜像。
+- `api_gateway_usage_stats` 保留命令名与既有字段；五个附加字段在每个层级都始终序列化。
 - SQLite 迁移只新增列，legacy 行在日志、合计与历史花费中按存储原样可见，任何历史金额都不重算；回滚可还原解析器、聚合与界面，而附加列保持无害。
 - 覆盖率是显式的：`cache_rate_eligible_count / successful_request_count` 把有效新数据与 legacy、缺失、零分母及非法请求区分开，`null` 是唯一无数据表示，`0%` 只保留给普通输入为正的合法未缓存请求。
 - 流式转发字节与请求体保持不变；绝不注入 `stream_options.include_usage`，缺失的 usage 对象记作不存在。

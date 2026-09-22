@@ -359,6 +359,7 @@ pub(in crate::api_gateway) struct UsageAccounting {
 
 impl UsageAccounting {
     /// The classification written by the request-log contract path.
+    #[cfg(test)]
     pub(in crate::api_gateway) const CANONICAL: Self = Self {
         present: true,
         valid: true,
@@ -461,6 +462,7 @@ pub(in crate::api_gateway) fn canonical_usage_from_value(usage: &Value) -> Canon
     }
 }
 
+#[cfg(test)]
 pub(in crate::api_gateway) fn usage_tokens_from_value(usage: &Value) -> UsageTokens {
     canonical_usage_from_value(usage).tokens
 }
@@ -783,11 +785,6 @@ pub struct UsageStats {
     pub granularity: String,
     #[serde(flatten)]
     pub totals: UsageMetrics,
-    /// Additive nested mirror of [`Self::totals`], serialized under a `totals`
-    /// key while the flattened fields above stay unchanged for existing
-    /// clients. Both views always carry the same aggregation.
-    #[serde(rename = "totals", default, skip_deserializing)]
-    totals_view: UsageMetrics,
     pub buckets: Vec<UsageBucketRow>,
     pub models: Vec<UsageModelRow>,
     #[serde(default)]
@@ -1113,6 +1110,7 @@ impl UsageLogStore {
     /// Insert one record with the canonical request-log classification
     /// (`canonical_v1`, usage present and accounting valid), then permanently
     /// delete records older than the retention window (REQ-004/REQ-009).
+    #[cfg(test)]
     pub(in crate::api_gateway) fn append(
         &self,
         record: &UsageLogRecord,
@@ -1144,6 +1142,7 @@ impl UsageLogStore {
     /// order, then apply the same retention cleanup as [`Self::append`]
     /// (REQ-005). Each record carries the canonical request-log classification.
     /// An empty slice writes nothing.
+    #[cfg(test)]
     pub(in crate::api_gateway) fn append_batch(
         &self,
         records: &[UsageLogRecord],
@@ -1490,7 +1489,6 @@ impl UsageLogStore {
         Ok(UsageStats {
             granularity: if hour_buckets { "hour" } else { "day" }.to_string(),
             totals,
-            totals_view: totals,
             buckets,
             models,
             unpriced_items,
