@@ -1303,13 +1303,18 @@ async fn assert_truncated_auth_non_streaming(status: u16) {
     config.providers.extend([auth.clone(), fallback.clone()]);
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
 
+    // Health settlement merges into the latest persisted state (it never
+    // writes back a request-start snapshot), so the request inputs must exist
+    // on disk first — mirroring production, where candidates always come from
+    // the persisted configuration.
+    super::storage::write_config(&config).expect("seed relay config");
+
     let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         &[auth, fallback],
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -1406,6 +1411,12 @@ async fn assert_truncated_auth_streaming(status: u16) {
     config.providers.extend([auth.clone(), fallback.clone()]);
     let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
 
+    // Health settlement merges into the latest persisted state (it never
+    // writes back a request-start snapshot), so the request inputs must exist
+    // on disk first — mirroring production, where candidates always come from
+    // the persisted configuration.
+    super::storage::write_config(&config).expect("seed relay config");
+
     let (mut client, mut server) = tokio::io::duplex(64 * 1024);
     let mut attempts = Vec::new();
     super::runtime_http::attempt_streaming(
@@ -1414,7 +1425,6 @@ async fn assert_truncated_auth_streaming(status: u16) {
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -2242,7 +2252,6 @@ async fn streaming_switches_when_first_provider_fails_before_first_byte() {
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -2309,7 +2318,6 @@ async fn streaming_terminates_after_first_byte_without_switching() {
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -4119,7 +4127,6 @@ async fn non_json_upstream_response_is_retryable_and_switches() {
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -4165,7 +4172,6 @@ async fn return_to_client_error_is_passed_through_without_switching_or_disabling
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -4285,7 +4291,6 @@ async fn end_to_end_network_failure_falls_back_and_tries_first_candidate_once() 
         "/v1/chat/completions",
         &body,
         Some("local-model"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -4328,13 +4333,18 @@ async fn end_to_end_5xx_falls_back_and_tries_first_candidate_once() {
     config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
+    // Health settlement merges into the latest persisted state (it never
+    // writes back a request-start snapshot), so the request inputs must exist
+    // on disk first — mirroring production, where candidates always come from
+    // the persisted configuration.
+    super::storage::write_config(&config).expect("seed relay config");
+
     let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         &[a, b],
         "/v1/chat/completions",
         &body,
         Some("local-model"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -4353,7 +4363,8 @@ async fn end_to_end_5xx_falls_back_and_tries_first_candidate_once() {
     assert_eq!(attempts[1].status, 200);
     assert_eq!(attempts[1].result, UsageResult::Success);
 
-    let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+    let live = super::storage::read_config().expect("read persisted provider state");
+    let a_stored = live.providers.iter().find(|p| p.id == "a").unwrap();
     assert_eq!(a_stored.mappings[0].consecutive_failures, 1);
     assert!(!a_stored.mappings[0].auto_disabled, "a single 5xx must not disable the mapping");
 }
@@ -4380,13 +4391,18 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
         config.providers.push(b.clone());
         let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
+        // Health settlement merges into the latest persisted state (it never
+        // writes back a request-start snapshot), so the request inputs must
+        // exist on disk first — mirroring production, where candidates always
+        // come from the persisted configuration.
+        super::storage::write_config(&config).expect("seed relay config");
+
         let mut attempts = Vec::new();
         let response = super::runtime_http::attempt_non_streaming(
             &[a, b],
             "/v1/chat/completions",
             &body,
             Some("local-model"),
-            &mut config,
             &HashMap::new(),
             &mut attempts,
         )
@@ -4404,7 +4420,8 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
         assert_eq!(attempts[1].provider_id, "b");
         assert_eq!(attempts[1].status, 200);
 
-        let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+        let live = super::storage::read_config().expect("read persisted provider state");
+        let a_stored = live.providers.iter().find(|p| p.id == "a").unwrap();
         assert!(a_stored.mappings[0].auto_disabled, "status {status} must auto-disable immediately");
         assert!(
             a_stored
@@ -4417,7 +4434,8 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
             a_stored.mappings[0].disabled_reason
         );
         assert!(a_stored.mappings[0].disabled_at.is_some());
-        let b_stored = config.providers.iter().find(|p| p.id == "b").unwrap();
+        let live = super::storage::read_config().expect("read persisted provider state");
+        let b_stored = live.providers.iter().find(|p| p.id == "b").unwrap();
         assert!(!b_stored.mappings[0].auto_disabled);
         drop(home);
     }
@@ -4507,6 +4525,12 @@ async fn end_to_end_network_errors_accumulate_and_disable() {
     config.providers = vec![failed.clone(), healthy.clone()];
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
+    // Health settlement merges into the latest persisted state (it never
+    // writes back a request-start snapshot), so the request inputs must exist
+    // on disk first — mirroring production, where candidates always come from
+    // the persisted configuration.
+    super::storage::write_config(&config).expect("seed relay config");
+
     for _ in 0..3 {
         let mut attempts = Vec::new();
         let response = super::runtime_http::attempt_non_streaming(
@@ -4514,7 +4538,6 @@ async fn end_to_end_network_errors_accumulate_and_disable() {
             "/v1/chat/completions",
             &body,
             Some("local-model"),
-            &mut config,
             &HashMap::new(),
             &mut attempts,
         )
@@ -4542,6 +4565,112 @@ async fn end_to_end_network_errors_accumulate_and_disable() {
         "reason must describe the network failure: {:?}",
         a_stored.mappings[0].disabled_reason
     );
+}
+
+/// Regression: health settlement must merge into the latest persisted
+/// configuration instead of writing back a request-start snapshot. A provider
+/// saved while a (possibly long streaming/retrying) request is in flight used
+/// to silently disappear from `api_gateway.json` when that older request
+/// settled — surfacing as "a manually added provider vanishes from the list a
+/// while after saving".
+#[tokio::test]
+async fn health_settlement_preserves_providers_added_mid_request() {
+    let _home = isolated_temp_home("health-merge-preserves-concurrent-provider");
+    let (ok_url, _) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
+    let (auth_url, _) = spawn_mock_upstream(|_| {
+        MockReply::Json(401, json!({"error": {"message": "denied"}}))
+    })
+    .await;
+
+    // Phase 1: a successful request settles while a manual provider is saved
+    // concurrently. The late provider must survive and the success must still
+    // clear the serving row's counters.
+    let mut serving = upstream_provider("serving", "Serving", &ok_url, "sk", Some("remote-model"));
+    serving.mappings = vec![mapping("local-model", "remote-model", None)];
+    serving.mappings[0].consecutive_failures = 1;
+    serving.mappings[0].last_error_at = Some(7);
+    let mut config = config_with_key(0);
+    config.providers.push(serving.clone());
+    super::storage::write_config(&config).expect("seed relay config");
+
+    // Candidates are resolved before the concurrent save, exactly like a
+    // request that started before the user pressed Save.
+    let serving_candidates = vec![serving.clone()];
+    let mut late = upstream_provider(
+        "late-manual",
+        "Late Manual",
+        "https://example.invalid",
+        "sk-late",
+        Some("other-model"),
+    );
+    late.mappings = vec![mapping("late-local", "other-model", None)];
+    let mut fresh = super::storage::read_config().expect("fresh config for concurrent save");
+    fresh.providers.push(late);
+    super::storage::write_config(&fresh).expect("concurrent provider save");
+
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &serving_candidates,
+        "/v1/chat/completions",
+        &body,
+        Some("local-model"),
+        &HashMap::new(),
+        &mut attempts,
+    )
+    .await;
+    assert_eq!(response.status, 200);
+
+    let merged = super::storage::read_config().expect("read merged config");
+    assert!(
+        merged.providers.iter().any(|p| p.id == "late-manual"),
+        "a provider saved mid-request must survive success settlement"
+    );
+    let serving_merged = merged.providers.iter().find(|p| p.id == "serving").expect("serving provider");
+    assert_eq!(serving_merged.mappings[0].consecutive_failures, 0);
+    assert_eq!(serving_merged.mappings[0].last_error_at, None);
+
+    // Phase 2: same guarantee for the immediate-disable (401/403) path, which
+    // persists mid-request through `apply_failure`.
+    let mut auth = upstream_provider("auth", "Auth", &auth_url, "sk", Some("remote-model"));
+    auth.mappings = vec![mapping("local-model", "remote-model", None)];
+    let mut with_auth = super::storage::read_config().expect("read config for phase 2");
+    with_auth.providers.push(auth.clone());
+    super::storage::write_config(&with_auth).expect("seed auth provider");
+
+    let auth_candidates = vec![auth];
+    let mut late_two = upstream_provider(
+        "late-manual-2",
+        "Late Manual 2",
+        "https://example.invalid",
+        "sk-late-2",
+        Some("other-model"),
+    );
+    late_two.mappings = vec![mapping("late-local-2", "other-model", None)];
+    let mut fresh_two = super::storage::read_config().expect("fresh config for phase 2 save");
+    fresh_two.providers.push(late_two);
+    super::storage::write_config(&fresh_two).expect("concurrent provider save in phase 2");
+
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &auth_candidates,
+        "/v1/chat/completions",
+        &body,
+        Some("local-model"),
+        &HashMap::new(),
+        &mut attempts,
+    )
+    .await;
+    assert_eq!(response.status, 502, "only the auth candidate serves this model");
+
+    let merged = super::storage::read_config().expect("read merged config after 401");
+    assert!(
+        merged.providers.iter().any(|p| p.id == "late-manual-2"),
+        "a provider saved mid-request must survive immediate-disable settlement"
+    );
+    let auth_merged = merged.providers.iter().find(|p| p.id == "auth").expect("auth provider");
+    assert!(auth_merged.mappings[0].auto_disabled, "401 must still disable immediately");
 }
 
 #[tokio::test]
@@ -4576,11 +4705,19 @@ async fn end_to_end_quota_429_counts_and_disables_while_rate_limit_429_does_not(
         config.providers = vec![limited.clone(), healthy.clone()];
         let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
+        // Health settlement merges into the latest persisted state (it never
+        // writes back a request-start snapshot), so the request inputs must
+        // exist on disk first — mirroring production, where candidates always
+        // come from the persisted configuration.
+        super::storage::write_config(&config).expect("seed relay config");
+
         for _ in 0..3 {
             let mut attempts = Vec::new();
-            // Re-resolve candidates each round so an auto-disabled row drops out.
+            // Re-resolve candidates from the persisted state each round so an
+            // auto-disabled row drops out.
+            let live = super::storage::read_config().expect("read persisted provider state");
             let candidates: Vec<GatewayUpstreamProvider> = candidate_providers(
-                &config.providers,
+                &live.providers,
                 Some("local-model"),
                 super::UpstreamProtocol::ChatCompletions,
             )
@@ -4592,7 +4729,6 @@ async fn end_to_end_quota_429_counts_and_disables_while_rate_limit_429_does_not(
                 "/v1/chat/completions",
                 &body,
                 Some("local-model"),
-                &mut config,
                 &HashMap::new(),
                 &mut attempts,
             )
@@ -4600,7 +4736,8 @@ async fn end_to_end_quota_429_counts_and_disables_while_rate_limit_429_does_not(
             assert_eq!(response.status, 200, "{name}: fallback must serve");
         }
 
-        let stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+        let live = super::storage::read_config().expect("read persisted provider state");
+        let stored = live.providers.iter().find(|p| p.id == "a").unwrap();
         assert_eq!(
             stored.mappings[0].auto_disabled, should_disable,
             "{name}: auto_disabled mismatch"
@@ -4653,7 +4790,6 @@ async fn end_to_end_transient_429_and_404_switch_without_disabling() {
             "/v1/chat/completions",
             &body,
             Some("local-model"),
-            &mut config,
             &HashMap::new(),
             &mut attempts,
         )
@@ -4706,7 +4842,6 @@ async fn end_to_end_client_4xx_returns_to_caller_without_switching_or_disabling(
             "/v1/chat/completions",
             &body,
             Some("local-model"),
-            &mut config,
             &HashMap::new(),
             &mut attempts,
         )
@@ -4753,6 +4888,12 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
     config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
+    // Health settlement merges into the latest persisted state (it never
+    // writes back a request-start snapshot), so the request inputs must exist
+    // on disk first — mirroring production, where candidates always come from
+    // the persisted configuration.
+    super::storage::write_config(&config).expect("seed relay config");
+
     for attempt in 1..=3u32 {
         let mut attempts = Vec::new();
         let response = super::runtime_http::attempt_non_streaming(
@@ -4760,7 +4901,6 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
             "/v1/chat/completions",
             &body,
             Some("local-model"),
-            &mut config,
             &HashMap::new(),
             &mut attempts,
         )
@@ -4775,7 +4915,8 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
             String::from_utf8_lossy(&response.body).contains("from-b"),
             "a non-JSON 2xx must not reach the caller as success"
         );
-        let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+        let live = super::storage::read_config().expect("read persisted provider state");
+        let a_stored = live.providers.iter().find(|p| p.id == "a").unwrap();
         assert_eq!(
             a_stored.mappings[0].consecutive_failures, attempt,
             "non-JSON must count as a failure"
@@ -4803,13 +4944,18 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
     config.providers.push(a.clone());
     config.providers.push(b.clone());
 
+    // Health settlement merges into the latest persisted state (it never
+    // writes back a request-start snapshot), so the request inputs must exist
+    // on disk first — mirroring production, where candidates always come from
+    // the persisted configuration.
+    super::storage::write_config(&config).expect("seed relay config");
+
     let mut attempts = Vec::new();
     let response = super::runtime_http::attempt_non_streaming(
         &[a, b],
         "/v1/chat/completions",
         &body,
         Some("local-model"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -4827,7 +4973,8 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
     );
     assert_eq!(attempts[1].provider_id, "b");
     assert_eq!(attempts[1].result, UsageResult::Success);
-    let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+    let live = super::storage::read_config().expect("read persisted provider state");
+    let a_stored = live.providers.iter().find(|p| p.id == "a").unwrap();
     assert_eq!(a_stored.mappings[0].consecutive_failures, 1);
     assert!(!a_stored.mappings[0].auto_disabled);
     drop(home);
@@ -5235,6 +5382,12 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
     config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
+    // Health settlement merges into the latest persisted state (it never
+    // writes back a request-start snapshot), so the request inputs must exist
+    // on disk first — mirroring production, where candidates always come from
+    // the persisted configuration.
+    super::storage::write_config(&config).expect("seed relay config");
+
     let mut attempts = Vec::new();
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(15),
@@ -5243,7 +5396,6 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
             "/v1/chat/completions",
             &body,
             Some("local-model"),
-            &mut config,
             &HashMap::new(),
             &mut attempts,
         ),
@@ -5269,7 +5421,8 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
     // `streaming_all_unavailable_network_error_logs_zero_status` pin that shape.
     assert_eq!(attempts[1].provider_id, "b");
     assert_eq!(attempts[1].result, UsageResult::Success);
-    let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+    let live = super::storage::read_config().expect("read persisted provider state");
+    let a_stored = live.providers.iter().find(|p| p.id == "a").unwrap();
     assert_eq!(
         a_stored.mappings[0].consecutive_failures, 1,
         "a connection timeout must count as a failure"
@@ -5326,6 +5479,12 @@ async fn unresponsive_upstream_is_a_retryable_timeout_not_a_hang() {
     config.providers.push(b.clone());
     let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
 
+    // Health settlement merges into the latest persisted state (it never
+    // writes back a request-start snapshot), so the request inputs must exist
+    // on disk first — mirroring production, where candidates always come from
+    // the persisted configuration.
+    super::storage::write_config(&config).expect("seed relay config");
+
     let (response, _elapsed) = tokio::time::timeout(
         std::time::Duration::from_secs(75),
         attempt_non_streaming_paused(
@@ -5342,7 +5501,8 @@ async fn unresponsive_upstream_is_a_retryable_timeout_not_a_hang() {
     assert_eq!(response.status, 200, "a timed-out candidate must switch");
     assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
     assert_eq!(ok_log.lock().unwrap().len(), 1);
-    let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+    let live = super::storage::read_config().expect("read persisted provider state");
+    let a_stored = live.providers.iter().find(|p| p.id == "a").unwrap();
     assert_eq!(
         a_stored.mappings[0].consecutive_failures, 1,
         "a response timeout must count as a failure"
@@ -5450,10 +5610,13 @@ async fn streaming_2xx_non_json_is_retryable_and_switches_before_first_byte() {
     // Each provider needs a mapping for row-level health assertions.
     a.mappings.push(mapping("local", "remote-default", None));
     b.mappings.push(mapping("local", "remote-default", None));
-    // The runtime only records failures for candidates registered in the config,
-    // so the fixture must mirror the listeners it is about to drive.
+    // Health settlement merges into the latest persisted state (it never
+    // writes back a request-start snapshot), so the fixture must be persisted
+    // before driving the listeners — mirroring production, where candidates
+    // always come from the persisted configuration.
     config.providers.push(a.clone());
     config.providers.push(b.clone());
+    super::storage::write_config(&config).expect("seed relay config");
     let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
 
     let (mut client, mut server) = tokio::io::duplex(64 * 1024);
@@ -5464,7 +5627,6 @@ async fn streaming_2xx_non_json_is_retryable_and_switches_before_first_byte() {
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -5510,7 +5672,8 @@ async fn streaming_2xx_non_json_is_retryable_and_switches_before_first_byte() {
     );
     assert_eq!(bad_log.lock().unwrap().len(), 1);
     assert_eq!(stream_log.lock().unwrap().len(), 1);
-    let a_stored = config.providers.iter().find(|p| p.id == "a").unwrap();
+    let live = super::storage::read_config().expect("read persisted provider state");
+    let a_stored = live.providers.iter().find(|p| p.id == "a").unwrap();
     assert_eq!(
         a_stored.mappings[0].consecutive_failures, 1,
         "a 2xx non-JSON stream must count as a failure"
@@ -7722,7 +7885,7 @@ async fn spawn_streaming_sequence_mock(
 
 async fn attempt_streaming_text(
     ordered: &[GatewayUpstreamProvider],
-    config: &mut GatewayConfig,
+    _config: &mut GatewayConfig,
 ) -> String {
     let body = serde_json::to_vec(&json!({"model": "local", "stream": true})).unwrap();
     let (mut client, mut server) = tokio::io::duplex(64 * 1024);
@@ -7735,7 +7898,6 @@ async fn attempt_streaming_text(
         "/v1/chat/completions",
         &body,
         Some("local"),
-        config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -7751,7 +7913,7 @@ async fn attempt_streaming_text(
 /// elapsed time, so header-driven waits are observable without real waiting.
 async fn attempt_non_streaming_timed(
     ordered: &[GatewayUpstreamProvider],
-    config: &mut GatewayConfig,
+    _config: &mut GatewayConfig,
 ) -> (super::runtime_http::HttpResponse, std::time::Duration) {
     let _ticker = spawn_paused_clock_ticker();
     let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
@@ -7764,7 +7926,6 @@ async fn attempt_non_streaming_timed(
         "/v1/chat/completions",
         &body,
         Some("local"),
-        config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -7780,7 +7941,7 @@ async fn attempt_non_streaming_paused(
     path: &str,
     body: &[u8],
     requested: Option<&str>,
-    config: &mut GatewayConfig,
+    _config: &mut GatewayConfig,
 ) -> (super::runtime_http::HttpResponse, std::time::Duration) {
     let _ticker = spawn_paused_clock_ticker();
     let started = tokio::time::Instant::now();
@@ -7792,7 +7953,6 @@ async fn attempt_non_streaming_paused(
         path,
         body,
         requested,
-        config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -8037,7 +8197,6 @@ async fn retry_policy_initial_pass_does_not_wait_for_cooldown() {
             "/v1/chat/completions",
             &serde_json::to_vec(&json!({"model": "local"})).unwrap(),
             Some("local"),
-            &mut config,
             &HashMap::new(),
             &mut attempts,
         ),
@@ -8242,7 +8401,6 @@ async fn single_candidate_500_non_streaming_fails_fast_without_retry() {
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -8303,7 +8461,6 @@ async fn single_candidate_429_with_retry_header_non_streaming_fails_fast_without
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -8356,7 +8513,6 @@ async fn single_candidate_429_without_retry_header_non_streaming_fails_fast_with
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -8475,6 +8631,12 @@ async fn retry_stream_recovers_after_zero_cooldown_and_completed_sse_clears_heal
     config.providers.push(provider.clone());
     config.providers.push(other.clone());
 
+    // Health settlement merges into the latest persisted state (it never
+    // writes back a request-start snapshot), so the request inputs — including
+    // the seeded failure counters — must exist on disk first, mirroring
+    // production, where candidates always come from the persisted configuration.
+    super::storage::write_config(&config).expect("seed relay config");
+
     let text = attempt_streaming_text(&[provider.clone(), other.clone()], &mut config).await;
 
     assert_eq!(
@@ -8489,7 +8651,8 @@ async fn retry_stream_recovers_after_zero_cooldown_and_completed_sse_clears_heal
     );
     assert!(text.contains("recovered-stream"), "completed retry stream: {text}");
     assert!(text.contains("data: [DONE]"), "completed retry stream: {text}");
-    let stored = config.providers.iter().find(|item| item.id == "a").unwrap();
+    let live = super::storage::read_config().expect("read persisted provider state");
+    let stored = live.providers.iter().find(|item| item.id == "a").unwrap();
     assert_eq!(
         stored.mappings[0].consecutive_failures, 0,
         "only the completed stream is success for the inbound-request health result"
@@ -8540,6 +8703,11 @@ async fn retry_stream_persistent_503_attempts_six_times_and_counts_health_once()
     let mut config = GatewayConfig::default();
     config.providers.push(provider.clone());
     config.providers.push(other.clone());
+    // Health settlement merges into the latest persisted state (it never
+    // writes back a request-start snapshot), so the request inputs must exist
+    // on disk first — mirroring production, where candidates always come from
+    // the persisted configuration.
+    super::storage::write_config(&config).expect("seed relay config");
     let text = attempt_streaming_text(&[provider.clone(), other.clone()], &mut config).await;
 
     assert_eq!(
@@ -8556,7 +8724,8 @@ async fn retry_stream_persistent_503_attempts_six_times_and_counts_health_once()
         text.contains("all_providers_unavailable"),
         "exhausted stream: {text}"
     );
-    let stored = config.providers.iter().find(|item| item.id == "a").unwrap();
+    let live = super::storage::read_config().expect("read persisted provider state");
+    let stored = live.providers.iter().find(|item| item.id == "a").unwrap();
     assert_eq!(
         stored.mappings[0].consecutive_failures, 1,
         "A's six upstream failures in one inbound request count once"
@@ -8625,12 +8794,19 @@ async fn retry_stream_html_401_and_403_disable_immediately() {
         let mut config = GatewayConfig::default();
         config.providers = vec![auth.clone(), healthy.clone()];
 
+        // Health settlement merges into the latest persisted state (it never
+        // writes back a request-start snapshot), so the request inputs must
+        // exist on disk first — mirroring production, where candidates always
+        // come from the persisted configuration.
+        super::storage::write_config(&config).expect("seed relay config");
+
         let text = attempt_streaming_text(&[auth, healthy], &mut config).await;
 
         assert_eq!(auth_attempts.load(Ordering::SeqCst), 1, "status {status}");
         assert_eq!(healthy_attempts.load(Ordering::SeqCst), 1, "status {status}");
         assert!(text.contains(&format!("healthy-after-{status}")), "stream: {text}");
-        let stored = config.providers.iter().find(|item| item.id == "a").unwrap();
+        let live = super::storage::read_config().expect("read persisted provider state");
+        let stored = live.providers.iter().find(|item| item.id == "a").unwrap();
         assert!(stored.mappings[0].auto_disabled, "HTML {status} must immediately disable");
         assert!(
             stored.mappings[0].disabled_reason.as_deref().unwrap_or("").contains(&status.to_string()),
@@ -11412,7 +11588,6 @@ async fn streaming_all_unavailable_network_error_logs_zero_status() {
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -13485,7 +13660,6 @@ async fn non_streaming_upstream_html_400_is_wrapped_in_standard_envelope() {
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &headers,
         &mut attempts,
     )
@@ -13603,7 +13777,6 @@ async fn non_streaming_upstream_json_400_is_passed_through_byte_for_byte() {
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -13737,7 +13910,6 @@ async fn mid_stream_failure_capture_is_failure_keeps_usage_and_skips_other_candi
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )
@@ -15565,7 +15737,6 @@ async fn attempt_buffer_records_failed_then_successful_attempts_in_completion_or
         "/v1/chat/completions",
         &body,
         Some("local"),
-        &mut config,
         &HashMap::new(),
         &mut attempts,
     )

@@ -573,21 +573,28 @@ fn all_unavailable_message(failures: &[(String, String)]) -> String {
     format!("all providers unavailable: {summary}{hint}")
 }
 
-fn apply_failure(
-    config: &mut GatewayConfig,
-    target: &MappingTarget,
-    class: FailureClass,
-    reason: &str,
-) {
+/// Persist one immediate-disable outcome (401/403) against the latest on-disk
+/// configuration.
+///
+/// The request-start snapshot is never written back: it may predate providers,
+/// keys, prices or toggles saved while this request was in flight (a streaming
+/// response or retry backoff can span tens of seconds), and a whole-file
+/// rewrite from it would silently discard those concurrent edits. Only the
+/// matching mapping rows are touched; a provider deleted mid-request stays
+/// deleted.
+fn apply_failure(target: &MappingTarget, class: FailureClass, reason: &str) {
     let at = now_ts();
-    if let Some(stored) = config
+    let Ok(mut latest) = read_config() else {
+        return;
+    };
+    if let Some(stored) = latest
         .providers
         .iter_mut()
         .find(|stored| stored.id == target.provider_id)
     {
         register_mapping_failure(stored, target, class, reason, at);
     }
-    let _ = write_config(config);
+    let _ = write_config(&latest);
 }
 
 /// One provider still eligible for a bounded retry inside the current request.
@@ -678,7 +685,6 @@ impl RequestHealth {
 
     fn record_failure(
         &mut self,
-        config: &mut GatewayConfig,
         target: &MappingTarget,
         class: FailureClass,
         reason: &str,
@@ -687,7 +693,7 @@ impl RequestHealth {
         match class {
             FailureClass::DisableImmediately => {
                 if !entry.disable_immediately {
-                    apply_failure(config, target, class, reason);
+                    apply_failure(target, class, reason);
                 }
                 entry.disable_immediately = true;
                 entry.reason = reason.to_string();
@@ -709,8 +715,15 @@ impl RequestHealth {
         self.entry(target).succeeded = true;
     }
 
-    fn apply(&self, config: &mut GatewayConfig) {
+    /// Merge this request's outcomes into the latest on-disk configuration and
+    /// persist it. Like [`apply_failure`], this never writes back a
+    /// request-start snapshot, so concurrent provider/key/price/toggle edits
+    /// survive the settlement of an older in-flight request.
+    fn apply(&self) {
         let at = now_ts();
+        let Ok(mut latest) = read_config() else {
+            return;
+        };
         let mut changed = false;
         for target in &self.order {
             let Some(outcome) = self.outcomes.get(target) else {
@@ -719,7 +732,7 @@ impl RequestHealth {
             if outcome.disable_immediately {
                 continue;
             }
-            let Some(stored) = config
+            let Some(stored) = latest
                 .providers
                 .iter_mut()
                 .find(|stored| stored.id == target.provider_id)
@@ -741,7 +754,7 @@ impl RequestHealth {
             }
         }
         if changed {
-            let _ = write_config(config);
+            let _ = write_config(&latest);
         }
     }
 }
@@ -752,7 +765,6 @@ impl RequestHealth {
 /// produces no target and therefore no health outcome.
 fn settle_failure(
     health: &mut RequestHealth,
-    config: &mut GatewayConfig,
     provider: &GatewayUpstreamProvider,
     requested: Option<&str>,
     upstream_model: &str,
@@ -760,7 +772,7 @@ fn settle_failure(
     reason: &str,
 ) {
     if let Some(target) = MappingTarget::for_request(provider, requested, upstream_model) {
-        health.record_failure(config, &target, class, reason);
+        health.record_failure(&target, class, reason);
     }
 }
 
@@ -927,7 +939,6 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
     path: &str,
     body: &[u8],
     requested: Option<&str>,
-    config: &mut GatewayConfig,
     client_headers: &HashMap<String, String>,
     attempts: &mut Vec<AttemptLog>,
 ) -> HttpResponse {
@@ -952,11 +963,11 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
         match outcome {
             AttemptResult::Success(response) => {
                 settle_success(&mut health, provider, requested, &model);
-                health.apply(config);
+                health.apply();
                 return response;
             }
             AttemptResult::ReturnToClient(response) => {
-                health.apply(config);
+                health.apply();
                 return response;
             }
             AttemptResult::Failure {
@@ -967,7 +978,6 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
             } => {
                 settle_failure(
                     &mut health,
-                    config,
                     provider,
                     requested,
                     &model,
@@ -1021,11 +1031,11 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
                     requested,
                     &candidate.model,
                 );
-                health.apply(config);
+                health.apply();
                 return response;
             }
             AttemptResult::ReturnToClient(response) => {
-                health.apply(config);
+                health.apply();
                 return response;
             }
             AttemptResult::Failure {
@@ -1036,7 +1046,6 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
             } => {
                 settle_failure(
                     &mut health,
-                    config,
                     &candidate.provider,
                     requested,
                     &candidate.model,
@@ -1061,7 +1070,7 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
         }
     }
 
-    health.apply(config);
+    health.apply();
     let mut response = json_response(502, all_unavailable_payload(all_unavailable_message(&failures)));
     let mut capture = last_capture.unwrap_or_default();
     capture.status = 502;
@@ -1105,7 +1114,6 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     path: &str,
     body: &[u8],
     requested: Option<&str>,
-    config: &mut GatewayConfig,
     client_headers: &HashMap<String, String>,
     attempts: &mut Vec<AttemptLog>,
 ) -> Result<ForwardCapture, String> {
@@ -1184,7 +1192,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 let class =
                     classify_failure_with_message(status, false, parsed, error_message.as_deref());
                 if class == FailureClass::ReturnToClient {
-                    health.apply(config);
+                    health.apply();
                     capture.status = status;
                     attempts.push(build_attempt_log(
                         provider,
@@ -1267,14 +1275,14 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         break 'attempt (FailureClass::Retryable, true, reason, retry_delay);
                     }
                     if let Err(error) = write_stream_headers(writer, status).await {
-                        health.apply(config);
+                        health.apply();
                         return Err(error);
                     }
                     // Capture usage from a read-only copy before the bytes are
                     // written; the forwarded payload is unchanged.
                     usage.feed(&first);
                     if let Err(error) = writer.write_all(&first).await {
-                        health.apply(config);
+                        health.apply();
                         return Err(error.to_string());
                     }
                     // Last byte forwarded to the caller, used to complete the
@@ -1282,7 +1290,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     // (REQ-005/AC-008).
                     let mut last_forwarded = first.last().copied();
                     if writer.flush().await.is_err() {
-                        health.apply(config);
+                        health.apply();
                         capture.downstream_cancelled = true;
                         return Ok(capture);
                     }
@@ -1291,7 +1299,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                             Some(Ok(chunk)) => {
                                 usage.feed(&chunk);
                                 if writer.write_all(&chunk).await.is_err() {
-                                    health.apply(config);
+                                    health.apply();
                                     capture.downstream_cancelled = true;
                                     return Ok(capture);
                                 }
@@ -1302,14 +1310,13 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                 let reason = format!("stream failed after first byte: {error}");
                                 settle_failure(
                                     &mut health,
-                                    config,
                                     provider,
                                     requested,
                                     &candidate.model,
                                     FailureClass::Retryable,
                                     &reason,
                                 );
-                                health.apply(config);
+                                health.apply();
                                 // The attempt is complete: its stream ended with
                                 // an error and keeps the usage accumulated so far
                                 // (REQ-003/REQ-005).
@@ -1352,7 +1359,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     requested,
                                     &candidate.model,
                                 );
-                                health.apply(config);
+                                health.apply();
                                 capture.status = status;
                                 capture.usage = usage.usage();
                                 // A normally ended stream is the served success
@@ -1405,7 +1412,6 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         };
         settle_failure(
             &mut health,
-            config,
             provider,
             requested,
             &candidate.model,
@@ -1422,7 +1428,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         }
     }
 
-    health.apply(config);
+    health.apply();
     // Nothing was written downstream yet, so the failure is a plain HTTP 502
     // JSON response rather than an SSE error event over HTTP 200 (REQ-003).
     let response = json_response(502, all_unavailable_payload(all_unavailable_message(&failures)));
@@ -1478,7 +1484,7 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
     // always within the gateway's processing time.
     let started = Instant::now();
 
-    let mut config = match read_config() {
+    let config = match read_config() {
         Ok(config) => config,
         Err(error) => {
             let response = json_response(
@@ -1654,7 +1660,6 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                 path,
                 &request.body,
                 requested.as_deref(),
-                &mut config,
                 &request.headers,
                 &mut attempts,
             )
@@ -1665,7 +1670,6 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                 path,
                 &request.body,
                 requested.as_deref(),
-                &mut config,
                 &request.headers,
                 &mut attempts,
             )
