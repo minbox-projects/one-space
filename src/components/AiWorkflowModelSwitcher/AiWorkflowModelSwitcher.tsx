@@ -5,17 +5,21 @@ import {
   CheckCircle2,
   ChevronDown,
   Layers,
+  Plus,
   RotateCcw,
   Save,
-  Zap,
-  X,
   Sliders,
+  Trash2,
+  X,
+  Zap,
 } from "lucide-react";
 import {
   SUPPORTED_ROLES,
   SUPPORTED_TOOLS,
   VALID_EFFORTS,
   activateProfile,
+  createProfile,
+  deleteProfile,
   getModelSources,
   getProfileMatrix,
   listProfiles,
@@ -27,6 +31,18 @@ import {
   type SupportedTool,
   type ValidEffort,
 } from "@/lib/aiWorkflowProfiles";
+import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { useConfirmDialog } from "../ConfirmDialogProvider";
+import { useToast } from "../ToastProvider";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../ui/dialog";
+import { SearchableModelCombobox } from "./SearchableModelCombobox";
 
 export interface AiWorkflowModelSwitcherProps {
   homeOverride?: string;
@@ -36,6 +52,11 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
   homeOverride,
 }) => {
   const { t } = useTranslation();
+  const confirmDialog = useConfirmDialog();
+  const { pushToast } = useToast();
+  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation(
+    "ai-workflow-model-switcher",
+  );
 
   const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
@@ -51,22 +72,48 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
   const [activationReport, setActivationReport] =
     useState<ProfileActivationReport | null>(null);
 
+  // 单元格编辑状态
   const [editingCell, setEditingCell] = useState<{
     role: string;
     tool: SupportedTool;
   } | null>(null);
+  const [cellSearchFilter, setCellSearchFilter] = useState<string>("");
 
+  // 整列填充状态
   const [batchColumnTool, setBatchColumnTool] = useState<SupportedTool | null>(
     null,
   );
   const [batchColumnValue, setBatchColumnValue] = useState<string>("");
 
+  // 整行填充状态
   const [batchRowRole, setBatchRowRole] = useState<string | null>(null);
   const [batchRowValue, setBatchRowValue] = useState<string>("");
 
+  // 推理强度批量下拉
   const [isEffortDropdownOpen, setIsEffortDropdownOpen] =
     useState<boolean>(false);
   const [selectedEffort, setSelectedEffort] = useState<ValidEffort>("high");
+
+  // 新建方案 Dialog 状态
+  const [isCreateDialogOpen, setIsCreateDialogOpen] = useState<boolean>(false);
+  const [newProfileName, setNewProfileName] = useState<string>("");
+  const [createSourceMode, setCreateSourceMode] = useState<"clone" | "blank">(
+    "clone",
+  );
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  // 聚合所有工具候选模型并集，供整行填充使用
+  const allCandidateModels = useMemo(() => {
+    const set = new Set<string>();
+    if (modelSources) {
+      for (const tool of SUPPORTED_TOOLS) {
+        for (const m of modelSources[tool]?.models || []) {
+          set.add(m);
+        }
+      }
+    }
+    return Array.from(set).sort();
+  }, [modelSources]);
 
   const normalizeRows = useCallback(
     (rawRows: AgentMatrixRow[]): AgentMatrixRow[] => {
@@ -297,12 +344,135 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
     }
   };
 
+  // 方案新建
+  const handleOpenCreateDialog = () => {
+    setNewProfileName("");
+    setCreateSourceMode("clone");
+    setCreateError(null);
+    setIsCreateDialogOpen(true);
+  };
+
+  const handleCreateProfileSubmit = async () => {
+    const trimmed = newProfileName.trim();
+    if (!trimmed) {
+      setCreateError(t("aiWorkflow.profileNameRequired", "方案名称不能为空"));
+      return;
+    }
+    const nameRegex = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/i;
+    if (!nameRegex.test(trimmed)) {
+      setCreateError(
+        t(
+          "aiWorkflow.profileNameInvalid",
+          "方案名称格式无效，仅支持字母、数字、短横线与点",
+        ),
+      );
+      return;
+    }
+    if (profiles.some((p) => p.name.toLowerCase() === trimmed.toLowerCase())) {
+      setCreateError(t("aiWorkflow.profileAlreadyExists", "该方案名称已存在"));
+      return;
+    }
+
+    try {
+      setIsActivating(true);
+      const copyFrom =
+        createSourceMode === "clone" && selectedProfile
+          ? selectedProfile
+          : undefined;
+      await createProfile(trimmed, copyFrom, homeOverride);
+      pushToast({
+        title: t("aiWorkflow.profileCreated", {
+          name: trimmed,
+          defaultValue: `方案 "${trimmed}" 创建成功`,
+        }),
+        kind: "success",
+      });
+      setIsCreateDialogOpen(false);
+      const updated = await listProfiles(homeOverride);
+      setProfiles(updated);
+      setSelectedProfile(trimmed);
+      await loadMatrix(trimmed);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setCreateError(message);
+    } finally {
+      setIsActivating(false);
+    }
+  };
+
+  // 方案删除
+  const handleDeleteProfile = async () => {
+    if (!selectedProfile || selectedProfile === activeProfile) return;
+    const confirmed = await confirmDialog(
+      t("aiWorkflow.confirmDeleteProfileMessage", {
+        name: selectedProfile,
+        defaultValue: `确定要删除方案 "${selectedProfile}" 吗？此操作不可撤销。`,
+      }),
+      {
+        title: t("aiWorkflow.confirmDeleteProfileTitle", "删除配置方案"),
+        kind: "warning",
+        okLabel: t("delete", "删除"),
+        cancelLabel: t("cancel", "取消"),
+      },
+    );
+    if (!confirmed) return;
+
+    try {
+      setIsActivating(true);
+      await deleteProfile(selectedProfile, homeOverride);
+      pushToast({
+        title: t("aiWorkflow.profileDeleted", {
+          name: selectedProfile,
+          defaultValue: `方案 "${selectedProfile}" 已删除`,
+        }),
+        kind: "success",
+      });
+      const updated = await listProfiles(homeOverride);
+      setProfiles(updated);
+      const nextProfile =
+        updated.find((p) => p.active)?.name || updated[0]?.name || null;
+      setSelectedProfile(nextProfile);
+      if (nextProfile) {
+        await loadMatrix(nextProfile);
+      } else {
+        setMatrix([]);
+        setOriginalMatrix([]);
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      pushToast({ title: message, kind: "error" });
+    } finally {
+      setIsActivating(false);
+    }
+  };
+
   return (
     <div
       data-testid="ai-workflow-model-switcher"
       className="space-y-6 pb-12 text-foreground"
     >
-      {/* 顶部控制栏 */}
+      {/* 1. 工具顶部标准化标题栏（与其他工具保持一致） */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className={`rounded-lg p-2 ${iconClassName}`}>
+            <ToolIcon className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold tracking-tight">
+              {t("aiWorkflowModelSwitcher", "AI Workflow 模型切换")}
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t(
+                "aiWorkflowModelSwitcherDesc",
+                "集中管理 subagent 角色模型与推理强度，支持一键切换生效。",
+              )}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. 方案选择与控制栏 */}
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border bg-card p-4 shadow-sm">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
@@ -311,6 +481,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
               {t("aiWorkflow.selectProfile", "配置方案")}:
             </span>
           </div>
+
           <div className="flex flex-wrap items-center gap-1.5">
             {profiles.map((p) => {
               const isSelected = p.name === selectedProfile;
@@ -332,6 +503,44 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                 </button>
               );
             })}
+
+            {/* 新建方案按钮 */}
+            <button
+              type="button"
+              data-testid="create-profile-trigger"
+              onClick={handleOpenCreateDialog}
+              className="inline-flex items-center gap-1 rounded-lg border border-dashed border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
+              title={t("aiWorkflow.newProfile", "新建方案")}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              <span>{t("aiWorkflow.newProfile", "新建方案")}</span>
+            </button>
+
+            {/* 删除方案按钮 */}
+            {selectedProfile ? (
+              <button
+                type="button"
+                data-testid="delete-profile-trigger"
+                disabled={
+                  isActivating ||
+                  !selectedProfile ||
+                  selectedProfile === activeProfile
+                }
+                onClick={() => void handleDeleteProfile()}
+                title={
+                  selectedProfile === activeProfile
+                    ? t(
+                        "aiWorkflow.cannotDeleteActiveProfile",
+                        "无法删除当前已激活的方案",
+                      )
+                    : t("aiWorkflow.deleteProfile", "删除方案")
+                }
+                className="inline-flex items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-background"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>{t("aiWorkflow.deleteProfile", "删除方案")}</span>
+              </button>
+            ) : null}
           </div>
 
           {activeProfile ? (
@@ -367,7 +576,9 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
               className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
             >
               <Sliders className="h-3.5 w-3.5" />
-              <span>{t("aiWorkflow.batchApplyEffort", "批量调整推理强度")}</span>
+              <span>
+                {t("aiWorkflow.batchApplyEffort", "批量调整推理强度")}
+              </span>
               <ChevronDown className="h-3 w-3 opacity-60" />
             </button>
 
@@ -545,6 +756,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                   {SUPPORTED_TOOLS.map((tool) => {
                     const degradedError = modelSources?.[tool]?.error;
                     const isBatchActive = batchColumnTool === tool;
+                    const candidateModels = modelSources?.[tool]?.models || [];
 
                     return (
                       <th
@@ -561,9 +773,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                               type="button"
                               data-testid={`batch-fill-column-${tool}`}
                               onClick={() => {
-                                setBatchColumnTool(
-                                  isBatchActive ? null : tool,
-                                );
+                                setBatchColumnTool(isBatchActive ? null : tool);
                                 setBatchColumnValue("");
                               }}
                               className="rounded border bg-background px-2 py-0.5 text-[11px] font-normal text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -583,29 +793,62 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                             </div>
                           ) : null}
 
+                          {/* 整列填充展开面板：支持模糊检索、列表选择、防折行按钮与关闭隐藏 */}
                           {isBatchActive ? (
-                            <div className="mt-1 flex items-center gap-1 font-normal">
-                              <input
-                                type="text"
-                                data-testid={`batch-fill-input-${tool}`}
+                            <div className="mt-1 flex flex-col gap-1.5 rounded-lg border bg-card p-2 shadow-sm font-normal">
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="text-[11px] font-medium text-muted-foreground">
+                                  {t("aiWorkflow.batchFillColumn", "整列填充")}
+                                </span>
+                                <button
+                                  type="button"
+                                  data-testid={`batch-fill-hide-${tool}`}
+                                  onClick={() => {
+                                    setBatchColumnTool(null);
+                                    setBatchColumnValue("");
+                                  }}
+                                  title={t(
+                                    "aiWorkflow.hideBatchFill",
+                                    "收起隐藏",
+                                  )}
+                                  className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+
+                              <SearchableModelCombobox
                                 value={batchColumnValue}
-                                onChange={(e) =>
-                                  setBatchColumnValue(e.target.value)
-                                }
+                                onChange={(val) => setBatchColumnValue(val)}
+                                candidates={candidateModels}
                                 placeholder={t(
                                   "aiWorkflow.modelPlaceholder",
-                                  "输入模型...",
+                                  "输入或选择模型...",
                                 )}
-                                className="h-7 w-full rounded border bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+                                testId={`batch-fill-input-${tool}`}
+                                autoFocus
                               />
-                              <button
-                                type="button"
-                                data-testid={`batch-fill-apply-${tool}`}
-                                onClick={() => handleApplyColumnBatch(tool)}
-                                className="h-7 rounded bg-primary px-2 text-xs text-primary-foreground hover:bg-primary/90"
-                              >
-                                {t("aiWorkflow.apply", "应用")}
-                              </button>
+
+                              <div className="flex items-center justify-end gap-1.5 pt-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setBatchColumnTool(null);
+                                    setBatchColumnValue("");
+                                  }}
+                                  className="shrink-0 whitespace-nowrap rounded border border-input bg-background px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                                >
+                                  {t("aiWorkflow.cancel", "取消")}
+                                </button>
+                                <button
+                                  type="button"
+                                  data-testid={`batch-fill-apply-${tool}`}
+                                  onClick={() => handleApplyColumnBatch(tool)}
+                                  className="shrink-0 whitespace-nowrap rounded bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                                >
+                                  {t("aiWorkflow.apply", "应用")}
+                                </button>
+                              </div>
                             </div>
                           ) : null}
                         </div>
@@ -635,9 +878,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                               type="button"
                               data-testid={`batch-fill-row-${role}`}
                               onClick={() => {
-                                setBatchRowRole(
-                                  isRowBatchActive ? null : role,
-                                );
+                                setBatchRowRole(isRowBatchActive ? null : role);
                                 setBatchRowValue("");
                               }}
                               className="rounded border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -647,28 +888,60 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                           </div>
 
                           {isRowBatchActive ? (
-                            <div className="mt-1 flex items-center gap-1 font-normal">
-                              <input
-                                type="text"
-                                data-testid={`batch-fill-row-input-${role}`}
+                            <div className="mt-1 flex flex-col gap-1.5 rounded-lg border bg-card p-2 shadow-sm font-normal">
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="text-[11px] font-medium text-muted-foreground">
+                                  {t("aiWorkflow.batchFillRow", "整行填充")}
+                                </span>
+                                <button
+                                  type="button"
+                                  data-testid={`batch-fill-row-hide-${role}`}
+                                  onClick={() => {
+                                    setBatchRowRole(null);
+                                    setBatchRowValue("");
+                                  }}
+                                  title={t(
+                                    "aiWorkflow.hideBatchFill",
+                                    "收起隐藏",
+                                  )}
+                                  className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+
+                              <SearchableModelCombobox
                                 value={batchRowValue}
-                                onChange={(e) =>
-                                  setBatchRowValue(e.target.value)
-                                }
+                                onChange={(val) => setBatchRowValue(val)}
+                                candidates={allCandidateModels}
                                 placeholder={t(
                                   "aiWorkflow.modelPlaceholder",
-                                  "输入模型...",
+                                  "输入或选择模型...",
                                 )}
-                                className="h-7 w-full rounded border bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+                                testId={`batch-fill-row-input-${role}`}
+                                autoFocus
                               />
-                              <button
-                                type="button"
-                                data-testid={`batch-fill-row-apply-${role}`}
-                                onClick={() => handleApplyRowBatch(role)}
-                                className="h-7 rounded bg-primary px-2 text-xs text-primary-foreground hover:bg-primary/90"
-                              >
-                                {t("aiWorkflow.apply", "应用")}
-                              </button>
+
+                              <div className="flex items-center justify-end gap-1.5 pt-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setBatchRowRole(null);
+                                    setBatchRowValue("");
+                                  }}
+                                  className="shrink-0 whitespace-nowrap rounded border border-input bg-background px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                                >
+                                  {t("aiWorkflow.cancel", "取消")}
+                                </button>
+                                <button
+                                  type="button"
+                                  data-testid={`batch-fill-row-apply-${role}`}
+                                  onClick={() => handleApplyRowBatch(role)}
+                                  className="shrink-0 whitespace-nowrap rounded bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                                >
+                                  {t("aiWorkflow.apply", "应用")}
+                                </button>
+                              </div>
                             </div>
                           ) : null}
                         </div>
@@ -681,8 +954,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                         );
                         const origCell = origRow?.[tool];
                         const isCellDirty =
-                          JSON.stringify(cellData) !==
-                          JSON.stringify(origCell);
+                          JSON.stringify(cellData) !== JSON.stringify(origCell);
 
                         const isCellEditing =
                           editingCell?.role === role &&
@@ -695,9 +967,10 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                           <td
                             key={tool}
                             data-testid={`cell-${role}-${tool}`}
-                            onClick={() =>
-                              setEditingCell({ role, tool })
-                            }
+                            onClick={() => {
+                              setEditingCell({ role, tool });
+                              setCellSearchFilter("");
+                            }}
                             className={`p-3 align-top transition-colors ${
                               isCellDirty
                                 ? "bg-amber-500/10 dark:bg-amber-500/15"
@@ -724,12 +997,27 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                                 ) : null}
                               </div>
 
-                              {/* 展开编辑区 */}
+                              {/* 展开编辑区：支持模型输入过滤与候选列表模糊检索 */}
                               {isCellEditing ? (
                                 <div
                                   className="mt-1 space-y-2 rounded-lg border bg-background p-2.5 shadow-sm"
                                   onClick={(e) => e.stopPropagation()}
                                 >
+                                  <div className="flex items-center justify-between border-b pb-1 text-[11px] font-semibold text-muted-foreground">
+                                    <span>
+                                      {role} · {tool}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      data-testid={`cell-close-${role}-${tool}`}
+                                      onClick={() => setEditingCell(null)}
+                                      className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                                      title={t("aiWorkflow.cancel", "取消")}
+                                    >
+                                      <X className="h-3 w-3" />
+                                    </button>
+                                  </div>
+
                                   <div>
                                     <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
                                       Model
@@ -738,11 +1026,12 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                                       type="text"
                                       data-testid={`manual-model-input-${role}-${tool}`}
                                       value={cellData?.model || ""}
-                                      onChange={(e) =>
+                                      onChange={(e) => {
                                         handleUpdateCell(role, tool, {
                                           model: e.target.value,
-                                        })
-                                      }
+                                        });
+                                        setCellSearchFilter(e.target.value);
+                                      }}
                                       placeholder={t(
                                         "aiWorkflow.modelPlaceholder",
                                         "输入或选择模型...",
@@ -753,7 +1042,10 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
 
                                   <div>
                                     <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
-                                      {t("aiWorkflow.reasoningEffort", "推理强度")}
+                                      {t(
+                                        "aiWorkflow.reasoningEffort",
+                                        "推理强度",
+                                      )}
                                     </label>
                                     <select
                                       value={
@@ -774,37 +1066,90 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                                     </select>
                                   </div>
 
-                                  {/* 候选模型列表 */}
+                                  {/* 候选模型列表：支持输入模糊过滤高亮 */}
                                   {candidateModels.length > 0 ? (
                                     <div>
-                                      <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
-                                        Candidates
-                                      </label>
+                                      <div className="mb-1 flex items-center justify-between text-[11px] font-medium text-muted-foreground">
+                                        <span>Candidates</span>
+                                        {cellSearchFilter.trim() ? (
+                                          <span className="text-[10px] text-primary">
+                                            过滤中
+                                          </span>
+                                        ) : null}
+                                      </div>
                                       <div
                                         data-testid={`model-options-${tool}`}
                                         className="max-h-28 space-y-1 overflow-y-auto rounded border bg-muted/30 p-1"
                                       >
-                                        {candidateModels.map((m) => (
-                                          <button
-                                            key={m}
-                                            type="button"
-                                            onClick={() =>
-                                              handleUpdateCell(role, tool, {
-                                                model: m,
-                                              })
-                                            }
-                                            className={`block w-full truncate rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
-                                              cellData?.model === m
-                                                ? "bg-primary text-primary-foreground font-medium"
-                                                : "hover:bg-muted"
-                                            }`}
-                                          >
-                                            {m}
-                                          </button>
-                                        ))}
+                                        {candidateModels
+                                          .filter((m) => {
+                                            if (!cellSearchFilter.trim())
+                                              return true;
+                                            return m
+                                              .toLowerCase()
+                                              .includes(
+                                                cellSearchFilter
+                                                  .trim()
+                                                  .toLowerCase(),
+                                              );
+                                          })
+                                          .map((m) => (
+                                            <button
+                                              key={m}
+                                              type="button"
+                                              onClick={() => {
+                                                handleUpdateCell(role, tool, {
+                                                  model: m,
+                                                });
+                                                setCellSearchFilter(m);
+                                              }}
+                                              className={`block w-full truncate rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
+                                                cellData?.model === m
+                                                  ? "bg-primary text-primary-foreground font-medium"
+                                                  : "hover:bg-muted"
+                                              }`}
+                                            >
+                                              {m}
+                                            </button>
+                                          ))}
+                                        {candidateModels.filter((m) =>
+                                          m
+                                            .toLowerCase()
+                                            .includes(
+                                              cellSearchFilter
+                                                .trim()
+                                                .toLowerCase(),
+                                            ),
+                                        ).length === 0 ? (
+                                          <div className="py-2 text-center text-[10px] text-muted-foreground">
+                                            {t(
+                                              "aiWorkflow.noMatchingModels",
+                                              "无匹配候选（支持自定义输入）",
+                                            )}
+                                          </div>
+                                        ) : null}
                                       </div>
                                     </div>
                                   ) : null}
+
+                                  <div className="flex items-center justify-end gap-1.5 pt-1">
+                                    <button
+                                      type="button"
+                                      data-testid={`cell-cancel-${role}-${tool}`}
+                                      onClick={() => setEditingCell(null)}
+                                      className="shrink-0 rounded border border-input bg-background px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                                    >
+                                      {t("aiWorkflow.cancel", "取消")}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      data-testid={`cell-done-${role}-${tool}`}
+                                      onClick={() => setEditingCell(null)}
+                                      className="shrink-0 rounded bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                                    >
+                                      {t("aiWorkflow.close", "完成")}
+                                    </button>
+                                  </div>
                                 </div>
                               ) : null}
                             </div>
@@ -823,6 +1168,104 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
           Loading...
         </div>
       ) : null}
+
+      {/* 新建配置方案 Dialog */}
+      <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>
+              {t("aiWorkflow.createProfileTitle", "新建配置方案")}
+            </DialogTitle>
+            <DialogDescription>
+              {t(
+                "aiWorkflow.createProfileDesc",
+                "为 AI Workflow subagent 矩阵创建一套新的模型与推理强度配置方案。",
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2 text-sm">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                {t("aiWorkflow.profileName", "方案名称")}
+              </label>
+              <input
+                type="text"
+                data-testid="create-profile-name-input"
+                value={newProfileName}
+                onChange={(e) => {
+                  setNewProfileName(e.target.value);
+                  setCreateError(null);
+                }}
+                placeholder={t(
+                  "aiWorkflow.profileNamePlaceholder",
+                  "例如 my-new-profile",
+                )}
+                className="h-8 w-full rounded border bg-background px-2.5 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {t("aiWorkflow.profileNameHelp", "仅支持字母、数字、短横线与点")}
+              </p>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                {t("aiWorkflow.initialConfigFrom", "初始配置来源")}
+              </label>
+              <div className="space-y-2">
+                <label className="flex cursor-pointer items-center gap-2 text-xs">
+                  <input
+                    type="radio"
+                    name="cloneSource"
+                    data-testid="create-profile-radio-clone"
+                    checked={createSourceMode === "clone"}
+                    onChange={() => setCreateSourceMode("clone")}
+                  />
+                  <span>
+                    {t("aiWorkflow.cloneCurrent", {
+                      name: selectedProfile || "当前方案",
+                      defaultValue: `从当前方案复制 (${selectedProfile || "当前方案"})`,
+                    })}
+                  </span>
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-xs">
+                  <input
+                    type="radio"
+                    name="cloneSource"
+                    data-testid="create-profile-radio-blank"
+                    checked={createSourceMode === "blank"}
+                    onChange={() => setCreateSourceMode("blank")}
+                  />
+                  <span>{t("aiWorkflow.blankProfile", "创建空白方案")}</span>
+                </label>
+              </div>
+            </div>
+            {createError && (
+              <div
+                role="alert"
+                className="rounded border border-destructive/20 bg-destructive/10 p-2 text-xs text-destructive"
+              >
+                {createError}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => setIsCreateDialogOpen(false)}
+              className="rounded border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
+            >
+              {t("aiWorkflow.cancel", "取消")}
+            </button>
+            <button
+              type="button"
+              data-testid="create-profile-submit"
+              onClick={() => void handleCreateProfileSubmit()}
+              className="rounded bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              {t("aiWorkflow.create", "创建")}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

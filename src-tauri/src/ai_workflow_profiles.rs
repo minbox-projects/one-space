@@ -202,6 +202,21 @@ fn parse_activation_report(raw: &str) -> Result<ProfileActivationReport, String>
     ))
 }
 
+fn get_active_profile_name(home: &Path) -> Option<String> {
+    let config_path = home.join(".config/ai-workflow/config.yaml");
+    if config_path.exists() {
+        if let Ok(content) = fs::read_to_string(&config_path) {
+            if let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                return val
+                    .get("active_profile")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Lists all profile YAML files under `~/.config/ai-workflow/profiles/`.
 /// Marks the one matching `active_profile` in `~/.config/ai-workflow/config.yaml`.
 /// If a profile YAML is malformed, records its error without crashing.
@@ -212,22 +227,7 @@ pub fn list_profiles(home_override: Option<&Path>) -> Result<Vec<ProfileSummary>
         return Ok(vec![]);
     }
 
-    let config_path = home.join(".config/ai-workflow/config.yaml");
-    let active_profile: Option<String> = if config_path.exists() {
-        if let Ok(content) = fs::read_to_string(&config_path) {
-            if let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                val.get("active_profile")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.trim().to_string())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let active_profile = get_active_profile_name(&home);
 
     let entries = match fs::read_dir(&profiles_dir) {
         Ok(e) => e,
@@ -638,6 +638,64 @@ pub fn save_and_activate_profile(
     }
 }
 
+/// Creates a new profile YAML file.
+/// If copy_from is specified, copies content from that existing profile.
+/// Otherwise creates a valid minimal schema.
+pub fn create_profile(
+    name: &str,
+    copy_from: Option<&str>,
+    home_override: Option<&Path>,
+) -> Result<(), String> {
+    validate_profile_name(name)?;
+    let home = resolve_home_dir(home_override)?;
+    let profiles_dir = home.join(".config/ai-workflow/profiles");
+    fs::create_dir_all(&profiles_dir)
+        .map_err(|e| format!("Failed to create profiles directory: {}", e))?;
+
+    let target_file = profiles_dir.join(format!("{}.yaml", name));
+    if target_file.exists() {
+        return Err(format!("Profile '{}' already exists", name));
+    }
+
+    let yaml_content = if let Some(source_name) = copy_from {
+        let trimmed_source = source_name.trim();
+        if !trimmed_source.is_empty() {
+            validate_profile_name(trimmed_source)?;
+            let source_file = profiles_dir.join(format!("{}.yaml", trimmed_source));
+            if !source_file.exists() {
+                return Err(format!("Source profile '{}' does not exist", trimmed_source));
+            }
+            fs::read_to_string(&source_file)
+                .map_err(|e| format!("Failed to read source profile '{}': {}", trimmed_source, e))?
+        } else {
+            "version: 1.0.0\nagents: {}\n".to_string()
+        }
+    } else {
+        "version: 1.0.0\nagents: {}\n".to_string()
+    };
+
+    write_file_atomic(&target_file, yaml_content.as_bytes())
+}
+
+/// Deletes a profile YAML file.
+/// Cannot delete active profile.
+pub fn delete_profile(name: &str, home_override: Option<&Path>) -> Result<(), String> {
+    validate_profile_name(name)?;
+    let home = resolve_home_dir(home_override)?;
+    let active_name = get_active_profile_name(&home);
+    if active_name.as_deref() == Some(name) {
+        return Err(format!("Cannot delete active profile '{}'", name));
+    }
+
+    let profiles_dir = home.join(".config/ai-workflow/profiles");
+    let target_file = profiles_dir.join(format!("{}.yaml", name));
+    if target_file.exists() {
+        fs::remove_file(&target_file)
+            .map_err(|e| format!("Failed to delete profile '{}': {}", name, e))?;
+    }
+    Ok(())
+}
+
 // Tauri commands
 
 #[tauri::command]
@@ -678,3 +736,21 @@ pub fn ai_workflow_activate_profile(
 ) -> Result<ProfileActivationReport, String> {
     activate_profile(&name, home_override.as_deref().map(Path::new))
 }
+
+#[tauri::command]
+pub fn ai_workflow_create_profile(
+    name: String,
+    copy_from: Option<String>,
+    home_override: Option<String>,
+) -> Result<(), String> {
+    create_profile(&name, copy_from.as_deref(), home_override.as_deref().map(Path::new))
+}
+
+#[tauri::command]
+pub fn ai_workflow_delete_profile(
+    name: String,
+    home_override: Option<String>,
+) -> Result<(), String> {
+    delete_profile(&name, home_override.as_deref().map(Path::new))
+}
+

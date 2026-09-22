@@ -1883,6 +1883,7 @@
       ],
       "related_files": [
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.tsx",
+        "src/components/AiWorkflowModelSwitcher/SearchableModelCombobox.tsx",
         "src/lib/aiWorkflowProfiles.ts"
       ],
       "tests": [
@@ -1924,12 +1925,25 @@
           "name": "activateProfile",
           "kind": "function",
           "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "createProfile",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "deleteProfile",
+          "kind": "function",
+          "visibility": "public"
         }
       ],
       "depends_on": [],
       "read_scope": [
         "src/components/AiWorkflowModelSwitcher/index.ts",
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.tsx",
+        "src/components/AiWorkflowModelSwitcher/SearchableModelCombobox.tsx",
         "src/lib/aiWorkflowProfiles.ts",
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx"
       ],

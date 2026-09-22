@@ -750,3 +750,81 @@ exit 1
         );
     });
 }
+
+// ============================================================================
+// 6. create_profile & delete_profile tests
+// ============================================================================
+
+#[test]
+fn test_ai_workflow_create_profile_blank_and_duplicate_handling() {
+    with_temp_test_home("create-profile", |home| {
+        // 创建空方案
+        let res = create_profile("my-new-profile", None, Some(home));
+        assert!(res.is_ok(), "create blank profile should succeed: {:?}", res);
+
+        let target_file = home.join(".config/ai-workflow/profiles/my-new-profile.yaml");
+        assert!(target_file.exists(), "target yaml file must exist");
+        let content = fs::read_to_string(&target_file).expect("read created yaml");
+        assert!(content.contains("version: 1.0.0"));
+
+        // 重复创建相同名称应当报错
+        let dup_res = create_profile("my-new-profile", None, Some(home));
+        assert!(dup_res.is_err(), "duplicate profile creation must fail");
+        assert!(dup_res.unwrap_err().contains("already exists"));
+
+        // 非法名称应当报错
+        let invalid_res = create_profile("invalid name with spaces", None, Some(home));
+        assert!(invalid_res.is_err(), "invalid profile name must fail");
+    });
+}
+
+#[test]
+fn test_ai_workflow_create_profile_clones_existing() {
+    with_temp_test_home("create-profile-clone", |home| {
+        let profiles_dir = home.join(".config/ai-workflow/profiles");
+        fs::create_dir_all(&profiles_dir).expect("create profiles dir");
+
+        let source_content = "version: 1.0.0\nagents:\n  backend:\n    codex:\n      model: test-model\n      reasoning_effort: high\n";
+        fs::write(profiles_dir.join("source-profile.yaml"), source_content).expect("write source");
+
+        let res = create_profile("cloned-profile", Some("source-profile"), Some(home));
+        assert!(res.is_ok(), "clone profile should succeed: {:?}", res);
+
+        let cloned_file = profiles_dir.join("cloned-profile.yaml");
+        assert!(cloned_file.exists());
+        let cloned_content = fs::read_to_string(&cloned_file).expect("read cloned");
+        assert_eq!(cloned_content, source_content);
+
+        // 尝试从不存在的源复制
+        let non_exist_res = create_profile("other-profile", Some("non-existent"), Some(home));
+        assert!(non_exist_res.is_err());
+        assert!(non_exist_res.unwrap_err().contains("does not exist"));
+    });
+}
+
+#[test]
+fn test_ai_workflow_delete_profile_removes_file_and_protects_active() {
+    with_temp_test_home("delete-profile", |home| {
+        let profiles_dir = home.join(".config/ai-workflow/profiles");
+        fs::create_dir_all(&profiles_dir).expect("create profiles dir");
+
+        fs::write(profiles_dir.join("active-profile.yaml"), "version: 1.0.0\n").expect("write active");
+        fs::write(profiles_dir.join("inactive-profile.yaml"), "version: 1.0.0\n").expect("write inactive");
+
+        let config_dir = home.join(".config/ai-workflow");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::write(config_dir.join("config.yaml"), "active_profile: active-profile\n").expect("write config");
+
+        // 删除激活中的方案应当被阻止
+        let del_active = delete_profile("active-profile", Some(home));
+        assert!(del_active.is_err(), "deleting active profile must be rejected");
+        assert!(del_active.unwrap_err().contains("Cannot delete active profile"));
+        assert!(profiles_dir.join("active-profile.yaml").exists());
+
+        // 删除非激活方案应当成功
+        let del_inactive = delete_profile("inactive-profile", Some(home));
+        assert!(del_inactive.is_ok(), "deleting inactive profile must succeed: {:?}", del_inactive);
+        assert!(!profiles_dir.join("inactive-profile.yaml").exists());
+    });
+}
+

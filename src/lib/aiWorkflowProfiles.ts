@@ -131,3 +131,26 @@ export async function activateProfile(
     homeOverride,
   });
 }
+
+export async function createProfile(
+  name: string,
+  copyFrom?: string,
+  homeOverride?: string,
+): Promise<void> {
+  return invoke<void>("ai_workflow_create_profile", {
+    name,
+    copyFrom,
+    homeOverride,
+  });
+}
+
+export async function deleteProfile(
+  name: string,
+  homeOverride?: string,
+): Promise<void> {
+  return invoke<void>("ai_workflow_delete_profile", {
+    name,
+    homeOverride,
+  });
+}
+

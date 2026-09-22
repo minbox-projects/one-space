@@ -104,6 +104,12 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       if (command === "ai_workflow_save_and_activate_profile") {
         return mockActivationReport;
       }
+      if (command === "ai_workflow_create_profile") {
+        return null;
+      }
+      if (command === "ai_workflow_delete_profile") {
+        return null;
+      }
       throw new Error(`Unhandled invoke command: ${command}`);
     });
   });
@@ -500,4 +506,227 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       expect(alert).toHaveTextContent(binaryError);
     });
   });
+
+  describe("优化需求与功能扩展测试", () => {
+    it("页面顶部展示与其他工具一致的标准化标题栏", async () => {
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+      expect(
+        await screen.findByRole("heading", { name: /AI Workflow 模型切换|AI Workflow Model Switcher/i }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/集中管理|Centralized matrix management/i),
+      ).toBeInTheDocument();
+    });
+
+    it("支持新建方案并自动选中新方案", async () => {
+      const user = userEvent.setup();
+      let currentProfiles = [...mockProfiles];
+      invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+        const payload = args as Record<string, unknown> | undefined;
+        if (command === "ai_workflow_list_profiles") return currentProfiles;
+        if (command === "ai_workflow_get_profile_matrix") return mockGatewayMatrix;
+        if (command === "ai_workflow_get_model_sources") return mockModelSources;
+        if (command === "ai_workflow_create_profile") {
+          currentProfiles = [
+            ...currentProfiles,
+            { name: payload?.name as string, active: false },
+          ];
+          return null;
+        }
+        return null;
+      });
+
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      // 点击新建方案按钮
+      const createTrigger = await screen.findByTestId("create-profile-trigger");
+      await user.click(createTrigger);
+
+      // 弹窗可见
+      const nameInput = await screen.findByTestId("create-profile-name-input");
+      expect(nameInput).toBeInTheDocument();
+
+      // 输入新方案名称并点击提交
+      await user.type(nameInput, "custom-plan-v1");
+      const submitBtn = screen.getByTestId("create-profile-submit");
+      await user.click(submitBtn);
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith(
+          "ai_workflow_create_profile",
+          expect.objectContaining({
+            name: "custom-plan-v1",
+          }),
+        );
+      });
+
+      // 新方案被成功渲染且被选中
+      expect(await screen.findByRole("button", { name: /custom-plan-v1/ })).toBeInTheDocument();
+    });
+
+    it("支持删除已有非激活方案，并在激活方案上禁用删除", async () => {
+      const user = userEvent.setup();
+      let currentProfiles = [...mockProfiles];
+      invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+        const payload = args as Record<string, unknown> | undefined;
+        if (command === "ai_workflow_list_profiles") return currentProfiles;
+        if (command === "ai_workflow_get_profile_matrix") return mockGatewayMatrix;
+        if (command === "ai_workflow_get_model_sources") return mockModelSources;
+        if (command === "ai_workflow_delete_profile") {
+          currentProfiles = currentProfiles.filter((p) => p.name !== payload?.name);
+          return null;
+        }
+        return null;
+      });
+
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      // 默认选中 onespace-api-gateway（active 为 true），删除按钮应当为禁用状态
+      const deleteBtn = await screen.findByTestId("delete-profile-trigger");
+      expect(deleteBtn).toBeDisabled();
+
+      // 切换到非激活方案 baibai-40
+      await user.click(screen.getByRole("button", { name: /baibai-40/ }));
+
+      // 切换后删除按钮启用
+      await waitFor(() => {
+        expect(deleteBtn).not.toBeDisabled();
+      });
+
+      // 点击删除按钮触发二次确认
+      await user.click(deleteBtn);
+
+      // 确认弹窗出现，点击确认删除（精确匹配 "删除" 或 "Delete" 按钮）
+      const confirmOkBtn = await screen.findByRole("button", { name: /^删除$|^Delete$/i });
+      await user.click(confirmOkBtn);
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith(
+          "ai_workflow_delete_profile",
+          expect.objectContaining({
+            name: "baibai-40",
+          }),
+        );
+      });
+    });
+
+    it("整列填充支持模糊检索候选模型列表并点选", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      // 点击 opencode 列整列填充
+      await user.click(await screen.findByTestId("batch-fill-column-opencode"));
+
+      // 找到整列填充输入框，输入 "GLM" 进行模糊过滤
+      const batchInput = await screen.findByTestId("batch-fill-input-opencode");
+      await user.type(batchInput, "GLM");
+
+      // 下拉列表中出现过滤后的匹配项并点击
+      const option = await screen.findByTestId("batch-fill-input-opencode-option-apigateway/GLM-5");
+      expect(option).toBeInTheDocument();
+      await user.click(option);
+
+      // 点击应用填充到整列
+      await user.click(screen.getByTestId("batch-fill-apply-opencode"));
+
+      // 9 个角色的 opencode 均填充为 apigateway/GLM-5
+      for (const role of SUPPORTED_ROLES) {
+        expect(screen.getByTestId(`cell-${role}-opencode`)).toHaveTextContent("apigateway/GLM-5");
+      }
+
+      // 应用后整列填充面板自动收起隐藏
+      expect(screen.queryByTestId("batch-fill-hide-opencode")).not.toBeInTheDocument();
+    });
+
+    it("整列填充支持显式点击收起隐藏按钮", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      // 打开整列填充
+      await user.click(await screen.findByTestId("batch-fill-column-codex"));
+      const hideBtn = await screen.findByTestId("batch-fill-hide-codex");
+      expect(hideBtn).toBeInTheDocument();
+
+      // 点击收起隐藏
+      await user.click(hideBtn);
+      expect(screen.queryByTestId("batch-fill-hide-codex")).not.toBeInTheDocument();
+    });
+
+    it("整行填充优化：支持聚合候选模糊检索点选，支持显式收起及应用后自动隐藏", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      await screen.findByTestId("matrix-row-role-backend");
+
+      // 点击 backend 行批量填充按钮展开整行填充面板
+      await user.click(screen.getByTestId("batch-fill-row-backend"));
+      const hideBtn = await screen.findByTestId("batch-fill-row-hide-backend");
+      expect(hideBtn).toBeInTheDocument();
+
+      // 测试显式点击收起隐藏按钮
+      await user.click(hideBtn);
+      expect(screen.queryByTestId("batch-fill-row-hide-backend")).not.toBeInTheDocument();
+
+      // 再次打开整行填充
+      await user.click(screen.getByTestId("batch-fill-row-backend"));
+      const batchInput = await screen.findByTestId("batch-fill-row-input-backend");
+
+      // 输入 "sonnet" 模糊检索（来自 claude 的候选模型）
+      await user.type(batchInput, "sonnet");
+      const option = await screen.findByTestId(
+        "batch-fill-row-input-backend-option-claude-3-7-sonnet",
+      );
+      expect(option).toBeInTheDocument();
+      await user.click(option);
+
+      // 点击应用整行
+      await user.click(screen.getByTestId("batch-fill-row-apply-backend"));
+
+      // 验证 backend 行各列均被更新
+      expect(screen.getByTestId("cell-backend-codex")).toHaveTextContent(
+        "claude-3-7-sonnet",
+      );
+      expect(screen.getByTestId("cell-backend-claude")).toHaveTextContent(
+        "claude-3-7-sonnet",
+      );
+      expect(screen.getByTestId("cell-backend-opencode")).toHaveTextContent(
+        "claude-3-7-sonnet",
+      );
+
+      // 验证应用后整行填充面板自动收起
+      expect(
+        screen.queryByTestId("batch-fill-row-hide-backend"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("单元格展开编辑时，提供取消按钮与关闭按钮，点击后关闭编辑面板", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      const cell = await screen.findByTestId("cell-backend-codex");
+      // 展开编辑单元格
+      await user.click(cell);
+
+      const cancelBtn = await screen.findByTestId("cell-cancel-backend-codex");
+      const closeBtn = await screen.findByTestId("cell-close-backend-codex");
+      expect(cancelBtn).toBeInTheDocument();
+      expect(closeBtn).toBeInTheDocument();
+
+      // 点击取消按钮，编辑面板关闭
+      await user.click(cancelBtn);
+      expect(
+        screen.queryByTestId("cell-cancel-backend-codex"),
+      ).not.toBeInTheDocument();
+
+      // 重新展开并测试右上角关闭按钮
+      await user.click(cell);
+      const closeBtn2 = await screen.findByTestId("cell-close-backend-codex");
+      await user.click(closeBtn2);
+      expect(
+        screen.queryByTestId("cell-close-backend-codex"),
+      ).not.toBeInTheDocument();
+    });
+  });
 });
+
+
