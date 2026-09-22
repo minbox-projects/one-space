@@ -1,8 +1,8 @@
 use crate::{
-    ai_assistant, ai_env, ai_news, ai_sessions, api_gateway, app_store, assistant_mcp, backup,
-    cli_updates, config, config_conflict, file_sharing, mcp_export, mcp_servers, mcp_templates,
-    messages, protocol_router, proxy, secrets, short_link, skills, ssh_tunnels, storage, subagents,
-    version_detect, workflows, workspaces,
+    ai_assistant, ai_env, ai_news, ai_sessions, ai_workflow_profiles, api_gateway, app_store,
+    assistant_mcp, backup, cli_updates, config, config_conflict, file_sharing, mcp_export,
+    mcp_servers, mcp_templates, messages, protocol_router, proxy, secrets, short_link, skills,
+    ssh_tunnels, storage, subagents, version_detect, workflows, workspaces,
 };
 use std::str::FromStr;
 use tauri::tray::TrayIconBuilder;
@@ -480,7 +480,13 @@ pub fn run() {
             workflows::workflows_replay_run,
             workflows::workflows_runs_list,
             workflows::workflows_run_update,
-            workflows::workflows_run_delete
+            workflows::workflows_run_delete,
+            // AI Workflow Profiles
+            ai_workflow_profiles::ai_workflow_list_profiles,
+            ai_workflow_profiles::ai_workflow_get_profile_matrix,
+            ai_workflow_profiles::ai_workflow_get_model_sources,
+            ai_workflow_profiles::ai_workflow_activate_profile,
+            ai_workflow_profiles::ai_workflow_save_and_activate_profile
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
