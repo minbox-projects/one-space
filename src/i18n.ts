@@ -741,7 +741,6 @@ const resources = {
       apiGatewayUsageTokens: "Tokens",
       apiGatewayUsageRequests: "Requests",
       apiGatewayUsageCost: "Cost",
-      apiGatewayUsageAvgCacheHit: "Avg Cache Hit",
       apiGatewayUsageTrend: "Usage Trend",
       apiGatewayUsagePeak: "Peak",
       apiGatewayUsagePeakDetail:
@@ -764,7 +763,7 @@ const resources = {
       apiGatewayUsageCacheRead: "Cache read",
       apiGatewayUsageCacheWrite: "Cache write",
       apiGatewayUsageOutput: "Output",
-      apiGatewayUsageCacheHit: "Cache hit",
+      apiGatewayUsageCacheHit: "Token Cache Hit Rate",
       apiGatewayUsageCostColumn: "Cost ($)",
       apiGatewayUsageModelColumn: "Model",
       apiGatewayUsageProviderColumn: "Provider",
@@ -4443,7 +4442,6 @@ const resources = {
       apiGatewayUsageTokens: "Tokens",
       apiGatewayUsageRequests: "请求数",
       apiGatewayUsageCost: "花费",
-      apiGatewayUsageAvgCacheHit: "平均缓存命中率",
       apiGatewayUsageTrend: "用量趋势",
       apiGatewayUsagePeak: "峰值",
       apiGatewayUsagePeakDetail:
@@ -4465,7 +4463,7 @@ const resources = {
       apiGatewayUsageCacheRead: "缓存（读）",
       apiGatewayUsageCacheWrite: "缓存（写）",
       apiGatewayUsageOutput: "输出",
-      apiGatewayUsageCacheHit: "缓存命中率",
+      apiGatewayUsageCacheHit: "Token 缓存命中率",
       apiGatewayUsageCostColumn: "花费（$）",
       apiGatewayUsageModelColumn: "模型",
       apiGatewayUsageProviderColumn: "服务商",

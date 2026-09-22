@@ -7,6 +7,31 @@ import type { UsageStats } from "@/lib/apiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
+/**
+ * Backend-owned additive cache-accounting fields. They are required at every
+ * aggregation level (totals, buckets, models, providers); a level with no valid
+ * positive denominator carries `cache_hit_rate_percent: null`.
+ */
+interface CacheAccounting {
+  cache_hit_tokens: number;
+  cache_eligible_tokens: number;
+  cache_hit_rate_percent: number | null;
+  cache_rate_eligible_count: number;
+  successful_request_count: number;
+}
+
+const NO_CACHE_ACCOUNTING: CacheAccounting = {
+  cache_hit_tokens: 0,
+  cache_eligible_tokens: 0,
+  cache_hit_rate_percent: null,
+  cache_rate_eligible_count: 0,
+  successful_request_count: 0,
+};
+
+function cacheAccounting(overrides: Partial<CacheAccounting> = {}): CacheAccounting {
+  return { ...NO_CACHE_ACCOUNTING, ...overrides };
+}
+
 function metrics(overrides: Partial<UsageStats> = {}): UsageStats {
   return {
     request_count: 0,
@@ -17,6 +42,7 @@ function metrics(overrides: Partial<UsageStats> = {}): UsageStats {
     total_tokens: 0,
     amount: 0,
     unpriced_count: 0,
+    ...NO_CACHE_ACCOUNTING,
     granularity: "hour",
     buckets: [],
     models: [],
@@ -133,6 +159,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 30,
             amount: 0,
             unpriced_count: 3,
+            ...cacheAccounting({ successful_request_count: 3 }),
             providers: [
               {
                 provider_id: "p1",
@@ -145,6 +172,7 @@ describe("UsageStatsPanel", () => {
                 total_tokens: 30,
                 amount: 0,
                 unpriced_count: 3,
+                ...cacheAccounting({ successful_request_count: 3 }),
               },
             ],
           },
@@ -204,6 +232,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 200,
             amount: 0,
             unpriced_count: 3,
+            ...cacheAccounting({ successful_request_count: 3 }),
             providers: [
               {
                 provider_id: "p-openai",
@@ -216,6 +245,7 @@ describe("UsageStatsPanel", () => {
                 total_tokens: 200,
                 amount: 0,
                 unpriced_count: 3,
+                ...cacheAccounting({ successful_request_count: 3 }),
               },
             ],
           },
@@ -229,6 +259,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 100,
             amount: 0,
             unpriced_count: 2,
+            ...cacheAccounting({ successful_request_count: 2 }),
             providers: [
               {
                 provider_id: "p-deepseek",
@@ -241,6 +272,7 @@ describe("UsageStatsPanel", () => {
                 total_tokens: 100,
                 amount: 0,
                 unpriced_count: 2,
+                ...cacheAccounting({ successful_request_count: 2 }),
               },
             ],
           },
@@ -316,6 +348,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 60,
             amount: 0.5,
             unpriced_count: 0,
+            ...cacheAccounting({ successful_request_count: 2 }),
             providers: [
               {
                 provider_id: "called",
@@ -328,6 +361,7 @@ describe("UsageStatsPanel", () => {
                 total_tokens: 60,
                 amount: 0.5,
                 unpriced_count: 0,
+                ...cacheAccounting({ successful_request_count: 2 }),
               },
             ],
           },
@@ -353,6 +387,7 @@ describe("UsageStatsPanel", () => {
       total_tokens: 2,
       amount: 0.01,
       unpriced_count: 0,
+      ...cacheAccounting({ successful_request_count: 1 }),
     }));
     invokeMock.mockImplementation(async (command: string) => {
       if (command !== "api_gateway_usage_stats") {
@@ -388,6 +423,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 2,
             amount: 0.01,
             unpriced_count: 0,
+            ...cacheAccounting({ successful_request_count: 1 }),
           },
           {
             label: "2026-09-17",
@@ -399,6 +435,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 2,
             amount: 0.01,
             unpriced_count: 0,
+            ...cacheAccounting({ successful_request_count: 1 }),
           },
         ],
       });
@@ -478,6 +515,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 30,
             amount: 0.1,
             unpriced_count: 0,
+            ...cacheAccounting({ successful_request_count: 2 }),
             providers: [
               {
                 provider_id: "p-alpha",
@@ -490,6 +528,7 @@ describe("UsageStatsPanel", () => {
                 total_tokens: 30,
                 amount: 0.1,
                 unpriced_count: 0,
+                ...cacheAccounting({ successful_request_count: 2 }),
               },
             ],
           },
@@ -503,6 +542,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 30,
             amount: 0.2,
             unpriced_count: 0,
+            ...cacheAccounting({ successful_request_count: 2 }),
             providers: [
               {
                 provider_id: "p-beta",
@@ -515,6 +555,7 @@ describe("UsageStatsPanel", () => {
                 total_tokens: 30,
                 amount: 0.2,
                 unpriced_count: 0,
+                ...cacheAccounting({ successful_request_count: 2 }),
               },
             ],
           },
@@ -559,6 +600,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 2_500_000,
             amount: 0.25,
             unpriced_count: 0,
+            ...cacheAccounting({ successful_request_count: 10 }),
           },
         ],
         models: [
@@ -572,6 +614,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 15_200_000,
             amount: 1.25,
             unpriced_count: 0,
+            ...cacheAccounting({ successful_request_count: 50 }),
             providers: [],
           },
         ],
@@ -609,7 +652,7 @@ describe("UsageStatsPanel", () => {
     expect(modelCells[5]).toHaveAttribute("title", "800");
   });
 
-  it("展示细分指标卡片（缓存命中率、Input、Output、Cache Read、Cache Write）", async () => {
+  it("展示细分指标卡片（Token 缓存命中率、Input、Output、Cache Read、Cache Write）", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command !== "api_gateway_usage_stats") {
         throw new Error(`Unhandled command: ${command}`);
@@ -622,14 +665,25 @@ describe("UsageStatsPanel", () => {
         cache_write_tokens: 50,
         output_tokens: 550,
         amount: 0.05,
+        // 后端权威命中率；旧前端公式会算出 100 / (300 + 100) = 25%。
+        cache_hit_tokens: 100,
+        cache_eligible_tokens: 400,
+        cache_hit_rate_percent: 40,
+        cache_rate_eligible_count: 10,
+        successful_request_count: 10,
       });
     });
 
     renderWithProviders(<UsageStatsPanel />);
 
-    // 平均缓存命中率: 100 / (300 + 100) = 25%
     const cacheHitCard = await screen.findByTestId("api-gateway-usage-card-cache-hit");
-    expect(cacheHitCard).toHaveTextContent("25%");
+    // 指标名称固定为 Token Cache Hit Rate，命中率直接使用后端字段
+    expect(cacheHitCard).toHaveTextContent("Token Cache Hit Rate");
+    expect(cacheHitCard).not.toHaveTextContent("Avg Cache Hit");
+    expect(cacheHitCard).toHaveTextContent("40%");
+    expect(cacheHitCard).not.toHaveTextContent("25%");
+    // 覆盖显示为 有效请求数 / 成功请求数
+    expect(cacheHitCard).toHaveTextContent(/10\s*\/\s*10/);
 
     const inputCard = screen.getByTestId("api-gateway-usage-card-input");
     expect(inputCard).toHaveTextContent("300");
@@ -666,6 +720,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 100,
             amount: 0.05,
             unpriced_count: 0,
+            ...cacheAccounting({ successful_request_count: 2 }),
           },
           {
             label: "2026-09-20",
@@ -677,6 +732,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 400,
             amount: 0.1,
             unpriced_count: 0,
+            ...cacheAccounting({ successful_request_count: 3 }),
           },
         ],
       });
@@ -729,6 +785,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 30,
             amount: 0.01,
             unpriced_count: 0,
+            ...cacheAccounting({ successful_request_count: 2 }),
           },
         ],
       });
@@ -771,6 +828,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 800,
             amount: 0.4,
             unpriced_count: 0,
+            ...cacheAccounting({ successful_request_count: 8 }),
             providers: [
               {
                 provider_id: "prov-1",
@@ -783,6 +841,7 @@ describe("UsageStatsPanel", () => {
                 total_tokens: 800,
                 amount: 0.4,
                 unpriced_count: 0,
+                ...cacheAccounting({ successful_request_count: 8 }),
               },
             ],
           },
@@ -796,6 +855,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 200,
             amount: 0.1,
             unpriced_count: 0,
+            ...cacheAccounting({ successful_request_count: 2 }),
             providers: [],
           },
         ],
@@ -812,7 +872,7 @@ describe("UsageStatsPanel", () => {
     expect(shareBars[2]).toHaveAttribute("aria-label", "20%");
   });
 
-  it("用量分析列表中展示缓存命中率列并正确计算百分比", async () => {
+  it("用量分析列表使用后端缓存命中率与覆盖计数，不再前端换算", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command !== "api_gateway_usage_stats") {
         throw new Error(`Unhandled command: ${command}`);
@@ -831,6 +891,12 @@ describe("UsageStatsPanel", () => {
             total_tokens: 500,
             amount: 0.25,
             unpriced_count: 0,
+            // 旧前端公式会算出 100 / (300 + 100) = 25%，后端权威值为 80%。
+            cache_hit_tokens: 400,
+            cache_eligible_tokens: 500,
+            cache_hit_rate_percent: 80,
+            cache_rate_eligible_count: 5,
+            successful_request_count: 5,
             providers: [
               {
                 provider_id: "prov-anthropic",
@@ -843,6 +909,11 @@ describe("UsageStatsPanel", () => {
                 total_tokens: 500,
                 amount: 0.25,
                 unpriced_count: 0,
+                cache_hit_tokens: 400,
+                cache_eligible_tokens: 500,
+                cache_hit_rate_percent: 80,
+                cache_rate_eligible_count: 5,
+                successful_request_count: 5,
               },
             ],
           },
@@ -853,16 +924,307 @@ describe("UsageStatsPanel", () => {
     renderWithProviders(<UsageStatsPanel />);
 
     const modelTable = await screen.findByTestId("api-gateway-usage-models");
-    // 表头包含 Cache hit
-    expect(within(modelTable).getByRole("columnheader", { name: "Cache hit" })).toBeInTheDocument();
+    // 表头使用固定指标名称
+    expect(
+      within(modelTable).getByRole("columnheader", {
+        name: "Token Cache Hit Rate",
+      }),
+    ).toBeInTheDocument();
 
-    // 模型行缓存命中率: 100 / (300 + 100) = 25%
+    const modelRow = within(modelTable).getByTestId("api-gateway-usage-model-row");
     const modelCacheHitCell = screen.getByTestId("api-gateway-usage-model-cache-hit");
-    expect(modelCacheHitCell).toHaveTextContent("25%");
+    expect(modelCacheHitCell).toHaveTextContent("80%");
+    expect(modelCacheHitCell).not.toHaveTextContent("25%");
+    // 模型行覆盖计数为 有效请求数 / 成功请求数
+    expect(modelRow).toHaveTextContent(/5\s*\/\s*5/);
 
-    // 提供商行缓存命中率
+    const providerRow = within(modelTable).getByTestId("api-gateway-usage-provider-row");
     const providerCacheHitCell = screen.getByTestId("api-gateway-usage-provider-cache-hit");
-    expect(providerCacheHitCell).toHaveTextContent("25%");
+    expect(providerCacheHitCell).toHaveTextContent("80%");
+    expect(providerCacheHitCell).not.toHaveTextContent("25%");
+    expect(providerRow).toHaveTextContent(/5\s*\/\s*5/);
+  });
+
+  it("无有效分母时命中率显示破折号且覆盖为 0 / 成功请求数，绝不显示 0%", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({
+        // 总请求 5 条（含失败），其中成功 3 条，但没有任何有效缓存分母。
+        request_count: 5,
+        successful_request_count: 3,
+        cache_hit_tokens: 0,
+        cache_eligible_tokens: 0,
+        cache_hit_rate_percent: null,
+        cache_rate_eligible_count: 0,
+        total_tokens: 30,
+        models: [
+          {
+            local_model: "legacy-only",
+            request_count: 5,
+            input_tokens: 10,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 20,
+            total_tokens: 30,
+            amount: 0,
+            unpriced_count: 0,
+            successful_request_count: 3,
+            cache_hit_tokens: 0,
+            cache_eligible_tokens: 0,
+            cache_hit_rate_percent: null,
+            cache_rate_eligible_count: 0,
+            providers: [
+              {
+                provider_id: "p-legacy",
+                provider_name: "Legacy Provider",
+                request_count: 5,
+                input_tokens: 10,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 20,
+                total_tokens: 30,
+                amount: 0,
+                unpriced_count: 0,
+                successful_request_count: 3,
+                cache_hit_tokens: 0,
+                cache_eligible_tokens: 0,
+                cache_hit_rate_percent: null,
+                cache_rate_eligible_count: 0,
+              },
+            ],
+          },
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+
+    const cacheHitCard = await screen.findByTestId("api-gateway-usage-card-cache-hit");
+    expect(cacheHitCard).toHaveTextContent("—");
+    expect(cacheHitCard).not.toHaveTextContent("0%");
+    expect(cacheHitCard).toHaveTextContent(/0\s*\/\s*3/);
+    expect(cacheHitCard).not.toHaveTextContent(/0\s*\/\s*5/);
+
+    const modelTable = await screen.findByTestId("api-gateway-usage-models");
+    const modelRow = within(modelTable).getByTestId("api-gateway-usage-model-row");
+    const modelCacheHitCell = within(modelRow).getByTestId(
+      "api-gateway-usage-model-cache-hit",
+    );
+    expect(modelCacheHitCell).toHaveTextContent("—");
+    expect(modelCacheHitCell).not.toHaveTextContent("0%");
+    expect(modelRow).toHaveTextContent(/0\s*\/\s*3/);
+    expect(modelRow).not.toHaveTextContent(/0\s*\/\s*5/);
+
+    const providerRow = within(modelTable).getByTestId(
+      "api-gateway-usage-provider-row",
+    );
+    const providerCacheHitCell = within(providerRow).getByTestId(
+      "api-gateway-usage-provider-cache-hit",
+    );
+    expect(providerCacheHitCell).toHaveTextContent("—");
+    expect(providerCacheHitCell).not.toHaveTextContent("0%");
+    expect(providerRow).toHaveTextContent(/0\s*\/\s*3/);
+    expect(providerRow).not.toHaveTextContent(/0\s*\/\s*5/);
+  });
+
+  it("后端合法的 0.0 显示为 0% 且与无数据的破折号可区分", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({
+        request_count: 2,
+        successful_request_count: 2,
+        total_tokens: 1000,
+        input_tokens: 1000,
+        cache_read_tokens: 0,
+        cache_hit_tokens: 0,
+        cache_eligible_tokens: 1000,
+        cache_hit_rate_percent: 0,
+        cache_rate_eligible_count: 2,
+        models: [
+          {
+            local_model: "uncached-model",
+            request_count: 2,
+            input_tokens: 1000,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 1000,
+            amount: 0,
+            unpriced_count: 0,
+            cache_hit_tokens: 0,
+            cache_eligible_tokens: 1000,
+            cache_hit_rate_percent: 0,
+            cache_rate_eligible_count: 2,
+            successful_request_count: 2,
+            providers: [
+              {
+                provider_id: "p-uncached",
+                provider_name: "Uncached Provider",
+                request_count: 2,
+                input_tokens: 1000,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 1000,
+                amount: 0,
+                unpriced_count: 0,
+                cache_hit_tokens: 0,
+                cache_eligible_tokens: 1000,
+                cache_hit_rate_percent: 0,
+                cache_rate_eligible_count: 2,
+                successful_request_count: 2,
+              },
+            ],
+          },
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+
+    const cacheHitCard = await screen.findByTestId("api-gateway-usage-card-cache-hit");
+    expect(cacheHitCard).toHaveTextContent("0%");
+    expect(cacheHitCard).not.toHaveTextContent("—");
+    expect(cacheHitCard).toHaveTextContent(/2\s*\/\s*2/);
+
+    const modelTable = await screen.findByTestId("api-gateway-usage-models");
+    const modelCacheHitCell = within(modelTable).getByTestId("api-gateway-usage-model-cache-hit");
+    expect(modelCacheHitCell).toHaveTextContent("0%");
+    expect(modelCacheHitCell).not.toHaveTextContent("—");
+  });
+
+  it("同一本地模型的多服务商各自展示后端命中率且服务商行保持分离", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({
+        request_count: 4,
+        total_tokens: 1200,
+        cache_hit_tokens: 750,
+        cache_eligible_tokens: 1000,
+        cache_hit_rate_percent: 75,
+        cache_rate_eligible_count: 2,
+        successful_request_count: 2,
+        models: [
+          {
+            local_model: "shared-local-model",
+            request_count: 4,
+            input_tokens: 600,
+            cache_read_tokens: 300,
+            cache_write_tokens: 0,
+            output_tokens: 300,
+            total_tokens: 1200,
+            amount: 0.6,
+            unpriced_count: 0,
+            // 模型汇总由后端 token 加权得出 75%；旧公式会得到 300 / (600 + 300) ≈ 33%。
+            cache_hit_tokens: 750,
+            cache_eligible_tokens: 1000,
+            cache_hit_rate_percent: 75,
+            cache_rate_eligible_count: 2,
+            successful_request_count: 2,
+            providers: [
+              {
+                provider_id: "p-openai",
+                provider_name: "OpenAI Compatible",
+                request_count: 2,
+                input_tokens: 300,
+                cache_read_tokens: 100,
+                cache_write_tokens: 0,
+                output_tokens: 150,
+                total_tokens: 600,
+                amount: 0.3,
+                unpriced_count: 0,
+                // 旧公式会得到 100 / (300 + 100) = 25%；后端为 80%。
+                cache_hit_tokens: 400,
+                cache_eligible_tokens: 500,
+                cache_hit_rate_percent: 80,
+                cache_rate_eligible_count: 1,
+                successful_request_count: 1,
+              },
+              {
+                provider_id: "p-anthropic",
+                provider_name: "Anthropic Compatible",
+                request_count: 2,
+                input_tokens: 300,
+                cache_read_tokens: 200,
+                cache_write_tokens: 0,
+                output_tokens: 150,
+                total_tokens: 600,
+                amount: 0.3,
+                unpriced_count: 0,
+                // 旧公式会得到 200 / (300 + 200) = 40%；后端为 70%。
+                cache_hit_tokens: 350,
+                cache_eligible_tokens: 500,
+                cache_hit_rate_percent: 70,
+                cache_rate_eligible_count: 1,
+                successful_request_count: 1,
+              },
+            ],
+          },
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+
+    const modelTable = await screen.findByTestId("api-gateway-usage-models");
+
+    const modelRow = within(modelTable).getByTestId("api-gateway-usage-model-row");
+    expect(modelRow).toHaveTextContent("shared-local-model");
+    const modelCacheHitCell = within(modelRow).getByTestId(
+      "api-gateway-usage-model-cache-hit",
+    );
+    expect(modelCacheHitCell).toHaveTextContent("75%");
+    expect(modelCacheHitCell).not.toHaveTextContent("33%");
+    expect(modelRow).toHaveTextContent(/2\s*\/\s*2/);
+
+    const providerRows = within(modelTable).getAllByTestId(
+      "api-gateway-usage-provider-row",
+    );
+    expect(providerRows).toHaveLength(2);
+    expect(providerRows[0]).toHaveTextContent("OpenAI Compatible");
+    expect(providerRows[1]).toHaveTextContent("Anthropic Compatible");
+    expect(providerRows[0].textContent).not.toEqual(providerRows[1].textContent);
+
+    const providerCacheHitCells = within(modelTable).getAllByTestId(
+      "api-gateway-usage-provider-cache-hit",
+    );
+    expect(providerCacheHitCells).toHaveLength(2);
+    expect(providerCacheHitCells[0]).toHaveTextContent("80%");
+    expect(providerCacheHitCells[0]).not.toHaveTextContent("25%");
+    expect(providerCacheHitCells[1]).toHaveTextContent("70%");
+    expect(providerCacheHitCells[1]).not.toHaveTextContent("40%");
+    expect(providerRows[0]).toHaveTextContent(/1\s*\/\s*1/);
+    expect(providerRows[1]).toHaveTextContent(/1\s*\/\s*1/);
+  });
+
+  it("中文环境命中率指标名称为 Token 缓存命中率", async () => {
+    await i18n.changeLanguage("zh");
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "api_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({
+        request_count: 2,
+        cache_hit_tokens: 50,
+        cache_eligible_tokens: 100,
+        cache_hit_rate_percent: 50,
+        cache_rate_eligible_count: 2,
+        successful_request_count: 2,
+      });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+
+    const cacheHitCard = await screen.findByTestId("api-gateway-usage-card-cache-hit");
+    expect(cacheHitCard).toHaveTextContent("Token 缓存命中率");
+    expect(cacheHitCard).not.toHaveTextContent("平均缓存命中率");
+    expect(cacheHitCard).toHaveTextContent("50%");
   });
 
   it("脏数据中空服务商行不渲染，含数据的真实服务商行仍保留", async () => {
@@ -885,6 +1247,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 30,
             amount: 0.1,
             unpriced_count: 0,
+            ...cacheAccounting({ successful_request_count: 2 }),
             providers: [
               {
                 provider_id: "prov-a",
@@ -897,6 +1260,7 @@ describe("UsageStatsPanel", () => {
                 total_tokens: 30,
                 amount: 0.1,
                 unpriced_count: 0,
+                ...cacheAccounting({ successful_request_count: 2 }),
               },
               {
                 provider_id: "",
@@ -909,6 +1273,7 @@ describe("UsageStatsPanel", () => {
                 total_tokens: 0,
                 amount: 0,
                 unpriced_count: 0,
+                ...cacheAccounting(),
               },
             ],
           },
@@ -923,6 +1288,7 @@ describe("UsageStatsPanel", () => {
             total_tokens: 2,
             amount: 0,
             unpriced_count: 0,
+            ...cacheAccounting({ successful_request_count: 1 }),
             providers: [
               {
                 provider_id: "",
@@ -935,6 +1301,7 @@ describe("UsageStatsPanel", () => {
                 total_tokens: 2,
                 amount: 0,
                 unpriced_count: 0,
+                ...cacheAccounting({ successful_request_count: 1 }),
               },
             ],
           },
