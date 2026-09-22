@@ -1,5 +1,5 @@
 use super::{
-    default_port, now_ts, GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelPrice,
+    now_ts, resolve_port, GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelPrice,
     CONFIG_FILE, LEGACY_CONFIG_FILE_NAME, LEGACY_USAGE_DB_FILE_NAME, MAX_PROVIDER_WEIGHT,
     MIN_PROVIDER_WEIGHT,
 };
@@ -75,9 +75,7 @@ pub(in crate::api_gateway) fn effective_default_key(
 }
 
 pub(in crate::api_gateway) fn normalize_config(config: &mut GatewayConfig) {
-    if config.port == 0 {
-        config.port = default_port();
-    }
+    config.port = resolve_port(config.port, cfg!(debug_assertions));
     for provider in &mut config.providers {
         if provider.weight < MIN_PROVIDER_WEIGHT || provider.weight > MAX_PROVIDER_WEIGHT {
             provider.weight = provider.weight.clamp(MIN_PROVIDER_WEIGHT, MAX_PROVIDER_WEIGHT);

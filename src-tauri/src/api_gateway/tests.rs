@@ -2469,6 +2469,63 @@ fn default_port_release_stays_17688_and_dev_uses_17689() {
     }
 }
 
+/// The shared `api_gateway.json` is written by both `tauri dev` (debug) and the
+/// installed release build, so the release default stored on disk must resolve
+/// to the dev default in a debug build instead of making `tauri dev` fight the
+/// installed app for port 17688.
+#[test]
+fn read_config_resolves_release_default_port_to_dev_port() {
+    with_temp_home("shared-release-port", |_home| {
+        let stored = json!({
+            "enabled": false,
+            "port": 17688,
+            "providers": [],
+            "keys": [],
+            "default_key_id": null,
+            "terminal_syncs": []
+        });
+        let password = crate::crypto::get_or_init_master_password().expect("master password");
+        let encrypted =
+            crate::crypto::encrypt(&stored.to_string(), &password).expect("encrypt shared config");
+        fs::write(config_path().expect("config path"), encrypted).expect("write shared config");
+
+        let loaded = super::storage::read_config().expect("read shared config");
+        assert_eq!(
+            loaded.port, 17689,
+            "the shared release port must resolve to the dev port"
+        );
+    });
+}
+
+/// A stored port that is neither canonical default is a real custom value and
+/// must survive a write/read cycle untouched.
+#[test]
+fn read_config_preserves_custom_port() {
+    with_temp_home("custom-port", |_home| {
+        let mut config = GatewayConfig::default();
+        config.port = 19000;
+        super::storage::write_config(&config).expect("write config");
+
+        let loaded = super::storage::read_config().expect("read config");
+        assert_eq!(loaded.port, 19000, "a custom port must never be rewritten");
+    });
+}
+
+/// Both build profiles resolve the two canonical defaults to their own port and
+/// keep every other value, so the shared file can never move release off 17688
+/// or dev off 17689.
+#[test]
+fn resolve_port_maps_canonical_defaults_per_build_profile() {
+    assert_eq!(super::resolve_port(17688, true), 17689);
+    assert_eq!(super::resolve_port(17689, true), 17689);
+    assert_eq!(super::resolve_port(17688, false), 17688);
+    assert_eq!(super::resolve_port(17689, false), 17688);
+    assert_eq!(super::resolve_port(0, true), 17689);
+    assert_eq!(super::resolve_port(0, false), 17688);
+    assert_eq!(super::resolve_port(19000, true), 19000);
+    assert_eq!(super::resolve_port(19000, false), 19000);
+}
+
 #[test]
 fn build_gateway_provider_rejects_unsupported_tools() {
     for tool in ["claude", "antigravity", ""] {
@@ -5852,7 +5909,9 @@ async fn capture_terminal_sync(
 #[tokio::test]
 async fn terminal_sync_with_seam_creates_one_gateway_provider_per_tool() {
     let _home = isolated_temp_home("terminal-sync-seam-create");
-    let config = gateway_config(17688);
+    // A custom port keeps this terminal-sync test independent of the build
+    // profile's canonical port resolution.
+    let config = gateway_config(19000);
     super::storage::write_config(&config).unwrap();
     let local_base_url = super::storage::local_base_url(config.port);
 
