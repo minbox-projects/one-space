@@ -47,6 +47,7 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 - `~/.agents/skills` 是所有 Skills 安装、扫描、同步与显示的规范目录；迁移后不再按工具维护独立 Skills 目录。
 - `~/.claude/skills` 是指向 `~/.agents/skills` 的兼容符号链接；若该路径被普通文件/目录或错误、损坏的符号链接占用，则保持原样并返回可操作的失败，绝不覆盖。
 - 同名冲突以统一目录版本为准；工具特定版本备份到 `~/.agents/skills/.backups/<tool>/<skill>/<content-hash>/`，按来源工具、Skill 名与内容哈希做幂等键，重复初始化不产生重复备份。
+- `.backups`、`.stage-*`、`.backup-*` 是内部产物，绝不视为 Skill：扫描、迁移、投影、哈希、复制与计数全部跳过，避免递归膨胀。启动初始化时清理统一与各工具 skills 根下的 `.stage-*`/`.backup-*`、删除工具根 `.backups` 副本；统一 `.backups` 出现递归嵌套污染时整体删除，未污染的合法备份保留。
 - 兼容性矩阵由后端记录 Claude / OpenCode / Codex / Antigravity 对 `~/.agents/skills` 的读取行为；无法直接读取的工具显式标记为依赖兼容路径或不受支持。
 
 ## API 网关模块与边界

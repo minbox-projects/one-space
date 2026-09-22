@@ -294,6 +294,9 @@ pub(in crate::skills) fn has_path_traversal(path: &Path) -> bool {
 
 pub(in crate::skills) fn is_ignored_name(name: &str) -> bool {
     IGNORE_NAMES.contains(&name)
+        || name == ".backups"
+        || name.starts_with(".stage-")
+        || name.starts_with(".backup-")
 }
 
 pub(in crate::skills) fn parse_duplicate_file_name(name: &str) -> Option<String> {

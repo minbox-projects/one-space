@@ -1591,3 +1591,233 @@ fn unified_skills_commands_are_registered_in_the_tauri_handler() {
         "skills compatibility results must be registered as a Tauri command"
     );
 }
+
+#[test]
+fn reconcile_never_projects_internal_artifacts_into_tool_dirs() {
+    with_temp_home("reconcile-skip-internal", |home| {
+        let unified = unified_skills_root(home);
+        write_skill_dir(
+            &unified.join("git-commit"),
+            "git-commit",
+            "Git Commit",
+            "Unified version",
+        );
+        write_skill_dir(
+            &unified
+                .join(".backups")
+                .join("codex")
+                .join("git-commit")
+                .join("deadbeef"),
+            "git-commit",
+            "Git Commit",
+            "Backed up version",
+        );
+        write_skill_dir(
+            &unified.join(".stage-1"),
+            "git-commit",
+            "Git Commit",
+            "Stage copy",
+        );
+
+        reconcile_one_model("codex", INSTALL_SCOPE_GLOBAL, None).expect("reconcile codex");
+        reconcile_one_model("opencode", INSTALL_SCOPE_GLOBAL, None).expect("reconcile opencode");
+
+        let codex = home.join(".codex").join("skills");
+        assert!(
+            codex.join("git-commit").join("SKILL.md").exists(),
+            "a real skill must still be projected into {}",
+            codex.display()
+        );
+        assert!(
+            !codex.join(".backups").exists(),
+            ".backups must never be projected into {}",
+            codex.display()
+        );
+        assert!(
+            !codex.join(".stage-1").exists(),
+            "stage directories must never be projected into {}",
+            codex.display()
+        );
+        let opencode = home.join(".config").join("opencode").join("skills");
+        assert!(
+            !opencode.join(".backups").exists(),
+            ".backups must never be projected into {}",
+            opencode.display()
+        );
+    });
+}
+
+#[test]
+fn initialization_never_migrates_tool_internal_artifacts_and_removes_them() {
+    with_temp_home("init-skip-internal", |home| {
+        let codex = home.join(".codex").join("skills");
+        write_skill_dir(
+            &codex.join("git-commit"),
+            "git-commit",
+            "Git Commit",
+            "Tool version",
+        );
+        write_skill_dir(
+            &codex.join(".backups").join("codex").join("git-commit"),
+            "git-commit",
+            "Git Commit",
+            "Tool-side junk",
+        );
+        write_skill_dir(
+            &codex.join(".stage-1"),
+            "git-commit",
+            "Git Commit",
+            "Tool-side stage",
+        );
+
+        initialize_unified_skills().expect("initialize");
+
+        let unified = unified_skills_root(home);
+        assert!(
+            unified.join("git-commit").join("SKILL.md").exists(),
+            "a real tool skill must be migrated into {}",
+            unified.display()
+        );
+        assert!(
+            !unified.join(".backups").exists(),
+            "tool-side internal artifacts must not be backed up into {}",
+            unified.display()
+        );
+        assert!(
+            !unified.join(".stage-1").exists(),
+            "tool-side stage directories must not be migrated into {}",
+            unified.display()
+        );
+        assert!(
+            !codex.join(".backups").exists(),
+            "tool-side .backups must be removed"
+        );
+        assert!(
+            !codex.join(".stage-1").exists(),
+            "tool-side stage directories must be removed"
+        );
+        assert!(
+            codex.join("git-commit").join("SKILL.md").exists(),
+            "a real tool skill must be preserved"
+        );
+    });
+}
+
+#[test]
+fn initialization_removes_recursively_polluted_unified_backups() {
+    with_temp_home("init-polluted-backups", |home| {
+        let unified = unified_skills_root(home);
+        write_skill_dir(
+            &unified.join("git-commit"),
+            "git-commit",
+            "Git Commit",
+            "Unified version",
+        );
+        write_skill_dir(
+            &unified
+                .join(".backups")
+                .join("codex")
+                .join(".backups")
+                .join("abc")
+                .join("codex")
+                .join("git-commit"),
+            "git-commit",
+            "Git Commit",
+            "Recursive pollution",
+        );
+
+        initialize_unified_skills().expect("initialize");
+
+        assert!(
+            !unified.join(".backups").exists(),
+            "a polluted .backups tree must be removed"
+        );
+        assert!(
+            unified.join("git-commit").join("SKILL.md").exists(),
+            "a real unified skill must be preserved"
+        );
+    });
+}
+
+#[test]
+fn initialization_preserves_clean_unified_backups() {
+    with_temp_home("init-clean-backups", |home| {
+        let unified = unified_skills_root(home);
+        write_skill_dir(
+            &unified.join("git-commit"),
+            "git-commit",
+            "Git Commit",
+            "Unified version",
+        );
+        let backup = unified
+            .join(".backups")
+            .join("codex")
+            .join("git-commit")
+            .join("abc123");
+        write_skill_dir(&backup, "git-commit", "Git Commit", "Tool-specific version");
+
+        initialize_unified_skills().expect("initialize");
+
+        assert!(
+            backup.join("SKILL.md").exists(),
+            "a clean conflict backup must be preserved"
+        );
+    });
+}
+
+#[test]
+fn local_rescan_and_count_ignore_stage_copies_of_skills() {
+    with_temp_home("rescan-skip-stage", |home| {
+        let unified = unified_skills_root(home);
+        write_skill_dir(
+            &unified.join("git-commit"),
+            "git-commit",
+            "Git Commit",
+            "Unified version",
+        );
+        write_skill_dir(
+            &unified.join(".stage-42"),
+            "git-commit",
+            "Git Commit",
+            "Stage copy",
+        );
+
+        let mut state = SkillsLocalState::default();
+        rebuild_local_installed_from_models(&mut state).expect("rebuild installed");
+        let names: Vec<_> = state.skills.iter().map(|s| s.dir_name.clone()).collect();
+        assert_eq!(
+            names,
+            vec!["git-commit".to_string()],
+            "a stage copy must not be recorded as an installed skill"
+        );
+
+        let count =
+            skills_installed_count_all_scopes().expect("count installed skills across scopes");
+        assert_eq!(
+            count, 1,
+            "a stage copy must not inflate the installed skill count"
+        );
+    });
+}
+
+#[test]
+fn directory_hash_ignores_internal_artifacts() {
+    with_temp_home("hash-ignore-internal", |home| {
+        let plain = home.join("plain");
+        let with_internal = home.join("with-internal");
+        write_skill_dir(&plain, "git-commit", "Git Commit", "Same content");
+        write_skill_dir(&with_internal, "git-commit", "Git Commit", "Same content");
+        write_skill_dir(
+            &with_internal.join(".backups").join("codex").join("x"),
+            "x",
+            "X",
+            "Junk backup",
+        );
+        fs::create_dir_all(with_internal.join(".stage-9")).expect("create stage");
+        assert_eq!(
+            hash_dir(&plain).expect("hash plain"),
+            hash_dir(&with_internal).expect("hash with internal artifacts"),
+            "internal artifacts must not affect the directory hash"
+        );
+    });
+}

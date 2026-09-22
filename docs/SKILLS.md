@@ -106,6 +106,8 @@
 
 首次初始化会把工具目录中已存在的非冲突 Skills 迁移进 `~/.agents/skills`；同名冲突时保留统一目录版本，并把工具目录版本备份到 `~/.agents/skills/.backups/<tool>/<skill>/`。初始化对失败项按条结构化报告，不会丢弃已成功的迁移。
 
+`.backups`、`.stage-*`、`.backup-*` 是 OneSpace 内部产物，不是 Skill：扫描、迁移、投影、哈希、复制与计数一律跳过。初始化启动时还会清理统一目录与各工具目录根下的 `.stage-*`/`.backup-*` 残留、删除工具目录根下的 `.backups` 副本；若统一目录的 `.backups` 内出现递归嵌套的 `.backups`（历史版本递归膨胀产物），则整体删除后重建，未污染的冲突备份保持不动。
+
 ### 5.2 Project Scope
 
 项目安装目录：

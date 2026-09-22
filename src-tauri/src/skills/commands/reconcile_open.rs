@@ -1,18 +1,18 @@
 use crate::config::{self};
 use crate::skills::{
     acquire_job_key, api_ok, combined_revision, compatibility_matrix, ensure_dir,
-    find_current_installed_skill, get_source, hash_dir, job_lock, load_local_skills_state,
-    load_skills_state, load_sync_state, local_skill_id, make_repo_key, mirror_dir, model_dir,
-    normalize_install_scope, normalize_project_root_for_scope, normalized_record_dir_name, now_ts,
-    parse_required_skill_dir_name, parse_skill_md, project_compat_dirs, project_primary_dir,
-    read_required_skill_dir_name, record_local_dir, record_scope,
-    refresh_repository_record_from_snapshot, replace_dir_atomic, repo_storage_dir,
+    find_current_installed_skill, get_source, hash_dir, is_ignored_name, job_lock,
+    load_local_skills_state, load_skills_state, load_sync_state, local_skill_id, make_repo_key,
+    mirror_dir, model_dir, normalize_install_scope, normalize_project_root_for_scope,
+    normalized_record_dir_name, now_ts, parse_required_skill_dir_name, parse_skill_md,
+    project_compat_dirs, project_primary_dir, read_required_skill_dir_name, record_local_dir,
+    record_scope, refresh_repository_record_from_snapshot, replace_dir_atomic, repo_storage_dir,
     resolve_effective_models, save_local_skills_state, save_skills_state,
     scan_project_installed_skills_for_model, snapshot_repository_index_baseline,
     source_skill_abs_path, trigger_storage_sync, upsert_repository_from_dir, ApiOk,
     CatalogOpenFolderResult, CatalogSkillKeyInput, CompatibilityResult, RepositoryRecord,
-    SkillKeyInput, SkillRecord, SkillsInitResult, SkillsLocalState, SkillMigrationOutcome,
-    SkillMigrationStatus, INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT, MODELS,
+    SkillKeyInput, SkillMigrationOutcome, SkillMigrationStatus, SkillRecord, SkillsInitResult,
+    SkillsLocalState, INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT, MODELS,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -63,16 +63,90 @@ fn migrate_skill_into_unified(
     }
 }
 
+fn remove_generated_dir(path: &Path) {
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if meta.is_dir() && !meta.file_type().is_symlink() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
+fn cleanup_generated_dirs(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with(".stage-") || name.starts_with(".backup-") {
+            remove_generated_dir(&entry.path());
+        }
+    }
+}
+
+fn unified_backups_is_polluted(backups: &Path) -> bool {
+    fn scan(dir: &Path, remaining_depth: u32) -> bool {
+        if remaining_depth == 0 {
+            return false;
+        }
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == ".backups" || name.starts_with(".stage-") || name.starts_with(".backup-") {
+                return true;
+            }
+            if scan(&entry.path(), remaining_depth - 1) {
+                return true;
+            }
+        }
+        false
+    }
+    scan(backups, 3)
+}
+
+fn cleanup_generated_artifacts(unified: &Path) {
+    let unified_canon = fs::canonicalize(unified).unwrap_or_else(|_| unified.to_path_buf());
+    cleanup_generated_dirs(unified);
+    let unified_backups = unified.join(".backups");
+    if unified_backups.is_dir() && unified_backups_is_polluted(&unified_backups) {
+        remove_generated_dir(&unified_backups);
+    }
+    for model in MODELS {
+        let Ok(root) = mirror_dir(model) else {
+            continue;
+        };
+        cleanup_generated_dirs(&root);
+        let root_canon = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+        if root_canon == unified_canon {
+            continue;
+        }
+        let tool_backups = root.join(".backups");
+        if tool_backups.is_dir() {
+            remove_generated_dir(&tool_backups);
+        }
+    }
+}
+
 pub fn initialize_unified_skills() -> Result<SkillsInitResult, String> {
     let unified = dirs::home_dir()
         .ok_or("home directory not found")?
         .join(".agents")
         .join("skills");
     fs::create_dir_all(&unified).map_err(|e| e.to_string())?;
+    cleanup_generated_artifacts(&unified);
+    let unified_canon = fs::canonicalize(&unified).unwrap_or_else(|_| unified.clone());
     let mut outcomes = Vec::new();
     for tool in MODELS {
         let source_root = mirror_dir(tool)?;
-        if source_root == unified {
+        let source_canon = fs::canonicalize(&source_root).unwrap_or_else(|_| source_root.clone());
+        if source_canon == unified_canon {
             continue;
         }
         let entries = match fs::read_dir(&source_root) {
@@ -85,6 +159,9 @@ pub fn initialize_unified_skills() -> Result<SkillsInitResult, String> {
                 continue;
             }
             let skill = entry.file_name().to_string_lossy().to_string();
+            if is_ignored_name(&skill) {
+                continue;
+            }
             match migrate_skill_into_unified(tool, &skill, &source, &unified) {
                 Ok(Some(outcome)) => outcomes.push(outcome),
                 Ok(None) => {}
@@ -128,7 +205,11 @@ pub(in crate::skills) fn reconcile_one_model(
                 let entry = entry.map_err(|e| e.to_string())?;
                 let p = entry.path();
                 if p.is_dir() {
-                    primary_map.insert(entry.file_name().to_string_lossy().to_string(), p);
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if is_ignored_name(&name) {
+                        continue;
+                    }
+                    primary_map.insert(name, p);
                 }
             }
             let mut compat_names = HashSet::new();
@@ -137,6 +218,9 @@ pub(in crate::skills) fn reconcile_one_model(
                 let p = entry.path();
                 if p.is_dir() {
                     let name = entry.file_name().to_string_lossy().to_string();
+                    if is_ignored_name(&name) {
+                        continue;
+                    }
                     compat_names.insert(name.clone());
                     if let Some(src) = primary_map.get(&name) {
                         let dst = compat.join(&name);
@@ -166,6 +250,9 @@ pub(in crate::skills) fn reconcile_one_model(
         let p = entry.path();
         if p.is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
+            if is_ignored_name(&name) {
+                continue;
+            }
             sot_map.insert(name, p);
         }
     }
@@ -176,6 +263,9 @@ pub(in crate::skills) fn reconcile_one_model(
         let p = entry.path();
         if p.is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
+            if is_ignored_name(&name) {
+                continue;
+            }
             mirror_names.insert(name.clone());
             if let Some(src) = sot_map.get(&name) {
                 let dst = mirror.join(&name);
@@ -228,6 +318,9 @@ pub(in crate::skills) fn rebuild_local_installed_from_models(
                 continue;
             }
             let dir_name = entry.file_name().to_string_lossy().to_string();
+            if is_ignored_name(&dir_name) {
+                continue;
+            }
             let md = p.join("SKILL.md");
             if !md.exists() {
                 continue;
@@ -364,6 +457,10 @@ pub async fn skills_rescan_mirror(
         for entry in entries.flatten() {
             let p = entry.path();
             if !p.is_dir() {
+                continue;
+            }
+            let entry_name = entry.file_name().to_string_lossy().to_string();
+            if is_ignored_name(&entry_name) {
                 continue;
             }
             let md = p.join("SKILL.md");
@@ -653,7 +750,14 @@ pub fn skills_installed_count_all_scopes() -> Result<usize, String> {
             if let Ok(entries) = fs::read_dir(&root) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_dir() && path.join("SKILL.md").exists() {
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if is_ignored_name(&name) {
+                        continue;
+                    }
+                    if path.join("SKILL.md").exists() {
                         seen.insert(fs::canonicalize(&path).unwrap_or(path));
                     }
                 }
