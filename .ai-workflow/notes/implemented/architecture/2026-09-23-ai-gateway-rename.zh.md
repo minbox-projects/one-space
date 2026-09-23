@@ -15,7 +15,7 @@ Status: implemented
 - 前端：`src/components/AiGateway/` 与 `src/lib/aiGateway.ts`；`AiGateway*` 组件名、`aiGateway*` 命令封装与 `AI_GATEWAY_*` 常量；事件 `ai-gateway-status-update` 与 `ai-gateway-config-update`；导航 id `ai-gateway` 与 `ai-gateway-backend`；设置分区 `ai-gateway`。
 - 后端：`src-tauri/src/ai_gateway.rs` 及其子模块（`types_config`、`storage`、`selection`、`runtime_http`、`forwarding`、`commands`、`usage_log`、`templates`、`migration`）与 `ai_gateway_*` Tauri 命令。
 - 持久化与终端集成：`ai_gateway.json`、`ai_gateway_usage.db`、终端同步标记 `ai_gateway_gateway`，以及同步生成的服务商记录名 `AI Gateway`。
-- `migrate_legacy_files()` 在 `get_app_dir()` 下把改名前的配置与用量 SQLite 数据库（含 `-wal`/`-shm` 侧车）各自改名为当前名：仅当目标不存在时执行，已存在的当前文件始终优先且旧文件保持不动，因此绝不覆盖、幂等、错误全部忽略。调用点为配置读取、配置写入、`ai_gateway_autostart` 与 `UsageLogStore::default_store`。
+- `migrate_legacy_files()` 在 `get_app_dir()` 下把改名前的配置文件与用量 SQLite 主库改名为当前名：两者各自仅在旧文件存在且新文件不存在时改名；用量库 `-wal`/`-shm` 侧车仅当本次调用成功改名旧主库后才随迁，且各自仅在新目标不存在时改名；当前主库已存在或旧主库缺失时，遗留侧车保持原状，绝不把遗留侧车挂到现有库。绝不覆盖、幂等、错误静默忽略。已接受的边界：主库与侧车改名之间进程中断时，旧侧车此后不再迁移，旧 WAL 中未 checkpoint 的事务不恢复。调用点为配置读取、配置写入、`ai_gateway_autostart` 与 `UsageLogStore::default_store`。
 - `has_legacy_gateway_marker()` 识别顶层或 `tool_config` 内的改名前沿用的终端标记；新写入一律使用 `ai_gateway_gateway`，下次同步复用旧记录的 id 并原地升级，不会新建重复记录。
 - `src-tauri/src/ai_gateway/migration.rs` 是一版生命的临时模块，也是唯一允许出现改名前后两套标识符的地方；其注释声明下个版本删除，删除条件为所有用户完成升级且删除不改变行为。
 - 原 `cleanup_legacy_files()` 与 API Fusion 时代的遗留常量已删除：`api_fusion.json` 与 `api_fusion_usage.db` 不再被自动删除，也不会被读取。
@@ -29,7 +29,8 @@ Status: implemented
 
 ## Consequences
 
-- 既有安装通过这一版的原地改名保留配置与用量历史；两种文件名同时存在时当前文件优先，因此部分迁移的目录可无数据损失地收敛。
+- 既有安装通过这一版的原地改名保留配置与用量历史；各文件仅在其当前名不存在时改名，因此部分迁移的目录可收敛：当前文件优先、旧文件保持不动。
+- 已接受的边界：用量库主库改名与侧车改名之间发生进程中断时，遗留 `-wal`/`-shm` 侧车此后不再迁移，旧 WAL 中未 checkpoint 的事务不恢复；配置与主库数据仍然保留。
 - 只带旧标记的服务商在迁移版本期间仍按网关记录识别；下次同步原地升级后，该记录只使用当前标记。
 - `api_fusion.json` 与 `api_fusion_usage.db` 继续以孤儿文件留在磁盘上：此前的自动删除被刻意撤回，两个文件也不会被读取，因此本次改名不删除任何用户数据。
 - 下个版本删除 `migration.rs` 只有在升级窗口结束后才行为中立；在那之前，它始终是"全部 `ai_gateway` 命名"规则的唯一豁免。
