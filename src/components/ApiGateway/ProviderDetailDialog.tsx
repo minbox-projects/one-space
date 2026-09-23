@@ -639,6 +639,44 @@ export function ProviderDetailDialog({
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                {mappings.length > 0 ? (
+                  <>
+                    <button
+                      type="button"
+                      data-testid="api-gateway-enable-all-mappings"
+                      onClick={() =>
+                        setMappings((prev) =>
+                          prev.map((entry) => ({ ...entry, enabled: true })),
+                        )
+                      }
+                      disabled={
+                        busy || mappings.every((entry) => entry.enabled !== false)
+                      }
+                      aria-label={t("apiGatewayEnableAllMappings", "Enable all")}
+                      className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs font-medium shadow-sm transition hover:bg-muted disabled:opacity-50"
+                    >
+                      <Eye className="h-3 w-3" />
+                      {t("apiGatewayEnableAllMappings", "Enable all")}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="api-gateway-disable-all-mappings"
+                      onClick={() =>
+                        setMappings((prev) =>
+                          prev.map((entry) => ({ ...entry, enabled: false })),
+                        )
+                      }
+                      disabled={
+                        busy || mappings.every((entry) => entry.enabled === false)
+                      }
+                      aria-label={t("apiGatewayDisableAllMappings", "Disable all")}
+                      className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs font-medium shadow-sm transition hover:bg-muted disabled:opacity-50"
+                    >
+                      <EyeOff className="h-3 w-3" />
+                      {t("apiGatewayDisableAllMappings", "Disable all")}
+                    </button>
+                  </>
+                ) : null}
                 {autoDisabledModels.length > 0 && provider.id !== "" && onReenableModels ? (
                   <button
                     type="button"
