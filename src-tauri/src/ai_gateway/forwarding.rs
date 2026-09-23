@@ -6,11 +6,11 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 /// Parsed upstream response for a non-streaming attempt.
-pub(in crate::api_gateway) struct UpstreamJsonResponse {
-    pub(in crate::api_gateway) status: u16,
-    pub(in crate::api_gateway) body: Vec<u8>,
-    pub(in crate::api_gateway) parsed: bool,
-    pub(in crate::api_gateway) headers: HeaderMap,
+pub(in crate::ai_gateway) struct UpstreamJsonResponse {
+    pub(in crate::ai_gateway) status: u16,
+    pub(in crate::ai_gateway) body: Vec<u8>,
+    pub(in crate::ai_gateway) parsed: bool,
+    pub(in crate::ai_gateway) headers: HeaderMap,
 }
 
 /// Bound only the connect phase (the repo's `proxy.rs` uses 10s) so a
@@ -35,11 +35,11 @@ fn shared_client() -> &'static Client {
             .connect_timeout(UPSTREAM_CONNECT_TIMEOUT)
             .read_timeout(UPSTREAM_READ_TIMEOUT)
             .build()
-            .expect("build API Gateway upstream HTTP client")
+            .expect("build AI Gateway upstream HTTP client")
     })
 }
 
-pub(in crate::api_gateway) fn join_url(base: &str, path: &str) -> String {
+pub(in crate::ai_gateway) fn join_url(base: &str, path: &str) -> String {
     let base = base.trim_end_matches('/');
     let path = path.trim_start_matches('/');
     // Providers are commonly configured with a base URL that already ends in
@@ -78,7 +78,7 @@ fn is_forwardable_client_header(name: &str) -> bool {
 }
 
 /// Rewrite only the top-level `model` field, leaving all other fields equivalent.
-pub(in crate::api_gateway) fn rewrite_body_model(
+pub(in crate::ai_gateway) fn rewrite_body_model(
     body: &[u8],
     model: &str,
 ) -> Result<Vec<u8>, String> {
@@ -140,7 +140,7 @@ fn build_request(
 }
 
 /// Send a non-streaming upstream request and return status plus raw body.
-pub(in crate::api_gateway) async fn forward_non_streaming(
+pub(in crate::ai_gateway) async fn forward_non_streaming(
     provider: &GatewayUpstreamProvider,
     path: &str,
     body: &[u8],
@@ -169,7 +169,7 @@ pub(in crate::api_gateway) async fn forward_non_streaming(
 
 /// Open an upstream streaming response. Callers stream bytes and enforce the
 /// first-byte switching boundary themselves.
-pub(in crate::api_gateway) async fn open_streaming_response(
+pub(in crate::ai_gateway) async fn open_streaming_response(
     provider: &GatewayUpstreamProvider,
     path: &str,
     body: &[u8],

@@ -9,14 +9,14 @@
 //! (missing `enabled` field, removed price fields, changed behavior) until
 //! Step 1 lands.
 
-use crate::api_gateway::templates::{
+use crate::ai_gateway::templates::{
     apply_create_provider_from_template, apply_delete_provider_model,
     apply_delete_provider_template, apply_reset_provider_templates,
     apply_restore_provider_model, apply_template_sync_with, apply_upsert_provider_template,
     builtin_templates, find_builtin_template, parse_template_snapshot, provider_template_views,
     ProviderTemplateView,
 };
-use crate::api_gateway::types_config::{
+use crate::ai_gateway::types_config::{
     GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelMapping, ModelPrice, ProviderTemplate,
     ProviderTemplateModel, ProviderTemplateState, TerminalSyncRecord, UpstreamProtocol,
 };
@@ -462,7 +462,7 @@ fn find_builtin_template_unknown_id_reports_error() {
     assert_eq!(commandcode.id, "commandcode");
 }
 
-/// Compatibility: an old `api_gateway.json` without any new field deserializes
+/// Compatibility: an old `ai_gateway.json` without any new field deserializes
 /// with serde defaults and survives a serialization round trip unchanged.
 #[test]
 fn legacy_gateway_config_without_new_fields_deserializes() {
@@ -2742,7 +2742,7 @@ fn live_catalog_fixture_names_cover_their_identifier_segments() {
 
 /// AC-013 clause 3: an auto-disabled mapping row retains its runtime state
 /// (`auto_disabled`, counter, reason, timestamps) across a template sync.
-/// Newly propagated rows arrive healthy; `api_gateway_restore_provider_model`
+/// Newly propagated rows arrive healthy; `ai_gateway_restore_provider_model`
 /// produces a healthy rebuilt row as well. A regression that copies runtime
 /// state from old to new rows on sync will fail this test.
 #[test]
@@ -2841,7 +2841,7 @@ fn sync_does_not_rewrite_runtime_state_on_existing_rows_and_restores_healthy() {
     assert_eq!(y_map.disabled_at, None, "new row has no disabled_at");
     assert_eq!(y_map.last_error_at, None, "new row has no last_error_at");
 
-    // ---- Restore: api_gateway_restore_provider_model rebuilds healthy. ----
+    // ---- Restore: ai_gateway_restore_provider_model rebuilds healthy. ----
     // First, add model-x to the ignored set so we can restore it.
     let prov = config.providers.iter_mut().find(|p| p.id == "p-sync-rt").expect("provider");
     prov.ignored_models.push("model-x".to_string());

@@ -1,5 +1,5 @@
 use crate::{
-    ai_assistant, ai_env, ai_news, ai_sessions, ai_workflow_profiles, api_gateway, app_store,
+    ai_assistant, ai_env, ai_news, ai_sessions, ai_workflow_profiles, ai_gateway, app_store,
     assistant_mcp, backup, cli_updates, config, config_conflict, file_sharing, mcp_export,
     mcp_servers, mcp_templates, messages, protocol_router, proxy, secrets, short_link, skills,
     ssh_tunnels, storage, subagents, version_detect, workflows, workspaces,
@@ -105,9 +105,9 @@ pub fn run() {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let _ = protocol_router::protocol_router_autostart().await;
-                let _ = api_gateway::api_gateway_autostart(app_handle.clone()).await;
+                let _ = ai_gateway::ai_gateway_autostart(app_handle.clone()).await;
                 let _ = app_handle.emit("protocol-router-status-update", ());
-                let _ = app_handle.emit("api-gateway-status-update", ());
+                let _ = app_handle.emit("ai-gateway-status-update", ());
             });
             setup_sessions_history_sync_service(app.handle());
             crate::ai_assistant::init_scheduler(app.handle().clone());
@@ -300,37 +300,37 @@ pub fn run() {
             file_sharing::file_sharing_start,
             file_sharing::file_sharing_status,
             file_sharing::file_sharing_stop,
-            // API Gateway
-            api_gateway::api_gateway_get_config,
-            api_gateway::api_gateway_save_config,
-            api_gateway::api_gateway_upsert_provider,
-            api_gateway::api_gateway_delete_provider,
-            api_gateway::api_gateway_set_provider_enabled,
-            api_gateway::api_gateway_reenable_provider_model,
-            api_gateway::api_gateway_reenable_provider_models,
-            api_gateway::api_gateway_upsert_key,
-            api_gateway::api_gateway_delete_key,
-            api_gateway::api_gateway_set_default_key,
-            api_gateway::api_gateway_start,
-            api_gateway::api_gateway_stop,
-            api_gateway::api_gateway_status,
-            api_gateway::api_gateway_terminal_targets,
-            api_gateway::api_gateway_configure_terminal,
-            api_gateway::api_gateway_sync_terminal,
-            api_gateway::api_gateway_usage_stats,
-            api_gateway::api_gateway_request_logs,
-            api_gateway::api_gateway_usage_retention_get,
-            api_gateway::api_gateway_usage_retention_save,
-            api_gateway::api_gateway_provider_templates,
-            api_gateway::api_gateway_sync_provider_template,
-            api_gateway::api_gateway_create_provider_from_template,
-            api_gateway::api_gateway_delete_provider_model,
-            api_gateway::api_gateway_restore_provider_model,
-            api_gateway::api_gateway_upsert_provider_template,
-            api_gateway::api_gateway_delete_provider_template,
-            api_gateway::api_gateway_reset_provider_templates,
-            api_gateway::api_gateway_template_auto_refresh_get,
-            api_gateway::api_gateway_template_auto_refresh_save,
+            // AI Gateway
+            ai_gateway::ai_gateway_get_config,
+            ai_gateway::ai_gateway_save_config,
+            ai_gateway::ai_gateway_upsert_provider,
+            ai_gateway::ai_gateway_delete_provider,
+            ai_gateway::ai_gateway_set_provider_enabled,
+            ai_gateway::ai_gateway_reenable_provider_model,
+            ai_gateway::ai_gateway_reenable_provider_models,
+            ai_gateway::ai_gateway_upsert_key,
+            ai_gateway::ai_gateway_delete_key,
+            ai_gateway::ai_gateway_set_default_key,
+            ai_gateway::ai_gateway_start,
+            ai_gateway::ai_gateway_stop,
+            ai_gateway::ai_gateway_status,
+            ai_gateway::ai_gateway_terminal_targets,
+            ai_gateway::ai_gateway_configure_terminal,
+            ai_gateway::ai_gateway_sync_terminal,
+            ai_gateway::ai_gateway_usage_stats,
+            ai_gateway::ai_gateway_request_logs,
+            ai_gateway::ai_gateway_usage_retention_get,
+            ai_gateway::ai_gateway_usage_retention_save,
+            ai_gateway::ai_gateway_provider_templates,
+            ai_gateway::ai_gateway_sync_provider_template,
+            ai_gateway::ai_gateway_create_provider_from_template,
+            ai_gateway::ai_gateway_delete_provider_model,
+            ai_gateway::ai_gateway_restore_provider_model,
+            ai_gateway::ai_gateway_upsert_provider_template,
+            ai_gateway::ai_gateway_delete_provider_template,
+            ai_gateway::ai_gateway_reset_provider_templates,
+            ai_gateway::ai_gateway_template_auto_refresh_get,
+            ai_gateway::ai_gateway_template_auto_refresh_save,
             // New service_providers domain (replaces providers_*)
             app_store::service_providers_list,
             app_store::service_provider_read_opencode_config,
@@ -570,7 +570,13 @@ mod tests {
         );
         assert_eq!(
             setup_source
-                .matches("app_handle.emit(\"api-gateway-status-update\", ())")
+                .matches("ai_gateway::ai_gateway_autostart(app_handle.clone()).await")
+                .count(),
+            1
+        );
+        assert_eq!(
+            setup_source
+                .matches("app_handle.emit(\"ai-gateway-status-update\", ())")
                 .count(),
             1
         );

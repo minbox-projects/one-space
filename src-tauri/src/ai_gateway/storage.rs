@@ -1,25 +1,13 @@
+use super::migration::migrate_legacy_files;
 use super::{
     now_ts, resolve_port, GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelPrice,
-    CONFIG_FILE, LEGACY_CONFIG_FILE_NAME, LEGACY_USAGE_DB_FILE_NAME, MAX_PROVIDER_WEIGHT,
-    MIN_PROVIDER_WEIGHT,
+    CONFIG_FILE, MAX_PROVIDER_WEIGHT, MIN_PROVIDER_WEIGHT,
 };
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
-/// Best-effort removal of `api_fusion`-era files under `get_app_dir()`.
-///
-/// Never fails: every error is ignored so the main flow is unaffected, and
-/// the current `api_gateway.*` files are never touched.
-pub(in crate::api_gateway) fn cleanup_legacy_files() {
-    let Ok(dir) = crate::config::get_app_dir() else {
-        return;
-    };
-    let _ = fs::remove_file(dir.join(LEGACY_CONFIG_FILE_NAME));
-    let _ = fs::remove_file(dir.join(LEGACY_USAGE_DB_FILE_NAME));
-}
-
-pub(in crate::api_gateway) fn config_path() -> Result<PathBuf, String> {
+pub(in crate::ai_gateway) fn config_path() -> Result<PathBuf, String> {
     Ok(crate::config::get_app_dir()?.join(CONFIG_FILE))
 }
 
@@ -43,7 +31,7 @@ fn read_config_file(path: &PathBuf) -> Result<Option<GatewayConfig>, String> {
 /// Manual choice wins while it points at an enabled key; otherwise the search
 /// advances to the next enabled key in list order (wrapping) so disabling or
 /// deleting the current default transparently falls through.
-pub(in crate::api_gateway) fn resolve_default_key_id(
+pub(in crate::ai_gateway) fn resolve_default_key_id(
     keys: &[GatewayKey],
     stored: Option<&str>,
 ) -> Option<String> {
@@ -67,14 +55,14 @@ pub(in crate::api_gateway) fn resolve_default_key_id(
     }
 }
 
-pub(in crate::api_gateway) fn effective_default_key(
+pub(in crate::ai_gateway) fn effective_default_key(
     config: &GatewayConfig,
 ) -> Option<&GatewayKey> {
     let id = config.default_key_id.as_deref()?;
     config.keys.iter().find(|key| key.id == id && key.enabled)
 }
 
-pub(in crate::api_gateway) fn normalize_config(config: &mut GatewayConfig) {
+pub(in crate::ai_gateway) fn normalize_config(config: &mut GatewayConfig) {
     config.port = resolve_port(config.port, cfg!(debug_assertions));
     for provider in &mut config.providers {
         if provider.weight < MIN_PROVIDER_WEIGHT || provider.weight > MAX_PROVIDER_WEIGHT {
@@ -178,7 +166,7 @@ fn normalize_model_prices(config: &mut GatewayConfig) {
 }
 
 /// Query the real reasoning effort levels supported by a model based on its model identifier.
-pub(in crate::api_gateway) fn query_model_reasoning_efforts(model: &str) -> Vec<String> {
+pub(in crate::ai_gateway) fn query_model_reasoning_efforts(model: &str) -> Vec<String> {
     let lower = model.trim().to_lowercase();
     let base = lower.split('/').last().unwrap_or(&lower);
     let base = base.strip_suffix(":free").unwrap_or(base);
@@ -257,7 +245,7 @@ pub(in crate::api_gateway) fn query_model_reasoning_efforts(model: &str) -> Vec<
 
 /// Synchronize pricing configurations from providers into template models and
 /// ensure real reasoning efforts are populated for providers and templates.
-pub(in crate::api_gateway) fn normalize_template_prices_and_efforts(config: &mut GatewayConfig) {
+pub(in crate::ai_gateway) fn normalize_template_prices_and_efforts(config: &mut GatewayConfig) {
     // 1. Ensure provider mappings have real reasoning efforts when empty
     for provider in &mut config.providers {
         for mapping in &mut provider.mappings {
@@ -358,10 +346,10 @@ pub(in crate::api_gateway) fn normalize_template_prices_and_efforts(config: &mut
     }
 }
 
-pub(in crate::api_gateway) fn read_config() -> Result<GatewayConfig, String> {
+pub(in crate::ai_gateway) fn read_config() -> Result<GatewayConfig, String> {
     let path = config_path()?;
     if let Some(config) = read_config_file(&path)? {
-        cleanup_legacy_files();
+        migrate_legacy_files();
         return Ok(config);
     }
     Ok(GatewayConfig::default())
@@ -369,7 +357,7 @@ pub(in crate::api_gateway) fn read_config() -> Result<GatewayConfig, String> {
 
 /// Encrypt the entire configuration and write it atomically through a temp file
 /// plus rename so a partial write can never corrupt the on-disk state.
-pub(in crate::api_gateway) fn write_config(config: &GatewayConfig) -> Result<(), String> {
+pub(in crate::ai_gateway) fn write_config(config: &GatewayConfig) -> Result<(), String> {
     let mut next = config.clone();
     normalize_config(&mut next);
     let json = serde_json::to_string(&next).map_err(|e| e.to_string())?;
@@ -379,25 +367,25 @@ pub(in crate::api_gateway) fn write_config(config: &GatewayConfig) -> Result<(),
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, encrypted).map_err(|e| e.to_string())?;
     fs::rename(&tmp, path).map_err(|e| e.to_string())?;
-    cleanup_legacy_files();
+    migrate_legacy_files();
     Ok(())
 }
 
-pub(in crate::api_gateway) fn new_provider_id() -> String {
+pub(in crate::ai_gateway) fn new_provider_id() -> String {
     format!("gw-{}", uuid::Uuid::new_v4().simple())
 }
 
-pub(in crate::api_gateway) fn new_key_id() -> String {
+pub(in crate::ai_gateway) fn new_key_id() -> String {
     format!("key-{}", uuid::Uuid::new_v4().simple())
 }
 
 /// Generate a random local API key value from OS entropy so clients never
 /// supply one themselves; 128 bits of randomness, no separators to copy wrong.
-pub(in crate::api_gateway) fn new_key_value() -> String {
+pub(in crate::ai_gateway) fn new_key_value() -> String {
     format!("sk-gateway-{}", uuid::Uuid::new_v4().simple())
 }
 
-pub(in crate::api_gateway) fn find_provider_mut<'a>(
+pub(in crate::ai_gateway) fn find_provider_mut<'a>(
     config: &'a mut GatewayConfig,
     provider_id: &str,
 ) -> Option<&'a mut GatewayUpstreamProvider> {
@@ -407,11 +395,11 @@ pub(in crate::api_gateway) fn find_provider_mut<'a>(
         .find(|provider| provider.id == provider_id)
 }
 
-pub(in crate::api_gateway) fn local_base_url(port: u16) -> String {
+pub(in crate::ai_gateway) fn local_base_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/v1")
 }
 
-pub(in crate::api_gateway) fn touch_key_created_at(key: &mut GatewayKey) {
+pub(in crate::ai_gateway) fn touch_key_created_at(key: &mut GatewayKey) {
     if key.created_at == 0 {
         key.created_at = now_ts();
     }

@@ -27,7 +27,7 @@ mod templates;
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "onespace-api-gateway-{}-{}",
+        "onespace-ai-gateway-{}-{}",
         name,
         uuid::Uuid::new_v4()
     ))
@@ -680,8 +680,8 @@ enum MockReply {
 /// `crate::lock_test_home_env` mutex.
 ///
 /// Keep using this helper for tests that drive the global API-gateway server
-/// (`start_server`/`stop_server`/`api_gateway_start`/`api_gateway_stop`/
-/// `api_gateway_save_config`). The server reads its config from worker threads
+/// (`start_server`/`stop_server`/`ai_gateway_start`/`ai_gateway_stop`/
+/// `ai_gateway_save_config`). The server reads its config from worker threads
 /// that cannot see the thread-local override, and its `RUNNING_SERVER` state is
 /// a process-wide singleton, so those tests must stay serialized.
 struct TempHome {
@@ -1184,7 +1184,7 @@ async fn client_headers_are_forwarded_except_relay_credentials() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 1 (20260916-api-gateway-upstream-retry): bounded retry / recovery
+// Step 1 (20260916-ai-gateway-upstream-retry): bounded retry / recovery
 // ---------------------------------------------------------------------------
 
 /// Scripted JSON mock upstream running on the CURRENT tokio runtime (via
@@ -2503,7 +2503,7 @@ async fn server_starts_listens_and_stops() {
 #[test]
 fn config_defaults_to_port_17688() {
     with_temp_home("defaults", |_home| {
-        let config = super::commands::api_gateway_get_config().unwrap();
+        let config = super::commands::ai_gateway_get_config().unwrap();
         assert_eq!(config.port, super::default_port());
         assert!(!config.enabled);
     });
@@ -2518,7 +2518,7 @@ fn default_port_release_stays_17688_and_dev_uses_17689() {
     }
 }
 
-/// The shared `api_gateway.json` is written by both `tauri dev` (debug) and the
+/// The shared `ai_gateway.json` is written by both `tauri dev` (debug) and the
 /// installed release build, so the release default stored on disk must resolve
 /// to the dev default in a debug build instead of making `tauri dev` fight the
 /// installed app for port 17688.
@@ -2814,11 +2814,11 @@ fn build_gateway_provider_opencode_carries_gateway_models_and_marker() {
     .expect("opencode provider must build");
 
     assert_eq!(value["id"], "fus-oc");
-    assert_eq!(value["name"], "API Gateway");
+    assert_eq!(value["name"], "AI Gateway");
     assert_eq!(value["tool"], "opencode");
     assert_eq!(value["base_url"], "http://127.0.0.1:17688");
     assert_eq!(value["api_key"], "local-key-123");
-    assert_eq!(value["tool_config"]["api_gateway_gateway"], true);
+    assert_eq!(value["tool_config"]["ai_gateway_gateway"], true);
     assert!(value.get("active").is_none(), "must never auto-activate: {value}");
     assert!(value.get("is_active").is_none(), "must never auto-activate: {value}");
 
@@ -2954,11 +2954,11 @@ fn build_gateway_provider_codex_shape_is_wire_api_chat_without_options() {
     .expect("codex provider must build");
 
     assert_eq!(value["id"], "fus-cx");
-    assert_eq!(value["name"], "API Gateway");
+    assert_eq!(value["name"], "AI Gateway");
     assert_eq!(value["tool"], "codex");
     assert_eq!(value["base_url"], "http://127.0.0.1:17688");
     assert_eq!(value["api_key"], "local-key-123");
-    assert_eq!(value["tool_config"]["api_gateway_gateway"], true);
+    assert_eq!(value["tool_config"]["ai_gateway_gateway"], true);
     assert_eq!(value["tool_config"]["wire_api"], "chat");
     assert_eq!(
         value["model"], "local-a",
@@ -3172,7 +3172,7 @@ fn ac_009_per_row_reenable_cleared_runtime_state_leaves_other_rows() {
         super::storage::write_config(&config).unwrap();
 
         // ── Call the per-row re-enable command ──
-        let result = super::commands::api_gateway_reenable_provider_model(
+        let result = super::commands::ai_gateway_reenable_provider_model(
             "p1".to_string(),
             "local-a".to_string(),
             "up-a".to_string(),
@@ -3255,7 +3255,7 @@ fn ac_009_unknown_provider_error_no_write() {
         // Snapshot: serialize the config to a string for comparison.
         let before_json = serde_json::to_string(&config).expect("serialize");
 
-        let result = super::commands::api_gateway_reenable_provider_model(
+        let result = super::commands::ai_gateway_reenable_provider_model(
             "ghost-provider".to_string(),
             "local-x".to_string(),
             "up-x".to_string(),
@@ -3282,21 +3282,21 @@ fn ac_009_key_matches_no_row_error() {
 
         let before_json = serde_json::to_string(&config).expect("serialize");
 
-        let err_empty_upstream = super::commands::api_gateway_reenable_provider_model(
+        let err_empty_upstream = super::commands::ai_gateway_reenable_provider_model(
             "p1".to_string(),
             "local-a".to_string(),
             String::new(),
         );
         assert!(err_empty_upstream.is_err(), "empty upstream_model must be an error");
 
-        let err_empty_local = super::commands::api_gateway_reenable_provider_model(
+        let err_empty_local = super::commands::ai_gateway_reenable_provider_model(
             "p1".to_string(),
             String::new(),
             "up-a".to_string(),
         );
         assert!(err_empty_local.is_err(), "empty local_model must be an error");
 
-        let err_nonexist = super::commands::api_gateway_reenable_provider_model(
+        let err_nonexist = super::commands::ai_gateway_reenable_provider_model(
             "p1".to_string(),
             "nonexistent".to_string(),
             "up-a".to_string(),
@@ -3346,7 +3346,7 @@ fn ac_009_duplicate_trimmed_keys_cleared_together() {
         super::storage::write_config(&config).unwrap();
 
         // Re-enable one of the duplicates — both should be cleared.
-        let result = super::commands::api_gateway_reenable_provider_model(
+        let result = super::commands::ai_gateway_reenable_provider_model(
             "p1".to_string(),
             " local-a ".to_string(), // match via trimmed key semantics
             " up-a ".to_string(),
@@ -3411,7 +3411,7 @@ fn ac_010_provider_level_reenable_clears_all_auto_disabled() {
         super::storage::write_config(&config).unwrap();
 
         // Call the provider-level re-enable-all command.
-        let result = super::commands::api_gateway_reenable_provider_models("p1".to_string());
+        let result = super::commands::ai_gateway_reenable_provider_models("p1".to_string());
         assert!(result.is_ok(), "provider-level re-enable must succeed for known provider");
         let after = result.unwrap();
 
@@ -3464,7 +3464,7 @@ fn ac_010_unknown_provider_error_no_write() {
 
         let before_json = serde_json::to_string(&config).expect("serialize");
 
-        let result = super::commands::api_gateway_reenable_provider_models("nonexistent".to_string());
+        let result = super::commands::ai_gateway_reenable_provider_models("nonexistent".to_string());
         assert!(result.is_err(), "unknown provider must return Err");
 
         let after = super::storage::read_config().expect("re-read after error");
@@ -3489,21 +3489,21 @@ fn provider_enable_command_only_changes_user_intent() {
         super::storage::write_config(&config).unwrap();
 
         let after =
-            super::commands::api_gateway_set_provider_enabled("p1".to_string(), false).unwrap();
+            super::commands::ai_gateway_set_provider_enabled("p1".to_string(), false).unwrap();
         // User intent changed.
         assert!(!after.providers[0].enabled);
         // Provider-level legacy field may be cleared on write; skip asserting it.
         // Row-level runtime state must stay untouched.
         assert!(after.providers[0].mappings[0].auto_disabled, "row auto state independent of user intent");
         assert_eq!(after.providers[0].mappings[0].consecutive_failures, 3);
-        assert!(super::commands::api_gateway_set_provider_enabled("ghost".to_string(), true).is_err());
+        assert!(super::commands::ai_gateway_set_provider_enabled("ghost".to_string(), true).is_err());
     });
 }
 
 #[test]
 fn key_commands_persist_and_advance_default_key() {
     with_temp_home("key-commands", |_home| {
-        let config = super::commands::api_gateway_upsert_key(GatewayKey {
+        let config = super::commands::ai_gateway_upsert_key(GatewayKey {
             id: "k1".to_string(),
             label: "K1".to_string(),
             value: "v1".to_string(),
@@ -3513,7 +3513,7 @@ fn key_commands_persist_and_advance_default_key() {
         .unwrap();
         assert_eq!(config.default_key_id.as_deref(), Some("k1"));
 
-        super::commands::api_gateway_upsert_key(GatewayKey {
+        super::commands::ai_gateway_upsert_key(GatewayKey {
             id: "k2".to_string(),
             label: "K2".to_string(),
             value: "v2".to_string(),
@@ -3521,11 +3521,11 @@ fn key_commands_persist_and_advance_default_key() {
             created_at: 0,
         })
         .unwrap();
-        let switched = super::commands::api_gateway_set_default_key("k2".to_string()).unwrap();
+        let switched = super::commands::ai_gateway_set_default_key("k2".to_string()).unwrap();
         assert_eq!(switched.default_key_id.as_deref(), Some("k2"));
 
         // Disabling the current default advances to the next enabled key.
-        let advanced = super::commands::api_gateway_upsert_key(GatewayKey {
+        let advanced = super::commands::ai_gateway_upsert_key(GatewayKey {
             id: "k2".to_string(),
             label: "K2".to_string(),
             value: String::new(),
@@ -3537,7 +3537,7 @@ fn key_commands_persist_and_advance_default_key() {
         assert_eq!(advanced.keys[1].value, "v2", "empty value preserves the stored secret");
 
         // No enabled key remains -> default clears.
-        let cleared = super::commands::api_gateway_delete_key("k1".to_string()).unwrap();
+        let cleared = super::commands::ai_gateway_delete_key("k1".to_string()).unwrap();
         assert_eq!(cleared.default_key_id, None);
     });
 }
@@ -3545,7 +3545,7 @@ fn key_commands_persist_and_advance_default_key() {
 #[test]
 fn new_keys_without_a_value_get_a_random_secret() {
     with_temp_home("key-autogen", |_home| {
-        let first = super::commands::api_gateway_upsert_key(GatewayKey {
+        let first = super::commands::ai_gateway_upsert_key(GatewayKey {
             id: String::new(),
             label: "CI".to_string(),
             value: String::new(),
@@ -3557,7 +3557,7 @@ fn new_keys_without_a_value_get_a_random_secret() {
         assert!(first_value.starts_with("sk-gateway-"), "unexpected key: {first_value}");
         assert!(first_value.len() > "sk-gateway-".len());
 
-        let second = super::commands::api_gateway_upsert_key(GatewayKey {
+        let second = super::commands::ai_gateway_upsert_key(GatewayKey {
             id: String::new(),
             label: "CI 2".to_string(),
             value: String::new(),
@@ -3575,7 +3575,7 @@ fn new_keys_without_a_value_get_a_random_secret() {
 #[test]
 fn new_keys_with_mask_placeholder_get_a_random_secret() {
     with_temp_home("key-mask-autogen", |_home| {
-        let created = super::commands::api_gateway_upsert_key(GatewayKey {
+        let created = super::commands::ai_gateway_upsert_key(GatewayKey {
             id: String::new(),
             label: "Masked".to_string(),
             value: "********".to_string(),
@@ -3613,7 +3613,7 @@ fn provider_delete_removes_ledger_entry() {
         });
         super::storage::write_config(&config).unwrap();
 
-        let after = super::commands::api_gateway_delete_provider("p1".to_string()).unwrap();
+        let after = super::commands::ai_gateway_delete_provider("p1".to_string()).unwrap();
         assert!(after.providers.is_empty());
         assert!(after.terminal_syncs.is_empty());
     });
@@ -3624,44 +3624,44 @@ fn every_command_is_registered_in_the_invoke_handler() {
     const RUN_APP_SOURCE: &str = include_str!("../app_runtime/run_app.rs");
     const LIB_SOURCE: &str = include_str!("../lib.rs");
 
-    assert!(LIB_SOURCE.contains("mod api_gateway;"));
+    assert!(LIB_SOURCE.contains("mod ai_gateway;"));
     let commands = [
-        "api_gateway_get_config",
-        "api_gateway_save_config",
-        "api_gateway_upsert_provider",
-        "api_gateway_delete_provider",
-        "api_gateway_set_provider_enabled",
-        "api_gateway_reenable_provider_model",
-        "api_gateway_reenable_provider_models",
-        "api_gateway_upsert_key",
-        "api_gateway_delete_key",
-        "api_gateway_set_default_key",
-        "api_gateway_start",
-        "api_gateway_stop",
-        "api_gateway_status",
-        "api_gateway_terminal_targets",
-        "api_gateway_configure_terminal",
-        "api_gateway_sync_terminal",
+        "ai_gateway_get_config",
+        "ai_gateway_save_config",
+        "ai_gateway_upsert_provider",
+        "ai_gateway_delete_provider",
+        "ai_gateway_set_provider_enabled",
+        "ai_gateway_reenable_provider_model",
+        "ai_gateway_reenable_provider_models",
+        "ai_gateway_upsert_key",
+        "ai_gateway_delete_key",
+        "ai_gateway_set_default_key",
+        "ai_gateway_start",
+        "ai_gateway_stop",
+        "ai_gateway_status",
+        "ai_gateway_terminal_targets",
+        "ai_gateway_configure_terminal",
+        "ai_gateway_sync_terminal",
         // 20260917-ai-gateway-usage-logs commands.
-        "api_gateway_usage_stats",
-        "api_gateway_request_logs",
-        "api_gateway_usage_retention_get",
-        "api_gateway_usage_retention_save",
+        "ai_gateway_usage_stats",
+        "ai_gateway_request_logs",
+        "ai_gateway_usage_retention_get",
+        "ai_gateway_usage_retention_save",
         // 20260918-provider-templates commands.
-        "api_gateway_provider_templates",
-        "api_gateway_sync_provider_template",
-        "api_gateway_create_provider_from_template",
-        "api_gateway_delete_provider_model",
-        "api_gateway_restore_provider_model",
-        "api_gateway_upsert_provider_template",
-        "api_gateway_delete_provider_template",
-        "api_gateway_reset_provider_templates",
+        "ai_gateway_provider_templates",
+        "ai_gateway_sync_provider_template",
+        "ai_gateway_create_provider_from_template",
+        "ai_gateway_delete_provider_model",
+        "ai_gateway_restore_provider_model",
+        "ai_gateway_upsert_provider_template",
+        "ai_gateway_delete_provider_template",
+        "ai_gateway_reset_provider_templates",
         // 20260923-template-auto-refresh commands.
-        "api_gateway_template_auto_refresh_get",
-        "api_gateway_template_auto_refresh_save",
+        "ai_gateway_template_auto_refresh_get",
+        "ai_gateway_template_auto_refresh_save",
     ];
     for command in commands {
-        let registration = format!("api_gateway::{command},");
+        let registration = format!("ai_gateway::{command},");
         assert_eq!(
             RUN_APP_SOURCE.matches(&registration).count(),
             1,
@@ -3670,18 +3670,18 @@ fn every_command_is_registered_in_the_invoke_handler() {
     }
     // The usage-log commands must also be exported through `lib.rs`.
     for command in [
-        "api_gateway_usage_stats",
-        "api_gateway_request_logs",
-        "api_gateway_usage_retention_get",
-        "api_gateway_usage_retention_save",
-        "api_gateway_provider_templates",
-        "api_gateway_sync_provider_template",
-        "api_gateway_create_provider_from_template",
-        "api_gateway_delete_provider_model",
-        "api_gateway_restore_provider_model",
-        "api_gateway_upsert_provider_template",
-        "api_gateway_delete_provider_template",
-        "api_gateway_reset_provider_templates",
+        "ai_gateway_usage_stats",
+        "ai_gateway_request_logs",
+        "ai_gateway_usage_retention_get",
+        "ai_gateway_usage_retention_save",
+        "ai_gateway_provider_templates",
+        "ai_gateway_sync_provider_template",
+        "ai_gateway_create_provider_from_template",
+        "ai_gateway_delete_provider_model",
+        "ai_gateway_restore_provider_model",
+        "ai_gateway_upsert_provider_template",
+        "ai_gateway_delete_provider_template",
+        "ai_gateway_reset_provider_templates",
     ] {
         assert!(
             LIB_SOURCE.contains(command),
@@ -3690,11 +3690,11 @@ fn every_command_is_registered_in_the_invoke_handler() {
     }
     // REQ-005: the legacy price-table commands are removed from the surface.
     for removed in [
-        "api_gateway_model_prices_get",
-        "api_gateway_model_prices_save",
+        "ai_gateway_model_prices_get",
+        "ai_gateway_model_prices_save",
     ] {
         assert!(
-            !RUN_APP_SOURCE.contains(&format!("api_gateway::{removed},")),
+            !RUN_APP_SOURCE.contains(&format!("ai_gateway::{removed},")),
             "the removed command {removed} must not be registered in generate_handler!"
         );
         assert!(
@@ -3704,9 +3704,9 @@ fn every_command_is_registered_in_the_invoke_handler() {
     }
     // REQ-011: the standalone model-fetch command is removed together with its
     // frontend wrapper; its registration and export must be gone.
-    for removed in ["api_gateway_fetch_models"] {
+    for removed in ["ai_gateway_fetch_models"] {
         assert!(
-            !RUN_APP_SOURCE.contains(&format!("api_gateway::{removed},")),
+            !RUN_APP_SOURCE.contains(&format!("ai_gateway::{removed},")),
             "the removed command {removed} must not be registered in generate_handler!"
         );
         assert!(
@@ -3716,9 +3716,9 @@ fn every_command_is_registered_in_the_invoke_handler() {
     }
     // The obsolete provider-level re-enable was replaced by per-row and provider-level
     // commands; its registration and export must be absent.
-    for removed in ["api_gateway_reenable_provider"] {
+    for removed in ["ai_gateway_reenable_provider"] {
         assert!(
-            !RUN_APP_SOURCE.contains(&format!("api_gateway::{removed},")),
+            !RUN_APP_SOURCE.contains(&format!("ai_gateway::{removed},")),
             "the removed command {removed} must not be registered in generate_handler!"
         );
         assert!(
@@ -3804,7 +3804,7 @@ fn upsert_provider_replaces_exactly_its_own_price_rows() {
             ..ModelPrice::default()
         };
 
-        let saved = super::commands::api_gateway_upsert_provider(
+        let saved = super::commands::ai_gateway_upsert_provider(
             updated.clone(),
             Some(vec![edited_a, blank_model, duplicate_a, unreachable_z]),
         )
@@ -3867,7 +3867,7 @@ fn upsert_provider_replaces_exactly_its_own_price_rows() {
         // `prices: None` leaves that provider's rows unchanged.
         let mut renamed = updated.clone();
         renamed.name = "Provider P Renamed Again".to_string();
-        let after_none = super::commands::api_gateway_upsert_provider(renamed, None)
+        let after_none = super::commands::ai_gateway_upsert_provider(renamed, None)
             .expect("upsert without prices");
         let mut before_rows: Vec<ModelPrice> = saved
             .model_prices
@@ -3906,7 +3906,7 @@ fn upsert_provider_replaces_exactly_its_own_price_rows() {
             off_peaks: Vec::new(),
             ..ModelPrice::default()
         };
-        let mirrored = super::commands::api_gateway_upsert_provider(
+        let mirrored = super::commands::ai_gateway_upsert_provider(
             updated.clone(),
             Some(vec![legacy_row]),
         )
@@ -3937,7 +3937,7 @@ fn upsert_provider_binds_new_provider_rows_to_generated_id() {
         let submitted = priced_with_provider("other", "remote-new", 1.0, 0.0, 0.0, 2.0);
 
         let config =
-            super::commands::api_gateway_upsert_provider(new_provider, Some(vec![submitted]))
+            super::commands::ai_gateway_upsert_provider(new_provider, Some(vec![submitted]))
                 .expect("creating a priced provider");
 
         let created = config
@@ -4001,7 +4001,7 @@ fn delete_provider_removes_its_price_rows_but_keeps_others() {
         ];
         super::storage::write_config(&config).expect("seed config");
 
-        let after = super::commands::api_gateway_delete_provider("p".to_string())
+        let after = super::commands::ai_gateway_delete_provider("p".to_string())
             .expect("delete the provider");
         assert!(
             after.providers.iter().all(|candidate| candidate.id != "p"),
@@ -4149,7 +4149,7 @@ fn create_provider_from_template_command_returns_config() {
     with_temp_home("create-from-template-command", |_home| {
         super::storage::write_config(&GatewayConfig::default()).expect("write config");
 
-        let result = super::commands::api_gateway_create_provider_from_template(
+        let result = super::commands::ai_gateway_create_provider_from_template(
             "opencode-zen".into(),
             "T".into(),
             "".into(),
@@ -4716,7 +4716,7 @@ async fn end_to_end_network_errors_accumulate_and_disable() {
 /// Regression: health settlement must merge into the latest persisted
 /// configuration instead of writing back a request-start snapshot. A provider
 /// saved while a (possibly long streaming/retrying) request is in flight used
-/// to silently disappear from `api_gateway.json` when that older request
+/// to silently disappear from `ai_gateway.json` when that older request
 /// settled — surfacing as "a manually added provider vanishes from the list a
 /// while after saving".
 #[tokio::test]
@@ -5487,11 +5487,11 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
 // and free-port helpers defined above.
 // ---------------------------------------------------------------------------
 
-/// Finding A (error): `api_gateway_start` / `api_gateway_stop` must persist
+/// Finding A (error): `ai_gateway_start` / `ai_gateway_stop` must persist
 /// `GatewayConfig.enabled` so the enable intent survives a reload (AC-003,
 /// AC-019). The test reads the flag back from disk after each command.
 #[tokio::test]
-async fn api_gateway_start_and_stop_persist_enabled_flag() {
+async fn ai_gateway_start_and_stop_persist_enabled_flag() {
     let _home = temp_home("enabled-persist");
     let port = free_port().await;
     let mut config = config_with_key(port);
@@ -5502,17 +5502,17 @@ async fn api_gateway_start_and_stop_persist_enabled_flag() {
     assert!(started.running, "start must report a running server");
     let enabled_after_start = super::storage::read_config().unwrap().enabled;
 
-    let stopped = super::commands::api_gateway_stop().await.unwrap();
+    let stopped = super::commands::ai_gateway_stop().await.unwrap();
     assert!(!stopped.running, "stop must report a stopped server");
     let enabled_after_stop = super::storage::read_config().unwrap().enabled;
 
     assert!(
         enabled_after_start,
-        "api_gateway_start must persist enabled=true (reloaded {enabled_after_start})"
+        "ai_gateway_start must persist enabled=true (reloaded {enabled_after_start})"
     );
     assert!(
         !enabled_after_stop,
-        "api_gateway_stop must persist enabled=false (reloaded {enabled_after_stop})"
+        "ai_gateway_stop must persist enabled=false (reloaded {enabled_after_stop})"
     );
 }
 
@@ -5880,7 +5880,7 @@ async fn loopback_listener_rejects_non_loopback_address_on_same_port() {
         None => true,
     };
 
-    super::commands::api_gateway_stop().await.unwrap();
+    super::commands::ai_gateway_stop().await.unwrap();
 
     assert!(loopback_ok, "loopback listener must accept connections");
     if let Some(ip) = primary_ip {
@@ -5906,24 +5906,24 @@ async fn loopback_listener_rejects_non_loopback_address_on_same_port() {
 // config directory.
 // ---------------------------------------------------------------------------
 
-/// A previously synced API Gateway provider as it appears in the terminal
-/// service provider list. `tool_config.api_gateway_gateway == true` is the stable
+/// A previously synced AI Gateway provider as it appears in the terminal
+/// service provider list. `tool_config.ai_gateway_gateway == true` is the stable
 /// marker emitted by `build_gateway_provider`.
 fn managed_gateway_provider(id: &str, tool: &str) -> Value {
     json!({
         "id": id,
         "tool": tool,
-        "name": "API Gateway",
+        "name": "AI Gateway",
         "base_url": "http://127.0.0.1:17688",
         "api_key": "previous-local-key",
         "tool_config": {
-            "api_gateway_gateway": true,
+            "ai_gateway_gateway": true,
             "wire_api": "chat",
         }
     })
 }
 
-/// A user-owned provider record without the API Gateway gateway marker. The
+/// A user-owned provider record without the AI Gateway gateway marker. The
 /// stale-ledger protection must never claim or overwrite it.
 fn unmarked_user_provider(id: &str, tool: &str) -> Value {
     json!({
@@ -5949,10 +5949,10 @@ fn terminal_providers_payload() -> Value {
             {
                 "id": "managed-cx",
                 "tool": "codex",
-                "name": "API Gateway",
+                "name": "AI Gateway",
                 "base_url": "http://127.0.0.1:17688",
                 "api_key": "previous-local-key",
-                "api_gateway_gateway": true
+                "ai_gateway_gateway": true
             },
             unmarked_user_provider("user-oc", "opencode"),
             {
@@ -6055,10 +6055,10 @@ async fn terminal_sync_with_seam_creates_one_gateway_provider_per_tool() {
 
     let opencode = by_tool("opencode");
     assert!(!opencode["id"].as_str().unwrap_or("").is_empty());
-    assert_eq!(opencode["name"], "API Gateway");
+    assert_eq!(opencode["name"], "AI Gateway");
     assert_eq!(opencode["base_url"], local_base_url.as_str());
     assert_eq!(opencode["api_key"], "local-key-123");
-    assert_eq!(opencode["tool_config"]["api_gateway_gateway"], true);
+    assert_eq!(opencode["tool_config"]["ai_gateway_gateway"], true);
     assert_eq!(opencode["provider_key"], "gateway");
     assert_eq!(
         opencode["tool_config"]["options"]["baseURL"],
@@ -6077,10 +6077,10 @@ async fn terminal_sync_with_seam_creates_one_gateway_provider_per_tool() {
 
     let codex = by_tool("codex");
     assert!(!codex["id"].as_str().unwrap_or("").is_empty());
-    assert_eq!(codex["name"], "API Gateway");
+    assert_eq!(codex["name"], "AI Gateway");
     assert_eq!(codex["base_url"], local_base_url.as_str());
     assert_eq!(codex["api_key"], "local-key-123");
-    assert_eq!(codex["tool_config"]["api_gateway_gateway"], true);
+    assert_eq!(codex["tool_config"]["ai_gateway_gateway"], true);
     assert_eq!(codex["tool_config"]["wire_api"], "chat");
     assert!(codex.get("provider_key").is_none(), "codex has no provider_key");
     assert!(
@@ -6514,7 +6514,7 @@ async fn terminal_sync_with_seam_requires_an_enabled_local_key() {
 
 // ---------------------------------------------------------------------------
 // Terminal targets projection: `terminal_targets_from` is the pure function the
-// `api_gateway_terminal_targets` command delegates to. It must recognize a
+// `ai_gateway_terminal_targets` command delegates to. It must recognize a
 // managed gateway only through the marker, never through a stale ledger that
 // points at a user-owned provider.
 // ---------------------------------------------------------------------------
@@ -6677,7 +6677,7 @@ fn terminal_targets_from_marks_pending_when_ledger_key_or_base_url_drifted() {
 }
 
 // ---------------------------------------------------------------------------
-// Plan 20260916-api-gateway-per-model-endpoint, Step 1 (RED)
+// Plan 20260916-ai-gateway-per-model-endpoint, Step 1 (RED)
 //
 // A mapping row may declare the endpoint protocol it belongs to
 // (`chat_completions` / `responses`); an absent or null declaration inherits the
@@ -7401,7 +7401,7 @@ async fn mapping_with_explicit_null_protocol_inherits_the_provider_protocol() {
 }
 
 // ---------------------------------------------------------------------------
-// Plan 20260916-api-gateway-per-model-endpoint, Step 3 (cross-module E2E)
+// Plan 20260916-ai-gateway-per-model-endpoint, Step 3 (cross-module E2E)
 //
 // Each case drives the real local relay listener (`call_gateway` -> loopback
 // HTTP) against an in-process mock upstream and asserts on the upstream
@@ -7890,7 +7890,7 @@ async fn models_endpoint_deduplicates_the_same_local_model_across_records() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 2 (20260916-api-gateway-upstream-retry): cooldown, retry headers, budget
+// Step 2 (20260916-ai-gateway-upstream-retry): cooldown, retry headers, budget
 // ---------------------------------------------------------------------------
 //
 // These tests exercise the observable HTTP boundary of `attempt_non_streaming`
@@ -8774,7 +8774,7 @@ async fn single_candidate_streaming_retryable_failure_attempts_upstream_once() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 (20260916-api-gateway-upstream-retry): streaming retry and health RED
+// Step 3 (20260916-ai-gateway-upstream-retry): streaming retry and health RED
 // ---------------------------------------------------------------------------
 
 /// REQ-002/REQ-005 regression (migrated to two candidates): before a stream
@@ -9093,7 +9093,7 @@ async fn retry_stream_html_413_returns_unchanged_without_fallback() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 (20260916-api-gateway-upstream-retry): downstream cancellation RED
+// Step 3 (20260916-ai-gateway-upstream-retry): downstream cancellation RED
 // ---------------------------------------------------------------------------
 
 /// Send a complete request over a real loopback connection. The caller closes
@@ -9413,10 +9413,10 @@ fn rfc3339_millis(value: &str) -> i64 {
         .timestamp_millis()
 }
 
-/// AC-007 / compatibility: an `api_gateway.json` written before this feature —
+/// AC-007 / compatibility: an `ai_gateway.json` written before this feature —
 /// has no usage fields, yet still deserializes with the documented
 /// defaults, and the new fields round-trip without disturbing existing ones.
-/// Writes always target the `api_gateway.json` file.
+/// Writes always target the `ai_gateway.json` file.
 #[test]
 fn gateway_config_accepts_older_json_and_round_trips_usage_fields() {
     let older = serde_json::json!({
@@ -9733,7 +9733,7 @@ fn normalize_config_migrates_global_rows_and_drops_unreachable_rows() {
     );
 }
 
-/// AC-006 counterexample / REQ-004: a legacy encrypted `api_gateway.json`
+/// AC-006 counterexample / REQ-004: a legacy encrypted `ai_gateway.json`
 /// carrying global rows stays readable, migrates the reachable global row,
 /// deletes the unmatched one, preserves providers/keys/default key/ledger/
 /// retention, and is stable across a further load-write cycle with only
@@ -10449,7 +10449,7 @@ fn usage_field_mapping_handles_provider_shapes_and_missing_fields() {
 }
 
 // ---------------------------------------------------------------------------
-// Plan 20260921-api-gateway-cache-hit-accounting Step 2 (RED): canonical
+// Plan 20260921-ai-gateway-cache-hit-accounting Step 2 (RED): canonical
 // normalization. Each test compiles against the current `usage_log.rs`
 // boundary (`usage_tokens_from_value`, `UsageTokens`, `compute_cost`) and
 // fails on an observable wrong value, never on a missing symbol.
@@ -10740,7 +10740,7 @@ fn sse_usage_accumulator_parses_usage_across_chunk_boundaries() {
 
 fn usage_store(name: &str) -> (PathBuf, UsageLogStore) {
     let dir = make_temp_dir(name);
-    let store = UsageLogStore::at(dir.join("api_gateway_usage.db"));
+    let store = UsageLogStore::at(dir.join("ai_gateway_usage.db"));
     (dir, store)
 }
 
@@ -10781,7 +10781,7 @@ fn usage_store_survives_reopen_and_returns_ordered_records() {
         )
         .unwrap();
 
-    let reopened = UsageLogStore::at(dir.join("api_gateway_usage.db"));
+    let reopened = UsageLogStore::at(dir.join("ai_gateway_usage.db"));
     let records = reopened.all_records().unwrap();
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].timestamp_ms, now, "newest first");
@@ -11136,7 +11136,7 @@ fn usage_store_never_contains_credentials_headers_or_bodies() {
     assert!(!stored_error.contains(sk_token));
     assert!(stored_error.contains("[redacted]"));
 
-    let raw = fs::read(dir.join("api_gateway_usage.db")).expect("read usage db");
+    let raw = fs::read(dir.join("ai_gateway_usage.db")).expect("read usage db");
     let raw_text = String::from_utf8_lossy(&raw);
     assert!(!raw_text.contains(secret));
     assert!(
@@ -12071,7 +12071,7 @@ fn upsert_provider_with_prices_preserves_existing_config_fields() {
 
         let mut edited = provider("p1");
         edited.mappings = vec![mapping("local-a", "remote-a", None)];
-        let saved = super::commands::api_gateway_upsert_provider(
+        let saved = super::commands::ai_gateway_upsert_provider(
             edited,
             Some(vec![priced_with_provider(
                 "p1",
@@ -12119,7 +12119,7 @@ fn upsert_provider_with_prices_preserves_existing_config_fields() {
 /// AC-012 / REQ-010: invalid retention is rejected with an actionable error and
 /// the stored value plus the rest of the config are untouched; 1 and 365 work.
 #[test]
-fn api_gateway_usage_retention_save_rejects_invalid_and_keeps_stored_value() {
+fn ai_gateway_usage_retention_save_rejects_invalid_and_keeps_stored_value() {
     with_temp_home("retention-save", |_home| {
         let mut config = GatewayConfig::default();
         config.usage_retention_days = 30;
@@ -12127,12 +12127,12 @@ fn api_gateway_usage_retention_save_rejects_invalid_and_keeps_stored_value() {
         config.keys.push(key("k1", true));
         super::storage::write_config(&config).expect("seed config");
 
-        let zero = super::commands::api_gateway_usage_retention_save(0).unwrap_err();
+        let zero = super::commands::ai_gateway_usage_retention_save(0).unwrap_err();
         assert!(zero.contains("1") && zero.contains("365"), "actionable error: {zero}");
-        assert!(super::commands::api_gateway_usage_retention_save(400).is_err());
+        assert!(super::commands::ai_gateway_usage_retention_save(400).is_err());
 
         assert_eq!(
-            super::commands::api_gateway_usage_retention_get().unwrap(),
+            super::commands::ai_gateway_usage_retention_get().unwrap(),
             30,
             "stored value unchanged after rejection"
         );
@@ -12141,15 +12141,15 @@ fn api_gateway_usage_retention_save_rejects_invalid_and_keeps_stored_value() {
         assert_eq!(reloaded.providers.len(), 1, "rejection must not rewrite config");
 
         assert_eq!(
-            super::commands::api_gateway_usage_retention_save(1).unwrap(),
+            super::commands::ai_gateway_usage_retention_save(1).unwrap(),
             1
         );
         assert_eq!(
-            super::commands::api_gateway_usage_retention_save(365).unwrap(),
+            super::commands::ai_gateway_usage_retention_save(365).unwrap(),
             365
         );
         assert_eq!(
-            super::commands::api_gateway_usage_retention_get().unwrap(),
+            super::commands::ai_gateway_usage_retention_get().unwrap(),
             365
         );
         assert_eq!(
@@ -12160,7 +12160,7 @@ fn api_gateway_usage_retention_save_rejects_invalid_and_keeps_stored_value() {
     });
 }
 
-/// Write a raw JSON object as the encrypted `api_gateway.json`, so a test can
+/// Write a raw JSON object as the encrypted `ai_gateway.json`, so a test can
 /// seed a config written by an older build (missing the interval field) or one
 /// carrying an out-of-range stored interval. Mirrors the port-compatibility
 /// seeding pattern.
@@ -12187,7 +12187,7 @@ fn config_json_with_template_interval(interval: Option<u32>) -> Value {
     value
 }
 
-/// AC-002 / REQ-002: an older `api_gateway.json` without the interval field reads
+/// AC-002 / REQ-002: an older `ai_gateway.json` without the interval field reads
 /// as 60 minutes with no migration, a fresh config defaults to 60, the field is
 /// always serialized, and the public constants pin the accepted range.
 #[test]
@@ -12232,13 +12232,13 @@ fn template_auto_refresh_get_keeps_zero_and_bounds_and_normalizes_other_stored_v
     with_temp_home("template-auto-refresh-get", |_home| {
         for stored in [0u32, 10, 1440] {
             seed_encrypted_config(&config_json_with_template_interval(Some(stored)));
-            let reported = super::commands::api_gateway_template_auto_refresh_get()
+            let reported = super::commands::ai_gateway_template_auto_refresh_get()
                 .expect("an in-range stored interval must read");
             assert_eq!(reported, stored, "stored {stored} must be reported unchanged");
         }
         for stored in [5u32, 9999] {
             seed_encrypted_config(&config_json_with_template_interval(Some(stored)));
-            let reported = super::commands::api_gateway_template_auto_refresh_get()
+            let reported = super::commands::ai_gateway_template_auto_refresh_get()
                 .expect("an out-of-range stored interval must still read");
             assert_eq!(
                 reported, 60,
@@ -12283,7 +12283,7 @@ fn template_auto_refresh_stored_type_invalid_values_read_as_sixty_without_rewrit
                 "type-invalid stored interval {bad} must normalize to 60"
             );
             assert_eq!(
-                super::commands::api_gateway_template_auto_refresh_get()
+                super::commands::ai_gateway_template_auto_refresh_get()
                     .expect("get must succeed for a type-invalid stored interval"),
                 60,
                 "get must report 60 for type-invalid stored interval {bad}"
@@ -12329,7 +12329,7 @@ fn template_auto_refresh_save_rejects_out_of_range_without_writing() {
         let bytes_before = fs::read(config_path().expect("config path")).expect("read raw config");
 
         for rejected in [5i64, -1, 1441] {
-            let error = super::commands::api_gateway_template_auto_refresh_save(rejected)
+            let error = super::commands::ai_gateway_template_auto_refresh_save(rejected)
                 .expect_err("an out-of-range interval must be rejected");
             assert!(
                 error.contains('0') && error.contains("10") && error.contains("1440"),
@@ -12343,7 +12343,7 @@ fn template_auto_refresh_save_rejects_out_of_range_without_writing() {
             "a rejected save must not rewrite the config file"
         );
         assert_eq!(
-            super::commands::api_gateway_template_auto_refresh_get().expect("get"),
+            super::commands::ai_gateway_template_auto_refresh_get().expect("get"),
             60,
             "the stored interval must be unchanged after rejection"
         );
@@ -12367,11 +12367,11 @@ fn template_auto_refresh_save_persists_zero_and_boundary_values() {
         super::storage::write_config(&config).expect("seed config");
 
         for accepted in [0i64, 10, 60, 1440] {
-            let saved = super::commands::api_gateway_template_auto_refresh_save(accepted)
+            let saved = super::commands::ai_gateway_template_auto_refresh_save(accepted)
                 .expect("an accepted interval must save");
             assert_eq!(saved, accepted as u32, "save must return the persisted value");
             assert_eq!(
-                super::commands::api_gateway_template_auto_refresh_get().expect("get"),
+                super::commands::ai_gateway_template_auto_refresh_get().expect("get"),
                 accepted as u32,
                 "get must report the value just saved"
             );
@@ -12395,7 +12395,7 @@ fn template_auto_refresh_save_persists_zero_and_boundary_values() {
 /// AC-015 / AC-016 / AC-020 / AC-021 / AC-022: the stats/logs commands resolve
 /// the range, aggregate, group, filter and paginate entirely in the backend.
 #[test]
-fn api_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
+fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
     with_temp_home("usage-commands", |_home| {
         let store = UsageLogStore::default_store().expect("usage store");
         let now = super::now_millis();
@@ -12430,7 +12430,7 @@ fn api_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
             )
             .unwrap();
 
-        let stats = super::commands::api_gateway_usage_stats(None).unwrap();
+        let stats = super::commands::ai_gateway_usage_stats(None).unwrap();
         assert_eq!(stats.granularity, "day");
         assert_eq!(stats.totals.request_count, 2);
         assert_eq!(stats.totals.total_tokens, 45);
@@ -12440,10 +12440,10 @@ fn api_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert_eq!(stats.buckets.len(), 1, "one day bucket");
 
         let today =
-            super::commands::api_gateway_usage_stats(Some("today".to_string())).unwrap();
+            super::commands::ai_gateway_usage_stats(Some("today".to_string())).unwrap();
         assert_eq!(today.granularity, "hour", "today buckets by hour");
 
-        let page = super::commands::api_gateway_request_logs(None, None, None, None, None).unwrap();
+        let page = super::commands::ai_gateway_request_logs(None, None, None, None, None).unwrap();
         assert_eq!(page.total, 2);
         assert_eq!(page.page, 1);
         assert_eq!(page.page_size, 50);
@@ -12453,7 +12453,7 @@ fn api_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
             "newest first"
         );
 
-        let failed = super::commands::api_gateway_request_logs(
+        let failed = super::commands::ai_gateway_request_logs(
             None,
             None,
             Some("failure".to_string()),
@@ -12464,7 +12464,7 @@ fn api_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert_eq!(failed.total, 1);
         assert_eq!(failed.records[0].result, UsageResult::Failure);
 
-        let by_model = super::commands::api_gateway_request_logs(
+        let by_model = super::commands::ai_gateway_request_logs(
             None,
             Some("model".to_string()),
             None,
@@ -12476,7 +12476,7 @@ fn api_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert_eq!(by_model.groups.len(), 1);
         assert_eq!(by_model.groups[0].error_count, 1, "failure counted as error");
 
-        let by_day = super::commands::api_gateway_request_logs(
+        let by_day = super::commands::ai_gateway_request_logs(
             None,
             Some("day".to_string()),
             None,
@@ -12488,7 +12488,7 @@ fn api_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert_eq!(by_day.groups[0].request_count, 2);
         assert_eq!(by_day.groups[0].error_count, 1);
 
-        let clamped = super::commands::api_gateway_request_logs(
+        let clamped = super::commands::ai_gateway_request_logs(
             None,
             None,
             None,
@@ -12499,7 +12499,7 @@ fn api_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert_eq!(clamped.page, 1, "page clamps to the only page");
 
         // AC-021: a filter with no matches returns an empty, error-free page.
-        let empty = super::commands::api_gateway_request_logs(
+        let empty = super::commands::ai_gateway_request_logs(
             None,
             None,
             Some("failure".to_string()),
@@ -12511,7 +12511,7 @@ fn api_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert!(empty.records.is_empty());
         assert_eq!(empty.total_pages, 1);
 
-        assert!(super::commands::api_gateway_request_logs(
+        assert!(super::commands::ai_gateway_request_logs(
             None,
             Some("bogus".to_string()),
             None,
@@ -12538,7 +12538,7 @@ fn utc8_day_start(now_ms: i64) -> i64 {
 /// includes the 23:59:59 edge while excluding today and the day before
 /// yesterday. It also drives the request-log command to the same window.
 #[test]
-fn api_gateway_yesterday_range_counts_only_yesterday_hourly() {
+fn ai_gateway_yesterday_range_counts_only_yesterday_hourly() {
     with_temp_home("usage-yesterday-range", |_home| {
         let store = UsageLogStore::default_store().expect("usage store");
         let today_start = utc8_day_start(super::now_millis());
@@ -12567,7 +12567,7 @@ fn api_gateway_yesterday_range_counts_only_yesterday_hourly() {
         }
 
         let stats =
-            super::commands::api_gateway_usage_stats(Some("yesterday".to_string()))
+            super::commands::ai_gateway_usage_stats(Some("yesterday".to_string()))
                 .expect("yesterday stats");
         assert_eq!(stats.granularity, "hour");
         assert_eq!(
@@ -12587,7 +12587,7 @@ fn api_gateway_yesterday_range_counts_only_yesterday_hourly() {
         assert_eq!(nine.metrics.request_count, 1);
         assert_eq!(nine.metrics.total_tokens, 15);
 
-        let page = super::commands::api_gateway_request_logs(
+        let page = super::commands::ai_gateway_request_logs(
             Some("yesterday".to_string()),
             None,
             None,
@@ -12619,7 +12619,7 @@ fn api_gateway_yesterday_range_counts_only_yesterday_hourly() {
 /// selectors are errors for both commands, and `""` / `None` / `all` resolve
 /// to the all-time window that still includes the day before yesterday.
 #[test]
-fn api_gateway_usage_range_selector_rejects_unknown_and_accepts_all_time() {
+fn ai_gateway_usage_range_selector_rejects_unknown_and_accepts_all_time() {
     with_temp_home("usage-range-selector", |_home| {
         let store = UsageLogStore::default_store().expect("usage store");
         let today_start = utc8_day_start(super::now_millis());
@@ -12647,17 +12647,17 @@ fn api_gateway_usage_range_selector_rejects_unknown_and_accepts_all_time() {
         }
 
         let today =
-            super::commands::api_gateway_usage_stats(Some("today".to_string()))
+            super::commands::ai_gateway_usage_stats(Some("today".to_string()))
                 .expect("today stats");
         assert_eq!(today.granularity, "hour");
         assert_eq!(today.totals.request_count, 1, "only today's record");
 
         assert!(
-            super::commands::api_gateway_usage_stats(Some("3d".to_string())).is_err(),
+            super::commands::ai_gateway_usage_stats(Some("3d".to_string())).is_err(),
             "3d is not a supported quick range"
         );
         assert!(
-            super::commands::api_gateway_request_logs(
+            super::commands::ai_gateway_request_logs(
                 Some("3d".to_string()),
                 None,
                 None,
@@ -12668,11 +12668,11 @@ fn api_gateway_usage_range_selector_rejects_unknown_and_accepts_all_time() {
             "3d must fail for request logs too"
         );
         assert!(
-            super::commands::api_gateway_usage_stats(Some("bogus".to_string())).is_err(),
+            super::commands::ai_gateway_usage_stats(Some("bogus".to_string())).is_err(),
             "an unknown selector must never silently fall back"
         );
         assert!(
-            super::commands::api_gateway_request_logs(
+            super::commands::ai_gateway_request_logs(
                 Some("bogus".to_string()),
                 None,
                 None,
@@ -12684,14 +12684,14 @@ fn api_gateway_usage_range_selector_rejects_unknown_and_accepts_all_time() {
         );
 
         for all in [Some("".to_string()), None, Some("all".to_string())] {
-            let stats = super::commands::api_gateway_usage_stats(all.clone())
+            let stats = super::commands::ai_gateway_usage_stats(all.clone())
                 .expect("all-time stats");
             assert_eq!(
                 stats.totals.request_count, 3,
                 "all-time must include the day-before-yesterday record"
             );
             let page =
-                super::commands::api_gateway_request_logs(all, None, None, None, None)
+                super::commands::ai_gateway_request_logs(all, None, None, None, None)
                     .expect("all-time request logs");
             assert_eq!(page.total, 3);
         }
@@ -12703,7 +12703,7 @@ fn api_gateway_usage_range_selector_rejects_unknown_and_accepts_all_time() {
 /// buckets. The window start is inclusive; the day before it and the
 /// day-seven-days-back boundary are excluded.
 #[test]
-fn api_gateway_seven_day_range_matches_previous_days_window() {
+fn ai_gateway_seven_day_range_matches_previous_days_window() {
     with_temp_home("usage-seven-day-parity", |_home| {
         let store = UsageLogStore::default_store().expect("usage store");
         let today_start = utc8_day_start(super::now_millis());
@@ -12734,7 +12734,7 @@ fn api_gateway_seven_day_range_matches_previous_days_window() {
         }
 
         let stats =
-            super::commands::api_gateway_usage_stats(Some("7d".to_string()))
+            super::commands::ai_gateway_usage_stats(Some("7d".to_string()))
                 .expect("7d stats");
         assert_eq!(stats.granularity, "day");
         assert_eq!(
@@ -12742,7 +12742,7 @@ fn api_gateway_seven_day_range_matches_previous_days_window() {
             "today and the inclusive window start are in; earlier records are out"
         );
 
-        let page = super::commands::api_gateway_request_logs(
+        let page = super::commands::ai_gateway_request_logs(
             Some("7d".to_string()),
             None,
             None,
@@ -13170,7 +13170,7 @@ async fn forwarded_logs_never_contain_keys_headers_or_bodies() {
     let raw = fs::read(
         crate::config::get_app_dir()
             .expect("app dir")
-            .join("api_gateway_usage.db"),
+            .join("ai_gateway_usage.db"),
     )
     .expect("read usage db");
     let raw_text = String::from_utf8_lossy(&raw);
@@ -13249,7 +13249,7 @@ async fn price_change_does_not_alter_historical_amounts() {
         .find(|candidate| candidate.id == "p1")
         .expect("p1 must exist")
         .clone();
-    super::commands::api_gateway_upsert_provider(
+    super::commands::ai_gateway_upsert_provider(
         p1,
         Some(vec![priced_with_provider(
             "p1",
@@ -13287,7 +13287,7 @@ async fn price_change_does_not_alter_historical_amounts() {
         .find(|candidate| candidate.id == "p1")
         .expect("p1 must exist")
         .clone();
-    super::commands::api_gateway_upsert_provider(
+    super::commands::ai_gateway_upsert_provider(
         p1,
         Some(vec![priced_with_provider(
             "p1",
@@ -14179,7 +14179,7 @@ fn request_logs_page_exposes_in_range_model_facet() {
 #[test]
 fn deleting_the_default_key_advances_to_the_next_enabled_key() {
     with_temp_home("delete-default-key-advance", |_home| {
-        super::commands::api_gateway_upsert_key(GatewayKey {
+        super::commands::ai_gateway_upsert_key(GatewayKey {
             id: "k1".to_string(),
             label: "K1".to_string(),
             value: "v1".to_string(),
@@ -14187,7 +14187,7 @@ fn deleting_the_default_key_advances_to_the_next_enabled_key() {
             created_at: 0,
         })
         .unwrap();
-        super::commands::api_gateway_upsert_key(GatewayKey {
+        super::commands::ai_gateway_upsert_key(GatewayKey {
             id: "k2".to_string(),
             label: "K2".to_string(),
             value: "v2".to_string(),
@@ -14195,10 +14195,10 @@ fn deleting_the_default_key_advances_to_the_next_enabled_key() {
             created_at: 0,
         })
         .unwrap();
-        let defaulted = super::commands::api_gateway_set_default_key("k2".to_string()).unwrap();
+        let defaulted = super::commands::ai_gateway_set_default_key("k2".to_string()).unwrap();
         assert_eq!(defaulted.default_key_id.as_deref(), Some("k2"));
 
-        let after_delete = super::commands::api_gateway_delete_key("k2".to_string()).unwrap();
+        let after_delete = super::commands::ai_gateway_delete_key("k2".to_string()).unwrap();
         assert_eq!(
             after_delete.default_key_id.as_deref(),
             Some("k1"),
@@ -14215,7 +14215,7 @@ fn deleting_the_default_key_advances_to_the_next_enabled_key() {
     });
 }
 
-/// Standards S2: `api_gateway_save_config` must normalize brand-new keys whose
+/// Standards S2: `ai_gateway_save_config` must normalize brand-new keys whose
 /// submitted value is blank or the UI mask placeholder, generating a real
 /// `sk-gateway-` secret instead of persisting `""` or `"********"`.
 #[tokio::test]
@@ -15108,59 +15108,6 @@ fn provider_disable_and_reenable_preserves_mapping_enabled_state() {
     });
 }
 
-/// Legacy cleanup removes only the `api_fusion`-era files while coexisting
-/// new `api_gateway` files stay byte-identical.
-#[test]
-fn cleanup_legacy_files_removes_only_legacy_files() {
-    let _home = isolated_temp_home("legacy-cleanup");
-    let dir = crate::config::get_app_dir().expect("app dir");
-    fs::create_dir_all(&dir).expect("create app dir");
-    fs::write(dir.join(super::CONFIG_FILE), b"new-config").expect("write new config");
-    fs::write(dir.join(super::USAGE_DB_FILE), b"new-db").expect("write new db");
-    fs::write(
-        dir.join(super::LEGACY_CONFIG_FILE_NAME),
-        b"legacy-config",
-    )
-    .expect("write legacy config");
-    fs::write(
-        dir.join(super::LEGACY_USAGE_DB_FILE_NAME),
-        b"legacy-db",
-    )
-    .expect("write legacy db");
-
-    super::storage::cleanup_legacy_files();
-
-    assert!(
-        !dir.join(super::LEGACY_CONFIG_FILE_NAME).exists(),
-        "legacy config must be gone"
-    );
-    assert!(
-        !dir.join(super::LEGACY_USAGE_DB_FILE_NAME).exists(),
-        "legacy usage db must be gone"
-    );
-    assert_eq!(
-        fs::read(dir.join(super::CONFIG_FILE)).expect("read new config"),
-        b"new-config",
-        "new config must stay intact"
-    );
-    assert_eq!(
-        fs::read(dir.join(super::USAGE_DB_FILE)).expect("read new db"),
-        b"new-db",
-        "new usage db must stay intact"
-    );
-}
-
-/// Legacy cleanup with no legacy files present succeeds silently and is idempotent.
-#[test]
-fn cleanup_legacy_files_succeeds_without_legacy_files() {
-    let _home = isolated_temp_home("legacy-cleanup-absent");
-    let dir = crate::config::get_app_dir().expect("app dir");
-    fs::create_dir_all(&dir).expect("create app dir");
-
-    super::storage::cleanup_legacy_files();
-    super::storage::cleanup_legacy_files();
-}
-
 #[test]
 fn query_model_reasoning_efforts_matches_families_and_ignores_prefixes() {
     use super::storage::query_model_reasoning_efforts;
@@ -15909,7 +15856,7 @@ fn usage_log_table_columns(path: &Path) -> Vec<String> {
     columns
 }
 
-/// AC-011 / REQ-005 / REQ-006: an `api_gateway_usage.db` written by the previous
+/// AC-011 / REQ-005 / REQ-006: an `ai_gateway_usage.db` written by the previous
 /// release gains both columns idempotently, keeps its pre-migration statistics,
 /// treats historical rows as terminal with no message, and exposes the stored
 /// values of new attempt and terminal rows through the request-log command.
@@ -16118,7 +16065,7 @@ fn usage_store_migrates_pre_upgrade_database_and_exposes_new_fields() {
         );
 
         // The request-log command payload carries both stored fields.
-        let command_page = super::commands::api_gateway_request_logs(None, None, None, None, None)
+        let command_page = super::commands::ai_gateway_request_logs(None, None, None, None, None)
             .expect("request-log command");
         let payload = serde_json::to_value(&command_page).expect("serialize the command payload");
         assert_eq!(payload["total"], json!(4));
@@ -16163,7 +16110,7 @@ fn usage_store_migrates_pre_upgrade_database_and_exposes_new_fields() {
 fn usage_store_append_batch_reports_unopenable_paths_without_side_effects() {
     let dir = make_temp_dir("usage-append-unopenable");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let db_path = dir.join("api_gateway_usage.db");
+    let db_path = dir.join("ai_gateway_usage.db");
     // A directory at the database path makes SQLite's open fail.
     fs::create_dir_all(&db_path).expect("create a directory at the database path");
     let store = UsageLogStore::at(&db_path);
@@ -20193,14 +20140,14 @@ async fn models_endpoint_excludes_auto_disabled_rows_that_are_unique() {
 }
 
 // ---------------------------------------------------------------------------
-// AC-013 clauses 1–2: api_gateway_upsert_provider runtime-state semantics
+// AC-013 clauses 1–2: ai_gateway_upsert_provider runtime-state semantics
 // ---------------------------------------------------------------------------
 
 /// AC-013 clause 1: upserting the same trimmed key preserves runtime state
 /// (`auto_disabled`, counter, reason, timestamps). A regression that drops
 /// the preserve loop will clear these fields and fail this test.
 #[test]
-fn api_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
+fn ai_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
     with_temp_home("upsert-preserve-runtime", |_home| {
         // Seed a provider row keyed (local_model, upstream_model) with
         // auto_disabled=true, reason, and consecutive_failures=3.
@@ -20239,7 +20186,7 @@ fn api_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
         super::storage::write_config(&initial_config).expect("write seed config");
 
         // Upsert the SAME provider but change display_name — trim key unchanged.
-        let result = super::commands::api_gateway_upsert_provider(
+        let result = super::commands::ai_gateway_upsert_provider(
             GatewayUpstreamProvider {
                 id: seeded.id.clone(),
                 name: "Upsert Keep Renamed".to_string(),
@@ -20319,7 +20266,7 @@ fn api_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
 /// (`auto_disabled=false`, counter=0, no reason/timestamps). A regression that
 /// fails to reset new keys will retain stale state and fail this test.
 #[test]
-fn api_gateway_upsert_clears_runtime_state_for_changed_key() {
+fn ai_gateway_upsert_clears_runtime_state_for_changed_key() {
     with_temp_home("upsert-clear-runtime", |_home| {
         // Seed two rows in one provider.
         let seeded = GatewayUpstreamProvider {
@@ -20372,7 +20319,7 @@ fn api_gateway_upsert_clears_runtime_state_for_changed_key() {
         super::storage::write_config(&config).expect("write seed config");
 
         // Upsert: keep local-a unchanged, replace local-b -> remote-c.
-        let result = super::commands::api_gateway_upsert_provider(
+        let result = super::commands::ai_gateway_upsert_provider(
             GatewayUpstreamProvider {
                 id: seeded.id.clone(),
                 name: "Upsert Reset Updated".to_string(),
@@ -20670,7 +20617,7 @@ fn provider_weight_validation_bounds() {
         // 1. weight = 0 (below minimum 1) -> must fail and leave config unchanged
         let mut p_invalid_zero = provider("p-weight-zero");
         p_invalid_zero.weight = 0;
-        let err_zero = super::commands::api_gateway_upsert_provider(p_invalid_zero, None)
+        let err_zero = super::commands::ai_gateway_upsert_provider(p_invalid_zero, None)
             .expect_err("AC-002: saving provider with weight: 0 must return validation error");
         assert!(
             err_zero.to_lowercase().contains("weight")
@@ -20686,7 +20633,7 @@ fn provider_weight_validation_bounds() {
         // 2. weight = 101 (above maximum 100) -> must fail and leave config unchanged
         let mut p_invalid_overflow = provider("p-weight-101");
         p_invalid_overflow.weight = 101;
-        let err_overflow = super::commands::api_gateway_upsert_provider(p_invalid_overflow, None)
+        let err_overflow = super::commands::ai_gateway_upsert_provider(p_invalid_overflow, None)
             .expect_err("AC-002: saving provider with weight: 101 must return validation error");
         assert!(
             err_overflow.to_lowercase().contains("weight")
@@ -20704,7 +20651,7 @@ fn provider_weight_validation_bounds() {
             let pid = format!("p-valid-{idx}");
             let mut p_valid = provider(&pid);
             p_valid.weight = valid_weight;
-            let result = super::commands::api_gateway_upsert_provider(p_valid, None);
+            let result = super::commands::ai_gateway_upsert_provider(p_valid, None);
             assert!(
                 result.is_ok(),
                 "AC-002: saving provider with valid weight {valid_weight} must succeed: {:?}",
@@ -21039,7 +20986,7 @@ fn swrr_session_affinity_preserves_bound_with_weighted_fallback() {
 }
 
 // ---------------------------------------------------------------------------
-// Plan 20260921-api-gateway-cache-hit-accounting Step 5 (RED): storage,
+// Plan 20260921-ai-gateway-cache-hit-accounting Step 5 (RED): storage,
 // coverage and cross-provider aggregation. Every test compiles against the
 // CURRENT boundary (raw `PRAGMA table_info`, existing `UsageLogStore` /
 // `sample_record` helpers, serialized `usage_stats` JSON) and fails on an
@@ -21069,7 +21016,7 @@ fn seed_classified_usage_row(
     usage_present: bool,
     cache_accounting_valid: bool,
 ) {
-    let db_path = dir.join("api_gateway_usage.db");
+    let db_path = dir.join("ai_gateway_usage.db");
     // Run the production schema/migration through the store boundary without
     // writing a canonical row of our own.
     let _ = UsageLogStore::at(&db_path)
@@ -21118,7 +21065,7 @@ fn seed_classified_usage_row(
 fn cachehit_storage_migration_adds_semantics_columns_idempotently_and_preserves_legacy_rows() {
     let dir = make_temp_dir("cachehit-migration");
     fs::create_dir_all(&dir).expect("create temp dir for pre-upgrade db");
-    let db_path = dir.join("api_gateway_usage.db");
+    let db_path = dir.join("ai_gateway_usage.db");
     // Pre-upgrade file: previous release schema without the new semantics
     // columns (and without the already-shipped attempt columns).
     let legacy = rusqlite::Connection::open(&db_path).expect("create pre-upgrade db");
@@ -21404,7 +21351,7 @@ fn cachehit_storage_coverage_counts_only_valid_positive_denominator_success() {
 /// REQ-002 / AC-011 backend half: `UsageMetrics` exposes five
 /// ALWAYS-serialized additive fields at EVERY flattened aggregation level
 /// (totals, buckets, models, providers). Existing fields keep names/types
-/// and the command name `api_gateway_usage_stats` is unchanged.
+/// and the command name `ai_gateway_usage_stats` is unchanged.
 #[test]
 fn cachehit_metrics_expose_five_additive_fields_at_every_level() {
     let (dir, store) = usage_store("cachehit-contract");
@@ -21499,7 +21446,7 @@ fn cachehit_metrics_expose_five_additive_fields_at_every_level() {
     let command_stats = with_temp_home("cachehit-command-contract", |_| {
         // Touch the command boundary only for its name/type; the isolated
         // fixture above already proves the payload shape.
-        let _ = super::commands::api_gateway_usage_stats
+        let _ = super::commands::ai_gateway_usage_stats
             as fn(Option<String>) -> Result<super::UsageStats, String>;
     });
     let _ = command_stats;
@@ -21978,7 +21925,7 @@ async fn cachehit_invalid_upstream_usage_is_persisted_invalid_and_cache_ineligib
 }
 
 // ---------------------------------------------------------------------------
-// Plan 20260921-api-gateway-cache-hit-accounting Step 8 (RED): streaming usage
+// Plan 20260921-ai-gateway-cache-hit-accounting Step 8 (RED): streaming usage
 // locations and no-mutation forwarding.
 //
 // Every case drives a real streaming request through the loopback mock
@@ -22917,7 +22864,7 @@ fn probe_row_provider(
     provider
 }
 
-/// Read one provider's first persisted row back from `api_gateway.json`.
+/// Read one provider's first persisted row back from `ai_gateway.json`.
 fn stored_probe_row(provider_id: &str) -> ModelMapping {
     let stored = super::storage::read_config().expect("read persisted provider state");
     stored
@@ -24415,7 +24362,7 @@ async fn unsuppressed_failed_probe_refreshes_the_cooldown_and_details() {
 //
 // The backend Step 3 symbols below do not exist yet, so this section is
 // expected to fail compilation until they land:
-//   - super::API_GATEWAY_CONFIG_UPDATED_EVENT
+//   - super::AI_GATEWAY_CONFIG_UPDATED_EVENT
 //   - super::runtime_http::CONFIG_UPDATE_EVENTS
 //   - start_server(None) / autostart(None) / save_config_inner(_, None)
 // ===========================================================================
@@ -24425,14 +24372,14 @@ async fn unsuppressed_failed_probe_refreshes_the_cooldown_and_details() {
 #[test]
 fn config_update_event_name_is_the_cross_stack_literal() {
     assert_eq!(
-        super::API_GATEWAY_CONFIG_UPDATED_EVENT,
-        "api-gateway-config-update"
+        super::AI_GATEWAY_CONFIG_UPDATED_EVENT,
+        "ai-gateway-config-update"
     );
 }
 
 /// The event name recorded by the same-thread emission recorder, mirrored from
 /// the production constant so an event-name drift is a compile error.
-const CONFIG_UPDATE_EVENT_NAME: &str = super::API_GATEWAY_CONFIG_UPDATED_EVENT;
+const CONFIG_UPDATE_EVENT_NAME: &str = super::AI_GATEWAY_CONFIG_UPDATED_EVENT;
 
 /// Snapshot the same-thread emission recorder (a test-only `thread_local`).
 fn recorded_config_update_events() -> Vec<String> {

@@ -200,7 +200,7 @@ pub struct ProviderTemplateView {
 /// Resolve the effective template data for `template_id`: the last persisted
 /// sync result when present, else the built-in snapshot. An unknown id is an
 /// actionable error naming the id.
-pub(in crate::api_gateway) fn effective_template(
+pub(in crate::ai_gateway) fn effective_template(
     config: &GatewayConfig,
     template_id: &str,
 ) -> Result<ProviderTemplate, String> {
@@ -754,7 +754,7 @@ pub fn apply_template_sync_with(
 /// `reqwest` with a 15-second timeout and no credentials. A blank URL, non-2xx
 /// status, timeout and network error return an actionable error naming the URL
 /// and the reason.
-pub(in crate::api_gateway) async fn fetch_template_models(
+pub(in crate::ai_gateway) async fn fetch_template_models(
     template: &ProviderTemplate,
 ) -> Result<String, String> {
     let url = template

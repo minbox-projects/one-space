@@ -58,7 +58,7 @@ fn test_ai_workflow_list_profiles_loads_fixtures_and_marks_active() {
         let config_dir = home.join(".config/ai-workflow");
         fs::write(
             config_dir.join("config.yaml"),
-            "active_profile: onesapce-api-gateway\n",
+            "active_profile: onesapce-ai-gateway\n",
         )
         .expect("write config.yaml");
 
@@ -69,19 +69,19 @@ fn test_ai_workflow_list_profiles_loads_fixtures_and_marks_active() {
         .expect("write baibai-40.yaml");
 
         fs::write(
-            profiles_dir.join("onesapce-api-gateway.yaml"),
+            profiles_dir.join("onesapce-ai-gateway.yaml"),
             "version: 1.0.0\nagents:\n  frontend:\n    opencode: { model: apigateway/deepseek, reasoning_effort: high }\n",
         )
-        .expect("write onesapce-api-gateway.yaml");
+        .expect("write onesapce-ai-gateway.yaml");
 
         let list = list_profiles(Some(home)).expect("list_profiles should succeed");
         assert_eq!(list.len(), 2, "should list exactly 2 profiles");
 
         let active_entry = list
             .iter()
-            .find(|p| p.name == "onesapce-api-gateway")
-            .expect("onesapce-api-gateway should be present");
-        assert!(active_entry.active, "onesapce-api-gateway must be active");
+            .find(|p| p.name == "onesapce-ai-gateway")
+            .expect("onesapce-ai-gateway should be present");
+        assert!(active_entry.active, "onesapce-ai-gateway must be active");
         assert!(active_entry.error.is_none(), "should have no error");
 
         let inactive_entry = list

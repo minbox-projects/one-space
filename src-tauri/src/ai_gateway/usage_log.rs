@@ -1,7 +1,7 @@
-//! Usage metering and request logs for the API gateway.
+//! Usage metering and request logs for the AI gateway.
 //!
 //! Records live in a dedicated SQLite file (never the encrypted
-//! `api_gateway.json`) and deliberately contain no request/response bodies,
+//! `ai_gateway.json`) and deliberately contain no request/response bodies,
 //! headers or credentials. The store base path is injectable so tests point at
 //! a temp directory and never touch real application data.
 
@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// File name of the dedicated usage-log database under `get_app_dir()`.
-pub(in crate::api_gateway) const USAGE_DB_FILE: &str = "api_gateway_usage.db";
+pub(in crate::ai_gateway) const USAGE_DB_FILE: &str = "ai_gateway_usage.db";
 /// Fixed page size for the ungrouped request-log list.
 pub const USAGE_LOG_PAGE_SIZE: u32 = 50;
 /// Milliseconds in one UTC day.
@@ -57,7 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_usage_logs_timestamp ON usage_logs(timestamp_ms);
 CREATE INDEX IF NOT EXISTS idx_usage_logs_local_model ON usage_logs(local_model);
 ";
 
-pub(in crate::api_gateway) fn now_millis() -> i64 {
+pub(in crate::ai_gateway) fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
@@ -113,7 +113,7 @@ impl UsageResult {
         }
     }
 
-    pub(in crate::api_gateway) fn parse(value: &str) -> Option<Self> {
+    pub(in crate::ai_gateway) fn parse(value: &str) -> Option<Self> {
         match value {
             "success" => Some(Self::Success),
             "failure" => Some(Self::Failure),
@@ -168,7 +168,7 @@ pub fn validate_retention_days(days: i64) -> Result<u32, String> {
 
 /// Clamp a persisted retention value, falling back to the default for
 /// out-of-range values written by older or corrupted configs.
-pub(in crate::api_gateway) fn normalize_retention_days(days: u32) -> u32 {
+pub(in crate::ai_gateway) fn normalize_retention_days(days: u32) -> u32 {
     if (MIN_USAGE_RETENTION_DAYS..=MAX_USAGE_RETENTION_DAYS).contains(&days) {
         days
     } else {
@@ -339,7 +339,7 @@ fn top_field_present(usage: &Value, key: &str) -> bool {
 /// tiers so billing stays conservative (no double counting, no negative)
 /// while the store layer keeps the row cache-statistics-ineligible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::api_gateway) struct CanonicalUsage {
+pub(in crate::ai_gateway) struct CanonicalUsage {
     pub tokens: UsageTokens,
     pub valid: bool,
 }
@@ -352,7 +352,7 @@ pub(in crate::api_gateway) struct CanonicalUsage {
 /// always carry the canonical contract, while the accounting-aware insert path
 /// persists the parser's real classification.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(in crate::api_gateway) struct UsageAccounting {
+pub(in crate::ai_gateway) struct UsageAccounting {
     pub present: bool,
     pub valid: bool,
 }
@@ -360,7 +360,7 @@ pub(in crate::api_gateway) struct UsageAccounting {
 impl UsageAccounting {
     /// The classification written by the request-log contract path.
     #[cfg(test)]
-    pub(in crate::api_gateway) const CANONICAL: Self = Self {
+    pub(in crate::ai_gateway) const CANONICAL: Self = Self {
         present: true,
         valid: true,
     };
@@ -384,7 +384,7 @@ impl UsageAccounting {
 ///   with the top-level creation value as the deducted cache-write fallback.
 /// - Nested cache write wins over the top-level creation fallback.
 /// - `output_tokens` wins over `completion_tokens`.
-pub(in crate::api_gateway) fn canonical_usage_from_value(usage: &Value) -> CanonicalUsage {
+pub(in crate::ai_gateway) fn canonical_usage_from_value(usage: &Value) -> CanonicalUsage {
     let reported = usage
         .get("input_tokens")
         .or_else(|| usage.get("prompt_tokens"))
@@ -463,13 +463,13 @@ pub(in crate::api_gateway) fn canonical_usage_from_value(usage: &Value) -> Canon
 }
 
 #[cfg(test)]
-pub(in crate::api_gateway) fn usage_tokens_from_value(usage: &Value) -> UsageTokens {
+pub(in crate::ai_gateway) fn usage_tokens_from_value(usage: &Value) -> UsageTokens {
     canonical_usage_from_value(usage).tokens
 }
 
 /// Parse `usage` out of a complete (buffered) upstream JSON response, keeping
 /// the canonical validity classification so the store can persist it.
-pub(in crate::api_gateway) fn parse_usage_from_response(body: &[u8]) -> Option<CanonicalUsage> {
+pub(in crate::ai_gateway) fn parse_usage_from_response(body: &[u8]) -> Option<CanonicalUsage> {
     let value: Value = serde_json::from_slice(body).ok()?;
     let usage = value.get("usage")?;
     if usage.is_object() {
@@ -484,7 +484,7 @@ pub(in crate::api_gateway) fn parse_usage_from_response(body: &[u8]) -> Option<C
 /// A standard JSON envelope yields its non-empty `error.message`; any other body
 /// yields a readable summary (lossy decode, markup removed, consecutive
 /// whitespace collapsed, trimmed). Bodies without readable text yield `None`.
-pub(in crate::api_gateway) fn extract_upstream_error_text(body: &[u8]) -> Option<String> {
+pub(in crate::ai_gateway) fn extract_upstream_error_text(body: &[u8]) -> Option<String> {
     if let Ok(value) = serde_json::from_slice::<Value>(body) {
         let message = value
             .get("error")
@@ -533,7 +533,7 @@ fn strip_html_markup(text: &str) -> String {
 /// credential shapes are masked, and text longer than
 /// [`MAX_ERROR_MESSAGE_CHARS`] is truncated on a Unicode scalar boundary with a
 /// trailing `…`. Text that stays empty is stored as no message (`None`).
-pub(in crate::api_gateway) fn sanitize_error_text(text: &str, api_key: &str) -> Option<String> {
+pub(in crate::ai_gateway) fn sanitize_error_text(text: &str, api_key: &str) -> Option<String> {
     let redacted = if api_key.is_empty() {
         text.to_string()
     } else {
@@ -625,13 +625,13 @@ fn starts_with_ignore_ascii_case(bytes: &[u8], start: usize, word: &[u8]) -> boo
 /// last accumulated object, so a later `null`, string or number payload can
 /// never overwrite it.
 #[derive(Default)]
-pub(in crate::api_gateway) struct SseUsageAccumulator {
+pub(in crate::ai_gateway) struct SseUsageAccumulator {
     buffer: String,
     usage: Option<CanonicalUsage>,
 }
 
 impl SseUsageAccumulator {
-    pub(in crate::api_gateway) fn feed(&mut self, chunk: &[u8]) {
+    pub(in crate::ai_gateway) fn feed(&mut self, chunk: &[u8]) {
         self.buffer.push_str(&String::from_utf8_lossy(chunk));
         while let Some(position) = self.buffer.find('\n') {
             let line: String = self.buffer.drain(..=position).collect();
@@ -668,12 +668,12 @@ impl SseUsageAccumulator {
         }
     }
 
-    pub(in crate::api_gateway) fn usage(&self) -> Option<UsageTokens> {
+    pub(in crate::ai_gateway) fn usage(&self) -> Option<UsageTokens> {
         self.usage.map(|canonical| canonical.tokens)
     }
 
     /// The last valid usage object with its canonical validity classification.
-    pub(in crate::api_gateway) fn canonical_usage(&self) -> Option<CanonicalUsage> {
+    pub(in crate::ai_gateway) fn canonical_usage(&self) -> Option<CanonicalUsage> {
         self.usage
     }
 }
@@ -684,7 +684,7 @@ impl SseUsageAccumulator {
 
 /// Half-open millisecond range `[start, end)`; `None` means unbounded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(in crate::api_gateway) struct TimeRange {
+pub(in crate::ai_gateway) struct TimeRange {
     pub start_ms: Option<i64>,
     pub end_ms: Option<i64>,
 }
@@ -698,7 +698,7 @@ fn utc8_day_start_ms(now_ms: i64) -> i64 {
 ///
 /// `None` means "all"; `Some(1)` means today; `Some(n)` covers today plus the
 /// previous `n - 1` natural days, with the day boundary fixed at UTC+8 midnight.
-pub(in crate::api_gateway) fn resolve_range(days: Option<i64>, now_ms: i64) -> TimeRange {
+pub(in crate::ai_gateway) fn resolve_range(days: Option<i64>, now_ms: i64) -> TimeRange {
     let Some(days) = days.filter(|days| *days >= 1) else {
         return TimeRange::default();
     };
@@ -712,7 +712,7 @@ pub(in crate::api_gateway) fn resolve_range(days: Option<i64>, now_ms: i64) -> T
 /// A resolved range selector together with the bucket granularity its window
 /// implies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::api_gateway) struct ResolvedRange {
+pub(in crate::ai_gateway) struct ResolvedRange {
     pub range: TimeRange,
     /// `true` when the window spans exactly one UTC+8 natural day, which is the
     /// condition for hourly buckets.
@@ -729,7 +729,7 @@ pub(in crate::api_gateway) struct ResolvedRange {
 ///
 /// Any other selector is rejected with the supported vocabulary; it never
 /// silently falls back to all-time or today.
-pub(in crate::api_gateway) fn resolve_range_selector(
+pub(in crate::ai_gateway) fn resolve_range_selector(
     selector: Option<&str>,
     now_ms: i64,
 ) -> Result<ResolvedRange, String> {
@@ -870,7 +870,7 @@ pub struct UsageLogsPage {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(in crate::api_gateway) struct LogFilter {
+pub(in crate::ai_gateway) struct LogFilter {
     pub status: Option<UsageResult>,
     pub model: Option<String>,
 }
@@ -1081,7 +1081,7 @@ fn migrate_usage_logs(connection: &Connection) -> Result<(), String> {
 /// One persistable row: its request-log record plus the real usage
 /// classification captured while parsing the upstream response (REQ-004).
 #[derive(Debug, Clone, PartialEq)]
-pub(in crate::api_gateway) struct UsageLogEntry {
+pub(in crate::ai_gateway) struct UsageLogEntry {
     pub record: UsageLogRecord,
     pub accounting: UsageAccounting,
 }
@@ -1127,21 +1127,21 @@ fn apply_retention(connection: &Connection, retention_days: u32) {
 
 /// SQLite-backed usage-log storage bound to one explicit database path.
 #[derive(Debug, Clone)]
-pub(in crate::api_gateway) struct UsageLogStore {
+pub(in crate::ai_gateway) struct UsageLogStore {
     path: PathBuf,
 }
 
 impl UsageLogStore {
     /// Injected base path, used by tests to point at a temp directory.
-    pub(in crate::api_gateway) fn at(path: impl Into<PathBuf>) -> Self {
+    pub(in crate::ai_gateway) fn at(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
 
-    /// Default store under `get_app_dir()/api_gateway_usage.db`.
-    pub(in crate::api_gateway) fn default_store() -> Result<Self, String> {
+    /// Default store under `get_app_dir()/ai_gateway_usage.db`.
+    pub(in crate::ai_gateway) fn default_store() -> Result<Self, String> {
         let dir = crate::config::get_app_dir()?;
         let path = dir.join(USAGE_DB_FILE);
-        super::storage::cleanup_legacy_files();
+        super::migration::migrate_legacy_files();
         Ok(Self::at(path))
     }
 
@@ -1164,7 +1164,7 @@ impl UsageLogStore {
     /// (`canonical_v1`, usage present and accounting valid), then permanently
     /// delete records older than the retention window (REQ-004/REQ-009).
     #[cfg(test)]
-    pub(in crate::api_gateway) fn append(
+    pub(in crate::ai_gateway) fn append(
         &self,
         record: &UsageLogRecord,
         retention_days: u32,
@@ -1174,7 +1174,7 @@ impl UsageLogStore {
 
     /// Insert one record carrying the parser's real usage classification. Used
     /// by the request runtime so missing or invalid usage is persisted as such.
-    pub(in crate::api_gateway) fn append_with_accounting(
+    pub(in crate::ai_gateway) fn append_with_accounting(
         &self,
         record: &UsageLogRecord,
         accounting: UsageAccounting,
@@ -1196,7 +1196,7 @@ impl UsageLogStore {
     /// (REQ-005). Each record carries the canonical request-log classification.
     /// An empty slice writes nothing.
     #[cfg(test)]
-    pub(in crate::api_gateway) fn append_batch(
+    pub(in crate::ai_gateway) fn append_batch(
         &self,
         records: &[UsageLogRecord],
         retention_days: u32,
@@ -1215,7 +1215,7 @@ impl UsageLogStore {
     /// Insert every entry of one request through a single connection, in slice
     /// order, then apply the same retention cleanup as [`Self::append`]
     /// (REQ-005). An empty slice writes nothing.
-    pub(in crate::api_gateway) fn append_batch_with_accounting(
+    pub(in crate::ai_gateway) fn append_batch_with_accounting(
         &self,
         entries: &[UsageLogEntry],
         retention_days: u32,
@@ -1235,7 +1235,7 @@ impl UsageLogStore {
 
     /// Test-only inspection helper: total row count.
     #[cfg(test)]
-    pub(in crate::api_gateway) fn count(&self) -> Result<u32, String> {
+    pub(in crate::ai_gateway) fn count(&self) -> Result<u32, String> {
         let connection = self.open()?;
         let count: i64 = connection
             .query_row("SELECT COUNT(*) FROM usage_logs", [], |row| row.get(0))
@@ -1245,7 +1245,7 @@ impl UsageLogStore {
 
     /// Test-only inspection helper: every row, newest first.
     #[cfg(test)]
-    pub(in crate::api_gateway) fn all_records(&self) -> Result<Vec<UsageLogRecord>, String> {
+    pub(in crate::ai_gateway) fn all_records(&self) -> Result<Vec<UsageLogRecord>, String> {
         let connection = self.open()?;
         let mut statement = connection
             .prepare(&format!(
@@ -1262,7 +1262,7 @@ impl UsageLogStore {
 
     /// Ungrouped page of records, newest first, 50 per page. `page` is clamped
     /// to the valid range so switching ranges never lands on a blank page.
-    pub(in crate::api_gateway) fn query_logs(
+    pub(in crate::ai_gateway) fn query_logs(
         &self,
         range: &TimeRange,
         filter: &LogFilter,
@@ -1335,7 +1335,7 @@ impl UsageLogStore {
 
     /// Grouped rows by `"model"` or `"day"` (UTC+8). Historical `cancelled` rows
     /// are excluded from the groups, and `error_count` counts only `failure` rows.
-    pub(in crate::api_gateway) fn group_logs(
+    pub(in crate::ai_gateway) fn group_logs(
         &self,
         range: &TimeRange,
         filter: &LogFilter,
@@ -1408,7 +1408,7 @@ impl UsageLogStore {
         Ok(groups)
     }
 
-    pub(in crate::api_gateway) fn usage_stats(
+    pub(in crate::ai_gateway) fn usage_stats(
         &self,
         range: &TimeRange,
         hour_buckets: bool,

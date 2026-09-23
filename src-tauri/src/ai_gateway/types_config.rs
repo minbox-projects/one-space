@@ -1,15 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(in crate::api_gateway) const CONFIG_FILE: &str = "api_gateway.json";
-/// Legacy file names from the `api_fusion` era, kept ONLY for deletion.
-/// These files are never read, copied or opened — see `cleanup_legacy_files`.
-pub(in crate::api_gateway) const LEGACY_CONFIG_FILE_NAME: &str = "api_fusion.json";
-pub(in crate::api_gateway) const LEGACY_USAGE_DB_FILE_NAME: &str = "api_fusion_usage.db";
-pub(in crate::api_gateway) const DEFAULT_PORT: u16 = 17688;
+pub(in crate::ai_gateway) const CONFIG_FILE: &str = "ai_gateway.json";
+pub(in crate::ai_gateway) const DEFAULT_PORT: u16 = 17688;
 /// Dev (`debug_assertions`) default so `tauri dev` can run alongside the
 /// installed release build. Release keeps `DEFAULT_PORT`.
-pub(in crate::api_gateway) const DEV_DEFAULT_PORT: u16 = 17689;
+pub(in crate::ai_gateway) const DEV_DEFAULT_PORT: u16 = 17689;
 
 /// Default request-log retention in days for configs written before the field existed.
 pub const DEFAULT_USAGE_RETENTION_DAYS: u32 = 90;
@@ -28,7 +24,7 @@ pub const MAX_TEMPLATE_AUTO_REFRESH_MINUTES: u32 = 1440;
 pub const MIN_PROVIDER_WEIGHT: u32 = 1;
 pub const MAX_PROVIDER_WEIGHT: u32 = 100;
 
-pub(in crate::api_gateway) fn default_port() -> u16 {
+pub(in crate::ai_gateway) fn default_port() -> u16 {
     if cfg!(debug_assertions) {
         DEV_DEFAULT_PORT
     } else {
@@ -38,14 +34,14 @@ pub(in crate::api_gateway) fn default_port() -> u16 {
 
 /// Resolve the effective listening port for the current build profile.
 ///
-/// `api_gateway.json` is shared by `tauri dev` (debug) and the installed
+/// `ai_gateway.json` is shared by `tauri dev` (debug) and the installed
 /// release build, and the stored port is not user editable. The two canonical
 /// defaults are translated per profile so `tauri dev` listens on
 /// `DEV_DEFAULT_PORT` while release keeps `DEFAULT_PORT`, even after the other
 /// profile wrote its own default into the shared file. A stored value that is
 /// neither canonical default is a real custom port and is preserved; `0` falls
 /// back to the profile default.
-pub(in crate::api_gateway) fn resolve_port(stored: u16, is_dev: bool) -> u16 {
+pub(in crate::ai_gateway) fn resolve_port(stored: u16, is_dev: bool) -> u16 {
     match (stored, is_dev) {
         (0, true) | (DEFAULT_PORT, true) => DEV_DEFAULT_PORT,
         (0, false) | (DEV_DEFAULT_PORT, false) => DEFAULT_PORT,
@@ -53,11 +49,11 @@ pub(in crate::api_gateway) fn resolve_port(stored: u16, is_dev: bool) -> u16 {
     }
 }
 
-pub(in crate::api_gateway) fn default_usage_retention_days() -> u32 {
+pub(in crate::ai_gateway) fn default_usage_retention_days() -> u32 {
     DEFAULT_USAGE_RETENTION_DAYS
 }
 
-pub(in crate::api_gateway) fn default_template_auto_refresh_minutes() -> u32 {
+pub(in crate::ai_gateway) fn default_template_auto_refresh_minutes() -> u32 {
     DEFAULT_TEMPLATE_AUTO_REFRESH_MINUTES
 }
 
@@ -80,7 +76,7 @@ pub fn validate_template_auto_refresh_minutes(minutes: i64) -> Result<u32, Strin
 /// Normalize a persisted template auto-refresh interval on read: `0` (disabled)
 /// and in-range 10-1440 values are kept, while any other value written by an
 /// older or corrupted config falls back to the default.
-pub(in crate::api_gateway) fn normalize_template_auto_refresh_minutes(minutes: u32) -> u32 {
+pub(in crate::ai_gateway) fn normalize_template_auto_refresh_minutes(minutes: u32) -> u32 {
     if minutes == 0
         || (MIN_TEMPLATE_AUTO_REFRESH_MINUTES..=MAX_TEMPLATE_AUTO_REFRESH_MINUTES).contains(&minutes)
     {
@@ -106,15 +102,15 @@ where
         .unwrap_or(DEFAULT_TEMPLATE_AUTO_REFRESH_MINUTES))
 }
 
-pub(in crate::api_gateway) fn default_provider_weight() -> u32 {
+pub(in crate::ai_gateway) fn default_provider_weight() -> u32 {
     1
 }
 
-pub(in crate::api_gateway) fn default_true() -> bool {
+pub(in crate::ai_gateway) fn default_true() -> bool {
     true
 }
 
-pub(in crate::api_gateway) fn now_ts() -> u64 {
+pub(in crate::ai_gateway) fn now_ts() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -365,7 +361,7 @@ pub struct ProviderTemplateState {
     pub source: Option<String>,
 }
 
-/// A local API key accepted by the API Gateway listener.
+/// A local API key accepted by the AI Gateway listener.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayKey {
     pub id: String,
@@ -532,7 +528,7 @@ impl Default for ModelPrice {
     }
 }
 
-/// Persisted API Gateway configuration.
+/// Persisted AI Gateway configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
     #[serde(default)]
@@ -548,7 +544,7 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub terminal_syncs: Vec<TerminalSyncRecord>,
     /// Request-log retention in days (1-365, default 90). `#[serde(default)]`
-    /// keeps older `api_gateway.json` files readable without migration.
+    /// keeps older `ai_gateway.json` files readable without migration.
     #[serde(default = "default_usage_retention_days")]
     pub usage_retention_days: u32,
     /// User-maintained upstream-model price table; absent in older configs.
@@ -562,7 +558,7 @@ pub struct GatewayConfig {
     pub deleted_template_ids: Vec<String>,
     /// Interval in minutes between automatic provider-template refreshes; `0`
     /// disables the schedule. `#[serde(default = ...)]` keeps older
-    /// `api_gateway.json` files readable without migration and the value is
+    /// `ai_gateway.json` files readable without migration and the value is
     /// always serialized.
     #[serde(
         default = "default_template_auto_refresh_minutes",

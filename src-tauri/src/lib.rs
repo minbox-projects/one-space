@@ -3,7 +3,7 @@ mod ai_env;
 mod ai_news;
 mod ai_sessions;
 mod ai_workflow_profiles;
-mod api_gateway;
+mod ai_gateway;
 mod app_store;
 mod assistant_mcp;
 mod backup;
@@ -45,13 +45,13 @@ pub(crate) use app_runtime::{
 };
 // Usage statistics, request logs and retention commands. Each one is also
 // registered in `app_runtime::run_app`'s `generate_handler!`.
-pub use api_gateway::{
-    api_gateway_create_provider_from_template, api_gateway_delete_provider_model,
-    api_gateway_delete_provider_template, api_gateway_provider_templates,
-    api_gateway_request_logs,
-    api_gateway_reset_provider_templates, api_gateway_restore_provider_model,
-    api_gateway_sync_provider_template, api_gateway_upsert_provider_template,
-    api_gateway_usage_retention_get, api_gateway_usage_retention_save, api_gateway_usage_stats,
+pub use ai_gateway::{
+    ai_gateway_create_provider_from_template, ai_gateway_delete_provider_model,
+    ai_gateway_delete_provider_template, ai_gateway_provider_templates,
+    ai_gateway_request_logs,
+    ai_gateway_reset_provider_templates, ai_gateway_restore_provider_model,
+    ai_gateway_sync_provider_template, ai_gateway_upsert_provider_template,
+    ai_gateway_usage_retention_get, ai_gateway_usage_retention_save, ai_gateway_usage_stats,
 };
 pub use ai_workflow_profiles::{
     ai_workflow_activate_profile, ai_workflow_create_profile, ai_workflow_delete_profile,

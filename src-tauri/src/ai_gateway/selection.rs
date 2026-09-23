@@ -11,7 +11,7 @@ use tokio::time::Instant;
 
 /// Outcome class for an upstream attempt, driving switching and auto-disable decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::api_gateway) enum FailureClass {
+pub(in crate::ai_gateway) enum FailureClass {
     /// Auth failures (401/403) disable the provider immediately and switch.
     DisableImmediately,
     /// Counts toward consecutive failures; switches and auto-disables at the threshold.
@@ -26,7 +26,7 @@ pub(in crate::api_gateway) enum FailureClass {
 
 /// Outcome of resolving a request model against one provider for an inbound protocol.
 #[derive(Debug)]
-pub(in crate::api_gateway) enum ModelResolution {
+pub(in crate::ai_gateway) enum ModelResolution {
     /// Forward using this upstream model.
     Serve(String),
     /// A valid mapping row matches the requested model but declares another
@@ -49,7 +49,7 @@ pub(in crate::api_gateway) enum ModelResolution {
 /// none matches, the request is a `ProtocolMismatch` and the default model is
 /// not used as a fallback. The default model serves an unmapped model only when
 /// the provider protocol itself matches.
-pub(in crate::api_gateway) fn resolve_model_for_protocol(
+pub(in crate::ai_gateway) fn resolve_model_for_protocol(
     provider: &GatewayUpstreamProvider,
     requested: Option<&str>,
     protocol: UpstreamProtocol,
@@ -97,7 +97,7 @@ pub(in crate::api_gateway) fn resolve_model_for_protocol(
 /// mapping row may declare the inbound protocol. The provider-level
 /// `auto_disabled` field is legacy and never filters; only an auto-disabled row
 /// removes the model it maps.
-pub(in crate::api_gateway) fn candidate_providers<'a>(
+pub(in crate::ai_gateway) fn candidate_providers<'a>(
     providers: &'a [GatewayUpstreamProvider],
     requested: Option<&str>,
     protocol: UpstreamProtocol,
@@ -115,7 +115,7 @@ pub(in crate::api_gateway) fn candidate_providers<'a>(
 }
 
 /// Uniformly shuffle a copy of the candidate list for one request attempt pass.
-pub(in crate::api_gateway) fn shuffled_candidates(
+pub(in crate::ai_gateway) fn shuffled_candidates(
     candidates: &[GatewayUpstreamProvider],
 ) -> Vec<GatewayUpstreamProvider> {
     let mut ordered = candidates.to_vec();
@@ -130,7 +130,7 @@ fn weighted_scheduler() -> &'static Mutex<HashMap<String, i64>> {
 }
 
 /// Reset the global weighted round-robin scheduler state for tests.
-pub(in crate::api_gateway) fn reset_weighted_scheduler_for_test() {
+pub(in crate::ai_gateway) fn reset_weighted_scheduler_for_test() {
     let mut map = weighted_scheduler().lock().unwrap_or_else(|e| e.into_inner());
     map.clear();
 }
@@ -140,7 +140,7 @@ pub(in crate::api_gateway) fn reset_weighted_scheduler_for_test() {
 /// Returns all candidates ordered with the SWRR primary candidate at index 0,
 /// followed by remaining candidates sorted descending by updated current_weight
 /// (with provider ID ascending as tie-breaker).
-pub(in crate::api_gateway) fn weighted_candidates(
+pub(in crate::ai_gateway) fn weighted_candidates(
     candidates: &[GatewayUpstreamProvider],
 ) -> Vec<GatewayUpstreamProvider> {
     if candidates.is_empty() {
@@ -205,7 +205,7 @@ pub(in crate::api_gateway) fn weighted_candidates(
 
 /// Client headers that may carry a session identity, highest precedence first.
 /// The inbound header map is already lower-cased before it is looked up.
-pub(in crate::api_gateway) const SESSION_ID_HEADERS: [&str; 7] = [
+pub(in crate::ai_gateway) const SESSION_ID_HEADERS: [&str; 7] = [
     "x-session-affinity",
     "x-opencode-session",
     "session-id",
@@ -218,20 +218,20 @@ pub(in crate::api_gateway) const SESSION_ID_HEADERS: [&str; 7] = [
 /// Idle time after which a session binding is treated as absent. Recency is
 /// measured on `tokio::time::Instant`, so a paused-clock test can assert
 /// expiry without real waiting.
-pub(in crate::api_gateway) const SESSION_BINDING_IDLE_TIMEOUT: Duration =
+pub(in crate::ai_gateway) const SESSION_BINDING_IDLE_TIMEOUT: Duration =
     Duration::from_secs(30 * 60);
 
 /// Maximum live bindings; the least recently used entry is evicted first.
-pub(in crate::api_gateway) const SESSION_BINDING_CAPACITY: usize = 1024;
+pub(in crate::ai_gateway) const SESSION_BINDING_CAPACITY: usize = 1024;
 
 /// Consecutive misses after which a binding migrates to the serving provider.
-pub(in crate::api_gateway) const SESSION_BINDING_MISS_THRESHOLD: u32 = 2;
+pub(in crate::ai_gateway) const SESSION_BINDING_MISS_THRESHOLD: u32 = 2;
 
 /// Resolve the session identity as the first header of [`SESSION_ID_HEADERS`]
 /// present with a non-empty trimmed value. A header whose value is empty or
 /// whitespace-only counts as absent and the walk continues, and headers outside
 /// the list are never consulted.
-pub(in crate::api_gateway) fn resolve_session_id(
+pub(in crate::ai_gateway) fn resolve_session_id(
     headers: &HashMap<String, String>,
 ) -> Option<String> {
     SESSION_ID_HEADERS.iter().find_map(|header| {
@@ -248,16 +248,16 @@ pub(in crate::api_gateway) fn resolve_session_id(
 /// consecutive misses recorded since its last bound success.
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::api_gateway) struct SessionBinding {
-    pub(in crate::api_gateway) provider_id: String,
-    pub(in crate::api_gateway) misses: u32,
+pub(in crate::ai_gateway) struct SessionBinding {
+    pub(in crate::ai_gateway) provider_id: String,
+    pub(in crate::ai_gateway) misses: u32,
 }
 
 /// A request's candidate order together with the binding that ordered it.
 #[derive(Debug)]
-pub(in crate::api_gateway) struct SessionOrder {
-    pub(in crate::api_gateway) ordered: Vec<GatewayUpstreamProvider>,
-    pub(in crate::api_gateway) bound_provider_id: Option<String>,
+pub(in crate::ai_gateway) struct SessionOrder {
+    pub(in crate::ai_gateway) ordered: Vec<GatewayUpstreamProvider>,
+    pub(in crate::ai_gateway) bound_provider_id: Option<String>,
 }
 
 /// One entry of [`SessionAffinityStore`].
@@ -274,19 +274,19 @@ struct SessionBindingEntry {
 /// most [`SESSION_BINDING_CAPACITY`] entries and evicts the least recently used
 /// one, and nothing is ever persisted.
 #[derive(Debug, Default)]
-pub(in crate::api_gateway) struct SessionAffinityStore {
+pub(in crate::ai_gateway) struct SessionAffinityStore {
     entries: HashMap<(String, String), SessionBindingEntry>,
 }
 
 impl SessionAffinityStore {
-    pub(in crate::api_gateway) fn new() -> Self {
+    pub(in crate::ai_gateway) fn new() -> Self {
         Self::default()
     }
 
     /// Read a live binding and refresh its recency; an entry idle for more than
     /// the timeout is dropped and reported as absent.
     #[cfg(test)]
-    pub(in crate::api_gateway) fn lookup(
+    pub(in crate::ai_gateway) fn lookup(
         &mut self,
         session: &str,
         model: &str,
@@ -310,7 +310,7 @@ impl SessionAffinityStore {
     /// look the binding up, shuffle once, write the first-request binding and
     /// reorder a bound provider to the front. A request without a session or a
     /// non-empty trimmed model reads and writes nothing.
-    pub(in crate::api_gateway) fn resolve_order<F>(
+    pub(in crate::ai_gateway) fn resolve_order<F>(
         &mut self,
         session: Option<&str>,
         model: Option<&str>,
@@ -363,7 +363,7 @@ impl SessionAffinityStore {
     /// candidate is replaced immediately at zero misses; a different serving
     /// provider records one miss and migrates the binding at
     /// [`SESSION_BINDING_MISS_THRESHOLD`].
-    pub(in crate::api_gateway) fn settle(
+    pub(in crate::ai_gateway) fn settle(
         &mut self,
         session: &str,
         model: &str,
@@ -402,7 +402,7 @@ impl SessionAffinityStore {
 
     /// Live binding count after dropping idle-expired entries (test-only).
     #[cfg(test)]
-    pub(in crate::api_gateway) fn live_len(&mut self) -> usize {
+    pub(in crate::ai_gateway) fn live_len(&mut self) -> usize {
         self.prune_expired();
         self.entries.len()
     }
@@ -448,7 +448,7 @@ impl SessionAffinityStore {
 /// unchanged when there is no session, no non-empty trimmed model, no bound id
 /// or no matching candidate, so a binding never adds, drops or widens a
 /// candidate.
-pub(in crate::api_gateway) fn reorder_bound_first(
+pub(in crate::ai_gateway) fn reorder_bound_first(
     mut ordered: Vec<GatewayUpstreamProvider>,
     session: Option<&str>,
     model: Option<&str>,
@@ -474,7 +474,7 @@ static SESSION_AFFINITY: OnceLock<Mutex<SessionAffinityStore>> = OnceLock::new()
 
 /// The process-global binding table of the running gateway. Bindings live in
 /// process memory only, so a restart starts with none.
-pub(in crate::api_gateway) fn session_affinity() -> &'static Mutex<SessionAffinityStore> {
+pub(in crate::ai_gateway) fn session_affinity() -> &'static Mutex<SessionAffinityStore> {
     SESSION_AFFINITY.get_or_init(|| Mutex::new(SessionAffinityStore::new()))
 }
 
@@ -482,7 +482,7 @@ pub(in crate::api_gateway) fn session_affinity() -> &'static Mutex<SessionAffini
 /// behavior tests that touch the global store).
 #[cfg(test)]
 #[allow(dead_code)]
-pub(in crate::api_gateway) fn reset_session_affinity_for_test() {
+pub(in crate::ai_gateway) fn reset_session_affinity_for_test() {
     *session_affinity()
         .lock()
         .expect("session affinity store lock") = SessionAffinityStore::new();
@@ -490,7 +490,7 @@ pub(in crate::api_gateway) fn reset_session_affinity_for_test() {
 
 /// Choose a single candidate uniformly at random (used by coverage-sensitive tests).
 #[cfg(test)]
-pub(in crate::api_gateway) fn pick_candidate(
+pub(in crate::ai_gateway) fn pick_candidate(
     candidates: &[GatewayUpstreamProvider],
 ) -> Option<GatewayUpstreamProvider> {
     shuffled_candidates(candidates).into_iter().next()
@@ -503,7 +503,7 @@ pub(in crate::api_gateway) fn pick_candidate(
 /// caller treats a parsed `< 400` response as success before classifying, so a
 /// non-JSON success body falls through to retryable; network errors are always
 /// retryable.
-pub(in crate::api_gateway) fn classify_failure(
+pub(in crate::ai_gateway) fn classify_failure(
     status: u16,
     network_error: bool,
     _body_parsed: bool,
@@ -530,7 +530,7 @@ pub(in crate::api_gateway) fn classify_failure(
 
 /// Maximum bounded retries after a provider's first attempt in one request
 /// (so a provider is contacted at most `1 + MAX_RETRIES_PER_PROVIDER` times).
-pub(in crate::api_gateway) const MAX_RETRIES_PER_PROVIDER: u32 = 5;
+pub(in crate::ai_gateway) const MAX_RETRIES_PER_PROVIDER: u32 = 5;
 
 const RETRY_BASE_DELAY_MILLIS: u128 = 2_000;
 const RETRY_MAX_DELAY_MILLIS: u128 = 30_000;
@@ -539,7 +539,7 @@ const RETRY_JITTER_RATIO: f64 = 0.25;
 /// Default delay before the `retry`-th retry (1-based): the spec's
 /// `min(2000ms * 2^(retry-1) * (1 + random[0,1]*0.25), 30000ms)`. Header-driven
 /// overrides take priority over this.
-pub(in crate::api_gateway) fn default_retry_delay(retry: u32) -> Duration {
+pub(in crate::ai_gateway) fn default_retry_delay(retry: u32) -> Duration {
     let exponent = retry.saturating_sub(1).min(20);
     let base = RETRY_BASE_DELAY_MILLIS.saturating_mul(1u128 << exponent);
     let jitter = 1.0 + rand::random::<f64>() * RETRY_JITTER_RATIO;
@@ -548,7 +548,7 @@ pub(in crate::api_gateway) fn default_retry_delay(retry: u32) -> Duration {
 }
 
 /// Read the first value of each header, falling through invalid values.
-pub(in crate::api_gateway) fn retry_header_delay(
+pub(in crate::ai_gateway) fn retry_header_delay(
     headers: &reqwest::header::HeaderMap,
 ) -> Option<Duration> {
     fn numeric_delay(value: &str, divisor: f64) -> Option<Duration> {
@@ -588,7 +588,7 @@ pub(in crate::api_gateway) fn retry_header_delay(
 /// A bare `limit`/`exceeded` (e.g. `Rate limit exceeded`) is NOT quota: it
 /// stays a transient rate limit so ordinary throttling never disables a
 /// mapping row.
-pub(in crate::api_gateway) fn is_quota_exceeded_message(message: Option<&str>) -> bool {
+pub(in crate::ai_gateway) fn is_quota_exceeded_message(message: Option<&str>) -> bool {
     let Some(message) = message.map(str::trim).filter(|value| !value.is_empty()) else {
         return false;
     };
@@ -632,7 +632,7 @@ pub(in crate::api_gateway) fn is_quota_exceeded_message(message: Option<&str>) -
 /// A 429 whose message matches [`is_quota_exceeded_message`] is `Retryable`
 /// (counts toward mapping health); any other 429 stays `Transient`.
 /// Everything else delegates to [`classify_failure`].
-pub(in crate::api_gateway) fn classify_failure_with_message(
+pub(in crate::ai_gateway) fn classify_failure_with_message(
     status: u16,
     network_error: bool,
     body_parsed: bool,
@@ -652,7 +652,7 @@ pub(in crate::api_gateway) fn classify_failure_with_message(
 /// same provider (its quota will not recover inside the request budget), so
 /// callers pass the same error text here to suppress the same-provider retry
 /// while keeping the health count.
-pub(in crate::api_gateway) fn is_retryable_failure(class: FailureClass, status: u16) -> bool {
+pub(in crate::ai_gateway) fn is_retryable_failure(class: FailureClass, status: u16) -> bool {
     match class {
         FailureClass::Retryable => true,
         FailureClass::Transient => status == 429,
@@ -663,7 +663,7 @@ pub(in crate::api_gateway) fn is_retryable_failure(class: FailureClass, status: 
 /// Quota-aware variant of [`is_retryable_failure`]: quota-exhausted 429s count
 /// toward health (via their `Retryable` class) but never requeue the same
 /// provider.
-pub(in crate::api_gateway) fn is_retryable_with_message(
+pub(in crate::ai_gateway) fn is_retryable_with_message(
     class: FailureClass,
     status: u16,
     error_message: Option<&str>,
@@ -680,15 +680,15 @@ pub(in crate::api_gateway) fn is_retryable_with_message(
 /// Runtime health settles per row, so a failure of one row never touches a
 /// sibling row or the provider's own legacy state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(in crate::api_gateway) struct MappingTarget {
-    pub(in crate::api_gateway) provider_id: String,
-    pub(in crate::api_gateway) local_model: String,
-    pub(in crate::api_gateway) upstream_model: String,
+pub(in crate::ai_gateway) struct MappingTarget {
+    pub(in crate::ai_gateway) provider_id: String,
+    pub(in crate::ai_gateway) local_model: String,
+    pub(in crate::ai_gateway) upstream_model: String,
 }
 
 impl MappingTarget {
     /// Build a target, trimming every component.
-    pub(in crate::api_gateway) fn new(
+    pub(in crate::ai_gateway) fn new(
         provider_id: &str,
         local_model: &str,
         upstream_model: &str,
@@ -707,7 +707,7 @@ impl MappingTarget {
     /// row's trimmed `local_model` and that row's trimmed `upstream_model` equals
     /// the resolved upstream model. A `default_model` attempt therefore settles
     /// on no row and records no health outcome.
-    pub(in crate::api_gateway) fn for_request(
+    pub(in crate::ai_gateway) fn for_request(
         provider: &GatewayUpstreamProvider,
         requested: Option<&str>,
         upstream_model: &str,
@@ -729,10 +729,10 @@ impl MappingTarget {
 /// retried, the mapping row identity it settles on, and the upstream model to
 /// forward. Returned by [`find_probe_candidate`].
 #[derive(Debug, Clone)]
-pub(in crate::api_gateway) struct ProbeCandidate {
-    pub(in crate::api_gateway) provider: GatewayUpstreamProvider,
-    pub(in crate::api_gateway) target: MappingTarget,
-    pub(in crate::api_gateway) upstream_model: String,
+pub(in crate::ai_gateway) struct ProbeCandidate {
+    pub(in crate::ai_gateway) provider: GatewayUpstreamProvider,
+    pub(in crate::ai_gateway) target: MappingTarget,
+    pub(in crate::ai_gateway) upstream_model: String,
 }
 
 /// Whether a row's trimmed `disabled_reason` denotes an immediate auth disable
@@ -759,7 +759,7 @@ fn is_immediate_auth_disable_reason(reason: Option<&str>) -> bool {
 /// At most one candidate is returned: the oldest `disabled_at` first, breaking
 /// ties by provider id, then `local_model`, then `upstream_model` (trimmed,
 /// lexicographic). A missing or blank requested model yields no candidate.
-pub(in crate::api_gateway) fn find_probe_candidate(
+pub(in crate::ai_gateway) fn find_probe_candidate(
     providers: &[GatewayUpstreamProvider],
     requested: Option<&str>,
     protocol: UpstreamProtocol,
@@ -838,7 +838,7 @@ fn active_probes() -> &'static Mutex<HashSet<MappingTarget>> {
 ///
 /// Process memory only; dropping it releases the target, including when the
 /// request future is cancelled, because the release runs in [`Drop`].
-pub(in crate::api_gateway) struct ProbeGuard {
+pub(in crate::ai_gateway) struct ProbeGuard {
     target: MappingTarget,
 }
 
@@ -855,7 +855,7 @@ impl Drop for ProbeGuard {
 ///
 /// Returns `None` when another request already holds the guard, in which case
 /// the caller must skip probing and continue on its exhausted path.
-pub(in crate::api_gateway) fn try_acquire_probe_guard(
+pub(in crate::ai_gateway) fn try_acquire_probe_guard(
     target: &MappingTarget,
 ) -> Option<ProbeGuard> {
     let mut active = active_probes()
@@ -875,7 +875,7 @@ pub(in crate::api_gateway) fn try_acquire_probe_guard(
 /// `disabled_at` to `at`. With `update_details` the failure also stamps
 /// `last_error_at` and `disabled_reason`; a suppressed transport failure passes
 /// `false` so only the cooldown moves.
-pub(in crate::api_gateway) fn rearm_mapping_probe_cooldown(
+pub(in crate::ai_gateway) fn rearm_mapping_probe_cooldown(
     provider: &mut GatewayUpstreamProvider,
     target: &MappingTarget,
     reason: &str,
@@ -897,7 +897,7 @@ pub(in crate::api_gateway) fn rearm_mapping_probe_cooldown(
 /// Record a failure on every row matching `target`'s trimmed key. Returns `true`
 /// when that key is (or becomes) auto-disabled. `Transient` and `ReturnToClient`
 /// never count as failures.
-pub(in crate::api_gateway) fn register_mapping_failure(
+pub(in crate::ai_gateway) fn register_mapping_failure(
     provider: &mut GatewayUpstreamProvider,
     target: &MappingTarget,
     class: FailureClass,
@@ -937,7 +937,7 @@ pub(in crate::api_gateway) fn register_mapping_failure(
 
 /// A successful attempt resets the consecutive failure counter and last-error
 /// value of every row matching `target`'s trimmed key.
-pub(in crate::api_gateway) fn register_mapping_success(
+pub(in crate::ai_gateway) fn register_mapping_success(
     provider: &mut GatewayUpstreamProvider,
     target: &MappingTarget,
 ) {
@@ -950,7 +950,7 @@ pub(in crate::api_gateway) fn register_mapping_success(
 }
 
 /// Clear a row's runtime health state only; the user's `enabled` intent is untouched.
-pub(in crate::api_gateway) fn clear_mapping_runtime_state(mapping: &mut ModelMapping) {
+pub(in crate::ai_gateway) fn clear_mapping_runtime_state(mapping: &mut ModelMapping) {
     mapping.auto_disabled = false;
     mapping.disabled_reason = None;
     mapping.disabled_at = None;
@@ -959,7 +959,7 @@ pub(in crate::api_gateway) fn clear_mapping_runtime_state(mapping: &mut ModelMap
 }
 
 /// Whether a row's trimmed `(local_model, upstream_model)` equals the given key.
-pub(in crate::api_gateway) fn mapping_matches_key(
+pub(in crate::ai_gateway) fn mapping_matches_key(
     mapping: &ModelMapping,
     local_model: &str,
     upstream_model: &str,
@@ -971,7 +971,7 @@ pub(in crate::api_gateway) fn mapping_matches_key(
 /// Manual re-enable clears the legacy provider runtime state and the runtime
 /// state of every auto-disabled row; the user's `enabled` intent is untouched
 /// and a row that is not auto-disabled keeps its counter.
-pub(in crate::api_gateway) fn manual_reenable(provider: &mut GatewayUpstreamProvider) {
+pub(in crate::ai_gateway) fn manual_reenable(provider: &mut GatewayUpstreamProvider) {
     provider.auto_disabled = false;
     provider.disabled_reason = None;
     provider.disabled_at = None;
@@ -985,7 +985,7 @@ pub(in crate::api_gateway) fn manual_reenable(provider: &mut GatewayUpstreamProv
 }
 
 /// User toggle touches only the `enabled` intent flag.
-pub(in crate::api_gateway) fn set_user_enabled(
+pub(in crate::ai_gateway) fn set_user_enabled(
     provider: &mut GatewayUpstreamProvider,
     enabled: bool,
 ) {

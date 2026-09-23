@@ -1,11 +1,11 @@
+use super::migration::migrate_legacy_files;
 use super::runtime_http::{autostart, server_status, start_server, stop_server};
 use super::selection::{
     clear_mapping_runtime_state, manual_reenable, mapping_matches_key, set_user_enabled,
 };
 use super::storage::{
-    cleanup_legacy_files, effective_default_key, find_provider_mut, local_base_url, new_key_id,
-    new_key_value, new_provider_id, read_config, resolve_default_key_id, touch_key_created_at,
-    write_config,
+    effective_default_key, find_provider_mut, local_base_url, new_key_id, new_key_value,
+    new_provider_id, read_config, resolve_default_key_id, touch_key_created_at, write_config,
 };
 use super::templates::{
     apply_create_provider_from_template, apply_delete_provider_model,
@@ -26,16 +26,16 @@ use super::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Terminal tools that API Gateway is allowed to write to.
-pub(in crate::api_gateway) const SUPPORTED_TERMINAL_TOOLS: [&str; 2] = ["opencode", "codex"];
+/// Terminal tools that AI Gateway is allowed to write to.
+pub(in crate::ai_gateway) const SUPPORTED_TERMINAL_TOOLS: [&str; 2] = ["opencode", "codex"];
 
-/// Display name and provider key of the managed API Gateway gateway record.
-const GATEWAY_PROVIDER_NAME: &str = "API Gateway";
+/// Display name and provider key of the managed AI Gateway gateway record.
+const GATEWAY_PROVIDER_NAME: &str = "AI Gateway";
 const GATEWAY_PROVIDER_KEY: &str = "gateway";
-/// Stable marker identifying a provider record written by API Gateway.
-const GATEWAY_MARKER_KEY: &str = "api_gateway_gateway";
+/// Stable marker identifying a provider record written by AI Gateway.
+const GATEWAY_MARKER_KEY: &str = "ai_gateway_gateway";
 
-/// A terminal service provider record that API Gateway can configure or sync.
+/// A terminal service provider record that AI Gateway can configure or sync.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalTarget {
     pub tool: String,
@@ -52,7 +52,7 @@ pub struct TerminalTarget {
     pub synced_at: Option<u64>,
 }
 
-pub(in crate::api_gateway) fn is_supported_terminal_tool(tool: &str) -> bool {
+pub(in crate::ai_gateway) fn is_supported_terminal_tool(tool: &str) -> bool {
     SUPPORTED_TERMINAL_TOOLS
         .iter()
         .any(|supported| supported.eq_ignore_ascii_case(tool.trim()))
@@ -66,7 +66,10 @@ fn provider_tool(provider: &Value) -> &str {
 }
 
 /// A provider carries the gateway marker either at the top level or under
-/// `tool_config`; both shapes are recognized.
+/// `tool_config`; both shapes are recognized. Records written before the
+/// ai_gateway rename still carry the legacy marker and stay recognized through
+/// [`super::migration::has_legacy_gateway_marker`], so the next sync upgrades
+/// them in place.
 fn provider_has_gateway_marker(provider: &Value) -> bool {
     provider.get(GATEWAY_MARKER_KEY).and_then(Value::as_bool) == Some(true)
         || provider
@@ -74,6 +77,7 @@ fn provider_has_gateway_marker(provider: &Value) -> bool {
             .and_then(|tool_config| tool_config.get(GATEWAY_MARKER_KEY))
             .and_then(Value::as_bool)
             == Some(true)
+        || super::migration::has_legacy_gateway_marker(provider)
 }
 
 fn non_empty(value: Option<&str>) -> Option<String> {
@@ -83,15 +87,15 @@ fn non_empty(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Build the terminal provider record written by API Gateway for one tool.
+/// Build the terminal provider record written by AI Gateway for one tool.
 ///
-/// The record is always marked as an API Gateway gateway, carries the resolved
+/// The record is always marked as an AI Gateway gateway, carries the resolved
 /// default local key value as its `api_key` (top-level and, for opencode,
 /// `tool_config.options.apiKey`), and never carries an `active`/`is_active`
 /// flag. Opencode activation plus projection to opencode.json are applied
 /// separately via the service-provider active list and projection after the
 /// upsert succeeds.
-pub(in crate::api_gateway) fn build_gateway_provider(
+pub(in crate::ai_gateway) fn build_gateway_provider(
     provider_id: &str,
     tool: &str,
     base_url: &str,
@@ -207,7 +211,7 @@ pub(in crate::api_gateway) fn build_gateway_provider(
 }
 
 /// Pending-sync is derived from the persisted ledger, never from the redacted api_key.
-pub(in crate::api_gateway) fn terminal_sync_pending(
+pub(in crate::ai_gateway) fn terminal_sync_pending(
     record: &TerminalSyncRecord,
     current_key_id: Option<&str>,
     current_base_url: &str,
@@ -220,7 +224,7 @@ pub(in crate::api_gateway) fn terminal_sync_pending(
     }
 }
 
-pub(in crate::api_gateway) fn default_key_for_sync(
+pub(in crate::ai_gateway) fn default_key_for_sync(
     config: &GatewayConfig,
 ) -> Result<(String, String), String> {
     // Mirror the frontend `resolveDefaultKeyId` rule: the stored choice wins
@@ -250,12 +254,12 @@ fn api_err_to_string(error: crate::app_store::ApiErr) -> String {
 }
 
 #[tauri::command]
-pub fn api_gateway_get_config() -> Result<GatewayConfig, String> {
+pub fn ai_gateway_get_config() -> Result<GatewayConfig, String> {
     read_config()
 }
 
 #[tauri::command]
-pub async fn api_gateway_save_config(
+pub async fn ai_gateway_save_config(
     app: tauri::AppHandle,
     config: GatewayConfig,
 ) -> Result<GatewayConfig, String> {
@@ -265,7 +269,7 @@ pub async fn api_gateway_save_config(
 /// The full save-config behavior with the application handle injected: normalize
 /// masked secrets, validate weights, persist, then restart or stop the listener
 /// through [`start_inner`] so the runtime handle slot is refreshed.
-pub(in crate::api_gateway) async fn save_config_inner(
+pub(in crate::ai_gateway) async fn save_config_inner(
     config: GatewayConfig,
     app: Option<tauri::AppHandle>,
 ) -> Result<GatewayConfig, String> {
@@ -302,13 +306,13 @@ pub(in crate::api_gateway) async fn save_config_inner(
     if next.enabled {
         start_inner(app.clone()).await?;
     } else {
-        api_gateway_stop().await?;
+        ai_gateway_stop().await?;
     }
     read_config()
 }
 
 #[tauri::command]
-pub fn api_gateway_upsert_provider(
+pub fn ai_gateway_upsert_provider(
     mut provider: GatewayUpstreamProvider,
     prices: Option<Vec<ModelPrice>>,
 ) -> Result<GatewayConfig, String> {
@@ -385,7 +389,7 @@ pub fn api_gateway_upsert_provider(
 }
 
 #[tauri::command]
-pub fn api_gateway_delete_provider(provider_id: String) -> Result<GatewayConfig, String> {
+pub fn ai_gateway_delete_provider(provider_id: String) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     config.providers.retain(|provider| provider.id != provider_id);
     config
@@ -399,7 +403,7 @@ pub fn api_gateway_delete_provider(provider_id: String) -> Result<GatewayConfig,
 }
 
 #[tauri::command]
-pub fn api_gateway_set_provider_enabled(
+pub fn ai_gateway_set_provider_enabled(
     provider_id: String,
     enabled: bool,
 ) -> Result<GatewayConfig, String> {
@@ -417,7 +421,7 @@ pub fn api_gateway_set_provider_enabled(
 /// An unknown provider, or a key that matches no row (including a blank local or
 /// upstream model), is an actionable error that writes nothing.
 #[tauri::command]
-pub fn api_gateway_reenable_provider_model(
+pub fn ai_gateway_reenable_provider_model(
     provider_id: String,
     local_model: String,
     upstream_model: String,
@@ -447,7 +451,7 @@ pub fn api_gateway_reenable_provider_model(
 /// providers are untouched. An unknown provider is an actionable error that
 /// writes nothing.
 #[tauri::command]
-pub fn api_gateway_reenable_provider_models(provider_id: String) -> Result<GatewayConfig, String> {
+pub fn ai_gateway_reenable_provider_models(provider_id: String) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     let provider = find_provider_mut(&mut config, &provider_id)
         .ok_or_else(|| format!("provider not found: {provider_id}"))?;
@@ -457,7 +461,7 @@ pub fn api_gateway_reenable_provider_models(provider_id: String) -> Result<Gatew
 }
 
 #[tauri::command]
-pub fn api_gateway_upsert_key(mut key: GatewayKey) -> Result<GatewayConfig, String> {
+pub fn ai_gateway_upsert_key(mut key: GatewayKey) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     touch_key_created_at(&mut key);
     if key.id.trim().is_empty() {
@@ -479,7 +483,7 @@ pub fn api_gateway_upsert_key(mut key: GatewayKey) -> Result<GatewayConfig, Stri
 }
 
 #[tauri::command]
-pub fn api_gateway_delete_key(key_id: String) -> Result<GatewayConfig, String> {
+pub fn ai_gateway_delete_key(key_id: String) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     config.keys.retain(|key| key.id != key_id);
     write_config(&config)?;
@@ -487,7 +491,7 @@ pub fn api_gateway_delete_key(key_id: String) -> Result<GatewayConfig, String> {
 }
 
 #[tauri::command]
-pub fn api_gateway_set_default_key(key_id: String) -> Result<GatewayConfig, String> {
+pub fn ai_gateway_set_default_key(key_id: String) -> Result<GatewayConfig, String> {
     let mut config = read_config()?;
     let enabled = config
         .keys
@@ -517,13 +521,13 @@ fn persist_enabled(enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn api_gateway_start(app: tauri::AppHandle) -> Result<GatewayStatus, String> {
+pub async fn ai_gateway_start(app: tauri::AppHandle) -> Result<GatewayStatus, String> {
     start_inner(Some(app)).await
 }
 
 /// Start the listener and persist the enable intent, with the application
 /// handle injected so the server can broadcast runtime-state transitions.
-pub(in crate::api_gateway) async fn start_inner(
+pub(in crate::ai_gateway) async fn start_inner(
     app: Option<tauri::AppHandle>,
 ) -> Result<GatewayStatus, String> {
     let status = start_server(app).await?;
@@ -532,19 +536,19 @@ pub(in crate::api_gateway) async fn start_inner(
 }
 
 #[tauri::command]
-pub async fn api_gateway_stop() -> Result<GatewayStatus, String> {
+pub async fn ai_gateway_stop() -> Result<GatewayStatus, String> {
     let status = stop_server().await?;
     persist_enabled(false)?;
     Ok(status)
 }
 
 #[tauri::command]
-pub fn api_gateway_status() -> Result<GatewayStatus, String> {
+pub fn ai_gateway_status() -> Result<GatewayStatus, String> {
     server_status()
 }
 
-pub async fn api_gateway_autostart(app: tauri::AppHandle) -> Result<GatewayStatus, String> {
-    cleanup_legacy_files();
+pub async fn ai_gateway_autostart(app: tauri::AppHandle) -> Result<GatewayStatus, String> {
+    migrate_legacy_files();
     autostart(Some(app)).await
 }
 
@@ -613,7 +617,7 @@ fn resolve_gateway_provider_id(
 /// the current terminal service provider list. Managed gateways are recognized
 /// through the gateway marker only; a stale ledger id that points at an unmarked
 /// user provider is never claimed.
-pub(in crate::api_gateway) fn terminal_targets_from(
+pub(in crate::ai_gateway) fn terminal_targets_from(
     config: &GatewayConfig,
     providers_data: &serde_json::Value,
 ) -> Vec<TerminalTarget> {
@@ -661,7 +665,7 @@ pub(in crate::api_gateway) fn terminal_targets_from(
 }
 
 #[tauri::command]
-pub fn api_gateway_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
+pub fn ai_gateway_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
     let config = read_config()?;
     let payload = crate::app_store::service_providers_list().map_err(api_err_to_string)?;
     Ok(terminal_targets_from(&config, &payload.data))
@@ -669,7 +673,7 @@ pub fn api_gateway_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
 
 /// Boxed future returned by an injected terminal upsert, kept `Send` so the
 /// pipeline can run on the Tauri async runtime.
-pub(in crate::api_gateway) type UpsertFuture =
+pub(in crate::ai_gateway) type UpsertFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
 /// Terminal sync pipeline with an injectable upsert seam: build one gateway
@@ -680,7 +684,7 @@ pub(in crate::api_gateway) type UpsertFuture =
 /// `active`/`is_active` flag; opencode activation plus projection to
 /// opencode.json are applied separately in `apply_terminal_sync` after the
 /// ledger is persisted.
-pub(in crate::api_gateway) async fn apply_terminal_sync_with<F>(
+pub(in crate::ai_gateway) async fn apply_terminal_sync_with<F>(
     providers_data: &serde_json::Value,
     mut upsert: F,
     target_tools: Vec<String>,
@@ -796,7 +800,7 @@ async fn apply_terminal_sync(
 }
 
 #[tauri::command]
-pub async fn api_gateway_configure_terminal(
+pub async fn ai_gateway_configure_terminal(
     app: tauri::AppHandle,
     target_tools: Vec<String>,
 ) -> Result<Vec<TerminalSyncRecord>, String> {
@@ -804,7 +808,7 @@ pub async fn api_gateway_configure_terminal(
 }
 
 #[tauri::command]
-pub async fn api_gateway_sync_terminal(
+pub async fn ai_gateway_sync_terminal(
     app: tauri::AppHandle,
     target_tools: Option<Vec<String>>,
 ) -> Result<Vec<TerminalSyncRecord>, String> {
@@ -829,7 +833,7 @@ pub async fn api_gateway_sync_terminal(
 /// `"yesterday"` bucket by hour; `"7d"`/`"15d"`/`"30d"` bucket by day. Unknown
 /// selectors are rejected with the supported vocabulary.
 #[tauri::command]
-pub fn api_gateway_usage_stats(range: Option<String>) -> Result<UsageStats, String> {
+pub fn ai_gateway_usage_stats(range: Option<String>) -> Result<UsageStats, String> {
     let resolved = resolve_range_selector(range.as_deref(), now_millis())?;
     UsageLogStore::default_store()?.usage_stats(&resolved.range, resolved.hourly)
 }
@@ -838,7 +842,7 @@ pub fn api_gateway_usage_stats(range: Option<String>) -> Result<UsageStats, Stri
 /// `group_by` is `"model"` or `"day"`. Range resolution, grouping, filtering and
 /// pagination all happen here in the backend.
 #[tauri::command]
-pub fn api_gateway_request_logs(
+pub fn ai_gateway_request_logs(
     range: Option<String>,
     group_by: Option<String>,
     status: Option<String>,
@@ -874,14 +878,14 @@ pub fn api_gateway_request_logs(
 }
 
 #[tauri::command]
-pub fn api_gateway_usage_retention_get() -> Result<u32, String> {
+pub fn ai_gateway_usage_retention_get() -> Result<u32, String> {
     Ok(normalize_retention_days(read_config()?.usage_retention_days))
 }
 
 /// Replace only the retention days; invalid values (not 1-365) are rejected
 /// with an actionable error and are never persisted.
 #[tauri::command]
-pub fn api_gateway_usage_retention_save(days: i64) -> Result<u32, String> {
+pub fn ai_gateway_usage_retention_save(days: i64) -> Result<u32, String> {
     let validated = validate_retention_days(days)?;
     let mut config = read_config()?;
     config.usage_retention_days = validated;
@@ -890,7 +894,7 @@ pub fn api_gateway_usage_retention_save(days: i64) -> Result<u32, String> {
 }
 
 #[tauri::command]
-pub fn api_gateway_template_auto_refresh_get() -> Result<u32, String> {
+pub fn ai_gateway_template_auto_refresh_get() -> Result<u32, String> {
     Ok(normalize_template_auto_refresh_minutes(
         read_config()?.template_auto_refresh_minutes,
     ))
@@ -900,7 +904,7 @@ pub fn api_gateway_template_auto_refresh_get() -> Result<u32, String> {
 /// than `0` (disabled) or 10-1440 minutes are rejected with an actionable error
 /// and are never persisted.
 #[tauri::command]
-pub fn api_gateway_template_auto_refresh_save(minutes: i64) -> Result<u32, String> {
+pub fn ai_gateway_template_auto_refresh_save(minutes: i64) -> Result<u32, String> {
     let validated = validate_template_auto_refresh_minutes(minutes)?;
     let mut config = read_config()?;
     config.template_auto_refresh_minutes = validated;
@@ -915,7 +919,7 @@ pub fn api_gateway_template_auto_refresh_save(minutes: i64) -> Result<u32, Strin
 /// The two built-in provider templates with their current data source: a
 /// persisted sync result when one exists, else the in-app snapshot.
 #[tauri::command]
-pub fn api_gateway_provider_templates() -> Result<Vec<ProviderTemplateView>, String> {
+pub fn ai_gateway_provider_templates() -> Result<Vec<ProviderTemplateView>, String> {
     let config = read_config()?;
     provider_template_views(&config)
 }
@@ -926,7 +930,7 @@ pub fn api_gateway_provider_templates() -> Result<Vec<ProviderTemplateView>, Str
 /// fatal source problem (network, non-JSON, invalid structure, empty model set)
 /// leaves the configuration unchanged.
 #[tauri::command]
-pub async fn api_gateway_sync_provider_template(
+pub async fn ai_gateway_sync_provider_template(
     template_id: String,
 ) -> Result<ProviderTemplateView, String> {
     let mut config = read_config()?;
@@ -941,7 +945,7 @@ pub async fn api_gateway_sync_provider_template(
 /// enabled template model and writing no price row. A blank API key is rejected
 /// and writes nothing.
 #[tauri::command]
-pub fn api_gateway_create_provider_from_template(
+pub fn ai_gateway_create_provider_from_template(
     template_id: String,
     name: String,
     base_url: String,
@@ -965,7 +969,7 @@ pub fn api_gateway_create_provider_from_template(
 /// ignored set exactly once and both bound and manual providers drop that model's
 /// provider-scoped price row.
 #[tauri::command]
-pub fn api_gateway_delete_provider_model(
+pub fn ai_gateway_delete_provider_model(
     provider_id: String,
     upstream_model: String,
 ) -> Result<GatewayConfig, String> {
@@ -977,7 +981,7 @@ pub fn api_gateway_delete_provider_model(
 /// Restore one ignored model from the template's current data and return the
 /// refreshed configuration.
 #[tauri::command]
-pub fn api_gateway_restore_provider_model(
+pub fn ai_gateway_restore_provider_model(
     provider_id: String,
     upstream_model: String,
 ) -> Result<GatewayConfig, String> {
@@ -988,7 +992,7 @@ pub fn api_gateway_restore_provider_model(
 
 /// Upsert a provider template: update an existing template or add a new custom template.
 #[tauri::command]
-pub fn api_gateway_upsert_provider_template(
+pub fn ai_gateway_upsert_provider_template(
     template: ProviderTemplate,
 ) -> Result<Vec<ProviderTemplateView>, String> {
     let mut config = read_config()?;
@@ -997,7 +1001,7 @@ pub fn api_gateway_upsert_provider_template(
 
 /// Delete a provider template. Fails if the template is currently in use by any upstream provider.
 #[tauri::command]
-pub fn api_gateway_delete_provider_template(
+pub fn ai_gateway_delete_provider_template(
     template_id: String,
 ) -> Result<Vec<ProviderTemplateView>, String> {
     let mut config = read_config()?;
@@ -1006,9 +1010,50 @@ pub fn api_gateway_delete_provider_template(
 
 /// Reset built-in provider templates back to snapshot defaults.
 #[tauri::command]
-pub fn api_gateway_reset_provider_templates() -> Result<Vec<ProviderTemplateView>, String> {
+pub fn ai_gateway_reset_provider_templates() -> Result<Vec<ProviderTemplateView>, String> {
     let mut config = read_config()?;
     apply_reset_provider_templates(&mut config, write_config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Map, Value};
+
+    fn bool_field(key: &str, value: bool) -> Value {
+        let mut map = Map::new();
+        map.insert(key.to_string(), Value::Bool(value));
+        Value::Object(map)
+    }
+
+    fn with_tool_config(inner: Value) -> Value {
+        let mut map = Map::new();
+        map.insert("tool_config".to_string(), inner);
+        Value::Object(map)
+    }
+
+    /// The combined marker check accepts the current marker and the legacy one
+    /// (top level or under `tool_config`) while rejecting unrelated records.
+    #[test]
+    fn provider_marker_recognizes_current_and_legacy_but_not_unrelated() {
+        assert!(provider_has_gateway_marker(&bool_field(GATEWAY_MARKER_KEY, true)));
+        assert!(provider_has_gateway_marker(&with_tool_config(bool_field(
+            GATEWAY_MARKER_KEY,
+            true
+        ))));
+
+        let legacy = super::super::migration::LEGACY_GATEWAY_MARKER_KEY;
+        assert!(provider_has_gateway_marker(&bool_field(legacy, true)));
+        assert!(provider_has_gateway_marker(&with_tool_config(bool_field(
+            legacy, true
+        ))));
+
+        assert!(!provider_has_gateway_marker(&bool_field(GATEWAY_MARKER_KEY, false)));
+        assert!(!provider_has_gateway_marker(&with_tool_config(bool_field(
+            "npm", true
+        ))));
+        assert!(!provider_has_gateway_marker(&Value::Null));
+    }
 }
 
 

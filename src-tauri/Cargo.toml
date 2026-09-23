@@ -60,7 +60,7 @@ if-addrs = "0.15.0"
 tokio-util = { version = "0.7.19", features = ["io-util", "rt"] }
 
 [dev-dependencies]
-# `start_paused`/`pause`/`advance` for the API Gateway retry timing tests.
+# `start_paused`/`pause`/`advance` for the AI Gateway retry timing tests.
 tokio = { version = "1", features = ["test-util"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

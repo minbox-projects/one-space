@@ -27,15 +27,15 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, Mutex};
 use tokio::time::{sleep, Instant};
 
-pub(in crate::api_gateway) struct RunningServer {
-    pub(in crate::api_gateway) port: u16,
-    pub(in crate::api_gateway) shutdown: Option<oneshot::Sender<()>>,
+pub(in crate::ai_gateway) struct RunningServer {
+    pub(in crate::ai_gateway) port: u16,
+    pub(in crate::ai_gateway) shutdown: Option<oneshot::Sender<()>>,
 }
 
-pub(in crate::api_gateway) static RUNNING_SERVER: OnceLock<Mutex<Option<RunningServer>>> =
+pub(in crate::ai_gateway) static RUNNING_SERVER: OnceLock<Mutex<Option<RunningServer>>> =
     OnceLock::new();
 
-pub(in crate::api_gateway) fn state_lock() -> &'static Mutex<Option<RunningServer>> {
+pub(in crate::ai_gateway) fn state_lock() -> &'static Mutex<Option<RunningServer>> {
     RUNNING_SERVER.get_or_init(|| Mutex::new(None))
 }
 
@@ -69,25 +69,25 @@ fn captured_app_handle() -> Option<tauri::AppHandle> {
 /// this only exists to make the transition broadcast deterministic to assert.
 #[cfg(test)]
 thread_local! {
-    pub(in crate::api_gateway) static CONFIG_UPDATE_EVENTS: std::cell::RefCell<Vec<String>> =
+    pub(in crate::ai_gateway) static CONFIG_UPDATE_EVENTS: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Emit one `api-gateway-config-update` event when a handle was captured; a
+/// Emit one `ai-gateway-config-update` event when a handle was captured; a
 /// missing handle is a no-op that never affects settlement.
 fn emit_config_updated() {
     #[cfg(test)]
     CONFIG_UPDATE_EVENTS.with(|events| {
         events
             .borrow_mut()
-            .push(super::API_GATEWAY_CONFIG_UPDATED_EVENT.to_string())
+            .push(super::AI_GATEWAY_CONFIG_UPDATED_EVENT.to_string())
     });
     if let Some(handle) = captured_app_handle() {
-        let _ = handle.emit(super::API_GATEWAY_CONFIG_UPDATED_EVENT, ());
+        let _ = handle.emit(super::AI_GATEWAY_CONFIG_UPDATED_EVENT, ());
     }
 }
 
-pub(in crate::api_gateway) fn status_from_config(
+pub(in crate::ai_gateway) fn status_from_config(
     config: &GatewayConfig,
     running: bool,
 ) -> GatewayStatus {
@@ -113,7 +113,7 @@ pub(in crate::api_gateway) fn status_from_config(
 /// On bind failure the port configuration is left untouched and the error is
 /// actionable: it names the port and the underlying cause. It never falls back
 /// to another port.
-pub(in crate::api_gateway) async fn start_server(
+pub(in crate::ai_gateway) async fn start_server(
     app: Option<tauri::AppHandle>,
 ) -> Result<GatewayStatus, String> {
     // Store the handle before the early-return path so a restart always
@@ -135,7 +135,7 @@ pub(in crate::api_gateway) async fn start_server(
         .await
         .map_err(|e| {
             format!(
-                "failed to bind API Gateway port {} on 127.0.0.1: {e}",
+                "failed to bind AI Gateway port {} on 127.0.0.1: {e}",
                 config.port
             )
         })?;
@@ -149,7 +149,7 @@ pub(in crate::api_gateway) async fn start_server(
     Ok(status_from_config(&config, true))
 }
 
-pub(in crate::api_gateway) async fn stop_server() -> Result<GatewayStatus, String> {
+pub(in crate::ai_gateway) async fn stop_server() -> Result<GatewayStatus, String> {
     let config = read_config()?;
     let mut guard = state_lock().lock().await;
     if let Some(mut running) = guard.take() {
@@ -160,7 +160,7 @@ pub(in crate::api_gateway) async fn stop_server() -> Result<GatewayStatus, Strin
     Ok(status_from_config(&config, false))
 }
 
-pub(in crate::api_gateway) fn server_status() -> Result<GatewayStatus, String> {
+pub(in crate::ai_gateway) fn server_status() -> Result<GatewayStatus, String> {
     let config = read_config()?;
     let running = state_lock()
         .try_lock()
@@ -169,7 +169,7 @@ pub(in crate::api_gateway) fn server_status() -> Result<GatewayStatus, String> {
     Ok(status_from_config(&config, running))
 }
 
-pub(in crate::api_gateway) async fn autostart(
+pub(in crate::ai_gateway) async fn autostart(
     app: Option<tauri::AppHandle>,
 ) -> Result<GatewayStatus, String> {
     let config = read_config()?;
@@ -180,7 +180,7 @@ pub(in crate::api_gateway) async fn autostart(
     }
 }
 
-pub(in crate::api_gateway) async fn run_server(
+pub(in crate::ai_gateway) async fn run_server(
     listener: TcpListener,
     mut shutdown: oneshot::Receiver<()>,
 ) {
@@ -203,43 +203,43 @@ pub(in crate::api_gateway) async fn run_server(
 }
 
 #[derive(Debug)]
-pub(in crate::api_gateway) struct HttpRequest {
-    pub(in crate::api_gateway) method: String,
-    pub(in crate::api_gateway) path: String,
-    pub(in crate::api_gateway) headers: HashMap<String, String>,
-    pub(in crate::api_gateway) body: Vec<u8>,
+pub(in crate::ai_gateway) struct HttpRequest {
+    pub(in crate::ai_gateway) method: String,
+    pub(in crate::ai_gateway) path: String,
+    pub(in crate::ai_gateway) headers: HashMap<String, String>,
+    pub(in crate::ai_gateway) body: Vec<u8>,
 }
 
-pub(in crate::api_gateway) struct HttpResponse {
-    pub(in crate::api_gateway) status: u16,
-    pub(in crate::api_gateway) content_type: &'static str,
-    pub(in crate::api_gateway) body: Vec<u8>,
+pub(in crate::ai_gateway) struct HttpResponse {
+    pub(in crate::ai_gateway) status: u16,
+    pub(in crate::ai_gateway) content_type: &'static str,
+    pub(in crate::ai_gateway) body: Vec<u8>,
     /// Usage/provider metadata captured while forwarding, consumed by the
     /// request logger. Never forwarded to the caller.
-    pub(in crate::api_gateway) capture: Option<ForwardCapture>,
+    pub(in crate::ai_gateway) capture: Option<ForwardCapture>,
 }
 
 /// Per-request forwarding metadata used to write exactly one usage log row.
 #[derive(Debug, Clone, Default)]
-pub(in crate::api_gateway) struct ForwardCapture {
-    pub(in crate::api_gateway) status: u16,
-    pub(in crate::api_gateway) provider_id: String,
-    pub(in crate::api_gateway) provider_name: String,
-    pub(in crate::api_gateway) upstream_model: String,
-    pub(in crate::api_gateway) usage: Option<UsageTokens>,
+pub(in crate::ai_gateway) struct ForwardCapture {
+    pub(in crate::ai_gateway) status: u16,
+    pub(in crate::ai_gateway) provider_id: String,
+    pub(in crate::ai_gateway) provider_name: String,
+    pub(in crate::ai_gateway) upstream_model: String,
+    pub(in crate::ai_gateway) usage: Option<UsageTokens>,
     /// No candidate could serve the request (including every candidate failing).
-    pub(in crate::api_gateway) all_unavailable: bool,
+    pub(in crate::ai_gateway) all_unavailable: bool,
     /// The upstream stream failed after bytes had already reached the caller.
-    pub(in crate::api_gateway) upstream_error: bool,
+    pub(in crate::ai_gateway) upstream_error: bool,
     /// The downstream client went away mid-forward, so the request is neither
     /// a success nor an error and its whole log buffer is discarded.
-    pub(in crate::api_gateway) downstream_cancelled: bool,
+    pub(in crate::ai_gateway) downstream_cancelled: bool,
 }
 
 impl ForwardCapture {
     /// Final result classification: an HTTP 2xx is success only when the
     /// request was not cancelled, all-unavailable or an upstream error.
-    pub(in crate::api_gateway) fn result(&self) -> UsageResult {
+    pub(in crate::ai_gateway) fn result(&self) -> UsageResult {
         if self.downstream_cancelled {
             UsageResult::Cancelled
         } else if self.all_unavailable || self.upstream_error || self.status >= 400 || self.status == 0 {
@@ -259,18 +259,18 @@ impl ForwardCapture {
 /// without writing any row. `error_message` is the sanitized upstream error text
 /// and must be extracted where the raw bytes are still available.
 #[derive(Debug, Clone, PartialEq)]
-pub(in crate::api_gateway) struct AttemptLog {
-    pub(in crate::api_gateway) provider_id: String,
-    pub(in crate::api_gateway) provider_name: String,
-    pub(in crate::api_gateway) upstream_model: String,
-    pub(in crate::api_gateway) status: u16,
-    pub(in crate::api_gateway) result: UsageResult,
-    pub(in crate::api_gateway) error_message: Option<String>,
-    pub(in crate::api_gateway) usage: Option<UsageTokens>,
+pub(in crate::ai_gateway) struct AttemptLog {
+    pub(in crate::ai_gateway) provider_id: String,
+    pub(in crate::ai_gateway) provider_name: String,
+    pub(in crate::ai_gateway) upstream_model: String,
+    pub(in crate::ai_gateway) status: u16,
+    pub(in crate::ai_gateway) result: UsageResult,
+    pub(in crate::ai_gateway) error_message: Option<String>,
+    pub(in crate::ai_gateway) usage: Option<UsageTokens>,
     /// Whether the captured usage object decomposed into valid canonical tiers
     /// (`false` for a missing or invalid/conflicting usage object).
-    pub(in crate::api_gateway) usage_valid: bool,
-    pub(in crate::api_gateway) duration_ms: u64,
+    pub(in crate::ai_gateway) usage_valid: bool,
+    pub(in crate::ai_gateway) duration_ms: u64,
 }
 
 impl Default for AttemptLog {
@@ -313,7 +313,7 @@ fn build_attempt_log(
     }
 }
 
-pub(in crate::api_gateway) async fn read_http_request(
+pub(in crate::ai_gateway) async fn read_http_request(
     stream: &mut TcpStream,
 ) -> Result<HttpRequest, String> {
     let mut buf = Vec::new();
@@ -369,7 +369,7 @@ pub(in crate::api_gateway) async fn read_http_request(
     })
 }
 
-pub(in crate::api_gateway) fn find_header_end(buf: &[u8]) -> Option<usize> {
+pub(in crate::ai_gateway) fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
@@ -400,7 +400,7 @@ fn protocol_for_path(path: &str) -> UpstreamProtocol {
     }
 }
 
-pub(in crate::api_gateway) fn json_response(status: u16, body: Value) -> HttpResponse {
+pub(in crate::ai_gateway) fn json_response(status: u16, body: Value) -> HttpResponse {
     let payload = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
     HttpResponse {
         status,
@@ -410,7 +410,7 @@ pub(in crate::api_gateway) fn json_response(status: u16, body: Value) -> HttpRes
     }
 }
 
-pub(in crate::api_gateway) fn reason_for_status(status: u16) -> &'static str {
+pub(in crate::ai_gateway) fn reason_for_status(status: u16) -> &'static str {
     match status {
         200..=299 => "OK",
         400 => "Bad Request",
@@ -422,7 +422,7 @@ pub(in crate::api_gateway) fn reason_for_status(status: u16) -> &'static str {
     }
 }
 
-pub(in crate::api_gateway) fn http_response_bytes(response: HttpResponse) -> Vec<u8> {
+pub(in crate::ai_gateway) fn http_response_bytes(response: HttpResponse) -> Vec<u8> {
     let header = format!(
         "HTTP/1.1 {} {}\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         response.status,
@@ -435,7 +435,7 @@ pub(in crate::api_gateway) fn http_response_bytes(response: HttpResponse) -> Vec
 
 /// Accept credentials from either `Authorization: Bearer <key>` or `x-api-key`.
 /// Any enabled local key matches; no enabled key means every request is rejected.
-pub(in crate::api_gateway) fn is_authorized(request: &HttpRequest, config: &GatewayConfig) -> bool {
+pub(in crate::ai_gateway) fn is_authorized(request: &HttpRequest, config: &GatewayConfig) -> bool {
     let enabled: Vec<&GatewayKey> = config
         .keys
         .iter()
@@ -460,7 +460,7 @@ pub(in crate::api_gateway) fn is_authorized(request: &HttpRequest, config: &Gate
 
 /// Union of local model names across enabled providers' user-enabled,
 /// not-auto-disabled mapping rows.
-pub(in crate::api_gateway) fn local_model_names(config: &GatewayConfig) -> Vec<String> {
+pub(in crate::ai_gateway) fn local_model_names(config: &GatewayConfig) -> Vec<String> {
     let mut names: Vec<String> = config
         .providers
         .iter()
@@ -479,7 +479,7 @@ pub(in crate::api_gateway) fn local_model_names(config: &GatewayConfig) -> Vec<S
     names
 }
 
-pub(in crate::api_gateway) fn models_payload(config: &GatewayConfig) -> Value {
+pub(in crate::ai_gateway) fn models_payload(config: &GatewayConfig) -> Value {
     let data: Vec<Value> = local_model_names(config)
         .into_iter()
         .map(|id| json!({ "id": id, "object": "model" }))
@@ -567,7 +567,7 @@ fn no_candidate_message(
     }
 }
 
-pub(in crate::api_gateway) fn format_network_error_reason(error: &str) -> String {
+pub(in crate::ai_gateway) fn format_network_error_reason(error: &str) -> String {
     let lower = error.to_ascii_lowercase();
     let detail = if lower.contains("connection refused")
         || lower.contains("failed to connect")
@@ -1156,7 +1156,7 @@ fn record_provider_failure(failures: &mut Vec<(String, String)>, name: &str, rea
 /// Every completed attempt is appended to `attempts` in completion order
 /// (REQ-001); the caller owns the buffer so an attempt still in flight when the
 /// request ends is dropped without losing the completed entries.
-pub(in crate::api_gateway) async fn attempt_non_streaming(
+pub(in crate::ai_gateway) async fn attempt_non_streaming(
     ordered: &[GatewayUpstreamProvider],
     path: &str,
     body: &[u8],
@@ -1390,7 +1390,7 @@ fn is_sse_response_chunk(content_type: &str, first_chunk: &[u8]) -> bool {
 /// Every completed attempt is appended to `attempts` in completion order
 /// (REQ-001). An attempt whose bytes are still being forwarded when the request
 /// ends is in flight and appends nothing.
-pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
+pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     writer: &mut W,
     ordered: &[GatewayUpstreamProvider],
     path: &str,
@@ -1812,7 +1812,7 @@ async fn write_stream_headers<W: AsyncWrite + Unpin>(
         .map_err(|e| e.to_string())
 }
 
-pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
+pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
     let request = match read_http_request(&mut stream).await {
         Ok(request) => request,
         Err(error) => {
@@ -2287,7 +2287,7 @@ fn record_usage_log(config: &GatewayConfig, record: &UsageLogRecord) {
     let write = UsageLogStore::default_store()
         .and_then(|store| store.append_with_accounting(record, accounting, retention));
     if let Err(error) = write {
-        log::warn!("API gateway usage log write failed: {error}");
+        log::warn!("AI gateway usage log write failed: {error}");
     }
 }
 
@@ -2298,6 +2298,6 @@ fn write_usage_log_entries(config: &GatewayConfig, entries: Vec<UsageLogEntry>) 
     let write = UsageLogStore::default_store()
         .and_then(|store| store.append_batch_with_accounting(&entries, retention));
     if let Err(error) = write {
-        log::warn!("API gateway usage log write failed: {error}");
+        log::warn!("AI gateway usage log write failed: {error}");
     }
 }
