@@ -9,9 +9,9 @@ use super::{
     SshTunnelCustomConfig, SshTunnelForwardConfig, SshTunnelGroupRecord, SshTunnelGroupUpsertInput,
     SshTunnelGroupView, SshTunnelProbeDraftInput, SshTunnelProbeResult, SshTunnelRecord,
     SshTunnelRuntimeView, SshTunnelSourceKind, SshTunnelStatus, SshTunnelUpsertInput,
-    SshTunnelView, SshTunnelWindowReconnectDoneEvent, SshTunnelsSnapshot, DEFAULT_TUNNEL_GROUP_ID,
-    DEFAULT_TUNNEL_GROUP_NAME, LOCAL_BIND_HOST, SSH_TUNNEL_WINDOW_RECONNECT_DONE_EVENT,
-    SSH_TUNNEL_WINDOW_RECONNECT_START_EVENT,
+    SshTunnelView, SshTunnelWindowReconnectDoneEvent, SshTunnelsSnapshot, ALL_TUNNELS_BATCH_ID,
+    ALL_TUNNELS_BATCH_NAME, DEFAULT_TUNNEL_GROUP_ID, DEFAULT_TUNNEL_GROUP_NAME, LOCAL_BIND_HOST,
+    SSH_TUNNEL_WINDOW_RECONNECT_DONE_EVENT, SSH_TUNNEL_WINDOW_RECONNECT_START_EVENT,
 };
 use std::collections::HashSet;
 use tauri::{AppHandle, Emitter};
@@ -423,6 +423,156 @@ pub fn ssh_tunnel_group_disconnect(
         total_count,
         failures,
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AllTunnelsBatchOperation {
+    Connect,
+    Disconnect,
+}
+
+pub(in crate::ssh_tunnels) fn select_all_tunnels_batch_ids(
+    tunnels: &[SshTunnelRecord],
+    running_ids: &HashSet<String>,
+    operation: AllTunnelsBatchOperation,
+) -> Vec<String> {
+    tunnels
+        .iter()
+        .filter(|tunnel| match operation {
+            AllTunnelsBatchOperation::Connect => !running_ids.contains(&tunnel.id),
+            AllTunnelsBatchOperation::Disconnect => running_ids.contains(&tunnel.id),
+        })
+        .map(|tunnel| tunnel.id.clone())
+        .collect()
+}
+
+pub(crate) fn aggregate_all_tunnels_batch_result(
+    operation: &str,
+    total_count: usize,
+    skipped_count: usize,
+    success_count: usize,
+    failures: Vec<SshTunnelBatchFailureDetail>,
+) -> SshTunnelBatchOperationResult {
+    SshTunnelBatchOperationResult {
+        operation: operation.to_string(),
+        group_id: ALL_TUNNELS_BATCH_ID.to_string(),
+        group_name: ALL_TUNNELS_BATCH_NAME.to_string(),
+        success_count,
+        failed_count: failures.len(),
+        skipped_count,
+        total_count,
+        failures,
+    }
+}
+
+#[tauri::command]
+pub async fn ssh_tunnels_connect_all(
+    app: AppHandle,
+) -> Result<SshTunnelBatchOperationResult, String> {
+    let tunnels = load_records()?;
+    let total_count = tunnels.len();
+
+    let running_ids = {
+        let manager = runtime_manager().lock().map_err(|e| e.to_string())?;
+        manager.keys().cloned().collect::<HashSet<String>>()
+    };
+
+    let selected_ids =
+        select_all_tunnels_batch_ids(&tunnels, &running_ids, AllTunnelsBatchOperation::Connect);
+    let skipped_count = total_count - selected_ids.len();
+    let selected: HashSet<&str> = selected_ids.iter().map(String::as_str).collect();
+
+    let mut success_count = 0;
+    let mut failures: Vec<SshTunnelBatchFailureDetail> = Vec::new();
+    for tunnel in &tunnels {
+        if !selected.contains(tunnel.id.as_str()) {
+            continue;
+        }
+
+        match connect_internal(app.clone(), tunnel.id.clone(), false) {
+            Ok(_) => success_count += 1,
+            Err(error) => {
+                failures.push(SshTunnelBatchFailureDetail {
+                    tunnel_id: tunnel.id.clone(),
+                    tunnel_name: tunnel.name.clone(),
+                    error,
+                });
+            }
+        }
+    }
+
+    emit_tunnels_updated(&app);
+    record_group_operation_failure(
+        &app,
+        ALL_TUNNELS_BATCH_ID,
+        ALL_TUNNELS_BATCH_NAME,
+        "connect",
+        total_count,
+        &failures,
+    );
+
+    Ok(aggregate_all_tunnels_batch_result(
+        "connect",
+        total_count,
+        skipped_count,
+        success_count,
+        failures,
+    ))
+}
+
+#[tauri::command]
+pub async fn ssh_tunnels_disconnect_all(
+    app: AppHandle,
+) -> Result<SshTunnelBatchOperationResult, String> {
+    let tunnels = load_records()?;
+    let total_count = tunnels.len();
+
+    let running_ids = {
+        let manager = runtime_manager().lock().map_err(|e| e.to_string())?;
+        manager.keys().cloned().collect::<HashSet<String>>()
+    };
+
+    let selected_ids =
+        select_all_tunnels_batch_ids(&tunnels, &running_ids, AllTunnelsBatchOperation::Disconnect);
+    let skipped_count = total_count - selected_ids.len();
+    let selected: HashSet<&str> = selected_ids.iter().map(String::as_str).collect();
+
+    let mut success_count = 0;
+    let mut failures: Vec<SshTunnelBatchFailureDetail> = Vec::new();
+    for tunnel in &tunnels {
+        if !selected.contains(tunnel.id.as_str()) {
+            continue;
+        }
+
+        match disconnect_runtime(&tunnel.id) {
+            Ok(_) => success_count += 1,
+            Err(error) => {
+                failures.push(SshTunnelBatchFailureDetail {
+                    tunnel_id: tunnel.id.clone(),
+                    tunnel_name: tunnel.name.clone(),
+                    error,
+                });
+            }
+        }
+    }
+
+    emit_tunnels_updated(&app);
+    record_group_operation_failure(
+        &app,
+        ALL_TUNNELS_BATCH_ID,
+        ALL_TUNNELS_BATCH_NAME,
+        "disconnect",
+        total_count,
+        &failures,
+    );
+
+    Ok(aggregate_all_tunnels_batch_result(
+        "disconnect",
+        total_count,
+        skipped_count,
+        success_count,
+        failures,
+    ))
 }
 
 #[tauri::command]

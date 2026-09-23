@@ -1,7 +1,7 @@
 use super::{toggle_quick_assistant_window, toggle_selection_assistant_window};
 use crate::{config, ssh_tunnels};
 use std::path::PathBuf;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use std::sync::OnceLock;
 
@@ -15,6 +15,14 @@ pub(crate) fn get_hostname() -> String {
                 .unwrap_or_else(|_| "unknown-host".to_string())
         })
         .clone()
+}
+
+pub(super) fn emit_main_window_visibility(app: &tauri::AppHandle) {
+    let visible = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    let _ = app.emit("main-window-visibility-changed", visible);
 }
 
 #[tauri::command]
@@ -31,6 +39,7 @@ pub(super) fn show_main_window(app: tauri::AppHandle) {
             let _ = w.set_focus();
         });
     }
+    emit_main_window_visibility(&app);
     ssh_tunnels::ssh_tunnels_on_window_show(app);
 }
 
@@ -43,9 +52,10 @@ pub(super) fn toggle_main_window(app: tauri::AppHandle) {
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let _ = window.hide();
         } else {
-            show_main_window(app);
+            show_main_window(app.clone());
         }
     }
+    emit_main_window_visibility(&app);
 }
 
 #[tauri::command]
@@ -54,7 +64,9 @@ pub(super) fn hide_window(window: tauri::Window) -> Result<(), String> {
     let _ = window
         .app_handle()
         .set_activation_policy(tauri::ActivationPolicy::Accessory);
-    window.hide().map_err(|e| e.to_string())
+    let result = window.hide().map_err(|e| e.to_string());
+    emit_main_window_visibility(window.app_handle());
+    result
 }
 
 #[tauri::command]

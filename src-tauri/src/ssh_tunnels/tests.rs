@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -293,4 +294,158 @@ fn wait_before_io_retry_obeys_stop_signal() {
     let stopped_at = Instant::now();
     assert!(!wait_before_io_retry(&stop));
     assert!(stopped_at.elapsed() < SSH_IO_RETRY_BACKOFF);
+}
+
+fn record_with_id(id: &str, name: &str) -> SshTunnelRecord {
+    let mut record = sample_record(DEFAULT_TUNNEL_GROUP_ID);
+    record.id = id.to_string();
+    record.name = name.to_string();
+    record
+}
+
+fn running_ids(ids: &[&str]) -> HashSet<String> {
+    ids.iter().map(|id| id.to_string()).collect()
+}
+
+#[test]
+fn connect_all_selection_skips_running_tunnels_and_preserves_saved_order() {
+    let tunnels = vec![
+        record_with_id("tunnel-a", "A"),
+        record_with_id("tunnel-b", "B"),
+        record_with_id("tunnel-c", "C"),
+    ];
+    let running = running_ids(&["tunnel-b"]);
+
+    let selected =
+        select_all_tunnels_batch_ids(&tunnels, &running, AllTunnelsBatchOperation::Connect);
+
+    assert_eq!(
+        selected,
+        vec!["tunnel-a".to_string(), "tunnel-c".to_string()]
+    );
+}
+
+#[test]
+fn disconnect_all_selection_returns_only_running_tunnels_in_saved_order() {
+    let tunnels = vec![
+        record_with_id("tunnel-a", "A"),
+        record_with_id("tunnel-b", "B"),
+        record_with_id("tunnel-c", "C"),
+    ];
+    let running = running_ids(&["tunnel-c", "tunnel-a"]);
+
+    let selected =
+        select_all_tunnels_batch_ids(&tunnels, &running, AllTunnelsBatchOperation::Disconnect);
+
+    assert_eq!(
+        selected,
+        vec!["tunnel-a".to_string(), "tunnel-c".to_string()]
+    );
+}
+
+#[test]
+fn all_tunnels_selection_with_no_saved_tunnels_returns_empty_for_both_operations() {
+    let tunnels: Vec<SshTunnelRecord> = Vec::new();
+    let running = running_ids(&["tunnel-a"]);
+
+    let connect_selection =
+        select_all_tunnels_batch_ids(&tunnels, &running, AllTunnelsBatchOperation::Connect);
+    let disconnect_selection =
+        select_all_tunnels_batch_ids(&tunnels, &running, AllTunnelsBatchOperation::Disconnect);
+
+    assert!(connect_selection.is_empty());
+    assert!(disconnect_selection.is_empty());
+}
+
+#[test]
+fn all_tunnels_selection_ignores_running_ids_without_a_saved_tunnel() {
+    let tunnels = vec![record_with_id("tunnel-a", "A")];
+    let running = running_ids(&["ghost-tunnel"]);
+
+    let connect_selection =
+        select_all_tunnels_batch_ids(&tunnels, &running, AllTunnelsBatchOperation::Connect);
+    let disconnect_selection =
+        select_all_tunnels_batch_ids(&tunnels, &running, AllTunnelsBatchOperation::Disconnect);
+
+    assert_eq!(connect_selection, vec!["tunnel-a".to_string()]);
+    assert!(disconnect_selection.is_empty());
+}
+
+#[test]
+fn aggregation_derives_failed_count_from_failures_and_keeps_named_details() {
+    let failures = vec![
+        SshTunnelBatchFailureDetail {
+            tunnel_id: "tunnel-b".to_string(),
+            tunnel_name: "B".to_string(),
+            error: "connection refused".to_string(),
+        },
+        SshTunnelBatchFailureDetail {
+            tunnel_id: "tunnel-d".to_string(),
+            tunnel_name: "D".to_string(),
+            error: "authentication failed".to_string(),
+        },
+    ];
+
+    let result = aggregate_all_tunnels_batch_result("connect", 5, 1, 2, failures);
+
+    assert_eq!(result.operation, "connect");
+    assert_eq!(result.group_id, "all");
+    assert_eq!(result.group_name, "All Tunnels");
+    assert_eq!(result.total_count, 5);
+    assert_eq!(result.skipped_count, 1);
+    assert_eq!(result.success_count, 2);
+    assert_eq!(result.failed_count, 2);
+    assert_eq!(result.failures.len(), 2);
+    assert_eq!(result.failures[0].tunnel_id, "tunnel-b");
+    assert_eq!(result.failures[0].tunnel_name, "B");
+    assert_eq!(result.failures[0].error, "connection refused");
+    assert_eq!(result.failures[1].tunnel_id, "tunnel-d");
+    assert_eq!(result.failures[1].tunnel_name, "D");
+    assert_eq!(result.failures[1].error, "authentication failed");
+}
+
+#[test]
+fn aggregation_without_failures_reports_zero_failed_and_keeps_all_tunnels_identity() {
+    let result = aggregate_all_tunnels_batch_result("disconnect", 3, 3, 0, Vec::new());
+
+    assert_eq!(result.operation, "disconnect");
+    assert_eq!(result.group_id, "all");
+    assert_eq!(result.group_name, "All Tunnels");
+    assert_eq!(result.total_count, 3);
+    assert_eq!(result.skipped_count, 3);
+    assert_eq!(result.success_count, 0);
+    assert_eq!(result.failed_count, 0);
+    assert!(result.failures.is_empty());
+}
+
+const RUN_APP_SOURCE: &str = include_str!("../app_runtime/run_app.rs");
+
+fn invoke_handler_registration_block() -> &'static str {
+    RUN_APP_SOURCE
+        .split_once(".invoke_handler(tauri::generate_handler![")
+        .expect("invoke handler registration block start")
+        .1
+        .split_once(".build(tauri::generate_context!())")
+        .expect("invoke handler registration block end")
+        .0
+}
+
+#[test]
+fn invoke_handler_registers_both_all_tunnels_batch_commands_exactly_once() {
+    let block = invoke_handler_registration_block();
+
+    assert_eq!(
+        block
+            .matches("ssh_tunnels::ssh_tunnels_connect_all")
+            .count(),
+        1,
+        "ssh_tunnels_connect_all must be registered exactly once"
+    );
+    assert_eq!(
+        block
+            .matches("ssh_tunnels::ssh_tunnels_disconnect_all")
+            .count(),
+        1,
+        "ssh_tunnels_disconnect_all must be registered exactly once"
+    );
 }

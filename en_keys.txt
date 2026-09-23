@@ -31,6 +31,8 @@ apiGateway.provider.weightHint
 apiGateway.provider.weightInvalid
 apiGatewayDefaultModelAutoAdded
 apiGatewayDefaultModelNone
+apiGatewayDisableAllMappings
+apiGatewayEnableAllMappings
 apiGatewayEveryDay
 apiGatewayIgnoredModels
 apiGatewayIgnoredModelsDesc

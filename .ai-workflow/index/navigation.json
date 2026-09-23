@@ -119,6 +119,76 @@
       "shared_entry": false
     },
     {
+      "id": "tray-menu",
+      "name": "Tray Menu",
+      "aliases": [
+        "tray",
+        "menu-bar"
+      ],
+      "module_root": "frontend",
+      "owner_role": "frontend",
+      "responsibility": "托盘原生菜单所有权：`buildTrayMenuModel` 结构/标签/启用勾选/快捷键提示（遵循已注册快捷键的语义，`Meta` 不是修饰键，非法或未命名值省略）、`applyTrayMenu` 原生应用（单条目 accelerator 被拒时降级重试），`src/App.tsx` 控制器按窗口可见性、服务状态、`tray-shortcuts-updated`（Settings 保存快捷键后发出）与 i18n 语言变化重建并执行全部动作",
+      "entries": [
+        "src/lib/trayMenu.ts"
+      ],
+      "related_files": [
+        "src/App.tsx",
+        "src/i18n.ts"
+      ],
+      "tests": [
+        "src/App.trayMenu.test.tsx",
+        "src/lib/trayMenu.test.ts"
+      ],
+      "symbols": [
+        {
+          "file": "src/lib/trayMenu.ts",
+          "name": "buildTrayMenuModel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/trayMenu.ts",
+          "name": "isAcceleratorHint",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/trayMenu.ts",
+          "name": "applyTrayMenu",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/trayMenu.ts",
+          "name": "TrayMenuActionHandler",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/trayMenu.ts",
+          "name": "TrayMenuNode",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/trayMenu.ts",
+          "name": "TrayMenuState",
+          "kind": "type",
+          "visibility": "public"
+        }
+      ],
+      "depends_on": [],
+      "read_scope": [
+        "src/App.trayMenu.test.tsx",
+        "src/App.tsx",
+        "src/i18n.ts",
+        "src/lib/trayMenu.test.ts",
+        "src/lib/trayMenu.ts"
+      ],
+      "relations": [],
+      "shared_entry": false
+    },
+    {
       "id": "ai-environments",
       "name": "AI Environments",
       "aliases": [
@@ -2438,7 +2508,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "SSH 转发配置、运行时桥接、重连与配置校验",
+      "responsibility": "SSH 转发配置、运行时桥接、重连、配置校验与全量隧道批量连接/断开（批次标识 `all` / `All Tunnels`）",
       "entries": [
         "src-tauri/src/ssh_tunnels.rs"
       ],
@@ -2457,7 +2527,32 @@
       "tests": [
         "src-tauri/src/ssh_tunnels/tests.rs"
       ],
-      "symbols": [],
+      "symbols": [
+        {
+          "file": "src-tauri/src/ssh_tunnels/commands.rs",
+          "name": "ssh_tunnels_connect_all",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ssh_tunnels/commands.rs",
+          "name": "ssh_tunnels_disconnect_all",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ssh_tunnels/constants.rs",
+          "name": "ALL_TUNNELS_BATCH_ID",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ssh_tunnels/constants.rs",
+          "name": "ALL_TUNNELS_BATCH_NAME",
+          "kind": "constant",
+          "visibility": "public"
+        }
+      ],
       "depends_on": [],
       "read_scope": [
         "src-tauri/src/ssh_tunnels.rs",
@@ -2959,7 +3054,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "Tauri 应用启动、CLI 入口、运行时服务（含进程级系统恢复信号：`SYSTEM_RESUME_GRACE_SECS = 60` 的 `mark_system_resume` / `system_resume_grace_active(now)`，仅进程内存，供 API 网关在恢复后的宽限窗口内抑制网络类传输失败计数）、托盘与全局快捷键、OAuth 打开",
+      "responsibility": "Tauri 应用启动、CLI 入口、运行时服务（含进程级系统恢复信号：`SYSTEM_RESUME_GRACE_SECS = 60` 的 `mark_system_resume` / `system_resume_grace_active(now)`，仅进程内存，供 API 网关在恢复后的宽限窗口内抑制网络类传输失败计数）、托盘（Rust 侧创建、左键切换主窗口、右键原生菜单、双语启动兜底菜单、`main-window-visibility-changed` 事件与 `toggle_quick_ai_window` 命令）、全局快捷键、OAuth 打开与统一退出清理",
       "entries": [
         "src-tauri/src/lib.rs"
       ],
@@ -2975,7 +3070,32 @@
         "src-tauri/src/app_runtime/windows_data.rs"
       ],
       "tests": [],
-      "symbols": [],
+      "symbols": [
+        {
+          "file": "src-tauri/src/app_runtime/shortcuts_tray.rs",
+          "name": "toggle_quick_ai_window",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/app_runtime/shortcuts_tray.rs",
+          "name": "get_fallback_tray_label",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/app_runtime/shortcuts_tray.rs",
+          "name": "shutdown_runtime_services",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/app_runtime/windows_data.rs",
+          "name": "emit_main_window_visibility",
+          "kind": "function",
+          "visibility": "public"
+        }
+      ],
       "depends_on": [],
       "read_scope": [
         "src-tauri/src/lib.rs",

@@ -1925,4 +1925,176 @@ describe("ProviderDetailDialog 运行时字段合并", () => {
   });
 });
 
+describe("ProviderDetailDialog 批量启用/禁用映射", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("映射为空时不展示批量按钮", () => {
+    const provider = makeProvider({ mappings: [] });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByTestId("api-gateway-enable-all-mappings"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("api-gateway-disable-all-mappings"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("全部禁用只改 enabled 并保留 auto_disabled，且不触发自动禁用恢复", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const onReenableModel = vi.fn();
+    const onReenableModels = vi.fn();
+    const provider = makeProvider({
+      mappings: [
+        { local_model: "a", upstream_model: "ra", enabled: true },
+        {
+          local_model: "b",
+          upstream_model: "rb",
+          enabled: true,
+          auto_disabled: true,
+        },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+        onReenableModel={onReenableModel}
+        onReenableModels={onReenableModels}
+      />,
+    );
+
+    await user.click(screen.getByTestId("api-gateway-disable-all-mappings"));
+
+    expect(
+      screen.getByRole("switch", { name: "Enable mapping 1" }),
+    ).toHaveAttribute("aria-checked", "false");
+    expect(
+      screen.getByRole("switch", { name: "Enable mapping 2" }),
+    ).toHaveAttribute("aria-checked", "false");
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as GatewayUpstreamProvider;
+    expect(saved.mappings.map((mapping) => mapping.enabled)).toEqual([
+      false,
+      false,
+    ]);
+    expect(saved.mappings[1].auto_disabled).toBe(true);
+    expect(onReenableModel).not.toHaveBeenCalled();
+    expect(onReenableModels).not.toHaveBeenCalled();
+  });
+
+  it("全部启用只改 enabled 并保留 auto_disabled，且不触发自动禁用恢复", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const onReenableModel = vi.fn();
+    const onReenableModels = vi.fn();
+    const provider = makeProvider({
+      mappings: [
+        { local_model: "a", upstream_model: "ra", enabled: false },
+        {
+          local_model: "b",
+          upstream_model: "rb",
+          enabled: false,
+          auto_disabled: true,
+        },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+        onReenableModel={onReenableModel}
+        onReenableModels={onReenableModels}
+      />,
+    );
+
+    await user.click(screen.getByTestId("api-gateway-enable-all-mappings"));
+
+    // 用户禁用行恢复为开启；自动禁用行因运行状态仍显示关闭
+    expect(
+      screen.getByRole("switch", { name: "Enable mapping 1" }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.getByRole("switch", { name: "Enable mapping 2" }),
+    ).toHaveAttribute("aria-checked", "false");
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as GatewayUpstreamProvider;
+    expect(saved.mappings.map((mapping) => mapping.enabled)).toEqual([true, true]);
+    expect(saved.mappings[1].auto_disabled).toBe(true);
+    expect(onReenableModel).not.toHaveBeenCalled();
+    expect(onReenableModels).not.toHaveBeenCalled();
+  });
+
+  it("已全启用时全部启用按钮禁用、已全禁用时全部禁用按钮禁用", () => {
+    const allEnabled = makeProvider({
+      mappings: [
+        { local_model: "a", upstream_model: "ra", enabled: true },
+        { local_model: "b", upstream_model: "rb", enabled: true },
+      ],
+    });
+
+    const { unmount } = renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={allEnabled}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("api-gateway-enable-all-mappings")).toBeDisabled();
+    expect(screen.getByTestId("api-gateway-disable-all-mappings")).toBeEnabled();
+    unmount();
+
+    const allDisabled = makeProvider({
+      mappings: [
+        { local_model: "a", upstream_model: "ra", enabled: false },
+        { local_model: "b", upstream_model: "rb", enabled: false },
+      ],
+    });
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={allDisabled}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("api-gateway-enable-all-mappings")).toBeEnabled();
+    expect(screen.getByTestId("api-gateway-disable-all-mappings")).toBeDisabled();
+  });
+});
+
 
