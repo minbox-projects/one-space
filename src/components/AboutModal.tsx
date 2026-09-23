@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, RefreshCw, Zap, ArrowUpCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -8,11 +8,20 @@ import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { openExternalUrl } from '@/lib/externalActions';
 
-export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: () => void }) {
+export function AboutModal({
+  open: isOpen,
+  onClose,
+  autoCheckOnOpen = false,
+}: {
+  open: boolean;
+  onClose: () => void;
+  autoCheckOnOpen?: boolean;
+}) {
   const { t } = useTranslation();
   const [currentVersion, setCurrentVersion] = useState('');
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(false);
   const [autoUpdateInterval, setAutoUpdateInterval] = useState(360);
+  const autoCheckedRef = useRef(false);
   const {
     status,
     checking,
@@ -41,8 +50,14 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
           setAutoUpdateEnabled(false);
           setAutoUpdateInterval(360);
         });
+      if (autoCheckOnOpen && !autoCheckedRef.current) {
+        autoCheckedRef.current = true;
+        void checkForUpdates(false, true);
+      }
+    } else {
+      autoCheckedRef.current = false;
     }
-  }, [isOpen]);
+  }, [isOpen, autoCheckOnOpen, checkForUpdates]);
 
   const handleInstallAction = async () => {
     if (status === 'downloading' || status === 'installing') {
