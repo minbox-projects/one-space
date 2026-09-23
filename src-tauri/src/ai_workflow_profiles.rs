@@ -152,8 +152,8 @@ fn resolve_ai_workflow_cli(home_override: Option<&Path>) -> Result<PathBuf, Stri
         return Ok(path);
     }
 
-    if let Some(path_var) = env::var_os("PATH") {
-        for dir in env::split_paths(&path_var) {
+    if let Some(path_os) = crate::cli_probe::augmented_path() {
+        for dir in env::split_paths(&path_os) {
             let candidate = dir.join("ai-workflow");
             if candidate.is_file() {
                 return Ok(candidate);
@@ -505,6 +505,12 @@ pub fn activate_profile(
     let cli_path = resolve_ai_workflow_cli(home_override)?;
     let mut cmd = Command::new(&cli_path);
     cmd.args(["profile", "activate"]);
+    // GUI launches often miss fnm/nvm/Homebrew paths, so the `ai-workflow`
+    // shim (`exec node ...`) would fail with `exec: node: not found`.
+    // Reuse the CLI probe's PATH fixup so the child inherits node dirs.
+    if let Some(path) = crate::cli_probe::augmented_path() {
+        cmd.env("PATH", path);
+    }
     if let Some(home) = home_override {
         cmd.arg("--home").arg(home);
         cmd.env("HOME", home);
