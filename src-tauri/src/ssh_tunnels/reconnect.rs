@@ -118,6 +118,7 @@ pub fn start_sleep_resume_monitor(app: AppHandle) {
                 .unwrap_or(SLEEP_RESUME_HEARTBEAT_INTERVAL);
             last_seen = now;
             if elapsed >= SLEEP_RESUME_GAP_THRESHOLD {
+                crate::app_runtime::mark_system_resume();
                 schedule_auto_reconnect_reconcile(
                     app.clone(),
                     "sleep-gap-heartbeat",
@@ -138,6 +139,7 @@ pub fn start_system_wake_observer(app: AppHandle) {
     let workspace = NSWorkspace::sharedWorkspace();
     let center = workspace.notificationCenter();
     let block = RcBlock::new(move |_notification: NonNull<NSNotification>| {
+        crate::app_runtime::mark_system_resume();
         schedule_auto_reconnect_reconcile(
             app.clone(),
             "macos-wake-notification",

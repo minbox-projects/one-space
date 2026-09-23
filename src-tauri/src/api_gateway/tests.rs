@@ -1316,6 +1316,7 @@ async fn assert_truncated_auth_non_streaming(status: u16) {
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -1426,6 +1427,7 @@ async fn assert_truncated_auth_streaming(status: u16) {
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await
@@ -2253,6 +2255,7 @@ async fn streaming_switches_when_first_provider_fails_before_first_byte() {
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await
@@ -2319,6 +2322,7 @@ async fn streaming_terminates_after_first_byte_without_switching() {
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await
@@ -4185,6 +4189,7 @@ async fn non_json_upstream_response_is_retryable_and_switches() {
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -4230,6 +4235,7 @@ async fn return_to_client_error_is_passed_through_without_switching_or_disabling
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -4349,6 +4355,7 @@ async fn end_to_end_network_failure_falls_back_and_tries_first_candidate_once() 
         &body,
         Some("local-model"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -4403,6 +4410,7 @@ async fn end_to_end_5xx_falls_back_and_tries_first_candidate_once() {
         &body,
         Some("local-model"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -4461,6 +4469,7 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
             &body,
             Some("local-model"),
             &HashMap::new(),
+            false,
             &mut attempts,
         )
         .await;
@@ -4596,6 +4605,7 @@ async fn end_to_end_network_errors_accumulate_and_disable() {
             &body,
             Some("local-model"),
             &HashMap::new(),
+            false,
             &mut attempts,
         )
         .await;
@@ -4674,6 +4684,7 @@ async fn health_settlement_preserves_providers_added_mid_request() {
         &body,
         Some("local-model"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -4716,6 +4727,7 @@ async fn health_settlement_preserves_providers_added_mid_request() {
         &body,
         Some("local-model"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -4787,6 +4799,7 @@ async fn end_to_end_quota_429_counts_and_disables_while_rate_limit_429_does_not(
                 &body,
                 Some("local-model"),
                 &HashMap::new(),
+                false,
                 &mut attempts,
             )
             .await;
@@ -4848,6 +4861,7 @@ async fn end_to_end_transient_429_and_404_switch_without_disabling() {
             &body,
             Some("local-model"),
             &HashMap::new(),
+            false,
             &mut attempts,
         )
         .await;
@@ -4900,6 +4914,7 @@ async fn end_to_end_client_4xx_returns_to_caller_without_switching_or_disabling(
             &body,
             Some("local-model"),
             &HashMap::new(),
+            false,
             &mut attempts,
         )
         .await;
@@ -4959,6 +4974,7 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
             &body,
             Some("local-model"),
             &HashMap::new(),
+            false,
             &mut attempts,
         )
         .await;
@@ -5014,6 +5030,7 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
         &body,
         Some("local-model"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -5454,6 +5471,7 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
             &body,
             Some("local-model"),
             &HashMap::new(),
+            false,
             &mut attempts,
         ),
     )
@@ -5685,6 +5703,7 @@ async fn streaming_2xx_non_json_is_retryable_and_switches_before_first_byte() {
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await
@@ -7958,6 +7977,7 @@ async fn attempt_streaming_text(
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await
@@ -7986,6 +8006,7 @@ async fn attempt_non_streaming_timed(
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -8013,6 +8034,7 @@ async fn attempt_non_streaming_paused(
         body,
         requested,
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -8257,6 +8279,7 @@ async fn retry_policy_initial_pass_does_not_wait_for_cooldown() {
             &serde_json::to_vec(&json!({"model": "local"})).unwrap(),
             Some("local"),
             &HashMap::new(),
+            false,
             &mut attempts,
         ),
     )
@@ -8461,6 +8484,7 @@ async fn single_candidate_500_non_streaming_fails_fast_without_retry() {
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -8521,6 +8545,7 @@ async fn single_candidate_429_with_retry_header_non_streaming_fails_fast_without
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -8573,6 +8598,7 @@ async fn single_candidate_429_without_retry_header_non_streaming_fails_fast_with
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -11648,6 +11674,7 @@ async fn streaming_all_unavailable_network_error_logs_zero_status() {
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await
@@ -13959,6 +13986,7 @@ async fn non_streaming_upstream_html_400_is_wrapped_in_standard_envelope() {
         &body,
         Some("local"),
         &headers,
+        false,
         &mut attempts,
     )
     .await;
@@ -14076,6 +14104,7 @@ async fn non_streaming_upstream_json_400_is_passed_through_byte_for_byte() {
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -14209,6 +14238,7 @@ async fn mid_stream_failure_capture_is_failure_keeps_usage_and_skips_other_candi
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await
@@ -16036,6 +16066,7 @@ async fn attempt_buffer_records_failed_then_successful_attempts_in_completion_or
         &body,
         Some("local"),
         &HashMap::new(),
+        false,
         &mut attempts,
     )
     .await;
@@ -21919,6 +21950,528 @@ async fn streaming_responses_without_usage_is_forwarded_untouched_and_records_ab
     );
 
     super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+// ---------------------------------------------------------------------------
+// System-resume grace (REQ-004 / AC-006 / AC-007)
+//
+// The resume timestamp is process-wide and the relay evaluates the grace once
+// per inbound request. These tests drive the boundary through the injected
+// timestamp and the explicit suppression flag so the 60-second edge stays
+// deterministic.
+// ---------------------------------------------------------------------------
+
+/// Clears the process-wide resume timestamp on drop so a panicking test cannot
+/// leak a grace window into a later, serially-run server test.
+struct ResumeSignalGuard;
+
+impl Drop for ResumeSignalGuard {
+    fn drop(&mut self) {
+        crate::app_runtime::set_system_resume_at_for_tests(None);
+    }
+}
+
+/// Persist one enabled provider with a single enabled `local-a -> remote-a`
+/// mapping row carrying the given failure state, and return the provider the
+/// direct attempt functions are driven with. Health settlement re-reads the
+/// persisted row, mirroring production.
+fn seed_single_mapped_row(
+    upstream_url: &str,
+    consecutive_failures: u32,
+    last_error_at: Option<u64>,
+) -> GatewayUpstreamProvider {
+    let mut provider = upstream_provider("a", "Provider A", upstream_url, "sk-a", Some("remote-a"));
+    let mut row = mapping("local-a", "remote-a", None);
+    row.consecutive_failures = consecutive_failures;
+    row.last_error_at = last_error_at;
+    provider.mappings = vec![row];
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed relay config");
+    provider
+}
+
+fn persisted_mapping_row(config: &GatewayConfig, provider_id: &str) -> ModelMapping {
+    config
+        .providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .unwrap_or_else(|| panic!("provider {provider_id} must be persisted"))
+        .mappings[0]
+        .clone()
+}
+
+/// REQ-004 / AC-007: with no detected resume in this process the grace is
+/// inactive, so transport-failure suppression can never trigger.
+#[test]
+fn system_resume_grace_is_inactive_when_no_resume_was_detected() {
+    let _lock = crate::lock_test_home_env();
+    let _reset = ResumeSignalGuard;
+    crate::app_runtime::set_system_resume_at_for_tests(None);
+    assert!(
+        !crate::app_runtime::system_resume_grace_active(std::time::SystemTime::now()),
+        "no detected resume must leave the grace inactive for the current instant"
+    );
+    assert!(
+        !crate::app_runtime::system_resume_grace_active(std::time::SystemTime::UNIX_EPOCH),
+        "an arbitrary instant must still be outside a grace that was never armed"
+    );
+}
+
+/// REQ-004 / AC-006 / AC-007: the fixed 60-second grace includes exactly its
+/// boundary instant and has expired one second later.
+#[test]
+fn system_resume_grace_includes_sixty_seconds_and_expires_at_sixty_one() {
+    let _lock = crate::lock_test_home_env();
+    let _reset = ResumeSignalGuard;
+    let resume_at = std::time::SystemTime::now();
+    crate::app_runtime::set_system_resume_at_for_tests(Some(resume_at));
+    assert!(
+        crate::app_runtime::system_resume_grace_active(
+            resume_at + std::time::Duration::from_secs(59)
+        ),
+        "T+59s must be inside the grace"
+    );
+    assert!(
+        crate::app_runtime::system_resume_grace_active(
+            resume_at + std::time::Duration::from_secs(60)
+        ),
+        "T+60s is the inclusive boundary and must still be inside the grace"
+    );
+    assert!(
+        !crate::app_runtime::system_resume_grace_active(
+            resume_at + std::time::Duration::from_secs(61)
+        ),
+        "T+61s must be outside the grace"
+    );
+}
+
+/// REQ-004: the production detection entry point arms the grace for the current
+/// instant, which the relay then reads when a request starts.
+#[test]
+fn mark_system_resume_activates_the_grace_for_the_current_instant() {
+    let _lock = crate::lock_test_home_env();
+    let _reset = ResumeSignalGuard;
+    crate::app_runtime::set_system_resume_at_for_tests(None);
+    crate::app_runtime::mark_system_resume();
+    assert!(
+        crate::app_runtime::system_resume_grace_active(std::time::SystemTime::now()),
+        "a freshly detected resume must be inside the grace"
+    );
+}
+
+/// REQ-004 / AC-006: a suppressed transport failure (connection refused) must
+/// leave the mapping row's counter and error stamp untouched and must not
+/// auto-disable it.
+#[tokio::test]
+async fn suppressed_transport_failure_does_not_increment_the_mapping_row() {
+    let _home = isolated_temp_home("grace-suppressed-transport");
+    let dead_url = closed_port_base_url().await;
+    let provider = seed_single_mapped_row(&dead_url, 0, None);
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        true,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(
+        response.status, 502,
+        "a transport failure must still fail the request: {}",
+        String::from_utf8_lossy(&response.body)
+    );
+    assert_eq!(attempts.len(), 1, "the single candidate is attempted once");
+    let stored = super::storage::read_config().expect("read persisted provider state");
+    let row = persisted_mapping_row(&stored, "a");
+    assert_eq!(
+        row.consecutive_failures, 0,
+        "a suppressed transport failure must not count"
+    );
+    assert_eq!(
+        row.last_error_at, None,
+        "a suppressed transport failure must not stamp last_error_at"
+    );
+    assert!(
+        !row.auto_disabled,
+        "a suppressed transport failure must not auto-disable the row"
+    );
+}
+
+/// REQ-004 / AC-006: a suppressed transport failure on a row one failure below
+/// the threshold keeps the original counter and error stamp and stays enabled.
+#[tokio::test]
+async fn suppressed_transport_failure_at_threshold_minus_one_does_not_auto_disable() {
+    let _home = isolated_temp_home("grace-suppressed-threshold");
+    let dead_url = closed_port_base_url().await;
+    let provider = seed_single_mapped_row(&dead_url, super::FAILURE_THRESHOLD - 1, Some(4242));
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+
+    let mut attempts = Vec::new();
+    let _response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        true,
+        &mut attempts,
+    )
+    .await;
+
+    let stored = super::storage::read_config().expect("read persisted provider state");
+    let row = persisted_mapping_row(&stored, "a");
+    assert_eq!(
+        row.consecutive_failures,
+        super::FAILURE_THRESHOLD - 1,
+        "a suppressed failure must not advance the counter toward the threshold"
+    );
+    assert_eq!(
+        row.last_error_at,
+        Some(4242),
+        "the pre-existing last_error_at must survive a suppressed failure"
+    );
+    assert!(
+        !row.auto_disabled,
+        "a suppressed failure must never cross the auto-disable threshold"
+    );
+}
+
+/// REQ-004 / AC-007: without suppression a transport failure counts normally and
+/// stamps last_error_at.
+#[tokio::test]
+async fn unsuppressed_transport_failure_increments_and_stamps_the_mapping_row() {
+    let _home = isolated_temp_home("grace-unsuppressed-transport");
+    let dead_url = closed_port_base_url().await;
+    let provider = seed_single_mapped_row(&dead_url, 0, None);
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 502, "an unreachable upstream must answer all-unavailable");
+    let stored = super::storage::read_config().expect("read persisted provider state");
+    let row = persisted_mapping_row(&stored, "a");
+    assert_eq!(
+        row.consecutive_failures, 1,
+        "an unsuppressed transport failure must count"
+    );
+    assert!(
+        row.last_error_at.is_some(),
+        "a counted failure must stamp last_error_at"
+    );
+    assert!(!row.auto_disabled, "one failure must not auto-disable");
+}
+
+/// REQ-004 / AC-007: without suppression a transport failure one below the
+/// threshold auto-disables the row.
+#[tokio::test]
+async fn unsuppressed_transport_failure_at_threshold_minus_one_auto_disables_the_row() {
+    let _home = isolated_temp_home("grace-unsuppressed-threshold");
+    let dead_url = closed_port_base_url().await;
+    let provider = seed_single_mapped_row(&dead_url, super::FAILURE_THRESHOLD - 1, Some(4242));
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+
+    let mut attempts = Vec::new();
+    let _response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        &mut attempts,
+    )
+    .await;
+
+    let stored = super::storage::read_config().expect("read persisted provider state");
+    let row = persisted_mapping_row(&stored, "a");
+    assert_eq!(
+        row.consecutive_failures,
+        super::FAILURE_THRESHOLD,
+        "an unsuppressed failure must advance the counter"
+    );
+    assert!(
+        row.auto_disabled,
+        "an unsuppressed failure must auto-disable at the threshold"
+    );
+}
+
+/// REQ-004 / AC-006: an HTTP 5xx is a status failure, not a transport failure, so
+/// it still counts inside the grace window.
+#[tokio::test]
+async fn http_500_failure_still_counts_inside_the_suppression_window() {
+    let _home = isolated_temp_home("grace-http-500-counts");
+    let (upstream_url, _log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "boom"}}))).await;
+    let provider = seed_single_mapped_row(&upstream_url, 0, None);
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        true,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 502, "a 5xx must still fail the request");
+    assert_eq!(attempts.len(), 1);
+    let stored = super::storage::read_config().expect("read persisted provider state");
+    let row = persisted_mapping_row(&stored, "a");
+    assert_eq!(
+        row.consecutive_failures, 1,
+        "a 5xx inside the grace window must still count"
+    );
+    assert!(
+        row.last_error_at.is_some(),
+        "a counted 5xx must stamp last_error_at"
+    );
+}
+
+/// REQ-004 / AC-006: a quota-exhausted 429 is a status failure, not a transport
+/// failure, so it still counts inside the grace window.
+#[tokio::test]
+async fn quota_429_failure_still_counts_inside_the_suppression_window() {
+    let _home = isolated_temp_home("grace-quota-429-counts");
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            429,
+            json!({"error": {"message": "You have exhausted your weekly quota; upgrade your plan to continue."}}),
+        )
+    })
+    .await;
+    let provider = seed_single_mapped_row(&upstream_url, 0, None);
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        true,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 502, "a quota 429 must still fail the request");
+    assert_eq!(attempts.len(), 1);
+    let stored = super::storage::read_config().expect("read persisted provider state");
+    let row = persisted_mapping_row(&stored, "a");
+    assert_eq!(
+        row.consecutive_failures, 1,
+        "a quota-exhausted 429 inside the grace window must still count"
+    );
+    assert!(
+        row.last_error_at.is_some(),
+        "a counted quota 429 must stamp last_error_at"
+    );
+}
+
+/// REQ-004 / AC-006: a suppressed streaming transport failure still writes the
+/// pre-stream 502 but leaves the mapping row untouched.
+#[tokio::test]
+async fn suppressed_streaming_transport_failure_leaves_the_row_and_pre_stream_502_unchanged() {
+    let _home = isolated_temp_home("grace-suppressed-stream");
+    let dead_url = closed_port_base_url().await;
+    let provider = seed_single_mapped_row(&dead_url, 0, None);
+    let body = serde_json::to_vec(&json!({"model": "local-a", "stream": true})).unwrap();
+
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
+    let capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        true,
+        &mut attempts,
+    )
+    .await
+    .expect("streaming attempt");
+    drop(server);
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    let text = String::from_utf8_lossy(&out).into_owned();
+    let (status_line, _body) = raw_http_status_and_body(&text);
+
+    assert!(
+        status_line.starts_with("HTTP/1.1 502"),
+        "a pre-stream transport failure must answer 502: {text}"
+    );
+    assert!(
+        !text.contains("text/event-stream"),
+        "a pre-stream failure must not answer SSE: {text}"
+    );
+    assert_eq!(capture.status, 0, "a network failure has no upstream HTTP status");
+    assert_eq!(attempts.len(), 1);
+    let stored = super::storage::read_config().expect("read persisted provider state");
+    let row = persisted_mapping_row(&stored, "a");
+    assert_eq!(
+        row.consecutive_failures, 0,
+        "a suppressed streaming transport failure must not count"
+    );
+    assert_eq!(
+        row.last_error_at, None,
+        "a suppressed streaming transport failure must not stamp last_error_at"
+    );
+}
+
+/// REQ-004 / AC-007: an unsuppressed streaming transport failure counts on the
+/// mapping row.
+#[tokio::test]
+async fn unsuppressed_streaming_transport_failure_counts_on_the_mapping_row() {
+    let _home = isolated_temp_home("grace-unsuppressed-stream");
+    let dead_url = closed_port_base_url().await;
+    let provider = seed_single_mapped_row(&dead_url, 0, None);
+    let body = serde_json::to_vec(&json!({"model": "local-a", "stream": true})).unwrap();
+
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
+    let _capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        &mut attempts,
+    )
+    .await
+    .expect("streaming attempt");
+    drop(server);
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+
+    let stored = super::storage::read_config().expect("read persisted provider state");
+    let row = persisted_mapping_row(&stored, "a");
+    assert_eq!(
+        row.consecutive_failures, 1,
+        "an unsuppressed streaming transport failure must count"
+    );
+    assert!(
+        row.last_error_at.is_some(),
+        "a counted streaming failure must stamp last_error_at"
+    );
+}
+
+/// One real relay request against a single enabled, mapped provider whose base
+/// URL refuses connections. Arms the given resume timestamp (or clears it),
+/// drives the real gateway, and reports the persisted row afterwards. The
+/// caller must hold `temp_home` so the process-wide server reads the same
+/// isolated configuration.
+async fn relay_one_dead_upstream_request(
+    resume_at: Option<std::time::SystemTime>,
+) -> (u16, u32, Option<u64>) {
+    crate::app_runtime::set_system_resume_at_for_tests(resume_at);
+    let port = free_port().await;
+    let dead_url = closed_port_base_url().await;
+    let mut provider = upstream_provider("a", "Provider A", &dead_url, "sk-a", Some("remote-a"));
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    let mut config = config_with_key(port);
+    config.providers.push(provider);
+    super::storage::write_config(&config).expect("seed gateway config");
+    super::runtime_http::start_server().await.expect("start gateway");
+    let (status, _content_type, _text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    let stored = super::storage::read_config().expect("read persisted provider state");
+    let row = persisted_mapping_row(&stored, "a");
+    super::runtime_http::stop_server().await.expect("stop gateway");
+    (status, row.consecutive_failures, row.last_error_at)
+}
+
+/// REQ-004 / AC-006: a relay request that starts inside the resume grace settles
+/// its transport failure without touching the mapping row.
+#[tokio::test]
+async fn relay_request_starting_inside_the_resume_grace_does_not_count_a_transport_failure() {
+    let home = temp_home("grace-relay-inside");
+    let _reset = ResumeSignalGuard;
+    let (status, failures, last_error_at) =
+        relay_one_dead_upstream_request(Some(std::time::SystemTime::now())).await;
+    assert_eq!(status, 502, "an unreachable upstream must answer all-unavailable");
+    assert_eq!(
+        failures, 0,
+        "a transport failure inside the grace must not increment the counter"
+    );
+    assert_eq!(
+        last_error_at, None,
+        "a transport failure inside the grace must not stamp last_error_at"
+    );
+    drop(_reset);
+    drop(home);
+}
+
+/// REQ-004 / AC-007: a relay request that starts more than 60 seconds after the
+/// detected resume counts the transport failure as before.
+#[tokio::test]
+async fn relay_request_starting_after_the_resume_grace_counts_a_transport_failure() {
+    let home = temp_home("grace-relay-expired");
+    let _reset = ResumeSignalGuard;
+    let (status, failures, last_error_at) = relay_one_dead_upstream_request(Some(
+        std::time::SystemTime::now() - std::time::Duration::from_secs(61),
+    ))
+    .await;
+    assert_eq!(status, 502, "an unreachable upstream must answer all-unavailable");
+    assert_eq!(
+        failures, 1,
+        "a transport failure outside the grace must increment the counter"
+    );
+    assert!(
+        last_error_at.is_some(),
+        "a counted transport failure must stamp last_error_at"
+    );
+    drop(_reset);
+    drop(home);
+}
+
+/// REQ-004 / AC-007: with no detected resume at all every transport failure
+/// counts.
+#[tokio::test]
+async fn relay_request_without_a_resume_signal_counts_a_transport_failure() {
+    let home = temp_home("grace-relay-no-signal");
+    let _reset = ResumeSignalGuard;
+    let (status, failures, last_error_at) = relay_one_dead_upstream_request(None).await;
+    assert_eq!(status, 502, "an unreachable upstream must answer all-unavailable");
+    assert_eq!(
+        failures, 1,
+        "without a resume signal every transport failure must count"
+    );
+    assert!(
+        last_error_at.is_some(),
+        "a counted transport failure must stamp last_error_at"
+    );
+    drop(_reset);
     drop(home);
 }
 

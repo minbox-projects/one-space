@@ -13,6 +13,9 @@ use windows_data::*;
 
 pub(crate) use cli::get_git_command;
 pub(crate) use oauth_open::{atomic_write_string, open_path_with_system};
+pub(crate) use runtime_services::{mark_system_resume, system_resume_grace_active};
+#[cfg(test)]
+pub(crate) use runtime_services::set_system_resume_at_for_tests;
 pub use run_app::run;
 pub(crate) use ssh_oauth::get_ssh_hosts;
 #[cfg(test)]

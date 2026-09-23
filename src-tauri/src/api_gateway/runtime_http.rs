@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, Mutex};
@@ -643,6 +643,9 @@ enum AttemptResult {
     Failure {
         class: FailureClass,
         retryable: bool,
+        /// True for a network/transport failure (send, body read, stream open
+        /// or mid-stream read); false for an HTTP-status failure.
+        transport: bool,
         reason: String,
         retry_delay: Option<Duration>,
     },
@@ -661,6 +664,9 @@ enum AttemptResult {
 struct RequestHealth {
     order: Vec<MappingTarget>,
     outcomes: HashMap<MappingTarget, ProviderOutcome>,
+    /// Set once per inbound request from the system-resume grace: while true a
+    /// transport `Retryable` failure is not counted toward mapping health.
+    suppress_transport_failures: bool,
 }
 
 #[derive(Default)]
@@ -688,7 +694,15 @@ impl RequestHealth {
         target: &MappingTarget,
         class: FailureClass,
         reason: &str,
+        transport: bool,
     ) {
+        // A transport failure whose class is Retryable, settled inside the
+        // post-resume grace, neither counts nor stamps `last_error_at`
+        // (REQ-004/AC-006). HTTP-status failures, immediate auth disables and
+        // every other class keep today's behavior.
+        if transport && self.suppress_transport_failures && class == FailureClass::Retryable {
+            return;
+        }
         let entry = self.entry(target);
         match class {
             FailureClass::DisableImmediately => {
@@ -770,9 +784,10 @@ fn settle_failure(
     upstream_model: &str,
     class: FailureClass,
     reason: &str,
+    transport: bool,
 ) {
     if let Some(target) = MappingTarget::for_request(provider, requested, upstream_model) {
-        health.record_failure(&target, class, reason);
+        health.record_failure(&target, class, reason, transport);
     }
 }
 
@@ -888,6 +903,7 @@ async fn attempt_candidate(
                         response.status,
                         error_message.as_deref(),
                     ),
+                    transport: false,
                     reason: failure_reason(response.status, response.parsed, error_message.as_deref()),
                     retry_delay: retry_header_delay(&response.headers),
                 },
@@ -909,6 +925,7 @@ async fn attempt_candidate(
                 AttemptResult::Failure {
                     class: FailureClass::Retryable,
                     retryable: true,
+                    transport: true,
                     reason,
                     retry_delay: None,
                 },
@@ -940,11 +957,15 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
     body: &[u8],
     requested: Option<&str>,
     client_headers: &HashMap<String, String>,
+    suppress_transport_failures: bool,
     attempts: &mut Vec<AttemptLog>,
 ) -> HttpResponse {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
-    let mut health = RequestHealth::default();
+    let mut health = RequestHealth {
+        suppress_transport_failures,
+        ..Default::default()
+    };
     let mut retries: Vec<RetryCandidate> = Vec::new();
     // Last attempted provider/model, reported when every candidate is unavailable.
     let mut last_capture: Option<ForwardCapture> = None;
@@ -973,6 +994,7 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
             AttemptResult::Failure {
                 class,
                 retryable,
+                transport,
                 reason,
                 retry_delay,
             } => {
@@ -983,6 +1005,7 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
                     &model,
                     class,
                     &reason,
+                    transport,
                 );
                 record_provider_failure(&mut failures, &provider.name, reason);
                 last_capture = Some(ForwardCapture {
@@ -1041,6 +1064,7 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
             AttemptResult::Failure {
                 class,
                 retryable,
+                transport,
                 reason,
                 retry_delay,
             } => {
@@ -1051,6 +1075,7 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
                     &candidate.model,
                     class,
                     &reason,
+                    transport,
                 );
                 record_provider_failure(&mut failures, &candidate.provider.name, reason);
                 last_capture = Some(ForwardCapture {
@@ -1115,11 +1140,15 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     body: &[u8],
     requested: Option<&str>,
     client_headers: &HashMap<String, String>,
+    suppress_transport_failures: bool,
     attempts: &mut Vec<AttemptLog>,
 ) -> Result<ForwardCapture, String> {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
-    let mut health = RequestHealth::default();
+    let mut health = RequestHealth {
+        suppress_transport_failures,
+        ..Default::default()
+    };
     let mut retries = Vec::new();
     let mut remaining_wait = Duration::from_secs(120);
     let mut initial = ordered.iter();
@@ -1157,7 +1186,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         capture.upstream_model = candidate.model.clone();
         let provider = &candidate.provider;
         let started = Instant::now();
-        let (class, retryable, reason, retry_delay) = 'attempt: {
+        let (class, retryable, reason, retry_delay, transport) = 'attempt: {
             let streamed = open_streaming_response(
                 provider, path, body, &candidate.model, client_headers,
             ).await;
@@ -1175,7 +1204,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         sanitize_error_text(&reason, &provider.api_key),
                         None,
                     ));
-                    break 'attempt (FailureClass::Retryable, true, reason, None);
+                    break 'attempt (FailureClass::Retryable, true, reason, None, true);
                 }
             };
             let status = response.status().as_u16();
@@ -1241,7 +1270,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     error_message,
                     None,
                 ));
-                break 'attempt (class, retryable, reason, retry_delay);
+                break 'attempt (class, retryable, reason, retry_delay, false);
             }
 
             let content_type = response
@@ -1272,7 +1301,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                             ),
                             None,
                         ));
-                        break 'attempt (FailureClass::Retryable, true, reason, retry_delay);
+                        break 'attempt (FailureClass::Retryable, true, reason, retry_delay, false);
                     }
                     if let Err(error) = write_stream_headers(writer, status).await {
                         health.apply();
@@ -1315,6 +1344,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     &candidate.model,
                                     FailureClass::Retryable,
                                     &reason,
+                                    true,
                                 );
                                 health.apply();
                                 // The attempt is complete: its stream ended with
@@ -1390,7 +1420,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         sanitize_error_text(&reason, &provider.api_key),
                         None,
                     ));
-                    break 'attempt (FailureClass::Retryable, true, reason, retry_delay);
+                    break 'attempt (FailureClass::Retryable, true, reason, retry_delay, true);
                 }
                 None => {
                     last_failure_status = Some(502);
@@ -1406,7 +1436,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         None,
                         None,
                     ));
-                    break 'attempt (FailureClass::Retryable, true, reason, retry_delay);
+                    break 'attempt (FailureClass::Retryable, true, reason, retry_delay, false);
                 }
             }
         };
@@ -1417,6 +1447,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             &candidate.model,
             class,
             &reason,
+            transport,
         );
         record_provider_failure(&mut failures, &provider.name, reason);
         candidate.attempts += 1;
@@ -1483,6 +1514,12 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
     // Measured across the whole handled request so the recorded duration is
     // always within the gateway's processing time.
     let started = Instant::now();
+
+    // Evaluate the post-resume grace exactly once, when the request starts:
+    // every transport failure settled by this request is suppressed while the
+    // window is open (REQ-004/AC-006).
+    let suppress_transport_failures =
+        crate::app_runtime::system_resume_grace_active(SystemTime::now());
 
     let config = match read_config() {
         Ok(config) => config,
@@ -1661,6 +1698,7 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                 &request.body,
                 requested.as_deref(),
                 &request.headers,
+                suppress_transport_failures,
                 &mut attempts,
             )
             .await
@@ -1671,6 +1709,7 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                 &request.body,
                 requested.as_deref(),
                 &request.headers,
+                suppress_transport_failures,
                 &mut attempts,
             )
             .await;

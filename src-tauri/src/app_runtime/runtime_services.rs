@@ -1,6 +1,48 @@
 use crate::app_store;
-use std::time::Duration;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
+
+/// Fixed grace after a detected system resume during which transport failures
+/// are not counted toward mapping-row health (REQ-004).
+const SYSTEM_RESUME_GRACE_SECS: u64 = 60;
+
+/// Most recent detected system resume as Unix epoch seconds, or `0` when no
+/// resume has been detected in this process. Process memory only; never
+/// persisted.
+static SYSTEM_RESUME_AT_SECS: AtomicI64 = AtomicI64::new(0);
+
+/// Truncate a `SystemTime` to Unix epoch seconds. `None` (and any instant
+/// before the epoch) maps to the `0` "no resume" sentinel.
+fn epoch_secs(at: Option<SystemTime>) -> i64 {
+    at.and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or(0)
+}
+
+/// Record the most recent detected system resume (REQ-004). Called from the
+/// SSH-tunnel sleep-gap heartbeat and the macOS wake observer before they
+/// schedule their SSH reconnect work.
+pub(crate) fn mark_system_resume() {
+    SYSTEM_RESUME_AT_SECS.store(epoch_secs(Some(SystemTime::now())), Ordering::Relaxed);
+}
+
+/// Whether `now` falls inside the fixed grace measured from the most recent
+/// detected resume, inclusive of its `T+60s` boundary. False when no resume has
+/// ever been detected in this process.
+pub(crate) fn system_resume_grace_active(now: SystemTime) -> bool {
+    let resume = SYSTEM_RESUME_AT_SECS.load(Ordering::Relaxed);
+    if resume == 0 {
+        return false;
+    }
+    epoch_secs(Some(now)).saturating_sub(resume) <= SYSTEM_RESUME_GRACE_SECS as i64
+}
+
+/// Test-only seam that sets/clears the process-wide resume timestamp.
+#[cfg(test)]
+pub(crate) fn set_system_resume_at_for_tests(at: Option<SystemTime>) {
+    SYSTEM_RESUME_AT_SECS.store(epoch_secs(at), Ordering::Relaxed);
+}
 
 pub(super) fn setup_proxy_monitor(app: &tauri::AppHandle) {
     let app = app.clone();
