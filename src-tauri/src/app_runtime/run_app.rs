@@ -172,6 +172,8 @@ pub fn run() {
             ssh_tunnels::ssh_tunnel_disconnect,
             ssh_tunnels::ssh_tunnel_group_connect,
             ssh_tunnels::ssh_tunnel_group_disconnect,
+            ssh_tunnels::ssh_tunnels_connect_all,
+            ssh_tunnels::ssh_tunnels_disconnect_all,
             ssh_tunnels::ssh_tunnel_probe_draft,
             ssh_tunnels::ssh_tunnel_probe_saved,
             ssh_tunnels::ssh_tunnels_refresh_status,
