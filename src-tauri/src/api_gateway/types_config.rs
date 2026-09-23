@@ -129,6 +129,11 @@ impl ModelMapping {
 /// Upper bound on consecutive failures before a provider is automatically disabled.
 pub const FAILURE_THRESHOLD: u32 = 3;
 
+/// Fixed cooldown before an auto-disabled mapping row becomes eligible for one
+/// half-open probe attempt. Eligibility is evaluated against an explicit `now`,
+/// so the 60-second boundary stays deterministic.
+pub const AUTO_DISABLE_PROBE_COOLDOWN_SECS: u64 = 60;
+
 /// Which OpenAI-compatible endpoint family an upstream provider exposes.
 ///
 /// The relay accepts `/chat/completions` and `/responses` from clients. A

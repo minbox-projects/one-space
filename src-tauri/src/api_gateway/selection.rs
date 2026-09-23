@@ -1,7 +1,10 @@
-use super::{GatewayUpstreamProvider, ModelMapping, UpstreamProtocol, FAILURE_THRESHOLD};
+use super::{
+    GatewayUpstreamProvider, ModelMapping, UpstreamProtocol, AUTO_DISABLE_PROBE_COOLDOWN_SECS,
+    FAILURE_THRESHOLD,
+};
 use rand::seq::SliceRandom;
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tokio::time::Instant;
@@ -722,6 +725,175 @@ impl MappingTarget {
     }
 }
 
+/// One eligible half-open probe: the provider whose auto-disabled row may be
+/// retried, the mapping row identity it settles on, and the upstream model to
+/// forward. Returned by [`find_probe_candidate`].
+#[derive(Debug, Clone)]
+pub(in crate::api_gateway) struct ProbeCandidate {
+    pub(in crate::api_gateway) provider: GatewayUpstreamProvider,
+    pub(in crate::api_gateway) target: MappingTarget,
+    pub(in crate::api_gateway) upstream_model: String,
+}
+
+/// Whether a row's trimmed `disabled_reason` denotes an immediate auth disable
+/// (401/403) that must stay manual-only. Rows persisted by older builds could
+/// have reached the threshold counter under the previous counting rule, so the
+/// reason prefix is the discriminator for them; no threshold disable produces
+/// this prefix.
+fn is_immediate_auth_disable_reason(reason: Option<&str>) -> bool {
+    let reason = reason.unwrap_or("").trim();
+    reason.starts_with("HTTP 401") || reason.starts_with("HTTP 403")
+}
+
+/// Find at most one eligible half-open probe candidate for a request.
+///
+/// A row is eligible only when its provider and the row are both enabled, the
+/// row is auto-disabled by a transient-failure threshold (`consecutive_failures
+/// >= FAILURE_THRESHOLD`) with a `disabled_reason` that is not an immediate auth
+/// disable, it has a non-empty trimmed `upstream_model`, its trimmed
+/// `local_model` equals the requested model, its effective protocol equals the
+/// inbound `protocol`, its `disabled_at` is present, and the cooldown
+/// `now - disabled_at >= AUTO_DISABLE_PROBE_COOLDOWN_SECS` has elapsed. Rows
+/// whose provider is already serving as a healthy candidate are excluded.
+///
+/// At most one candidate is returned: the oldest `disabled_at` first, breaking
+/// ties by provider id, then `local_model`, then `upstream_model` (trimmed,
+/// lexicographic). A missing or blank requested model yields no candidate.
+pub(in crate::api_gateway) fn find_probe_candidate(
+    providers: &[GatewayUpstreamProvider],
+    requested: Option<&str>,
+    protocol: UpstreamProtocol,
+    healthy_provider_ids: &[String],
+    now: u64,
+) -> Option<ProbeCandidate> {
+    let requested = requested.map(str::trim).filter(|value| !value.is_empty())?;
+    let mut best: Option<((u64, String, String, String), ProbeCandidate)> = None;
+    for provider in providers.iter().filter(|provider| provider.enabled) {
+        if healthy_provider_ids
+            .iter()
+            .any(|id| id == &provider.id)
+        {
+            continue;
+        }
+        for mapping in provider
+            .mappings
+            .iter()
+            .filter(|mapping| mapping.enabled && mapping.auto_disabled)
+        {
+            let Some(disabled_at) = mapping.disabled_at else {
+                continue;
+            };
+            if now.saturating_sub(disabled_at) < AUTO_DISABLE_PROBE_COOLDOWN_SECS {
+                continue;
+            }
+            if mapping.consecutive_failures < FAILURE_THRESHOLD {
+                continue;
+            }
+            if is_immediate_auth_disable_reason(mapping.disabled_reason.as_deref()) {
+                continue;
+            }
+            if mapping.local_model.trim() != requested {
+                continue;
+            }
+            let upstream_model = mapping.upstream_model.trim().to_string();
+            if upstream_model.is_empty() {
+                continue;
+            }
+            if mapping.effective_protocol(provider.protocol) != protocol {
+                continue;
+            }
+            let key = (
+                disabled_at,
+                provider.id.trim().to_string(),
+                mapping.local_model.trim().to_string(),
+                upstream_model.clone(),
+            );
+            let replace = match &best {
+                None => true,
+                Some((best_key, _)) => key < *best_key,
+            };
+            if replace {
+                let target = MappingTarget::new(&provider.id, &mapping.local_model, &upstream_model);
+                best = Some((
+                    key,
+                    ProbeCandidate {
+                        provider: provider.clone(),
+                        target,
+                        upstream_model,
+                    },
+                ));
+            }
+        }
+    }
+    best.map(|(_, candidate)| candidate)
+}
+
+/// Process-wide set of mapping targets with a probe currently in flight.
+fn active_probes() -> &'static Mutex<HashSet<MappingTarget>> {
+    static ACTIVE_PROBES: OnceLock<Mutex<HashSet<MappingTarget>>> = OnceLock::new();
+    ACTIVE_PROBES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Single-flight guard for one in-flight probe of a mapping target.
+///
+/// Process memory only; dropping it releases the target, including when the
+/// request future is cancelled, because the release runs in [`Drop`].
+pub(in crate::api_gateway) struct ProbeGuard {
+    target: MappingTarget,
+}
+
+impl Drop for ProbeGuard {
+    fn drop(&mut self) {
+        active_probes()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&self.target);
+    }
+}
+
+/// Try to become the single in-flight probe for `target`'s mapping key.
+///
+/// Returns `None` when another request already holds the guard, in which case
+/// the caller must skip probing and continue on its exhausted path.
+pub(in crate::api_gateway) fn try_acquire_probe_guard(
+    target: &MappingTarget,
+) -> Option<ProbeGuard> {
+    let mut active = active_probes()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if active.insert(target.clone()) {
+        Some(ProbeGuard {
+            target: target.clone(),
+        })
+    } else {
+        None
+    }
+}
+
+/// Re-arm a failed probe's cooldown: every row matching `target`'s trimmed key
+/// stays auto-disabled, keeps its consecutive-failure counter, and moves
+/// `disabled_at` to `at`. With `update_details` the failure also stamps
+/// `last_error_at` and `disabled_reason`; a suppressed transport failure passes
+/// `false` so only the cooldown moves.
+pub(in crate::api_gateway) fn rearm_mapping_probe_cooldown(
+    provider: &mut GatewayUpstreamProvider,
+    target: &MappingTarget,
+    reason: &str,
+    at: u64,
+    update_details: bool,
+) {
+    for mapping in provider.mappings.iter_mut().filter(|mapping| {
+        mapping_matches_key(mapping, &target.local_model, &target.upstream_model)
+    }) {
+        mapping.auto_disabled = true;
+        mapping.disabled_at = Some(at);
+        if update_details {
+            mapping.last_error_at = Some(at);
+            mapping.disabled_reason = Some(reason.to_string());
+        }
+    }
+}
+
 /// Record a failure on every row matching `target`'s trimmed key. Returns `true`
 /// when that key is (or becomes) auto-disabled. `Transient` and `ReturnToClient`
 /// never count as failures.
@@ -743,7 +915,13 @@ pub(in crate::api_gateway) fn register_mapping_failure(
     for mapping in provider.mappings.iter_mut().filter(|mapping| {
         mapping_matches_key(mapping, &target.local_model, &target.upstream_model)
     }) {
-        mapping.consecutive_failures = mapping.consecutive_failures.saturating_add(1);
+        // Frozen Step 2 rule: an immediate auth disable records reason/at/
+        // last_error_at but must not advance the transient-failure counter, so
+        // the counter keeps meaning consecutive Retryable failures and a 401/403
+        // row can never reach the probe threshold through the counter.
+        if class == FailureClass::Retryable {
+            mapping.consecutive_failures = mapping.consecutive_failures.saturating_add(1);
+        }
         mapping.last_error_at = Some(at);
         let should_disable = class == FailureClass::DisableImmediately
             || mapping.consecutive_failures >= FAILURE_THRESHOLD;

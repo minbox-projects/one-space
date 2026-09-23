@@ -1,10 +1,11 @@
 use super::forwarding::{forward_non_streaming, open_streaming_response};
 use super::selection::{
-    candidate_providers, classify_failure_with_message, default_retry_delay,
-    is_quota_exceeded_message, is_retryable_with_message, register_mapping_failure,
+    candidate_providers, classify_failure_with_message, clear_mapping_runtime_state,
+    default_retry_delay, find_probe_candidate, is_quota_exceeded_message, is_retryable_with_message,
+    mapping_matches_key, rearm_mapping_probe_cooldown, register_mapping_failure,
     register_mapping_success, resolve_model_for_protocol, resolve_session_id, retry_header_delay,
-    session_affinity, weighted_candidates, FailureClass, MappingTarget, ModelResolution,
-    SessionOrder, MAX_RETRIES_PER_PROVIDER,
+    session_affinity, try_acquire_probe_guard, weighted_candidates, FailureClass, MappingTarget,
+    ModelResolution, ProbeCandidate, ProbeGuard, SessionOrder, MAX_RETRIES_PER_PROVIDER,
 };
 use super::storage::{local_base_url, read_config, write_config};
 use super::usage_log::{
@@ -563,9 +564,11 @@ fn all_unavailable_message(failures: &[(String, String)]) -> String {
         .collect::<Vec<_>>()
         .join("; ");
 
-    let hint = if failures.iter().all(|(_, r)| r.contains("Quota Exceeded") || (r.contains("429") && r.contains("额度已用尽"))) {
+    let hint = if !failures.is_empty()
+        && failures.iter().all(|(_, r)| r.contains("Quota Exceeded") || (r.contains("429") && r.contains("额度已用尽")))
+    {
         " [提示: 所有服务商额度均已耗尽，请更换服务商或检查账户额度]"
-    } else if failures.iter().all(|(_, r)| r.contains("network error")) {
+    } else if !failures.is_empty() && failures.iter().all(|(_, r)| r.contains("network error")) {
         " [提示: 无法连接到上游服务，请检查服务商 Base URL 与网络/代理设置]"
     } else {
         ""
@@ -667,6 +670,9 @@ struct RequestHealth {
     /// Set once per inbound request from the system-resume grace: while true a
     /// transport `Retryable` failure is not counted toward mapping health.
     suppress_transport_failures: bool,
+    /// The one half-open probe this request attempted, if any. Settled in
+    /// [`RequestHealth::apply`] against the latest on-disk configuration.
+    probe: Option<ProbeSettlement>,
 }
 
 #[derive(Default)]
@@ -675,6 +681,19 @@ struct ProviderOutcome {
     disable_immediately: bool,
     succeeded: bool,
     reason: String,
+}
+
+/// Outcome of one attempted half-open probe, buffered until the request ends.
+struct ProbeSettlement {
+    target: MappingTarget,
+    /// Attempt time used to re-arm the cooldown on failure.
+    at: u64,
+    result: ProbeResult,
+}
+
+enum ProbeResult {
+    Succeeded,
+    Failed { transport: bool, reason: String },
 }
 
 impl RequestHealth {
@@ -729,16 +748,92 @@ impl RequestHealth {
         self.entry(target).succeeded = true;
     }
 
-    /// Merge this request's outcomes into the latest on-disk configuration and
-    /// persist it. Like [`apply_failure`], this never writes back a
-    /// request-start snapshot, so concurrent provider/key/price/toggle edits
-    /// survive the settlement of an older in-flight request.
+    /// Mark the request's half-open probe as served: the settlement clears the
+    /// probed row's runtime state.
+    fn record_probe_success(&mut self, target: &MappingTarget) {
+        self.probe = Some(ProbeSettlement {
+            target: target.clone(),
+            at: now_ts(),
+            result: ProbeResult::Succeeded,
+        });
+    }
+
+    /// Mark the request's half-open probe as failed at `at`: the settlement
+    /// re-arms the probed row's cooldown. A suppressed transport failure keeps
+    /// the counter, `last_error_at` and `disabled_reason` untouched.
+    fn record_probe_failure(
+        &mut self,
+        target: &MappingTarget,
+        at: u64,
+        transport: bool,
+        reason: &str,
+    ) {
+        self.probe = Some(ProbeSettlement {
+            target: target.clone(),
+            at,
+            result: ProbeResult::Failed {
+                transport,
+                reason: reason.to_string(),
+            },
+        });
+    }
+
+    /// Merge this request's probe and non-probe outcomes into the latest on-disk
+    /// configuration and persist it. Like [`apply_failure`], this never writes
+    /// back a request-start snapshot, so concurrent provider/key/price/toggle
+    /// edits survive the settlement of an older in-flight request.
     fn apply(&self) {
         let at = now_ts();
         let Ok(mut latest) = read_config() else {
             return;
         };
         let mut changed = false;
+        // The half-open probe settles first: a success clears the row, a failure
+        // re-arms its cooldown without ever touching the counter. Details are
+        // refreshed unless the failure was a transport failure suppressed by the
+        // resume grace (REQ-004/AC-006).
+        if let Some(probe) = &self.probe {
+            if let Some(stored) = latest
+                .providers
+                .iter_mut()
+                .find(|stored| stored.id == probe.target.provider_id)
+            {
+                match &probe.result {
+                    ProbeResult::Succeeded => {
+                        for mapping in stored.mappings.iter_mut().filter(|mapping| {
+                            mapping_matches_key(
+                                mapping,
+                                &probe.target.local_model,
+                                &probe.target.upstream_model,
+                            )
+                        }) {
+                            clear_mapping_runtime_state(mapping);
+                            changed = true;
+                        }
+                    }
+                    ProbeResult::Failed { transport, reason } => {
+                        let update_details = !(*transport && self.suppress_transport_failures);
+                        let matched = stored.mappings.iter().any(|mapping| {
+                            mapping_matches_key(
+                                mapping,
+                                &probe.target.local_model,
+                                &probe.target.upstream_model,
+                            )
+                        });
+                        if matched {
+                            rearm_mapping_probe_cooldown(
+                                stored,
+                                &probe.target,
+                                reason,
+                                probe.at,
+                                update_details,
+                            );
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
         for target in &self.order {
             let Some(outcome) = self.outcomes.get(target) else {
                 continue;
@@ -958,6 +1053,7 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
     requested: Option<&str>,
     client_headers: &HashMap<String, String>,
     suppress_transport_failures: bool,
+    probe: Option<&ProbeCandidate>,
     attempts: &mut Vec<AttemptLog>,
 ) -> HttpResponse {
     let protocol = protocol_for_path(path);
@@ -1095,6 +1191,52 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
         }
     }
 
+    // Half-open probe (REQ-001): only after every healthy candidate and its
+    // bounded retries have failed, try the single eligible auto-disabled row
+    // once. The single-flight guard makes concurrent requests skip a probe that
+    // is already in flight, and a probe is never queued for retry or backoff.
+    if let Some(candidate) = probe {
+        if let Some(_guard) = try_acquire_probe_guard(&candidate.target) {
+            let provider = &candidate.provider;
+            let model = candidate.upstream_model.as_str();
+            let (outcome, log) =
+                attempt_candidate(provider, path, body, model, client_headers).await;
+            attempts.push(log);
+            match outcome {
+                AttemptResult::Success(response) => {
+                    health.record_probe_success(&candidate.target);
+                    health.apply();
+                    return response;
+                }
+                AttemptResult::ReturnToClient(response) => {
+                    let status = response.status;
+                    health.record_probe_failure(
+                        &candidate.target,
+                        now_ts(),
+                        false,
+                        &format!("HTTP {status} returned to client"),
+                    );
+                    health.apply();
+                    return response;
+                }
+                AttemptResult::Failure {
+                    transport, reason, ..
+                } => {
+                    health.record_probe_failure(&candidate.target, now_ts(), transport, &reason);
+                    record_provider_failure(&mut failures, &provider.name, reason);
+                    last_capture = Some(ForwardCapture {
+                        provider_id: provider.id.clone(),
+                        provider_name: provider.name.clone(),
+                        upstream_model: candidate.upstream_model.clone(),
+                        ..Default::default()
+                    });
+                    // The probe is never requeued; fall through to the existing
+                    // exhausted path so the 502 envelope names the provider.
+                }
+            }
+        }
+    }
+
     health.apply();
     let mut response = json_response(502, all_unavailable_payload(all_unavailable_message(&failures)));
     let mut capture = last_capture.unwrap_or_default();
@@ -1141,6 +1283,7 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     requested: Option<&str>,
     client_headers: &HashMap<String, String>,
     suppress_transport_failures: bool,
+    probe: Option<&ProbeCandidate>,
     attempts: &mut Vec<AttemptLog>,
 ) -> Result<ForwardCapture, String> {
     let protocol = protocol_for_path(path);
@@ -1161,8 +1304,13 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     // pre-stream failure is a 502 JSON transport, which must never replace that
     // real status in the request log.
     let mut last_failure_status: Option<u16> = None;
+    // The optional half-open probe is taken at most once, after every healthy
+    // candidate and bounded retry has failed. `_probe_guard` holds the
+    // single-flight guard for the whole probe and releases it on return.
+    let mut pending_probe = probe;
+    let mut _probe_guard: Option<ProbeGuard> = None;
     loop {
-        let (mut candidate, retry_index) = if let Some(provider) = initial.next() {
+        let (mut candidate, retry_index, probe_target) = if let Some(provider) = initial.next() {
             let model = match resolve_model_for_protocol(provider, requested, protocol) {
                 ModelResolution::Serve(model) => model,
                 ModelResolution::ProtocolMismatch(_) | ModelResolution::NoMatch => continue,
@@ -1175,9 +1323,29 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     ready_at: None,
                 },
                 retries.len(),
+                None,
             )
         } else if let Some(index) = RetryCandidate::next_ready(&retries, &mut remaining_wait).await {
-            (retries.remove(index), index)
+            (retries.remove(index), index, None)
+        } else if let Some(candidate) = pending_probe.take() {
+            match try_acquire_probe_guard(&candidate.target) {
+                Some(guard) => {
+                    _probe_guard = Some(guard);
+                    (
+                        RetryCandidate {
+                            provider: candidate.provider.clone(),
+                            model: candidate.upstream_model.clone(),
+                            attempts: 0,
+                            ready_at: None,
+                        },
+                        retries.len(),
+                        Some(candidate.target.clone()),
+                    )
+                }
+                // Another request already probes this mapping key: continue to
+                // the exhausted path without an attempt.
+                None => break,
+            }
         } else {
             break;
         };
@@ -1221,6 +1389,16 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 let class =
                     classify_failure_with_message(status, false, parsed, error_message.as_deref());
                 if class == FailureClass::ReturnToClient {
+                    if let Some(target) = &probe_target {
+                        // A probe that returns the upstream 4xx unchanged still
+                        // re-arms its cooldown (REQ-001).
+                        health.record_probe_failure(
+                            target,
+                            now_ts(),
+                            false,
+                            &failure_reason(status, parsed, error_message.as_deref()),
+                        );
+                    }
                     health.apply();
                     capture.status = status;
                     attempts.push(build_attempt_log(
@@ -1337,15 +1515,22 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                             // Bytes already sent: terminate the stream, never switch.
                             Some(Err(error)) => {
                                 let reason = format!("stream failed after first byte: {error}");
-                                settle_failure(
-                                    &mut health,
-                                    provider,
-                                    requested,
-                                    &candidate.model,
-                                    FailureClass::Retryable,
-                                    &reason,
-                                    true,
-                                );
+                                if let Some(target) = &probe_target {
+                                    // A mid-stream probe failure re-arms the
+                                    // cooldown; it is never retried and no
+                                    // second probe is attempted (REQ-001).
+                                    health.record_probe_failure(target, now_ts(), true, &reason);
+                                } else {
+                                    settle_failure(
+                                        &mut health,
+                                        provider,
+                                        requested,
+                                        &candidate.model,
+                                        FailureClass::Retryable,
+                                        &reason,
+                                        true,
+                                    );
+                                }
                                 health.apply();
                                 // The attempt is complete: its stream ended with
                                 // an error and keeps the usage accumulated so far
@@ -1383,12 +1568,18 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                 return Ok(capture);
                             }
                             None => {
-                                settle_success(
-                                    &mut health,
-                                    provider,
-                                    requested,
-                                    &candidate.model,
-                                );
+                                if let Some(target) = &probe_target {
+                                    // A served probe clears its row's runtime
+                                    // state (REQ-001/AC-001).
+                                    health.record_probe_success(target);
+                                } else {
+                                    settle_success(
+                                        &mut health,
+                                        provider,
+                                        requested,
+                                        &candidate.model,
+                                    );
+                                }
                                 health.apply();
                                 capture.status = status;
                                 capture.usage = usage.usage();
@@ -1440,22 +1631,30 @@ pub(in crate::api_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 }
             }
         };
-        settle_failure(
-            &mut health,
-            provider,
-            requested,
-            &candidate.model,
-            class,
-            &reason,
-            transport,
-        );
-        record_provider_failure(&mut failures, &provider.name, reason);
-        candidate.attempts += 1;
-        if retryable && ordered.len() > 1 && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
-            candidate.ready_at = Instant::now().checked_add(
-                retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
+        if let Some(target) = &probe_target {
+            // A probe that failed before its first byte re-arms its cooldown,
+            // names the provider in the all-unavailable message and is never
+            // queued for retry or backoff (REQ-001/AC-002).
+            health.record_probe_failure(target, now_ts(), transport, &reason);
+            record_provider_failure(&mut failures, &provider.name, reason);
+        } else {
+            settle_failure(
+                &mut health,
+                provider,
+                requested,
+                &candidate.model,
+                class,
+                &reason,
+                transport,
             );
-            retries.insert(retry_index, candidate);
+            record_provider_failure(&mut failures, &provider.name, reason);
+            candidate.attempts += 1;
+            if retryable && ordered.len() > 1 && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
+                candidate.ready_at = Instant::now().checked_add(
+                    retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
+                );
+                retries.insert(retry_index, candidate);
+            }
         }
     }
 
@@ -1629,7 +1828,22 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
             .into_iter()
             .cloned()
             .collect();
-    if candidates.is_empty() {
+    // The half-open probe is computed against the healthy candidate provider
+    // ids so an already-serving provider is never also probed (REQ-002). It is
+    // the only attempt of a zero-candidate request that has an eligible row.
+    let healthy_provider_ids: Vec<String> = candidates
+        .iter()
+        .map(|provider| provider.id.clone())
+        .collect();
+    let probe = find_probe_candidate(
+        &config.providers,
+        requested.as_deref(),
+        protocol,
+        &healthy_provider_ids,
+        now_ts(),
+    );
+    let probe_only = candidates.is_empty();
+    if probe_only && probe.is_none() {
         let message = no_candidate_message(&config, requested.as_deref(), protocol);
         // Streaming and non-streaming alike answer HTTP 502 + JSON before any
         // byte is written; the log always records the gateway failure status.
@@ -1657,24 +1871,36 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
         return Ok(());
     }
 
-    let session_id = resolve_session_id(&request.headers);
-    // The lookup, the shuffle and a first-request binding write share one lock
-    // guard, which is released before any forwarding begins. A poisoned binding
-    // table must not take the gateway down, so recover the guard instead.
-    let SessionOrder {
-        ordered,
-        bound_provider_id,
-    } = session_affinity()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .resolve_order(session_id.as_deref(), requested.as_deref(), || {
-            weighted_candidates(&candidates)
-        });
-    // The reorder is a no-op when the bound provider is not one of this
-    // request's eligible candidates, which forces the binding to be replaced.
-    let bound_was_eligible = bound_provider_id
-        .as_deref()
-        .is_some_and(|id| candidates.iter().any(|provider| provider.id == id));
+    // A probe-only request neither reads nor writes a session-affinity binding
+    // and uses no session id (REQ-002).
+    let session_id = if probe_only {
+        None
+    } else {
+        resolve_session_id(&request.headers)
+    };
+    let (ordered, bound_was_eligible) = if probe_only {
+        (Vec::new(), false)
+    } else {
+        // The lookup, the shuffle and a first-request binding write share one
+        // lock guard, which is released before any forwarding begins. A poisoned
+        // binding table must not take the gateway down, so recover the guard
+        // instead.
+        let SessionOrder {
+            ordered,
+            bound_provider_id,
+        } = session_affinity()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .resolve_order(session_id.as_deref(), requested.as_deref(), || {
+                weighted_candidates(&candidates)
+            });
+        // The reorder is a no-op when the bound provider is not one of this
+        // request's eligible candidates, which forces the binding to be replaced.
+        let bound_was_eligible = bound_provider_id
+            .as_deref()
+            .is_some_and(|id| candidates.iter().any(|provider| provider.id == id));
+        (ordered, bound_was_eligible)
+    };
     let (mut reader, mut writer) = stream.into_split();
     let disconnected = async {
         let mut buf = [0u8; 1024];
@@ -1699,6 +1925,7 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                 requested.as_deref(),
                 &request.headers,
                 suppress_transport_failures,
+                probe.as_ref(),
                 &mut attempts,
             )
             .await
@@ -1710,6 +1937,7 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
                 requested.as_deref(),
                 &request.headers,
                 suppress_transport_failures,
+                probe.as_ref(),
                 &mut attempts,
             )
             .await;
@@ -1743,18 +1971,21 @@ pub(in crate::api_gateway) async fn handle_connection(mut stream: TcpStream) -> 
             // before the best-effort usage rows are persisted so the binding
             // is already settled when the caller observes the response. A
             // request that reached no upstream carries an empty provider id
-            // and settles nothing; the lock is held for this call only.
-            let served = capture.provider_id.trim();
-            let served = if served.is_empty() { None } else { Some(served) };
-            session_affinity()
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .settle(
-                    session_id.as_deref().unwrap_or_default(),
-                    requested.as_deref().unwrap_or_default(),
-                    bound_was_eligible,
-                    served,
-                );
+            // and settles nothing; the lock is held for this call only. A
+            // probe-only request never read a binding, so it settles none.
+            if !probe_only {
+                let served = capture.provider_id.trim();
+                let served = if served.is_empty() { None } else { Some(served) };
+                session_affinity()
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .settle(
+                        session_id.as_deref().unwrap_or_default(),
+                        requested.as_deref().unwrap_or_default(),
+                        bound_was_eligible,
+                        served,
+                    );
+            }
             if attempts.is_empty() {
                 // No upstream attempt completed, so the request's only row is
                 // the gateway's own terminal row, like a no-candidate request

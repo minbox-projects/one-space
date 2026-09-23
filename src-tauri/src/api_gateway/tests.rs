@@ -529,7 +529,12 @@ fn auto_disable_threshold_immediate_disable_and_success_reset() {
     // Provider-level must NOT be written.
     assert!(!threshold.auto_disabled);
 
-    // DisableImmediately (401/403) — first call disables.
+    // DisableImmediately (401/403) — first call disables. Frozen Step 2 rule:
+    // an immediate auth disable still records the reason/at/last_error_at but
+    // must NOT increment consecutive_failures, so the counter keeps meaning
+    // consecutive transient failures and probe eligibility
+    // (`consecutive_failures >= FAILURE_THRESHOLD`) stays manual-only for auth
+    // disables (REQ-003).
     let mut auth = provider("auth");
     auth.mappings = vec![mapping("l", "r", None)];
     let t_auth = MappingTarget::new("auth", "l", "r");
@@ -538,6 +543,15 @@ fn auto_disable_threshold_immediate_disable_and_success_reset() {
     ));
     assert!(auth.mappings[0].auto_disabled);
     assert_eq!(auth.mappings[0].disabled_reason.as_deref(), Some("unauthorized"));
+    assert_eq!(
+        auth.mappings[0].consecutive_failures, 0,
+        "an immediate auth disable must not increment the transient-failure counter"
+    );
+    assert_eq!(
+        auth.mappings[0].last_error_at,
+        Some(5),
+        "an immediate auth disable must still stamp last_error_at"
+    );
     assert!(!auth.auto_disabled, "AC-002: provider-level must stay clear");
 
     // Transient (404/429) — never counts or disables.
@@ -597,6 +611,13 @@ fn auto_disabled_state_persists_and_separates_from_user_enabled() {
             Some("auth failed")
         );
         assert_eq!(loaded.providers[0].mappings[0].disabled_at, Some(123));
+        // Frozen Step 2 rule: an immediate auth disable persists without
+        // incrementing the transient-failure counter.
+        assert_eq!(
+            loaded.providers[0].mappings[0].consecutive_failures, 0,
+            "an immediate auth disable must not persist a transient failure count"
+        );
+        assert_eq!(loaded.providers[0].mappings[0].last_error_at, Some(123));
         // Provider-level legacy fields must be cleared by normalize_config on read.
         assert!(!loaded.providers[0].auto_disabled, "provider-level must stay clear on read");
 
@@ -1317,6 +1338,7 @@ async fn assert_truncated_auth_non_streaming(status: u16) {
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -1359,6 +1381,16 @@ async fn assert_truncated_auth_non_streaming(status: u16) {
     assert!(
         auth_provider.mappings[0].auto_disabled,
         "HTTP {status} must immediately persist auto_disabled on the mapping row despite the truncated body"
+    );
+    // Frozen Step 2 rule: an immediate auth disable never advances the
+    // transient-failure counter but still stamps last_error_at.
+    assert_eq!(
+        auth_provider.mappings[0].consecutive_failures, 0,
+        "HTTP {status} immediate disable must not increment consecutive_failures"
+    );
+    assert!(
+        auth_provider.mappings[0].last_error_at.is_some(),
+        "HTTP {status} immediate disable must still stamp last_error_at"
     );
 }
 
@@ -1428,6 +1460,7 @@ async fn assert_truncated_auth_streaming(status: u16) {
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await
@@ -1473,6 +1506,16 @@ async fn assert_truncated_auth_streaming(status: u16) {
     assert!(
         auth_provider.mappings[0].auto_disabled,
         "HTTP {status} must immediately persist auto_disabled on the mapping row despite the truncated body"
+    );
+    // Frozen Step 2 rule: an immediate auth disable never advances the
+    // transient-failure counter but still stamps last_error_at.
+    assert_eq!(
+        auth_provider.mappings[0].consecutive_failures, 0,
+        "HTTP {status} immediate disable must not increment consecutive_failures"
+    );
+    assert!(
+        auth_provider.mappings[0].last_error_at.is_some(),
+        "HTTP {status} immediate disable must still stamp last_error_at"
     );
 }
 
@@ -2256,6 +2299,7 @@ async fn streaming_switches_when_first_provider_fails_before_first_byte() {
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await
@@ -2323,6 +2367,7 @@ async fn streaming_terminates_after_first_byte_without_switching() {
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await
@@ -4190,6 +4235,7 @@ async fn non_json_upstream_response_is_retryable_and_switches() {
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -4236,6 +4282,7 @@ async fn return_to_client_error_is_passed_through_without_switching_or_disabling
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -4356,6 +4403,7 @@ async fn end_to_end_network_failure_falls_back_and_tries_first_candidate_once() 
         Some("local-model"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -4411,6 +4459,7 @@ async fn end_to_end_5xx_falls_back_and_tries_first_candidate_once() {
         Some("local-model"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -4470,6 +4519,7 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
             Some("local-model"),
             &HashMap::new(),
             false,
+            None,
             &mut attempts,
         )
         .await;
@@ -4500,6 +4550,17 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
             a_stored.mappings[0].disabled_reason
         );
         assert!(a_stored.mappings[0].disabled_at.is_some());
+        // Frozen Step 2 rule: the immediate 401/403 disable records reason/at and
+        // last_error_at but must NOT advance consecutive_failures, so the counter
+        // can no longer reach the probe threshold through an auth disable.
+        assert_eq!(
+            a_stored.mappings[0].consecutive_failures, 0,
+            "status {status} immediate disable must not increment the counter"
+        );
+        assert!(
+            a_stored.mappings[0].last_error_at.is_some(),
+            "status {status} immediate disable must still stamp last_error_at"
+        );
         let live = super::storage::read_config().expect("read persisted provider state");
         let b_stored = live.providers.iter().find(|p| p.id == "b").unwrap();
         assert!(!b_stored.mappings[0].auto_disabled);
@@ -4606,6 +4667,7 @@ async fn end_to_end_network_errors_accumulate_and_disable() {
             Some("local-model"),
             &HashMap::new(),
             false,
+            None,
             &mut attempts,
         )
         .await;
@@ -4685,6 +4747,7 @@ async fn health_settlement_preserves_providers_added_mid_request() {
         Some("local-model"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -4728,6 +4791,7 @@ async fn health_settlement_preserves_providers_added_mid_request() {
         Some("local-model"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -4740,6 +4804,11 @@ async fn health_settlement_preserves_providers_added_mid_request() {
     );
     let auth_merged = merged.providers.iter().find(|p| p.id == "auth").expect("auth provider");
     assert!(auth_merged.mappings[0].auto_disabled, "401 must still disable immediately");
+    assert_eq!(
+        auth_merged.mappings[0].consecutive_failures, 0,
+        "an immediate 401 disable must not increment the transient-failure counter"
+    );
+    assert!(auth_merged.mappings[0].last_error_at.is_some());
 }
 
 #[tokio::test]
@@ -4800,6 +4869,7 @@ async fn end_to_end_quota_429_counts_and_disables_while_rate_limit_429_does_not(
                 Some("local-model"),
                 &HashMap::new(),
                 false,
+                None,
                 &mut attempts,
             )
             .await;
@@ -4862,6 +4932,7 @@ async fn end_to_end_transient_429_and_404_switch_without_disabling() {
             Some("local-model"),
             &HashMap::new(),
             false,
+            None,
             &mut attempts,
         )
         .await;
@@ -4915,6 +4986,7 @@ async fn end_to_end_client_4xx_returns_to_caller_without_switching_or_disabling(
             Some("local-model"),
             &HashMap::new(),
             false,
+            None,
             &mut attempts,
         )
         .await;
@@ -4975,6 +5047,7 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
             Some("local-model"),
             &HashMap::new(),
             false,
+            None,
             &mut attempts,
         )
         .await;
@@ -5031,6 +5104,7 @@ async fn end_to_end_non_json_response_is_a_counted_failure_not_success() {
         Some("local-model"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -5472,6 +5546,7 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
             Some("local-model"),
             &HashMap::new(),
             false,
+            None,
             &mut attempts,
         ),
     )
@@ -5704,6 +5779,7 @@ async fn streaming_2xx_non_json_is_retryable_and_switches_before_first_byte() {
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await
@@ -7978,6 +8054,7 @@ async fn attempt_streaming_text(
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await
@@ -8007,6 +8084,7 @@ async fn attempt_non_streaming_timed(
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -8035,6 +8113,7 @@ async fn attempt_non_streaming_paused(
         requested,
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -8280,6 +8359,7 @@ async fn retry_policy_initial_pass_does_not_wait_for_cooldown() {
             Some("local"),
             &HashMap::new(),
             false,
+            None,
             &mut attempts,
         ),
     )
@@ -8485,6 +8565,7 @@ async fn single_candidate_500_non_streaming_fails_fast_without_retry() {
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -8546,6 +8627,7 @@ async fn single_candidate_429_with_retry_header_non_streaming_fails_fast_without
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -8599,6 +8681,7 @@ async fn single_candidate_429_without_retry_header_non_streaming_fails_fast_with
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -8897,6 +8980,16 @@ async fn retry_stream_html_401_and_403_disable_immediately() {
             stored.mappings[0].disabled_reason.as_deref().unwrap_or("").contains(&status.to_string()),
             "HTML {status} disable reason: {:?}",
             stored.mappings[0].disabled_reason
+        );
+        // Frozen Step 2 rule: the immediate auth disable does not count as a
+        // transient failure, so the counter stays zero for a 401/403 row.
+        assert_eq!(
+            stored.mappings[0].consecutive_failures, 0,
+            "HTML {status} immediate disable must not increment the counter"
+        );
+        assert!(
+            stored.mappings[0].last_error_at.is_some(),
+            "HTML {status} immediate disable must still stamp last_error_at"
         );
     }
 }
@@ -11675,6 +11768,7 @@ async fn streaming_all_unavailable_network_error_logs_zero_status() {
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await
@@ -13987,6 +14081,7 @@ async fn non_streaming_upstream_html_400_is_wrapped_in_standard_envelope() {
         Some("local"),
         &headers,
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -14105,6 +14200,7 @@ async fn non_streaming_upstream_json_400_is_passed_through_byte_for_byte() {
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -14239,6 +14335,7 @@ async fn mid_stream_failure_capture_is_failure_keeps_usage_and_skips_other_candi
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await
@@ -16067,6 +16164,7 @@ async fn attempt_buffer_records_failed_then_successful_attempts_in_completion_or
         Some("local"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -19364,7 +19462,9 @@ fn ac_002_three_5xx_disable_row_not_provider() {
     // register_mapping_* no longer writes provider-level fields.
     assert!(!p.auto_disabled, "provider-level auto_disabled must NOT be set");
 
-    // 401/403 disables immediately (first call).
+    // 401/403 disables immediately (first call). Frozen Step 2 rule: the immediate
+    // disable records reason/at/last_error_at but leaves consecutive_failures at
+    // zero, so the counter only ever tracks consecutive transient failures.
     let mut auth_p = provider("auth-p");
     auth_p.mappings = vec![mapping("x", "rx", None)];
     let target_x = MappingTarget::new("auth-p", "x", "rx");
@@ -19376,6 +19476,11 @@ fn ac_002_three_5xx_disable_row_not_provider() {
         auth_p.mappings[0].disabled_reason.as_deref(),
         Some("unauthorized")
     );
+    assert_eq!(
+        auth_p.mappings[0].consecutive_failures, 0,
+        "an immediate auth disable must not increment the counter"
+    );
+    assert_eq!(auth_p.mappings[0].last_error_at, Some(10));
 
     // Provider-level must remain healthy.
     assert!(!auth_p.auto_disabled, "AC-002: provider-level must stay clear on immediate disable");
@@ -19497,6 +19602,11 @@ fn ac_006_sibling_rows_stay_healthy() {
     // Row A is auto-disabled.
     let row_a = p.mappings.iter().find(|m| m.local_model == "a").unwrap();
     assert!(row_a.auto_disabled);
+    assert_eq!(
+        row_a.consecutive_failures, 0,
+        "an immediate auth disable disables the row without incrementing the counter (Step 2 rule)"
+    );
+    assert!(row_a.last_error_at.is_some());
 
     // Row B stays healthy.
     let row_b = p.mappings.iter().find(|m| m.local_model == "b").unwrap();
@@ -19613,6 +19723,10 @@ fn ac_013_upsert_preserves_reset_drops_runtime_state() {
     register_mapping_failure(&mut p, &target_a, FailureClass::DisableImmediately, "gone", 100);
     assert!(p.mappings[0].auto_disabled);
     assert_eq!(p.mappings[0].last_error_at, Some(100));
+    assert_eq!(
+        p.mappings[0].consecutive_failures, 0,
+        "an immediate auth disable records last_error_at but not a transient failure count"
+    );
 
     // Test mapping_matches_key helper.
     assert!(mapping_matches_key(&p.mappings[0], "a", "ra"));
@@ -22079,6 +22193,7 @@ async fn suppressed_transport_failure_does_not_increment_the_mapping_row() {
         Some("local-a"),
         &HashMap::new(),
         true,
+        None,
         &mut attempts,
     )
     .await;
@@ -22122,6 +22237,7 @@ async fn suppressed_transport_failure_at_threshold_minus_one_does_not_auto_disab
         Some("local-a"),
         &HashMap::new(),
         true,
+        None,
         &mut attempts,
     )
     .await;
@@ -22161,6 +22277,7 @@ async fn unsuppressed_transport_failure_increments_and_stamps_the_mapping_row() 
         Some("local-a"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -22196,6 +22313,7 @@ async fn unsuppressed_transport_failure_at_threshold_minus_one_auto_disables_the
         Some("local-a"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await;
@@ -22231,6 +22349,7 @@ async fn http_500_failure_still_counts_inside_the_suppression_window() {
         Some("local-a"),
         &HashMap::new(),
         true,
+        None,
         &mut attempts,
     )
     .await;
@@ -22272,6 +22391,7 @@ async fn quota_429_failure_still_counts_inside_the_suppression_window() {
         Some("local-a"),
         &HashMap::new(),
         true,
+        None,
         &mut attempts,
     )
     .await;
@@ -22309,6 +22429,7 @@ async fn suppressed_streaming_transport_failure_leaves_the_row_and_pre_stream_50
         Some("local-a"),
         &HashMap::new(),
         true,
+        None,
         &mut attempts,
     )
     .await
@@ -22360,6 +22481,7 @@ async fn unsuppressed_streaming_transport_failure_counts_on_the_mapping_row() {
         Some("local-a"),
         &HashMap::new(),
         false,
+        None,
         &mut attempts,
     )
     .await
@@ -22473,6 +22595,1357 @@ async fn relay_request_without_a_resume_signal_counts_a_transport_failure() {
     );
     drop(_reset);
     drop(home);
+}
+
+// ===========================================================================
+// Plan 20260923-gateway-auto-disable-recovery, Step 2 (RED):
+// Half-open probe eligibility, single flight, re-arm and settlement.
+//
+// The backend Step 2 symbols below do not exist yet, so this whole section is
+// expected to fail compilation until they land:
+//   - super::AUTO_DISABLE_PROBE_COOLDOWN_SECS
+//   - super::selection::find_probe_candidate / ProbeCandidate
+//   - super::selection::try_acquire_probe_guard / ProbeGuard
+//   - super::selection::rearm_mapping_probe_cooldown
+//   - the `probe` argument of attempt_non_streaming / attempt_streaming
+// ===========================================================================
+
+/// Fixed cooldown mirrored from the production constant so the boundary tests
+/// read as 59/60/61 seconds rather than as magic numbers.
+const PROBE_COOLDOWN: u64 = super::AUTO_DISABLE_PROBE_COOLDOWN_SECS;
+
+fn probe_now() -> u64 {
+    super::types_config::now_ts()
+}
+
+/// Build one enabled provider with a single auto-disabled mapping row carrying
+/// threshold failure state and the given `disabled_at`.
+fn probe_row_provider(
+    id: &str,
+    url: &str,
+    local_model: &str,
+    upstream_model: &str,
+    disabled_at: Option<u64>,
+) -> GatewayUpstreamProvider {
+    let mut provider = upstream_provider(
+        id,
+        &format!("Provider {id}"),
+        url,
+        &format!("sk-{id}"),
+        None,
+    );
+    let mut row = mapping(local_model, upstream_model, None);
+    row.auto_disabled = true;
+    row.consecutive_failures = super::FAILURE_THRESHOLD;
+    row.disabled_reason = Some("HTTP 500 upstream error".to_string());
+    row.disabled_at = disabled_at;
+    row.last_error_at = disabled_at;
+    provider.mappings = vec![row];
+    provider
+}
+
+/// Read one provider's first persisted row back from `api_gateway.json`.
+fn stored_probe_row(provider_id: &str) -> ModelMapping {
+    let stored = super::storage::read_config().expect("read persisted provider state");
+    stored
+        .providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .unwrap_or_else(|| panic!("provider {provider_id} must be persisted"))
+        .mappings[0]
+        .clone()
+}
+
+/// AC-003 / REQ-001: eligibility is decided against the injected `now`, so the
+/// 60-second cooldown boundary is exact: 30s and 59s are ineligible, 60s and
+/// older are eligible.
+#[test]
+fn find_probe_candidate_cooldown_boundary_is_exact() {
+    let now = 5_000_000u64;
+    let find = |age: u64| {
+        let provider = probe_row_provider(
+            "probe-boundary",
+            "https://probe.invalid",
+            "local-x",
+            "remote-x",
+            Some(now - age),
+        );
+        super::selection::find_probe_candidate(
+            std::slice::from_ref(&provider),
+            Some("local-x"),
+            UpstreamProtocol::ChatCompletions,
+            &[],
+            now,
+        )
+    };
+
+    assert!(find(30).is_none(), "a 30s-old row is inside the 60s cooldown");
+    assert!(
+        find(PROBE_COOLDOWN - 1).is_none(),
+        "a 59s-old row is one second short of the cooldown"
+    );
+    assert!(
+        find(PROBE_COOLDOWN).is_some(),
+        "exactly 60s old is the inclusive eligible boundary"
+    );
+    assert!(find(PROBE_COOLDOWN + 1).is_some(), "an older row stays eligible");
+}
+
+/// REQ-001: the helper returns exactly one candidate and orders by oldest
+/// `disabled_at`, with the target identifying the probed row.
+#[test]
+fn find_probe_candidate_returns_the_oldest_eligible_row_with_its_target() {
+    let now = 5_000_000u64;
+    let older = probe_row_provider(
+        "probe-oldest-b",
+        "https://probe.invalid",
+        "local-x",
+        "remote-b",
+        Some(now - 120),
+    );
+    let newer = probe_row_provider(
+        "probe-oldest-a",
+        "https://probe.invalid",
+        "local-x",
+        "remote-a",
+        Some(now - 60),
+    );
+
+    let candidate = super::selection::find_probe_candidate(
+        &[newer, older],
+        Some("local-x"),
+        UpstreamProtocol::ChatCompletions,
+        &[],
+        now,
+    )
+    .expect("an eligible row must be returned");
+
+    assert_eq!(candidate.provider.id, "probe-oldest-b", "oldest disabled_at wins");
+    assert_eq!(candidate.upstream_model, "remote-b");
+    assert_eq!(
+        candidate.target,
+        MappingTarget::new("probe-oldest-b", "local-x", "remote-b")
+    );
+}
+
+/// REQ-001: ties are broken deterministically (provider id, then the row key
+/// components) so two equal cooldowns never make selection nondeterministic.
+#[test]
+fn find_probe_candidate_tie_breaks_deterministically() {
+    let now = 5_000_000u64;
+    let at = now - 120;
+    let b = probe_row_provider(
+        "probe-tie-b",
+        "https://probe.invalid",
+        "local-x",
+        "remote-b",
+        Some(at),
+    );
+    let a = probe_row_provider(
+        "probe-tie-a",
+        "https://probe.invalid",
+        "local-x",
+        "remote-a",
+        Some(at),
+    );
+
+    let candidate = super::selection::find_probe_candidate(
+        &[b, a],
+        Some("local-x"),
+        UpstreamProtocol::ChatCompletions,
+        &[],
+        now,
+    )
+    .expect("a tie must still return one candidate");
+    assert_eq!(candidate.provider.id, "probe-tie-a", "provider id breaks the tie");
+
+    // Two rows of one provider share the cooldown; the lexicographically
+    // smaller upstream_model wins.
+    let mut provider = probe_row_provider(
+        "probe-tie-upstream",
+        "https://probe.invalid",
+        "local-x",
+        "remote-z",
+        Some(at),
+    );
+    let mut smaller = mapping("local-x", "remote-a", None);
+    smaller.auto_disabled = true;
+    smaller.consecutive_failures = super::FAILURE_THRESHOLD;
+    smaller.disabled_reason = Some("HTTP 500 upstream error".to_string());
+    smaller.disabled_at = Some(at);
+    smaller.last_error_at = Some(at);
+    provider.mappings.push(smaller);
+
+    let candidate = super::selection::find_probe_candidate(
+        &[provider],
+        Some("local-x"),
+        UpstreamProtocol::ChatCompletions,
+        &[],
+        now,
+    )
+    .expect("duplicate-key rows must still yield one candidate");
+    assert_eq!(candidate.upstream_model, "remote-a");
+}
+
+/// AC-005 / REQ-003: user intent and incomplete runtime state never probe. A
+/// user-disabled row, a row of a user-disabled provider, a row without
+/// `disabled_at` and a row below the failure threshold are all ineligible.
+#[test]
+fn find_probe_candidate_excludes_user_disabled_and_incomplete_rows() {
+    let now = 5_000_000u64;
+    let find = |provider: &GatewayUpstreamProvider| {
+        super::selection::find_probe_candidate(
+            std::slice::from_ref(provider),
+            Some("local-x"),
+            UpstreamProtocol::ChatCompletions,
+            &[],
+            now,
+        )
+    };
+    let eligible = probe_row_provider(
+        "probe-excl",
+        "https://probe.invalid",
+        "local-x",
+        "remote-x",
+        Some(now - 120),
+    );
+    assert!(find(&eligible).is_some(), "control row must be eligible");
+
+    let mut row_disabled = eligible.clone();
+    row_disabled.mappings[0].enabled = false;
+    assert!(
+        find(&row_disabled).is_none(),
+        "a row with enabled=false is user intent and must never be probed"
+    );
+
+    let mut provider_disabled = eligible.clone();
+    provider_disabled.enabled = false;
+    assert!(
+        find(&provider_disabled).is_none(),
+        "a row of a user-disabled provider must never be probed"
+    );
+
+    let mut no_disabled_at = eligible.clone();
+    no_disabled_at.mappings[0].disabled_at = None;
+    assert!(
+        find(&no_disabled_at).is_none(),
+        "a row without disabled_at has no cooldown anchor"
+    );
+
+    let mut below_threshold = eligible.clone();
+    below_threshold.mappings[0].consecutive_failures = super::FAILURE_THRESHOLD - 1;
+    assert!(
+        find(&below_threshold).is_none(),
+        "a row below the transient-failure threshold must not be probed"
+    );
+}
+
+/// AC-005 / REQ-003 / REQ-001: a `disabled_reason` starting with `HTTP 401` or
+/// `HTTP 403` keeps a row manual-only, including legacy rows whose counter
+/// reached the threshold under the previous counting rule.
+#[test]
+fn find_probe_candidate_excludes_immediate_auth_disable_reasons() {
+    let now = 5_000_000u64;
+    let find = |counter: u32, reason: Option<&str>| {
+        let mut provider = probe_row_provider(
+            "probe-auth-reason",
+            "https://probe.invalid",
+            "local-x",
+            "remote-x",
+            Some(now - 120),
+        );
+        provider.mappings[0].consecutive_failures = counter;
+        provider.mappings[0].disabled_reason = reason.map(str::to_string);
+        super::selection::find_probe_candidate(
+            std::slice::from_ref(&provider),
+            Some("local-x"),
+            UpstreamProtocol::ChatCompletions,
+            &[],
+            now,
+        )
+    };
+
+    assert!(
+        find(super::FAILURE_THRESHOLD, Some("HTTP 500 upstream error")).is_some(),
+        "a threshold row with a transient reason stays probe-eligible"
+    );
+    assert!(find(super::FAILURE_THRESHOLD, Some("HTTP 401 unauthorized")).is_none());
+    assert!(find(super::FAILURE_THRESHOLD, Some("HTTP 403 forbidden")).is_none());
+    assert!(
+        find(super::FAILURE_THRESHOLD, Some("  HTTP 401 unauthorized  ")).is_none(),
+        "the reason is trimmed before the prefix check"
+    );
+    // A fresh immediate disable under the Step 2 counter rule also sits below
+    // the threshold, so both discriminators exclude it.
+    assert!(find(0, Some("HTTP 401 unauthorized")).is_none());
+    assert!(
+        find(super::FAILURE_THRESHOLD, Some("HTTP 429 quota exhausted")).is_some(),
+        "an unrelated status prefix is not an auth disable"
+    );
+}
+
+/// AC-005 / REQ-001: the requested model, the row's effective protocol and a
+/// non-empty trimmed upstream model all gate eligibility.
+#[test]
+fn find_probe_candidate_excludes_protocol_model_and_empty_upstream_mismatches() {
+    let now = 5_000_000u64;
+    let find = |provider: &GatewayUpstreamProvider,
+                requested: Option<&str>,
+                protocol: UpstreamProtocol| {
+        super::selection::find_probe_candidate(
+            std::slice::from_ref(provider),
+            requested,
+            protocol,
+            &[],
+            now,
+        )
+    };
+    let eligible = probe_row_provider(
+        "probe-mismatch",
+        "https://probe.invalid",
+        "local-x",
+        "remote-x",
+        Some(now - 120),
+    );
+    assert!(find(&eligible, Some("local-x"), UpstreamProtocol::ChatCompletions).is_some());
+
+    assert!(
+        find(&eligible, Some("other-model"), UpstreamProtocol::ChatCompletions).is_none(),
+        "a row for another local model must not be probed"
+    );
+    assert!(
+        find(&eligible, None, UpstreamProtocol::ChatCompletions).is_none(),
+        "a request without a model cannot match a probe row"
+    );
+
+    let mut pinned = eligible.clone();
+    pinned.mappings[0].protocol = Some(UpstreamProtocol::Responses);
+    assert!(
+        find(&pinned, Some("local-x"), UpstreamProtocol::ChatCompletions).is_none(),
+        "a row pinned to another protocol must not be probed for this inbound protocol"
+    );
+    assert!(
+        find(&pinned, Some("local-x"), UpstreamProtocol::Responses).is_some(),
+        "the same row is eligible for its own protocol"
+    );
+
+    let mut empty_upstream = eligible.clone();
+    empty_upstream.mappings[0].upstream_model = "   ".to_string();
+    assert!(
+        find(&empty_upstream, Some("local-x"), UpstreamProtocol::ChatCompletions).is_none(),
+        "a row with a blank upstream model must never be forwarded"
+    );
+}
+
+/// AC-004 / REQ-002: a provider already serving as a healthy candidate is never
+/// also selected as a probe.
+#[test]
+fn find_probe_candidate_excludes_providers_already_serving_as_healthy() {
+    let now = 5_000_000u64;
+    let probe = probe_row_provider(
+        "probe-healthy",
+        "https://probe.invalid",
+        "local-x",
+        "remote-x",
+        Some(now - 120),
+    );
+    assert!(
+        super::selection::find_probe_candidate(
+            std::slice::from_ref(&probe),
+            Some("local-x"),
+            UpstreamProtocol::ChatCompletions,
+            &["probe-healthy".to_string()],
+            now,
+        )
+        .is_none(),
+        "a provider already serving healthy candidates must not be probed"
+    );
+    assert!(
+        super::selection::find_probe_candidate(
+            std::slice::from_ref(&probe),
+            Some("local-x"),
+            UpstreamProtocol::ChatCompletions,
+            &["some-other-provider".to_string()],
+            now,
+        )
+        .is_some(),
+        "an unrelated healthy provider id must not exclude this row"
+    );
+}
+
+/// REQ-001: the single-flight guard is process-wide per `MappingTarget` and is
+/// released on drop. This deterministic acquire/release sequence is the
+/// evidence for the single-flight guarantee; a real concurrent interleaving
+/// cannot be pinned without a flaky scheduler dance, and the behavior it would
+/// observe is already forced by the guard's mutual exclusion here.
+#[test]
+fn probe_guard_is_single_flight_per_mapping_target_and_releases_on_drop() {
+    let target = MappingTarget::new("probe-guard", "local-x", "remote-x");
+    let other = MappingTarget::new("probe-guard-other", "local-x", "remote-x");
+
+    let guard = super::selection::try_acquire_probe_guard(&target)
+        .expect("the first acquisition of a free target must succeed");
+    assert!(
+        super::selection::try_acquire_probe_guard(&target).is_none(),
+        "a second acquisition of the held target must fail"
+    );
+    assert!(
+        super::selection::try_acquire_probe_guard(&other).is_some(),
+        "a different mapping target must not be blocked"
+    );
+    drop(guard);
+    assert!(
+        super::selection::try_acquire_probe_guard(&target).is_some(),
+        "dropping the guard must release the target"
+    );
+}
+
+/// REQ-001: re-arming the cooldown refreshes only `disabled_at` and leaves the
+/// counter and error details untouched when `update_details` is false.
+#[test]
+fn rearm_mapping_probe_cooldown_keeps_counter_and_omits_details_when_asked() {
+    let now = 5_000_000u64;
+    let initial = now - 120;
+    let mut provider = probe_row_provider(
+        "probe-rearm",
+        "https://probe.invalid",
+        "local-x",
+        "remote-x",
+        Some(initial),
+    );
+    let target = MappingTarget::new("probe-rearm", "local-x", "remote-x");
+    let at = now + 5;
+
+    super::selection::rearm_mapping_probe_cooldown(
+        &mut provider,
+        &target,
+        "network error: connection refused",
+        at,
+        false,
+    );
+
+    let row = &provider.mappings[0];
+    assert!(row.auto_disabled, "re-arm keeps the row auto-disabled");
+    assert_eq!(row.disabled_at, Some(at), "the cooldown moves to the attempt time");
+    assert_eq!(
+        row.consecutive_failures,
+        super::FAILURE_THRESHOLD,
+        "re-arm must not change the consecutive-failure counter"
+    );
+    assert_eq!(
+        row.last_error_at,
+        Some(initial),
+        "update_details=false must not touch last_error_at"
+    );
+    assert_eq!(
+        row.disabled_reason.as_deref(),
+        Some("HTTP 500 upstream error"),
+        "update_details=false must not touch the reason"
+    );
+}
+
+/// REQ-001: with `update_details` true the re-arm also stamps the reason and
+/// `last_error_at`, still without changing the counter.
+#[test]
+fn rearm_mapping_probe_cooldown_updates_details_when_asked() {
+    let now = 5_000_000u64;
+    let mut provider = probe_row_provider(
+        "probe-rearm-details",
+        "https://probe.invalid",
+        "local-x",
+        "remote-x",
+        Some(now - 120),
+    );
+    let target = MappingTarget::new("probe-rearm-details", "local-x", "remote-x");
+    let at = now + 7;
+
+    super::selection::rearm_mapping_probe_cooldown(
+        &mut provider,
+        &target,
+        "network error: connection refused",
+        at,
+        true,
+    );
+
+    let row = &provider.mappings[0];
+    assert!(row.auto_disabled);
+    assert_eq!(row.disabled_at, Some(at));
+    assert_eq!(
+        row.consecutive_failures,
+        super::FAILURE_THRESHOLD,
+        "re-arm must not change the consecutive-failure counter"
+    );
+    assert_eq!(row.last_error_at, Some(at));
+    assert_eq!(
+        row.disabled_reason.as_deref(),
+        Some("network error: connection refused")
+    );
+}
+
+/// AC-001 / REQ-001: through the real relay, a threshold-disabled row whose
+/// cooldown expired, with no healthy candidate, is probed exactly once, the
+/// upstream success is served and the stored row is cleared. AC-011: the row's
+/// user intent stays enabled and it serves as a normal candidate afterwards.
+#[tokio::test]
+async fn probe_success_recovers_and_serves_through_the_relay() {
+    let home = temp_home("probe-success-relay");
+    let port = free_port().await;
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "probe-recovered"}))).await;
+
+    let now = probe_now();
+    let provider = probe_row_provider(
+        "probe-ok-relay",
+        &upstream_url,
+        "probe-local-ok",
+        "probe-remote-ok",
+        Some(now.saturating_sub(PROBE_COOLDOWN + 60)),
+    );
+    let mut config = config_with_key(port);
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "probe-local-ok"})),
+    )
+    .await;
+    assert_eq!(status, 200, "a successful probe must serve the client: {text}");
+    assert!(
+        text.contains("probe-recovered"),
+        "the upstream success body must reach the client: {text}"
+    );
+    assert_eq!(
+        upstream_log.lock().unwrap().len(),
+        1,
+        "exactly one probe attempt is made"
+    );
+
+    let row = stored_probe_row("probe-ok-relay");
+    assert!(!row.auto_disabled, "a probe success must clear auto_disabled");
+    assert_eq!(row.consecutive_failures, 0, "a probe success must reset the counter");
+    assert_eq!(row.disabled_reason, None);
+    assert_eq!(row.disabled_at, None);
+    assert_eq!(row.last_error_at, None);
+    assert!(row.enabled, "AC-011: user intent must survive a probe recovery");
+
+    // AC-011: the recovered row now serves as an ordinary healthy candidate.
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "probe-local-ok"})),
+    )
+    .await;
+    assert_eq!(status, 200, "the recovered row must serve again: {text}");
+    assert_eq!(
+        upstream_log.lock().unwrap().len(),
+        2,
+        "the second request is a normal candidate attempt"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-001 / REQ-001: the same success recovery through a direct attempt with no
+/// healthy candidates and the probe as the only attempt.
+#[tokio::test]
+async fn probe_success_recovers_and_serves_via_a_direct_attempt() {
+    let _home = isolated_temp_home("probe-success-direct");
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "direct-probe-ok"}))).await;
+
+    let now = probe_now();
+    let provider = probe_row_provider(
+        "probe-ok-direct",
+        &upstream_url,
+        "probe-local-direct",
+        "probe-remote-direct",
+        Some(now.saturating_sub(PROBE_COOLDOWN)),
+    );
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed relay config");
+
+    let candidate = super::selection::find_probe_candidate(
+        std::slice::from_ref(&provider),
+        Some("probe-local-direct"),
+        UpstreamProtocol::ChatCompletions,
+        &[],
+        now,
+    )
+    .expect("the seeded row must be probe-eligible");
+
+    let body = serde_json::to_vec(&json!({"model": "probe-local-direct"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &[],
+        "/v1/chat/completions",
+        &body,
+        Some("probe-local-direct"),
+        &HashMap::new(),
+        false,
+        Some(&candidate),
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 200, "the probe response is the caller response");
+    assert_eq!(attempts.len(), 1, "exactly one probe attempt is logged");
+    assert_eq!(attempts[0].provider_id, "probe-ok-direct");
+    assert_eq!(attempts[0].upstream_model, "probe-remote-direct");
+    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+
+    let row = stored_probe_row("probe-ok-direct");
+    assert!(!row.auto_disabled);
+    assert_eq!(row.consecutive_failures, 0);
+    assert_eq!(row.disabled_reason, None);
+    assert_eq!(row.disabled_at, None);
+    assert_eq!(row.last_error_at, None);
+    assert!(row.enabled);
+}
+
+/// AC-002 / REQ-001: a failed probe keeps the row auto-disabled, refreshes
+/// `disabled_at` to the probe time without changing the counter, answers the
+/// existing `all_providers_unavailable` 502 naming the provider, and a second
+/// request inside the refreshed cooldown performs no new probe.
+#[tokio::test]
+async fn probe_failure_rearms_the_cooldown_and_blocks_a_second_probe() {
+    let home = temp_home("probe-failure-relay");
+    let port = free_port().await;
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "still down"}})))
+            .await;
+
+    let now = probe_now();
+    let initial_disabled_at = now.saturating_sub(120);
+    let provider = probe_row_provider(
+        "probe-fail-relay",
+        &upstream_url,
+        "probe-local-fail",
+        "probe-remote-fail",
+        Some(initial_disabled_at),
+    );
+    let mut config = config_with_key(port);
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "probe-local-fail"})),
+    )
+    .await;
+    assert_eq!(
+        status, 502,
+        "a failed probe returns the existing all-unavailable envelope: {text}"
+    );
+    let envelope = assert_standard_error_envelope(&text);
+    assert_eq!(envelope["error"]["code"], "all_providers_unavailable");
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Provider probe-fail-relay"),
+        "the failed probe must name its provider: {text}"
+    );
+    assert_eq!(upstream_log.lock().unwrap().len(), 1, "the probe is attempted exactly once");
+
+    let row = stored_probe_row("probe-fail-relay");
+    assert!(row.auto_disabled, "a failed probe keeps the row auto-disabled");
+    let refreshed = row.disabled_at.expect("the cooldown must be re-armed");
+    assert!(
+        refreshed > initial_disabled_at,
+        "disabled_at must be refreshed to the probe time ({refreshed} vs {initial_disabled_at})"
+    );
+    assert_eq!(
+        row.consecutive_failures,
+        super::FAILURE_THRESHOLD,
+        "re-arm must not change the counter"
+    );
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "probe-local-fail"})),
+    )
+    .await;
+    assert_eq!(status, 502, "the cooled-down row answers the existing 502: {text}");
+    assert_eq!(
+        upstream_log.lock().unwrap().len(),
+        1,
+        "a request inside the refreshed cooldown must not probe again"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-003 / REQ-001: a 30-second-old row is inside the cooldown, so a relay
+/// request never forwards its `upstream_model` and answers the existing 502.
+#[tokio::test]
+async fn cooldown_boundary_blocks_a_relay_probe_attempt() {
+    let home = temp_home("probe-cooldown-relay");
+    let port = free_port().await;
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "must-not-run"}))).await;
+
+    let now = probe_now();
+    let provider = probe_row_provider(
+        "probe-cooldown-relay",
+        &upstream_url,
+        "probe-local-cool",
+        "probe-remote-cool",
+        Some(now.saturating_sub(30)),
+    );
+    let mut config = config_with_key(port);
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "probe-local-cool"})),
+    )
+    .await;
+    assert_eq!(status, 502, "a row inside the cooldown answers the existing 502: {text}");
+    let envelope = assert_standard_error_envelope(&text);
+    assert_eq!(envelope["error"]["code"], "all_providers_unavailable");
+    assert!(
+        upstream_log.lock().unwrap().is_empty(),
+        "the cooled-down row's upstream_model must never be forwarded"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-004 / REQ-002: a healthy candidate serves and no probe attempt reaches
+/// the probe row.
+#[tokio::test]
+async fn healthy_candidate_is_never_preempted_by_a_probe() {
+    let home = temp_home("probe-lowest-priority-healthy");
+    let port = free_port().await;
+    let (healthy_url, healthy_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "healthy-served"}))).await;
+    let (probe_url, probe_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "probe-served"}))).await;
+
+    let now = probe_now();
+    let mut healthy = upstream_provider(
+        "probe-prio-healthy",
+        "Probe Prio Healthy",
+        &healthy_url,
+        "sk",
+        None,
+    );
+    healthy.mappings = vec![mapping("probe-local-prio", "probe-remote-healthy", None)];
+    let probe = probe_row_provider(
+        "probe-prio-probe",
+        &probe_url,
+        "probe-local-prio",
+        "probe-remote-probe",
+        Some(now.saturating_sub(120)),
+    );
+
+    let mut config = config_with_key(port);
+    config.providers.push(healthy);
+    config.providers.push(probe);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "probe-local-prio"})),
+    )
+    .await;
+    assert_eq!(status, 200, "the healthy candidate must serve: {text}");
+    assert!(text.contains("healthy-served"), "healthy body missing: {text}");
+    assert_eq!(healthy_log.lock().unwrap().len(), 1);
+    assert!(
+        probe_log.lock().unwrap().is_empty(),
+        "a healthy candidate must never be preempted by a probe"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-004 / REQ-002: only after every healthy candidate has failed is exactly
+/// one probe attempted, and its success serves the client.
+#[tokio::test]
+async fn probe_is_attempted_only_after_every_healthy_candidate_fails() {
+    let home = temp_home("probe-after-healthy-failure");
+    let port = free_port().await;
+    let (healthy_url, healthy_log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "healthy down"}})))
+            .await;
+    let (probe_url, probe_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "probe-after-healthy"}))).await;
+
+    let now = probe_now();
+    let mut healthy = upstream_provider(
+        "probe-after-healthy",
+        "Probe After Healthy",
+        &healthy_url,
+        "sk",
+        None,
+    );
+    healthy.mappings = vec![mapping("probe-local-after", "probe-remote-healthy", None)];
+    let probe = probe_row_provider(
+        "probe-after-probe",
+        &probe_url,
+        "probe-local-after",
+        "probe-remote-probe",
+        Some(now.saturating_sub(120)),
+    );
+
+    let mut config = config_with_key(port);
+    config.providers.push(healthy);
+    config.providers.push(probe);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "probe-local-after"})),
+    )
+    .await;
+    assert_eq!(status, 200, "the probe must serve after the healthy candidate fails: {text}");
+    assert!(text.contains("probe-after-healthy"), "probe body missing: {text}");
+    assert_eq!(
+        healthy_log.lock().unwrap().len(),
+        1,
+        "the single healthy candidate is attempted once"
+    );
+    assert_eq!(
+        probe_log.lock().unwrap().len(),
+        1,
+        "exactly one probe attempt happens after the healthy failures"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-004 / REQ-002: a probe-only success writes a normal named probe attempt
+/// row and exactly one terminal row instead of the synthetic no-candidate row.
+#[tokio::test]
+async fn probe_only_success_logs_a_named_attempt_and_one_terminal_row() {
+    let home = temp_home("probe-logging-relay");
+    let port = free_port().await;
+    let (upstream_url, _upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "probe-logged"}))).await;
+
+    let now = probe_now();
+    let provider = probe_row_provider(
+        "probe-logging",
+        &upstream_url,
+        "probe-local-log",
+        "probe-remote-log",
+        Some(now.saturating_sub(120)),
+    );
+    let mut config = config_with_key(port);
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, _text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "probe-local-log"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let records = wait_for_usage_logs(1).await;
+    assert!(!records.is_empty(), "a probe-only request must write usage rows");
+    assert!(
+        records.iter().all(|record| !record.provider_id.is_empty()),
+        "the synthetic no-candidate row (empty provider) must not be written: {records:?}"
+    );
+    let probe_rows: Vec<&UsageLogRecord> = records
+        .iter()
+        .filter(|record| record.provider_id == "probe-logging")
+        .collect();
+    assert!(
+        !probe_rows.is_empty(),
+        "the probe attempt row must name the probed provider: {records:?}"
+    );
+    assert_eq!(probe_rows[0].provider_name, "Provider probe-logging");
+    assert_eq!(probe_rows[0].upstream_model, "probe-remote-log");
+    assert_eq!(probe_rows[0].local_model, "probe-local-log");
+    assert_eq!(probe_rows[0].result, UsageResult::Success);
+    assert_eq!(probe_rows[0].status, 200);
+    let terminals: Vec<&UsageLogRecord> = records.iter().filter(|record| record.terminal).collect();
+    assert_eq!(
+        terminals.len(),
+        1,
+        "exactly one terminal row represents the probe outcome: {records:?}"
+    );
+    assert_eq!(
+        terminals[0].provider_id, "probe-logging",
+        "the terminal row must reflect the probe outcome, not the synthetic row"
+    );
+    assert_eq!(terminals[0].result, UsageResult::Success);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-004 / REQ-002: a failed probe-only request names its provider in the 502
+/// envelope and logs a named failed attempt plus one terminal failure row.
+#[tokio::test]
+async fn probe_only_failure_names_the_probed_provider_and_logs_failure_rows() {
+    let home = temp_home("probe-logging-failure");
+    let port = free_port().await;
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "probe failed"}})))
+            .await;
+
+    let now = probe_now();
+    let provider = probe_row_provider(
+        "probe-log-fail",
+        &upstream_url,
+        "probe-local-logfail",
+        "probe-remote-logfail",
+        Some(now.saturating_sub(120)),
+    );
+    let mut config = config_with_key(port);
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "probe-local-logfail"})),
+    )
+    .await;
+    assert_eq!(status, 502, "a failed probe answers the existing 502: {text}");
+    let envelope = assert_standard_error_envelope(&text);
+    assert_eq!(envelope["error"]["code"], "all_providers_unavailable");
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Provider probe-log-fail"),
+        "the 502 envelope must name the probed provider: {text}"
+    );
+    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+
+    let records = wait_for_usage_logs(1).await;
+    assert!(
+        records.iter().all(|record| !record.provider_id.is_empty()),
+        "no synthetic no-candidate row may be written: {records:?}"
+    );
+    assert!(
+        records
+            .iter()
+            .any(|record| record.provider_id == "probe-log-fail"
+                && record.upstream_model == "probe-remote-logfail"),
+        "the failed probe attempt row must name the provider: {records:?}"
+    );
+    let terminals: Vec<&UsageLogRecord> = records.iter().filter(|record| record.terminal).collect();
+    assert_eq!(terminals.len(), 1, "exactly one terminal row: {records:?}");
+    assert_eq!(terminals[0].provider_id, "probe-log-fail");
+    assert_eq!(terminals[0].result, UsageResult::Failure);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-004 / REQ-002: a probe-only request neither reads nor writes a
+/// session-affinity binding, even when it carries a session header and an
+/// existing binding for another session must stay untouched.
+#[tokio::test]
+async fn probe_only_request_does_not_read_or_write_session_affinity() {
+    let home = temp_home("probe-session-affinity");
+    *affinity_lock() = super::selection::SessionAffinityStore::new();
+
+    // Seed a foreign binding so an accidental write to a different key or an
+    // eviction would be visible.
+    {
+        let mut store = affinity_lock();
+        let _ = store.resolve_order(Some("foreign-session"), Some("foreign-model"), || {
+            vec![provider("foreign-provider")]
+        });
+    }
+    assert_eq!(affinity_lock().live_len(), 1, "the foreign binding must be seeded");
+
+    let port = free_port().await;
+    let (upstream_url, _upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "probe-affinity"}))).await;
+
+    let now = probe_now();
+    let probe = probe_row_provider(
+        "probe-affinity",
+        &upstream_url,
+        "probe-local-affinity",
+        "probe-remote-affinity",
+        Some(now.saturating_sub(120)),
+    );
+    let mut config = config_with_key(port);
+    config.providers.push(probe);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, _text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-session-affinity", "probe-session-a"),
+        ],
+        Some(json!({"model": "probe-local-affinity"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    assert!(
+        affinity_lock()
+            .lookup("probe-session-a", "probe-local-affinity")
+            .is_none(),
+        "a probe-only request must not write a binding for its session/model"
+    );
+    assert_eq!(
+        affinity_lock().live_len(),
+        1,
+        "a probe-only request must not disturb existing bindings"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-005 / REQ-003: a legacy row disabled by 401 with a threshold counter is
+/// never probed by the relay, so its `upstream_model` is never forwarded.
+#[tokio::test]
+async fn auth_disabled_row_is_never_probed_by_the_relay() {
+    let home = temp_home("probe-exclude-auth-relay");
+    let port = free_port().await;
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "must-not-run"}))).await;
+
+    let now = probe_now();
+    let mut provider = probe_row_provider(
+        "probe-auth-relay",
+        &upstream_url,
+        "probe-local-auth",
+        "probe-remote-auth",
+        Some(now.saturating_sub(600)),
+    );
+    provider.mappings[0].disabled_reason = Some("HTTP 401 unauthorized".to_string());
+    let mut config = config_with_key(port);
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server().await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "probe-local-auth"})),
+    )
+    .await;
+    assert_eq!(status, 502, "an auth-disabled row answers the existing 502: {text}");
+    let envelope = assert_standard_error_envelope(&text);
+    assert_eq!(envelope["error"]["code"], "all_providers_unavailable");
+    assert!(
+        upstream_log.lock().unwrap().is_empty(),
+        "the auth-disabled row's upstream_model must never be forwarded"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// REQ-001: when the probe target's single-flight guard is already held, the
+/// probe is skipped: no upstream attempt, no attempt row, and the existing 502.
+#[tokio::test]
+async fn a_guarded_probe_target_performs_no_attempt_and_returns_502() {
+    let _home = isolated_temp_home("probe-guard-held-direct");
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "must-not-run"}))).await;
+
+    let now = probe_now();
+    let provider = probe_row_provider(
+        "probe-guard-direct",
+        &upstream_url,
+        "probe-local-guard",
+        "probe-remote-guard",
+        Some(now.saturating_sub(120)),
+    );
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed relay config");
+
+    let candidate = super::selection::find_probe_candidate(
+        std::slice::from_ref(&provider),
+        Some("probe-local-guard"),
+        UpstreamProtocol::ChatCompletions,
+        &[],
+        now,
+    )
+    .expect("the seeded row must be probe-eligible");
+
+    let _guard = super::selection::try_acquire_probe_guard(&candidate.target)
+        .expect("the test holds the single-flight guard");
+
+    let body = serde_json::to_vec(&json!({"model": "probe-local-guard"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &[],
+        "/v1/chat/completions",
+        &body,
+        Some("probe-local-guard"),
+        &HashMap::new(),
+        false,
+        Some(&candidate),
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 502, "a guarded probe returns the existing 502");
+    assert!(attempts.is_empty(), "no attempt row may be produced while guarded");
+    assert!(
+        upstream_log.lock().unwrap().is_empty(),
+        "the guarded probe must not reach the upstream"
+    );
+    let row = stored_probe_row("probe-guard-direct");
+    assert!(row.auto_disabled, "a skipped probe must not clear the row");
+}
+
+/// REQ-001: the same single-flight skip on the streaming path, which writes the
+/// pre-stream 502 JSON and never contacts the upstream.
+#[tokio::test]
+async fn a_guarded_streaming_probe_target_performs_no_attempt_and_writes_502() {
+    let _home = isolated_temp_home("probe-guard-held-stream");
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "must-not-run"}))).await;
+
+    let now = probe_now();
+    let provider = probe_row_provider(
+        "probe-guard-stream",
+        &upstream_url,
+        "probe-local-gstream",
+        "probe-remote-gstream",
+        Some(now.saturating_sub(120)),
+    );
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed relay config");
+
+    let candidate = super::selection::find_probe_candidate(
+        std::slice::from_ref(&provider),
+        Some("probe-local-gstream"),
+        UpstreamProtocol::ChatCompletions,
+        &[],
+        now,
+    )
+    .expect("the seeded row must be probe-eligible");
+
+    let _guard = super::selection::try_acquire_probe_guard(&candidate.target)
+        .expect("the test holds the single-flight guard");
+
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let body = serde_json::to_vec(&json!({"model": "probe-local-gstream", "stream": true})).unwrap();
+    let mut attempts = Vec::new();
+    let capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        &[],
+        "/v1/chat/completions",
+        &body,
+        Some("probe-local-gstream"),
+        &HashMap::new(),
+        false,
+        Some(&candidate),
+        &mut attempts,
+    )
+    .await
+    .expect("a guarded streaming probe must still write the 502");
+    drop(server);
+
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    let text = String::from_utf8_lossy(&out);
+    let (status_line, _body) = raw_http_status_and_body(&text);
+    assert!(
+        status_line.starts_with("HTTP/1.1 502"),
+        "a guarded streaming probe must write 502: {text}"
+    );
+    assert!(attempts.is_empty(), "no streaming attempt row may be produced while guarded");
+    assert!(
+        upstream_log.lock().unwrap().is_empty(),
+        "the guarded streaming probe must not reach the upstream"
+    );
+    assert_eq!(capture.status, 502);
+}
+
+/// AC-006 (probe clause) / REQ-004: a transport failed probe settled inside the
+/// resume grace refreshes only `disabled_at`; the counter, `last_error_at` and
+/// `disabled_reason` stay unchanged.
+#[tokio::test]
+async fn suppressed_failed_probe_refreshes_only_the_cooldown() {
+    let _home = isolated_temp_home("probe-grace-suppressed");
+    let dead_url = closed_port_base_url().await;
+    let now = probe_now();
+    let initial = now.saturating_sub(120);
+    let provider = probe_row_provider(
+        "probe-grace-sup",
+        &dead_url,
+        "probe-local-grace",
+        "probe-remote-grace",
+        Some(initial),
+    );
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed relay config");
+
+    let candidate = super::selection::find_probe_candidate(
+        std::slice::from_ref(&provider),
+        Some("probe-local-grace"),
+        UpstreamProtocol::ChatCompletions,
+        &[],
+        now,
+    )
+    .expect("the seeded row must be probe-eligible");
+
+    let body = serde_json::to_vec(&json!({"model": "probe-local-grace"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &[],
+        "/v1/chat/completions",
+        &body,
+        Some("probe-local-grace"),
+        &HashMap::new(),
+        true,
+        Some(&candidate),
+        &mut attempts,
+    )
+    .await;
+    assert_eq!(response.status, 502);
+
+    let row = stored_probe_row("probe-grace-sup");
+    assert!(row.auto_disabled, "a failed probe keeps the row auto-disabled");
+    let refreshed = row.disabled_at.expect("the cooldown must be re-armed");
+    assert!(
+        refreshed > initial,
+        "disabled_at must be refreshed even when the transport failure is suppressed"
+    );
+    assert_eq!(
+        row.consecutive_failures,
+        super::FAILURE_THRESHOLD,
+        "a suppressed failed probe must not change the counter"
+    );
+    assert_eq!(
+        row.last_error_at,
+        Some(initial),
+        "a suppressed failed probe must keep last_error_at"
+    );
+    assert_eq!(
+        row.disabled_reason.as_deref(),
+        Some("HTTP 500 upstream error"),
+        "a suppressed failed probe must keep the reason"
+    );
+}
+
+/// REQ-001: an unsuppressed transport failed probe refreshes the cooldown and
+/// the error details (`last_error_at` and `disabled_reason`) while the
+/// consecutive-failure counter stays unchanged by the re-arm.
+#[tokio::test]
+async fn unsuppressed_failed_probe_refreshes_the_cooldown_and_details() {
+    let _home = isolated_temp_home("probe-grace-unsuppressed");
+    let dead_url = closed_port_base_url().await;
+    let now = probe_now();
+    let initial = now.saturating_sub(120);
+    let provider = probe_row_provider(
+        "probe-grace-unsup",
+        &dead_url,
+        "probe-local-grace",
+        "probe-remote-grace",
+        Some(initial),
+    );
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed relay config");
+
+    let candidate = super::selection::find_probe_candidate(
+        std::slice::from_ref(&provider),
+        Some("probe-local-grace"),
+        UpstreamProtocol::ChatCompletions,
+        &[],
+        now,
+    )
+    .expect("the seeded row must be probe-eligible");
+
+    let body = serde_json::to_vec(&json!({"model": "probe-local-grace"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &[],
+        "/v1/chat/completions",
+        &body,
+        Some("probe-local-grace"),
+        &HashMap::new(),
+        false,
+        Some(&candidate),
+        &mut attempts,
+    )
+    .await;
+    assert_eq!(response.status, 502);
+
+    let row = stored_probe_row("probe-grace-unsup");
+    assert!(row.auto_disabled);
+    let refreshed = row.disabled_at.expect("the cooldown must be re-armed");
+    assert!(refreshed > initial, "disabled_at must be refreshed to the probe time");
+    assert_eq!(
+        row.consecutive_failures,
+        super::FAILURE_THRESHOLD,
+        "the re-arm must not change the counter even without suppression"
+    );
+    let last_error = row
+        .last_error_at
+        .expect("an unsuppressed failed probe must refresh last_error_at");
+    assert!(
+        last_error >= refreshed,
+        "last_error_at must be stamped at (or after) the probe time ({last_error} vs {refreshed})"
+    );
+    assert_ne!(
+        row.last_error_at,
+        Some(initial),
+        "last_error_at must move away from the pre-probe value"
+    );
+    let reason = row.disabled_reason.expect("the reason must be updated");
+    assert!(
+        reason.contains("network error"),
+        "the updated reason must describe the transport failure: {reason}"
+    );
 }
 
 
