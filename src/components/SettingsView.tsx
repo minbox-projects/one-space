@@ -1865,15 +1865,9 @@ export function SettingsView({
         const normalized = Number.isFinite(saved) ? Number(saved) : parsed;
         setSavedUsageRetentionDays(normalized);
         setUsageRetentionInput(String(normalized));
+        let savedMinutes: number;
         try {
-          await apiGatewayTemplateAutoRefreshSave(parsedMinutes);
-          const persisted = await apiGatewayTemplateAutoRefreshGet();
-          const normalizedMinutes = Number.isFinite(persisted)
-            ? Number(persisted)
-            : parsedMinutes;
-          setSavedTemplateAutoRefreshMinutes(normalizedMinutes);
-          setTemplateAutoRefreshInput(String(normalizedMinutes));
-          notifyTemplateAutoRefreshIntervalChanged();
+          savedMinutes = await apiGatewayTemplateAutoRefreshSave(parsedMinutes);
         } catch {
           setMessage({
             type: "error",
@@ -1884,6 +1878,23 @@ export function SettingsView({
           });
           return;
         }
+        const normalizedMinutes = Number.isFinite(savedMinutes)
+          ? Number(savedMinutes)
+          : parsedMinutes;
+        setSavedTemplateAutoRefreshMinutes(normalizedMinutes);
+        setTemplateAutoRefreshInput(String(normalizedMinutes));
+        try {
+          const persisted = await apiGatewayTemplateAutoRefreshGet();
+          if (Number.isFinite(persisted)) {
+            const reReadMinutes = Number(persisted);
+            setSavedTemplateAutoRefreshMinutes(reReadMinutes);
+            setTemplateAutoRefreshInput(String(reReadMinutes));
+          }
+        } catch {
+          // The save already persisted; tolerate a transient re-read failure and
+          // keep the value returned by the successful save.
+        }
+        notifyTemplateAutoRefreshIntervalChanged();
         setMessage({
           type: "success",
           text: t("currentSectionSavedSuccess", "Current section saved."),

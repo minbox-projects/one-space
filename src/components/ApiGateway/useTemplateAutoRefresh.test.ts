@@ -133,6 +133,7 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
     resetTauriMocks();
     clearTemplateSyncInFlight();
     clearTemplateAutoRefreshFailures();
+    window.localStorage.clear();
   });
 
   afterEach(() => {
@@ -270,6 +271,41 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
     expect(document.body.textContent ?? "").not.toContain("Auto refresh failed");
     expect(document.body.textContent ?? "").not.toContain("network down");
     expect(screen.queryByText("Action failed")).not.toBeInTheDocument();
+  });
+
+  it("failurePathPerformsNoPersistenceBeyondTheReadAndSyncCommands", async () => {
+    installInvoke({
+      interval: 10,
+      templates: [
+        makeView("t1", "https://one.test/models"),
+        makeView("t2", "https://two.test/models"),
+      ],
+      sync: (templateId) =>
+        templateId === "t1"
+          ? Promise.reject(new Error("network down"))
+          : {},
+    });
+
+    mountAutoRefresh();
+    await settle();
+    await settle(10 * 60_000);
+
+    expect(syncIds()).toEqual(["t1", "t2"]);
+
+    // 失败批次只能读取与同步，绝不能触发配置/服务商/模板的持久化命令。
+    const commands = new Set(
+      invokeMock.mock.calls.map(([command]) => String(command)),
+    );
+    expect([...commands].sort()).toEqual(
+      [
+        AUTO_REFRESH_GET_COMMAND,
+        PROVIDER_TEMPLATES_COMMAND,
+        SYNC_PROVIDER_TEMPLATE_COMMAND,
+      ].sort(),
+    );
+
+    // 失败状态仅存在于内存，不写入 localStorage。
+    expect(window.localStorage.length).toBe(0);
   });
 
   it("clearsFailuresOnTheNextSuccessfulBatchAndSupportsManualClear", async () => {

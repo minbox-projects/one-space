@@ -73,6 +73,8 @@ const baseStorageConfig = {
 describe("SettingsView", () => {
   let currentTemplateAutoRefreshMinutes = 60;
   let templateAutoRefreshSaveError: Error | null = null;
+  let failTemplateAutoRefreshGetAfterSave = false;
+  let templateAutoRefreshGetError: Error | null = null;
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -83,6 +85,8 @@ describe("SettingsView", () => {
     resetMessageMocks();
     currentTemplateAutoRefreshMinutes = 60;
     templateAutoRefreshSaveError = null;
+    failTemplateAutoRefreshGetAfterSave = false;
+    templateAutoRefreshGetError = null;
     await i18n.changeLanguage("en");
 
     let currentConfig = structuredClone(baseStorageConfig);
@@ -104,6 +108,9 @@ describe("SettingsView", () => {
         return currentRetention;
       }
       if (command === "api_gateway_template_auto_refresh_get") {
+        if (templateAutoRefreshGetError) {
+          throw templateAutoRefreshGetError;
+        }
         return currentTemplateAutoRefreshMinutes;
       }
       if (command === "api_gateway_template_auto_refresh_save") {
@@ -120,6 +127,11 @@ describe("SettingsView", () => {
           );
         }
         currentTemplateAutoRefreshMinutes = minutes;
+        if (failTemplateAutoRefreshGetAfterSave) {
+          templateAutoRefreshGetError = new Error(
+            "transient template auto refresh read failure",
+          );
+        }
         return currentTemplateAutoRefreshMinutes;
       }
       if (command === "save_storage_config") {
@@ -491,6 +503,41 @@ describe("SettingsView", () => {
     unsubscribe();
   });
 
+  it("shows success and keeps the saved value when the post-save re-read fails", async () => {
+    failTemplateAutoRefreshGetAfterSave = true;
+    currentTemplateAutoRefreshMinutes = 30;
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsView initialTab="ai-gateway" onBack={() => {}} />);
+
+    const input = await screen.findByLabelText(
+      "Template auto refresh minutes",
+    );
+    await waitFor(() => expect(input).toHaveValue(30));
+
+    await user.clear(input);
+    await user.type(input, "60");
+    await user.click(
+      screen.getByRole("button", { name: /Save Settings|保存设置/ }),
+    );
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "api_gateway_template_auto_refresh_save",
+        { minutes: 60 },
+      ),
+    );
+
+    expect(
+      await screen.findByText(/Current section saved\.|当前菜单已保存。/),
+    ).toBeInTheDocument();
+    expect(input).toHaveValue(60);
+    expect(
+      screen.queryByText(
+        /Template auto refresh minutes must be 0 \(disabled\) or between 10 and 1440/,
+      ),
+    ).not.toBeInTheDocument();
+  });
+
   it("blocks 5 and an empty value, never saving and showing the localized range message", async () => {
     currentTemplateAutoRefreshMinutes = 30;
     const user = userEvent.setup();
@@ -531,6 +578,40 @@ describe("SettingsView", () => {
       expect.anything(),
     );
   });
+
+  it.each(["10.5", "-1"])(
+    "blocks the non-whole/negative interval %s, never saving and showing the localized range message",
+    async (value) => {
+      currentTemplateAutoRefreshMinutes = 30;
+      const user = userEvent.setup();
+      renderWithProviders(
+        <SettingsView initialTab="ai-gateway" onBack={() => {}} />,
+      );
+
+      const input = await screen.findByLabelText(
+        "Template auto refresh minutes",
+      );
+      await waitFor(() => expect(input).toHaveValue(30));
+      const saveButton = screen.getByRole("button", {
+        name: /Save Settings|保存设置/,
+      });
+
+      await user.clear(input);
+      await user.type(input, value);
+      expect(input).toHaveValue(Number(value));
+      await user.click(saveButton);
+
+      expect(
+        await screen.findByText(
+          /Template auto refresh minutes must be 0 \(disabled\) or between 10 and 1440/,
+        ),
+      ).toBeInTheDocument();
+      expect(invokeMock).not.toHaveBeenCalledWith(
+        "api_gateway_template_auto_refresh_save",
+        expect.anything(),
+      );
+    },
+  );
 
   it("maps a backend rejection to the localized message instead of the raw error", async () => {
     currentTemplateAutoRefreshMinutes = 30;
@@ -578,5 +659,39 @@ describe("SettingsView", () => {
     expect(zhInvalid.trim()).not.toBe("");
     expect(zhLabel).not.toBe(enLabel);
     expect(zhInvalid).not.toBe(enInvalid);
+  });
+
+  it("renders the interval input and invalid message in Chinese without key fallback", async () => {
+    await i18n.changeLanguage("zh");
+    try {
+      const zhLabel = i18n.t("apiGatewayTemplateAutoRefreshLabel");
+      const zhInvalid = i18n.t("apiGatewayTemplateAutoRefreshInvalid");
+
+      currentTemplateAutoRefreshMinutes = 30;
+      const user = userEvent.setup();
+      renderWithProviders(
+        <SettingsView initialTab="ai-gateway" onBack={() => {}} />,
+      );
+
+      const input = await screen.findByLabelText(zhLabel);
+      await waitFor(() => expect(input).toHaveValue(30));
+
+      await user.clear(input);
+      await user.type(input, "5");
+      await user.click(
+        screen.getByRole("button", { name: /Save Settings|保存设置/ }),
+      );
+
+      expect(await screen.findByText(zhInvalid)).toBeInTheDocument();
+      // 中文渲染不得回退到键名，也不得泄露原始错误串。
+      expect(
+        screen.queryByText("apiGatewayTemplateAutoRefreshLabel"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("apiGatewayTemplateAutoRefreshInvalid"),
+      ).not.toBeInTheDocument();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
   });
 });

@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-18-api-gateway-provider-templates.md
-2026-09-18-api-gateway-provider-templates.md: 8d8a972594d4ef7e15b0cce9174d259b3fe89671
-2026-09-18-api-gateway-provider-templates.zh.md: d6306e90bbf6d0b341ebaaf7235b5d6a917054b1
+2026-09-18-api-gateway-provider-templates.md: 628358b3dc04e4f9c6558c309caf856d3152dacf
+2026-09-18-api-gateway-provider-templates.zh.md: 4d03fefb930c2b382b53135aee232715579bb957

@@ -90,6 +90,22 @@ pub(in crate::api_gateway) fn normalize_template_auto_refresh_minutes(minutes: u
     }
 }
 
+/// Read a persisted template auto-refresh interval tolerantly: values that are
+/// not a plain non-negative JSON integer (null, strings, fractions, negatives
+/// or numbers beyond `u32`) read as the default instead of failing the whole
+/// config, while integers are normalized like any other stored value.
+fn deserialize_template_auto_refresh_minutes<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = serde_json::Value::deserialize(deserializer)?;
+    Ok(raw
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .map(normalize_template_auto_refresh_minutes)
+        .unwrap_or(DEFAULT_TEMPLATE_AUTO_REFRESH_MINUTES))
+}
+
 pub(in crate::api_gateway) fn default_provider_weight() -> u32 {
     1
 }
@@ -543,7 +559,10 @@ pub struct GatewayConfig {
     /// disables the schedule. `#[serde(default = ...)]` keeps older
     /// `api_gateway.json` files readable without migration and the value is
     /// always serialized.
-    #[serde(default = "default_template_auto_refresh_minutes")]
+    #[serde(
+        default = "default_template_auto_refresh_minutes",
+        deserialize_with = "deserialize_template_auto_refresh_minutes"
+    )]
     pub template_auto_refresh_minutes: u32,
 }
 

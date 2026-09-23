@@ -12089,6 +12089,73 @@ fn template_auto_refresh_get_keeps_zero_and_bounds_and_normalizes_other_stored_v
     });
 }
 
+/// Base config JSON with `template_auto_refresh_minutes` set to any raw JSON
+/// value, so a test can seed a wrong-typed stored interval that a strict `u32`
+/// deserializer would reject.
+fn config_json_with_raw_template_interval(interval: Value) -> Value {
+    let mut value = json!({
+        "enabled": false,
+        "port": 17688,
+        "providers": [],
+        "keys": [],
+        "default_key_id": null,
+        "terminal_syncs": []
+    });
+    value["template_auto_refresh_minutes"] = interval;
+    value
+}
+
+/// REQ-002 / AC-002: a stored interval carrying the wrong JSON type or an
+/// out-of-`u32` number must not fail the whole config read. It normalizes to 60,
+/// the public get command reports 60, and reading never rewrites the file.
+#[test]
+fn template_auto_refresh_stored_type_invalid_values_read_as_sixty_without_rewriting() {
+    with_temp_home("template-auto-refresh-type-invalid", |_home| {
+        for bad in [json!(-5), json!(10.5), json!("60"), json!(4_294_967_296u64)] {
+            seed_encrypted_config(&config_json_with_raw_template_interval(bad.clone()));
+            let bytes_before =
+                fs::read(config_path().expect("config path")).expect("read raw config");
+
+            let loaded = super::storage::read_config().expect(
+                "a type-invalid stored interval must not fail the whole config read",
+            );
+            assert_eq!(
+                loaded.template_auto_refresh_minutes, 60,
+                "type-invalid stored interval {bad} must normalize to 60"
+            );
+            assert_eq!(
+                super::commands::api_gateway_template_auto_refresh_get()
+                    .expect("get must succeed for a type-invalid stored interval"),
+                60,
+                "get must report 60 for type-invalid stored interval {bad}"
+            );
+            assert_eq!(
+                fs::read(config_path().expect("config path")).expect("read raw config"),
+                bytes_before,
+                "reading a type-invalid stored interval must not rewrite the file: {bad}"
+            );
+        }
+    });
+}
+
+/// REQ-002 / AC-002: the raw in-range values 0, 10 and 1440 still read back
+/// unchanged after the type-robustness repair.
+#[test]
+fn template_auto_refresh_stored_in_range_values_read_unchanged() {
+    with_temp_home("template-auto-refresh-raw-in-range", |_home| {
+        for stored in [json!(0u32), json!(10u32), json!(1440u32)] {
+            let expected = stored.as_u64().expect("in-range JSON number") as u32;
+            seed_encrypted_config(&config_json_with_raw_template_interval(stored));
+            let loaded =
+                super::storage::read_config().expect("an in-range stored interval must read");
+            assert_eq!(
+                loaded.template_auto_refresh_minutes, expected,
+                "stored {expected} must read unchanged"
+            );
+        }
+    });
+}
+
 /// AC-002 / REQ-002: an out-of-range save is rejected with an actionable error
 /// naming the accepted values, and neither the stored interval nor any other
 /// config field is rewritten.
