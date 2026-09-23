@@ -1927,14 +1927,10 @@ export function SettingsView({
           main: config.main_shortcut,
           quick: config.quick_ai_shortcut,
         });
-      }
-
-      if (
-        activeTab === "appearance" &&
-        config.language &&
-        config.language !== baseConfig.language
-      ) {
-        await invoke("update_tray_menu", { lang: config.language });
+        await emit("tray-shortcuts-updated", {
+          main: config.main_shortcut,
+          quick: config.quick_ai_shortcut,
+        }).catch(console.error);
       }
 
       if (activeTab === "ai") {

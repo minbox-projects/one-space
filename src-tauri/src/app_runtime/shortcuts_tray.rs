@@ -1,9 +1,6 @@
 use super::toggle_main_window;
-use crate::ssh_tunnels;
-use serde::Serialize;
 use std::str::FromStr;
-use tauri::menu::{Menu, MenuItem};
-use tauri::{Emitter, Manager, WebviewUrl};
+use tauri::{Manager, WebviewUrl};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 #[tauri::command]
@@ -47,6 +44,37 @@ mod tests {
         assert!(script.contains("if [ $STATUS -eq 0 ]; then"));
         assert!(script.contains(r#"echo "Claude profile not found: $PROFILE_ID" >&2"#));
     }
+
+    #[test]
+    fn fallback_tray_labels_cover_both_languages_and_unknown_ids() {
+        assert_eq!(
+            super::get_fallback_tray_label("zh", "toggle"),
+            "显示/隐藏 OneSpace"
+        );
+        assert_eq!(
+            super::get_fallback_tray_label("zh", "quit"),
+            "退出 OneSpace"
+        );
+        assert_eq!(
+            super::get_fallback_tray_label("en", "toggle"),
+            "Show/Hide OneSpace"
+        );
+        assert_eq!(
+            super::get_fallback_tray_label("en", "quit"),
+            "Quit OneSpace"
+        );
+        // "any other language" falls back to the English bootstrap labels.
+        assert_eq!(
+            super::get_fallback_tray_label("fr", "toggle"),
+            "Show/Hide OneSpace"
+        );
+        assert_eq!(
+            super::get_fallback_tray_label("fr", "quit"),
+            "Quit OneSpace"
+        );
+        assert_eq!(super::get_fallback_tray_label("zh", "unknown-id"), "");
+        assert_eq!(super::get_fallback_tray_label("en", "unknown-id"), "");
+    }
 }
 
 #[tauri::command]
@@ -67,14 +95,19 @@ pub(super) fn update_shortcuts(
     if let Ok(s) = Shortcut::from_str(&quick) {
         let _ = gs.on_shortcut(s, move |app, _, event| {
             if event.state() == ShortcutState::Pressed {
-                toggle_quick_ai_window(app);
+                toggle_quick_ai_window_internal(&app);
             }
         });
     }
     Ok(())
 }
 
-pub(super) fn toggle_quick_ai_window(app: &tauri::AppHandle) {
+#[tauri::command]
+pub(super) fn toggle_quick_ai_window(app: tauri::AppHandle) {
+    toggle_quick_ai_window_internal(&app);
+}
+
+pub(super) fn toggle_quick_ai_window_internal(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("quick-ai") {
         if window.is_visible().unwrap_or(false) {
             let _ = window.hide();
@@ -177,166 +210,30 @@ pub(super) fn toggle_selection_assistant_window(app: &tauri::AppHandle) {
 }
 
 use tauri_plugin_global_shortcut::ShortcutState;
-pub(super) fn get_tray_label(lang: &str, id: &str) -> &'static str {
+
+pub(super) fn get_fallback_tray_label(lang: &str, id: &str) -> &'static str {
     match lang {
         "zh" => match id {
-            "show" => "显示窗口",
-            "quick" => "快速 AI 会话",
-            "search" => "全局搜索",
-            "launcher" => "启动台",
-            "sessions" => "AI 会话",
-            "environments" => "AI 环境",
-            "notes" => "笔记",
-            "snippets" => "代码片段",
-            "settings" => "设置",
-            "sync" => "立即同步",
-            "quit" => "退出",
+            "toggle" => "显示/隐藏 OneSpace",
+            "quit" => "退出 OneSpace",
             _ => "",
         },
         _ => match id {
-            "show" => "Show Window",
-            "quick" => "Quick AI Session",
-            "search" => "Global Search",
-            "launcher" => "Launcher",
-            "sessions" => "AI Sessions",
-            "environments" => "AI Environments",
-            "notes" => "Notes",
-            "snippets" => "Snippets",
-            "settings" => "Settings",
-            "sync" => "Sync Now",
-            "quit" => "Quit",
+            "toggle" => "Show/Hide OneSpace",
+            "quit" => "Quit OneSpace",
             _ => "",
         },
     }
 }
 
-#[derive(Clone, Serialize)]
-pub(super) struct TrayActionPayload {
-    action: &'static str,
-    target: &'static str,
-}
-
-pub(super) fn emit_tray_action(app: &tauri::AppHandle, target: &'static str) {
-    let payload = TrayActionPayload {
-        action: "navigate",
-        target,
-    };
-    let _ = app.emit("tray-action", payload);
-}
-
-pub(super) fn create_tray_menu<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    lang: &str,
-) -> tauri::Result<Menu<R>> {
-    let show_i = MenuItem::with_id(
-        app,
-        "show",
-        get_tray_label(lang, "show"),
-        true,
-        None::<&str>,
-    )?;
-    let quick_i = MenuItem::with_id(
-        app,
-        "quick",
-        get_tray_label(lang, "quick"),
-        true,
-        None::<&str>,
-    )?;
-    let search_i = MenuItem::with_id(
-        app,
-        "search",
-        get_tray_label(lang, "search"),
-        true,
-        None::<&str>,
-    )?;
-    let launcher_i = MenuItem::with_id(
-        app,
-        "launcher",
-        get_tray_label(lang, "launcher"),
-        true,
-        None::<&str>,
-    )?;
-    let sessions_i = MenuItem::with_id(
-        app,
-        "sessions",
-        get_tray_label(lang, "sessions"),
-        true,
-        None::<&str>,
-    )?;
-    let environments_i = MenuItem::with_id(
-        app,
-        "environments",
-        get_tray_label(lang, "environments"),
-        true,
-        None::<&str>,
-    )?;
-    let notes_i = MenuItem::with_id(
-        app,
-        "notes",
-        get_tray_label(lang, "notes"),
-        true,
-        None::<&str>,
-    )?;
-    let snippets_i = MenuItem::with_id(
-        app,
-        "snippets",
-        get_tray_label(lang, "snippets"),
-        true,
-        None::<&str>,
-    )?;
-    let sync_i = MenuItem::with_id(
-        app,
-        "sync",
-        get_tray_label(lang, "sync"),
-        true,
-        None::<&str>,
-    )?;
-    let settings_i = MenuItem::with_id(
-        app,
-        "settings",
-        get_tray_label(lang, "settings"),
-        true,
-        None::<&str>,
-    )?;
-    let quit_i = MenuItem::with_id(
-        app,
-        "quit",
-        get_tray_label(lang, "quit"),
-        true,
-        None::<&str>,
-    )?;
-    Menu::with_items(
-        app,
-        &[
-            &show_i,
-            &quick_i,
-            &search_i,
-            &tauri::menu::PredefinedMenuItem::separator(app)?,
-            &launcher_i,
-            &sessions_i,
-            &environments_i,
-            &notes_i,
-            &snippets_i,
-            &tauri::menu::PredefinedMenuItem::separator(app)?,
-            &sync_i,
-            &settings_i,
-            &tauri::menu::PredefinedMenuItem::separator(app)?,
-            &quit_i,
-        ],
-    )
+pub(super) fn shutdown_runtime_services() {
+    crate::file_sharing::request_shutdown();
+    let _ = crate::ssh_tunnels::shutdown_runtime();
 }
 
 #[tauri::command]
 pub(super) fn quit_app(app: tauri::AppHandle) {
-    let _ = ssh_tunnels::shutdown_runtime();
+    shutdown_runtime_services();
     app.exit(0);
 }
 
-#[tauri::command]
-pub(super) fn update_tray_menu(app: tauri::AppHandle, lang: String) -> Result<(), String> {
-    let menu = create_tray_menu(&app, &lang).map_err(|e| e.to_string())?;
-    if let Some(tray) = app.tray_by_id("main") {
-        let _ = tray.set_menu(Some(menu));
-    }
-    Ok(())
-}

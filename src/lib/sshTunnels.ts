@@ -54,3 +54,11 @@ export function sshTunnelGroupConnect<T>(groupId: string) {
 export function sshTunnelGroupDisconnect<T>(groupId: string) {
   return invokeTyped<T>("ssh_tunnel_group_disconnect", { groupId });
 }
+
+export function sshTunnelsConnectAll<T>() {
+  return invokeTyped<T>("ssh_tunnels_connect_all");
+}
+
+export function sshTunnelsDisconnectAll<T>() {
+  return invokeTyped<T>("ssh_tunnels_disconnect_all");
+}

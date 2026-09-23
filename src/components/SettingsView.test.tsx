@@ -133,7 +133,7 @@ describe("SettingsView", () => {
       if (command === "save_shared_profile") {
         return null;
       }
-      if (command === "update_tray_menu" || command === "update_shortcuts") {
+      if (command === "update_shortcuts") {
         return null;
       }
       throw new Error(`Unhandled command: ${command}`);

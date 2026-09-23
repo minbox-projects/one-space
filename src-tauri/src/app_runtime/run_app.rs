@@ -5,14 +5,15 @@ use crate::{
     ssh_tunnels, storage, subagents, version_detect, workflows, workspaces,
 };
 use std::str::FromStr;
-use tauri::tray::TrayIconBuilder;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use super::{
-    cli, create_tray_menu, emit_tray_action, handle_internal_cli_command, oauth_open,
-    runtime_services, setup_proxy_monitor, setup_sessions_history_sync_service, shortcuts_tray,
-    ssh_oauth, toggle_main_window, toggle_quick_ai_window, windows_data,
+    cli, handle_internal_cli_command, oauth_open, runtime_services, setup_proxy_monitor,
+    setup_sessions_history_sync_service, shortcuts_tray, ssh_oauth, toggle_main_window,
+    windows_data,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -31,6 +32,7 @@ pub fn run() {
                         .app_handle()
                         .set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
+                windows_data::emit_main_window_visibility(window.app_handle());
             }
         })
         .setup(|app| {
@@ -38,52 +40,41 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
             let cfg = config::get_config().unwrap_or_default();
             let lang = cfg.language.unwrap_or_else(|| "zh".to_string());
-            let menu = create_tray_menu(app.handle(), &lang)?;
+            let toggle_i = MenuItem::with_id(
+                app,
+                "toggle",
+                shortcuts_tray::get_fallback_tray_label(&lang, "toggle"),
+                true,
+                None::<&str>,
+            )?;
+            let quit_i = MenuItem::with_id(
+                app,
+                "quit",
+                shortcuts_tray::get_fallback_tray_label(&lang, "quit"),
+                true,
+                None::<&str>,
+            )?;
+            let menu = Menu::with_items(app, &[&toggle_i, &quit_i])?;
             let _tray = TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
-                .show_menu_on_left_click(true)
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        windows_data::toggle_main_window(tray.app_handle().clone());
+                    }
+                })
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        windows_data::show_main_window(app.clone());
-                    }
-                    "quick" => {
-                        toggle_quick_ai_window(app);
-                    }
-                    "search" => {
-                        windows_data::show_main_window(app.clone());
-                        emit_tray_action(app, "omni-search");
-                    }
-                    "launcher" => {
-                        windows_data::show_main_window(app.clone());
-                        emit_tray_action(app, "launcher");
-                    }
-                    "sessions" => {
-                        windows_data::show_main_window(app.clone());
-                        emit_tray_action(app, "ai-sessions");
-                    }
-                    "environments" => {
-                        windows_data::show_main_window(app.clone());
-                        emit_tray_action(app, "ai-environments");
-                    }
-                    "notes" => {
-                        windows_data::show_main_window(app.clone());
-                        emit_tray_action(app, "notes");
-                    }
-                    "snippets" => {
-                        windows_data::show_main_window(app.clone());
-                        emit_tray_action(app, "snippets");
-                    }
-                    "sync" => {
-                        let _ = app.emit("trigger-sync", ());
-                    }
-                    "settings" => {
-                        windows_data::show_main_window(app.clone());
-                        emit_tray_action(app, "settings");
+                    "toggle" => {
+                        windows_data::toggle_main_window(app.clone());
                     }
                     "quit" => {
-                        file_sharing::request_shutdown();
-                        let _ = ssh_tunnels::shutdown_runtime();
+                        shortcuts_tray::shutdown_runtime_services();
                         app.exit(0);
                     }
                     _ => {}
@@ -104,7 +95,7 @@ pub fn run() {
             if let Ok(s) = Shortcut::from_str(&quick_s) {
                 let _ = gs.on_shortcut(s, move |app, _, event| {
                     if event.state() == ShortcutState::Pressed {
-                        toggle_quick_ai_window(app);
+                        shortcuts_tray::toggle_quick_ai_window_internal(&app);
                     }
                 });
             }
@@ -172,6 +163,8 @@ pub fn run() {
             ssh_tunnels::ssh_tunnel_disconnect,
             ssh_tunnels::ssh_tunnel_group_connect,
             ssh_tunnels::ssh_tunnel_group_disconnect,
+            ssh_tunnels::ssh_tunnels_connect_all,
+            ssh_tunnels::ssh_tunnels_disconnect_all,
             ssh_tunnels::ssh_tunnel_probe_draft,
             ssh_tunnels::ssh_tunnel_probe_saved,
             ssh_tunnels::ssh_tunnels_refresh_status,
@@ -243,7 +236,7 @@ pub fn run() {
             short_link::short_link_delete_token,
             short_link::short_link_create,
             shortcuts_tray::update_shortcuts,
-            shortcuts_tray::update_tray_menu,
+            shortcuts_tray::toggle_quick_ai_window,
             windows_data::hide_window,
             windows_data::hide_quick_ai_window,
             windows_data::show_quick_assistant_window,
@@ -498,8 +491,7 @@ pub fn run() {
                 windows_data::show_main_window(app_handle.clone());
             }
             tauri::RunEvent::Exit => {
-                file_sharing::request_shutdown();
-                let _ = ssh_tunnels::shutdown_runtime();
+                shortcuts_tray::shutdown_runtime_services();
             }
             _ => {}
         });
@@ -508,6 +500,53 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     const RUN_APP_SOURCE: &str = include_str!("run_app.rs");
+    const SHORTCUTS_TRAY_SOURCE: &str = include_str!("shortcuts_tray.rs");
+    const WINDOWS_DATA_SOURCE: &str = include_str!("windows_data.rs");
+
+    /// Production portion of an owned source file, excluding its `#[cfg(test)]`
+    /// module so the assertions cannot match their own string literals.
+    fn production_source(source: &str) -> &str {
+        source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .unwrap_or(source)
+    }
+
+    /// The tray builder chain from its construction up to the `.build(app)` call.
+    fn tray_builder_block(source: &str) -> &str {
+        source
+            .split_once("TrayIconBuilder::")
+            .expect("main tray builder construction")
+            .1
+            .split_once(".build(app)")
+            .expect("tray builder build call")
+            .0
+    }
+
+    /// Extracts a whole function (signature through closing brace) by brace matching.
+    fn extract_function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+        let start = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("missing function signature: {}", signature));
+        let open = source[start..]
+            .find('{')
+            .map(|offset| start + offset)
+            .unwrap_or_else(|| panic!("missing opening brace for: {}", signature));
+        let mut depth = 0usize;
+        for (offset, ch) in source[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[start..open + offset + 1];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces for: {}", signature);
+    }
 
     #[test]
     fn protocol_router_lifecycle_and_command_block_remain_isolated() {
@@ -541,5 +580,156 @@ mod tests {
             .expect("Protocol Router command block end")
             .0;
         assert_eq!(protocol_block.matches("protocol_router::").count(), 9);
+    }
+
+    #[test]
+    fn tray_disables_left_click_menu_and_toggles_only_on_left_button_up() {
+        let run_app = production_source(RUN_APP_SOURCE);
+        assert_eq!(
+            run_app.matches("show_menu_on_left_click(false)").count(),
+            1,
+            "the tray must set show_menu_on_left_click(false) exactly once"
+        );
+        assert!(
+            !run_app.contains("show_menu_on_left_click(true)"),
+            "a left click must never open the native menu"
+        );
+
+        let tray_block = tray_builder_block(run_app);
+        assert!(
+            tray_block.contains("TrayIconEvent::Click"),
+            "the tray toggle must be bound to TrayIconEvent::Click"
+        );
+        assert!(
+            tray_block.contains("MouseButton::Left"),
+            "the tray toggle must be bound to MouseButton::Left"
+        );
+        assert!(
+            tray_block.contains("MouseButtonState::Up"),
+            "the tray toggle must react to MouseButtonState::Up"
+        );
+        assert!(
+            tray_block.contains("toggle_main_window"),
+            "a left click must toggle the main window"
+        );
+        assert!(
+            !tray_block.contains("MouseButtonState::Down"),
+            "reacting to button Down as well would double-toggle the window"
+        );
+    }
+
+    #[test]
+    fn removed_tray_symbols_are_absent_from_the_app_runtime_sources() {
+        let run_app = production_source(RUN_APP_SOURCE);
+        let sources = [
+            ("run_app.rs", run_app),
+            ("shortcuts_tray.rs", SHORTCUTS_TRAY_SOURCE),
+            ("windows_data.rs", WINDOWS_DATA_SOURCE),
+        ];
+        let removed = [
+            "update_tray_menu",
+            "emit_tray_action",
+            "TrayActionPayload",
+            "tray-action",
+            "get_tray_label",
+        ];
+        for (file, source) in sources {
+            for symbol in removed {
+                assert!(
+                    !source.contains(symbol),
+                    "{} must not contain the removed tray symbol `{}`",
+                    file,
+                    symbol
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn invoke_handler_registers_the_tray_toggle_and_ssh_batch_commands() {
+        let run_app = production_source(RUN_APP_SOURCE);
+        let invoke_block = run_app
+            .split_once(".invoke_handler")
+            .expect("invoke handler marker")
+            .1
+            .split_once(".build(tauri::generate_context!())")
+            .expect("invoke handler end")
+            .0;
+        assert!(
+            invoke_block.contains("shortcuts_tray::toggle_quick_ai_window"),
+            "the invoke handler must register shortcuts_tray::toggle_quick_ai_window"
+        );
+        assert!(
+            invoke_block.contains("ssh_tunnels::ssh_tunnels_connect_all"),
+            "the invoke handler must register ssh_tunnels::ssh_tunnels_connect_all"
+        );
+        assert!(
+            invoke_block.contains("ssh_tunnels::ssh_tunnels_disconnect_all"),
+            "the invoke handler must register ssh_tunnels::ssh_tunnels_disconnect_all"
+        );
+    }
+
+    #[test]
+    fn shutdown_helper_is_used_by_the_tray_quit_quit_app_and_exit_paths() {
+        let run_app = production_source(RUN_APP_SOURCE);
+        let tray_block = tray_builder_block(run_app);
+        assert!(
+            tray_block.contains("shutdown_runtime_services"),
+            "the tray Quit arm must call shutdown_runtime_services"
+        );
+
+        let exit_block = run_app
+            .split_once("tauri::RunEvent::Exit")
+            .expect("RunEvent::Exit arm")
+            .1;
+        assert!(
+            exit_block.contains("shutdown_runtime_services"),
+            "RunEvent::Exit must call shutdown_runtime_services"
+        );
+
+        let quit_app_block: String = SHORTCUTS_TRAY_SOURCE
+            .split_once("fn quit_app")
+            .expect("quit_app command")
+            .1
+            .chars()
+            .take(400)
+            .collect();
+        assert!(
+            quit_app_block.contains("shutdown_runtime_services"),
+            "the quit_app command must call shutdown_runtime_services"
+        );
+    }
+
+    #[test]
+    fn main_window_visibility_event_is_emitted_from_every_transition() {
+        for signature in [
+            "fn show_main_window",
+            "fn toggle_main_window",
+            "fn hide_window",
+        ] {
+            let body = extract_function_body(WINDOWS_DATA_SOURCE, signature);
+            assert!(
+                body.contains("emit_main_window_visibility"),
+                "{} must call emit_main_window_visibility",
+                signature
+            );
+        }
+
+        let run_app = production_source(RUN_APP_SOURCE);
+        let close_block = run_app
+            .split_once(".on_window_event")
+            .expect("window event handler")
+            .1
+            .split_once(".setup(")
+            .expect("setup handler")
+            .0;
+        assert!(
+            close_block.contains("WindowEvent::CloseRequested"),
+            "the close handling must be bound to WindowEvent::CloseRequested"
+        );
+        assert!(
+            close_block.contains("emit_main_window_visibility"),
+            "the main-window close-request handler must call emit_main_window_visibility"
+        );
     }
 }

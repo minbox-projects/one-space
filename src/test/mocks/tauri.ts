@@ -21,13 +21,19 @@ function invokeCommandMock(command: string, args?: Record<string, unknown>) {
 }
 
 export const invokeMock = vi.fn(invokeCommandMock);
-export const listenMock = vi.fn(async () => vi.fn());
+type ListenSignature = (
+  eventName: string,
+  handler: (event: { payload?: unknown }) => unknown,
+) => Promise<() => void>;
+export const listenMock = vi.fn<ListenSignature>(async () => vi.fn());
 export const emitMock = vi.fn(async () => undefined);
 export const dialogOpenMock = vi.fn();
 export const dialogSaveMock = vi.fn();
 export const startDraggingMock = vi.fn(async () => undefined);
+export const isVisibleMock = vi.fn(async () => true);
 export const getCurrentWindowMock = vi.fn(() => ({
   startDragging: startDraggingMock,
+  isVisible: isVisibleMock,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -66,8 +72,11 @@ export function resetTauriMocks() {
   dialogSaveMock.mockReset();
   startDraggingMock.mockReset();
   startDraggingMock.mockResolvedValue(undefined);
+  isVisibleMock.mockReset();
+  isVisibleMock.mockResolvedValue(true);
   getCurrentWindowMock.mockReset();
   getCurrentWindowMock.mockReturnValue({
     startDragging: startDraggingMock,
+    isVisible: isVisibleMock,
   });
 }
