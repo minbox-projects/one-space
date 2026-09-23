@@ -1929,14 +1929,6 @@ export function SettingsView({
         });
       }
 
-      if (
-        activeTab === "appearance" &&
-        config.language &&
-        config.language !== baseConfig.language
-      ) {
-        await invoke("update_tray_menu", { lang: config.language });
-      }
-
       if (activeTab === "ai") {
         await emit("refresh-counts").catch(console.error);
       }

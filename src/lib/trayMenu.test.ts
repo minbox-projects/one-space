@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import {
   buildTrayMenuModel,
@@ -6,8 +6,50 @@ import {
   type TrayMenuNode,
   type TrayMenuState,
 } from "@/lib/trayMenu";
+import * as trayMenuModule from "@/lib/trayMenu";
 
 type ItemNode = Extract<TrayMenuNode, { kind: "item" }>;
+
+type ApplyTrayMenu = (
+  model: TrayMenuNode[],
+  onAction: (id: string) => void,
+) => Promise<boolean>;
+
+/** `applyTrayMenu` is the delivery contract; it does not exist before the applier lands. */
+const applyTrayMenu = (
+  trayMenuModule as unknown as { applyTrayMenu: ApplyTrayMenu }
+).applyTrayMenu;
+
+const nativeMenuMocks = vi.hoisted(() => {
+  const menuNew = vi.fn();
+  const menuItemNew = vi.fn();
+  const checkMenuItemNew = vi.fn();
+  const submenuNew = vi.fn();
+  const predefinedMenuItemNew = vi.fn();
+  const trayGetById = vi.fn();
+  const traySetMenu = vi.fn();
+  return {
+    menuNew,
+    menuItemNew,
+    checkMenuItemNew,
+    submenuNew,
+    predefinedMenuItemNew,
+    trayGetById,
+    traySetMenu,
+  };
+});
+
+vi.mock("@tauri-apps/api/menu", () => ({
+  Menu: { new: nativeMenuMocks.menuNew },
+  MenuItem: { new: nativeMenuMocks.menuItemNew },
+  CheckMenuItem: { new: nativeMenuMocks.checkMenuItemNew },
+  Submenu: { new: nativeMenuMocks.submenuNew },
+  PredefinedMenuItem: { new: nativeMenuMocks.predefinedMenuItemNew },
+}));
+
+vi.mock("@tauri-apps/api/tray", () => ({
+  TrayIcon: { getById: nativeMenuMocks.trayGetById },
+}));
 
 /** Wording-independent translator: every label is just its key. */
 const KEY_TRANSLATOR = (key: string) => key;
@@ -325,5 +367,149 @@ describe("bilingual labels", () => {
       expect(enLabel.length, `${id} en label should be non-empty`).toBeGreaterThan(0);
       expect(zhLabel, `${id} label should differ between zh and en`).not.toBe(enLabel);
     }
+  });
+});
+
+type NativeItemOptions = {
+  id?: string;
+  text?: string;
+  enabled?: boolean;
+  checked?: boolean;
+  accelerator?: string;
+  action?: (id: string) => void;
+  items?: unknown[];
+};
+
+/** Every option object handed to a native item constructor, tagged with its native kind. */
+function createdNativeItems(): Array<NativeItemOptions & { kind: string }> {
+  const created: Array<NativeItemOptions & { kind: string }> = [];
+  for (const call of nativeMenuMocks.menuItemNew.mock.calls) {
+    created.push({ kind: "MenuItem", ...(call[0] as NativeItemOptions) });
+  }
+  for (const call of nativeMenuMocks.checkMenuItemNew.mock.calls) {
+    created.push({ kind: "CheckMenuItem", ...(call[0] as NativeItemOptions) });
+  }
+  for (const call of nativeMenuMocks.submenuNew.mock.calls) {
+    created.push({ kind: "Submenu", ...(call[0] as NativeItemOptions) });
+  }
+  return created;
+}
+
+function nativeItemById(id: string) {
+  return createdNativeItems().find((item) => item.id === id);
+}
+
+describe("applyTrayMenu native menu", () => {
+  beforeEach(() => {
+    nativeMenuMocks.menuNew.mockReset().mockResolvedValue({ native: "menu" });
+    nativeMenuMocks.menuItemNew
+      .mockReset()
+      .mockImplementation(async (options: NativeItemOptions) => ({
+        kind: "MenuItem",
+        ...options,
+      }));
+    nativeMenuMocks.checkMenuItemNew
+      .mockReset()
+      .mockImplementation(async (options: NativeItemOptions) => ({
+        kind: "CheckMenuItem",
+        ...options,
+      }));
+    nativeMenuMocks.submenuNew
+      .mockReset()
+      .mockImplementation(async (options: NativeItemOptions) => ({
+        kind: "Submenu",
+        ...options,
+      }));
+    nativeMenuMocks.predefinedMenuItemNew
+      .mockReset()
+      .mockResolvedValue({ kind: "PredefinedMenuItem" });
+    nativeMenuMocks.trayGetById.mockReset().mockResolvedValue({
+      id: "main",
+      setMenu: nativeMenuMocks.traySetMenu,
+    });
+    nativeMenuMocks.traySetMenu.mockReset().mockResolvedValue(undefined);
+  });
+
+  it("maps model node kinds with ids, labels, enabled and checked", async () => {
+    const model = build({
+      windowVisible: true,
+      gateway: { running: true, port: 17688 },
+      router: { running: false, port: 17689 },
+      tunnels: { connected: 2, total: 5 },
+      sharing: { running: true, fileCount: 3 },
+    });
+
+    await expect(applyTrayMenu(model, vi.fn())).resolves.toBe(true);
+
+    const toggle = nativeItemById("toggle-window");
+    expect(toggle).toMatchObject({ kind: "MenuItem", enabled: true });
+    expect(toggle?.text).toBe(itemById(model, "toggle-window").label);
+    expect(toggle?.checked).toBeUndefined();
+
+    expect(nativeItemById("gateway")).toMatchObject({
+      kind: "CheckMenuItem",
+      checked: true,
+    });
+    expect(nativeItemById("router")).toMatchObject({
+      kind: "CheckMenuItem",
+      checked: false,
+    });
+    expect(nativeItemById("more-pages")).toMatchObject({ kind: "Submenu" });
+    expect(nativeItemById("services")).toMatchObject({ kind: "Submenu" });
+    expect(nativeItemById("tunnels-status")).toMatchObject({
+      kind: "MenuItem",
+      enabled: false,
+    });
+
+    // Four top-level separators plus three separators inside the Services submenu.
+    expect(nativeMenuMocks.predefinedMenuItemNew).toHaveBeenCalledTimes(7);
+    for (const call of nativeMenuMocks.predefinedMenuItemNew.mock.calls) {
+      expect(call[0]).toMatchObject({ item: "Separator" });
+    }
+  });
+
+  it("wires every leaf item action to onAction with its own id", async () => {
+    const onAction = vi.fn();
+    await applyTrayMenu(build(), onAction);
+
+    const leaves = createdNativeItems().filter(
+      (item) => item.kind !== "Submenu" && typeof item.action === "function",
+    );
+    expect(leaves.length).toBeGreaterThan(0);
+
+    for (const leaf of leaves) {
+      onAction.mockClear();
+      leaf.action?.(leaf.id as string);
+      expect(onAction).toHaveBeenCalledTimes(1);
+      expect(onAction).toHaveBeenCalledWith(leaf.id);
+    }
+  });
+
+  it("sets the created menu on the 'main' tray icon", async () => {
+    await applyTrayMenu(build(), vi.fn());
+
+    expect(nativeMenuMocks.trayGetById).toHaveBeenCalledWith("main");
+    const menu = await nativeMenuMocks.menuNew.mock.results[0].value;
+    expect(nativeMenuMocks.traySetMenu).toHaveBeenCalledWith(menu);
+  });
+
+  it("returns false without throwing when the main tray icon is missing", async () => {
+    nativeMenuMocks.trayGetById.mockResolvedValue(null);
+
+    await expect(applyTrayMenu(build(), vi.fn())).resolves.toBe(false);
+    expect(nativeMenuMocks.traySetMenu).not.toHaveBeenCalled();
+  });
+
+  it("returns false without throwing when the native tray API is unavailable", async () => {
+    nativeMenuMocks.trayGetById.mockRejectedValue(new Error("tauri unavailable"));
+
+    await expect(applyTrayMenu(build(), vi.fn())).resolves.toBe(false);
+  });
+
+  it("returns false without throwing when native menu creation fails", async () => {
+    nativeMenuMocks.menuNew.mockRejectedValue(new Error("no menu api"));
+
+    await expect(applyTrayMenu(build(), vi.fn())).resolves.toBe(false);
+    expect(nativeMenuMocks.traySetMenu).not.toHaveBeenCalled();
   });
 });

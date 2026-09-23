@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -62,12 +62,39 @@ import { SmartWorkspaceHub } from "./components/SmartWorkspaceHub";
 import { Documentation } from "./components/Documentation";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { FishPond } from "./components/FishPond";
-import { protocolRouterStatus, type ProtocolRouterStatus } from "./lib/protocolRouter";
 import {
+  protocolRouterStart,
+  protocolRouterStatus,
+  protocolRouterStop,
+  type ProtocolRouterStatus,
+} from "./lib/protocolRouter";
+import {
+  apiGatewayStart,
   apiGatewayStatus,
+  apiGatewayStop,
+  API_GATEWAY_DEFAULT_PORT,
   API_GATEWAY_STATUS_UPDATED_EVENT,
   type GatewayStatus,
 } from "./lib/apiGateway";
+import { fileSharingStatus, fileSharingStop } from "./lib/fileSharing";
+import {
+  sshTunnelsConnectAll,
+  sshTunnelsDisconnectAll,
+} from "./lib/sshTunnels";
+import {
+  applyTrayMenu,
+  buildTrayMenuModel,
+  type TrayMenuState,
+  type TrayTranslate,
+} from "./lib/trayMenu";
+import {
+  showQuickAssistantWindow,
+  showSelectionAssistantWindow,
+} from "./lib/aiWorkspace";
+import type {
+  SshTunnelBatchOperationResult,
+  SshTunnelsSnapshot,
+} from "./components/sshTunnels/types";
 import { UpdateUpgradeModal } from "./components/UpdateUpgradeModal";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { MessageCenter } from "./components/MessageCenter";
@@ -115,7 +142,10 @@ type ApiResp<T> = {
   data: T;
   meta: { schema_version: number; revision: number };
 };
-type TrayActionPayload = { action?: string; target?: string };
+type TrayShortcutConfig = {
+  main_shortcut?: string | null;
+  quick_ai_shortcut?: string | null;
+};
 type AppStorageConfig = {
   language?: string;
   storage_type?: "local" | "git" | "icloud";
@@ -168,16 +198,14 @@ type DashboardCounts = {
   storage_type?: "local" | "git" | "icloud";
 };
 
-const TRAY_NAV_TABS = new Set([
+const TRAY_NAVIGATION_IDS = new Set([
   "launcher",
   "workspaces",
   "ai-sessions",
   "ai-assistants",
-  "ai-assistants-library",
-  "ai-automations",
-  "ai-model-center",
   "ai-environments",
   "ai-usage",
+  "api-gateway",
   "ai-news",
   "more-tools",
   "skills",
@@ -186,14 +214,10 @@ const TRAY_NAV_TABS = new Set([
   "ssh",
   "ssh-tunnels",
   "protocol-router",
-  "api-gateway",
   "file-sharing",
-  "random-password",
-  "json-parser",
   "snippets",
   "bookmarks",
   "notes",
-  "cloud",
   "mail",
   "documentation",
 ]);
@@ -251,6 +275,7 @@ function App() {
   const [omniOpen, setOmniOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState("storage");
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [aboutAutoCheck, setAboutAutoCheck] = useState(false);
   const [messageCenterOpen, setMessageCenterOpen] = useState(false);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [messageUnreadCount, setMessageUnreadCount] = useState(0);
@@ -288,6 +313,17 @@ function App() {
     useState<ProtocolRouterStatus | null>(null);
   const [apiGatewayHeaderStatus, setApiGatewayHeaderStatus] =
     useState<GatewayStatus | null>(null);
+  const [trayState, setTrayState] = useState<TrayMenuState>({
+    windowVisible: true,
+    gateway: { running: false },
+    router: { running: false },
+    tunnels: { connected: 0, total: 0 },
+    sharing: { running: false, fileCount: 0 },
+    shortcuts: { main: null, quick: null },
+  });
+  const trayStateRef = useRef(trayState);
+  const trayActionRef = useRef<(id: string) => Promise<void>>(async () => {});
+  const gatewayBaseUrlRef = useRef<string | null>(null);
   const sshTunnelSummaryRef = useRef<{
     connectedCount: number;
     hasErrors: boolean;
@@ -352,7 +388,7 @@ function App() {
   const moreToolsSectionTitle =
     moreToolsSection === "short-link" ? t("shortLink", "Short Link") : null;
 
-  const navigateToTab = (target: string) => {
+  const navigateToTab = useCallback((target: string) => {
     setMobileNavigationOpen(false);
     const resolved = resolveNavigationTarget(target);
 
@@ -380,7 +416,7 @@ function App() {
     }
 
     setActiveTab(resolved.tab);
-  };
+  }, []);
 
   const navigateToMessageTarget = (target: MessageTarget) => {
     setMessageCenterOpen(false);
@@ -399,6 +435,333 @@ function App() {
   useEffect(() => {
     activeTabRef.current = activeTab;
   }, [activeTab]);
+
+  // Tray menu controller: seed state, apply the native menu and keep it in sync.
+  useEffect(() => {
+    trayStateRef.current = trayState;
+  }, [trayState]);
+
+  const applyTrayModel = useCallback(
+    (state: TrayMenuState) => {
+      if (!isTauri || isQuickAiView) return;
+      void applyTrayMenu(buildTrayMenuModel(state, t as TrayTranslate), (id) =>
+        trayActionRef.current(id),
+      );
+    },
+    [isQuickAiView, isTauri, t],
+  );
+
+  useEffect(() => {
+    applyTrayModel(trayState);
+  }, [applyTrayModel, trayState]);
+
+  const refreshTrayGateway = useCallback(async () => {
+    try {
+      const status = await apiGatewayStatus();
+      if (!status) return;
+      gatewayBaseUrlRef.current = status.local_base_url;
+      setTrayState((prev) => ({
+        ...prev,
+        gateway: { running: status.running, port: status.port },
+      }));
+    } catch {
+      // Keep the last known state when the status query fails.
+    }
+  }, []);
+
+  const refreshTrayRouter = useCallback(async () => {
+    try {
+      const status = await protocolRouterStatus();
+      if (!status) return;
+      setTrayState((prev) => ({
+        ...prev,
+        router: { running: status.running, port: status.port },
+      }));
+    } catch {
+      // Keep the last known state when the status query fails.
+    }
+  }, []);
+
+  const refreshTrayTunnels = useCallback(async () => {
+    try {
+      const snapshot = await invoke<SshTunnelsSnapshot>("ssh_tunnels_snapshot");
+      if (!snapshot) return;
+      const connected = (snapshot.runtime ?? []).filter(
+        (entry) => entry.status === "connected",
+      ).length;
+      setTrayState((prev) => ({
+        ...prev,
+        tunnels: { connected, total: (snapshot.tunnels ?? []).length },
+      }));
+    } catch {
+      // Keep the last known state when the snapshot query fails.
+    }
+  }, []);
+
+  const refreshTraySharing = useCallback(async () => {
+    try {
+      const snapshot = await fileSharingStatus();
+      if (!snapshot) return;
+      setTrayState((prev) => ({
+        ...prev,
+        sharing: {
+          running: snapshot.running,
+          fileCount: (snapshot.files ?? []).length,
+        },
+      }));
+    } catch {
+      // Keep the last known state when the status query fails.
+    }
+  }, []);
+
+  const refreshTrayVisibility = useCallback(async () => {
+    try {
+      const visible = await getCurrentWindow().isVisible();
+      if (typeof visible !== "boolean") return;
+      setTrayState((prev) =>
+        prev.windowVisible === visible
+          ? prev
+          : { ...prev, windowVisible: visible },
+      );
+    } catch {
+      // Keep the last known state when the visibility query fails.
+    }
+  }, []);
+
+  const handleTrayAction = useCallback(
+    async (id: string) => {
+      if (id === "toggle-window") {
+        if (trayStateRef.current.windowVisible) {
+          await invoke("hide_window");
+          setTrayState((prev) => ({ ...prev, windowVisible: false }));
+        } else {
+          await invoke("show_main_window");
+          setTrayState((prev) => ({ ...prev, windowVisible: true }));
+        }
+        return;
+      }
+      if (id === "quick-ai") {
+        await invoke("toggle_quick_ai_window");
+        return;
+      }
+      if (id === "quick-assistant") {
+        await showQuickAssistantWindow();
+        return;
+      }
+      if (id === "selection-assistant") {
+        await showSelectionAssistantWindow();
+        return;
+      }
+      if (id === "check-for-updates") {
+        setAboutAutoCheck(true);
+        setAboutOpen(true);
+        return;
+      }
+      if (id === "about") {
+        setAboutAutoCheck(false);
+        setAboutOpen(true);
+        return;
+      }
+      if (id === "gateway") {
+        const service = trayStateRef.current.gateway;
+        try {
+          if (service.running) {
+            await apiGatewayStop();
+          } else {
+            await apiGatewayStart();
+          }
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : errorToMessage(error);
+          pushToast({
+            title: service.running
+              ? t("error", { message })
+              : t("tray.action.gatewayStartFailed", {
+                  port: service.port ?? API_GATEWAY_DEFAULT_PORT,
+                  error: message,
+                }),
+            kind: "error",
+          });
+        }
+        await refreshTrayGateway();
+        return;
+      }
+      if (id === "router") {
+        const service = trayStateRef.current.router;
+        try {
+          if (service.running) {
+            await protocolRouterStop();
+          } else {
+            await protocolRouterStart();
+          }
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : errorToMessage(error);
+          pushToast({ title: t("error", { message }), kind: "error" });
+        }
+        await refreshTrayRouter();
+        return;
+      }
+      if (id === "connect-all" || id === "disconnect-all") {
+        try {
+          const result =
+            id === "connect-all"
+              ? await sshTunnelsConnectAll<SshTunnelBatchOperationResult>()
+              : await sshTunnelsDisconnectAll<SshTunnelBatchOperationResult>();
+          if (result.failed_count > 0) {
+            pushToast({
+              title: t("tray.action.sshBatchPartial", {
+                success: result.success_count,
+                failed: result.failed_count,
+              }),
+              kind: "error",
+            });
+          }
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : errorToMessage(error);
+          pushToast({ title: t("error", { message }), kind: "error" });
+        }
+        await refreshTrayTunnels();
+        return;
+      }
+      if (id === "stop-sharing") {
+        try {
+          await fileSharingStop();
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : errorToMessage(error);
+          pushToast({ title: t("error", { message }), kind: "error" });
+        }
+        await refreshTraySharing();
+        return;
+      }
+      if (id === "sync") {
+        try {
+          await invoke("sync_run_now");
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : errorToMessage(error);
+          pushToast({ title: t("error", { message }), kind: "error" });
+        }
+        return;
+      }
+      if (id === "copy-address") {
+        const url = gatewayBaseUrlRef.current;
+        if (url) {
+          await navigator.clipboard.writeText(url);
+        }
+        return;
+      }
+      if (id === "quit") {
+        await invoke("quit_app");
+        return;
+      }
+      if (id === "settings") {
+        await invoke("show_main_window");
+        navigateToTab("settings");
+        return;
+      }
+      if (TRAY_NAVIGATION_IDS.has(id)) {
+        await invoke("show_main_window");
+        navigateToTab(id);
+      }
+    },
+    [
+      navigateToTab,
+      pushToast,
+      refreshTrayGateway,
+      refreshTrayRouter,
+      refreshTraySharing,
+      refreshTrayTunnels,
+      t,
+    ],
+  );
+
+  useEffect(() => {
+    trayActionRef.current = handleTrayAction;
+  }, [handleTrayAction]);
+
+  useEffect(() => {
+    if (!isTauri || isQuickAiView) return;
+
+    const unlistenFns: Array<() => void> = [];
+    const addListener = (
+      eventName: string,
+      handler: (event: { payload?: unknown }) => void,
+    ) => {
+      listen(eventName, handler)
+        .then((fn) => {
+          unlistenFns.push(fn);
+        })
+        .catch((e) => {
+          console.error(`Failed to subscribe to ${eventName}`, e);
+        });
+    };
+
+    addListener("main-window-visibility-changed", (event) => {
+      const payload = event.payload;
+      if (typeof payload === "boolean") {
+        setTrayState((prev) =>
+          prev.windowVisible === payload
+            ? prev
+            : { ...prev, windowVisible: payload },
+        );
+      } else {
+        void refreshTrayVisibility();
+      }
+    });
+    addListener(API_GATEWAY_STATUS_UPDATED_EVENT, () => {
+      void refreshTrayGateway();
+    });
+    addListener("protocol-router-status-update", () => {
+      void refreshTrayRouter();
+    });
+    addListener("ssh-tunnels-updated", () => {
+      void refreshTrayTunnels();
+    });
+    addListener("file-sharing-updated", () => {
+      void refreshTraySharing();
+    });
+
+    const handleLanguageChanged = () => {
+      applyTrayModel(trayStateRef.current);
+    };
+    i18n.on("languageChanged", handleLanguageChanged);
+
+    void refreshTrayGateway();
+    void refreshTrayRouter();
+    void refreshTrayTunnels();
+    void refreshTraySharing();
+    void refreshTrayVisibility();
+    invoke<TrayShortcutConfig>("get_storage_config")
+      .then((cfg) => {
+        if (!cfg) return;
+        setTrayState((prev) => ({
+          ...prev,
+          shortcuts: {
+            main: cfg.main_shortcut ?? null,
+            quick: cfg.quick_ai_shortcut ?? null,
+          },
+        }));
+      })
+      .catch(() => {});
+
+    return () => {
+      unlistenFns.forEach((fn) => fn());
+      i18n.off("languageChanged", handleLanguageChanged);
+    };
+  }, [
+    applyTrayModel,
+    i18n,
+    isQuickAiView,
+    isTauri,
+    refreshTrayGateway,
+    refreshTrayRouter,
+    refreshTraySharing,
+    refreshTrayTunnels,
+    refreshTrayVisibility,
+  ]);
 
   useEffect(() => {
     const onNetworkCircuitOpen = () => {
@@ -820,25 +1183,6 @@ function App() {
             setCounts((prev) => ({ ...prev, mail: mailCount }));
           })
           .catch(() => {});
-      });
-
-      addListener("tray-action", (event) => {
-        const payload = (event.payload ?? {}) as TrayActionPayload;
-        if (payload.action !== "navigate" || !payload.target) {
-          return;
-        }
-        const normalizedTarget = normalizeLegacyTabTarget(payload.target);
-        if (normalizedTarget === "omni-search") {
-          setOmniOpen(true);
-          return;
-        }
-        if (normalizedTarget === "settings") {
-          navigateToTab("settings");
-          return;
-        }
-        if (TRAY_NAV_TABS.has(normalizedTarget)) {
-          navigateToTab(normalizedTarget);
-        }
       });
 
       addListener("git-sync-status", (event) => {
@@ -1298,7 +1642,6 @@ function App() {
         await invoke("save_storage_config", {
           config: { ...cfg, language: newLang },
         });
-        await invoke("update_tray_menu", { lang: newLang });
       } catch (e) {
         console.error("Failed to save language preference:", e);
       }
@@ -2319,7 +2662,11 @@ function App() {
         onOpenChange={setMessageCenterOpen}
         onNavigate={navigateToMessageTarget}
       />
-      <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      <AboutModal
+        open={aboutOpen}
+        onClose={() => setAboutOpen(false)}
+        autoCheckOnOpen={aboutAutoCheck}
+      />
       <UpdateUpgradeModal
         open={updateDialogOpen}
         onClose={() => setUpdateDialogOpen(false)}

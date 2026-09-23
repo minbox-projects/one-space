@@ -1,3 +1,12 @@
+import {
+  CheckMenuItem,
+  Menu,
+  MenuItem,
+  PredefinedMenuItem,
+  Submenu,
+} from "@tauri-apps/api/menu";
+import { TrayIcon } from "@tauri-apps/api/tray";
+
 export type TrayMenuSeparator = { kind: "separator" };
 
 export interface TrayMenuItem {
@@ -205,4 +214,72 @@ export function buildTrayMenuModel(state: TrayMenuState, t: TrayTranslate): Tray
     separator(),
     menuItem("quit", t("tray.quit")),
   ];
+}
+
+export type TrayMenuActionHandler = (id: string) => void;
+
+type NativeTrayMenuItem =
+  | Awaited<ReturnType<typeof MenuItem.new>>
+  | Awaited<ReturnType<typeof CheckMenuItem.new>>
+  | Awaited<ReturnType<typeof PredefinedMenuItem.new>>
+  | Awaited<ReturnType<typeof Submenu.new>>;
+
+async function buildNativeItems(
+  nodes: TrayMenuNode[],
+  onAction: TrayMenuActionHandler,
+): Promise<NativeTrayMenuItem[]> {
+  const items: NativeTrayMenuItem[] = [];
+  for (const node of nodes) {
+    if (node.kind === "separator") {
+      items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+      continue;
+    }
+    if (node.submenu) {
+      items.push(
+        await Submenu.new({
+          id: node.id,
+          text: node.label,
+          enabled: node.enabled,
+          items: await buildNativeItems(node.submenu, onAction),
+        }),
+      );
+      continue;
+    }
+    const options = {
+      id: node.id,
+      text: node.label,
+      enabled: node.enabled,
+      ...(node.accelerator !== undefined
+        ? { accelerator: node.accelerator }
+        : {}),
+      action: () => onAction(node.id),
+    };
+    if (node.checked !== undefined) {
+      items.push(await CheckMenuItem.new({ ...options, checked: node.checked }));
+    } else {
+      items.push(await MenuItem.new(options));
+    }
+  }
+  return items;
+}
+
+/**
+ * Build the native tray menu from the pure model and attach it to the `main`
+ * tray icon. Fails soft (`false`) when the Tauri menu/tray APIs are unavailable
+ * so the app never crashes outside a Tauri runtime.
+ */
+export async function applyTrayMenu(
+  model: TrayMenuNode[],
+  onAction: TrayMenuActionHandler,
+): Promise<boolean> {
+  try {
+    const items = await buildNativeItems(model, onAction);
+    const menu = await Menu.new({ items });
+    const tray = await TrayIcon.getById("main");
+    if (!tray) return false;
+    await tray.setMenu(menu);
+    return true;
+  } catch {
+    return false;
+  }
 }
