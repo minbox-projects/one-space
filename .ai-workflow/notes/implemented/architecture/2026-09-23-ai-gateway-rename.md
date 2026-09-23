@@ -25,7 +25,7 @@ Every internal identifier and display name now uses `AI Gateway` / `AI 网关`:
 - Keep `API Gateway` and rename only user-visible text: declined because the identifiers would still disagree with the `AI 能力` grouping and the `ai-gateway` settings section, and agents would keep switching between two vocabularies.
 - Rename without a migration module: declined because existing installations would start from an empty configuration and stop seeing their usage history, and the old files could no longer be migrated once new files are written.
 - Keep dual-name compatibility for files and markers: declined because it preserves the undocumented second source of truth that the earlier legacy-compatibility removal deliberately eliminated.
-- Rename the historical decision records as well: declined because sealed records keep their original titles and file names, and recording the rename here with cross-links avoids rewriting history.
+- Rename the historical decision records as well: declined because the referenced notes are active `implemented/` records, and the notes README keeps delivered decisions as history instead of rewriting them retroactively; a changed decision or rationale is recorded in a new note, which is what this record does, and the old notes keep their file names as historical slugs so existing cross-links stay traceable.
 
 ## Consequences
 
