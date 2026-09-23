@@ -4549,6 +4549,20 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
             "reason must record the status: {:?}",
             a_stored.mappings[0].disabled_reason
         );
+        // F-04: pin the producer-side reason prefix. The probe discriminator
+        // (`selection::is_immediate_auth_disable_reason`) recognises legacy rows
+        // solely by a trimmed `disabled_reason` starting with `HTTP 401`/`HTTP 403`,
+        // so the producer must keep writing exactly that prefix.
+        let auth_reason = a_stored.mappings[0].disabled_reason.as_deref().unwrap_or("");
+        let expected_prefix = match status {
+            401 => "HTTP 401",
+            403 => "HTTP 403",
+            other => panic!("unexpected auth status {other}"),
+        };
+        assert!(
+            auth_reason.starts_with(expected_prefix),
+            "status {status} must persist a reason starting with `{expected_prefix}`: {auth_reason:?}"
+        );
         assert!(a_stored.mappings[0].disabled_at.is_some());
         // Frozen Step 2 rule: the immediate 401/403 disable records reason/at and
         // last_error_at but must NOT advance consecutive_failures, so the counter
@@ -11164,17 +11178,41 @@ fn default_usage_store() -> UsageLogStore {
     UsageLogStore::default_store().expect("default usage store")
 }
 
-/// The relay records after the response is on the wire, so poll briefly.
+/// The relay records after the response is on the wire, so poll until the
+/// expected row count is visible. Under parallel load a 4-second budget was
+/// observed to expire while rows were still being written, which returned a
+/// partial set and let downstream assertions run against incomplete data; poll
+/// up to ~10 seconds and panic with the observed rows on timeout so a genuinely
+/// missing row is a clear failure instead of a silently partial result.
 async fn wait_for_usage_logs(expected: u32) -> Vec<UsageLogRecord> {
     let store = default_usage_store();
-    for _ in 0..400 {
+    for _ in 0..1000 {
         let records = store.all_records().unwrap_or_default();
         if records.len() as u32 >= expected {
             return records;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    store.all_records().unwrap_or_default()
+    let records = store.all_records().unwrap_or_default();
+    let summary = records
+        .iter()
+        .map(|record| {
+            format!(
+                "{{provider:{} local:{} upstream:{} result:{:?} status:{} terminal:{}}}",
+                record.provider_id,
+                record.local_model,
+                record.upstream_model,
+                record.result,
+                record.status,
+                record.terminal,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    panic!(
+        "wait_for_usage_logs timed out after ~10s: expected at least {expected} usage row(s), observed {}; rows: [{summary}]",
+        records.len(),
+    );
 }
 
 fn priced(upstream_model: &str, input: f64, cache_read: f64, cache_write: f64, output: f64) -> ModelPrice {
@@ -23808,6 +23846,194 @@ async fn a_guarded_streaming_probe_target_performs_no_attempt_and_writes_502() {
     assert_eq!(capture.status, 502);
 }
 
+/// AC-001 / REQ-001 (streaming): a threshold-disabled row whose cooldown
+/// expired, with no healthy candidate, is probed exactly once on the streaming
+/// path; the valid SSE response is served to the caller and the persisted row is
+/// cleared.
+#[tokio::test]
+async fn streaming_probe_success_clears_the_row_and_serves_the_stream() {
+    let _home = isolated_temp_home("probe-stream-success");
+    let sse = "data: {\"id\":\"stream-probe-ok\",\"choices\":[{\"delta\":{\"content\":\"probe-stream-ok\"}}]}\n\ndata: [DONE]\n\n";
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(move |_| MockReply::Stream(sse.to_string())).await;
+
+    let now = probe_now();
+    let provider = probe_row_provider(
+        "probe-stream-ok",
+        &upstream_url,
+        "probe-local-stream",
+        "probe-remote-stream",
+        Some(now.saturating_sub(PROBE_COOLDOWN + 60)),
+    );
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed relay config");
+
+    let candidate = super::selection::find_probe_candidate(
+        std::slice::from_ref(&provider),
+        Some("probe-local-stream"),
+        UpstreamProtocol::ChatCompletions,
+        &[],
+        now,
+    )
+    .expect("the seeded row must be probe-eligible");
+
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let body = serde_json::to_vec(&json!({"model": "probe-local-stream", "stream": true})).unwrap();
+    let mut attempts = Vec::new();
+    let capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        &[],
+        "/v1/chat/completions",
+        &body,
+        Some("probe-local-stream"),
+        &HashMap::new(),
+        false,
+        Some(&candidate),
+        &mut attempts,
+    )
+    .await
+    .expect("a successful streaming probe must open the stream");
+    drop(server);
+
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    let text = String::from_utf8_lossy(&out);
+    let (status_line, stream_body) = raw_http_status_and_body(&text);
+    assert!(
+        status_line.starts_with("HTTP/1.1 200"),
+        "a successful streaming probe must open the SSE stream: {text}"
+    );
+    assert!(
+        stream_body.contains("probe-stream-ok") && stream_body.contains("data: [DONE]"),
+        "the upstream SSE body must reach the client: {text}"
+    );
+    assert_eq!(capture.status, 200, "the served probe reports the upstream status");
+    assert_eq!(
+        upstream_log.lock().unwrap().len(),
+        1,
+        "the streaming probe is attempted exactly once"
+    );
+    assert_eq!(attempts.len(), 1, "exactly one probe attempt is logged");
+    assert_eq!(attempts[0].provider_id, "probe-stream-ok");
+    assert_eq!(attempts[0].upstream_model, "probe-remote-stream");
+    assert_eq!(attempts[0].result, UsageResult::Success);
+
+    let row = stored_probe_row("probe-stream-ok");
+    assert!(
+        !row.auto_disabled,
+        "a streaming probe success must clear auto_disabled"
+    );
+    assert_eq!(
+        row.consecutive_failures, 0,
+        "a streaming probe success must reset the counter"
+    );
+    assert_eq!(row.disabled_reason, None);
+    assert_eq!(row.disabled_at, None);
+    assert_eq!(row.last_error_at, None);
+    assert!(row.enabled, "AC-011: user intent must survive a streaming probe recovery");
+}
+
+/// AC-002 / REQ-001 (streaming): a probe whose upstream fails with a 500 before
+/// any byte re-arms the cooldown, keeps the counter and auto-disabled state, and
+/// writes the pre-stream 502 JSON envelope naming the provider.
+#[tokio::test]
+async fn streaming_probe_failure_rearms_before_any_byte_and_writes_502() {
+    let _home = isolated_temp_home("probe-stream-failure");
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "still down"}})))
+            .await;
+
+    let now = probe_now();
+    let initial = now.saturating_sub(120);
+    let provider = probe_row_provider(
+        "probe-stream-fail",
+        &upstream_url,
+        "probe-local-streamfail",
+        "probe-remote-streamfail",
+        Some(initial),
+    );
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed relay config");
+
+    let candidate = super::selection::find_probe_candidate(
+        std::slice::from_ref(&provider),
+        Some("probe-local-streamfail"),
+        UpstreamProtocol::ChatCompletions,
+        &[],
+        now,
+    )
+    .expect("the seeded row must be probe-eligible");
+
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let body =
+        serde_json::to_vec(&json!({"model": "probe-local-streamfail", "stream": true})).unwrap();
+    let mut attempts = Vec::new();
+    let capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        &[],
+        "/v1/chat/completions",
+        &body,
+        Some("probe-local-streamfail"),
+        &HashMap::new(),
+        false,
+        Some(&candidate),
+        &mut attempts,
+    )
+    .await
+    .expect("a pre-stream streaming probe failure must still write the 502");
+    drop(server);
+
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    let text = String::from_utf8_lossy(&out);
+    let (status_line, response_body) = raw_http_status_and_body(&text);
+    assert!(
+        status_line.starts_with("HTTP/1.1 502"),
+        "a failed streaming probe must write the pre-stream 502 JSON: {text}"
+    );
+    let envelope = assert_standard_error_envelope(&response_body);
+    assert_eq!(envelope["error"]["code"], "all_providers_unavailable");
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Provider probe-stream-fail"),
+        "the pre-stream 502 must name the probed provider: {response_body}"
+    );
+    assert_eq!(
+        upstream_log.lock().unwrap().len(),
+        1,
+        "the streaming probe is attempted exactly once"
+    );
+    assert_eq!(attempts.len(), 1, "exactly one probe attempt is logged");
+    assert_eq!(attempts[0].provider_id, "probe-stream-fail");
+    assert_eq!(attempts[0].upstream_model, "probe-remote-streamfail");
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(
+        attempts[0].status, 500,
+        "the attempt log keeps the real upstream status, not the transport 502"
+    );
+    assert_eq!(capture.status, 500, "the captured terminal status is the upstream status");
+
+    let row = stored_probe_row("probe-stream-fail");
+    assert!(
+        row.auto_disabled,
+        "a failed streaming probe keeps the row auto-disabled"
+    );
+    let refreshed = row.disabled_at.expect("the cooldown must be re-armed");
+    assert!(
+        refreshed > initial,
+        "disabled_at must be refreshed to the probe time ({refreshed} vs {initial})"
+    );
+    assert_eq!(
+        row.consecutive_failures,
+        super::FAILURE_THRESHOLD,
+        "re-arm must not change the counter"
+    );
+}
+
 /// AC-006 (probe clause) / REQ-004: a transport failed probe settled inside the
 /// resume grace refreshes only `disabled_at`; the counter, `last_error_at` and
 /// `disabled_reason` stay unchanged.
@@ -24253,6 +24479,13 @@ async fn fresh_immediate_disable_emits_one_event_and_repeat_emits_none() {
     );
     let row = stored_probe_row("cfg-auth");
     assert!(row.auto_disabled, "a 401 must disable the row");
+    // F-04: the fresh-401 producer path must write the exact `HTTP 401` prefix
+    // the probe discriminator depends on.
+    let reason = row.disabled_reason.as_deref().unwrap_or("");
+    assert!(
+        reason.starts_with("HTTP 401"),
+        "a fresh 401 must persist a reason starting with `HTTP 401`: {reason:?}"
+    );
 
     let second = attempt_without_probe(std::slice::from_ref(&provider), "cfg-local-auth").await;
     assert_eq!(second.status, 502);
