@@ -2097,4 +2097,142 @@ describe("ProviderDetailDialog 批量启用/禁用映射", () => {
   });
 });
 
+describe("ProviderDetailDialog 标签与自定义图标", () => {
+  it("renders existing tags and custom icon and saves them properly", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const provider = makeProvider({
+      tags: ["Official", "Code"],
+      icon: "openai",
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("provider-tag-badge-Official")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-tag-badge-Code")).toBeInTheDocument();
+
+    const iconTrigger = screen.getByTestId("provider-edit-icon-trigger");
+    expect(iconTrigger).toBeInTheDocument();
+
+    const saveBtn = screen.getByRole("button", { name: /Save|保存/i });
+    await user.click(saveBtn);
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tags: ["Official", "Code"],
+        icon: "openai",
+      }),
+      expect.any(Array),
+    );
+  });
+
+  it("supports adding new tags via Enter, toggling suggested tags, and removing tags", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const provider = makeProvider({
+      tags: ["Existing"],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+        availableTags={["Existing", "Fast"]}
+      />,
+    );
+
+    const tagInput = screen.getByTestId("ai-gateway-provider-tags-input");
+    await user.type(tagInput, "CustomTag{enter}");
+    expect(screen.getByTestId("provider-tag-badge-CustomTag")).toBeInTheDocument();
+
+    const suggestedFast = screen.getByTestId("suggested-tag-Fast");
+    await user.click(suggestedFast);
+    expect(screen.getByTestId("provider-tag-badge-Fast")).toBeInTheDocument();
+
+    const removeExisting = screen.getByTestId("remove-tag-Existing");
+    await user.click(removeExisting);
+    expect(screen.queryByTestId("provider-tag-badge-Existing")).not.toBeInTheDocument();
+
+    const saveBtn = screen.getByRole("button", { name: /Save|保存/i });
+    await user.click(saveBtn);
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tags: ["CustomTag", "Fast"],
+      }),
+      expect.any(Array),
+    );
+  });
+
+  it("allows saving without tags (optional) and inherits template icon by default", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const provider = makeProvider({
+      template_id: "opencode-zen",
+      tags: [],
+      icon: null,
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+        templates={[
+          {
+            template: {
+              id: "opencode-zen",
+              name: "OpenCode Zen",
+              description: "",
+              base_url: "https://opencode.ai/zen/v1",
+              protocol: "chat_completions",
+              api_key_prefix: "",
+              default_model: "zen-1",
+              recommended_models: [],
+              builtin: true,
+              created_at: 1000,
+              updated_at: 1000,
+              models: [],
+              icon: "opencode",
+            },
+            has_local_upstream: false,
+            active_provider_count: 1,
+          } as any,
+        ]}
+      />,
+    );
+
+    const iconTrigger = screen.getByTestId("provider-edit-icon-trigger");
+    expect(iconTrigger).toHaveTextContent(/Inherit from template|继承自服务商模板/i);
+
+    const saveBtn = screen.getByRole("button", { name: /Save|保存/i });
+    await user.click(saveBtn);
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tags: [],
+        icon: null,
+      }),
+      expect.any(Array),
+    );
+  });
+});
+
 

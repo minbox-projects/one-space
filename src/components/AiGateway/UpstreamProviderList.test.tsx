@@ -30,6 +30,41 @@ function makeProvider(
   };
 }
 
+function makeTemplateView(
+  overrides: {
+    id?: string;
+    name?: string;
+    icon?: string | null;
+    models?: string[];
+  } = {},
+): GatewayProviderTemplateView {
+  const {
+    id = "tpl-1",
+    name = "OpenCode Zen",
+    icon = "opencode",
+    models = ["remote-a"],
+  } = overrides;
+  return {
+    template: {
+      id,
+      name,
+      description: "Curated provider template",
+      base_url: "https://opencode.ai/zen/v1",
+      protocol: "responses",
+      source: "https://opencode.ai/zen/v1/models",
+      models_url: null,
+      models: models.map((upstream_model) => ({
+        upstream_model,
+        enabled: true,
+      })),
+      icon,
+    },
+    synced_at: null,
+    source: "https://opencode.ai/zen/v1/models",
+    from_snapshot: true,
+  };
+}
+
 describe("UpstreamProviderList 状态展示与过滤", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("en");
@@ -274,41 +309,6 @@ describe("UpstreamProviderList 模板头像与退休映射提示", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("en");
   });
-
-  function makeTemplateView(
-    overrides: {
-      id?: string;
-      name?: string;
-      icon?: string | null;
-      models?: string[];
-    } = {},
-  ): GatewayProviderTemplateView {
-    const {
-      id = "tpl-1",
-      name = "OpenCode Zen",
-      icon = "opencode",
-      models = ["remote-a"],
-    } = overrides;
-    return {
-      template: {
-        id,
-        name,
-        description: "Curated provider template",
-        base_url: "https://opencode.ai/zen/v1",
-        protocol: "responses",
-        source: "https://opencode.ai/zen/v1/models",
-        models_url: null,
-        models: models.map((upstream_model) => ({
-          upstream_model,
-          enabled: true,
-        })),
-        icon,
-      },
-      synced_at: null,
-      source: "https://opencode.ai/zen/v1/models",
-      from_snapshot: true,
-    };
-  }
 
   function providerListElement(
     providers: GatewayUpstreamProvider[],
@@ -690,6 +690,197 @@ describe("UpstreamProviderList 权重徽标展示 (AC-014)", () => {
     const defaultBadge = screen.getByTestId("ai-gateway-weight-badge-p-default");
     expect(defaultBadge).toBeInTheDocument();
     expect(defaultBadge).toHaveTextContent(/权重:\s*1/);
+  });
+});
+
+describe("UpstreamProviderList 标签展示与紧凑多选筛选 & 自定义图标", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("服务商卡片正确渲染标签徽章，未配置标签时不渲染标签容器", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({ id: "p-tagged", name: "Tagged Provider", tags: ["prod", "fast"] }),
+      makeProvider({ id: "p-notag", name: "No Tag Provider", tags: [] }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    const tagsContainer = screen.getByTestId("ai-gateway-provider-tags-p-tagged");
+    expect(tagsContainer).toBeInTheDocument();
+    expect(within(tagsContainer).getByText("#prod")).toBeInTheDocument();
+    expect(within(tagsContainer).getByText("#fast")).toBeInTheDocument();
+
+    expect(screen.queryByTestId("ai-gateway-provider-tags-p-notag")).not.toBeInTheDocument();
+  });
+
+  it("服务商自定义图标优先级高于模板图标，未设置时继承模板图标", () => {
+    const templates: GatewayProviderTemplateView[] = [
+      makeTemplateView({
+        id: "tpl-1",
+        name: "OpenAI Template",
+        icon: "openai",
+      }),
+    ];
+
+    const providers: GatewayUpstreamProvider[] = [
+      // 绑定模板且自定义图标为 deepseek（覆盖模板的 openai 图标）
+      makeProvider({
+        id: "p-custom",
+        name: "Custom Icon Provider",
+        template_id: "tpl-1",
+        icon: "deepseek",
+      }),
+      // 绑定模板但未自定义图标（继承模板的 openai 图标）
+      makeProvider({
+        id: "p-inherited",
+        name: "Inherited Icon Provider",
+        template_id: "tpl-1",
+        icon: null,
+      }),
+      // 无模板但自选图标 kimi
+      makeProvider({
+        id: "p-standalone-custom",
+        name: "Standalone Custom Provider",
+        template_id: null,
+        icon: "kimi",
+      }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        templates={templates}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    const customAvatar = screen.getByTestId("ai-gateway-provider-template-icon-p-custom");
+    expect(within(customAvatar).getByAltText("DeepSeek")).toBeInTheDocument();
+
+    const inheritedAvatar = screen.getByTestId("ai-gateway-provider-template-icon-p-inherited");
+    expect(within(inheritedAvatar).getByTestId("provider-icon-openai")).toBeInTheDocument();
+
+    const standaloneAvatar = screen.getByTestId("ai-gateway-provider-template-icon-p-standalone-custom");
+    expect(within(standaloneAvatar).getByAltText("Kimi")).toBeInTheDocument();
+  });
+
+  it("存在标签时展示紧凑型下拉触发按钮，支持多选筛选及清除", async () => {
+    const user = userEvent.setup();
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({ id: "p1", name: "Provider One", tags: ["prod", "fast"], enabled: true }),
+      makeProvider({ id: "p2", name: "Provider Two", tags: ["dev"], enabled: true }),
+      makeProvider({ id: "p3", name: "Provider Three", tags: ["prod"], enabled: false }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    // 存在标签时显示紧凑触发按钮
+    const trigger = screen.getByTestId("ai-gateway-tag-filter-trigger");
+    expect(trigger).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-tag-filter-badge")).not.toBeInTheDocument();
+
+    // 默认展示全部 3 个服务商
+    expect(screen.getByTestId("ai-gateway-provider-p1")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-provider-p2")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-provider-p3")).toBeInTheDocument();
+
+    // 点击展开下拉框
+    await user.click(trigger);
+    expect(screen.getByTestId("ai-gateway-tag-filter-menu")).toBeInTheDocument();
+
+    // 检查标签列表及计数：prod (2), fast (1), dev (1)
+    const prodOption = screen.getByTestId("ai-gateway-tag-option-prod");
+    expect(prodOption).toHaveTextContent("prod");
+    expect(prodOption).toHaveTextContent("2");
+
+    // 勾选 prod
+    await user.click(prodOption);
+
+    // 触发按钮上出现计数徽章为 1
+    const badge = screen.getByTestId("ai-gateway-tag-filter-badge");
+    expect(badge).toHaveTextContent("1");
+
+    // 此时仅展示 p1 和 p3，不展示 p2
+    expect(screen.getByTestId("ai-gateway-provider-p1")).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-provider-p2")).not.toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-provider-p3")).toBeInTheDocument();
+
+    // 组合状态筛选：切换为 Enabled
+    await user.click(screen.getByTestId("filter-status-enabled"));
+    // 此时仅 p1 满足（enabled=true 且 tags 含 prod）
+    expect(screen.getByTestId("ai-gateway-provider-p1")).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-provider-p3")).not.toBeInTheDocument();
+
+    // 再次点击 trigger 打开下拉菜单
+    await user.click(trigger);
+    // 在下拉菜单中点击清空标签筛选
+    const clearButton = screen.getByTestId("ai-gateway-tag-filter-clear");
+    await user.click(clearButton);
+
+    // 标签清空后，按 enabled 筛选，展示 p1 和 p2
+    expect(screen.getByTestId("ai-gateway-provider-p1")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-provider-p2")).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-provider-p3")).not.toBeInTheDocument();
+  });
+
+  it("当标签与状态过滤导致无结果时显示微空态，点击重置全部恢复", async () => {
+    const user = userEvent.setup();
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({ id: "p1", name: "Provider One", tags: ["prod"], enabled: true }),
+      makeProvider({ id: "p2", name: "Provider Two", tags: ["dev"], enabled: true }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    // 筛选 dev
+    await user.click(screen.getByTestId("ai-gateway-tag-filter-trigger"));
+    await user.click(screen.getByTestId("ai-gateway-tag-option-dev"));
+
+    // 筛选已禁用（p2 实际为已启用），导致结果为 0
+    await user.click(screen.getByTestId("filter-status-disabled"));
+
+    const empty = screen.getByTestId("ai-gateway-providers-filter-empty");
+    expect(empty).toBeInTheDocument();
+
+    // 点击恢复全部
+    const resetBtn = within(empty).getByRole("button", { name: /all providers/i });
+    await user.click(resetBtn);
+
+    // 两个服务商均恢复显示
+    expect(screen.getByTestId("ai-gateway-provider-p1")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-provider-p2")).toBeInTheDocument();
   });
 });
 

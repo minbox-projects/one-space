@@ -5,6 +5,7 @@ import {
   ProviderTemplateAvatar,
   ProviderTemplateIconPicker,
   resolveProviderTemplateIcon,
+  resolveEffectiveProviderIcon,
 } from "./ProviderTemplateIcon";
 
 describe("resolveProviderTemplateIcon", () => {
@@ -112,5 +113,60 @@ describe("ProviderTemplateIconPicker component", () => {
     fireEvent.click(screen.getByTestId("template-icon-option-commandcode"));
     expect(onChange).toHaveBeenCalledWith("commandcode");
     expect(screen.queryByTestId("template-edit-icon-menu")).not.toBeInTheDocument();
+  });
+
+  it("supports custom options, autoLabel, and inheritedIcon", () => {
+    const onChange = vi.fn();
+    render(
+      <ProviderTemplateIconPicker
+        value=""
+        onChange={onChange}
+        autoLabel="Inherit from template (Default)"
+        inheritedIcon="opencode"
+        triggerTestId="provider-icon-trigger"
+        selectTestId="provider-icon-select"
+        menuTestId="provider-icon-menu"
+      />
+    );
+
+    const trigger = screen.getByTestId("provider-icon-trigger");
+    expect(trigger).toHaveTextContent("Inherit from template (Default)");
+    expect(screen.getByTestId("provider-icon-opencode")).toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    expect(screen.getByTestId("provider-icon-menu")).toBeInTheDocument();
+  });
+});
+
+describe("resolveEffectiveProviderIcon", () => {
+  it("prioritizes provider custom icon over template icon", () => {
+    expect(
+      resolveEffectiveProviderIcon(
+        { icon: "builtin:deepseek", template_id: "opencode-zen" },
+        { icon: "opencode" },
+      ),
+    ).toBe("builtin:deepseek");
+  });
+
+  it("falls back to template icon when provider has no custom icon", () => {
+    expect(
+      resolveEffectiveProviderIcon(
+        { icon: "", template_id: "opencode-zen" },
+        { icon: "opencode" },
+      ),
+    ).toBe("opencode");
+    expect(
+      resolveEffectiveProviderIcon(
+        { icon: null, template_id: "opencode-zen" },
+        { icon: "commandcode" },
+      ),
+    ).toBe("commandcode");
+  });
+
+  it("returns null when neither provider nor template has an icon", () => {
+    expect(resolveEffectiveProviderIcon(null, null)).toBeNull();
+    expect(
+      resolveEffectiveProviderIcon({ icon: "" }, { icon: "" }),
+    ).toBeNull();
   });
 });

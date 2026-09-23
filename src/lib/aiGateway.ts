@@ -65,6 +65,10 @@ export interface GatewayUpstreamProvider {
   ignored_models?: string[];
   /** Routing weight for weighted round-robin (1-100, default 1). */
   weight?: number;
+  /** Tags for categorizing / filtering providers. */
+  tags?: string[];
+  /** Optional custom icon override; if not set, defaults to inheriting from template. */
+  icon?: string | null;
 }
 
 export interface GatewayKey {

@@ -605,6 +605,21 @@ const resources = {
         "Routing weight: higher weight receives higher forwarding frequency (1-100).",
       "aiGateway.provider.weightInvalid":
         "Weight must be an integer between 1 and 100.",
+      aiGatewayProviderTags: "Tags",
+      aiGatewayProviderTagsPlaceholder: "Add a tag and press Enter...",
+      aiGatewayProviderTagsDesc:
+        "Assign tags to categorize providers for filtering (optional).",
+      aiGatewayFilterByTags: "Filter by tags",
+      aiGatewayFilterTagsAll: "All tags",
+      aiGatewayFilterTagsSelected: "{{count}} tags",
+      aiGatewayFilterTagsClear: "Clear",
+      aiGatewayFilterTagsEmpty: "No tags available",
+      aiGatewayInheritTemplateIcon: "Inherit from template (Default)",
+      aiGatewayDefaultIcon: "Default icon",
+      aiGatewayCustomIcon: "Provider icon",
+      aiGatewayCustomIconDesc:
+        "Select a custom icon or inherit from the bound template.",
+      aiGatewayRecommendedTags: "Suggested tags",
       aiGatewayProviderTemplates: "Provider Templates",
       aiGatewayProviderTemplatesDesc:
         "Provider templates carry an optional model-list URL. Sync to refresh the model list, then add one as an upstream provider; prices stay on mapping rows.",
@@ -4434,6 +4449,21 @@ const resources = {
         "路由权重：权重越大被转发的频次越高（1-100）。",
       "aiGateway.provider.weightInvalid":
         "权重必须是 1 到 100 之间的整数。",
+      aiGatewayProviderTags: "标签",
+      aiGatewayProviderTagsPlaceholder: "输入标签后按回车添加...",
+      aiGatewayProviderTagsDesc:
+        "为服务商添加标签分类，便于筛选与检索（非必填）。",
+      aiGatewayFilterByTags: "按标签筛选",
+      aiGatewayFilterTagsAll: "全部标签",
+      aiGatewayFilterTagsSelected: "已选 {{count}} 项",
+      aiGatewayFilterTagsClear: "清空",
+      aiGatewayFilterTagsEmpty: "暂无可用标签",
+      aiGatewayInheritTemplateIcon: "继承自服务商模板（默认）",
+      aiGatewayDefaultIcon: "默认图标",
+      aiGatewayCustomIcon: "服务商图标",
+      aiGatewayCustomIconDesc:
+        "自定义服务商图标，未选择时默认继承绑定的服务商模板。",
+      aiGatewayRecommendedTags: "推荐标签",
       aiGatewayProviderTemplates: "服务商模板",
       aiGatewayProviderTemplatesDesc:
         "服务商模板携带可选模型清单 URL，可手动同步刷新模型列表后添加为上游服务商；价格仅在映射行维护。",

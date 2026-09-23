@@ -249,6 +249,10 @@ pub struct GatewayUpstreamProvider {
     pub ignored_models: Vec<String>,
     #[serde(default = "default_provider_weight")]
     pub weight: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 impl Default for GatewayUpstreamProvider {
@@ -270,6 +274,8 @@ impl Default for GatewayUpstreamProvider {
             template_id: None,
             ignored_models: Vec::new(),
             weight: 1,
+            tags: Vec::new(),
+            icon: None,
         }
     }
 }

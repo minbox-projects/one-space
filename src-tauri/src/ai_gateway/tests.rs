@@ -94,6 +94,8 @@ fn provider(id: &str) -> GatewayUpstreamProvider {
         last_error_at: None,
         template_id: None,
         ignored_models: Vec::new(),
+        tags: Vec::new(),
+        icon: None,
     }
 }
 
@@ -196,6 +198,43 @@ fn model_mapping_display_name_is_skipped_when_absent() {
         encoded.get("display_name").is_none(),
         "an absent display_name must not be serialized: {encoded}"
     );
+}
+
+#[test]
+fn provider_tags_and_icon_backward_compatibility_and_round_trip() {
+    let legacy_json = json!({
+        "id": "p-legacy",
+        "name": "Legacy Provider",
+        "base_url": "https://api.legacy.com/v1",
+        "api_key": "sk-legacy",
+    });
+    let provider: GatewayUpstreamProvider =
+        serde_json::from_value(legacy_json).expect("legacy provider must deserialize");
+    assert!(provider.tags.is_empty(), "tags must default to empty vec");
+    assert_eq!(provider.icon, None, "icon must default to None");
+
+    let encoded = serde_json::to_value(&provider).expect("serialize provider");
+    assert!(encoded.get("tags").is_none(), "empty tags must be omitted from JSON");
+    assert!(encoded.get("icon").is_none(), "absent icon must be omitted from JSON");
+
+    let mut configured = provider.clone();
+    configured.tags = vec!["Official".to_string(), "Fast".to_string()];
+    configured.icon = Some("openai".to_string());
+
+    let configured_encoded = serde_json::to_value(&configured).expect("serialize configured");
+    assert_eq!(
+        configured_encoded.get("tags"),
+        Some(&json!(["Official", "Fast"]))
+    );
+    assert_eq!(
+        configured_encoded.get("icon"),
+        Some(&json!("openai"))
+    );
+
+    let decoded: GatewayUpstreamProvider =
+        serde_json::from_value(configured_encoded).expect("deserialize configured");
+    assert_eq!(decoded.tags, vec!["Official".to_string(), "Fast".to_string()]);
+    assert_eq!(decoded.icon.as_deref(), Some("openai"));
 }
 
 #[test]
@@ -875,6 +914,8 @@ fn upstream_provider(
         last_error_at: None,
         template_id: None,
         ignored_models: Vec::new(),
+        tags: Vec::new(),
+        icon: None,
     }
 }
 
@@ -20252,6 +20293,8 @@ fn ai_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
             last_error_at: None,
             template_id: None,
             ignored_models: Vec::new(),
+            tags: Vec::new(),
+            icon: None,
         };
         let mut initial_config = GatewayConfig::default();
         initial_config.providers.push(seeded.clone());
@@ -20288,6 +20331,8 @@ fn ai_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
                 last_error_at: None,
                 template_id: None,
                 ignored_models: Vec::new(),
+                tags: Vec::new(),
+                icon: None,
             },
             None,
         );
@@ -20385,6 +20430,8 @@ fn ai_gateway_upsert_clears_runtime_state_for_changed_key() {
             last_error_at: None,
             template_id: None,
             ignored_models: Vec::new(),
+            tags: Vec::new(),
+            icon: None,
         };
         let mut config = GatewayConfig::default();
         config.providers.push(seeded.clone());
@@ -20438,6 +20485,8 @@ fn ai_gateway_upsert_clears_runtime_state_for_changed_key() {
                 last_error_at: None,
                 template_id: None,
                 ignored_models: Vec::new(),
+                tags: Vec::new(),
+                icon: None,
             },
             None,
         );
@@ -20544,6 +20593,8 @@ fn ac_016_status_from_config_counts_rows_not_providers() {
         last_error_at: None,
         template_id: None,
         ignored_models: Vec::new(),
+        tags: Vec::new(),
+        icon: None,
     };
 
     // Make those rows truly auto-disabled via register.

@@ -1,8 +1,10 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
   ArrowRightLeft,
+  Check,
+  ChevronDown,
   Filter,
   Globe,
   Pencil,
@@ -10,6 +12,7 @@ import {
   RotateCcw,
   Server,
   Sparkles,
+  Tag,
   Trash2,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
@@ -52,6 +55,58 @@ export function UpstreamProviderList({
 }: UpstreamProviderListProps) {
   const { t } = useTranslation();
   const [statusFilter, setStatusFilter] = useState<ProviderStatusFilter>("all");
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [tagFilterOpen, setTagFilterOpen] = useState(false);
+  const tagFilterRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!tagFilterOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (tagFilterRef.current && !tagFilterRef.current.contains(e.target as Node)) {
+        setTagFilterOpen(false);
+      }
+    }
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setTagFilterOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [tagFilterOpen]);
+
+  const allAvailableTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of providers) {
+      if (p.tags) {
+        for (const tag of p.tags) {
+          const trimmed = tag.trim();
+          if (trimmed) set.add(trimmed);
+        }
+      }
+    }
+    return Array.from(set).sort();
+  }, [providers]);
+
+  const tagCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const tag of allAvailableTags) {
+      map.set(tag, providers.filter((p) => p.tags?.includes(tag)).length);
+    }
+    return map;
+  }, [allAvailableTags, providers]);
+
+  const toggleTagFilter = (tag: string) => {
+    setSelectedTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
+    );
+  };
+
+  const clearTagFilter = () => {
+    setSelectedTags([]);
+  };
 
   const counts = useMemo(() => {
     let enabled = 0;
@@ -71,14 +126,17 @@ export function UpstreamProviderList({
   }, [providers]);
 
   const filteredProviders = useMemo(() => {
-    if (statusFilter === "enabled") {
-      return providers.filter((p) => p.enabled);
-    }
-    if (statusFilter === "disabled") {
-      return providers.filter((p) => !p.enabled);
-    }
-    return providers;
-  }, [providers, statusFilter]);
+    return providers.filter((p) => {
+      if (statusFilter === "enabled" && !p.enabled) return false;
+      if (statusFilter === "disabled" && p.enabled) return false;
+      if (selectedTags.length > 0) {
+        const pTags = p.tags ?? [];
+        const matches = selectedTags.some((t) => pTags.includes(t));
+        if (!matches) return false;
+      }
+      return true;
+    });
+  }, [providers, statusFilter, selectedTags]);
 
   return (
     <section className="space-y-3.5" data-testid="ai-gateway-providers">
@@ -183,6 +241,90 @@ export function UpstreamProviderList({
             </div>
           ) : null}
 
+          {allAvailableTags.length > 0 ? (
+            <div className="relative" ref={tagFilterRef}>
+              <button
+                type="button"
+                data-testid="ai-gateway-tag-filter-trigger"
+                aria-expanded={tagFilterOpen}
+                onClick={() => setTagFilterOpen((v) => !v)}
+                className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium shadow-xs transition ${
+                  selectedTags.length > 0
+                    ? "border-primary/50 bg-primary/10 text-primary"
+                    : "border-border/70 bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
+              >
+                <Tag className="h-3.5 w-3.5" />
+                <span>{t("aiGatewayFilterByTags", "Tags")}</span>
+                {selectedTags.length > 0 ? (
+                  <span
+                    data-testid="ai-gateway-tag-filter-badge"
+                    className="rounded-full bg-primary px-1.5 py-0.2 text-[10px] font-semibold text-primary-foreground"
+                  >
+                    {selectedTags.length}
+                  </span>
+                ) : null}
+                <ChevronDown
+                  className={`h-3 w-3 opacity-60 transition-transform ${
+                    tagFilterOpen ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
+
+              {tagFilterOpen && (
+                <div
+                  data-testid="ai-gateway-tag-filter-menu"
+                  className="absolute right-0 z-50 mt-1.5 min-w-[200px] max-w-[280px] rounded-lg border border-border/80 bg-popover p-1.5 shadow-lg backdrop-blur-md animate-in fade-in-50 zoom-in-95"
+                >
+                  <div className="flex items-center justify-between border-b border-border/50 px-2 py-1 pb-1.5 text-xs font-semibold text-foreground">
+                    <span>{t("aiGatewayFilterByTags", "Filter by tags")}</span>
+                    {selectedTags.length > 0 ? (
+                      <button
+                        type="button"
+                        data-testid="ai-gateway-tag-filter-clear"
+                        onClick={clearTagFilter}
+                        className="text-[11px] font-normal text-muted-foreground hover:text-foreground"
+                      >
+                        {t("aiGatewayClearFilter", "Clear")}
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="max-h-56 overflow-y-auto py-1 space-y-0.5">
+                    {allAvailableTags.map((tag) => {
+                      const isChecked = selectedTags.includes(tag);
+                      const count = tagCounts.get(tag) ?? 0;
+                      return (
+                        <button
+                          key={tag}
+                          type="button"
+                          data-testid={`ai-gateway-tag-option-${tag}`}
+                          onClick={() => toggleTagFilter(tag)}
+                          className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-foreground hover:bg-muted/70 transition-colors"
+                        >
+                          <div className="flex items-center gap-2 truncate">
+                            <div
+                              className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${
+                                isChecked
+                                  ? "border-primary bg-primary text-primary-foreground"
+                                  : "border-muted-foreground/40 bg-background"
+                              }`}
+                            >
+                              {isChecked && <Check className="h-2.5 w-2.5" />}
+                            </div>
+                            <span className="truncate">{tag}</span>
+                          </div>
+                          <span className="ml-2 text-[10px] text-muted-foreground">
+                            {count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : null}
+
           {onManageTemplates ? (
             <button
               type="button"
@@ -263,7 +405,10 @@ export function UpstreamProviderList({
           </p>
           <button
             type="button"
-            onClick={() => setStatusFilter("all")}
+            onClick={() => {
+              setStatusFilter("all");
+              setSelectedTags([]);
+            }}
             className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
           >
             <RotateCcw className="h-3 w-3" />
@@ -306,30 +451,43 @@ export function UpstreamProviderList({
                 <div>
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-start gap-3 min-w-0 flex-1">
-                      {templateView ? (
-                        <span
-                          data-testid={`ai-gateway-provider-template-icon-${provider.id}`}
-                          title={t("aiGatewayProviderTemplateAvatarTitle", {
-                            name: templateView.template.name,
-                            defaultValue: `Created from template ${templateView.template.name}`,
-                          })}
-                          className="shrink-0 mt-0.5"
-                        >
-                          <ProviderTemplateAvatar
-                            icon={templateView.template.icon}
-                            templateId={templateView.template.id}
-                            templateName={templateView.template.name}
-                            size={36}
-                          />
-                        </span>
-                      ) : (
-                        <div
-                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-muted/40 text-muted-foreground shadow-2xs mt-0.5"
-                          aria-hidden="true"
-                        >
-                          <Server className="h-4.5 w-4.5 opacity-70" />
-                        </div>
-                      )}
+                      {(() => {
+                        const effectiveIcon = provider.icon || templateView?.template.icon;
+                        if (effectiveIcon) {
+                          const isCustom = Boolean(provider.icon);
+                          return (
+                            <span
+                              data-testid={`ai-gateway-provider-template-icon-${provider.id}`}
+                              title={
+                                isCustom
+                                  ? t("aiGatewayCustomIcon", "Custom icon")
+                                  : templateView
+                                    ? t("aiGatewayProviderTemplateAvatarTitle", {
+                                        name: templateView.template.name,
+                                        defaultValue: `Created from template ${templateView.template.name}`,
+                                      })
+                                    : provider.name
+                              }
+                              className="shrink-0 mt-0.5"
+                            >
+                              <ProviderTemplateAvatar
+                                icon={effectiveIcon}
+                                templateId={templateView?.template.id ?? provider.id}
+                                templateName={provider.name}
+                                size={36}
+                              />
+                            </span>
+                          );
+                        }
+                        return (
+                          <div
+                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-muted/40 text-muted-foreground shadow-2xs mt-0.5"
+                            aria-hidden="true"
+                          >
+                            <Server className="h-4.5 w-4.5 opacity-70" />
+                          </div>
+                        );
+                      })()}
                       <div className="min-w-0 flex-1">
                         <button
                           type="button"
@@ -364,6 +522,21 @@ export function UpstreamProviderList({
                             </span>
                           ) : null}
                         </div>
+                        {provider.tags && provider.tags.length > 0 ? (
+                          <div
+                            data-testid={`ai-gateway-provider-tags-${provider.id}`}
+                            className="mt-1.5 flex flex-wrap items-center gap-1"
+                          >
+                            {provider.tags.map((tag) => (
+                              <span
+                                key={tag}
+                                className="inline-flex items-center rounded-md bg-secondary/80 px-1.5 py-0.5 text-[10px] font-medium text-secondary-foreground"
+                              >
+                                #{tag}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
 

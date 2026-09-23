@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArchiveRestore,
+  Check,
   ChevronDown,
   ChevronUp,
   Clock,
@@ -12,6 +13,7 @@ import {
   RotateCcw,
   Server,
   Sparkles,
+  Tag,
   Trash2,
   X,
 } from "lucide-react";
@@ -40,7 +42,11 @@ import {
   type ModelPrice,
 } from "@/lib/aiGateway";
 import { MappingPriceEditor } from "./MappingPriceEditor";
-import { ProviderTemplateAvatar } from "./ProviderTemplateIcon";
+import {
+  PROVIDER_CUSTOM_ICON_OPTIONS,
+  ProviderTemplateAvatar,
+  ProviderTemplateIconPicker,
+} from "./ProviderTemplateIcon";
 
 type ProviderDetailDialogProps = {
   open: boolean;
@@ -57,6 +63,7 @@ type ProviderDetailDialogProps = {
   onSave: (provider: GatewayUpstreamProvider, prices: ModelPrice[]) => void;
   onDelete?: (providerId: string) => void;
   templates?: GatewayProviderTemplateView[];
+  availableTags?: string[];
   onDeleteModel?: (providerId: string, upstreamModel: string) => void;
   onRestoreModel?: (providerId: string, upstreamModel: string) => void;
   /** Clear one auto-disabled mapping row's runtime state (no `enabled` change). */
@@ -87,6 +94,7 @@ export function ProviderDetailDialog({
   onSave,
   onDelete,
   templates,
+  availableTags,
   onDeleteModel,
   onRestoreModel,
   onReenableModel,
@@ -108,6 +116,9 @@ export function ProviderDetailDialog({
   );
   const [effortInputs, setEffortInputs] = useState<Record<number, string>>({});
   const [weight, setWeight] = useState<number | string>(provider?.weight ?? 1);
+  const [icon, setIcon] = useState<string>("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState<string>("");
 
   useEffect(() => {
     if (!provider) {
@@ -123,6 +134,9 @@ export function ProviderDetailDialog({
       setExpandedMappings({});
       setEffortInputs({});
       setWeight(1);
+      setIcon("");
+      setTags([]);
+      setTagInput("");
       return;
     }
     const providerPrices = prices ?? [];
@@ -174,8 +188,45 @@ export function ProviderDetailDialog({
     setExpandedMappings({});
     setEffortInputs({});
     setWeight(provider.weight ?? 1);
+    setIcon(provider.icon ?? "");
+    setTags(provider.tags ?? []);
+    setTagInput("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider, open]);
+
+  const candidateTags = [
+    ...new Set([...(availableTags ?? []), "LLM", "Embedding", "Vision", "Code", "Agent", "Reasoning"]),
+  ].filter(Boolean);
+
+  const handleAddTag = (rawTag: string) => {
+    const trimmed = rawTag.trim();
+    if (!trimmed) return;
+    if (!tags.includes(trimmed)) {
+      setTags((prev) => [...prev, trimmed]);
+    }
+    setTagInput("");
+  };
+
+  const handleRemoveTag = (tagToRemove: string) => {
+    setTags((prev) => prev.filter((t) => t !== tagToRemove));
+  };
+
+  const handleToggleTag = (tag: string) => {
+    if (tags.includes(tag)) {
+      handleRemoveTag(tag);
+    } else {
+      handleAddTag(tag);
+    }
+  };
+
+  const handleTagInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleAddTag(tagInput);
+    } else if (e.key === "Backspace" && !tagInput && tags.length > 0) {
+      handleRemoveTag(tags[tags.length - 1]);
+    }
+  };
 
   // 实时运行时合并：在弹窗打开时，把 `runtimeProvider` 快照中匹配行的五个运行时
   // 字段并入本地 mappings 草稿，绝不重置草稿或覆盖用户可编辑字段。effect 幂等：
@@ -364,6 +415,8 @@ export function ProviderDetailDialog({
           Number(weight) <= 100
             ? Number(weight)
             : 1,
+        icon: icon.trim() ? icon.trim() : null,
+        tags: Array.from(new Set(tags.map((t) => t.trim()).filter(Boolean))),
       },
       submittedPrices,
     );
@@ -386,9 +439,16 @@ export function ProviderDetailDialog({
           <div className="flex items-center gap-3 min-w-0">
             {isTemplateBound ? (
               <ProviderTemplateAvatar
-                icon={boundTemplate?.icon}
+                icon={icon || boundTemplate?.icon}
                 templateId={boundTemplate?.id ?? provider.template_id}
-                templateName={boundTemplate?.name}
+                templateName={name || boundTemplate?.name}
+                size={36}
+                className="shrink-0"
+              />
+            ) : icon ? (
+              <ProviderTemplateAvatar
+                icon={icon}
+                templateName={name}
                 size={36}
                 className="shrink-0"
               />
@@ -472,8 +532,8 @@ export function ProviderDetailDialog({
                   {boundTemplate ? (
                     <span className="rounded-full bg-muted/80 px-2 py-0.2 text-[10px] font-medium text-muted-foreground border border-border/50">
                       {t("aiGatewayBoundTemplatePresetModels", {
-                        count: boundTemplate.models.length,
-                        defaultValue: `${boundTemplate.models.length} preset models`,
+                        count: boundTemplate.models?.length ?? 0,
+                        defaultValue: `${boundTemplate.models?.length ?? 0} preset models`,
                       })}
                     </span>
                   ) : null}
@@ -515,8 +575,8 @@ export function ProviderDetailDialog({
           ) : null}
           {/* 基础配置两列网格（使用 AI 终端服务商统一的标准 field-grid 和 field） */}
           <div className="field-grid col-2 mb-0">
-            {/* 第 1 行：名称独占一行 */}
-            <div className="field full-span">
+            {/* 第 1 行：名称与自定义图标并排 */}
+            <div className="field">
               <label className="required">{t("aiGatewayName", "Name")}</label>
               <input
                 type="text"
@@ -524,6 +584,43 @@ export function ProviderDetailDialog({
                 onChange={(event) => setName(event.target.value)}
                 placeholder="e.g. DeepSeek / OpenAI"
                 aria-label={t("aiGatewayName", "Name")}
+              />
+            </div>
+
+            <div className="field">
+              <label className="inline-flex items-center gap-1.5">
+                <span>{t("aiGatewayCustomIcon", "Provider icon")}</span>
+                <span className="relative group inline-flex items-center">
+                  <Info
+                    className="h-3.5 w-3.5 cursor-help text-muted-foreground/70 transition hover:text-foreground"
+                    aria-label={t("aiGatewayCustomIconDesc", "Select a custom icon or inherit from the bound template.")}
+                  />
+                  <span
+                    role="tooltip"
+                    className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-56 rounded-md border bg-popover p-2 text-left text-xs font-normal text-popover-foreground shadow-lg group-hover:block group-focus-within:block"
+                  >
+                    {t(
+                      "aiGatewayCustomIconDesc",
+                      "Select a custom icon or inherit from the bound template.",
+                    )}
+                  </span>
+                </span>
+              </label>
+              <ProviderTemplateIconPicker
+                value={icon}
+                onChange={setIcon}
+                options={PROVIDER_CUSTOM_ICON_OPTIONS}
+                inheritedIcon={boundTemplate?.icon}
+                autoLabel={
+                  isTemplateBound
+                    ? t("aiGatewayInheritTemplateIcon", "Inherit from template (Default)")
+                    : t("aiGatewayDefaultIcon", "Default icon")
+                }
+                templateId={(boundTemplate?.id ?? provider.template_id) || undefined}
+                templateName={name || boundTemplate?.name}
+                triggerTestId="provider-edit-icon-trigger"
+                selectTestId="provider-edit-icon"
+                menuTestId="provider-edit-icon-menu"
               />
             </div>
 
@@ -667,6 +764,92 @@ export function ProviderDetailDialog({
                   {revealApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
+            </div>
+
+            {/* 第 5 行：标签区块（非必填，支持多选） */}
+            <div className="field full-span">
+              <label className="inline-flex items-center justify-between w-full">
+                <span className="inline-flex items-center gap-1.5">
+                  <Tag className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span>{t("aiGatewayProviderTags", "Tags")}</span>
+                  <span className="text-[11px] font-normal text-muted-foreground">
+                    ({t("commonOptional", "Optional")})
+                  </span>
+                </span>
+              </label>
+              <div
+                data-testid="ai-gateway-provider-tags-container"
+                className="flex flex-wrap items-center gap-1.5 min-h-[38px] rounded-lg border border-border bg-background p-1.5 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/50"
+              >
+                {tags.map((tag) => (
+                  <span
+                    key={tag}
+                    data-testid={`provider-tag-badge-${tag}`}
+                    className="inline-flex items-center gap-1 rounded-md bg-primary/10 border border-primary/20 px-2 py-0.5 text-xs font-medium text-primary"
+                  >
+                    <span>{tag}</span>
+                    <button
+                      type="button"
+                      data-testid={`remove-tag-${tag}`}
+                      onClick={() => handleRemoveTag(tag)}
+                      aria-label={`Remove tag ${tag}`}
+                      className="rounded p-0.5 hover:bg-primary/20 transition-colors"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+                <input
+                  data-testid="ai-gateway-provider-tags-input"
+                  type="text"
+                  value={tagInput}
+                  onChange={(e) => setTagInput(e.target.value)}
+                  onKeyDown={handleTagInputKeyDown}
+                  placeholder={
+                    tags.length === 0
+                      ? t(
+                          "aiGatewayProviderTagsPlaceholder",
+                          "Add a tag and press Enter...",
+                        )
+                      : ""
+                  }
+                  aria-label={t("aiGatewayProviderTags", "Tags")}
+                  className="flex-1 min-w-[140px] bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground/60 h-6 px-1"
+                />
+              </div>
+
+              {candidateTags.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                  <span className="text-[11px] text-muted-foreground mr-1">
+                    {t("aiGatewayRecommendedTags", "Suggested tags")}:
+                  </span>
+                  {candidateTags.map((candidate) => {
+                    const isSelected = tags.includes(candidate);
+                    return (
+                      <button
+                        key={candidate}
+                        type="button"
+                        data-testid={`suggested-tag-${candidate}`}
+                        onClick={() => handleToggleTag(candidate)}
+                        className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium transition-all ${
+                          isSelected
+                            ? "bg-primary text-primary-foreground shadow-2xs"
+                            : "bg-muted/70 text-muted-foreground hover:bg-muted hover:text-foreground border border-border/50"
+                        }`}
+                      >
+                        {isSelected ? <Check className="h-3 w-3" /> : <Plus className="h-3 w-3 opacity-60" />}
+                        <span>{candidate}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <p className="text-[11px] text-muted-foreground mt-1">
+                {t(
+                  "aiGatewayProviderTagsDesc",
+                  "Assign tags to categorize providers for filtering (optional).",
+                )}
+              </p>
             </div>
           </div>
 

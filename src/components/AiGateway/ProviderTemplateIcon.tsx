@@ -35,6 +35,44 @@ export const PROVIDER_TEMPLATE_ICON_OPTIONS: readonly ProviderTemplateIconOption
   },
 ] as const;
 
+export const PROVIDER_CUSTOM_ICON_OPTIONS: readonly ProviderTemplateIconOption[] = [
+  { id: "openai", labelKey: "providerIconChatgpt", fallbackLabel: "OpenAI / ChatGPT" },
+  { id: "builtin:claude", labelKey: "providerIconClaude", fallbackLabel: "Claude" },
+  { id: "builtin:deepseek", labelKey: "providerIconDeepSeek", fallbackLabel: "DeepSeek" },
+  { id: "builtin:kimi", labelKey: "providerIconKimi", fallbackLabel: "Kimi" },
+  { id: "builtin:bailian", labelKey: "providerIconBailian", fallbackLabel: "通义千问 / 百炼" },
+  { id: "builtin:zhipu", labelKey: "providerIconZhipu", fallbackLabel: "智谱 GLM" },
+  { id: "builtin:minimax", labelKey: "providerIconMiniMax", fallbackLabel: "MiniMax" },
+  { id: "builtin:baidu", labelKey: "providerIconBaidu", fallbackLabel: "百度千帆 / 文心" },
+  { id: "builtin:tencent", labelKey: "providerIconTencent", fallbackLabel: "腾讯混元" },
+  { id: "builtin:volcengine", labelKey: "providerIconVolcengine", fallbackLabel: "火山引擎" },
+  { id: "builtin:doubao", labelKey: "providerIconDoubao", fallbackLabel: "豆包" },
+  { id: "builtin:stepfun", labelKey: "providerIconStepFun", fallbackLabel: "阶跃星辰" },
+  { id: "builtin:xfyun", labelKey: "providerIconXFYun", fallbackLabel: "讯飞星火" },
+  { id: "builtin:sensenova", labelKey: "providerIconSenseNova", fallbackLabel: "商汤日日新" },
+  { id: "builtin:lingyi", labelKey: "providerIconLingyi", fallbackLabel: "零一万物" },
+  { id: "builtin:antigravity", labelKey: "providerIconAntigravity", fallbackLabel: "Antigravity" },
+  { id: "opencode", labelKey: "aiGatewayTemplateIconOpenCode", fallbackLabel: "OpenCode" },
+  { id: "commandcode", labelKey: "aiGatewayTemplateIconCommandCode", fallbackLabel: "CommandCode" },
+] as const;
+
+/**
+ * Resolves the effective icon for an upstream provider:
+ * 1. provider.icon (custom user icon)
+ * 2. template?.icon (inherited from bound template)
+ * 3. fallback (null)
+ */
+export function resolveEffectiveProviderIcon(
+  provider?: { icon?: string | null; template_id?: string | null } | null,
+  template?: { icon?: string | null } | null,
+): string | null {
+  const custom = provider?.icon?.trim();
+  if (custom) return custom;
+  const inherited = template?.icon?.trim();
+  if (inherited) return inherited;
+  return null;
+}
+
 export function resolveProviderTemplateIcon(
   icon?: string | null,
   templateId?: string | null,
@@ -179,6 +217,12 @@ export interface ProviderTemplateIconPickerProps {
   templateId?: string;
   templateName?: string;
   disabled?: boolean;
+  options?: readonly ProviderTemplateIconOption[];
+  autoLabel?: string;
+  inheritedIcon?: string | null;
+  triggerTestId?: string;
+  selectTestId?: string;
+  menuTestId?: string;
 }
 
 export function ProviderTemplateIconPicker({
@@ -187,6 +231,12 @@ export function ProviderTemplateIconPicker({
   templateId,
   templateName,
   disabled = false,
+  options,
+  autoLabel,
+  inheritedIcon,
+  triggerTestId = "template-edit-icon-trigger",
+  selectTestId = "template-edit-icon",
+  menuTestId = "template-edit-icon-menu",
 }: ProviderTemplateIconPickerProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -210,15 +260,18 @@ export function ProviderTemplateIconPicker({
     };
   }, [open]);
 
-  const currentOption = PROVIDER_TEMPLATE_ICON_OPTIONS.find((opt) => opt.id === value);
+  const effectiveOptions = options ?? PROVIDER_TEMPLATE_ICON_OPTIONS;
+  const currentOption = effectiveOptions.find((opt) => opt.id === value);
+  const defaultAutoLabel = autoLabel || t("aiGatewayTemplateIconAuto", "Auto (Default)");
   const label = currentOption
     ? t(currentOption.labelKey, currentOption.fallbackLabel)
-    : t("aiGatewayTemplateIconAuto", "Auto (Default)");
+    : defaultAutoLabel;
+  const effectiveAvatarIcon = value || inheritedIcon;
 
   return (
     <div className="relative w-full" ref={containerRef}>
       <select
-        data-testid="template-edit-icon"
+        data-testid={selectTestId}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
@@ -226,8 +279,8 @@ export function ProviderTemplateIconPicker({
         tabIndex={-1}
         aria-hidden="true"
       >
-        <option value="">{t("aiGatewayTemplateIconAuto", "Auto (Default)")}</option>
-        {PROVIDER_TEMPLATE_ICON_OPTIONS.map((opt) => (
+        <option value="">{defaultAutoLabel}</option>
+        {effectiveOptions.map((opt) => (
           <option key={opt.id} value={opt.id}>
             {t(opt.labelKey, opt.fallbackLabel)}
           </option>
@@ -236,7 +289,7 @@ export function ProviderTemplateIconPicker({
 
       <button
         type="button"
-        data-testid="template-edit-icon-trigger"
+        data-testid={triggerTestId}
         aria-haspopup="listbox"
         aria-expanded={open}
         disabled={disabled}
@@ -245,7 +298,7 @@ export function ProviderTemplateIconPicker({
       >
         <div className="flex items-center gap-2.5 min-w-0">
           <ProviderTemplateAvatar
-            icon={value}
+            icon={effectiveAvatarIcon}
             templateId={templateId}
             templateName={templateName}
             size={24}
@@ -264,8 +317,8 @@ export function ProviderTemplateIconPicker({
       {open && (
         <div
           role="listbox"
-          data-testid="template-edit-icon-menu"
-          className="absolute left-0 top-full z-50 mt-1.5 w-full min-w-[220px] rounded-xl border border-border/80 bg-popover p-1.5 text-popover-foreground shadow-lg animate-in fade-in-0 zoom-in-95"
+          data-testid={menuTestId}
+          className="absolute left-0 top-full z-50 mt-1.5 max-h-60 w-full min-w-[220px] overflow-y-auto rounded-xl border border-border/80 bg-popover p-1.5 text-popover-foreground shadow-lg animate-in fade-in-0 zoom-in-95"
         >
           <button
             type="button"
@@ -282,18 +335,19 @@ export function ProviderTemplateIconPicker({
           >
             <div className="flex items-center gap-2.5 min-w-0">
               <ProviderTemplateAvatar
+                icon={inheritedIcon}
                 templateId={templateId}
                 templateName={templateName}
                 size={28}
               />
-              <span className="truncate">{t("aiGatewayTemplateIconAuto", "Auto (Default)")}</span>
+              <span className="truncate">{defaultAutoLabel}</span>
             </div>
             {value === "" && <Check className="h-4 w-4 text-primary shrink-0" />}
           </button>
 
           <div className="my-1 border-t border-border/60" />
 
-          {PROVIDER_TEMPLATE_ICON_OPTIONS.map((opt) => {
+          {effectiveOptions.map((opt) => {
             const isSelected = value === opt.id;
             return (
               <button
