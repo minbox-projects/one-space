@@ -41,7 +41,52 @@ vi.mock("@/components/Launcher", () => ({
   Launcher: () => <div data-testid="mock-launcher" />,
 }));
 
+const aboutModalHarness = vi.hoisted(() => ({
+  props: [] as Array<{ open: boolean; autoCheckOnOpen: boolean }>,
+}));
+
+vi.mock("@/components/AboutModal", () => ({
+  AboutModal: (props: { open?: boolean; autoCheckOnOpen?: boolean }) => {
+    aboutModalHarness.props.push({
+      open: props.open ?? false,
+      autoCheckOnOpen: props.autoCheckOnOpen ?? false,
+    });
+    return null;
+  },
+}));
+
 const writeTextMock = vi.fn(async () => undefined);
+
+/** Top-level tray destinations that must show the window and activate their page. */
+const TOP_LEVEL_DESTINATIONS = [
+  "launcher",
+  "ai-sessions",
+  "ai-assistants",
+  "ai-environments",
+  "api-gateway",
+  "ai-usage",
+] as const;
+
+/** More Pages submenu destinations that must show the window and activate their page. */
+const MORE_PAGES_DESTINATIONS = [
+  "workspaces",
+  "mcp-servers",
+  "skills",
+  "subagents",
+  "ssh",
+  "ssh-tunnels",
+  "protocol-router",
+  "file-sharing",
+  "ai-news",
+  "bookmarks",
+  "mail",
+  "snippets",
+  "notes",
+  "documentation",
+  "more-tools",
+] as const;
+
+type NavWindow = Window & { setActiveTab?: (tab: string) => void };
 
 type BatchResult = {
   operation: "connect" | "disconnect";
@@ -99,11 +144,29 @@ function emptyBatch(operation: "connect" | "disconnect"): BatchResult {
   };
 }
 
+/** Copy the two-tunnel snapshot with the given runtime statuses for t1 and t2. */
+function snapshotWithRuntime(first: string, second: string) {
+  return {
+    ...SSH_SNAPSHOT,
+    runtime: SSH_SNAPSHOT.runtime.map((entry, index) => ({
+      ...entry,
+      status: index === 0 ? first : second,
+    })),
+  };
+}
+
 describe("App tray menu integration", () => {
   let eventHandlers: Record<string, Array<(event: { payload?: unknown }) => unknown>>;
   let gatewayRunning: boolean;
   let gatewayStartError: Error | null;
+  let routerRunning: boolean;
+  let sharingRunning: boolean;
+  let sharingFileCount: number;
+  let sshSnapshot: typeof SSH_SNAPSHOT;
   let sshConnectResult: BatchResult | null;
+  let sshDisconnectResult: BatchResult | null;
+  let sshSnapshotAfterConnect: typeof SSH_SNAPSHOT | null;
+  let sshSnapshotAfterDisconnect: typeof SSH_SNAPSHOT | null;
 
   function gatewayStatus() {
     return {
@@ -148,6 +211,22 @@ describe("App tray menu integration", () => {
     return invokeMock.mock.calls.filter(([name]) => name === command).length;
   }
 
+  async function waitForSetActiveTab() {
+    await waitFor(() =>
+      expect((window as NavWindow).setActiveTab).toBeTypeOf("function"),
+    );
+  }
+
+  /** Wrap the App's exposed navigation binding so tray actions are observable. */
+  function installSetActiveTabSpy() {
+    const original = (window as NavWindow).setActiveTab;
+    const spy = vi.fn((tab: string) => {
+      original?.(tab);
+    });
+    (window as NavWindow).setActiveTab = spy;
+    return spy;
+  }
+
   async function waitForAppliedMenu() {
     await waitFor(() => expect(trayHarness.applyTrayMenu).toHaveBeenCalled());
   }
@@ -190,7 +269,15 @@ describe("App tray menu integration", () => {
     eventHandlers = {};
     gatewayRunning = false;
     gatewayStartError = null;
+    routerRunning = false;
+    sharingRunning = false;
+    sharingFileCount = 0;
+    sshSnapshot = snapshotWithRuntime("connected", "disconnected");
     sshConnectResult = null;
+    sshDisconnectResult = null;
+    sshSnapshotAfterConnect = null;
+    sshSnapshotAfterDisconnect = null;
+    aboutModalHarness.props.length = 0;
 
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       value: {},
@@ -251,27 +338,42 @@ describe("App tray menu integration", () => {
           gatewayRunning = false;
           return gatewayStatus();
         case "protocol_router_status":
-          return { running: false, enabled: false, port: 17689, route_count: 0 };
+          return {
+            running: routerRunning,
+            enabled: routerRunning,
+            port: 17689,
+            route_count: 0,
+          };
         case "protocol_router_start":
+          routerRunning = true;
           return { running: true, enabled: true, port: 17689, route_count: 0 };
         case "protocol_router_stop":
+          routerRunning = false;
           return { running: false, enabled: true, port: 17689, route_count: 0 };
         case "ssh_tunnels_snapshot":
-          return SSH_SNAPSHOT;
+          return sshSnapshot;
+        case "get_ssh_hosts":
+          return [];
         case "ssh_tunnels_connect_all":
+          if (sshSnapshotAfterConnect) sshSnapshot = sshSnapshotAfterConnect;
           return sshConnectResult ?? emptyBatch("connect");
         case "ssh_tunnels_disconnect_all":
-          return emptyBatch("disconnect");
+          if (sshSnapshotAfterDisconnect) sshSnapshot = sshSnapshotAfterDisconnect;
+          return sshDisconnectResult ?? emptyBatch("disconnect");
+        case "file_sharing_networks":
+          return [];
         case "file_sharing_status":
           return {
-            running: false,
-            sessionId: null,
+            running: sharingRunning,
+            sessionId: sharingRunning ? "s1" : null,
             address: null,
             port: null,
             shareUrl: null,
             startedAt: null,
             stoppedAt: null,
-            files: [],
+            files: Array.from({ length: sharingFileCount }, (_, index) => ({
+              id: `file-${index}`,
+            })),
             transfers: [],
             summary: {
               activeTransfers: 0,
@@ -497,5 +599,322 @@ describe("App tray menu integration", () => {
     await waitFor(() =>
       expect(document.body.textContent ?? "").toContain(expected),
     );
+  });
+
+  it.each([...TOP_LEVEL_DESTINATIONS, ...MORE_PAGES_DESTINATIONS])(
+    "shows the window and activates the %s page from the tray",
+    async (id) => {
+      renderApp();
+      await waitForAppliedMenu();
+      await waitForSetActiveTab();
+
+      const spy = installSetActiveTabSpy();
+      const beforeShow = commandCallCount("show_main_window");
+
+      await fireTrayAction(id);
+
+      await waitFor(() =>
+        expect(commandCallCount("show_main_window")).toBeGreaterThan(beforeShow),
+      );
+      expect(spy).toHaveBeenCalledWith(id);
+    },
+  );
+
+  it("activates the settings page from the tray", async () => {
+    renderApp();
+    await waitForAppliedMenu();
+    await waitForSetActiveTab();
+
+    const spy = installSetActiveTabSpy();
+    const beforeShow = commandCallCount("show_main_window");
+
+    await fireTrayAction("settings");
+
+    await waitFor(() =>
+      expect(commandCallCount("show_main_window")).toBeGreaterThan(beforeShow),
+    );
+    expect(spy).toHaveBeenCalledWith("settings");
+  });
+
+  it("opens the About modal with the auto-check flag for check-for-updates", async () => {
+    renderApp();
+
+    await fireTrayAction("check-for-updates");
+
+    await waitFor(() => {
+      expect(aboutModalHarness.props.at(-1)).toEqual({
+        open: true,
+        autoCheckOnOpen: true,
+      });
+    });
+  });
+
+  it("opens the About modal without the auto-check flag for about", async () => {
+    renderApp();
+
+    await fireTrayAction("about");
+
+    await waitFor(() => {
+      expect(aboutModalHarness.props.at(-1)).toEqual({
+        open: true,
+        autoCheckOnOpen: false,
+      });
+    });
+  });
+
+  it("opens the quick assistant window from the tray", async () => {
+    renderApp();
+
+    await fireActionAndExpectCommand(
+      "quick-assistant",
+      "show_quick_assistant_window",
+    );
+  });
+
+  it("opens the selection assistant window from the tray", async () => {
+    renderApp();
+
+    await fireActionAndExpectCommand(
+      "selection-assistant",
+      "show_selection_assistant_window",
+    );
+  });
+
+  it("starts the stopped router from the tray and re-queries status", async () => {
+    routerRunning = false;
+    renderApp();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "router")?.checked).toBe(false),
+    );
+
+    const statusBefore = commandCallCount("protocol_router_status");
+    await fireActionAndExpectCommand("router", "protocol_router_start");
+
+    await waitFor(() =>
+      expect(commandCallCount("protocol_router_status")).toBeGreaterThan(
+        statusBefore,
+      ),
+    );
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "router")?.checked).toBe(true),
+    );
+  });
+
+  it("stops the running router from the tray and re-queries status", async () => {
+    routerRunning = true;
+    renderApp();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "router")?.checked).toBe(true),
+    );
+
+    const statusBefore = commandCallCount("protocol_router_status");
+    await fireActionAndExpectCommand("router", "protocol_router_stop");
+
+    await waitFor(() =>
+      expect(commandCallCount("protocol_router_status")).toBeGreaterThan(
+        statusBefore,
+      ),
+    );
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "router")?.checked).toBe(false),
+    );
+  });
+
+  it("rebuilds the tunnel count after an ssh-tunnels-updated event", async () => {
+    sshSnapshot = snapshotWithRuntime("connected", "disconnected");
+    renderApp();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "tunnels-status")?.label).toContain(
+        "1/2",
+      ),
+    );
+
+    sshSnapshot = snapshotWithRuntime("connected", "connected");
+    const before = trayHarness.applyTrayMenu.mock.calls.length;
+    await triggerEvent("ssh-tunnels-updated");
+
+    await waitFor(() =>
+      expect(trayHarness.applyTrayMenu.mock.calls.length).toBeGreaterThan(
+        before,
+      ),
+    );
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "tunnels-status")?.label).toContain(
+        "2/2",
+      ),
+    );
+  });
+
+  it("rebuilds the sharing state after a file-sharing-updated event", async () => {
+    renderApp();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "stop-sharing")?.enabled).toBe(false),
+    );
+
+    sharingRunning = true;
+    sharingFileCount = 2;
+    const before = trayHarness.applyTrayMenu.mock.calls.length;
+    await triggerEvent("file-sharing-updated");
+
+    await waitFor(() =>
+      expect(trayHarness.applyTrayMenu.mock.calls.length).toBeGreaterThan(
+        before,
+      ),
+    );
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "stop-sharing")?.enabled).toBe(true),
+    );
+    expect(findModelItem(latestModel(), "sharing-status")?.label).toContain("2");
+  });
+
+  it("rebuilds the router check state after a protocol-router-status-update event", async () => {
+    routerRunning = false;
+    renderApp();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "router")?.checked).toBe(false),
+    );
+
+    routerRunning = true;
+    const before = trayHarness.applyTrayMenu.mock.calls.length;
+    await triggerEvent("protocol-router-status-update");
+
+    await waitFor(() =>
+      expect(trayHarness.applyTrayMenu.mock.calls.length).toBeGreaterThan(
+        before,
+      ),
+    );
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "router")?.checked).toBe(true),
+    );
+  });
+
+  it("rebuilds every label on a language change", async () => {
+    isVisibleMock.mockResolvedValue(false);
+    renderApp();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "toggle-window")?.label).toBe(
+        String(i18n.t("tray.toggle.show")),
+      ),
+    );
+
+    const before = trayHarness.applyTrayMenu.mock.calls.length;
+    await act(async () => {
+      await i18n.changeLanguage("zh");
+    });
+
+    await waitFor(() =>
+      expect(trayHarness.applyTrayMenu.mock.calls.length).toBeGreaterThan(
+        before,
+      ),
+    );
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "toggle-window")?.label).toBe(
+        String(i18n.t("tray.toggle.show")),
+      ),
+    );
+  });
+
+  it("reflects only successful connections after a partially failed connect-all", async () => {
+    sshSnapshot = snapshotWithRuntime("disconnected", "disconnected");
+    sshConnectResult = {
+      ...emptyBatch("connect"),
+      success_count: 1,
+      failed_count: 1,
+      total_count: 2,
+      failures: [
+        { tunnel_id: "t2", tunnel_name: "Two", error: "auth failed" },
+      ],
+    };
+    sshSnapshotAfterConnect = snapshotWithRuntime("connected", "disconnected");
+    renderApp();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "tunnels-status")?.label).toContain(
+        "0/2",
+      ),
+    );
+
+    await fireTrayAction("connect-all");
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "tunnels-status")?.label).toContain(
+        "1/2",
+      ),
+    );
+    expect(findModelItem(latestModel(), "tunnels-status")?.label).not.toContain(
+      "2/2",
+    );
+  });
+
+  it("reflects only successful disconnections after a partially failed disconnect-all", async () => {
+    sshSnapshot = snapshotWithRuntime("connected", "connected");
+    sshDisconnectResult = {
+      ...emptyBatch("disconnect"),
+      success_count: 1,
+      failed_count: 1,
+      total_count: 2,
+      failures: [
+        { tunnel_id: "t2", tunnel_name: "Two", error: "stop failed" },
+      ],
+    };
+    sshSnapshotAfterDisconnect = snapshotWithRuntime(
+      "disconnected",
+      "connected",
+    );
+    renderApp();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "tunnels-status")?.label).toContain(
+        "2/2",
+      ),
+    );
+
+    await fireTrayAction("disconnect-all");
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "tunnels-status")?.label).toContain(
+        "1/2",
+      ),
+    );
+  });
+
+  it("rebuilds the model with new accelerator hints from tray-shortcuts-updated", async () => {
+    renderApp();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "toggle-window")?.accelerator).toBe(
+        "Alt+Space",
+      ),
+    );
+
+    await triggerEvent("tray-shortcuts-updated", {
+      main: "Cmd+K",
+      quick: "Ctrl+Shift+L",
+    });
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "toggle-window")?.accelerator).toBe(
+        "Cmd+K",
+      ),
+    );
+    expect(findModelItem(latestModel(), "quick-ai")?.accelerator).toBe(
+      "Ctrl+Shift+L",
+    );
+  });
+
+  it("does not register a trigger-sync listener", async () => {
+    renderApp();
+
+    await waitFor(() => expect(eventHandlers["refresh-counts"]).toBeDefined());
+
+    expect(
+      listenMock.mock.calls.some(([name]) => name === "trigger-sync"),
+    ).toBe(false);
   });
 });

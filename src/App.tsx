@@ -418,6 +418,18 @@ function App() {
     setActiveTab(resolved.tab);
   }, []);
 
+  const navigateFromTray = useCallback(
+    (target: string) => {
+      const binding = (window as AppWindowBindings).setActiveTab;
+      if (binding) {
+        binding(target);
+      } else {
+        navigateToTab(target);
+      }
+    },
+    [navigateToTab],
+  );
+
   const navigateToMessageTarget = (target: MessageTarget) => {
     setMessageCenterOpen(false);
     if (target.tab === "settings") {
@@ -659,16 +671,16 @@ function App() {
       }
       if (id === "settings") {
         await invoke("show_main_window");
-        navigateToTab("settings");
+        navigateFromTray("settings");
         return;
       }
       if (TRAY_NAVIGATION_IDS.has(id)) {
         await invoke("show_main_window");
-        navigateToTab(id);
+        navigateFromTray(id);
       }
     },
     [
-      navigateToTab,
+      navigateFromTray,
       pushToast,
       refreshTrayGateway,
       refreshTrayRouter,
@@ -722,6 +734,16 @@ function App() {
     });
     addListener("file-sharing-updated", () => {
       void refreshTraySharing();
+    });
+    addListener("tray-shortcuts-updated", (event) => {
+      const payload = (event.payload ?? {}) as {
+        main?: string | null;
+        quick?: string | null;
+      };
+      setTrayState((prev) => ({
+        ...prev,
+        shortcuts: { main: payload.main ?? null, quick: payload.quick ?? null },
+      }));
     });
 
     const handleLanguageChanged = () => {
@@ -1066,12 +1088,6 @@ function App() {
       setTimeout(() => {
         invoke("sync_run_now").catch((e) => console.error("Sync failed:", e));
       }, 3000);
-
-      addListener("trigger-sync", () => {
-        invoke("sync_run_now").catch((e) =>
-          console.error("Tray Sync failed:", e),
-        );
-      });
 
       addListener("refresh-counts", () => {
         scheduleLoadCounts();

@@ -206,11 +206,26 @@ describe("accelerator hints", () => {
     expect(itemById(model, "launcher").accelerator).toBeUndefined();
   });
 
+  it("attaches a single-segment shortcut now that bare keys are valid", () => {
+    const model = build({ shortcuts: { main: "F5", quick: "Space" } });
+    expect(itemById(model, "toggle-window").accelerator).toBe("F5");
+    expect(itemById(model, "quick-ai").accelerator).toBe("Space");
+  });
+
+  it("omits a Meta combination because Meta is not a modifier", () => {
+    const model = build({
+      shortcuts: { main: "Meta+A", quick: "Meta+Shift+B" },
+    });
+    expect(itemById(model, "toggle-window").accelerator).toBeUndefined();
+    expect(itemById(model, "quick-ai").accelerator).toBeUndefined();
+  });
+
   it.each([
     [""],
     [null],
     ["NotAKey+Whatever"],
     ["AltPlus"],
+    ["Meta+A"],
     ["Alt+"],
   ])("omits an invalid shortcut value %p", (shortcut) => {
     const model = build({ shortcuts: { main: shortcut, quick: shortcut } });
@@ -219,7 +234,9 @@ describe("accelerator hints", () => {
   });
 
   it.each([
+    // Modifier tokens followed by a named key.
     "Alt+Space",
+    "Alt+Enter",
     "Alt+Shift+A",
     "Cmd+Q",
     "Command+Q",
@@ -228,12 +245,24 @@ describe("accelerator hints", () => {
     "Option+Q",
     "Shift+A",
     "Super+A",
-    "Meta+A",
     "CmdOrCtrl+K",
     "CommandOrControl+K",
     "ctrl+shift+p",
+    "command+space",
     "Alt+1",
     "Shift+F5",
+    "Cmd+F24",
+    // A single bare last segment is valid on its own.
+    "F5",
+    "F24",
+    "Space",
+    "Enter",
+    "Tab",
+    "enter",
+    "A",
+    "1",
+    "PageDown",
+    "ArrowLeft",
   ])("accepts the valid accelerator hint %s", (value) => {
     expect(isAcceleratorHint(value)).toBe(true);
   });
@@ -244,9 +273,14 @@ describe("accelerator hints", () => {
     [undefined],
     ["NotAKey+Whatever"],
     ["AltPlus"],
+    ["Meta+A"],
     ["Alt+"],
     ["+A"],
     ["Alt+Shift+"],
+    ["Alt+Plus"],
+    ["Alt+AB"],
+    ["F25"],
+    ["Alt+Shift"],
   ])("rejects the invalid accelerator hint %p", (value) => {
     expect(isAcceleratorHint(value)).toBe(false);
   });
@@ -511,5 +545,32 @@ describe("applyTrayMenu native menu", () => {
 
     await expect(applyTrayMenu(build(), vi.fn())).resolves.toBe(false);
     expect(nativeMenuMocks.traySetMenu).not.toHaveBeenCalled();
+  });
+
+  it("retries an item without its accelerator when native creation rejects", async () => {
+    let rejectedAccelerator = false;
+    nativeMenuMocks.menuItemNew.mockImplementation(
+      async (options: NativeItemOptions) => {
+        if (!rejectedAccelerator && options.accelerator !== undefined) {
+          rejectedAccelerator = true;
+          throw new Error("invalid accelerator");
+        }
+        return { kind: "MenuItem", ...options };
+      },
+    );
+
+    await expect(applyTrayMenu(build(), vi.fn())).resolves.toBe(true);
+
+    const toggleAttempts = nativeMenuMocks.menuItemNew.mock.calls
+      .map((call) => call[0] as NativeItemOptions)
+      .filter((options) => options.id === "toggle-window");
+    expect(toggleAttempts.length).toBe(2);
+    expect(toggleAttempts[0]?.accelerator).toBe("Alt+Space");
+    expect(toggleAttempts[1]?.accelerator).toBeUndefined();
+
+    // The rest of the menu is still applied and attached to the tray.
+    expect(nativeItemById("quick-ai")).toBeDefined();
+    expect(nativeItemById("services")).toMatchObject({ kind: "Submenu" });
+    expect(nativeMenuMocks.traySetMenu).toHaveBeenCalled();
   });
 });

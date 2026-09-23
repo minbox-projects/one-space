@@ -1927,6 +1927,10 @@ export function SettingsView({
           main: config.main_shortcut,
           quick: config.quick_ai_shortcut,
         });
+        await emit("tray-shortcuts-updated", {
+          main: config.main_shortcut,
+          quick: config.quick_ai_shortcut,
+        }).catch(console.error);
       }
 
       if (activeTab === "ai") {

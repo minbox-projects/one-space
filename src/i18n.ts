@@ -3712,7 +3712,7 @@ const resources = {
       "tray.action.gatewayStartFailed":
         "Failed to start API Gateway on port {{port}}: {{error}}",
       "tray.action.sshBatchPartial":
-        "SSH tunnels: {{success}} connected, {{failed}} failed",
+        "SSH tunnels: {{success}} succeeded, {{failed}} failed",
     },
   },
   zh: {
@@ -7191,7 +7191,7 @@ const resources = {
       "tray.action.gatewayStartFailed":
         "无法在端口 {{port}} 启动 API 网关：{{error}}",
       "tray.action.sshBatchPartial":
-        "SSH 隧道：已连接 {{success}} 个，失败 {{failed}} 个",
+        "SSH 隧道：成功 {{success}} 个，失败 {{failed}} 个",
     },
   },
 };

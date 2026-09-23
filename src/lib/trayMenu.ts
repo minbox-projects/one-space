@@ -38,28 +38,56 @@ export interface TrayMenuState {
 export type TrayTranslate = (key: string, options?: Record<string, unknown>) => string;
 
 const MODIFIER_KEYS = new Set([
-  "alt",
-  "shift",
-  "cmd",
   "command",
-  "ctrl",
+  "cmd",
   "control",
+  "ctrl",
+  "alt",
   "option",
+  "shift",
   "super",
-  "meta",
   "cmdorctrl",
   "commandorcontrol",
 ]);
 
+const NAMED_KEYS = new Set([
+  "space",
+  "enter",
+  "tab",
+  "escape",
+  "backspace",
+  "delete",
+  "insert",
+  "home",
+  "end",
+  "pageup",
+  "pagedown",
+  "arrowup",
+  "arrowdown",
+  "arrowleft",
+  "arrowright",
+]);
+
+function isFunctionKey(segment: string): boolean {
+  const match = /^f(\d{1,2})$/i.exec(segment);
+  if (!match) return false;
+  const index = Number(match[1]);
+  return index >= 1 && index <= 24;
+}
+
+function isValidLastSegment(segment: string): boolean {
+  if (/^[A-Za-z0-9]$/.test(segment)) return true;
+  const lower = segment.toLowerCase();
+  return NAMED_KEYS.has(lower) || isFunctionKey(lower);
+}
+
 export function isAcceleratorHint(value: string | null | undefined): boolean {
   if (typeof value !== "string") return false;
   const segments = value.split("+");
-  if (segments.length < 2) return false;
-  const key = segments[segments.length - 1];
-  if (key === "" || MODIFIER_KEYS.has(key.toLowerCase())) return false;
+  const last = segments[segments.length - 1];
+  if (!isValidLastSegment(last)) return false;
   for (let index = 0; index < segments.length - 1; index += 1) {
-    const modifier = segments[index];
-    if (modifier === "" || !MODIFIER_KEYS.has(modifier.toLowerCase())) return false;
+    if (!MODIFIER_KEYS.has(segments[index].toLowerCase())) return false;
   }
   return true;
 }
@@ -224,6 +252,35 @@ type NativeTrayMenuItem =
   | Awaited<ReturnType<typeof PredefinedMenuItem.new>>
   | Awaited<ReturnType<typeof Submenu.new>>;
 
+async function createLeafItem(
+  node: TrayMenuItem,
+  onAction: TrayMenuActionHandler,
+): Promise<NativeTrayMenuItem | null> {
+  const action = () => onAction(node.id);
+  const build = (accelerator?: string) => {
+    const options = {
+      id: node.id,
+      text: node.label,
+      enabled: node.enabled,
+      ...(accelerator !== undefined ? { accelerator } : {}),
+      action,
+    };
+    return node.checked !== undefined
+      ? CheckMenuItem.new({ ...options, checked: node.checked })
+      : MenuItem.new(options);
+  };
+  try {
+    return await build(node.accelerator);
+  } catch {
+    if (node.accelerator === undefined) return null;
+    try {
+      return await build(undefined);
+    } catch {
+      return null;
+    }
+  }
+}
+
 async function buildNativeItems(
   nodes: TrayMenuNode[],
   onAction: TrayMenuActionHandler,
@@ -245,20 +302,8 @@ async function buildNativeItems(
       );
       continue;
     }
-    const options = {
-      id: node.id,
-      text: node.label,
-      enabled: node.enabled,
-      ...(node.accelerator !== undefined
-        ? { accelerator: node.accelerator }
-        : {}),
-      action: () => onAction(node.id),
-    };
-    if (node.checked !== undefined) {
-      items.push(await CheckMenuItem.new({ ...options, checked: node.checked }));
-    } else {
-      items.push(await MenuItem.new(options));
-    }
+    const item = await createLeafItem(node, onAction);
+    if (item) items.push(item);
   }
   return items;
 }
