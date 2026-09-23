@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-20-gateway-per-model-auto-disable.md
-2026-09-20-gateway-per-model-auto-disable.md: ca9dc9def5df8aa70e84c6455d4cee7b0266fc19
-2026-09-20-gateway-per-model-auto-disable.zh.md: c41e769ad0152e1344026e7c204aa1c44a01cb3d
+2026-09-20-gateway-per-model-auto-disable.md: 0b88ff96d19caa3610be40b820b55d6e28b188ad
+2026-09-20-gateway-per-model-auto-disable.zh.md: eeee9473928efb5c23d32722d6951a36d2fbe05d
