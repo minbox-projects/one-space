@@ -13,7 +13,8 @@ macOS 托盘菜单原本由 Rust 拥有：`create_tray_menu` 构建全部条目�
 前端拥有菜单模型与全部文案；Rust 保留托盘创建与 OS 集成。
 
 - `src/lib/trayMenu.ts` 拥有纯模型（`buildTrayMenuModel`、`isAcceleratorHint`）与原生应用器 `applyTrayMenu`：后者构建 `@tauri-apps/api/menu` 条目并对 `main` 托盘图标调用 `TrayIcon.setMenu`，API 不可用时软失败；全部标签来自 `src/i18n.ts`。
-- `src/App.tsx` 承载控制器：从窗口可见性、网关与路由状态、隧道计数、共享状态与已配置快捷键初始化状态，在 `main-window-visibility-changed`、`api-gateway-status-update`、`protocol-router-status-update`、`ssh-tunnels-updated`、`file-sharing-updated` 与 i18n `languageChanged` 时重建菜单，并通过既有命令封装实现全部托盘动作。
+- 快捷键提示遵循已注册快捷键的语义：只有单一有效键（`F5`、`Space`、`A`、`1`）或已知键名的修饰键组合才会显示，`Meta` 不是修饰键，无法解析或键名未知的值一律省略。原生条目创建拒绝某个条目的 accelerator 时，`applyTrayMenu` 会去掉该条目的 accelerator 重试，因此单个坏快捷键不会丢掉整个菜单。
+- `src/App.tsx` 承载控制器：从窗口可见性、网关与路由状态、隧道计数、共享状态与已配置快捷键初始化状态，在 `main-window-visibility-changed`、`api-gateway-status-update`、`protocol-router-status-update`、`ssh-tunnels-updated`、`file-sharing-updated`、`tray-shortcuts-updated`（Settings 保存快捷键后发出，提示无需重启即刷新）与 i18n `languageChanged` 时重建菜单，并通过既有命令封装实现全部托盘动作。
 - Rust 保留 OS 契约：托盘设置 `show_menu_on_left_click(false)`，只响应左键 Up 事件切换主窗口，右键打开原生菜单；webview 就绪前由两项双语启动兜底菜单（`get_fallback_tray_label`）继续显示或隐藏窗口与退出；`windows_data::emit_main_window_visibility` 发出 `main-window-visibility-changed`；`toggle_quick_ai_window` 命令打开快速 AI 窗口；`shutdown_runtime_services` 为托盘退出项、`quit_app` 与 `RunEvent::Exit` 提供同一条幂等清理路径。
 - 移除的内部接口为 `create_tray_menu`、`get_tray_label`、`update_tray_menu`、`emit_tray_action`、`TrayActionPayload` 与 `tray-action` 事件；没有外部消费者依赖它们。
 - `ssh_tunnels_connect_all` 与 `ssh_tunnels_disconnect_all` 支撑 Services 的批量动作，覆盖全部已保存隧道，复用分组批量内部实现与 `SshTunnelBatchOperationResult`，批次标识固定为 `ALL_TUNNELS_BATCH_ID = "all"` 与 `ALL_TUNNELS_BATCH_NAME = "All Tunnels"`。
@@ -28,8 +29,9 @@ macOS 托盘菜单原本由 Rust 拥有：`create_tray_menu` 构建全部条目�
 
 ## Consequences
 
-- 菜单结构、标签、启用与勾选只在一个 TypeScript 文件加 `src/i18n.ts` 中变化，新增或改名目标无需 Rust 改动；配置的快捷键字符串无法解析时，Show/Hide 与 Quick AI Session 的提示会被省略。
+- 菜单结构、标签、启用与勾选只在一个 TypeScript 文件加 `src/i18n.ts` 中变化，新增或改名目标无需 Rust 改动；配置的快捷键值不是合法的注册语义提示时，Show/Hide 与 Quick AI Session 的提示会被省略。
 - Rust 公共接口收缩为托盘创建、启动兜底、可见性事件、`toggle_quick_ai_window` 与统一退出清理；被移除的命令与事件已无剩余调用方，过时调用会显式失败而不是静默无效。
 - 应用内任何位置的语言切换与服务状态变化都会在不重启的情况下重建菜单；菜单读取与应用内页面相同的状态命令，因此展示状态会在下次重建时与页面一致。
-- 失败动作经既有 toast 通道上报，且控制器在每次动作后重新查询状态，因此失败或部分失败的动作绝不会渲染为完全成功。
+- 服务状态动作（网关、路由、SSH 批量、停止共享、同步）的失败经既有 toast 通道上报，其中网关、路由、隧道与共享动作随后重新查询各自状态，因此失败或部分失败的结果绝不会渲染为完全成功；一次性窗口、导航与对话框动作没有这一处理。
+- SSH 批量部分失败的 toast 与操作方向无关（`tray.action.sshBatchPartial` 只报告成功与失败数量、不指明操作方向），Connect All 与 Disconnect All 共用同一条消息。
 - 两次硬编码的双语启动兜底标签是 webview 接管前被接受的临时豁免；`MEMORY.md` 与导航索引在同一变更中记录该契约。

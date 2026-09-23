@@ -127,7 +127,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "托盘原生菜单所有权：`buildTrayMenuModel` 结构/标签/启用勾选/快捷键提示、`applyTrayMenu` 原生应用，`src/App.tsx` 控制器按窗口可见性、服务状态与 i18n 语言变化重建并执行全部动作",
+      "responsibility": "托盘原生菜单所有权：`buildTrayMenuModel` 结构/标签/启用勾选/快捷键提示（遵循已注册快捷键的语义，`Meta` 不是修饰键，非法或未命名值省略）、`applyTrayMenu` 原生应用（单条目 accelerator 被拒时降级重试），`src/App.tsx` 控制器按窗口可见性、服务状态、`tray-shortcuts-updated`（Settings 保存快捷键后发出）与 i18n 语言变化重建并执行全部动作",
       "entries": [
         "src/lib/trayMenu.ts"
       ],

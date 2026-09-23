@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-22-tray-menu-ownership-and-contract.md
-2026-09-22-tray-menu-ownership-and-contract.md: 77082188b7d4952c8d87cf4313681b18df6bd231
-2026-09-22-tray-menu-ownership-and-contract.zh.md: c399062fdd1b947430f003c8a6bd2c4102ba1162
+2026-09-22-tray-menu-ownership-and-contract.md: a897373f9e0ae18a6203e64e1ca39c0355c2ffc8
+2026-09-22-tray-menu-ownership-and-contract.zh.md: 6c255c4cee21010ebf15aa1ed4fd775c0afecbe5
