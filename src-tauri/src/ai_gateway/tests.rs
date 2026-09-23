@@ -679,7 +679,7 @@ enum MockReply {
 /// Process-wide `HOME` isolation shared through the global
 /// `crate::lock_test_home_env` mutex.
 ///
-/// Keep using this helper for tests that drive the global API-gateway server
+/// Keep using this helper for tests that drive the global AI Gateway server
 /// (`start_server`/`stop_server`/`ai_gateway_start`/`ai_gateway_stop`/
 /// `ai_gateway_save_config`). The server reads its config from worker threads
 /// that cannot see the thread-local override, and its `RUNNING_SERVER` state is
@@ -6401,6 +6401,78 @@ async fn terminal_sync_with_seam_reuses_marker_provider_when_ledger_id_absent() 
         "an absent ledger id must fall back to the marked gateway: {submitted:?}"
     );
     assert_eq!(records[0].provider_id, "managed-oc");
+}
+
+/// A gateway provider record written before the rename carries only the legacy
+/// marker. It must still be recognized as managed, its id must be reused by the
+/// target projection and the sync, and the upsert must upgrade it in place: the
+/// written record carries the current marker only (never the legacy one) and the
+/// AI Gateway display name.
+#[tokio::test]
+async fn terminal_sync_upgrades_legacy_marker_provider_in_place() {
+    let _home = isolated_temp_home("terminal-sync-legacy-marker-upgrade");
+    let config = gateway_config(17688);
+    super::storage::write_config(&config).unwrap();
+
+    let legacy_marker = super::migration::LEGACY_GATEWAY_MARKER_KEY;
+    let legacy_provider = json!({
+        "id": "legacy-gateway-oc",
+        "tool": "opencode",
+        "name": "Legacy Gateway",
+        "base_url": "http://127.0.0.1:17688",
+        "api_key": "previous-local-key",
+        "tool_config": {
+            legacy_marker: true,
+            "npm": "@ai-sdk/openai-compatible",
+        }
+    });
+    let providers_data = json!({ "providers": [legacy_provider] });
+
+    // The target projection recognizes the legacy marker as managed and reuses
+    // the provider id.
+    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let opencode = target_for(&targets, "opencode");
+    assert_eq!(
+        opencode.provider_id.as_deref(),
+        Some("legacy-gateway-oc"),
+        "a legacy-marked gateway must be recognized as managed: {opencode:?}"
+    );
+    assert!(
+        opencode.synced,
+        "a legacy-marked gateway must count as synced: {opencode:?}"
+    );
+
+    // The sync reuses the same id and rewrites the record under the current
+    // marker, dropping the legacy marker.
+    let (submitted, records) = capture_terminal_sync(
+        &providers_data,
+        vec!["opencode".to_string()],
+    )
+    .await;
+    assert_eq!(submitted.len(), 1, "exactly one upsert: {submitted:?}");
+    let upgraded = &submitted[0];
+    assert_eq!(
+        upgraded["id"], "legacy-gateway-oc",
+        "the legacy-marked provider id must be reused: {upgraded}"
+    );
+    assert_eq!(upgraded["name"], "AI Gateway");
+    assert_eq!(
+        upgraded["tool_config"]["ai_gateway_gateway"], true,
+        "the written record must carry the current marker: {upgraded}"
+    );
+    assert!(
+        upgraded
+            .get(super::migration::LEGACY_GATEWAY_MARKER_KEY)
+            .is_none(),
+        "the upgraded record must not keep the legacy marker at the top level: {upgraded}"
+    );
+    assert!(
+        upgraded["tool_config"]
+            .get(super::migration::LEGACY_GATEWAY_MARKER_KEY)
+            .is_none(),
+        "the upgraded record must not keep the legacy marker under tool_config: {upgraded}"
+    );
+    assert_eq!(records[0].provider_id, "legacy-gateway-oc");
 }
 
 /// Atomicity: when the injected upsert fails, the pipeline returns the error and
