@@ -254,7 +254,20 @@ pub fn api_gateway_get_config() -> Result<GatewayConfig, String> {
 }
 
 #[tauri::command]
-pub async fn api_gateway_save_config(config: GatewayConfig) -> Result<GatewayConfig, String> {
+pub async fn api_gateway_save_config(
+    app: tauri::AppHandle,
+    config: GatewayConfig,
+) -> Result<GatewayConfig, String> {
+    save_config_inner(config, Some(app)).await
+}
+
+/// The full save-config behavior with the application handle injected: normalize
+/// masked secrets, validate weights, persist, then restart or stop the listener
+/// through [`start_inner`] so the runtime handle slot is refreshed.
+pub(in crate::api_gateway) async fn save_config_inner(
+    config: GatewayConfig,
+    app: Option<tauri::AppHandle>,
+) -> Result<GatewayConfig, String> {
     let existing = read_config()?;
     let mut next = config;
     for provider in &mut next.providers {
@@ -286,7 +299,7 @@ pub async fn api_gateway_save_config(config: GatewayConfig) -> Result<GatewayCon
     }
     write_config(&next)?;
     if next.enabled {
-        api_gateway_start().await?;
+        start_inner(app.clone()).await?;
     } else {
         api_gateway_stop().await?;
     }
@@ -503,8 +516,16 @@ fn persist_enabled(enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn api_gateway_start() -> Result<GatewayStatus, String> {
-    let status = start_server().await?;
+pub async fn api_gateway_start(app: tauri::AppHandle) -> Result<GatewayStatus, String> {
+    start_inner(Some(app)).await
+}
+
+/// Start the listener and persist the enable intent, with the application
+/// handle injected so the server can broadcast runtime-state transitions.
+pub(in crate::api_gateway) async fn start_inner(
+    app: Option<tauri::AppHandle>,
+) -> Result<GatewayStatus, String> {
+    let status = start_server(app).await?;
     persist_enabled(true)?;
     Ok(status)
 }
@@ -521,9 +542,10 @@ pub fn api_gateway_status() -> Result<GatewayStatus, String> {
     server_status()
 }
 
-pub async fn api_gateway_autostart() -> Result<GatewayStatus, String> {
+#[tauri::command]
+pub async fn api_gateway_autostart(app: tauri::AppHandle) -> Result<GatewayStatus, String> {
     cleanup_legacy_files();
-    autostart().await
+    autostart(Some(app)).await
 }
 
 /// Find the managed gateway provider for a tool: the ledger record's provider id

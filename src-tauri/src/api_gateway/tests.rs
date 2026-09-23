@@ -925,7 +925,7 @@ async fn forwards_chat_completions_path_body_and_provider_auth() {
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let request_body = json!({
         "model": "local-a",
@@ -979,7 +979,7 @@ async fn unversioned_openai_paths_are_normalized_before_forwarding() {
         Some("remote-default"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _, text) = call_gateway(
         port,
@@ -1028,7 +1028,7 @@ async fn forwards_responses_path() {
     provider.protocol = UpstreamProtocol::Responses;
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -1098,7 +1098,7 @@ async fn provider_base_url_with_v1_does_not_double_the_version_segment() {
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -1145,7 +1145,7 @@ async fn client_headers_are_forwarded_except_relay_credentials() {
         Some("remote-default"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -1549,7 +1549,7 @@ async fn providers_are_only_offered_the_protocol_they_are_configured_for() {
     responses_only.protocol = UpstreamProtocol::Responses;
     config.providers.push(responses_only);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _, text) = call_gateway(
         port,
@@ -1624,7 +1624,7 @@ async fn models_endpoint_returns_local_union_without_upstream() {
     ];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -1669,7 +1669,7 @@ async fn models_endpoint_excludes_disabled_mappings() {
     p.mappings = vec![mapping("local-a", "remote-a", None), disabled];
     config.providers.push(p);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -1725,7 +1725,7 @@ async fn auth_accepts_bearer_and_x_api_key_and_rejects_invalid_credentials() {
         Some("remote-default"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let body = Some(json!({"model": "local"}));
     let (bearer, _, _) = call_gateway(
@@ -1790,7 +1790,7 @@ async fn unauthorized_when_no_enabled_keys() {
         Some("remote-default"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _, _) = call_gateway(
         port,
@@ -1822,7 +1822,7 @@ async fn unknown_path_and_method_return_404() {
         Some("remote-default"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (unknown, _, _) = call_gateway(
         port,
@@ -1857,7 +1857,7 @@ async fn gateway_request_parse_failure_uses_standard_error_envelope() {
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let text = call_gateway_raw(port, "GARBAGE\r\n").await;
     let (status_line, body) = raw_http_status_and_body(&text);
@@ -1895,7 +1895,7 @@ async fn gateway_config_read_failure_uses_standard_error_envelope() {
     super::storage::write_config(&config).unwrap();
     let path = config_path().unwrap();
     let valid = fs::read(&path).expect("read valid config");
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     fs::write(&path, b"not encrypted ciphertext").expect("corrupt config");
 
@@ -1928,7 +1928,7 @@ async fn gateway_unknown_path_uses_standard_error_envelope() {
     let port = free_port().await;
     let config = config_with_key(port);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, content_type, text) = call_gateway(
         port,
@@ -1957,7 +1957,7 @@ async fn gateway_unauthorized_uses_standard_error_envelope() {
     let port = free_port().await;
     let config = config_with_key(port);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, content_type, text) = call_gateway(
         port,
@@ -1986,7 +1986,7 @@ async fn gateway_wrong_method_on_models_uses_standard_error_envelope() {
     let port = free_port().await;
     let config = config_with_key(port);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, content_type, text) = call_gateway(
         port,
@@ -2015,7 +2015,7 @@ async fn gateway_invalid_request_body_uses_standard_error_envelope() {
     let port = free_port().await;
     let config = config_with_key(port);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let body = "{not valid json";
     let request = format!(
@@ -2051,7 +2051,7 @@ async fn gateway_no_candidate_uses_standard_error_envelope() {
     p.mappings = vec![mapping("known-local", "remote-a", None)];
     config.providers.push(p);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, content_type, text) = call_gateway(
         port,
@@ -2100,7 +2100,7 @@ async fn retryable_failure_switches_to_next_candidate() {
         Some("remote-default"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -2146,7 +2146,7 @@ async fn all_candidates_fail_returns_502_all_providers_unavailable() {
         Some("remote-default"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -2197,7 +2197,7 @@ async fn streaming_all_fail_returns_502_json_error_envelope() {
         Some("remote-default"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, content_type, text) = call_gateway(
         port,
@@ -2241,7 +2241,7 @@ async fn streaming_no_candidate_returns_502_json_error_envelope() {
     p.mappings = vec![mapping("known-local", "remote-a", None)];
     config.providers.push(p);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, content_type, text) = call_gateway(
         port,
@@ -2435,7 +2435,7 @@ async fn bind_failure_returns_actionable_error_and_keeps_configured_port() {
     config.port = port;
     super::storage::write_config(&config).unwrap();
 
-    let error = super::runtime_http::start_server().await.unwrap_err();
+    let error = super::runtime_http::start_server(None).await.unwrap_err();
     assert!(error.contains(&port.to_string()), "error must name the port: {error}");
     assert!(
         error.contains("bind") || error.contains("failed to bind"),
@@ -2466,7 +2466,7 @@ async fn server_starts_listens_and_stops() {
     ));
     super::storage::write_config(&config).unwrap();
 
-    let status = super::runtime_http::start_server().await.unwrap();
+    let status = super::runtime_http::start_server(None).await.unwrap();
     assert!(status.running);
     assert_eq!(status.port, port);
     assert_eq!(status.local_base_url, format!("http://127.0.0.1:{port}/v1"));
@@ -4191,7 +4191,7 @@ async fn no_candidate_model_returns_all_unavailable_without_upstream_request() {
     }];
     config.providers.push(p);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -4582,7 +4582,7 @@ async fn end_to_end_retryable_failures_auto_disable_at_threshold_and_stop_callin
     a.mappings = vec![mapping("local-model", "remote-model", None)];
     config.providers.push(a);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     for attempt in 1..=3 {
         let (status, _, text) = call_gateway(
@@ -5155,7 +5155,7 @@ async fn end_to_end_all_unavailable_non_streaming_lists_each_provider_failure() 
         Some("remote-model"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -5205,7 +5205,7 @@ async fn end_to_end_all_unavailable_streaming_returns_502_json_envelope() {
         Some("remote-model"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, content_type, text) = call_gateway(
         port,
@@ -5277,7 +5277,7 @@ async fn end_to_end_path_prefix_and_body_equivalence_for_chat_and_responses() {
     responses_provider.mappings = vec![mapping];
     config.providers.push(responses_provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let chat_body = json!({
         "model": "local-a",
@@ -5408,7 +5408,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         .providers
         .extend([active, disabled, auto_disabled, no_model]);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _, text) = call_gateway(
         port,
@@ -5481,7 +5481,7 @@ async fn api_gateway_start_and_stop_persist_enabled_flag() {
     config.enabled = false;
     super::storage::write_config(&config).unwrap();
 
-    let started = super::commands::api_gateway_start().await.unwrap();
+    let started = super::commands::start_inner(None).await.unwrap();
     assert!(started.running, "start must report a running server");
     let enabled_after_start = super::storage::read_config().unwrap().enabled;
 
@@ -5843,7 +5843,7 @@ async fn loopback_listener_rejects_non_loopback_address_on_same_port() {
     let port = free_port().await;
     let config = config_with_key(port);
     super::storage::write_config(&config).unwrap();
-    super::commands::api_gateway_start().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let loopback_ok = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
@@ -6851,7 +6851,7 @@ async fn mapping_protocol_routes_each_model_to_its_declared_endpoint() {
     ))
     .expect("decode config with mapping-level protocols");
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (responses_status, _, responses_text) = call_gateway(
         port,
@@ -6919,7 +6919,7 @@ async fn mapping_protocol_mismatch_is_never_served_and_never_falls_back_to_defau
     ))
     .expect("decode config with a mapping-level protocol");
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -7007,7 +7007,7 @@ async fn default_model_fallback_requires_a_matching_provider_protocol() {
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (responses_status, _, responses_text) = call_gateway(
         port,
@@ -7075,7 +7075,7 @@ async fn same_local_model_serves_both_protocols_from_its_own_row() {
     ))
     .expect("decode config with dual-protocol mapping rows");
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (chat_status, _, chat_text) = call_gateway(
         port,
@@ -7166,7 +7166,7 @@ async fn protocol_mismatch_error_names_the_required_endpoint() {
     ))
     .expect("decode config with a mapping-level protocol");
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _, text) = call_gateway(
         port,
@@ -7248,7 +7248,7 @@ async fn mapping_without_protocol_inherits_the_provider_protocol() {
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _, text) = call_gateway(
         port,
@@ -7326,7 +7326,7 @@ async fn mapping_with_explicit_null_protocol_inherits_the_provider_protocol() {
         "an explicit null protocol must stay null/absent when persisted, not become a value: {serialized}"
     );
 
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (responses_status, _, responses_text) = call_gateway(
         port,
@@ -7428,7 +7428,7 @@ async fn streaming_forwarding_reaches_each_models_own_endpoint_in_one_record() {
     ))
     .expect("decode config with mapping-level protocols");
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (responses_status, responses_type, responses_text) = call_gateway(
         port,
@@ -7532,7 +7532,7 @@ async fn protocol_mismatch_never_counts_as_failure_or_auto_disables() {
     ))
     .expect("decode config with a mapping-level protocol");
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     for attempt in 1..=4u32 {
         let (status, _content_type, text) = call_gateway(
@@ -7627,7 +7627,7 @@ async fn cross_record_candidates_are_selected_by_each_records_protocol() {
     config.providers.push(chat_record);
     config.providers.push(responses_record);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (chat_status, _, chat_text) = call_gateway(
         port,
@@ -7707,7 +7707,7 @@ async fn request_body_is_equivalent_except_model_for_chat_and_responses() {
     ))
     .expect("decode config with mapping-level protocols");
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let responses_body = json!({
         "model": "deepseek-v4.1-flash",
@@ -7817,7 +7817,7 @@ async fn models_endpoint_deduplicates_the_same_local_model_across_records() {
     ))
     .expect("decode two per-protocol records");
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -11243,7 +11243,7 @@ async fn usage_log_records_successful_non_streaming_forward_and_privacy() {
     config.usage_retention_days = 90;
     config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, _text) = call_gateway(
         port,
@@ -11314,7 +11314,7 @@ async fn usage_log_records_zero_tokens_when_upstream_omits_usage() {
     config.providers.push(provider);
     config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, _text) = call_gateway(
         port,
@@ -11366,7 +11366,7 @@ async fn usage_log_records_failure_for_upstream_error_response() {
     config.providers.push(provider);
     config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -11413,7 +11413,7 @@ async fn usage_log_records_failure_when_no_upstream_can_serve() {
     provider.mappings = vec![mapping("local-b", "remote-b", None)];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, _text) = call_gateway(
         port,
@@ -11492,7 +11492,7 @@ async fn usage_log_write_failure_is_swallowed_and_the_forwarded_request_still_su
     config.providers.push(provider);
     config.usage_retention_days = 90;
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, content_type, text) = call_gateway(
         port,
@@ -11606,7 +11606,7 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
     config.providers.push(provider);
     config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -11701,7 +11701,7 @@ async fn streaming_all_unavailable_logs_real_upstream_status() {
     provider.mappings = vec![mapping("local-a", "remote-a", None)];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, content_type, text) = call_gateway(
         port,
@@ -11829,7 +11829,7 @@ async fn unauthorized_models_and_unknown_routes_are_not_logged() {
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (unauthorized, _ct, _body) = call_gateway(
         port,
@@ -11970,7 +11970,7 @@ async fn unpriced_model_records_none_amount_and_excludes_it_from_totals() {
     config.providers.push(provider);
     // No price row for `remote-unpriced`.
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _ct, _text) = call_gateway(
         port,
@@ -12518,7 +12518,7 @@ async fn usage_log_records_unversioned_responses_path() {
     config.providers.push(provider);
     config.model_prices = vec![priced("remote-r", 1.0, 0.5, 2.0, 4.0)];
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -12585,7 +12585,7 @@ async fn forwarding_records_cache_read_and_write_tiers_non_streaming() {
     config.providers.push(provider);
     config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, _text) = call_gateway(
         port,
@@ -12644,7 +12644,7 @@ async fn streaming_forward_records_cache_read_and_write_tiers_and_preserves_byte
     config.providers.push(provider);
     config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -12697,7 +12697,7 @@ async fn streaming_success_without_usage_records_zero_tokens() {
     config.providers.push(provider);
     config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -12742,7 +12742,7 @@ async fn streaming_upstream_client_error_is_logged_failure_and_returned_unchange
     config.providers.push(provider);
     config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -12873,7 +12873,7 @@ async fn forwarded_logs_never_contain_keys_headers_or_bodies() {
     provider.mappings = vec![mapping("local-a", "remote-a", None)];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let authorization = format!("Bearer {local_key}");
     let headers = [
@@ -12948,7 +12948,7 @@ async fn price_change_does_not_alter_historical_amounts() {
     config.providers.push(provider);
     // `remote-a` starts unpriced.
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let auth: &[(&str, &str)] = &[("authorization", "Bearer local-key")];
 
@@ -13454,7 +13454,7 @@ async fn usage_log_zeroes_usage_for_error_response_with_usage_body() {
     config.providers.push(provider);
     config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -13968,7 +13968,7 @@ async fn save_config_generates_secret_for_new_keys_with_blank_or_masked_value() 
         created_at: 2,
     });
 
-    let saved = super::commands::api_gateway_save_config(config)
+    let saved = super::commands::save_config_inner(config, None)
         .await
         .expect("save config");
 
@@ -14421,7 +14421,7 @@ async fn mid_stream_failure_end_to_end_logs_one_failure_with_usage() {
     a.mappings = vec![mapping("local-a", "remote-a", None)];
     config.providers.push(a);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -14611,7 +14611,7 @@ async fn disabled_mapping_request_returns_all_providers_unavailable() {
     ))
     .expect("decode config containing a disabled mapping");
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -14723,7 +14723,7 @@ async fn disabled_mapping_on_one_provider_is_still_served_by_another_provider() 
     config.providers.push(provider_a);
     config.providers.push(provider_b);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -16243,7 +16243,7 @@ async fn all_candidates_failed_request_writes_one_row_per_completed_attempt() {
         Some("remote-c"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, content_type, text) = call_gateway(
         port,
@@ -16359,7 +16359,7 @@ async fn single_candidate_429_failure_keeps_upstream_status_on_the_terminal_row(
     provider.mappings = vec![mapping("local-429", "remote-429", None)];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let started = std::time::Instant::now();
     let (status, _content_type, text) = call_gateway(
@@ -16424,7 +16424,7 @@ async fn passed_through_client_error_is_terminal_and_keeps_the_upstream_message(
     provider.mappings = vec![mapping("local-400", "remote-400", None)];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -16504,7 +16504,7 @@ async fn failed_then_successful_request_writes_attempt_and_terminal_rows() {
     let expected_amount = compute_cost(&price, &tokens(10, 0, 0, 5));
     config.model_prices = vec![price];
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     const REQUESTS: u32 = 24;
     let mut failed_first_observed = false;
@@ -16656,7 +16656,7 @@ async fn pre_first_byte_stream_failure_switches_and_logs_both_attempts() {
         2.0,
     )];
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     const REQUESTS: u32 = 24;
     let mut failed_first_observed = false;
@@ -17834,7 +17834,7 @@ async fn session_affinity_session_requests_reuse_the_bound_provider() {
         Some("remote-default"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let mut failures: Vec<String> = Vec::new();
     let spellings: [(&str, &str, &str); 4] = [
@@ -17949,7 +17949,7 @@ async fn session_affinity_ineligible_binding_is_rebound_without_attempting_the_f
         Some("remote-default"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     // Request 1 binds S to whichever provider the shuffle placed first; both
     // initial bindings are handled symmetrically below.
@@ -18094,7 +18094,7 @@ async fn session_affinity_migrates_after_two_consecutive_misses() {
     b.mappings = vec![disabled];
     config.providers.push(b);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _, first_text) = call_gateway(
         port,
@@ -18242,7 +18242,7 @@ async fn session_affinity_bound_success_resets_consecutive_misses() {
     b.mappings = vec![disabled];
     config.providers.push(b);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _, first_text) = call_gateway(
         port,
@@ -18451,7 +18451,7 @@ async fn session_affinity_concurrent_session_requests_select_one_provider() {
         Some("remote-default"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let futures: Vec<_> = (0..8)
         .map(|_| {
@@ -18535,7 +18535,7 @@ async fn session_affinity_cancelled_request_does_not_count_as_a_miss() {
     b.mappings = vec![disabled];
     config.providers.push(b);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _, first_text) = call_gateway(
         port,
@@ -18710,7 +18710,7 @@ async fn session_affinity_session_header_failure_paths_keep_existing_semantics()
     config.port = port;
     config.keys.push(key_named("k1", "local-key"));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let mut failures: Vec<String> = Vec::new();
 
@@ -19083,7 +19083,7 @@ async fn session_affinity_headerless_and_blank_model_requests_write_no_binding()
         Some("remote-default"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let live_bindings = || affinity_lock().live_len();
 
@@ -19201,7 +19201,7 @@ async fn session_affinity_exhausted_request_keeps_the_bound_provider_and_rebinds
         .providers
         .push(upstream_provider("b", "Provider B", &b_bind_url, "sk-b", None));
     super::storage::write_config(&bind_config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _, text) = call_gateway(
         port,
@@ -19880,7 +19880,7 @@ async fn models_endpoint_excludes_auto_disabled_rows_that_are_unique() {
     config.providers.push(p_shared);
 
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -20336,7 +20336,7 @@ async fn test_all_providers_unavailable_429_quota_hint() {
         Some("remote-model"),
     ));
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -21655,7 +21655,7 @@ async fn cachehit_invalid_upstream_usage_is_persisted_invalid_and_cache_ineligib
     config.providers.push(provider);
     config.model_prices = vec![priced("remote-a", 1.0, 0.5, 2.0, 4.0)];
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, _text) = call_gateway(
         port,
@@ -21776,7 +21776,7 @@ async fn streaming_chat_top_level_usage_is_normalized_onto_terminal_row() {
     provider.mappings = vec![mapping("local-a", "remote-a", None)];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -21838,7 +21838,7 @@ async fn streaming_responses_nested_usage_is_normalized_onto_terminal_row() {
     provider.mappings = vec![mapping("local-r", "remote-r", None)];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -21898,7 +21898,7 @@ async fn streaming_chat_keeps_last_valid_usage_when_later_payload_is_not_an_obje
     provider.mappings = vec![mapping("local-a", "remote-a", None)];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -21961,7 +21961,7 @@ async fn streaming_chat_without_usage_injects_no_stream_options_and_records_abse
     provider.mappings = vec![mapping("local-a", "remote-a", None)];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let client_body = json!({
         "model": "local-a",
@@ -22037,7 +22037,7 @@ async fn streaming_responses_without_usage_is_forwarded_untouched_and_records_ab
     provider.mappings = vec![mapping("local-r", "remote-r", None)];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -22518,7 +22518,7 @@ async fn relay_one_dead_upstream_request(
     let mut config = config_with_key(port);
     config.providers.push(provider);
     super::storage::write_config(&config).expect("seed gateway config");
-    super::runtime_http::start_server().await.expect("start gateway");
+    super::runtime_http::start_server(None).await.expect("start gateway");
     let (status, _content_type, _text) = call_gateway(
         port,
         "POST",
@@ -23104,7 +23104,7 @@ async fn probe_success_recovers_and_serves_through_the_relay() {
     let mut config = config_with_key(port);
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -23235,7 +23235,7 @@ async fn probe_failure_rearms_the_cooldown_and_blocks_a_second_probe() {
     let mut config = config_with_key(port);
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -23312,7 +23312,7 @@ async fn cooldown_boundary_blocks_a_relay_probe_attempt() {
     let mut config = config_with_key(port);
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -23366,7 +23366,7 @@ async fn healthy_candidate_is_never_preempted_by_a_probe() {
     config.providers.push(healthy);
     config.providers.push(probe);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -23421,7 +23421,7 @@ async fn probe_is_attempted_only_after_every_healthy_candidate_fails() {
     config.providers.push(healthy);
     config.providers.push(probe);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -23468,7 +23468,7 @@ async fn probe_only_success_logs_a_named_attempt_and_one_terminal_row() {
     let mut config = config_with_key(port);
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, _text) = call_gateway(
         port,
@@ -23536,7 +23536,7 @@ async fn probe_only_failure_names_the_probed_provider_and_logs_failure_rows() {
     let mut config = config_with_key(port);
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -23612,7 +23612,7 @@ async fn probe_only_request_does_not_read_or_write_session_affinity() {
     let mut config = config_with_key(port);
     config.providers.push(probe);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, _text) = call_gateway(
         port,
@@ -23664,7 +23664,7 @@ async fn auth_disabled_row_is_never_probed_by_the_relay() {
     let mut config = config_with_key(port);
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
-    super::runtime_http::start_server().await.unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
 
     let (status, _content_type, text) = call_gateway(
         port,
@@ -23948,4 +23948,367 @@ async fn unsuppressed_failed_probe_refreshes_the_cooldown_and_details() {
     );
 }
 
+// ===========================================================================
+// Plan 20260923-gateway-auto-disable-recovery, Step 3 (RED):
+// Runtime-state transition broadcast and application-handle plumbing.
+//
+// The backend Step 3 symbols below do not exist yet, so this section is
+// expected to fail compilation until they land:
+//   - super::API_GATEWAY_CONFIG_UPDATED_EVENT
+//   - super::runtime_http::CONFIG_UPDATE_EVENTS
+//   - start_server(None) / autostart(None) / save_config_inner(_, None)
+// ===========================================================================
+
+/// The one cross-stack event name the frontend listener subscribes to. Pinning
+/// the literal here is the backend half of the REQ-005/AC-008 contract.
+#[test]
+fn config_update_event_name_is_the_cross_stack_literal() {
+    assert_eq!(
+        super::API_GATEWAY_CONFIG_UPDATED_EVENT,
+        "api-gateway-config-update"
+    );
+}
+
+/// The event name recorded by the same-thread emission recorder, mirrored from
+/// the production constant so an event-name drift is a compile error.
+const CONFIG_UPDATE_EVENT_NAME: &str = super::API_GATEWAY_CONFIG_UPDATED_EVENT;
+
+/// Snapshot the same-thread emission recorder (a test-only `thread_local`).
+fn recorded_config_update_events() -> Vec<String> {
+    super::runtime_http::CONFIG_UPDATE_EVENTS
+        .with(|events: &std::cell::RefCell<Vec<String>>| events.borrow().clone())
+}
+
+/// Reset the same-thread emission recorder.
+fn clear_config_update_events() {
+    super::runtime_http::CONFIG_UPDATE_EVENTS
+        .with(|events: &std::cell::RefCell<Vec<String>>| events.borrow_mut().clear());
+}
+
+/// One enabled provider with a single user-enabled mapping row at the given
+/// consecutive-failure count (auto-disabled state is left to the settlement).
+fn health_counter_provider(
+    id: &str,
+    url: &str,
+    local_model: &str,
+    upstream_model: &str,
+    consecutive_failures: u32,
+) -> GatewayUpstreamProvider {
+    let mut provider = upstream_provider(
+        id,
+        &format!("Provider {id}"),
+        url,
+        &format!("sk-{id}"),
+        None,
+    );
+    let mut row = mapping(local_model, upstream_model, None);
+    row.consecutive_failures = consecutive_failures;
+    provider.mappings = vec![row];
+    provider
+}
+
+/// Drive one non-streaming attempt against `ordered` with no probe and return
+/// the caller response.
+async fn attempt_without_probe(
+    ordered: &[GatewayUpstreamProvider],
+    requested: &str,
+) -> super::runtime_http::HttpResponse {
+    let body = serde_json::to_vec(&json!({"model": requested})).unwrap();
+    let mut attempts = Vec::new();
+    super::runtime_http::attempt_non_streaming(
+        ordered,
+        "/v1/chat/completions",
+        &body,
+        Some(requested),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await
+}
+
+/// AC-008 / REQ-005: a settlement that pushes a row to the threshold flips
+/// `auto_disabled` and records exactly one config-update event after the write.
+#[tokio::test]
+async fn threshold_flip_emits_exactly_one_config_update_event() {
+    let _home = isolated_temp_home("config-update-threshold");
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "still down"}})))
+            .await;
+
+    let provider = health_counter_provider(
+        "cfg-threshold",
+        &upstream_url,
+        "cfg-local-threshold",
+        "cfg-remote-threshold",
+        super::FAILURE_THRESHOLD - 1,
+    );
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed relay config");
+
+    clear_config_update_events();
+    let response = attempt_without_probe(std::slice::from_ref(&provider), "cfg-local-threshold").await;
+
+    assert_eq!(response.status, 502, "the exhausted request answers the existing 502");
+    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+    assert_eq!(
+        recorded_config_update_events(),
+        vec![CONFIG_UPDATE_EVENT_NAME.to_string()],
+        "a threshold flip must record exactly one config-update event"
+    );
+
+    let row = stored_probe_row("cfg-threshold");
+    assert!(row.auto_disabled, "the settlement must persist the auto-disable");
+    assert_eq!(row.consecutive_failures, super::FAILURE_THRESHOLD);
+    clear_config_update_events();
+}
+
+/// AC-008 / REQ-005 (counterexample): a settlement that only increments the
+/// counter emits nothing, so a busy gateway cannot cause reload storms.
+#[tokio::test]
+async fn counter_only_settlement_emits_no_config_update_event() {
+    let _home = isolated_temp_home("config-update-counter-only");
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "busy"}}))).await;
+
+    let provider = health_counter_provider(
+        "cfg-counter",
+        &upstream_url,
+        "cfg-local-counter",
+        "cfg-remote-counter",
+        0,
+    );
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed relay config");
+
+    clear_config_update_events();
+    let response = attempt_without_probe(std::slice::from_ref(&provider), "cfg-local-counter").await;
+
+    assert_eq!(response.status, 502);
+    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+    assert!(
+        recorded_config_update_events().is_empty(),
+        "a counter-only settlement must emit no config-update event"
+    );
+
+    let row = stored_probe_row("cfg-counter");
+    assert!(!row.auto_disabled, "a below-threshold row must stay healthy");
+    assert_eq!(row.consecutive_failures, 1);
+    clear_config_update_events();
+}
+
+/// AC-008 / REQ-005 / AC-001: a probe success flips `auto_disabled` back to
+/// healthy and records exactly one config-update event.
+#[tokio::test]
+async fn probe_recovery_flip_emits_exactly_one_config_update_event() {
+    let _home = isolated_temp_home("config-update-probe-recovery");
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "cfg-probe-recovered"}))).await;
+
+    let now = probe_now();
+    let provider = probe_row_provider(
+        "cfg-probe-recover",
+        &upstream_url,
+        "cfg-local-probe",
+        "cfg-remote-probe",
+        Some(now.saturating_sub(PROBE_COOLDOWN)),
+    );
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed probe config");
+
+    let candidate = super::selection::find_probe_candidate(
+        std::slice::from_ref(&provider),
+        Some("cfg-local-probe"),
+        UpstreamProtocol::ChatCompletions,
+        &[],
+        now,
+    )
+    .expect("the seeded row must be probe-eligible");
+
+    clear_config_update_events();
+    let body = serde_json::to_vec(&json!({"model": "cfg-local-probe"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &[],
+        "/v1/chat/completions",
+        &body,
+        Some("cfg-local-probe"),
+        &HashMap::new(),
+        false,
+        Some(&candidate),
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 200, "a successful probe serves the caller");
+    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+    assert_eq!(
+        recorded_config_update_events(),
+        vec![CONFIG_UPDATE_EVENT_NAME.to_string()],
+        "a probe recovery must record exactly one config-update event"
+    );
+
+    let row = stored_probe_row("cfg-probe-recover");
+    assert!(!row.auto_disabled, "a probe success must clear the row");
+    assert_eq!(row.consecutive_failures, 0, "a probe success must reset the counter");
+    assert_eq!(row.disabled_reason, None);
+    assert_eq!(row.disabled_at, None);
+    clear_config_update_events();
+}
+
+/// AC-008 / REQ-005 / AC-002: a failed probe re-arms the cooldown but keeps
+/// `auto_disabled=true`, so no config-update event is emitted.
+#[tokio::test]
+async fn probe_rearm_emits_no_config_update_event() {
+    let _home = isolated_temp_home("config-update-probe-rearm");
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "still down"}})))
+            .await;
+
+    let now = probe_now();
+    let initial = now.saturating_sub(120);
+    let provider = probe_row_provider(
+        "cfg-probe-rearm",
+        &upstream_url,
+        "cfg-local-rearm",
+        "cfg-remote-rearm",
+        Some(initial),
+    );
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed probe config");
+
+    let candidate = super::selection::find_probe_candidate(
+        std::slice::from_ref(&provider),
+        Some("cfg-local-rearm"),
+        UpstreamProtocol::ChatCompletions,
+        &[],
+        now,
+    )
+    .expect("the seeded row must be probe-eligible");
+
+    clear_config_update_events();
+    let body = serde_json::to_vec(&json!({"model": "cfg-local-rearm"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &[],
+        "/v1/chat/completions",
+        &body,
+        Some("cfg-local-rearm"),
+        &HashMap::new(),
+        false,
+        Some(&candidate),
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 502, "a failed probe answers the existing 502");
+    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+    assert!(
+        recorded_config_update_events().is_empty(),
+        "a re-armed probe keeps the row disabled and must emit no event"
+    );
+
+    let row = stored_probe_row("cfg-probe-rearm");
+    assert!(row.auto_disabled, "a failed probe keeps the row auto-disabled");
+    assert!(
+        row.disabled_at.expect("the cooldown must be re-armed") > initial,
+        "the failed probe must move disabled_at"
+    );
+    clear_config_update_events();
+}
+
+/// AC-008 / REQ-005: a fresh 401 disables a healthy row and records one event;
+/// a repeated 401 settlement on the already-disabled row records none.
+#[tokio::test]
+async fn fresh_immediate_disable_emits_one_event_and_repeat_emits_none() {
+    let _home = isolated_temp_home("config-update-immediate-auth");
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(401, json!({"error": {"message": "unauthorized"}})))
+            .await;
+
+    let provider = health_counter_provider(
+        "cfg-auth",
+        &upstream_url,
+        "cfg-local-auth",
+        "cfg-remote-auth",
+        0,
+    );
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed config");
+
+    clear_config_update_events();
+    let first = attempt_without_probe(std::slice::from_ref(&provider), "cfg-local-auth").await;
+    assert_eq!(first.status, 502);
+    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+    assert_eq!(
+        recorded_config_update_events(),
+        vec![CONFIG_UPDATE_EVENT_NAME.to_string()],
+        "a fresh immediate disable must record exactly one config-update event"
+    );
+    let row = stored_probe_row("cfg-auth");
+    assert!(row.auto_disabled, "a 401 must disable the row");
+
+    let second = attempt_without_probe(std::slice::from_ref(&provider), "cfg-local-auth").await;
+    assert_eq!(second.status, 502);
+    assert_eq!(upstream_log.lock().unwrap().len(), 2);
+    assert_eq!(
+        recorded_config_update_events(),
+        vec![CONFIG_UPDATE_EVENT_NAME.to_string()],
+        "re-disabling an already-disabled row must not emit another event"
+    );
+    clear_config_update_events();
+}
+
+/// REQ-005: with no captured application handle the relay settlement still
+/// persists the auto-disable and answers the existing 502, and nothing panics.
+/// The thread-local recorder is deliberately not asserted here: the emission
+/// helper runs on the relay's worker thread.
+#[tokio::test]
+async fn relay_settlement_without_a_captured_handle_still_persists() {
+    let home = temp_home("config-update-no-handle");
+    let port = free_port().await;
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "down"}}))).await;
+
+    let provider = health_counter_provider(
+        "cfg-no-handle",
+        &upstream_url,
+        "cfg-local-nohandle",
+        "cfg-remote-nohandle",
+        super::FAILURE_THRESHOLD - 1,
+    );
+    let mut config = config_with_key(port);
+    config.providers.push(provider);
+    super::storage::write_config(&config).unwrap();
+
+    // The test-friendly no-handle path: no application handle is captured.
+    super::runtime_http::start_server(None).await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "cfg-local-nohandle"})),
+    )
+    .await;
+    assert_eq!(status, 502, "the exhausted relay answers the existing 502: {text}");
+    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+
+    let row = stored_probe_row("cfg-no-handle");
+    assert!(
+        row.auto_disabled,
+        "the no-handle settlement must still persist the auto-disable"
+    );
+    assert_eq!(row.consecutive_failures, super::FAILURE_THRESHOLD);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
 

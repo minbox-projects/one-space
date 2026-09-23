@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
+use tauri::Emitter;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, Mutex};
@@ -36,6 +37,54 @@ pub(in crate::api_gateway) static RUNNING_SERVER: OnceLock<Mutex<Option<RunningS
 
 pub(in crate::api_gateway) fn state_lock() -> &'static Mutex<Option<RunningServer>> {
     RUNNING_SERVER.get_or_init(|| Mutex::new(None))
+}
+
+/// Application handle captured when the gateway server starts, so a settlement
+/// can broadcast a runtime-state transition without any frontend action. `None`
+/// means no handle was available and emission is skipped (REQ-005).
+static APP_HANDLE: OnceLock<std::sync::Mutex<Option<tauri::AppHandle>>> = OnceLock::new();
+
+fn app_handle_slot() -> &'static std::sync::Mutex<Option<tauri::AppHandle>> {
+    APP_HANDLE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Replace the process-wide captured handle; `None` clears it. Called before
+/// the early-return path of [`start_server`] so a restart refreshes the slot.
+fn capture_app_handle(app: Option<tauri::AppHandle>) {
+    let mut guard = app_handle_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    *guard = app;
+}
+
+fn captured_app_handle() -> Option<tauri::AppHandle> {
+    app_handle_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+/// Same-thread recorder for emission observability in tests. The relay settles
+/// on a worker thread, so the process-wide handle slot is exercised separately;
+/// this only exists to make the transition broadcast deterministic to assert.
+#[cfg(test)]
+thread_local! {
+    pub(in crate::api_gateway) static CONFIG_UPDATE_EVENTS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Emit one `api-gateway-config-update` event when a handle was captured; a
+/// missing handle is a no-op that never affects settlement.
+fn emit_config_updated() {
+    #[cfg(test)]
+    CONFIG_UPDATE_EVENTS.with(|events| {
+        events
+            .borrow_mut()
+            .push(super::API_GATEWAY_CONFIG_UPDATED_EVENT.to_string())
+    });
+    if let Some(handle) = captured_app_handle() {
+        let _ = handle.emit(super::API_GATEWAY_CONFIG_UPDATED_EVENT, ());
+    }
 }
 
 pub(in crate::api_gateway) fn status_from_config(
@@ -64,7 +113,12 @@ pub(in crate::api_gateway) fn status_from_config(
 /// On bind failure the port configuration is left untouched and the error is
 /// actionable: it names the port and the underlying cause. It never falls back
 /// to another port.
-pub(in crate::api_gateway) async fn start_server() -> Result<GatewayStatus, String> {
+pub(in crate::api_gateway) async fn start_server(
+    app: Option<tauri::AppHandle>,
+) -> Result<GatewayStatus, String> {
+    // Store the handle before the early-return path so a restart always
+    // refreshes (or clears) the process-wide slot (REQ-005).
+    capture_app_handle(app);
     let config = read_config()?;
     let mut guard = state_lock().lock().await;
     if let Some(running) = guard.as_ref() {
@@ -115,10 +169,12 @@ pub(in crate::api_gateway) fn server_status() -> Result<GatewayStatus, String> {
     Ok(status_from_config(&config, running))
 }
 
-pub(in crate::api_gateway) async fn autostart() -> Result<GatewayStatus, String> {
+pub(in crate::api_gateway) async fn autostart(
+    app: Option<tauri::AppHandle>,
+) -> Result<GatewayStatus, String> {
     let config = read_config()?;
     if config.enabled {
-        start_server().await
+        start_server(app).await
     } else {
         Ok(status_from_config(&config, false))
     }
@@ -590,14 +646,52 @@ fn apply_failure(target: &MappingTarget, class: FailureClass, reason: &str) {
     let Ok(mut latest) = read_config() else {
         return;
     };
+    let mut flipped = false;
     if let Some(stored) = latest
         .providers
         .iter_mut()
         .find(|stored| stored.id == target.provider_id)
     {
+        let before = auto_disabled_snapshot(stored, target);
         register_mapping_failure(stored, target, class, reason, at);
+        flipped = auto_disabled_flipped(stored, target, &before);
     }
-    let _ = write_config(&latest);
+    if write_config(&latest).is_ok() && flipped {
+        emit_config_updated();
+    }
+}
+
+/// Snapshot the `auto_disabled` flags of the mapping rows matching `target`'s
+/// trimmed key, so a settlement can detect a transition in either direction.
+fn auto_disabled_snapshot(
+    provider: &GatewayUpstreamProvider,
+    target: &MappingTarget,
+) -> Vec<bool> {
+    provider
+        .mappings
+        .iter()
+        .filter(|mapping| {
+            mapping_matches_key(mapping, &target.local_model, &target.upstream_model)
+        })
+        .map(|mapping| mapping.auto_disabled)
+        .collect()
+}
+
+/// Whether any row matching `target` changed `auto_disabled` since `before`.
+fn auto_disabled_flipped(
+    provider: &GatewayUpstreamProvider,
+    target: &MappingTarget,
+    before: &[bool],
+) -> bool {
+    provider
+        .mappings
+        .iter()
+        .filter(|mapping| {
+            mapping_matches_key(mapping, &target.local_model, &target.upstream_model)
+        })
+        .map(|mapping| mapping.auto_disabled)
+        .zip(before.iter().copied())
+        .any(|(after, was)| after != was)
 }
 
 /// One provider still eligible for a bounded retry inside the current request.
@@ -788,6 +882,10 @@ impl RequestHealth {
             return;
         };
         let mut changed = false;
+        // Whether any settled row flipped `auto_disabled` during this write:
+        // exactly one transition event is emitted after a successful write even
+        // when several rows flipped (REQ-005/AC-008).
+        let mut flipped = false;
         // The half-open probe settles first: a success clears the row, a failure
         // re-arms its cooldown without ever touching the counter. Details are
         // refreshed unless the failure was a transport failure suppressed by the
@@ -807,6 +905,9 @@ impl RequestHealth {
                                 &probe.target.upstream_model,
                             )
                         }) {
+                            if mapping.auto_disabled {
+                                flipped = true;
+                            }
                             clear_mapping_runtime_state(mapping);
                             changed = true;
                         }
@@ -821,6 +922,7 @@ impl RequestHealth {
                             )
                         });
                         if matched {
+                            let before = auto_disabled_snapshot(stored, &probe.target);
                             rearm_mapping_probe_cooldown(
                                 stored,
                                 &probe.target,
@@ -828,6 +930,9 @@ impl RequestHealth {
                                 probe.at,
                                 update_details,
                             );
+                            if auto_disabled_flipped(stored, &probe.target, &before) {
+                                flipped = true;
+                            }
                             changed = true;
                         }
                     }
@@ -852,6 +957,7 @@ impl RequestHealth {
                 register_mapping_success(stored, target);
                 changed = true;
             } else if outcome.health_failure {
+                let before = auto_disabled_snapshot(stored, target);
                 register_mapping_failure(
                     stored,
                     target,
@@ -859,11 +965,14 @@ impl RequestHealth {
                     &outcome.reason,
                     at,
                 );
+                if auto_disabled_flipped(stored, target, &before) {
+                    flipped = true;
+                }
                 changed = true;
             }
         }
-        if changed {
-            let _ = write_config(&latest);
+        if changed && write_config(&latest).is_ok() && flipped {
+            emit_config_updated();
         }
     }
 }

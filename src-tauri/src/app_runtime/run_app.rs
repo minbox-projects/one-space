@@ -114,7 +114,7 @@ pub fn run() {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let _ = protocol_router::protocol_router_autostart().await;
-                let _ = api_gateway::api_gateway_autostart().await;
+                let _ = api_gateway::api_gateway_autostart(app_handle.clone()).await;
                 let _ = app_handle.emit("protocol-router-status-update", ());
                 let _ = app_handle.emit("api-gateway-status-update", ());
             });
