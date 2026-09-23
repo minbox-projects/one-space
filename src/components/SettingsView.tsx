@@ -64,12 +64,12 @@ import {
   type ProtocolRouterStatus,
 } from "@/lib/protocolRouter";
 import {
-  apiGatewayTemplateAutoRefreshGet,
-  apiGatewayTemplateAutoRefreshSave,
-  apiGatewayUsageRetentionGet,
-  apiGatewayUsageRetentionSave,
+  aiGatewayTemplateAutoRefreshGet,
+  aiGatewayTemplateAutoRefreshSave,
+  aiGatewayUsageRetentionGet,
+  aiGatewayUsageRetentionSave,
   notifyTemplateAutoRefreshIntervalChanged,
-} from "@/lib/apiGateway";
+} from "@/lib/aiGateway";
 
 interface SyncPolicy {
   providers: boolean;
@@ -440,7 +440,7 @@ function parseAiNewsSyncIntervalInput(value: string): number | null {
   return parsed;
 }
 
-/** API Gateway log retention accepts whole days in the inclusive 1..365 range. */
+/** AI Gateway log retention accepts whole days in the inclusive 1..365 range. */
 function parseUsageRetentionInput(value: string): number | null {
   const trimmed = value.trim();
   if (!/^\d+$/.test(trimmed)) return null;
@@ -956,8 +956,8 @@ export function SettingsView({
   const loadAiGateway = async () => {
     try {
       const [days, minutes] = await Promise.all([
-        apiGatewayUsageRetentionGet(),
-        apiGatewayTemplateAutoRefreshGet(),
+        aiGatewayUsageRetentionGet(),
+        aiGatewayTemplateAutoRefreshGet(),
       ]);
       const normalized = Number.isFinite(days) ? Number(days) : 90;
       setSavedUsageRetentionDays(normalized);
@@ -1855,24 +1855,24 @@ export function SettingsView({
           setMessage({
             type: "error",
             text: t(
-              "apiGatewayTemplateAutoRefreshInvalid",
+              "aiGatewayTemplateAutoRefreshInvalid",
               "Template auto refresh minutes must be 0 (disabled) or between 10 and 1440",
             ),
           });
           return;
         }
-        const saved = await apiGatewayUsageRetentionSave(parsed);
+        const saved = await aiGatewayUsageRetentionSave(parsed);
         const normalized = Number.isFinite(saved) ? Number(saved) : parsed;
         setSavedUsageRetentionDays(normalized);
         setUsageRetentionInput(String(normalized));
         let savedMinutes: number;
         try {
-          savedMinutes = await apiGatewayTemplateAutoRefreshSave(parsedMinutes);
+          savedMinutes = await aiGatewayTemplateAutoRefreshSave(parsedMinutes);
         } catch {
           setMessage({
             type: "error",
             text: t(
-              "apiGatewayTemplateAutoRefreshInvalid",
+              "aiGatewayTemplateAutoRefreshInvalid",
               "Template auto refresh minutes must be 0 (disabled) or between 10 and 1440",
             ),
           });
@@ -1884,7 +1884,7 @@ export function SettingsView({
         setSavedTemplateAutoRefreshMinutes(normalizedMinutes);
         setTemplateAutoRefreshInput(String(normalizedMinutes));
         try {
-          const persisted = await apiGatewayTemplateAutoRefreshGet();
+          const persisted = await aiGatewayTemplateAutoRefreshGet();
           if (Number.isFinite(persisted)) {
             const reReadMinutes = Number(persisted);
             setSavedTemplateAutoRefreshMinutes(reReadMinutes);
@@ -5907,7 +5907,7 @@ export function SettingsView({
                       <p className="text-sm text-muted-foreground">
                         {t(
                           "aiGatewaySettingsDesc",
-                          "Configure how long API Gateway request logs are retained. Prices and usage live in the AI Gateway workspace.",
+                          "Configure how long AI Gateway request logs are retained. Prices and usage live in the AI Gateway workspace.",
                         )}
                       </p>
                     </div>
@@ -5941,7 +5941,7 @@ export function SettingsView({
                       <label className="block space-y-2">
                         <span className="text-sm font-medium">
                           {t(
-                            "apiGatewayTemplateAutoRefreshLabel",
+                            "aiGatewayTemplateAutoRefreshLabel",
                             "Template auto refresh minutes",
                           )}
                         </span>
@@ -5954,7 +5954,7 @@ export function SettingsView({
                             setTemplateAutoRefreshInput(event.target.value)
                           }
                           aria-label={t(
-                            "apiGatewayTemplateAutoRefreshLabel",
+                            "aiGatewayTemplateAutoRefreshLabel",
                             "Template auto refresh minutes",
                           )}
                           className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"

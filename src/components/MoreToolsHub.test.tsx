@@ -24,8 +24,8 @@ vi.mock("./SshTunnels", () => ({
 vi.mock("./ProtocolRouterTool", () => ({
   ProtocolRouterTool: () => <div>Protocol Router detail</div>,
 }));
-vi.mock("./ApiGateway", () => ({
-  ApiGateway: () => <div>API Gateway detail</div>,
+vi.mock("./AiGateway", () => ({
+  AiGateway: () => <div>AI Gateway detail</div>,
 }));
 vi.mock("./RandomPasswordTool", () => ({
   RandomPasswordTool: () => <div>Random Password detail</div>,
@@ -364,13 +364,13 @@ describe("MoreToolsHub", () => {
     expect(screen.getByText(/JT\/T Data Parser detail/)).toBeInTheDocument();
   });
 
-  it("不再把 API 网关作为更多工具卡片展示", () => {
+  it("不再把 AI 网关作为更多工具卡片展示", () => {
     renderWithProviders(
       <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
     );
 
     expect(
-      screen.queryByTestId("more-tool-card-api-gateway"),
+      screen.queryByTestId("more-tool-card-ai-gateway"),
     ).not.toBeInTheDocument();
   });
 

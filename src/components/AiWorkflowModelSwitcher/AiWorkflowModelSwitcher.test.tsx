@@ -14,7 +14,7 @@ import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
 const mockProfiles: ProfileSummary[] = [
-  { name: "onespace-api-gateway", active: true },
+  { name: "onespace-ai-gateway", active: true },
   { name: "baibai-40", active: false },
 ];
 
@@ -26,7 +26,7 @@ const mockGatewayRows: AgentMatrixRow[] = SUPPORTED_ROLES.map((role) => ({
 }));
 
 const mockGatewayMatrix: ProfileMatrix = {
-  name: "onespace-api-gateway",
+  name: "onespace-ai-gateway",
   rows: mockGatewayRows,
 };
 
@@ -120,15 +120,15 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
 
       // 验证 Profile 列表中包含两个 profile
       expect(
-        await screen.findByRole("button", { name: /onespace-api-gateway/ }),
+        await screen.findByRole("button", { name: /onespace-ai-gateway/ }),
       ).toBeInTheDocument();
       expect(
         screen.getByRole("button", { name: /baibai-40/ }),
       ).toBeInTheDocument();
 
-      // 验证 onespace-api-gateway 标记为当前激活
+      // 验证 onespace-ai-gateway 标记为当前激活
       const activeChip = screen.getByRole("button", {
-        name: /onespace-api-gateway/,
+        name: /onespace-ai-gateway/,
       });
       expect(activeChip).toHaveAttribute("data-active", "true");
 
@@ -385,7 +385,7 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
 
       await waitFor(() => {
         expect(invokeMock).toHaveBeenCalledWith("ai_workflow_activate_profile", {
-          name: "onespace-api-gateway",
+          name: "onespace-ai-gateway",
           homeOverride: undefined,
         });
       });
@@ -442,7 +442,7 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
         expect(invokeMock).toHaveBeenCalledWith(
           "ai_workflow_save_and_activate_profile",
           expect.objectContaining({
-            name: "onespace-api-gateway",
+            name: "onespace-ai-gateway",
             matrix: expect.arrayContaining([
               expect.objectContaining({
                 role: "backend",
@@ -582,7 +582,7 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
 
       renderWithProviders(<AiWorkflowModelSwitcher />);
 
-      // 默认选中 onespace-api-gateway（active 为 true），删除按钮应当为禁用状态
+      // 默认选中 onespace-ai-gateway（active 为 true），删除按钮应当为禁用状态
       const deleteBtn = await screen.findByTestId("delete-profile-trigger");
       expect(deleteBtn).toBeDisabled();
 
@@ -735,7 +735,7 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
         const payload = args as Record<string, unknown> | undefined;
         if (command === "ai_workflow_list_profiles") {
           return [
-            { name: "onespace-api-gateway", active: false },
+            { name: "onespace-ai-gateway", active: false },
             { name: "baibai-40", active: false },
           ];
         }
@@ -752,7 +752,7 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       renderWithProviders(<AiWorkflowModelSwitcher />);
 
       const gatewayChip = await screen.findByRole("button", {
-        name: /onespace-api-gateway/,
+        name: /onespace-ai-gateway/,
       });
       expect(gatewayChip).toHaveAttribute("data-active", "false");
       expect(
@@ -770,7 +770,7 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       renderWithProviders(<AiWorkflowModelSwitcher />);
 
       const activeChip = await screen.findByRole("button", {
-        name: /onespace-api-gateway/,
+        name: /onespace-ai-gateway/,
       });
       expect(activeChip).toHaveAttribute("data-active", "true");
       expect(activeChip).toHaveAttribute("data-selected", "true");

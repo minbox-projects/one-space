@@ -96,10 +96,10 @@ describe("SettingsView", () => {
       if (command === "get_storage_config") {
         return structuredClone(currentConfig);
       }
-      if (command === "api_gateway_usage_retention_get") {
+      if (command === "ai_gateway_usage_retention_get") {
         return currentRetention;
       }
-      if (command === "api_gateway_usage_retention_save") {
+      if (command === "ai_gateway_usage_retention_save") {
         const days = args.days as number;
         if (!Number.isInteger(days) || days < 1 || days > 365) {
           throw new Error("Retention days must be between 1 and 365");
@@ -107,13 +107,13 @@ describe("SettingsView", () => {
         currentRetention = days;
         return currentRetention;
       }
-      if (command === "api_gateway_template_auto_refresh_get") {
+      if (command === "ai_gateway_template_auto_refresh_get") {
         if (templateAutoRefreshGetError) {
           throw templateAutoRefreshGetError;
         }
         return currentTemplateAutoRefreshMinutes;
       }
-      if (command === "api_gateway_template_auto_refresh_save") {
+      if (command === "ai_gateway_template_auto_refresh_save") {
         if (templateAutoRefreshSaveError) {
           throw templateAutoRefreshSaveError;
         }
@@ -273,7 +273,7 @@ describe("SettingsView", () => {
     );
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_retention_save", {
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_usage_retention_save", {
         days: 30,
       }),
     );
@@ -300,7 +300,7 @@ describe("SettingsView", () => {
       ),
     ).toBeInTheDocument();
     expect(invokeMock).not.toHaveBeenCalledWith(
-      "api_gateway_usage_retention_save",
+      "ai_gateway_usage_retention_save",
       expect.anything(),
     );
 
@@ -315,7 +315,7 @@ describe("SettingsView", () => {
       ),
     ).toBeInTheDocument();
     expect(invokeMock).not.toHaveBeenCalledWith(
-      "api_gateway_usage_retention_save",
+      "ai_gateway_usage_retention_save",
       expect.anything(),
     );
 
@@ -325,7 +325,7 @@ describe("SettingsView", () => {
       screen.getByRole("button", { name: /Save Settings|保存设置/ }),
     );
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_retention_save", {
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_usage_retention_save", {
         days: 1,
       }),
     );
@@ -336,7 +336,7 @@ describe("SettingsView", () => {
       screen.getByRole("button", { name: /Save Settings|保存设置/ }),
     );
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_retention_save", {
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_usage_retention_save", {
         days: 365,
       }),
     );
@@ -353,7 +353,7 @@ describe("SettingsView", () => {
       screen.getByRole("button", { name: /Save Settings|保存设置/ }),
     );
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_retention_save", {
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_usage_retention_save", {
         days: 30,
       }),
     );
@@ -453,7 +453,7 @@ describe("SettingsView", () => {
 
   it("saves 0/10/60/1440, re-reads the persisted value and notifies subscribers", async () => {
     const { subscribeTemplateAutoRefreshIntervalChanged } = (await import(
-      "@/lib/apiGateway"
+      "@/lib/aiGateway"
     )) as unknown as {
       subscribeTemplateAutoRefreshIntervalChanged: (
         listener: () => void,
@@ -484,13 +484,13 @@ describe("SettingsView", () => {
 
       await waitFor(() =>
         expect(invokeMock).toHaveBeenCalledWith(
-          "api_gateway_template_auto_refresh_save",
+          "ai_gateway_template_auto_refresh_save",
           { minutes },
         ),
       );
       await waitFor(() =>
         expect(invokeMock).toHaveBeenCalledWith(
-          "api_gateway_template_auto_refresh_get",
+          "ai_gateway_template_auto_refresh_get",
         ),
       );
       await waitFor(() =>
@@ -522,7 +522,7 @@ describe("SettingsView", () => {
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith(
-        "api_gateway_template_auto_refresh_save",
+        "ai_gateway_template_auto_refresh_save",
         { minutes: 60 },
       ),
     );
@@ -561,7 +561,7 @@ describe("SettingsView", () => {
       ),
     ).toBeInTheDocument();
     expect(invokeMock).not.toHaveBeenCalledWith(
-      "api_gateway_template_auto_refresh_save",
+      "ai_gateway_template_auto_refresh_save",
       expect.anything(),
     );
 
@@ -574,7 +574,7 @@ describe("SettingsView", () => {
       ),
     ).toBeInTheDocument();
     expect(invokeMock).not.toHaveBeenCalledWith(
-      "api_gateway_template_auto_refresh_save",
+      "ai_gateway_template_auto_refresh_save",
       expect.anything(),
     );
   });
@@ -607,7 +607,7 @@ describe("SettingsView", () => {
         ),
       ).toBeInTheDocument();
       expect(invokeMock).not.toHaveBeenCalledWith(
-        "api_gateway_template_auto_refresh_save",
+        "ai_gateway_template_auto_refresh_save",
         expect.anything(),
       );
     },
@@ -643,18 +643,18 @@ describe("SettingsView", () => {
 
   it("ships bilingual template auto refresh label and validation text", async () => {
     await i18n.changeLanguage("en");
-    const enLabel = i18n.t("apiGatewayTemplateAutoRefreshLabel");
-    const enInvalid = i18n.t("apiGatewayTemplateAutoRefreshInvalid");
+    const enLabel = i18n.t("aiGatewayTemplateAutoRefreshLabel");
+    const enInvalid = i18n.t("aiGatewayTemplateAutoRefreshInvalid");
     expect(enLabel).toBe("Template auto refresh minutes");
     expect(enInvalid).toBe(
       "Template auto refresh minutes must be 0 (disabled) or between 10 and 1440",
     );
 
     await i18n.changeLanguage("zh");
-    const zhLabel = i18n.t("apiGatewayTemplateAutoRefreshLabel");
-    const zhInvalid = i18n.t("apiGatewayTemplateAutoRefreshInvalid");
-    expect(zhLabel).not.toBe("apiGatewayTemplateAutoRefreshLabel");
-    expect(zhInvalid).not.toBe("apiGatewayTemplateAutoRefreshInvalid");
+    const zhLabel = i18n.t("aiGatewayTemplateAutoRefreshLabel");
+    const zhInvalid = i18n.t("aiGatewayTemplateAutoRefreshInvalid");
+    expect(zhLabel).not.toBe("aiGatewayTemplateAutoRefreshLabel");
+    expect(zhInvalid).not.toBe("aiGatewayTemplateAutoRefreshInvalid");
     expect(zhLabel.trim()).not.toBe("");
     expect(zhInvalid.trim()).not.toBe("");
     expect(zhLabel).not.toBe(enLabel);
@@ -664,8 +664,8 @@ describe("SettingsView", () => {
   it("renders the interval input and invalid message in Chinese without key fallback", async () => {
     await i18n.changeLanguage("zh");
     try {
-      const zhLabel = i18n.t("apiGatewayTemplateAutoRefreshLabel");
-      const zhInvalid = i18n.t("apiGatewayTemplateAutoRefreshInvalid");
+      const zhLabel = i18n.t("aiGatewayTemplateAutoRefreshLabel");
+      const zhInvalid = i18n.t("aiGatewayTemplateAutoRefreshInvalid");
 
       currentTemplateAutoRefreshMinutes = 30;
       const user = userEvent.setup();
@@ -685,10 +685,10 @@ describe("SettingsView", () => {
       expect(await screen.findByText(zhInvalid)).toBeInTheDocument();
       // 中文渲染不得回退到键名，也不得泄露原始错误串。
       expect(
-        screen.queryByText("apiGatewayTemplateAutoRefreshLabel"),
+        screen.queryByText("aiGatewayTemplateAutoRefreshLabel"),
       ).not.toBeInTheDocument();
       expect(
-        screen.queryByText("apiGatewayTemplateAutoRefreshInvalid"),
+        screen.queryByText("aiGatewayTemplateAutoRefreshInvalid"),
       ).not.toBeInTheDocument();
     } finally {
       await i18n.changeLanguage("en");

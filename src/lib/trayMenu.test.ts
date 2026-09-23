@@ -120,7 +120,7 @@ describe("tray menu structure", () => {
       "ai-sessions",
       "ai-assistants",
       "ai-environments",
-      "api-gateway",
+      "ai-gateway",
       "ai-usage",
       "more-pages",
       "separator",

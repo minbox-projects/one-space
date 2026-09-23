@@ -43,8 +43,8 @@ import { AiSessions } from "./components/AiSessions";
 import { Workspaces } from "./components/Workspaces";
 import { AiEnvironments } from "./components/AiEnvironments";
 import { AiUsageStats } from "./components/AiUsageStats";
-import { ApiGateway } from "./components/ApiGateway";
-import { useTemplateAutoRefresh } from "./components/ApiGateway/useTemplateAutoRefresh";
+import { AiGateway } from "./components/AiGateway";
+import { useTemplateAutoRefresh } from "./components/AiGateway/useTemplateAutoRefresh";
 import { Skills } from "./components/Skills";
 import { Subagents } from "./components/Subagents";
 import { MCPServers } from "./components/MCPServers";
@@ -70,13 +70,13 @@ import {
   type ProtocolRouterStatus,
 } from "./lib/protocolRouter";
 import {
-  apiGatewayStart,
-  apiGatewayStatus,
-  apiGatewayStop,
-  API_GATEWAY_DEFAULT_PORT,
-  API_GATEWAY_STATUS_UPDATED_EVENT,
+  aiGatewayStart,
+  aiGatewayStatus,
+  aiGatewayStop,
+  AI_GATEWAY_DEFAULT_PORT,
+  AI_GATEWAY_STATUS_UPDATED_EVENT,
   type GatewayStatus,
-} from "./lib/apiGateway";
+} from "./lib/aiGateway";
 import { fileSharingStatus, fileSharingStop } from "./lib/fileSharing";
 import {
   sshTunnelsConnectAll,
@@ -206,7 +206,7 @@ const TRAY_NAVIGATION_IDS = new Set([
   "ai-assistants",
   "ai-environments",
   "ai-usage",
-  "api-gateway",
+  "ai-gateway",
   "ai-news",
   "more-tools",
   "skills",
@@ -315,7 +315,7 @@ function App() {
   } | null>(null);
   const [protocolRouterHeaderStatus, setProtocolRouterHeaderStatus] =
     useState<ProtocolRouterStatus | null>(null);
-  const [apiGatewayHeaderStatus, setApiGatewayHeaderStatus] =
+  const [aiGatewayHeaderStatus, setAiGatewayHeaderStatus] =
     useState<GatewayStatus | null>(null);
   const [trayState, setTrayState] = useState<TrayMenuState>({
     windowVisible: true,
@@ -473,7 +473,7 @@ function App() {
 
   const refreshTrayGateway = useCallback(async () => {
     try {
-      const status = await apiGatewayStatus();
+      const status = await aiGatewayStatus();
       if (!status) return;
       gatewayBaseUrlRef.current = status.local_base_url;
       setTrayState((prev) => ({
@@ -582,9 +582,9 @@ function App() {
         const service = trayStateRef.current.gateway;
         try {
           if (service.running) {
-            await apiGatewayStop();
+            await aiGatewayStop();
           } else {
-            await apiGatewayStart();
+            await aiGatewayStart();
           }
         } catch (error) {
           const message =
@@ -593,7 +593,7 @@ function App() {
             title: service.running
               ? t("error", { message })
               : t("tray.action.gatewayStartFailed", {
-                  port: service.port ?? API_GATEWAY_DEFAULT_PORT,
+                  port: service.port ?? AI_GATEWAY_DEFAULT_PORT,
                   error: message,
                 }),
             kind: "error",
@@ -727,7 +727,7 @@ function App() {
         void refreshTrayVisibility();
       }
     });
-    addListener(API_GATEWAY_STATUS_UPDATED_EVENT, () => {
+    addListener(AI_GATEWAY_STATUS_UPDATED_EVENT, () => {
       void refreshTrayGateway();
     });
     addListener("protocol-router-status-update", () => {
@@ -1147,13 +1147,13 @@ function App() {
       addListener("protocol-router-status-update", refreshProtocolRouterStatus);
       refreshProtocolRouterStatus();
 
-      const refreshApiGatewayStatus = () => {
-        void apiGatewayStatus()
-          .then(setApiGatewayHeaderStatus)
-          .catch(() => setApiGatewayHeaderStatus(null));
+      const refreshAiGatewayStatus = () => {
+        void aiGatewayStatus()
+          .then(setAiGatewayHeaderStatus)
+          .catch(() => setAiGatewayHeaderStatus(null));
       };
-      addListener(API_GATEWAY_STATUS_UPDATED_EVENT, refreshApiGatewayStatus);
-      refreshApiGatewayStatus();
+      addListener(AI_GATEWAY_STATUS_UPDATED_EVENT, refreshAiGatewayStatus);
+      refreshAiGatewayStatus();
 
       addListener("ssh-tunnel-window-reconnect-start", (event) => {
         const payload = (event.payload ?? {}) as { total?: number };
@@ -1586,8 +1586,8 @@ function App() {
             count: counts.environments,
           },
           {
-            id: "api-gateway",
-            name: t("apiGateway", "API Gateway"),
+            id: "ai-gateway",
+            name: t("aiGateway", "AI Gateway"),
             icon: Network,
           },
           {
@@ -1931,10 +1931,10 @@ function App() {
             <AiEnvironments isVisible={activeTab === "ai-environments"} />
           </div>
         )}
-        {shouldRenderTab("api-gateway") && (
-          <div className={activeTab === "api-gateway" ? "h-full" : "hidden"}>
-            <AppErrorBoundary label="API 网关" resetKey={activeTab}>
-              <ApiGateway isVisible={activeTab === "api-gateway"} />
+        {shouldRenderTab("ai-gateway") && (
+          <div className={activeTab === "ai-gateway" ? "h-full" : "hidden"}>
+            <AppErrorBoundary label="AI 网关" resetKey={activeTab}>
+              <AiGateway isVisible={activeTab === "ai-gateway"} />
             </AppErrorBoundary>
           </div>
         )}
@@ -2288,19 +2288,19 @@ function App() {
             </div>
 
             <div className="hidden items-center gap-1 sm:flex">
-              {apiGatewayHeaderStatus?.running && (
+              {aiGatewayHeaderStatus?.running && (
                 <button
-                  onClick={() => navigateToTab("api-gateway")}
+                  onClick={() => navigateToTab("ai-gateway")}
                   className="relative p-2.5 rounded-md transition-colors text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
-                  title={t("launcherApiGatewayRunningAria", {
-                    port: apiGatewayHeaderStatus.port,
-                    defaultValue: `API Gateway running on port ${apiGatewayHeaderStatus.port}`,
+                  title={t("launcherAiGatewayRunningAria", {
+                    port: aiGatewayHeaderStatus.port,
+                    defaultValue: `AI Gateway running on port ${aiGatewayHeaderStatus.port}`,
                   })}
-                  aria-label={t("launcherApiGatewayRunningAria", {
-                    port: apiGatewayHeaderStatus.port,
-                    defaultValue: `API Gateway running on port ${apiGatewayHeaderStatus.port}`,
+                  aria-label={t("launcherAiGatewayRunningAria", {
+                    port: aiGatewayHeaderStatus.port,
+                    defaultValue: `AI Gateway running on port ${aiGatewayHeaderStatus.port}`,
                   })}
-                  data-testid="header-api-gateway-status"
+                  data-testid="header-ai-gateway-status"
                 >
                   <Network className="w-5 h-5" />
                   <span className="absolute right-1 top-1 flex h-2 w-2">

@@ -80,67 +80,67 @@ describe("Antigravity 终端工具国际化键名", () => {
 });
 
 const PROVIDER_TEMPLATE_KEYS = [
-  "apiGatewayProviderTemplates",
-  "apiGatewayProviderTemplatesDesc",
-  "apiGatewayTemplateModelsCount",
-  "apiGatewayTemplateSource",
-  "apiGatewayTemplateLastSync",
-  "apiGatewayTemplateNotSynced",
-  "apiGatewayTemplateSync",
-  "apiGatewayTemplateSyncing",
-  "apiGatewayTemplateModelDisabled",
-  "apiGatewayTemplateAddProvider",
-  "apiGatewayTemplateExpand",
-  "apiGatewayTemplateTab",
-  "apiGatewayBoundTemplate",
-  "apiGatewayBoundTemplateDesc",
-  "apiGatewayBoundTemplateBadge",
-  "apiGatewayBoundTemplateNotFound",
-  "apiGatewayBoundTemplatePresetModels",
-  "apiGatewayConfiguredModelCount",
-  "apiGatewayNoTemplates",
-  "apiGatewayTemplatesLoadFailed",
-  "apiGatewayTemplateNoModels",
-  "apiGatewayTemplateSyncSuccess",
-  "apiGatewayTemplateProviderCreated",
-  "apiGatewayTemplateCreateFailed",
-  "apiGatewayTemplateCreateTitle",
-  "apiGatewayTemplateCreateDesc",
-  "apiGatewayTemplateNameLabel",
-  "apiGatewayTemplateIconLabel",
-  "apiGatewayTemplateIconAuto",
-  "apiGatewayTemplateIconOpenCode",
-  "apiGatewayTemplateIconCommandCode",
-  "apiGatewayTemplateIconOpenAI",
-  "apiGatewayTemplateBaseUrlLabel",
-  "apiGatewayTemplateProtocolLabel",
-  "apiGatewayTemplateApiKeyLabel",
-  "apiGatewayTemplateApiKeyRequired",
-  "apiGatewayTemplateCreateSubmit",
-  "apiGatewayEveryDay",
-  "apiGatewayWeekdaySun",
-  "apiGatewayWeekdayMon",
-  "apiGatewayWeekdayTue",
-  "apiGatewayWeekdayWed",
-  "apiGatewayWeekdayThu",
-  "apiGatewayWeekdayFri",
-  "apiGatewayWeekdaySat",
-  "apiGatewayTemplateDeprecated",
-  "apiGatewayProviderTemplateAvatarTitle",
-  "apiGatewayTemplateRetiredMappings",
-  "apiGatewayTemplateRetiredMappingsTooltip",
-  "apiGatewayIgnoredModels",
-  "apiGatewayIgnoredModelsDesc",
-  "apiGatewayRestoreModel",
-  "apiGatewayReasoningEfforts",
-  "apiGatewayReasoningEffortsDesc",
-  "apiGatewayReasoningEffortPlaceholder",
-  "apiGatewayReasoningEffortAdd",
-  "apiGatewayReasoningEffortRemove",
-  "apiGatewayMappingDetails",
-  "apiGatewayMappingDeleted",
-  "apiGatewayModelRestored",
-  "apiGatewayWeekdaySelect",
+  "aiGatewayProviderTemplates",
+  "aiGatewayProviderTemplatesDesc",
+  "aiGatewayTemplateModelsCount",
+  "aiGatewayTemplateSource",
+  "aiGatewayTemplateLastSync",
+  "aiGatewayTemplateNotSynced",
+  "aiGatewayTemplateSync",
+  "aiGatewayTemplateSyncing",
+  "aiGatewayTemplateModelDisabled",
+  "aiGatewayTemplateAddProvider",
+  "aiGatewayTemplateExpand",
+  "aiGatewayTemplateTab",
+  "aiGatewayBoundTemplate",
+  "aiGatewayBoundTemplateDesc",
+  "aiGatewayBoundTemplateBadge",
+  "aiGatewayBoundTemplateNotFound",
+  "aiGatewayBoundTemplatePresetModels",
+  "aiGatewayConfiguredModelCount",
+  "aiGatewayNoTemplates",
+  "aiGatewayTemplatesLoadFailed",
+  "aiGatewayTemplateNoModels",
+  "aiGatewayTemplateSyncSuccess",
+  "aiGatewayTemplateProviderCreated",
+  "aiGatewayTemplateCreateFailed",
+  "aiGatewayTemplateCreateTitle",
+  "aiGatewayTemplateCreateDesc",
+  "aiGatewayTemplateNameLabel",
+  "aiGatewayTemplateIconLabel",
+  "aiGatewayTemplateIconAuto",
+  "aiGatewayTemplateIconOpenCode",
+  "aiGatewayTemplateIconCommandCode",
+  "aiGatewayTemplateIconOpenAI",
+  "aiGatewayTemplateBaseUrlLabel",
+  "aiGatewayTemplateProtocolLabel",
+  "aiGatewayTemplateApiKeyLabel",
+  "aiGatewayTemplateApiKeyRequired",
+  "aiGatewayTemplateCreateSubmit",
+  "aiGatewayEveryDay",
+  "aiGatewayWeekdaySun",
+  "aiGatewayWeekdayMon",
+  "aiGatewayWeekdayTue",
+  "aiGatewayWeekdayWed",
+  "aiGatewayWeekdayThu",
+  "aiGatewayWeekdayFri",
+  "aiGatewayWeekdaySat",
+  "aiGatewayTemplateDeprecated",
+  "aiGatewayProviderTemplateAvatarTitle",
+  "aiGatewayTemplateRetiredMappings",
+  "aiGatewayTemplateRetiredMappingsTooltip",
+  "aiGatewayIgnoredModels",
+  "aiGatewayIgnoredModelsDesc",
+  "aiGatewayRestoreModel",
+  "aiGatewayReasoningEfforts",
+  "aiGatewayReasoningEffortsDesc",
+  "aiGatewayReasoningEffortPlaceholder",
+  "aiGatewayReasoningEffortAdd",
+  "aiGatewayReasoningEffortRemove",
+  "aiGatewayMappingDetails",
+  "aiGatewayMappingDeleted",
+  "aiGatewayModelRestored",
+  "aiGatewayWeekdaySelect",
 ] as const;
 
 describe("服务商模板国际化键", () => {
@@ -155,14 +155,14 @@ describe("服务商模板国际化键", () => {
     ["zh", "服务商模板", "上游服务商"],
   ] as const)("为 %s 保留模板与上游服务商命名", async (language, templates, providers) => {
     await i18n.changeLanguage(language);
-    expect(i18n.t("apiGatewayProviderTemplates")).toBe(templates);
-    expect(i18n.t("apiGatewayProviders")).toBe(providers);
+    expect(i18n.t("aiGatewayProviderTemplates")).toBe(templates);
+    expect(i18n.t("aiGatewayProviders")).toBe(providers);
   });
 
   it("zh 提供每天与同步中文案", async () => {
     await i18n.changeLanguage("zh");
-    expect(i18n.t("apiGatewayEveryDay")).toBe("每天");
-    expect(i18n.t("apiGatewayTemplateSyncing")).toBe("同步中...");
+    expect(i18n.t("aiGatewayEveryDay")).toBe("每天");
+    expect(i18n.t("aiGatewayTemplateSyncing")).toBe("同步中...");
   });
 
   it.each([
@@ -170,10 +170,10 @@ describe("服务商模板国际化键", () => {
     ["zh", "2 个映射已从模板移除"],
   ] as const)("为 %s 的退休映射提示保留 {{count}} 并正常插值", async (language, expected) => {
     await i18n.changeLanguage(language);
-    const raw = resourceBundle(language).apiGatewayTemplateRetiredMappings;
+    const raw = resourceBundle(language).aiGatewayTemplateRetiredMappings;
     expect(typeof raw).toBe("string");
     expect(raw as string).toContain("{{count}}");
-    expect(i18n.t("apiGatewayTemplateRetiredMappings", { count: 2 })).toBe(
+    expect(i18n.t("aiGatewayTemplateRetiredMappings", { count: 2 })).toBe(
       expected,
     );
   });
@@ -185,27 +185,27 @@ describe("服务商模板国际化键", () => {
     "为 %s 提供同步模型列表与模型禁用状态真实文案",
     async (language, syncLabel, disabledLabel) => {
       await i18n.changeLanguage(language);
-      expect(i18n.t("apiGatewayTemplateSync")).toBe(syncLabel);
-      expect(i18n.t("apiGatewayTemplateModelDisabled")).toBe(disabledLabel);
-      expect(i18n.t("apiGatewayTemplateSyncing")).not.toBe(
-        "apiGatewayTemplateSyncing",
+      expect(i18n.t("aiGatewayTemplateSync")).toBe(syncLabel);
+      expect(i18n.t("aiGatewayTemplateModelDisabled")).toBe(disabledLabel);
+      expect(i18n.t("aiGatewayTemplateSyncing")).not.toBe(
+        "aiGatewayTemplateSyncing",
       );
     },
   );
 
   it.each(["en", "zh"] as const)("为 %s 的模型数量文案保留 {{count}} 并正常插值", async (language) => {
     await i18n.changeLanguage(language);
-    const raw = resourceBundle(language).apiGatewayTemplateModelsCount;
+    const raw = resourceBundle(language).aiGatewayTemplateModelsCount;
     expect(typeof raw).toBe("string");
     expect(raw as string).toContain("{{count}}");
-    expect(i18n.t("apiGatewayTemplateModelsCount", { count: 3 })).not.toContain("{{count}}");
+    expect(i18n.t("aiGatewayTemplateModelsCount", { count: 3 })).not.toContain("{{count}}");
   });
 });
 
 const PROVIDER_MAPPING_PRICE_KEYS = [
-  "apiGatewayMappingPrice",
-  "apiGatewayDefaultModelNone",
-  "apiGatewayDefaultModelAutoAdded",
+  "aiGatewayMappingPrice",
+  "aiGatewayDefaultModelNone",
+  "aiGatewayDefaultModelAutoAdded",
 ] as const;
 
 describe("服务商映射价格国际化键", () => {
@@ -219,54 +219,54 @@ describe("服务商映射价格国际化键", () => {
 });
 
 const REMOVED_LEGACY_MODEL_PRICE_KEYS = [
-  "apiGatewayAddPrice",
-  "apiGatewayDeletePriceAria",
-  "apiGatewayModelPriceDialogTitle",
-  "apiGatewayModelPriceDialogDesc",
-  "apiGatewayModelPrices",
-  "apiGatewayModelPricesDesc",
-  "apiGatewayModelPricesEmpty",
-  "apiGatewayModelPricesLoadFailed",
-  "apiGatewayModelPricesSaveFailed",
-  "apiGatewayModelPricesSaved",
-  "apiGatewayOffPeakActive",
-  "apiGatewayOffPeakBadge",
-  "apiGatewayOffPeakCount",
-  "apiGatewayOffPeakEmpty",
-  "apiGatewayPriceAllModelsConfigured",
-  "apiGatewayPriceModel",
-  "apiGatewayPriceModelCount",
-  "apiGatewayPriceModelCount_plural",
-  "apiGatewayPriceModelPlaceholder",
-  "apiGatewayPriceNoAvailableModels",
-  "apiGatewayPriceNoProviders",
-  "apiGatewayPriceProviderNoModels",
-  "apiGatewayPriceSelectModel",
-  "apiGatewayPriceUnassignedProvider",
+  "aiGatewayAddPrice",
+  "aiGatewayDeletePriceAria",
+  "aiGatewayModelPriceDialogTitle",
+  "aiGatewayModelPriceDialogDesc",
+  "aiGatewayModelPrices",
+  "aiGatewayModelPricesDesc",
+  "aiGatewayModelPricesEmpty",
+  "aiGatewayModelPricesLoadFailed",
+  "aiGatewayModelPricesSaveFailed",
+  "aiGatewayModelPricesSaved",
+  "aiGatewayOffPeakActive",
+  "aiGatewayOffPeakBadge",
+  "aiGatewayOffPeakCount",
+  "aiGatewayOffPeakEmpty",
+  "aiGatewayPriceAllModelsConfigured",
+  "aiGatewayPriceModel",
+  "aiGatewayPriceModelCount",
+  "aiGatewayPriceModelCount_plural",
+  "aiGatewayPriceModelPlaceholder",
+  "aiGatewayPriceNoAvailableModels",
+  "aiGatewayPriceNoProviders",
+  "aiGatewayPriceProviderNoModels",
+  "aiGatewayPriceSelectModel",
+  "aiGatewayPriceUnassignedProvider",
 ] as const;
 
 const KEPT_PROVIDER_PRICE_KEYS = [
-  "apiGatewayMappingPrice",
-  "apiGatewayDefaultModelNone",
-  "apiGatewayDefaultModelAutoAdded",
-  "apiGatewayPriceInput",
-  "apiGatewayPriceCacheRead",
-  "apiGatewayPriceCacheWrite",
-  "apiGatewayPriceOutput",
-  "apiGatewayPricePerMillion",
-  "apiGatewayOffPeakEnable",
-  "apiGatewayOffPeakConfigure",
-  "apiGatewayOffPeakTimeRange",
-  "apiGatewayOffPeakStartTime",
-  "apiGatewayOffPeakEndTime",
-  "apiGatewayOffPeakRates",
-  "apiGatewayOffPeakAdd",
-  "apiGatewayOffPeakWindowIndex",
-  "apiGatewayEveryDay",
-  "apiGatewayWeekdaySelect",
+  "aiGatewayMappingPrice",
+  "aiGatewayDefaultModelNone",
+  "aiGatewayDefaultModelAutoAdded",
+  "aiGatewayPriceInput",
+  "aiGatewayPriceCacheRead",
+  "aiGatewayPriceCacheWrite",
+  "aiGatewayPriceOutput",
+  "aiGatewayPricePerMillion",
+  "aiGatewayOffPeakEnable",
+  "aiGatewayOffPeakConfigure",
+  "aiGatewayOffPeakTimeRange",
+  "aiGatewayOffPeakStartTime",
+  "aiGatewayOffPeakEndTime",
+  "aiGatewayOffPeakRates",
+  "aiGatewayOffPeakAdd",
+  "aiGatewayOffPeakWindowIndex",
+  "aiGatewayEveryDay",
+  "aiGatewayWeekdaySelect",
 ] as const;
 
-describe("API 网关模型价格旧入口国际化键清理", () => {
+describe("AI 网关模型价格旧入口国际化键清理", () => {
   it.each(["en", "zh"] as const)(
     "为 %s 移除旧入口键并保留服务商弹窗价格键",
     async (language) => {
@@ -282,23 +282,23 @@ describe("API 网关模型价格旧入口国际化键清理", () => {
 });
 
 const REMOVED_PROVIDER_TEMPLATE_KEYS = [
-  "apiGatewayTemplateSnapshot",
-  "apiGatewayTemplateSnapshotVersion",
-  "apiGatewayTemplatePriceInput",
-  "apiGatewayTemplatePriceCacheRead",
-  "apiGatewayTemplatePriceCacheWrite",
-  "apiGatewayTemplatePriceOutput",
-  "apiGatewayTemplatePriceUnit",
-  "apiGatewayTemplateOffPeak",
-  "apiGatewayTemplateNoOffPeak",
-  "apiGatewayTemplateReasoningEfforts",
-  "apiGatewayTemplateFetchModels",
-  "apiGatewayTemplateFetchingModels",
-  "apiGatewayTemplateFetchModelsApiKey",
-  "apiGatewayTemplateFetchModelsSuccess",
-  "apiGatewayTemplateImportSelected",
-  "apiGatewayTemplateSelectAll",
-  "apiGatewayTemplateDeselectAll",
+  "aiGatewayTemplateSnapshot",
+  "aiGatewayTemplateSnapshotVersion",
+  "aiGatewayTemplatePriceInput",
+  "aiGatewayTemplatePriceCacheRead",
+  "aiGatewayTemplatePriceCacheWrite",
+  "aiGatewayTemplatePriceOutput",
+  "aiGatewayTemplatePriceUnit",
+  "aiGatewayTemplateOffPeak",
+  "aiGatewayTemplateNoOffPeak",
+  "aiGatewayTemplateReasoningEfforts",
+  "aiGatewayTemplateFetchModels",
+  "aiGatewayTemplateFetchingModels",
+  "aiGatewayTemplateFetchModelsApiKey",
+  "aiGatewayTemplateFetchModelsSuccess",
+  "aiGatewayTemplateImportSelected",
+  "aiGatewayTemplateSelectAll",
+  "aiGatewayTemplateDeselectAll",
   "targetUrl",
   "alreadyAdded",
 ] as const;
@@ -321,9 +321,9 @@ describe("服务商模板快照、价格与获取模型旧键清理", () => {
 // ---------------------------------------------------------------------------
 
 const STEP_3_AUTO_DISABLE_KEYS = [
-  "apiGatewayProviderAutoDisabledModelsHint",
-  "apiGatewayReenableMapping",
-  "apiGatewayReenableAllMappings",
+  "aiGatewayProviderAutoDisabledModelsHint",
+  "aiGatewayReenableMapping",
+  "aiGatewayReenableAllMappings",
 ] as const;
 
 describe("逐行自动禁用新增国际化键", () => {
@@ -340,11 +340,11 @@ describe("逐行自动禁用新增国际化键", () => {
 
   it("提示键支持 count 插值显示被自动禁用的映射数量", async () => {
     await i18n.changeLanguage("en");
-    const rawEn = resourceBundle("en").apiGatewayProviderAutoDisabledModelsHint;
+    const rawEn = resourceBundle("en").aiGatewayProviderAutoDisabledModelsHint;
     expect(typeof rawEn).toBe("string");
     expect(rawEn as string).toContain("{{count}}");
-    expect(i18n.t("apiGatewayProviderAutoDisabledModelsHint", { count: 0 })).not.toContain("{{count}}");
-    expect(i18n.t("apiGatewayProviderAutoDisabledModelsHint", { count: 5 })).not.toContain("{{count}}");
+    expect(i18n.t("aiGatewayProviderAutoDisabledModelsHint", { count: 0 })).not.toContain("{{count}}");
+    expect(i18n.t("aiGatewayProviderAutoDisabledModelsHint", { count: 5 })).not.toContain("{{count}}");
   });
 
   it.each([
@@ -352,7 +352,7 @@ describe("逐行自动禁用新增国际化键", () => {
     ["zh", "重新启用映射"],
   ] as const)("重新启用映射按钮文案为 %s", async (language, expected) => {
     await i18n.changeLanguage(language);
-    expect(i18n.t("apiGatewayReenableMapping")).toBe(expected);
+    expect(i18n.t("aiGatewayReenableMapping")).toBe(expected);
   });
 
   it.each([
@@ -360,7 +360,7 @@ describe("逐行自动禁用新增国际化键", () => {
     ["zh", "重新启用所有映射"],
   ] as const)("重新启用全部映射按钮文案为 %s", async (language, expected) => {
     await i18n.changeLanguage(language);
-    expect(i18n.t("apiGatewayReenableAllMappings")).toBe(expected);
+    expect(i18n.t("aiGatewayReenableAllMappings")).toBe(expected);
   });
 
   it("en 与 zh 的键路径集合仍保持一致", () => {
@@ -372,9 +372,9 @@ describe("逐行自动禁用新增国际化键", () => {
   });
 });
 
-const USAGE_RANGE_YESTERDAY_KEYS = ["apiGatewayRangeYesterday"] as const;
+const USAGE_RANGE_YESTERDAY_KEYS = ["aiGatewayRangeYesterday"] as const;
 
-describe("API 网关快捷范围国际化键", () => {
+describe("AI 网关快捷范围国际化键", () => {
   it.each(["en", "zh"] as const)(
     "为 %s 提供昨天范围的真实文案",
     async (language) => {

@@ -63,7 +63,7 @@ const TOP_LEVEL_DESTINATIONS = [
   "ai-sessions",
   "ai-assistants",
   "ai-environments",
-  "api-gateway",
+  "ai-gateway",
   "ai-usage",
 ] as const;
 
@@ -328,13 +328,13 @@ describe("App tray menu integration", () => {
             },
             meta: { schema_version: 1, revision: 1 },
           };
-        case "api_gateway_status":
+        case "ai_gateway_status":
           return gatewayStatus();
-        case "api_gateway_start":
+        case "ai_gateway_start":
           if (gatewayStartError) throw gatewayStartError;
           gatewayRunning = true;
           return gatewayStatus();
-        case "api_gateway_stop":
+        case "ai_gateway_stop":
           gatewayRunning = false;
           return gatewayStatus();
         case "protocol_router_status":
@@ -455,7 +455,7 @@ describe("App tray menu integration", () => {
       expect(findModelItem(latestModel(), "gateway")?.checked).toBe(false),
     );
 
-    await fireActionAndExpectCommand("gateway", "api_gateway_start");
+    await fireActionAndExpectCommand("gateway", "ai_gateway_start");
 
     await waitFor(() =>
       expect(findModelItem(latestModel(), "gateway")?.checked).toBe(true),
@@ -470,7 +470,7 @@ describe("App tray menu integration", () => {
       expect(findModelItem(latestModel(), "gateway")?.checked).toBe(true),
     );
 
-    await fireActionAndExpectCommand("gateway", "api_gateway_stop");
+    await fireActionAndExpectCommand("gateway", "ai_gateway_stop");
   });
 
   it("connects all tunnels from the tray", async () => {
@@ -550,7 +550,7 @@ describe("App tray menu integration", () => {
     );
 
     gatewayRunning = true;
-    await triggerEvent("api-gateway-status-update", undefined);
+    await triggerEvent("ai-gateway-status-update", undefined);
 
     await waitFor(() =>
       expect(findModelItem(latestModel(), "gateway")?.checked).toBe(true),

@@ -226,7 +226,7 @@ export function buildTrayMenuModel(state: TrayMenuState, t: TrayTranslate): Tray
     menuItem("ai-sessions", t("tray.aiSessions")),
     menuItem("ai-assistants", t("tray.aiAssistants")),
     menuItem("ai-environments", t("tray.aiEnvironments")),
-    menuItem("api-gateway", t("tray.apiGateway")),
+    menuItem("ai-gateway", t("tray.aiGateway")),
     menuItem("ai-usage", t("tray.aiUsage")),
     menuItem("more-pages", t("tray.morePages"), {
       submenu: buildMorePagesMenu(t),

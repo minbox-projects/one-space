@@ -11,10 +11,10 @@ describe("snippets and notes navigation", () => {
   });
 });
 
-describe("API Gateway navigation", () => {
-  it("resolves api-gateway to a standalone tab instead of a More Tools section", () => {
-    expect(resolveNavigationTarget("api-gateway")).toEqual({ tab: "api-gateway" });
-    expect(isMoreToolsTab("api-gateway")).toBe(false);
+describe("AI Gateway navigation", () => {
+  it("resolves ai-gateway to a standalone tab instead of a More Tools section", () => {
+    expect(resolveNavigationTarget("ai-gateway")).toEqual({ tab: "ai-gateway" });
+    expect(isMoreToolsTab("ai-gateway")).toBe(false);
   });
 });
 

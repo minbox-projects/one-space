@@ -122,7 +122,7 @@ const INTERNAL_TARGETS: Array<{
   { id: "ssh", labelKey: "sshServers", fallback: "SSH Servers" },
   { id: "ssh-tunnels", labelKey: "sshTunnels", fallback: "SSH Tunnels" },
   { id: "protocol-router", labelKey: "protocolRouter", fallback: "Protocol Router" },
-  { id: "api-gateway", labelKey: "apiGateway", fallback: "API Gateway" },
+  { id: "ai-gateway", labelKey: "aiGateway", fallback: "AI Gateway" },
   { id: "file-sharing", labelKey: "fileSharing", fallback: "File Sharing" },
   { id: "snippets", labelKey: "snippets", fallback: "Snippets" },
   { id: "bookmarks", labelKey: "bookmarks", fallback: "Bookmarks" },
