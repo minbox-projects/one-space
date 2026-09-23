@@ -542,7 +542,6 @@ pub fn api_gateway_status() -> Result<GatewayStatus, String> {
     server_status()
 }
 
-#[tauri::command]
 pub async fn api_gateway_autostart(app: tauri::AppHandle) -> Result<GatewayStatus, String> {
     cleanup_legacy_files();
     autostart(Some(app)).await

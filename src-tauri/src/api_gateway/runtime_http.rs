@@ -620,11 +620,12 @@ fn all_unavailable_message(failures: &[(String, String)]) -> String {
         .collect::<Vec<_>>()
         .join("; ");
 
-    let hint = if !failures.is_empty()
-        && failures.iter().all(|(_, r)| r.contains("Quota Exceeded") || (r.contains("429") && r.contains("额度已用尽")))
+    let hint = if failures
+        .iter()
+        .all(|(_, r)| r.contains("Quota Exceeded") || (r.contains("429") && r.contains("额度已用尽")))
     {
         " [提示: 所有服务商额度均已耗尽，请更换服务商或检查账户额度]"
-    } else if !failures.is_empty() && failures.iter().all(|(_, r)| r.contains("network error")) {
+    } else if failures.iter().all(|(_, r)| r.contains("network error")) {
         " [提示: 无法连接到上游服务，请检查服务商 Base URL 与网络/代理设置]"
     } else {
         ""
@@ -1304,8 +1305,13 @@ pub(in crate::api_gateway) async fn attempt_non_streaming(
     // bounded retries have failed, try the single eligible auto-disabled row
     // once. The single-flight guard makes concurrent requests skip a probe that
     // is already in flight, and a probe is never queued for retry or backoff.
+    // The guard is held until after the failed probe's settlement below so a
+    // concurrent request cannot acquire it during the cooldown re-arm window,
+    // matching the streaming path.
+    let mut _probe_guard: Option<ProbeGuard> = None;
     if let Some(candidate) = probe {
-        if let Some(_guard) = try_acquire_probe_guard(&candidate.target) {
+        if let Some(guard) = try_acquire_probe_guard(&candidate.target) {
+            _probe_guard = Some(guard);
             let provider = &candidate.provider;
             let model = candidate.upstream_model.as_str();
             let (outcome, log) =
