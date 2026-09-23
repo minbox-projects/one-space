@@ -22,7 +22,6 @@ import {
   formatUsageGroupLabel,
   formatUtc8DateTime,
   USAGE_RANGE_KEYS,
-  usageRangeToDays,
   usageStatusTranslationKey,
   type UsageGroupBy,
   type UsageLogResult,
@@ -33,6 +32,7 @@ import { errorToMessage } from "@/lib/messages";
 
 const RANGE_LABEL_KEYS: Record<UsageRangeKey, string> = {
   today: "apiGatewayRangeToday",
+  yesterday: "apiGatewayRangeYesterday",
   "7d": "apiGatewayRange7d",
   "15d": "apiGatewayRange15d",
   "30d": "apiGatewayRange30d",
@@ -41,6 +41,7 @@ const RANGE_LABEL_KEYS: Record<UsageRangeKey, string> = {
 
 const RANGE_LABEL_FALLBACKS: Record<UsageRangeKey, string> = {
   today: "Today",
+  yesterday: "Yesterday",
   "7d": "7d",
   "15d": "15d",
   "30d": "30d",
@@ -290,7 +291,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
       else setLoading(true);
       try {
         const next = await apiGatewayRequestLogs({
-          days: usageRangeToDays(range),
+          range,
           groupBy,
           status,
           model,

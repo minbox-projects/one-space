@@ -47,7 +47,6 @@ import {
   apiGatewayUsageStats,
   localBaseUrl,
   resolveDefaultKeyId,
-  usageRangeToDays,
   type CreateProviderFromTemplateRequest,
   type GatewayConfig,
   type GatewayKey,
@@ -209,10 +208,9 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
     const templatesPromise = apiGatewayProviderTemplates()
       .then((value) => ({ ok: true as const, value: value ?? [] }))
       .catch((err: unknown) => ({ ok: false as const, error: err }));
-    const todayDays = usageRangeToDays("today");
-    const statsPromise = apiGatewayUsageStats(todayDays).catch(() => null);
+    const statsPromise = apiGatewayUsageStats("today").catch(() => null);
     const logsPromise = apiGatewayRequestLogs({
-      days: todayDays,
+      range: "today",
       groupBy: "day",
     }).catch(() => null);
     try {
@@ -269,11 +267,10 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
       if (!silent) {
         setRefreshingToday(true);
       }
-      const todayDays = usageRangeToDays("today");
       try {
         const [nextTodayStats, nextTodayLogs, nextStatus] = await Promise.all([
-          apiGatewayUsageStats(todayDays).catch(() => null),
-          apiGatewayRequestLogs({ days: todayDays, groupBy: "day" }).catch(() => null),
+          apiGatewayUsageStats("today").catch(() => null),
+          apiGatewayRequestLogs({ range: "today", groupBy: "day" }).catch(() => null),
           apiGatewayStatus().catch(() => null),
         ]);
         setTodayStats(nextTodayStats);

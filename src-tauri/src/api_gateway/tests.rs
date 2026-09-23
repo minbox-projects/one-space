@@ -12045,7 +12045,8 @@ fn api_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert_eq!(stats.models[0].providers.len(), 2, "per-provider detail");
         assert_eq!(stats.buckets.len(), 1, "one day bucket");
 
-        let today = super::commands::api_gateway_usage_stats(Some(1)).unwrap();
+        let today =
+            super::commands::api_gateway_usage_stats(Some("today".to_string())).unwrap();
         assert_eq!(today.granularity, "hour", "today buckets by hour");
 
         let page = super::commands::api_gateway_request_logs(None, None, None, None, None).unwrap();
@@ -12124,6 +12125,244 @@ fn api_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
             None,
         )
         .is_err());
+    });
+}
+
+/// One UTC day in milliseconds, used to derive the UTC+8 day boundaries the
+/// quick-range selectors are anchored to.
+const DAY_MS: i64 = 86_400_000;
+
+/// UTC+8 midnight (00:00) of the natural day containing `now_ms`, as epoch
+/// milliseconds. Mirrors the backend's `(ms + 8h) / 1d * 1d - 8h` formula so
+/// the window fixtures never depend on the wall clock near midnight.
+fn utc8_day_start(now_ms: i64) -> i64 {
+    (now_ms + 28_800_000) / DAY_MS * DAY_MS - 28_800_000
+}
+
+/// REQ (Backend slice): the `yesterday` selector resolves to the UTC+8
+/// half-open `[yesterday 00:00, today 00:00)` window, buckets by hour and
+/// includes the 23:59:59 edge while excluding today and the day before
+/// yesterday. It also drives the request-log command to the same window.
+#[test]
+fn api_gateway_yesterday_range_counts_only_yesterday_hourly() {
+    with_temp_home("usage-yesterday-range", |_home| {
+        let store = UsageLogStore::default_store().expect("usage store");
+        let today_start = utc8_day_start(super::now_millis());
+        let fixtures = [
+            (today_start - DAY_MS + 9 * 3_600_000, tokens(10, 0, 0, 5)),
+            (today_start - 1_000, tokens(20, 0, 0, 10)),
+            (today_start + 1_000, tokens(100, 0, 0, 50)),
+            (today_start - DAY_MS - 1_000, tokens(200, 0, 0, 100)),
+        ];
+        for (timestamp_ms, token_counts) in fixtures {
+            store
+                .append(
+                    &sample_record(
+                        timestamp_ms,
+                        "local-a",
+                        "remote-a",
+                        "p1",
+                        "Provider One",
+                        UsageResult::Success,
+                        Some(0.1),
+                        token_counts,
+                    ),
+                    365,
+                )
+                .unwrap();
+        }
+
+        let stats =
+            super::commands::api_gateway_usage_stats(Some("yesterday".to_string()))
+                .expect("yesterday stats");
+        assert_eq!(stats.granularity, "hour");
+        assert_eq!(
+            stats.totals.request_count, 2,
+            "only the two yesterday records may be counted"
+        );
+        assert_eq!(
+            stats.totals.total_tokens,
+            15 + 30,
+            "today's and the day-before-yesterday record must be excluded"
+        );
+        let nine = stats
+            .buckets
+            .iter()
+            .find(|bucket| bucket.label == "09:00")
+            .expect("the yesterday 09:00 record must land in a 09:00 hour bucket");
+        assert_eq!(nine.metrics.request_count, 1);
+        assert_eq!(nine.metrics.total_tokens, 15);
+
+        let page = super::commands::api_gateway_request_logs(
+            Some("yesterday".to_string()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("yesterday request logs");
+        assert_eq!(page.total, 2);
+        assert_eq!(page.records.len(), 2);
+        for record in &page.records {
+            assert!(
+                record.timestamp_ms >= today_start - DAY_MS
+                    && record.timestamp_ms < today_start,
+                "record {} escapes the yesterday window",
+                record.timestamp_ms
+            );
+        }
+        assert!(
+            page.records.iter().all(|record| {
+                record.timestamp_ms != today_start + 1_000
+                    && record.timestamp_ms != today_start - DAY_MS - 1_000
+            }),
+            "today's and the day-before-yesterday records must be excluded"
+        );
+    });
+}
+
+/// Selector contract: `today` stays hourly, the unsupported `3d` and `bogus`
+/// selectors are errors for both commands, and `""` / `None` / `all` resolve
+/// to the all-time window that still includes the day before yesterday.
+#[test]
+fn api_gateway_usage_range_selector_rejects_unknown_and_accepts_all_time() {
+    with_temp_home("usage-range-selector", |_home| {
+        let store = UsageLogStore::default_store().expect("usage store");
+        let today_start = utc8_day_start(super::now_millis());
+        let fixtures = [
+            today_start + 1_000,
+            today_start - 1_000,
+            today_start - DAY_MS - 1_000,
+        ];
+        for timestamp_ms in fixtures {
+            store
+                .append(
+                    &sample_record(
+                        timestamp_ms,
+                        "local-a",
+                        "remote-a",
+                        "p1",
+                        "Provider One",
+                        UsageResult::Success,
+                        Some(0.1),
+                        tokens(1, 0, 0, 1),
+                    ),
+                    365,
+                )
+                .unwrap();
+        }
+
+        let today =
+            super::commands::api_gateway_usage_stats(Some("today".to_string()))
+                .expect("today stats");
+        assert_eq!(today.granularity, "hour");
+        assert_eq!(today.totals.request_count, 1, "only today's record");
+
+        assert!(
+            super::commands::api_gateway_usage_stats(Some("3d".to_string())).is_err(),
+            "3d is not a supported quick range"
+        );
+        assert!(
+            super::commands::api_gateway_request_logs(
+                Some("3d".to_string()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .is_err(),
+            "3d must fail for request logs too"
+        );
+        assert!(
+            super::commands::api_gateway_usage_stats(Some("bogus".to_string())).is_err(),
+            "an unknown selector must never silently fall back"
+        );
+        assert!(
+            super::commands::api_gateway_request_logs(
+                Some("bogus".to_string()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .is_err(),
+            "an unknown selector must fail for request logs too"
+        );
+
+        for all in [Some("".to_string()), None, Some("all".to_string())] {
+            let stats = super::commands::api_gateway_usage_stats(all.clone())
+                .expect("all-time stats");
+            assert_eq!(
+                stats.totals.request_count, 3,
+                "all-time must include the day-before-yesterday record"
+            );
+            let page =
+                super::commands::api_gateway_request_logs(all, None, None, None, None)
+                    .expect("all-time request logs");
+            assert_eq!(page.total, 3);
+        }
+    });
+}
+
+/// Window parity: `7d` must equal the previous `days = 7` window — the UTC+8
+/// `[today 00:00 - 6 days, today 00:00 + 1 day)` half-open range with daily
+/// buckets. The window start is inclusive; the day before it and the
+/// day-seven-days-back boundary are excluded.
+#[test]
+fn api_gateway_seven_day_range_matches_previous_days_window() {
+    with_temp_home("usage-seven-day-parity", |_home| {
+        let store = UsageLogStore::default_store().expect("usage store");
+        let today_start = utc8_day_start(super::now_millis());
+        let window_start = today_start - 6 * DAY_MS;
+        let fixtures = [
+            today_start + 1_000,      // today: in
+            window_start,             // inclusive start: in
+            window_start - 1_000,     // one second before the start: out
+            today_start - 7 * DAY_MS, // the start of today minus 7 days: out
+            today_start - 7 * DAY_MS - 1_000, // one second before that: out
+        ];
+        for timestamp_ms in fixtures {
+            store
+                .append(
+                    &sample_record(
+                        timestamp_ms,
+                        "local-a",
+                        "remote-a",
+                        "p1",
+                        "Provider One",
+                        UsageResult::Success,
+                        Some(0.1),
+                        tokens(1, 0, 0, 1),
+                    ),
+                    365,
+                )
+                .unwrap();
+        }
+
+        let stats =
+            super::commands::api_gateway_usage_stats(Some("7d".to_string()))
+                .expect("7d stats");
+        assert_eq!(stats.granularity, "day");
+        assert_eq!(
+            stats.totals.request_count, 2,
+            "today and the inclusive window start are in; earlier records are out"
+        );
+
+        let page = super::commands::api_gateway_request_logs(
+            Some("7d".to_string()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("7d request logs");
+        assert_eq!(page.total, 2);
+        assert!(
+            page.records
+                .iter()
+                .all(|record| record.timestamp_ms >= window_start),
+            "no record before the inclusive 7d window start may appear"
+        );
     });
 }
 
@@ -20842,7 +21081,8 @@ fn cachehit_metrics_expose_five_additive_fields_at_every_level() {
     let command_stats = with_temp_home("cachehit-command-contract", |_| {
         // Touch the command boundary only for its name/type; the isolated
         // fixture above already proves the payload shape.
-        let _ = super::commands::api_gateway_usage_stats as fn(Option<i64>) -> Result<super::UsageStats, String>;
+        let _ = super::commands::api_gateway_usage_stats
+            as fn(Option<String>) -> Result<super::UsageStats, String>;
     });
     let _ = command_stats;
     let _ = fs::remove_dir_all(&dir);

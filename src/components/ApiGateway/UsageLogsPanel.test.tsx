@@ -82,7 +82,7 @@ describe("UsageLogsPanel", () => {
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
-        days: 1,
+        range: "today",
         groupBy: "none",
         status: null,
         model: null,
@@ -97,7 +97,7 @@ describe("UsageLogsPanel", () => {
     expect(rangeTrigger).toHaveTextContent("30d");
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
-        days: 30,
+        range: "30d",
         groupBy: "none",
         status: null,
         model: null,
@@ -302,7 +302,7 @@ describe("UsageLogsPanel", () => {
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
-        days: 1,
+        range: "today",
         groupBy: "none",
         status: "failure",
         model: "gpt-4o",
@@ -379,7 +379,7 @@ describe("UsageLogsPanel", () => {
     await user.click(screen.getByRole("button", { name: "Next" }));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
-        days: 1,
+        range: "today",
         groupBy: "none",
         status: null,
         model: null,
@@ -413,7 +413,7 @@ describe("UsageLogsPanel", () => {
     expect(groupTrigger).toHaveTextContent("Model");
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
-        days: 1,
+        range: "today",
         groupBy: "model",
         status: null,
         model: null,
@@ -428,7 +428,7 @@ describe("UsageLogsPanel", () => {
       if (command !== "api_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
-      if (args.days === 7) {
+      if (args.range === "yesterday") {
         return page({ page: 1, total: 5, total_pages: 1, records: [record()] });
       }
       return page({ page: args.page as number, total: 120, total_pages: 3 });
@@ -441,9 +441,18 @@ describe("UsageLogsPanel", () => {
 
     const rangeTrigger = screen.getByTestId("api-gateway-logs-range-trigger");
     await user.click(rangeTrigger);
-    await user.click(screen.getByRole("option", { name: "7d" }));
-    expect(rangeTrigger).toHaveTextContent("7d");
+    await user.click(screen.getByRole("option", { name: "Yesterday" }));
+    expect(rangeTrigger).toHaveTextContent("Yesterday");
 
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
+        range: "yesterday",
+        groupBy: "none",
+        status: null,
+        model: null,
+        page: 1,
+      }),
+    );
     await waitFor(() =>
       expect(screen.getByText("Page 1 / 1")).toBeInTheDocument(),
     );
@@ -531,7 +540,7 @@ describe("UsageLogsPanel", () => {
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
-        days: 1,
+        range: "today",
         groupBy: "none",
         status: null,
         model: "hidden-model",
