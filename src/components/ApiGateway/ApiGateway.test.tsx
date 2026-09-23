@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { ApiGateway } from "@/components/ApiGateway";
@@ -21,6 +21,13 @@ import {
 } from "@/lib/apiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 import { emitMock, invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
+import {
+  clearTemplateAutoRefreshFailures,
+  clearTemplateSyncInFlight,
+  isTemplateSyncInFlight,
+  setTemplateAutoRefreshFailure,
+  useTemplateAutoRefreshFailures,
+} from "./useTemplateAutoRefresh";
 
 type Store = {
   config: GatewayConfig;
@@ -125,6 +132,16 @@ function usageLogsPage(overrides: Partial<UsageLogsPage> = {}): UsageLogsPage {
     groups: [],
     ...overrides,
   };
+}
+
+function deferredPromise<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 function mockStore(store: Store) {
@@ -1920,6 +1937,145 @@ describe("ApiGateway", () => {
         ),
       ).toHaveValue("new-model"),
     );
+  });
+
+  it("marks a template as manually syncing and clears a prior automatic failure on success", async () => {
+    clearTemplateSyncInFlight();
+    clearTemplateAutoRefreshFailures();
+
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus(),
+      targets: [],
+    };
+    const templates = [
+      makeTemplateView({ template: makeTemplate({ id: "t1" }), synced_at: null }),
+    ];
+    const sync = deferredPromise<GatewayProviderTemplateView>();
+
+    invokeMock.mockImplementation(async (command: string, _args?: any) => {
+      switch (command) {
+        case "api_gateway_get_config":
+          return store.config;
+        case "api_gateway_status":
+          return store.status;
+        case "api_gateway_terminal_targets":
+          return store.targets;
+        case "api_gateway_provider_templates":
+          return templates;
+        case "api_gateway_sync_provider_template":
+          return sync.promise;
+        default:
+          throw new Error(`Unhandled command: ${command}`);
+      }
+    });
+
+    const failures = renderHook(() => useTemplateAutoRefreshFailures());
+    renderWithProviders(<ApiGateway />);
+
+    const manageButton = (
+      await screen.findAllByRole("button", {
+        name: /Provider templates|服务商模板/i,
+      })
+    )[0];
+    fireEvent.click(manageButton);
+    fireEvent.click(await screen.findByTestId("api-gateway-template-sync-t1"));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "api_gateway_sync_provider_template",
+        { templateId: "t1" },
+      ),
+    );
+
+    // 手动同步挂起期间，该模板必须被标记为进行中，自动批次才能推迟它。
+    expect(isTemplateSyncInFlight("t1")).toBe(true);
+
+    act(() => setTemplateAutoRefreshFailure("t1", "old reason"));
+    expect(failures.result.current.t1).toBe("old reason");
+
+    await act(async () => {
+      sync.resolve({
+        ...templates[0],
+        synced_at: 1_800_000_000,
+        from_snapshot: false,
+      });
+      await sync.promise;
+    });
+
+    await waitFor(() => expect(isTemplateSyncInFlight("t1")).toBe(false));
+    // 手动同步成功后，之前记录的自动刷新失败必须被清除。
+    await waitFor(() => expect(failures.result.current.t1).toBeUndefined());
+
+    clearTemplateSyncInFlight();
+    clearTemplateAutoRefreshFailures();
+  });
+
+  it("keeps a prior automatic failure when a manual sync rejects and still clears the in-flight marker", async () => {
+    clearTemplateSyncInFlight();
+    clearTemplateAutoRefreshFailures();
+
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus(),
+      targets: [],
+    };
+    const templates = [
+      makeTemplateView({ template: makeTemplate({ id: "t1" }), synced_at: null }),
+    ];
+    const sync = deferredPromise<GatewayProviderTemplateView>();
+
+    invokeMock.mockImplementation(async (command: string, _args?: any) => {
+      switch (command) {
+        case "api_gateway_get_config":
+          return store.config;
+        case "api_gateway_status":
+          return store.status;
+        case "api_gateway_terminal_targets":
+          return store.targets;
+        case "api_gateway_provider_templates":
+          return templates;
+        case "api_gateway_sync_provider_template":
+          return sync.promise;
+        default:
+          throw new Error(`Unhandled command: ${command}`);
+      }
+    });
+
+    const failures = renderHook(() => useTemplateAutoRefreshFailures());
+    renderWithProviders(<ApiGateway />);
+
+    const manageButton = (
+      await screen.findAllByRole("button", {
+        name: /Provider templates|服务商模板/i,
+      })
+    )[0];
+    fireEvent.click(manageButton);
+    fireEvent.click(await screen.findByTestId("api-gateway-template-sync-t1"));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "api_gateway_sync_provider_template",
+        { templateId: "t1" },
+      ),
+    );
+
+    expect(isTemplateSyncInFlight("t1")).toBe(true);
+
+    act(() => setTemplateAutoRefreshFailure("t1", "old reason"));
+    expect(failures.result.current.t1).toBe("old reason");
+
+    await act(async () => {
+      sync.reject(new Error("manual sync failed"));
+      await sync.promise.catch(() => undefined);
+    });
+
+    await waitFor(() => expect(isTemplateSyncInFlight("t1")).toBe(false));
+    // 手动同步失败不得清除已记录的自动刷新失败原因。
+    expect(failures.result.current.t1).toBe("old reason");
+
+    clearTemplateSyncInFlight();
+    clearTemplateAutoRefreshFailures();
   });
 
   it("createFromTemplateOpensNewProviderDetail", async () => {

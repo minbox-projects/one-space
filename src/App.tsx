@@ -44,6 +44,7 @@ import { Workspaces } from "./components/Workspaces";
 import { AiEnvironments } from "./components/AiEnvironments";
 import { AiUsageStats } from "./components/AiUsageStats";
 import { ApiGateway } from "./components/ApiGateway";
+import { useTemplateAutoRefresh } from "./components/ApiGateway/useTemplateAutoRefresh";
 import { Skills } from "./components/Skills";
 import { Subagents } from "./components/Subagents";
 import { MCPServers } from "./components/MCPServers";
@@ -261,6 +262,9 @@ function App() {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
   const { pushToast, dismissToast } = useToast();
+
+  // Provider-template auto refresh: runs regardless of which view is mounted.
+  useTemplateAutoRefresh();
 
   // URL View Routing
   const queryParams = new URLSearchParams(window.location.search);

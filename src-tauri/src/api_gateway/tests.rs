@@ -3656,6 +3656,9 @@ fn every_command_is_registered_in_the_invoke_handler() {
         "api_gateway_upsert_provider_template",
         "api_gateway_delete_provider_template",
         "api_gateway_reset_provider_templates",
+        // 20260923-template-auto-refresh commands.
+        "api_gateway_template_auto_refresh_get",
+        "api_gateway_template_auto_refresh_save",
     ];
     for command in commands {
         let registration = format!("api_gateway::{command},");
@@ -12154,6 +12157,238 @@ fn api_gateway_usage_retention_save_rejects_invalid_and_keeps_stored_value() {
             1,
             "accepted saves must also preserve providers"
         );
+    });
+}
+
+/// Write a raw JSON object as the encrypted `api_gateway.json`, so a test can
+/// seed a config written by an older build (missing the interval field) or one
+/// carrying an out-of-range stored interval. Mirrors the port-compatibility
+/// seeding pattern.
+fn seed_encrypted_config(value: &Value) {
+    let password = crate::crypto::get_or_init_master_password().expect("master password");
+    let encrypted = crate::crypto::encrypt(&value.to_string(), &password).expect("encrypt config");
+    fs::write(config_path().expect("config path"), encrypted).expect("write config");
+}
+
+/// Base config JSON for the interval tests; `None` omits the field entirely to
+/// model a pre-feature file.
+fn config_json_with_template_interval(interval: Option<u32>) -> Value {
+    let mut value = json!({
+        "enabled": false,
+        "port": 17688,
+        "providers": [],
+        "keys": [],
+        "default_key_id": null,
+        "terminal_syncs": []
+    });
+    if let Some(minutes) = interval {
+        value["template_auto_refresh_minutes"] = json!(minutes);
+    }
+    value
+}
+
+/// AC-002 / REQ-002: an older `api_gateway.json` without the interval field reads
+/// as 60 minutes with no migration, a fresh config defaults to 60, the field is
+/// always serialized, and the public constants pin the accepted range.
+#[test]
+fn template_auto_refresh_defaults_to_60_for_older_configs_and_new_configs() {
+    assert_eq!(super::DEFAULT_TEMPLATE_AUTO_REFRESH_MINUTES, 60);
+    assert_eq!(super::MIN_TEMPLATE_AUTO_REFRESH_MINUTES, 10);
+    assert_eq!(super::MAX_TEMPLATE_AUTO_REFRESH_MINUTES, 1440);
+
+    assert_eq!(
+        GatewayConfig::default().template_auto_refresh_minutes,
+        60,
+        "a fresh config must default the interval to 60 minutes"
+    );
+    let encoded = serde_json::to_value(GatewayConfig::default()).expect("encode default config");
+    assert!(
+        encoded.get("template_auto_refresh_minutes").is_some(),
+        "the interval must always be serialized: {encoded}"
+    );
+    assert_eq!(encoded["template_auto_refresh_minutes"], json!(60));
+
+    with_temp_home("template-auto-refresh-default", |_home| {
+        seed_encrypted_config(&config_json_with_template_interval(None));
+        let bytes_before = fs::read(config_path().expect("config path")).expect("read raw config");
+
+        let loaded = super::storage::read_config().expect("older config must load");
+        assert_eq!(
+            loaded.template_auto_refresh_minutes, 60,
+            "a missing interval must fall back to 60 without migration"
+        );
+        assert_eq!(
+            fs::read(config_path().expect("config path")).expect("read raw config"),
+            bytes_before,
+            "reading an older config must not migrate or rewrite it"
+        );
+    });
+}
+
+/// AC-002 / REQ-002: the get command preserves 0 (disabled) and the in-range
+/// boundaries and normalizes any other stored value to 60.
+#[test]
+fn template_auto_refresh_get_keeps_zero_and_bounds_and_normalizes_other_stored_values() {
+    with_temp_home("template-auto-refresh-get", |_home| {
+        for stored in [0u32, 10, 1440] {
+            seed_encrypted_config(&config_json_with_template_interval(Some(stored)));
+            let reported = super::commands::api_gateway_template_auto_refresh_get()
+                .expect("an in-range stored interval must read");
+            assert_eq!(reported, stored, "stored {stored} must be reported unchanged");
+        }
+        for stored in [5u32, 9999] {
+            seed_encrypted_config(&config_json_with_template_interval(Some(stored)));
+            let reported = super::commands::api_gateway_template_auto_refresh_get()
+                .expect("an out-of-range stored interval must still read");
+            assert_eq!(
+                reported, 60,
+                "stored {stored} is out of range and must normalize to 60"
+            );
+        }
+    });
+}
+
+/// Base config JSON with `template_auto_refresh_minutes` set to any raw JSON
+/// value, so a test can seed a wrong-typed stored interval that a strict `u32`
+/// deserializer would reject.
+fn config_json_with_raw_template_interval(interval: Value) -> Value {
+    let mut value = json!({
+        "enabled": false,
+        "port": 17688,
+        "providers": [],
+        "keys": [],
+        "default_key_id": null,
+        "terminal_syncs": []
+    });
+    value["template_auto_refresh_minutes"] = interval;
+    value
+}
+
+/// REQ-002 / AC-002: a stored interval carrying the wrong JSON type or an
+/// out-of-`u32` number must not fail the whole config read. It normalizes to 60,
+/// the public get command reports 60, and reading never rewrites the file.
+#[test]
+fn template_auto_refresh_stored_type_invalid_values_read_as_sixty_without_rewriting() {
+    with_temp_home("template-auto-refresh-type-invalid", |_home| {
+        for bad in [json!(-5), json!(10.5), json!("60"), json!(4_294_967_296u64)] {
+            seed_encrypted_config(&config_json_with_raw_template_interval(bad.clone()));
+            let bytes_before =
+                fs::read(config_path().expect("config path")).expect("read raw config");
+
+            let loaded = super::storage::read_config().expect(
+                "a type-invalid stored interval must not fail the whole config read",
+            );
+            assert_eq!(
+                loaded.template_auto_refresh_minutes, 60,
+                "type-invalid stored interval {bad} must normalize to 60"
+            );
+            assert_eq!(
+                super::commands::api_gateway_template_auto_refresh_get()
+                    .expect("get must succeed for a type-invalid stored interval"),
+                60,
+                "get must report 60 for type-invalid stored interval {bad}"
+            );
+            assert_eq!(
+                fs::read(config_path().expect("config path")).expect("read raw config"),
+                bytes_before,
+                "reading a type-invalid stored interval must not rewrite the file: {bad}"
+            );
+        }
+    });
+}
+
+/// REQ-002 / AC-002: the raw in-range values 0, 10 and 1440 still read back
+/// unchanged after the type-robustness repair.
+#[test]
+fn template_auto_refresh_stored_in_range_values_read_unchanged() {
+    with_temp_home("template-auto-refresh-raw-in-range", |_home| {
+        for stored in [json!(0u32), json!(10u32), json!(1440u32)] {
+            let expected = stored.as_u64().expect("in-range JSON number") as u32;
+            seed_encrypted_config(&config_json_with_raw_template_interval(stored));
+            let loaded =
+                super::storage::read_config().expect("an in-range stored interval must read");
+            assert_eq!(
+                loaded.template_auto_refresh_minutes, expected,
+                "stored {expected} must read unchanged"
+            );
+        }
+    });
+}
+
+/// AC-002 / REQ-002: an out-of-range save is rejected with an actionable error
+/// naming the accepted values, and neither the stored interval nor any other
+/// config field is rewritten.
+#[test]
+fn template_auto_refresh_save_rejects_out_of_range_without_writing() {
+    with_temp_home("template-auto-refresh-save-reject", |_home| {
+        let mut config = GatewayConfig::default();
+        config.template_auto_refresh_minutes = 60;
+        config.providers.push(provider("p1"));
+        config.keys.push(key("k1", true));
+        super::storage::write_config(&config).expect("seed config");
+        let bytes_before = fs::read(config_path().expect("config path")).expect("read raw config");
+
+        for rejected in [5i64, -1, 1441] {
+            let error = super::commands::api_gateway_template_auto_refresh_save(rejected)
+                .expect_err("an out-of-range interval must be rejected");
+            assert!(
+                error.contains('0') && error.contains("10") && error.contains("1440"),
+                "the error must name the accepted values 0/10/1440: {error}"
+            );
+        }
+
+        assert_eq!(
+            fs::read(config_path().expect("config path")).expect("read raw config"),
+            bytes_before,
+            "a rejected save must not rewrite the config file"
+        );
+        assert_eq!(
+            super::commands::api_gateway_template_auto_refresh_get().expect("get"),
+            60,
+            "the stored interval must be unchanged after rejection"
+        );
+        let reloaded = super::storage::read_config().expect("read config");
+        assert_eq!(reloaded.template_auto_refresh_minutes, 60);
+        assert_eq!(reloaded.providers.len(), 1, "providers must be preserved");
+        assert_eq!(reloaded.providers[0].id, "p1");
+        assert_eq!(reloaded.keys.len(), 1, "keys must be preserved");
+        assert_eq!(reloaded.keys[0].id, "k1");
+    });
+}
+
+/// AC-002 / REQ-002: 0, 10, 60 and 1440 all save, the get command and the
+/// persisted file report the saved value, and other config fields survive.
+#[test]
+fn template_auto_refresh_save_persists_zero_and_boundary_values() {
+    with_temp_home("template-auto-refresh-save-accept", |_home| {
+        let mut config = GatewayConfig::default();
+        config.providers.push(provider("p1"));
+        config.keys.push(key("k1", true));
+        super::storage::write_config(&config).expect("seed config");
+
+        for accepted in [0i64, 10, 60, 1440] {
+            let saved = super::commands::api_gateway_template_auto_refresh_save(accepted)
+                .expect("an accepted interval must save");
+            assert_eq!(saved, accepted as u32, "save must return the persisted value");
+            assert_eq!(
+                super::commands::api_gateway_template_auto_refresh_get().expect("get"),
+                accepted as u32,
+                "get must report the value just saved"
+            );
+            let reloaded = super::storage::read_config().expect("read config");
+            assert_eq!(
+                reloaded.template_auto_refresh_minutes, accepted as u32,
+                "the saved interval must be persisted"
+            );
+            assert_eq!(
+                reloaded.providers.len(),
+                1,
+                "an accepted save must preserve providers"
+            );
+            assert_eq!(reloaded.providers[0].id, "p1");
+            assert_eq!(reloaded.keys.len(), 1, "an accepted save must preserve keys");
+            assert_eq!(reloaded.keys[0].id, "k1");
+        }
     });
 }
 

@@ -64,8 +64,11 @@ import {
   type ProtocolRouterStatus,
 } from "@/lib/protocolRouter";
 import {
+  apiGatewayTemplateAutoRefreshGet,
+  apiGatewayTemplateAutoRefreshSave,
   apiGatewayUsageRetentionGet,
   apiGatewayUsageRetentionSave,
+  notifyTemplateAutoRefreshIntervalChanged,
 } from "@/lib/apiGateway";
 
 interface SyncPolicy {
@@ -448,6 +451,18 @@ function parseUsageRetentionInput(value: string): number | null {
   return parsed;
 }
 
+/** Template auto refresh accepts 0 (disabled) or whole minutes in the inclusive 10..1440 range. */
+function parseTemplateAutoRefreshInput(value: string): number | null {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  if (parsed === 0) return 0;
+  if (!Number.isInteger(parsed) || parsed < 10 || parsed > 1440) {
+    return null;
+  }
+  return parsed;
+}
+
 function isSettingsTab(value: string): value is SettingsTab {
   return (SETTINGS_TABS as string[]).includes(value);
 }
@@ -597,6 +612,10 @@ export function SettingsView({
   const [protocolRouterBusy, setProtocolRouterBusy] = useState(false);
   const [usageRetentionInput, setUsageRetentionInput] = useState("90");
   const [savedUsageRetentionDays, setSavedUsageRetentionDays] = useState(90);
+  const [templateAutoRefreshInput, setTemplateAutoRefreshInput] =
+    useState("60");
+  const [savedTemplateAutoRefreshMinutes, setSavedTemplateAutoRefreshMinutes] =
+    useState(60);
   const [newSkillSource, setNewSkillSource] = useState<SkillSourceConfig>({
     id: "",
     name: "",
@@ -936,10 +955,16 @@ export function SettingsView({
 
   const loadAiGateway = async () => {
     try {
-      const days = await apiGatewayUsageRetentionGet();
+      const [days, minutes] = await Promise.all([
+        apiGatewayUsageRetentionGet(),
+        apiGatewayTemplateAutoRefreshGet(),
+      ]);
       const normalized = Number.isFinite(days) ? Number(days) : 90;
       setSavedUsageRetentionDays(normalized);
       setUsageRetentionInput(String(normalized));
+      const normalizedMinutes = Number.isFinite(minutes) ? Number(minutes) : 60;
+      setSavedTemplateAutoRefreshMinutes(normalizedMinutes);
+      setTemplateAutoRefreshInput(String(normalizedMinutes));
     } catch (e) {
       console.error(e);
     }
@@ -1695,10 +1720,19 @@ export function SettingsView({
       }
       if (tab === "ai-gateway") {
         const parsed = parseUsageRetentionInput(usageRetentionInput);
-        next[tab] =
+        const retentionDirty =
           parsed !== null
             ? parsed !== savedUsageRetentionDays
             : usageRetentionInput.trim() !== String(savedUsageRetentionDays);
+        const parsedMinutes = parseTemplateAutoRefreshInput(
+          templateAutoRefreshInput,
+        );
+        const refreshDirty =
+          parsedMinutes !== null
+            ? parsedMinutes !== savedTemplateAutoRefreshMinutes
+            : templateAutoRefreshInput.trim() !==
+              String(savedTemplateAutoRefreshMinutes);
+        next[tab] = retentionDirty || refreshDirty;
         return;
       }
       if (tab === "news") {
@@ -1731,6 +1765,8 @@ export function SettingsView({
     savedAiNewsSyncIntervalInput,
     usageRetentionInput,
     savedUsageRetentionDays,
+    templateAutoRefreshInput,
+    savedTemplateAutoRefreshMinutes,
   ]);
 
   const currentTabDirty = tabDirtyMap[activeTab];
@@ -1812,10 +1848,53 @@ export function SettingsView({
           });
           return;
         }
+        const parsedMinutes = parseTemplateAutoRefreshInput(
+          templateAutoRefreshInput,
+        );
+        if (parsedMinutes === null) {
+          setMessage({
+            type: "error",
+            text: t(
+              "apiGatewayTemplateAutoRefreshInvalid",
+              "Template auto refresh minutes must be 0 (disabled) or between 10 and 1440",
+            ),
+          });
+          return;
+        }
         const saved = await apiGatewayUsageRetentionSave(parsed);
         const normalized = Number.isFinite(saved) ? Number(saved) : parsed;
         setSavedUsageRetentionDays(normalized);
         setUsageRetentionInput(String(normalized));
+        let savedMinutes: number;
+        try {
+          savedMinutes = await apiGatewayTemplateAutoRefreshSave(parsedMinutes);
+        } catch {
+          setMessage({
+            type: "error",
+            text: t(
+              "apiGatewayTemplateAutoRefreshInvalid",
+              "Template auto refresh minutes must be 0 (disabled) or between 10 and 1440",
+            ),
+          });
+          return;
+        }
+        const normalizedMinutes = Number.isFinite(savedMinutes)
+          ? Number(savedMinutes)
+          : parsedMinutes;
+        setSavedTemplateAutoRefreshMinutes(normalizedMinutes);
+        setTemplateAutoRefreshInput(String(normalizedMinutes));
+        try {
+          const persisted = await apiGatewayTemplateAutoRefreshGet();
+          if (Number.isFinite(persisted)) {
+            const reReadMinutes = Number(persisted);
+            setSavedTemplateAutoRefreshMinutes(reReadMinutes);
+            setTemplateAutoRefreshInput(String(reReadMinutes));
+          }
+        } catch {
+          // The save already persisted; tolerate a transient re-read failure and
+          // keep the value returned by the successful save.
+        }
+        notifyTemplateAutoRefreshIntervalChanged();
         setMessage({
           type: "success",
           text: t("currentSectionSavedSuccess", "Current section saved."),
@@ -5859,6 +5938,28 @@ export function SettingsView({
                           "Request logs older than this many days are permanently deleted when new logs are written.",
                         )}
                       </p>
+                      <label className="block space-y-2">
+                        <span className="text-sm font-medium">
+                          {t(
+                            "apiGatewayTemplateAutoRefreshLabel",
+                            "Template auto refresh minutes",
+                          )}
+                        </span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={1440}
+                          value={templateAutoRefreshInput}
+                          onChange={(event) =>
+                            setTemplateAutoRefreshInput(event.target.value)
+                          }
+                          aria-label={t(
+                            "apiGatewayTemplateAutoRefreshLabel",
+                            "Template auto refresh minutes",
+                          )}
+                          className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                        />
+                      </label>
                     </div>
                   </section>
                 </div>
