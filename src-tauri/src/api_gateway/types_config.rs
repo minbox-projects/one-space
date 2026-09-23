@@ -17,6 +17,14 @@ pub const DEFAULT_USAGE_RETENTION_DAYS: u32 = 90;
 pub const MIN_USAGE_RETENTION_DAYS: u32 = 1;
 pub const MAX_USAGE_RETENTION_DAYS: u32 = 365;
 
+/// Default interval in minutes between automatic provider-template refreshes
+/// for configs written before the field existed.
+pub const DEFAULT_TEMPLATE_AUTO_REFRESH_MINUTES: u32 = 60;
+/// Lower/upper bounds accepted by the template auto-refresh interval setting;
+/// `0` is the separate disabled value.
+pub const MIN_TEMPLATE_AUTO_REFRESH_MINUTES: u32 = 10;
+pub const MAX_TEMPLATE_AUTO_REFRESH_MINUTES: u32 = 1440;
+
 pub const MIN_PROVIDER_WEIGHT: u32 = 1;
 pub const MAX_PROVIDER_WEIGHT: u32 = 100;
 
@@ -47,6 +55,55 @@ pub(in crate::api_gateway) fn resolve_port(stored: u16, is_dev: bool) -> u16 {
 
 pub(in crate::api_gateway) fn default_usage_retention_days() -> u32 {
     DEFAULT_USAGE_RETENTION_DAYS
+}
+
+pub(in crate::api_gateway) fn default_template_auto_refresh_minutes() -> u32 {
+    DEFAULT_TEMPLATE_AUTO_REFRESH_MINUTES
+}
+
+/// Validate a user-provided template auto-refresh interval: only `0` (disabled)
+/// or 10-1440 minutes are accepted, and anything else is rejected with an
+/// actionable error and never persisted.
+pub fn validate_template_auto_refresh_minutes(minutes: i64) -> Result<u32, String> {
+    if minutes == 0
+        || (MIN_TEMPLATE_AUTO_REFRESH_MINUTES as i64..=MAX_TEMPLATE_AUTO_REFRESH_MINUTES as i64)
+            .contains(&minutes)
+    {
+        Ok(minutes as u32)
+    } else {
+        Err(format!(
+            "template auto refresh minutes must be 0 (disabled) or between {MIN_TEMPLATE_AUTO_REFRESH_MINUTES} and {MAX_TEMPLATE_AUTO_REFRESH_MINUTES}, got {minutes}"
+        ))
+    }
+}
+
+/// Normalize a persisted template auto-refresh interval on read: `0` (disabled)
+/// and in-range 10-1440 values are kept, while any other value written by an
+/// older or corrupted config falls back to the default.
+pub(in crate::api_gateway) fn normalize_template_auto_refresh_minutes(minutes: u32) -> u32 {
+    if minutes == 0
+        || (MIN_TEMPLATE_AUTO_REFRESH_MINUTES..=MAX_TEMPLATE_AUTO_REFRESH_MINUTES).contains(&minutes)
+    {
+        minutes
+    } else {
+        DEFAULT_TEMPLATE_AUTO_REFRESH_MINUTES
+    }
+}
+
+/// Read a persisted template auto-refresh interval tolerantly: values that are
+/// not a plain non-negative JSON integer (null, strings, fractions, negatives
+/// or numbers beyond `u32`) read as the default instead of failing the whole
+/// config, while integers are normalized like any other stored value.
+fn deserialize_template_auto_refresh_minutes<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = serde_json::Value::deserialize(deserializer)?;
+    Ok(raw
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .map(normalize_template_auto_refresh_minutes)
+        .unwrap_or(DEFAULT_TEMPLATE_AUTO_REFRESH_MINUTES))
 }
 
 pub(in crate::api_gateway) fn default_provider_weight() -> u32 {
@@ -498,6 +555,15 @@ pub struct GatewayConfig {
     /// Deleted template IDs; absent in older configs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deleted_template_ids: Vec<String>,
+    /// Interval in minutes between automatic provider-template refreshes; `0`
+    /// disables the schedule. `#[serde(default = ...)]` keeps older
+    /// `api_gateway.json` files readable without migration and the value is
+    /// always serialized.
+    #[serde(
+        default = "default_template_auto_refresh_minutes",
+        deserialize_with = "deserialize_template_auto_refresh_minutes"
+    )]
+    pub template_auto_refresh_minutes: u32,
 }
 
 impl Default for GatewayConfig {
@@ -513,6 +579,7 @@ impl Default for GatewayConfig {
             model_prices: Vec::new(),
             provider_templates: Vec::new(),
             deleted_template_ids: Vec::new(),
+            template_auto_refresh_minutes: DEFAULT_TEMPLATE_AUTO_REFRESH_MINUTES,
         }
     }
 }

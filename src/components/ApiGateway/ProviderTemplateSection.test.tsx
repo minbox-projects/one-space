@@ -1,6 +1,10 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
+import {
+  clearTemplateAutoRefreshFailures,
+  setTemplateAutoRefreshFailure,
+} from "./useTemplateAutoRefresh";
 import {
   ProviderTemplateSection,
   type ProviderTemplateSectionProps,
@@ -81,6 +85,10 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
       configurable: true,
       value: { writeText },
     });
+  });
+
+  afterEach(() => {
+    clearTemplateAutoRefreshFailures();
   });
 
   it("rendersTemplateCardsWithMetadataAndNoSnapshotBadges", () => {
@@ -484,5 +492,75 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
 
     const card = screen.getByTestId("api-gateway-template-tpl-cmd");
     expect(within(card).getByTestId("provider-icon-commandcode")).toBeInTheDocument();
+  });
+
+  it("rendersAutoRefreshFailureInlineOnMatchingCardAndKeepsSyncedAt", () => {
+    const syncedAt = 1_700_000_000;
+    const syncedText = formatGatewayTimestamp(syncedAt)!;
+    const view1 = makeView({
+      template: makeTemplate({ id: "t1", name: "Alpha" }),
+      synced_at: syncedAt,
+    });
+    const view2 = makeView({
+      template: makeTemplate({ id: "t2", name: "Beta" }),
+      synced_at: syncedAt,
+    });
+
+    setTemplateAutoRefreshFailure("t1", "network down");
+    renderSection({ templates: [view1, view2] });
+
+    const failure = screen.getByTestId(
+      "api-gateway-template-auto-refresh-failure-t1",
+    );
+    expect(failure).toHaveTextContent("Auto refresh failed: network down");
+    expect(
+      screen.queryByTestId("api-gateway-template-auto-refresh-failure-t2"),
+    ).not.toBeInTheDocument();
+
+    // 失败提示不影响 synced_at 文本
+    expect(screen.getByTestId("api-gateway-template-synced-t1")).toHaveTextContent(
+      syncedText,
+    );
+    expect(screen.getByTestId("api-gateway-template-synced-t2")).toHaveTextContent(
+      syncedText,
+    );
+
+    act(() => setTemplateAutoRefreshFailure("t1", null));
+    expect(
+      screen.queryByTestId("api-gateway-template-auto-refresh-failure-t1"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("api-gateway-template-synced-t1")).toHaveTextContent(
+      syncedText,
+    );
+  });
+
+  it("localizesAutoRefreshFailureWithInterpolatedReason", async () => {
+    setTemplateAutoRefreshFailure("t1", "boom");
+    renderSection({ templates: [makeView()] });
+
+    await i18n.changeLanguage("en");
+    const failure = await screen.findByTestId(
+      "api-gateway-template-auto-refresh-failure-t1",
+    );
+    expect(failure).toHaveTextContent("Auto refresh failed: boom");
+    expect(failure.textContent ?? "").not.toContain("{{reason}}");
+    expect(failure.textContent ?? "").not.toContain(
+      "apiGatewayTemplateAutoRefreshFailed",
+    );
+
+    await i18n.changeLanguage("zh");
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("api-gateway-template-auto-refresh-failure-t1"),
+      ).toHaveTextContent(/[\u4e00-\u9fff]/),
+    );
+
+    const zhText =
+      screen.getByTestId("api-gateway-template-auto-refresh-failure-t1")
+        .textContent ?? "";
+    expect(zhText).not.toBe("Auto refresh failed: boom");
+    expect(zhText).toContain("boom");
+    expect(zhText).not.toContain("{{reason}}");
+    expect(zhText).not.toContain("apiGatewayTemplateAutoRefreshFailed");
   });
 });

@@ -927,6 +927,34 @@ export function apiGatewayUsageRetentionSave(days: number) {
   return invoke<number>("api_gateway_usage_retention_save", { days });
 }
 
+/** Template auto-refresh interval in minutes; `0` disables the refresh loop. */
+export function apiGatewayTemplateAutoRefreshGet() {
+  return invoke<number>("api_gateway_template_auto_refresh_get");
+}
+
+export function apiGatewayTemplateAutoRefreshSave(minutes: number) {
+  return invoke<number>("api_gateway_template_auto_refresh_save", { minutes });
+}
+
+// Subscribers notified after the template auto-refresh interval is persisted so
+// long-lived views can re-read the value instead of polling or prop drilling.
+const templateAutoRefreshIntervalListeners = new Set<() => void>();
+
+export function notifyTemplateAutoRefreshIntervalChanged(): void {
+  for (const listener of Array.from(templateAutoRefreshIntervalListeners)) {
+    listener();
+  }
+}
+
+export function subscribeTemplateAutoRefreshIntervalChanged(
+  listener: () => void,
+): () => void {
+  templateAutoRefreshIntervalListeners.add(listener);
+  return () => {
+    templateAutoRefreshIntervalListeners.delete(listener);
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Provider templates
 // ---------------------------------------------------------------------------

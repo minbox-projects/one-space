@@ -78,6 +78,10 @@ import { LocalKeyList } from "./LocalKeyList";
 import { TerminalSyncPanel } from "./TerminalSyncPanel";
 import { UsageStatsPanel } from "./UsageStatsPanel";
 import { UsageLogsPanel } from "./UsageLogsPanel";
+import {
+  setTemplateAutoRefreshFailure,
+  setTemplateSyncInFlight,
+} from "./useTemplateAutoRefresh";
 
 type ApiGatewayTab =
   | "providers"
@@ -512,6 +516,7 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const handleSyncTemplate = useCallback(
     (templateId: string) => {
       setSyncingTemplates((prev) => ({ ...prev, [templateId]: true }));
+      setTemplateSyncInFlight(templateId, true);
       void (async () => {
         try {
           const updated = await apiGatewaySyncProviderTemplate(templateId);
@@ -520,6 +525,8 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
               view.template.id === templateId ? updated : view,
             ),
           );
+          // A manual success clears any prior automatic-refresh failure.
+          setTemplateAutoRefreshFailure(templateId, null);
           await applyConfig(await apiGatewayGetConfig());
           pushToast({
             title: t("apiGatewayTemplateSyncSuccess", "Provider template synced."),
@@ -532,6 +539,7 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
             kind: "error",
           });
         } finally {
+          setTemplateSyncInFlight(templateId, false);
           setSyncingTemplates((prev) => {
             const next = { ...prev };
             delete next[templateId];
