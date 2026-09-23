@@ -26,6 +26,7 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 ## 前端架构（`src/`）
 
 - `src/App.tsx` 是外壳与总控：侧边栏、页面切换、全局状态与快捷键；`src/lib/navigation.ts` 负责旧标签到新导航目标的解析（`resolveNavigationTarget`）。
+- 托盘菜单为前端所有权：`src/lib/trayMenu.ts` 提供纯模型 `buildTrayMenuModel`（结构、启用/勾选、快捷键提示，提示串解析失败时省略）与原生应用 `applyTrayMenu`（经 `@tauri-apps/api/menu` 与 `TrayIcon.setMenu`，API 不可用时软失败），菜单文案统一来自 `src/i18n.ts`；`src/App.tsx` 控制器按窗口可见性、网关/路由状态、`ssh-tunnels-updated`、`file-sharing-updated` 与 i18n `languageChanged` 重建菜单并执行全部动作，Services 子菜单展示网关/路由勾选项与端口、隧道 connected/total 计数与 Connect All/Disconnect All、共享状态与 Stop Sharing、Sync Now 及 Copy API Address（仅网关运行时可用）。原因与取舍见 [Tray menu ownership and contract](.ai-workflow/notes/implemented/architecture/2026-09-22-tray-menu-ownership-and-contract.md)。
 - 每个业务域是一个 `src/components/<Domain>/` 目录或同名组件；每个组件目录通常包含 `index.tsx`、子组件、`*.test.tsx`，复杂域再拆分 `components/`、`hooks/`、`helpers/`、`types.ts`（参见 `Workspaces/`）。
 - 命令封装与领域类型放在 `src/lib/`，按域一文件（如 `workflows.ts`、`skills.ts`、`subagents.ts`、`sshTunnels.ts`、`fileSharing.ts`、`shortLink.ts`、`aiAssistant.ts`、`apiGateway.ts`、`aiWorkflowProfiles.ts`）。
 - 文案统一走 `src/i18n.ts`，新增界面文本必须同时提供中英文；`en_keys.txt` / `zh_keys.txt` 为键清单。
@@ -33,7 +34,8 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 
 ## 后端架构（`src-tauri/src/`）
 
-- `lib.rs` 声明模块并由 `app_runtime::run` 启动；`app_runtime/` 负责窗口、托盘、全局快捷键、CLI 入口与 OAuth。
+- `lib.rs` 声明模块并由 `app_runtime::run` 启动；`app_runtime/` 负责窗口、托盘、全局快捷键、CLI 入口与 OAuth。托盘由 Rust 创建并保持 `show_menu_on_left_click(false)`：左键 Up 切换主窗口、右键打开原生菜单，前端就绪前显示两项双语兜底菜单（`get_fallback_tray_label`），`windows_data::emit_main_window_visibility` 发出 `main-window-visibility-changed`，`toggle_quick_ai_window` 命令打开快速 AI 窗口，`shutdown_runtime_services` 统一托盘退出、`quit_app` 与 `RunEvent::Exit` 的清理且可重复执行；`create_tray_menu`、`get_tray_label`、`update_tray_menu`、`emit_tray_action`、`TrayActionPayload` 与 `tray-action` 事件已移除。
+- SSH 隧道全量批量操作由 `ssh_tunnels_connect_all` / `ssh_tunnels_disconnect_all` 提供：覆盖全部已保存隧道、复用分组批量内部实现与 `SshTunnelBatchOperationResult`，批次标识固定为 `ALL_TUNNELS_BATCH_ID = "all"` 与 `ALL_TUNNELS_BATCH_NAME = "All Tunnels"`；已连接/已断开的隧道计为跳过并发出 `ssh-tunnels-updated`。
 - 每个业务域一个根文件加同名子目录（如 `ai_sessions.rs` + `ai_sessions/`、`skills.rs` + `skills/`、`protocol_router.rs` + `protocol_router/`、`ai_workflow_profiles.rs` + `ai_workflow_profiles/`）。子目录按 `commands`、`types`、`runtime`、`tests` 等拆分。
 - `app_store/` 是统一存储与迁移核心：`storage_engine.rs`、`migration.rs`、`provider_projection/`、`sync.rs`、`types/`；会话、provider 与 launcher 命令都在此汇聚。
 - 配置与密钥：`config.rs`、`runtime_profiles.rs`、`claude_profiles.rs`、`secrets.rs`、`crypto.rs`。
