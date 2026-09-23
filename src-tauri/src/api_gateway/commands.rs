@@ -18,7 +18,8 @@ use super::usage_log::{
     LogFilter, UsageLogStore, UsageLogsPage, UsageStats, USAGE_LOG_PAGE_SIZE,
 };
 use super::{
-    now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, ModelPrice,
+    normalize_template_auto_refresh_minutes, now_ts, validate_template_auto_refresh_minutes,
+    GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, ModelPrice,
     ProviderTemplate, TerminalSyncRecord, UpstreamProtocol, UsageResult, MAX_PROVIDER_WEIGHT,
     MIN_PROVIDER_WEIGHT,
 };
@@ -865,6 +866,25 @@ pub fn api_gateway_usage_retention_save(days: i64) -> Result<u32, String> {
     config.usage_retention_days = validated;
     write_config(&config)?;
     Ok(read_config()?.usage_retention_days)
+}
+
+#[tauri::command]
+pub fn api_gateway_template_auto_refresh_get() -> Result<u32, String> {
+    Ok(normalize_template_auto_refresh_minutes(
+        read_config()?.template_auto_refresh_minutes,
+    ))
+}
+
+/// Replace only the automatic provider-template refresh interval; values other
+/// than `0` (disabled) or 10-1440 minutes are rejected with an actionable error
+/// and are never persisted.
+#[tauri::command]
+pub fn api_gateway_template_auto_refresh_save(minutes: i64) -> Result<u32, String> {
+    let validated = validate_template_auto_refresh_minutes(minutes)?;
+    let mut config = read_config()?;
+    config.template_auto_refresh_minutes = validated;
+    write_config(&config)?;
+    Ok(read_config()?.template_auto_refresh_minutes)
 }
 
 // ---------------------------------------------------------------------------

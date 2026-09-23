@@ -336,6 +336,8 @@ pub fn run() {
             api_gateway::api_gateway_upsert_provider_template,
             api_gateway::api_gateway_delete_provider_template,
             api_gateway::api_gateway_reset_provider_templates,
+            api_gateway::api_gateway_template_auto_refresh_get,
+            api_gateway::api_gateway_template_auto_refresh_save,
             // New service_providers domain (replaces providers_*)
             app_store::service_providers_list,
             app_store::service_provider_read_opencode_config,
