@@ -886,6 +886,9 @@ const resources = {
         "Request logs older than this many days are permanently deleted when new logs are written.",
       aiGatewayRetentionInvalid:
         "Retention days must be a whole number between 1 and 365.",
+      apiGatewayTemplateAutoRefreshLabel: "Template auto refresh minutes",
+      apiGatewayTemplateAutoRefreshInvalid:
+        "Template auto refresh minutes must be 0 (disabled) or between 10 and 1440",
       protocolRouterTokenLabel: "Router Token",
       protocolRouterTokenDesc:
         "Claude profiles use this token to access the local router. Rotate it here if you need to invalidate older profile credentials.",
@@ -4705,6 +4708,9 @@ const resources = {
       aiGatewayRetentionDesc:
         "超过该天数的请求日志将在写入新日志时被永久删除。",
       aiGatewayRetentionInvalid: "保留天数必须是 1 到 365 之间的整数。",
+      apiGatewayTemplateAutoRefreshLabel: "模板自动刷新分钟数",
+      apiGatewayTemplateAutoRefreshInvalid:
+        "模板自动刷新分钟数必须为 0（禁用）或 10 到 1440 之间",
       protocolRouterTokenLabel: "Router Token",
       protocolRouterTokenDesc:
         "Claude Profile 会使用这个 Token 访问本地协议路由。如需让旧凭证失效，请在这里轮换。",

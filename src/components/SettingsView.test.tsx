@@ -71,6 +71,9 @@ const baseStorageConfig = {
 };
 
 describe("SettingsView", () => {
+  let currentTemplateAutoRefreshMinutes = 60;
+  let templateAutoRefreshSaveError: Error | null = null;
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -78,6 +81,8 @@ describe("SettingsView", () => {
   beforeEach(async () => {
     resetTauriMocks();
     resetMessageMocks();
+    currentTemplateAutoRefreshMinutes = 60;
+    templateAutoRefreshSaveError = null;
     await i18n.changeLanguage("en");
 
     let currentConfig = structuredClone(baseStorageConfig);
@@ -97,6 +102,25 @@ describe("SettingsView", () => {
         }
         currentRetention = days;
         return currentRetention;
+      }
+      if (command === "api_gateway_template_auto_refresh_get") {
+        return currentTemplateAutoRefreshMinutes;
+      }
+      if (command === "api_gateway_template_auto_refresh_save") {
+        if (templateAutoRefreshSaveError) {
+          throw templateAutoRefreshSaveError;
+        }
+        const minutes = args.minutes as number;
+        if (
+          minutes !== 0 &&
+          (!Number.isInteger(minutes) || minutes < 10 || minutes > 1440)
+        ) {
+          throw new Error(
+            "template auto refresh minutes must be 0 (disabled) or between 10 and 1440",
+          );
+        }
+        currentTemplateAutoRefreshMinutes = minutes;
+        return currentTemplateAutoRefreshMinutes;
       }
       if (command === "save_storage_config") {
         currentConfig = {
@@ -389,5 +413,170 @@ describe("SettingsView", () => {
     expect(randomUuidSpy).toHaveBeenCalledTimes(1);
     expect(dateNowSpy).toHaveBeenCalledTimes(1);
     expect(mathRandomSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the loaded template auto refresh minutes, defaulting a missing field to 60", async () => {
+    currentTemplateAutoRefreshMinutes = 60;
+    const firstView = renderWithProviders(
+      <SettingsView initialTab="ai-gateway" onBack={() => {}} />,
+    );
+    const defaultInput = await screen.findByLabelText(
+      "Template auto refresh minutes",
+    );
+    await waitFor(() => expect(defaultInput).toHaveValue(60));
+    firstView.unmount();
+
+    for (const value of [0, 10, 1440]) {
+      currentTemplateAutoRefreshMinutes = value;
+      const view = renderWithProviders(
+        <SettingsView initialTab="ai-gateway" onBack={() => {}} />,
+      );
+      const input = await screen.findByLabelText(
+        "Template auto refresh minutes",
+      );
+      await waitFor(() => expect(input).toHaveValue(value));
+      view.unmount();
+    }
+  });
+
+  it("saves 0/10/60/1440, re-reads the persisted value and notifies subscribers", async () => {
+    const { subscribeTemplateAutoRefreshIntervalChanged } = (await import(
+      "@/lib/apiGateway"
+    )) as unknown as {
+      subscribeTemplateAutoRefreshIntervalChanged: (
+        listener: () => void,
+      ) => () => void;
+    };
+    const listener = vi.fn();
+    const unsubscribe = subscribeTemplateAutoRefreshIntervalChanged(listener);
+
+    currentTemplateAutoRefreshMinutes = 30;
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsView initialTab="ai-gateway" onBack={() => {}} />);
+
+    const input = await screen.findByLabelText(
+      "Template auto refresh minutes",
+    );
+    await waitFor(() => expect(input).toHaveValue(30));
+    const saveButton = screen.getByRole("button", {
+      name: /Save Settings|保存设置/,
+    });
+
+    for (const minutes of [0, 10, 60, 1440]) {
+      await user.clear(input);
+      await user.type(input, String(minutes));
+      invokeMock.mockClear();
+      const listenerCallsBeforeSave = listener.mock.calls.length;
+
+      await user.click(saveButton);
+
+      await waitFor(() =>
+        expect(invokeMock).toHaveBeenCalledWith(
+          "api_gateway_template_auto_refresh_save",
+          { minutes },
+        ),
+      );
+      await waitFor(() =>
+        expect(invokeMock).toHaveBeenCalledWith(
+          "api_gateway_template_auto_refresh_get",
+        ),
+      );
+      await waitFor(() =>
+        expect(listener.mock.calls.length).toBeGreaterThan(
+          listenerCallsBeforeSave,
+        ),
+      );
+    }
+
+    unsubscribe();
+  });
+
+  it("blocks 5 and an empty value, never saving and showing the localized range message", async () => {
+    currentTemplateAutoRefreshMinutes = 30;
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsView initialTab="ai-gateway" onBack={() => {}} />);
+
+    const input = await screen.findByLabelText(
+      "Template auto refresh minutes",
+    );
+    await waitFor(() => expect(input).toHaveValue(30));
+    const saveButton = screen.getByRole("button", {
+      name: /Save Settings|保存设置/,
+    });
+
+    await user.clear(input);
+    await user.type(input, "5");
+    await user.click(saveButton);
+
+    expect(
+      await screen.findByText(
+        /Template auto refresh minutes must be 0 \(disabled\) or between 10 and 1440/,
+      ),
+    ).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "api_gateway_template_auto_refresh_save",
+      expect.anything(),
+    );
+
+    await user.clear(input);
+    await user.click(saveButton);
+
+    expect(
+      await screen.findByText(
+        /Template auto refresh minutes must be 0 \(disabled\) or between 10 and 1440/,
+      ),
+    ).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "api_gateway_template_auto_refresh_save",
+      expect.anything(),
+    );
+  });
+
+  it("maps a backend rejection to the localized message instead of the raw error", async () => {
+    currentTemplateAutoRefreshMinutes = 30;
+    templateAutoRefreshSaveError = new Error(
+      "template_auto_refresh_invalid: backend rejected 15",
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsView initialTab="ai-gateway" onBack={() => {}} />);
+
+    const input = await screen.findByLabelText(
+      "Template auto refresh minutes",
+    );
+    await waitFor(() => expect(input).toHaveValue(30));
+    await user.clear(input);
+    await user.type(input, "15");
+    await user.click(
+      screen.getByRole("button", { name: /Save Settings|保存设置/ }),
+    );
+
+    expect(
+      await screen.findByText(
+        /Template auto refresh minutes must be 0 \(disabled\) or between 10 and 1440/,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/template_auto_refresh_invalid: backend rejected 15/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("ships bilingual template auto refresh label and validation text", async () => {
+    await i18n.changeLanguage("en");
+    const enLabel = i18n.t("apiGatewayTemplateAutoRefreshLabel");
+    const enInvalid = i18n.t("apiGatewayTemplateAutoRefreshInvalid");
+    expect(enLabel).toBe("Template auto refresh minutes");
+    expect(enInvalid).toBe(
+      "Template auto refresh minutes must be 0 (disabled) or between 10 and 1440",
+    );
+
+    await i18n.changeLanguage("zh");
+    const zhLabel = i18n.t("apiGatewayTemplateAutoRefreshLabel");
+    const zhInvalid = i18n.t("apiGatewayTemplateAutoRefreshInvalid");
+    expect(zhLabel).not.toBe("apiGatewayTemplateAutoRefreshLabel");
+    expect(zhInvalid).not.toBe("apiGatewayTemplateAutoRefreshInvalid");
+    expect(zhLabel.trim()).not.toBe("");
+    expect(zhInvalid.trim()).not.toBe("");
+    expect(zhLabel).not.toBe(enLabel);
+    expect(zhInvalid).not.toBe(enInvalid);
   });
 });

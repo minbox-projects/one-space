@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   API_GATEWAY_DEFAULT_PORT,
   API_GATEWAY_KEY_MASK,
@@ -16,6 +16,8 @@ import {
   apiGatewayStatus,
   apiGatewayStop,
   apiGatewaySyncTerminal,
+  apiGatewayTemplateAutoRefreshGet,
+  apiGatewayTemplateAutoRefreshSave,
   apiGatewayTerminalTargets,
   apiGatewayUpsertKey,
   apiGatewayUpsertProvider,
@@ -39,10 +41,12 @@ import {
   isUnpricedOnly,
   localBaseUrl,
   maskSecret,
+  notifyTemplateAutoRefreshIntervalChanged,
   resolveAggregatedModelName,
   resolveAggregatedReasoningEfforts,
   resolveDefaultKeyId,
   resolveMappingPreview,
+  subscribeTemplateAutoRefreshIntervalChanged,
   USAGE_RANGE_KEYS,
   usageStatusTranslationKey,
   type GatewayConfig,
@@ -1942,5 +1946,75 @@ describe("apiGateway provider price helpers", () => {
     expect(
       resolveProviderPriceRow(configured.model_prices, "p1", "model-a")?.input,
     ).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 2: template auto-refresh interval wrappers and subscriber notification.
+// RED tests for the frozen interface contract. Only this test file is touched.
+// ---------------------------------------------------------------------------
+
+describe("apiGateway template auto refresh wrappers", () => {
+  beforeEach(() => {
+    resetTauriMocks();
+  });
+
+  it("invokes the exact get/save commands and returns the invoke result", async () => {
+    invokeMock.mockResolvedValueOnce(60);
+    const loaded = await apiGatewayTemplateAutoRefreshGet();
+    expect(invokeMock).toHaveBeenCalledWith(
+      "api_gateway_template_auto_refresh_get",
+    );
+    expect(loaded).toBe(60);
+
+    invokeMock.mockResolvedValueOnce(30);
+    const saved = await apiGatewayTemplateAutoRefreshSave(30);
+    expect(invokeMock).toHaveBeenCalledWith(
+      "api_gateway_template_auto_refresh_save",
+      { minutes: 30 },
+    );
+    expect(saved).toBe(30);
+  });
+
+  it("passes disable and boundary values through unchanged", async () => {
+    invokeMock.mockResolvedValueOnce(0);
+    expect(await apiGatewayTemplateAutoRefreshSave(0)).toBe(0);
+    expect(invokeMock).toHaveBeenCalledWith(
+      "api_gateway_template_auto_refresh_save",
+      { minutes: 0 },
+    );
+
+    invokeMock.mockResolvedValueOnce(10);
+    expect(await apiGatewayTemplateAutoRefreshSave(10)).toBe(10);
+    expect(invokeMock).toHaveBeenCalledWith(
+      "api_gateway_template_auto_refresh_save",
+      { minutes: 10 },
+    );
+
+    invokeMock.mockResolvedValueOnce(1440);
+    expect(await apiGatewayTemplateAutoRefreshSave(1440)).toBe(1440);
+    expect(invokeMock).toHaveBeenCalledWith(
+      "api_gateway_template_auto_refresh_save",
+      { minutes: 1440 },
+    );
+  });
+
+  it("notifies subscribers on every change and stops after unsubscribe", () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeTemplateAutoRefreshIntervalChanged(listener);
+    expect(listener).not.toHaveBeenCalled();
+
+    notifyTemplateAutoRefreshIntervalChanged();
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    notifyTemplateAutoRefreshIntervalChanged();
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    unsubscribe();
+    notifyTemplateAutoRefreshIntervalChanged();
+    expect(
+      listener,
+      "取消订阅后通知不应再触达旧监听器",
+    ).toHaveBeenCalledTimes(2);
   });
 });
