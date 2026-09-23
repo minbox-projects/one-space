@@ -21,7 +21,6 @@ import {
   formatUsageAmount,
   formatUsageRowAmount,
   USAGE_RANGE_KEYS,
-  usageRangeToDays,
   type UnpricedUsageItem,
   type UsageBucket,
   type UsageMetrics,
@@ -48,6 +47,7 @@ function formatCacheCoverage(eligible: number, successful: number): string {
 
 const RANGE_LABEL_KEYS: Record<UsageRangeKey, string> = {
   today: "apiGatewayRangeToday",
+  yesterday: "apiGatewayRangeYesterday",
   "7d": "apiGatewayRange7d",
   "15d": "apiGatewayRange15d",
   "30d": "apiGatewayRange30d",
@@ -56,6 +56,7 @@ const RANGE_LABEL_KEYS: Record<UsageRangeKey, string> = {
 
 const RANGE_LABEL_FALLBACKS: Record<UsageRangeKey, string> = {
   today: "Today",
+  yesterday: "Yesterday",
   "7d": "7d",
   "15d": "15d",
   "30d": "30d",
@@ -189,7 +190,7 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
       if (options?.refresh) setRefreshing(true);
       else setLoading(true);
       try {
-        const next = await apiGatewayUsageStats(usageRangeToDays(range));
+        const next = await apiGatewayUsageStats(range);
         if (requestSeqRef.current !== seq) return;
         setStats(next);
       } catch (err) {

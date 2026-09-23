@@ -427,34 +427,16 @@ export function apiGatewaySyncTerminal(targetTools?: string[]) {
 }
 
 /** Quick time ranges shared by the usage-stats and request-logs tabs. */
-export type UsageRangeKey = "today" | "7d" | "15d" | "30d" | "all";
+export type UsageRangeKey = "today" | "yesterday" | "7d" | "15d" | "30d" | "all";
 
 export const USAGE_RANGE_KEYS: readonly UsageRangeKey[] = [
   "today",
+  "yesterday",
   "7d",
   "15d",
   "30d",
   "all",
 ];
-
-/**
- * Map a quick-range selection to the backend `days` argument.
- * `null` means all time, `1` means today, otherwise the last N calendar days.
- */
-export function usageRangeToDays(range: UsageRangeKey): number | null {
-  switch (range) {
-    case "today":
-      return 1;
-    case "7d":
-      return 7;
-    case "15d":
-      return 15;
-    case "30d":
-      return 30;
-    case "all":
-      return null;
-  }
-}
 
 export interface UsageMetrics {
   request_count: number;
@@ -563,7 +545,7 @@ export interface UsageLogsPage {
 }
 
 export interface UsageLogsQuery {
-  days: number | null;
+  range: UsageRangeKey;
   groupBy?: UsageGroupBy | null;
   status?: UsageLogResult | null;
   model?: string | null;
@@ -921,15 +903,15 @@ export function usageStatusTranslationKey(result: UsageLogResult): string {
   }
 }
 
-/** Card totals, time buckets and model/provider breakdown for a time range. */
-export function apiGatewayUsageStats(days: number | null) {
-  return invoke<UsageStats>("api_gateway_usage_stats", { days });
+/** Card totals, time buckets and model/provider breakdown for a quick range. */
+export function apiGatewayUsageStats(range: UsageRangeKey) {
+  return invoke<UsageStats>("api_gateway_usage_stats", { range });
 }
 
 /** Paged request logs, optionally grouped by model or UTC+8 day. */
 export function apiGatewayRequestLogs(query: UsageLogsQuery) {
   return invoke<UsageLogsPage>("api_gateway_request_logs", {
-    days: query.days,
+    range: query.range,
     groupBy: query.groupBy ?? null,
     status: query.status ?? null,
     model: query.model ?? null,

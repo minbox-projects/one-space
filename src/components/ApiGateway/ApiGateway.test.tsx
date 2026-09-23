@@ -2079,6 +2079,30 @@ describe("ApiGateway", () => {
       "Removed from the template and disabled: gone-model",
     );
   });
+
+  it("首屏今日统计与今日分组日志使用 range=today 选择器", async () => {
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus({ running: true }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<ApiGateway />);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_stats", {
+        range: "today",
+      }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
+      range: "today",
+      groupBy: "day",
+      status: null,
+      model: null,
+      page: 1,
+    });
+  });
 });
 
 describe("ApiGateway 模板服务商模型维护", () => {

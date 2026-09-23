@@ -372,3 +372,17 @@ describe("逐行自动禁用新增国际化键", () => {
   });
 });
 
+const USAGE_RANGE_YESTERDAY_KEYS = ["apiGatewayRangeYesterday"] as const;
+
+describe("API 网关快捷范围国际化键", () => {
+  it.each(["en", "zh"] as const)(
+    "为 %s 提供昨天范围的真实文案",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      for (const key of USAGE_RANGE_YESTERDAY_KEYS) {
+        expect(i18n.t(key), `${language} 中 ${key} 应有真实文案`).not.toBe(key);
+      }
+    },
+  );
+});
+

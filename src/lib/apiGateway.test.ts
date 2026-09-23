@@ -43,7 +43,7 @@ import {
   resolveAggregatedReasoningEfforts,
   resolveDefaultKeyId,
   resolveMappingPreview,
-  usageRangeToDays,
+  USAGE_RANGE_KEYS,
   usageStatusTranslationKey,
   type GatewayConfig,
   type GatewayKey,
@@ -449,16 +449,16 @@ function metrics(overrides: Partial<UsageMetrics> = {}): UsageMetrics {
   };
 }
 
-describe("usageRangeToDays 快捷范围映射", () => {
-  it("今日映射为 1、近 N 天映射为 N", () => {
-    expect(usageRangeToDays("today")).toBe(1);
-    expect(usageRangeToDays("7d")).toBe(7);
-    expect(usageRangeToDays("15d")).toBe(15);
-    expect(usageRangeToDays("30d")).toBe(30);
-  });
-
-  it("全部范围映射为 null", () => {
-    expect(usageRangeToDays("all")).toBeNull();
+describe("USAGE_RANGE_KEYS 快捷范围顺序", () => {
+  it("按今日、昨天、近 N 天与全部的顺序暴露快捷范围", () => {
+    expect(USAGE_RANGE_KEYS).toEqual([
+      "today",
+      "yesterday",
+      "7d",
+      "15d",
+      "30d",
+      "all",
+    ]);
   });
 });
 
@@ -701,10 +701,10 @@ describe("用量与日志命令封装", () => {
   });
 
   it("按 camelCase 参数调用用量与保留天数命令", async () => {
-    await apiGatewayUsageStats(7);
-    await apiGatewayUsageStats(null);
+    await apiGatewayUsageStats("7d");
+    await apiGatewayUsageStats("all");
     await apiGatewayRequestLogs({
-      days: 1,
+      range: "today",
       groupBy: "day",
       status: "failure",
       model: "gpt-4o",
@@ -714,13 +714,13 @@ describe("用量与日志命令封装", () => {
     await apiGatewayUsageRetentionSave(30);
 
     expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_stats", {
-      days: 7,
+      range: "7d",
     });
     expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_stats", {
-      days: null,
+      range: "all",
     });
     expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
-      days: 1,
+      range: "today",
       groupBy: "day",
       status: "failure",
       model: "gpt-4o",
@@ -740,9 +740,9 @@ describe("用量与日志命令封装", () => {
   });
 
   it("查询参数缺省时携带空筛选与第 1 页", async () => {
-    await apiGatewayRequestLogs({ days: null });
+    await apiGatewayRequestLogs({ range: "today" });
     expect(invokeMock).toHaveBeenCalledWith("api_gateway_request_logs", {
-      days: null,
+      range: "today",
       groupBy: null,
       status: null,
       model: null,

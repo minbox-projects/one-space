@@ -60,16 +60,16 @@ describe("UsageStatsPanel", () => {
     await i18n.changeLanguage("en");
   });
 
-  it("默认今日并在切范围时按 days 重新取数，卡片展示 Tokens/请求数/花费", async () => {
+  it("默认今日并在切范围时按 range 重新取数，卡片展示 Tokens/请求数/花费", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string, args?: any) => {
       if (command !== "api_gateway_usage_stats") {
         throw new Error(`Unhandled command: ${command}`);
       }
-      const days = args.days as number | null;
+      const range = args.range as string;
       return metrics({
-        request_count: days === 1 ? 4 : 10,
-        total_tokens: days === 1 ? 1000 : 2500,
+        request_count: range === "today" ? 4 : 10,
+        total_tokens: range === "today" ? 1000 : 2500,
         amount: 0.1234,
       });
     });
@@ -78,7 +78,7 @@ describe("UsageStatsPanel", () => {
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_stats", {
-        days: 1,
+        range: "today",
       }),
     );
     const tokensCard = await screen.findByTestId("api-gateway-usage-card-tokens");
@@ -97,12 +97,48 @@ describe("UsageStatsPanel", () => {
     expect(rangeTrigger).toHaveTextContent("7d");
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_stats", {
-        days: 7,
+        range: "7d",
       }),
     );
     expect(
       await screen.findByTestId("api-gateway-usage-card-requests"),
     ).toHaveTextContent(formatCount(10));
+  });
+
+  it("范围下拉提供昨天并按 range=yesterday 取数渲染返回指标", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command !== "api_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      if (args.range === "yesterday") {
+        return metrics({ request_count: 3, total_tokens: 777, amount: 0.5 });
+      }
+      return metrics({ request_count: 1, total_tokens: 111 });
+    });
+
+    renderWithProviders(<UsageStatsPanel />);
+    await screen.findByTestId("api-gateway-usage-card-requests");
+
+    const rangeTrigger = screen.getByTestId("api-gateway-usage-range-trigger");
+    await user.click(rangeTrigger);
+    await user.click(screen.getByRole("option", { name: "Yesterday" }));
+    expect(rangeTrigger).toHaveTextContent("Yesterday");
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("api_gateway_usage_stats", {
+        range: "yesterday",
+      }),
+    );
+    expect(
+      await screen.findByTestId("api-gateway-usage-card-requests"),
+    ).toHaveTextContent(formatCount(3));
+    expect(screen.getByTestId("api-gateway-usage-card-tokens")).toHaveTextContent(
+      formatCount(777),
+    );
+    expect(screen.getByTestId("api-gateway-usage-card-cost")).toHaveTextContent(
+      "0.5",
+    );
   });
 
   it("刷新按钮在请求期间展示刷新中状态并重新取数", async () => {
