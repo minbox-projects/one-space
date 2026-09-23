@@ -664,6 +664,21 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
     targets
 }
 
+/// The supported terminal tools whose managed AI Gateway provider record
+/// already exists, in `SUPPORTED_TERMINAL_TOOLS` order. Reuses the same
+/// `synced` predicate the terminal target list exposes, so a null or unreadable
+/// payload yields no tools.
+pub(in crate::ai_gateway) fn previously_synced_terminal_tools(
+    config: &GatewayConfig,
+    providers_data: &serde_json::Value,
+) -> Vec<String> {
+    terminal_targets_from(config, providers_data)
+        .into_iter()
+        .filter(|target| target.synced)
+        .map(|target| target.tool)
+        .collect()
+}
+
 #[tauri::command]
 pub fn ai_gateway_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
     let config = read_config()?;
@@ -799,6 +814,40 @@ async fn apply_terminal_sync(
     Ok(records)
 }
 
+/// Apply one template sync, then best-effort refresh every previously synced
+/// terminal tool through the injected `terminal_sync` port.
+///
+/// The terminal refresh runs only after the template sync succeeded, only when
+/// at least one upstream provider is bound to that template, and only when at
+/// least one supported tool already holds a managed gateway record. It is
+/// awaited at most once and its error is swallowed, so the template sync result
+/// (and its `synced_at` update) always stands.
+pub(in crate::ai_gateway) async fn apply_template_sync_with_terminal_refresh<F, Fut>(
+    config: &mut GatewayConfig,
+    template_id: &str,
+    fetch: impl FnOnce(&ProviderTemplate) -> Result<String, String>,
+    persist: impl FnOnce(&GatewayConfig) -> Result<(), String>,
+    providers_data: &serde_json::Value,
+    terminal_sync: F,
+) -> Result<ProviderTemplateView, String>
+where
+    F: FnOnce(Vec<String>) -> Fut + Send,
+    Fut: std::future::Future<Output = Result<Vec<TerminalSyncRecord>, String>> + Send,
+{
+    let view = apply_template_sync_with(config, template_id, fetch, persist)?;
+    let bound = config
+        .providers
+        .iter()
+        .any(|provider| provider.template_id.as_deref() == Some(template_id));
+    if bound {
+        let tools = previously_synced_terminal_tools(config, providers_data);
+        if !tools.is_empty() {
+            let _ = terminal_sync(tools).await;
+        }
+    }
+    Ok(view)
+}
+
 #[tauri::command]
 pub async fn ai_gateway_configure_terminal(
     app: tauri::AppHandle,
@@ -931,14 +980,30 @@ pub fn ai_gateway_provider_templates() -> Result<Vec<ProviderTemplateView>, Stri
 /// leaves the configuration unchanged.
 #[tauri::command]
 pub async fn ai_gateway_sync_provider_template(
+    app: tauri::AppHandle,
     template_id: String,
 ) -> Result<ProviderTemplateView, String> {
     let mut config = read_config()?;
     let template = effective_template(&config, &template_id)?;
     let raw = fetch_template_models(&template).await?;
-    apply_template_sync_with(&mut config, &template_id, move |_| Ok(raw), |next| {
-        write_config(next)
-    })
+    // The service-provider payload only decides which tools were previously
+    // synced: a read failure degrades to an empty payload (refresh skipped)
+    // instead of failing the template sync.
+    let providers_data = crate::app_store::service_providers_list()
+        .map(|payload| payload.data)
+        .unwrap_or(Value::Null);
+    apply_template_sync_with_terminal_refresh(
+        &mut config,
+        &template_id,
+        move |_| Ok(raw),
+        write_config,
+        &providers_data,
+        move |tools| {
+            let app = app.clone();
+            async move { apply_terminal_sync(app, tools).await }
+        },
+    )
+    .await
 }
 
 /// Create an upstream provider from a template, carrying one enabled mapping per
