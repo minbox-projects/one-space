@@ -24780,3 +24780,416 @@ async fn relay_settlement_without_a_captured_handle_still_persists() {
     drop(home);
 }
 
+// ---------------------------------------------------------------------------
+// 20260923-template-terminal-resync: best-effort terminal refresh after a
+// successful provider-template sync.
+//
+// `apply_template_sync_with_terminal_refresh` keeps every external boundary
+// injectable: `fetch` and `persist` drive the template sync, `providers_data`
+// is the terminal service-provider payload used to recognize previously synced
+// tools, and `terminal_sync` is the injected port. These tests pin observable
+// behavior only, so no real app handle or terminal file is touched.
+// ---------------------------------------------------------------------------
+
+const RESYNC_SYNC_URL: &str = "https://tpl.example.com/v1/models";
+const RESYNC_SYNC_BODY: &str = r#"{"data":[{"id":"model-a","name":"Model A"}]}"#;
+
+/// Seed one template with a usable model-list URL and no models.
+fn resync_seed_template(config: &mut GatewayConfig, template_id: &str) {
+    config
+        .provider_templates
+        .push(super::ProviderTemplateState {
+            template_id: template_id.to_string(),
+            template: Some(super::ProviderTemplate {
+                id: template_id.to_string(),
+                name: "Resync Template".to_string(),
+                description: String::new(),
+                base_url: "https://tpl.example.com/v1".to_string(),
+                protocol: UpstreamProtocol::ChatCompletions,
+                source: RESYNC_SYNC_URL.to_string(),
+                models_url: Some(RESYNC_SYNC_URL.to_string()),
+                models: Vec::new(),
+                icon: None,
+            }),
+            synced_at: None,
+            source: None,
+        });
+}
+
+/// An upstream provider bound to `template_id`, so the sync has a bound-provider
+/// precondition and a propagation target.
+fn resync_bound_provider(id: &str, template_id: &str) -> GatewayUpstreamProvider {
+    let mut bound = provider(id);
+    bound.template_id = Some(template_id.to_string());
+    bound
+}
+
+/// A config with the template seeded and exactly one provider bound to it.
+fn resync_config() -> GatewayConfig {
+    let mut config = GatewayConfig::default();
+    resync_seed_template(&mut config, "t");
+    config.providers.push(resync_bound_provider("p", "t"));
+    config
+}
+
+/// A marked managed gateway record whose marker sits at the top level (the codex
+/// shape), as opposed to `managed_gateway_provider`'s `tool_config` marker.
+fn managed_gateway_provider_top_level(id: &str, tool: &str) -> Value {
+    json!({
+        "id": id,
+        "tool": tool,
+        "name": "API Gateway",
+        "base_url": "http://127.0.0.1:17688",
+        "api_key": "previous-local-key",
+        "api_gateway_gateway": true
+    })
+}
+
+fn empty_terminal_sync_calls() -> Arc<Mutex<Vec<Vec<String>>>> {
+    Arc::new(Mutex::new(Vec::new()))
+}
+
+/// AC-001 / REQ-001: after a successful template sync with one bound provider and
+/// a previously synced opencode gateway record, the terminal port runs exactly
+/// once for `opencode` and the template view is still returned.
+#[tokio::test]
+async fn template_sync_refreshes_a_previously_synced_terminal_tool_once() {
+    let mut config = resync_config();
+    let providers_data = json!({
+        "providers": [managed_gateway_provider("managed-oc", "opencode")]
+    });
+    let calls = empty_terminal_sync_calls();
+    let sink = calls.clone();
+
+    let view = super::commands::apply_template_sync_with_terminal_refresh(
+        &mut config,
+        "t",
+        |_template| Ok(RESYNC_SYNC_BODY.to_string()),
+        |_next| Ok(()),
+        &providers_data,
+        move |tools| {
+            sink.lock().expect("capture lock").push(tools);
+            async move { Ok(Vec::<TerminalSyncRecord>::new()) }
+        },
+    )
+    .await
+    .expect("a successful template sync must return the view");
+
+    assert!(
+        view.synced_at.is_some(),
+        "the returned view must carry the updated sync time"
+    );
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![vec!["opencode".to_string()]],
+        "the port must be called exactly once with the previously synced tool"
+    );
+}
+
+/// AC-002 / REQ-001: when both opencode and codex hold a marked managed gateway
+/// record, the port receives both tools once, in supported-tool order.
+#[tokio::test]
+async fn template_sync_refreshes_all_previously_synced_tools_in_supported_order() {
+    let mut config = resync_config();
+    let providers_data = terminal_providers_payload();
+    let calls = empty_terminal_sync_calls();
+    let sink = calls.clone();
+
+    super::commands::apply_template_sync_with_terminal_refresh(
+        &mut config,
+        "t",
+        |_template| Ok(RESYNC_SYNC_BODY.to_string()),
+        |_next| Ok(()),
+        &providers_data,
+        move |tools| {
+            sink.lock().expect("capture lock").push(tools);
+            async move { Ok(Vec::<TerminalSyncRecord>::new()) }
+        },
+    )
+    .await
+    .expect("a successful template sync must return the view");
+
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![vec!["opencode".to_string(), "codex".to_string()]],
+        "both previously synced tools must be refreshed once in supported order"
+    );
+}
+
+/// AC-003 / REQ-005: with no marked managed gateway record, the bound template
+/// still syncs but the terminal port is never called.
+#[tokio::test]
+async fn template_sync_skips_refresh_when_no_tool_was_previously_synced() {
+    let mut config = resync_config();
+    let providers_data = json!({
+        "providers": [unmarked_user_provider("user-oc", "opencode")]
+    });
+    let calls = empty_terminal_sync_calls();
+    let sink = calls.clone();
+
+    let view = super::commands::apply_template_sync_with_terminal_refresh(
+        &mut config,
+        "t",
+        |_template| Ok(RESYNC_SYNC_BODY.to_string()),
+        |_next| Ok(()),
+        &providers_data,
+        move |tools| {
+            sink.lock().expect("capture lock").push(tools);
+            async move { Ok(Vec::<TerminalSyncRecord>::new()) }
+        },
+    )
+    .await
+    .expect("a successful template sync must return the view");
+
+    assert!(view.synced_at.is_some());
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "an unmarked provider is not a synced managed gateway, so the port must not run"
+    );
+}
+
+/// AC-004 / REQ-005: a marked opencode gateway record exists, but no provider is
+/// bound to the synced template, so the terminal port is never called.
+#[tokio::test]
+async fn template_sync_skips_refresh_when_no_provider_is_bound_to_the_template() {
+    let mut config = GatewayConfig::default();
+    resync_seed_template(&mut config, "t");
+    // A manual provider carries no `template_id` and must not count as bound.
+    config.providers.push(provider("manual"));
+    let providers_data = json!({
+        "providers": [managed_gateway_provider("managed-oc", "opencode")]
+    });
+    let calls = empty_terminal_sync_calls();
+    let sink = calls.clone();
+
+    let view = super::commands::apply_template_sync_with_terminal_refresh(
+        &mut config,
+        "t",
+        |_template| Ok(RESYNC_SYNC_BODY.to_string()),
+        |_next| Ok(()),
+        &providers_data,
+        move |tools| {
+            sink.lock().expect("capture lock").push(tools);
+            async move { Ok(Vec::<TerminalSyncRecord>::new()) }
+        },
+    )
+    .await
+    .expect("a successful template sync must return the view");
+
+    assert!(view.synced_at.is_some());
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "an unbound template must never trigger a terminal write"
+    );
+}
+
+/// AC-005 / REQ-003: a terminal port error is swallowed, the template view with
+/// the updated sync time is still returned, and an unreadable service-provider
+/// payload degrades to no synced tools.
+#[tokio::test]
+async fn terminal_refresh_failure_is_swallowed_and_never_fails_the_template_sync() {
+    let mut config = resync_config();
+    let providers_data = json!({
+        "providers": [managed_gateway_provider("managed-oc", "opencode")]
+    });
+    let calls = empty_terminal_sync_calls();
+    let sink = calls.clone();
+
+    let view = super::commands::apply_template_sync_with_terminal_refresh(
+        &mut config,
+        "t",
+        |_template| Ok(RESYNC_SYNC_BODY.to_string()),
+        |_next| Ok(()),
+        &providers_data,
+        move |tools| {
+            sink.lock().expect("capture lock").push(tools);
+            async move {
+                Err::<Vec<TerminalSyncRecord>, String>(
+                    "terminal sync failed: no enabled local API key".to_string(),
+                )
+            }
+        },
+    )
+    .await
+    .expect("a terminal refresh error must not fail the template sync");
+
+    assert!(
+        view.synced_at.is_some(),
+        "the template's synced_at update must stand despite the terminal error"
+    );
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        1,
+        "the port must still be invoked once before its error is swallowed"
+    );
+    assert!(
+        super::commands::previously_synced_terminal_tools(&config, &Value::Null).is_empty(),
+        "an unreadable service-provider payload degrades to no synced tools"
+    );
+}
+
+/// AC-005 / REQ-003: an unreadable service-provider payload (`Value::Null`) skips
+/// the refresh entirely while the template view is still returned.
+#[tokio::test]
+async fn unreadable_service_provider_payload_skips_refresh_but_returns_the_template_view() {
+    let mut config = resync_config();
+    let calls = empty_terminal_sync_calls();
+    let sink = calls.clone();
+
+    let view = super::commands::apply_template_sync_with_terminal_refresh(
+        &mut config,
+        "t",
+        |_template| Ok(RESYNC_SYNC_BODY.to_string()),
+        |_next| Ok(()),
+        &Value::Null,
+        move |tools| {
+            sink.lock().expect("capture lock").push(tools);
+            async move { Ok(Vec::<TerminalSyncRecord>::new()) }
+        },
+    )
+    .await
+    .expect("an unreadable payload must not fail the template sync");
+
+    assert!(view.synced_at.is_some());
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "no synced tools can be resolved from an unreadable payload, so the port must not run"
+    );
+}
+
+/// AC-006 / REQ-006: a failed model-list fetch returns the original error,
+/// leaves the configuration unchanged and never starts a terminal refresh.
+#[tokio::test]
+async fn failed_template_fetch_returns_the_error_and_never_starts_a_terminal_refresh() {
+    let mut config = resync_config();
+    let before = serde_json::to_value(&config).expect("encode before");
+    let providers_data = json!({
+        "providers": [managed_gateway_provider("managed-oc", "opencode")]
+    });
+    let calls = empty_terminal_sync_calls();
+    let sink = calls.clone();
+
+    let error = super::commands::apply_template_sync_with_terminal_refresh(
+        &mut config,
+        "t",
+        |_template| Err("upstream unreachable".to_string()),
+        |_next| Ok(()),
+        &providers_data,
+        move |tools| {
+            sink.lock().expect("capture lock").push(tools);
+            async move { Ok(Vec::<TerminalSyncRecord>::new()) }
+        },
+    )
+    .await
+    .expect_err("a fetch failure must fail the template sync");
+
+    assert!(
+        error.contains("upstream unreachable"),
+        "the original template-sync error must surface: {error}"
+    );
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "a failed template sync must never start a terminal refresh"
+    );
+    assert_eq!(
+        before,
+        serde_json::to_value(&config).expect("encode after"),
+        "a failed template sync must leave the configuration unchanged"
+    );
+}
+
+/// Helper coverage: `previously_synced_terminal_tools` lists only marked,
+/// same-tool managed gateway providers, in supported-tool order, and treats a
+/// null/absent/non-array payload or an unmarked or stale-ledger provider as
+/// unsynced.
+#[test]
+fn previously_synced_terminal_tools_lists_only_marked_managed_providers_in_supported_order() {
+    let config = GatewayConfig::default();
+
+    for empty in [
+        Value::Null,
+        json!({}),
+        json!({"providers": []}),
+        json!({"providers": "not-an-array"}),
+    ] {
+        assert!(
+            super::commands::previously_synced_terminal_tools(&config, &empty).is_empty(),
+            "a payload without a provider array must have no synced tools: {empty}"
+        );
+    }
+
+    let unmarked_only = json!({
+        "providers": [unmarked_user_provider("user-oc", "opencode")]
+    });
+    assert!(
+        super::commands::previously_synced_terminal_tools(&config, &unmarked_only).is_empty(),
+        "an unmarked user provider is not a synced managed gateway"
+    );
+
+    // A stale ledger id pointing at an unmarked user provider must not count.
+    let mut stale = GatewayConfig::default();
+    stale.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "user-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:17688".to_string(),
+        synced_at: 1,
+    });
+    assert!(
+        super::commands::previously_synced_terminal_tools(&stale, &unmarked_only).is_empty(),
+        "a ledger id that now points at an unmarked user provider is stale"
+    );
+
+    // Supported-tool order is independent of the payload order (codex first).
+    let codex_first = json!({
+        "providers": [
+            managed_gateway_provider_top_level("managed-cx", "codex"),
+            managed_gateway_provider("managed-oc", "opencode"),
+            {
+                "id": "unrelated-other",
+                "tool": "claude",
+                "name": "Unrelated Tool",
+                "api_gateway_gateway": true
+            }
+        ]
+    });
+    assert_eq!(
+        super::commands::previously_synced_terminal_tools(&config, &codex_first),
+        vec!["opencode".to_string(), "codex".to_string()],
+        "marked managed providers are listed in supported-tool order, ignoring other tools"
+    );
+
+    let codex_only = json!({
+        "providers": [managed_gateway_provider_top_level("managed-cx", "codex")]
+    });
+    assert_eq!(
+        super::commands::previously_synced_terminal_tools(&config, &codex_only),
+        vec!["codex".to_string()],
+        "only the marked tool is listed"
+    );
+}
+
+/// AC-007 / REQ-004 (source-scan precedent): the template-sync command path must
+/// delegate to the existing `apply_terminal_sync` pipeline instead of
+/// reimplementing terminal-sync rules. Bounded to the command body up to the
+/// next `#[tauri::command]`.
+#[test]
+fn template_sync_command_delegates_to_apply_terminal_sync() {
+    const COMMANDS_SOURCE: &str = include_str!("commands.rs");
+
+    let start = COMMANDS_SOURCE
+        .find("pub async fn api_gateway_sync_provider_template(")
+        .expect("the provider-template sync command must exist");
+    let after = &COMMANDS_SOURCE[start + 1..];
+    let end = after
+        .find("#[tauri::command]")
+        .map(|offset| start + 1 + offset)
+        .unwrap_or(COMMANDS_SOURCE.len());
+    let body = &COMMANDS_SOURCE[start..end];
+
+    assert!(
+        body.contains("apply_terminal_sync"),
+        "api_gateway_sync_provider_template must delegate to apply_terminal_sync: {body}"
+    );
+}
+
