@@ -14,8 +14,8 @@ use super::templates::{
     fetch_template_models, provider_template_views, ProviderTemplateView,
 };
 use super::usage_log::{
-    normalize_retention_days, now_millis, resolve_range, validate_retention_days, LogFilter,
-    UsageLogStore, UsageLogsPage, UsageStats, USAGE_LOG_PAGE_SIZE,
+    normalize_retention_days, now_millis, resolve_range_selector, validate_retention_days,
+    LogFilter, UsageLogStore, UsageLogsPage, UsageStats, USAGE_LOG_PAGE_SIZE,
 };
 use super::{
     now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, ModelPrice,
@@ -802,13 +802,14 @@ pub async fn api_gateway_sync_terminal(
 // Usage statistics, request logs and retention
 // ---------------------------------------------------------------------------
 
-/// Aggregated cards, UTC+8 buckets and per-model/provider detail for `days`.
-/// `None` means all time, `Some(1)` means today; a single day buckets by hour.
+/// Aggregated cards, UTC+8 buckets and per-model/provider detail for `range`.
+/// `None`, an empty string and `"all"` mean all time; `"today"` and
+/// `"yesterday"` bucket by hour; `"7d"`/`"15d"`/`"30d"` bucket by day. Unknown
+/// selectors are rejected with the supported vocabulary.
 #[tauri::command]
-pub fn api_gateway_usage_stats(days: Option<i64>) -> Result<UsageStats, String> {
-    let range = resolve_range(days, now_millis());
-    let hour_buckets = days == Some(1);
-    UsageLogStore::default_store()?.usage_stats(&range, hour_buckets)
+pub fn api_gateway_usage_stats(range: Option<String>) -> Result<UsageStats, String> {
+    let resolved = resolve_range_selector(range.as_deref(), now_millis())?;
+    UsageLogStore::default_store()?.usage_stats(&resolved.range, resolved.hourly)
 }
 
 /// One page (50 rows, newest first) of request logs, or grouped rows when
@@ -816,13 +817,13 @@ pub fn api_gateway_usage_stats(days: Option<i64>) -> Result<UsageStats, String> 
 /// pagination all happen here in the backend.
 #[tauri::command]
 pub fn api_gateway_request_logs(
-    days: Option<i64>,
+    range: Option<String>,
     group_by: Option<String>,
     status: Option<String>,
     model: Option<String>,
     page: Option<u32>,
 ) -> Result<UsageLogsPage, String> {
-    let range = resolve_range(days, now_millis());
+    let range = resolve_range_selector(range.as_deref(), now_millis())?.range;
     let filter = LogFilter {
         status: status.as_deref().and_then(UsageResult::parse),
         model: model.filter(|model| !model.trim().is_empty()),
