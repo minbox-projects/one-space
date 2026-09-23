@@ -889,6 +889,7 @@ const resources = {
       apiGatewayTemplateAutoRefreshLabel: "Template auto refresh minutes",
       apiGatewayTemplateAutoRefreshInvalid:
         "Template auto refresh minutes must be 0 (disabled) or between 10 and 1440",
+      apiGatewayTemplateAutoRefreshFailed: "Auto refresh failed: {{reason}}",
       protocolRouterTokenLabel: "Router Token",
       protocolRouterTokenDesc:
         "Claude profiles use this token to access the local router. Rotate it here if you need to invalidate older profile credentials.",
@@ -4711,6 +4712,7 @@ const resources = {
       apiGatewayTemplateAutoRefreshLabel: "模板自动刷新分钟数",
       apiGatewayTemplateAutoRefreshInvalid:
         "模板自动刷新分钟数必须为 0（禁用）或 10 到 1440 之间",
+      apiGatewayTemplateAutoRefreshFailed: "自动刷新失败：{{reason}}",
       protocolRouterTokenLabel: "Router Token",
       protocolRouterTokenDesc:
         "Claude Profile 会使用这个 Token 访问本地协议路由。如需让旧凭证失效，请在这里轮换。",

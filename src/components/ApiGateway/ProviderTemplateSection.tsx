@@ -25,6 +25,7 @@ import {
 } from "@/lib/apiGateway";
 import { TemplateCreateDialog } from "./TemplateCreateDialog";
 import { ProviderTemplateAvatar } from "./ProviderTemplateIcon";
+import { useTemplateAutoRefreshFailures } from "./useTemplateAutoRefresh";
 
 export type ProviderTemplateSectionProps = {
   templates: GatewayProviderTemplateView[];
@@ -52,6 +53,7 @@ type ProviderTemplateCardProps = {
   expanded: boolean;
   syncing: boolean;
   busy: boolean;
+  failureReason?: string;
   onToggleExpand: () => void;
   onSync: (templateId: string) => void;
   onCreateProvider: () => void;
@@ -63,6 +65,7 @@ function ProviderTemplateCard({
   expanded,
   syncing,
   busy,
+  failureReason,
   onToggleExpand,
   onSync,
   onCreateProvider,
@@ -263,6 +266,15 @@ function ProviderTemplateCard({
             </span>
           </div>
         </div>
+
+        {failureReason ? (
+          <div
+            data-testid={`api-gateway-template-auto-refresh-failure-${template.id}`}
+            className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+          >
+            {t("apiGatewayTemplateAutoRefreshFailed", { reason: failureReason })}
+          </div>
+        ) : null}
       </div>
 
       {/* 底部操作栏：左侧展开控制，右侧添加服务商主按钮 */}
@@ -520,6 +532,7 @@ export function ProviderTemplateSection({
   onToggleExpand,
 }: ProviderTemplateSectionProps) {
   const { t } = useTranslation();
+  const templateFailures = useTemplateAutoRefreshFailures();
   const [internalExpandedIds, setInternalExpandedIds] = useState<Record<string, boolean>>({});
   const activeExpandedIds = expandedIds ?? internalExpandedIds;
   const [createView, setCreateView] = useState<GatewayProviderTemplateView | null>(
@@ -662,6 +675,7 @@ export function ProviderTemplateSection({
               expanded={Boolean(activeExpandedIds[view.template.id])}
               syncing={Boolean(syncingTemplateIds[view.template.id])}
               busy={busy}
+              failureReason={templateFailures[view.template.id]}
               onToggleExpand={() => toggleExpanded(view.template.id)}
               onSync={onSync}
               onCreateProvider={() => setCreateView(view)}
