@@ -46,6 +46,12 @@ type ProviderDetailDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   provider: GatewayUpstreamProvider | null;
+  /**
+   * Latest persisted snapshot of this provider. Only the five runtime health
+   * fields of rows matching the trimmed `(local_model, upstream_model)` key are
+   * merged into the local draft; user-editable fields and unsaved edits stay intact.
+   */
+  runtimeProvider?: GatewayUpstreamProvider | null;
   prices?: ModelPrice[];
   busy: boolean;
   onSave: (provider: GatewayUpstreamProvider, prices: ModelPrice[]) => void;
@@ -66,10 +72,16 @@ type ProviderDetailDialogProps = {
 const mappingInputClass =
   "h-[38px] rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/50";
 
+/** Stable identity for a mapping row's trimmed `(local_model, upstream_model)` key. */
+function runtimeMappingKey(localModel: string, upstreamModel: string): string {
+  return JSON.stringify([localModel.trim(), upstreamModel.trim()]);
+}
+
 export function ProviderDetailDialog({
   open,
   onOpenChange,
   provider,
+  runtimeProvider,
   prices,
   busy,
   onSave,
@@ -165,6 +177,50 @@ export function ProviderDetailDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider, open]);
 
+  // 实时运行时合并：在弹窗打开时，把 `runtimeProvider` 快照中匹配行的五个运行时
+  // 字段并入本地 mappings 草稿，绝不重置草稿或覆盖用户可编辑字段。effect 幂等：
+  // 逐字段比较，无变化时返回原数组（不触发重渲染），因此可在每次渲染后安全运行
+  // 而不循环，也能捕获运行时快照被原地更新（引用不变）的情况。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!open || !runtimeProvider) return;
+    const runtimeByKey = new Map<string, GatewayModelMapping>();
+    for (const mapping of runtimeProvider.mappings ?? []) {
+      runtimeByKey.set(
+        runtimeMappingKey(mapping.local_model, mapping.upstream_model),
+        mapping,
+      );
+    }
+    setMappings((prev) => {
+      let changed = false;
+      const next = prev.map((mapping) => {
+        const runtime = runtimeByKey.get(
+          runtimeMappingKey(mapping.local_model, mapping.upstream_model),
+        );
+        if (!runtime) return mapping;
+        if (
+          mapping.auto_disabled === runtime.auto_disabled &&
+          mapping.disabled_reason === runtime.disabled_reason &&
+          mapping.disabled_at === runtime.disabled_at &&
+          mapping.consecutive_failures === runtime.consecutive_failures &&
+          mapping.last_error_at === runtime.last_error_at
+        ) {
+          return mapping;
+        }
+        changed = true;
+        return {
+          ...mapping,
+          auto_disabled: runtime.auto_disabled,
+          disabled_reason: runtime.disabled_reason,
+          disabled_at: runtime.disabled_at,
+          consecutive_failures: runtime.consecutive_failures,
+          last_error_at: runtime.last_error_at,
+        };
+      });
+      return changed ? next : prev;
+    });
+  });
+
   if (!provider) return null;
 
   const isEditing = Boolean(provider.id);
@@ -177,7 +233,8 @@ export function ProviderDetailDialog({
     ? formatGatewayTimestamp(boundTemplateView.synced_at)
     : t("apiGatewayTemplateNotSynced", "Not synced yet");
   const ignoredModels = isTemplateBound ? provider.ignored_models ?? [] : [];
-  const autoDisabledModels = (provider.mappings ?? []).filter(
+  // 从本地草稿派生自动禁用计数与批量重新启用控件，使合并后的运行时更新立即反映。
+  const autoDisabledModels = mappings.filter(
     (mapping) => mapping.auto_disabled === true,
   );
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import {
   BarChart3,
   Boxes,
@@ -17,6 +17,7 @@ import {
 import { useToast } from "@/components/ToastProvider";
 import { errorToMessage } from "@/lib/messages";
 import {
+  API_GATEWAY_CONFIG_UPDATED_EVENT,
   API_GATEWAY_DEFAULT_PORT,
   API_GATEWAY_STATUS_UPDATED_EVENT,
   aggregateModels,
@@ -260,6 +261,30 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
     if (!isVisible) return;
     void load();
   }, [isVisible, load]);
+
+  // 订阅后端的运行时状态广播：结算翻转 auto_disabled 后刷新配置，使服务商卡片、
+  // 模型列表与运行时状态卡无需切页或重启即可反映新状态。非 Tauri 环境跳过。
+  useEffect(() => {
+    if (!isTauri) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen(API_GATEWAY_CONFIG_UPDATED_EVENT, () => {
+      void load();
+    })
+      .then((release) => {
+        if (disposed) {
+          // 组件已卸载后才解析出 unlisten：立即释放，避免泄漏。
+          release();
+        } else {
+          unlisten = release;
+        }
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [isTauri, load]);
 
   const refreshTodayUsage = useCallback(
     async (silent = true) => {
@@ -779,6 +804,12 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
     },
   ];
 
+  // 传给详情弹窗的最新运行时快照：取已加载 config 中与编辑目标同 id 的服务商对象，
+  // 供弹窗只合并运行时字段（未找到或新建服务商时为 null）。
+  const runtimeProvider = editingProvider?.id
+    ? config?.providers.find((provider) => provider.id === editingProvider.id) ?? null
+    : null;
+
   return (
     <div className="h-full overflow-y-auto" data-testid="api-gateway-console">
       <div className="mx-auto max-w-7xl space-y-4 p-6">
@@ -1016,6 +1047,7 @@ export function ApiGateway({ isVisible = true }: { isVisible?: boolean }) {
             }
           }}
           provider={editingProvider}
+          runtimeProvider={runtimeProvider}
           prices={config.model_prices ?? []}
           busy={busy}
           onSave={(draft, prices) => void handleSaveProvider(draft, prices)}

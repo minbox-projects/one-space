@@ -1,5 +1,6 @@
-import { screen, within } from "@testing-library/react";
+import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { ProviderDetailDialog } from "@/components/ApiGateway/ProviderDetailDialog";
@@ -1617,6 +1618,310 @@ describe("ProviderDetailDialog 服务商路由权重 (AC-012, AC-013)", () => {
       }),
       expect.anything(),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 4: runtime-field merge from the live provider snapshot (AC-010, REQ-007)
+// ---------------------------------------------------------------------------
+
+describe("ProviderDetailDialog 运行时字段合并", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  function runtimeSnapshot(
+    overrides: Partial<GatewayUpstreamProvider> = {},
+  ): GatewayUpstreamProvider {
+    return makeProvider({
+      id: "p1",
+      name: "Runtime Name",
+      base_url: "https://runtime.example",
+      ...overrides,
+    });
+  }
+
+  // The dialog must stay mounted while `runtimeProvider` changes, so the live
+  // snapshot is driven through a harness that owns it as state instead of
+  // re-rendering (which would remount the dialog and reset the draft).
+  function RuntimeDialogHarness({
+    provider,
+    onSave,
+    onRuntimeReady,
+  }: {
+    provider: GatewayUpstreamProvider;
+    onSave: ReturnType<typeof vi.fn>;
+    onRuntimeReady: (setRuntime: (next: GatewayUpstreamProvider) => void) => void;
+  }) {
+    const [runtimeProvider, setRuntimeProvider] =
+      useState<GatewayUpstreamProvider | null>(null);
+    onRuntimeReady(setRuntimeProvider);
+    return (
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        runtimeProvider={runtimeProvider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+        onReenableModel={vi.fn()}
+        onReenableModels={vi.fn()}
+      />
+    );
+  }
+
+  function renderRuntimeDialog({
+    provider,
+    onSave = vi.fn(),
+  }: {
+    provider: GatewayUpstreamProvider;
+    onSave?: ReturnType<typeof vi.fn>;
+  }) {
+    let setRuntimeProvider: (next: GatewayUpstreamProvider) => void = () => {};
+    const view = renderWithProviders(
+      <RuntimeDialogHarness
+        provider={provider}
+        onSave={onSave}
+        onRuntimeReady={(setter) => {
+          setRuntimeProvider = setter;
+        }}
+      />,
+    );
+    return {
+      ...view,
+      applyRuntime: async (next: GatewayUpstreamProvider) => {
+        await act(async () => {
+          setRuntimeProvider(next);
+        });
+      },
+    };
+  }
+
+  it("runtime_provider_merge_updates_auto_disabled_presentation_without_losing_unsaved_edits", async () => {
+    const user = userEvent.setup();
+    const provider = makeProvider({
+      id: "p1",
+      name: "Upstream A",
+      base_url: "https://api.a.example",
+      mappings: [
+        {
+          local_model: "gpt-4o",
+          upstream_model: "gpt-4o-2024",
+          display_name: "GPT-4o",
+          enabled: true,
+        },
+        {
+          local_model: "claude-3",
+          upstream_model: "claude-3-2024",
+          display_name: "Claude 3",
+          enabled: true,
+        },
+      ],
+    });
+
+    const { applyRuntime } = renderRuntimeDialog({ provider });
+
+    // 未保存编辑：重命名服务商、修改第 1 条映射的本地模型名。
+    await user.clear(screen.getByLabelText("Name"));
+    await user.type(screen.getByLabelText("Name"), "Unsaved Name");
+    await user.clear(screen.getByLabelText("Local model 1"));
+    await user.type(screen.getByLabelText("Local model 1"), "gpt-4o-custom");
+
+    expect(
+      (
+        screen
+          .getByRole("switch", { name: "Enable mapping 2" })
+          .closest("li") as HTMLElement
+      ).getAttribute("data-auto-disabled"),
+    ).toBeNull();
+
+    // 运行时快照：第 2 行与草稿键匹配并被自动禁用；第 1 行键因改名已不匹配，
+    // 且两个匹配候选都携带不同的用户可编辑字段以证明字段隔离。
+    const runtimeProvider = runtimeSnapshot({
+      name: "Runtime Name",
+      base_url: "https://runtime.example",
+      mappings: [
+        {
+          local_model: "gpt-4o",
+          upstream_model: "gpt-4o-2024",
+          display_name: "Runtime Display",
+          enabled: true,
+          auto_disabled: true,
+          disabled_reason: "HTTP 500",
+          consecutive_failures: 3,
+        },
+        {
+          local_model: "claude-3",
+          upstream_model: "claude-3-2024",
+          display_name: "Runtime Claude",
+          enabled: true,
+          auto_disabled: true,
+          disabled_reason: "HTTP 500",
+          disabled_at: 1_700_000_000,
+          consecutive_failures: 3,
+          last_error_at: 1_700_000_100,
+        },
+      ],
+    });
+
+    await applyRuntime(runtimeProvider);
+
+    // 匹配行的 auto-disabled 呈现更新：标记与行内重新启用控件。
+    const row2 = screen
+      .getByRole("switch", { name: "Enable mapping 2" })
+      .closest("li") as HTMLElement;
+    expect(row2.getAttribute("data-auto-disabled")).toBe("true");
+    expect(
+      within(row2).getByTestId("api-gateway-reenable-mapping-claude-3"),
+    ).toBeInTheDocument();
+
+    // 未保存编辑保留，运行时快照的非运行时字段没有覆盖用户字段。
+    expect(screen.getByLabelText("Name")).toHaveValue("Unsaved Name");
+    expect(screen.getByLabelText("API base URL")).toHaveValue(
+      "https://api.a.example",
+    );
+    expect(screen.getByLabelText("Local model 1")).toHaveValue("gpt-4o-custom");
+    expect(screen.getByLabelText("Local model name 1")).toHaveValue("GPT-4o");
+    expect(screen.getByLabelText("Local model name 2")).toHaveValue("Claude 3");
+
+    // 键不匹配的第 1 行不得被自动禁用。
+    const row1 = screen
+      .getByRole("switch", { name: "Enable mapping 1" })
+      .closest("li") as HTMLElement;
+    expect(row1.getAttribute("data-auto-disabled")).toBeNull();
+    expect(
+      within(row1).queryByTestId("api-gateway-reenable-mapping-gpt-4o-custom"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("runtime_provider_merge_drives_the_auto_disabled_hint_from_the_draft", async () => {
+    const provider = makeProvider({
+      id: "p1",
+      name: "Upstream A",
+      mappings: [
+        {
+          local_model: "gpt-4o",
+          upstream_model: "gpt-4o-2024",
+          enabled: true,
+        },
+        {
+          local_model: "claude-3",
+          upstream_model: "claude-3-2024",
+          enabled: true,
+        },
+      ],
+    });
+
+    const { applyRuntime } = renderRuntimeDialog({ provider });
+
+    // 干净快照：草稿没有自动禁用行，因此没有批量重新启用控件。
+    expect(
+      screen.queryByTestId("api-gateway-reenable-models-p1"),
+    ).not.toBeInTheDocument();
+
+    const runtimeProvider = runtimeSnapshot({
+      mappings: [
+        {
+          local_model: "gpt-4o",
+          upstream_model: "gpt-4o-2024",
+          enabled: true,
+          auto_disabled: true,
+          consecutive_failures: 3,
+        },
+        {
+          local_model: "claude-3",
+          upstream_model: "claude-3-2024",
+          enabled: true,
+        },
+      ],
+    });
+
+    await applyRuntime(runtimeProvider);
+
+    // provider 快照本身仍是健康的；只有从合并后的草稿派生才会出现该控件。
+    const reenableAll = screen.getByTestId("api-gateway-reenable-models-p1");
+    expect(reenableAll).toBeInTheDocument();
+    expect(reenableAll).toHaveAccessibleName(/Re-enable all|重新启用所有/i);
+
+    const row1 = screen
+      .getByRole("switch", { name: "Enable mapping 1" })
+      .closest("li") as HTMLElement;
+    expect(row1.getAttribute("data-auto-disabled")).toBe("true");
+    expect(
+      within(row1).getByTestId("api-gateway-reenable-mapping-gpt-4o"),
+    ).toBeInTheDocument();
+  });
+
+  it("runtime_provider_does_not_reset_the_draft_when_unrelated_fields_change", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const provider = makeProvider({
+      id: "p1",
+      name: "Upstream A",
+      base_url: "https://api.a.example",
+      mappings: [
+        {
+          local_model: "gpt-4o",
+          upstream_model: "gpt-4o-2024",
+          display_name: "GPT-4o",
+          enabled: true,
+        },
+        {
+          local_model: "claude-3",
+          upstream_model: "claude-3-2024",
+          display_name: "Claude 3",
+          enabled: true,
+        },
+      ],
+    });
+
+    const { applyRuntime } = renderRuntimeDialog({ provider, onSave });
+
+    await user.clear(screen.getByLabelText("Name"));
+    await user.type(screen.getByLabelText("Name"), "Unsaved Name");
+    await user.clear(screen.getByLabelText("Local model name 1"));
+    await user.type(screen.getByLabelText("Local model name 1"), "Unsaved Display");
+
+    // 运行时快照只改非运行时字段，另含一条草稿中不存在的键：
+    // 按索引合并（而非按键）会污染草稿。
+    const runtimeProvider = runtimeSnapshot({
+      name: "Runtime Name",
+      base_url: "https://runtime.example",
+      mappings: [
+        {
+          local_model: "gpt-4o",
+          upstream_model: "gpt-4o-2024",
+          display_name: "Runtime Display",
+          enabled: true,
+        },
+        {
+          local_model: "no-match",
+          upstream_model: "no-match",
+          enabled: true,
+          auto_disabled: true,
+          consecutive_failures: 3,
+        },
+      ],
+    });
+
+    await applyRuntime(runtimeProvider);
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const [saved] = onSave.mock.calls[0] as [GatewayUpstreamProvider, ModelPrice[]];
+    expect(saved.name).toBe("Unsaved Name");
+    expect(saved.base_url).toBe("https://api.a.example");
+    expect(saved.mappings).toHaveLength(2);
+    expect(saved.mappings[0]).toMatchObject({
+      local_model: "gpt-4o",
+      upstream_model: "gpt-4o-2024",
+      display_name: "Unsaved Display",
+    });
+    expect(saved.mappings[0].auto_disabled).toBeFalsy();
+    expect(saved.mappings[1].auto_disabled).toBeFalsy();
+    expect(saved.mappings.some((m) => m.local_model === "no-match")).toBe(false);
   });
 });
 

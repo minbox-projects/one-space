@@ -7,6 +7,7 @@ export const API_GATEWAY_DEFAULT_PORT = import.meta.env.DEV
   ? API_GATEWAY_DEV_PORT
   : API_GATEWAY_RELEASE_PORT;
 export const API_GATEWAY_STATUS_UPDATED_EVENT = "api-gateway-status-update";
+export const API_GATEWAY_CONFIG_UPDATED_EVENT = "api-gateway-config-update";
 
 /** Sentinel mask the frontend submits to keep a stored provider api key or local key; the backend reads it as "preserve existing value" (or generate a new one) and does not echo masked secrets. */
 export const API_GATEWAY_KEY_MASK = "********";

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { ApiGateway } from "@/components/ApiGateway";
 import {
+  API_GATEWAY_CONFIG_UPDATED_EVENT,
   API_GATEWAY_KEY_MASK,
   formatGatewayTimestamp,
   maskSecret,
@@ -19,7 +20,7 @@ import {
   type UsageStats,
 } from "@/lib/apiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
-import { emitMock, invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
+import { emitMock, invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
 
 type Store = {
   config: GatewayConfig;
@@ -2643,5 +2644,166 @@ describe("ApiGateway 逐行自动禁用前端计数与重新启用入口", () =>
       ).length;
       expect(callsAfter).toBeGreaterThan(callsBefore);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 4: live page refresh on the config-update broadcast (AC-009, REQ-006)
+// ---------------------------------------------------------------------------
+
+describe("ApiGateway 配置更新事件实时刷新", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("api_gateway_config_updated_event_triggers_a_configuration_reload_and_shows_the_new_state", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [
+          makeProvider({
+            id: "p1",
+            name: "Upstream A",
+            mappings: [
+              {
+                local_model: "gpt-4o",
+                upstream_model: "gpt-4o-2024",
+                enabled: true,
+              },
+            ],
+          }),
+        ],
+      }),
+      status: makeStatus({ provider_count: 1, auto_disabled_count: 0 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    // 捕获页面注册的配置更新事件回调（默认挂到配置更新事件名上）。
+    const configUpdateHandlers: Array<(event: unknown) => void> = [];
+    (
+      listenMock as unknown as {
+        mockImplementation: (
+          fn: (
+            eventName: string,
+            handler: (event: unknown) => void,
+          ) => Promise<() => void>,
+        ) => void;
+      }
+    ).mockImplementation(
+      async (eventName: string, handler: (event: unknown) => void) => {
+        if (eventName === API_GATEWAY_CONFIG_UPDATED_EVENT) {
+          configUpdateHandlers.push(handler);
+        }
+        return vi.fn();
+      },
+    );
+
+    renderWithProviders(<ApiGateway />);
+    await within(
+      await screen.findByTestId("api-gateway-providers"),
+    ).findByText("Upstream A");
+
+    // 初始为健康行：服务商卡片没有自动禁用提示。
+    expect(
+      screen.queryByTestId("api-gateway-provider-auto-disabled-models-p1"),
+    ).not.toBeInTheDocument();
+
+    // 冻结接口契约：导出的事件名必须与后端广播一致，且页面在 mount 时订阅它。
+    expect(API_GATEWAY_CONFIG_UPDATED_EVENT).toBe(
+      "api-gateway-config-update",
+    );
+    expect(listenMock).toHaveBeenCalledWith(
+      API_GATEWAY_CONFIG_UPDATED_EVENT,
+      expect.any(Function),
+    );
+    expect(configUpdateHandlers.length).toBeGreaterThan(0);
+
+    const getConfigCallsBefore = invokeMock.mock.calls.filter(
+      ([command]) => command === "api_gateway_get_config",
+    ).length;
+
+    // 后端结算把该映射行自动禁用；mock store 反映新状态。
+    store.config = {
+      ...store.config,
+      providers: [
+        makeProvider({
+          id: "p1",
+          name: "Upstream A",
+          mappings: [
+            {
+              local_model: "gpt-4o",
+              upstream_model: "gpt-4o-2024",
+              enabled: true,
+              auto_disabled: true,
+              disabled_reason: "HTTP 500",
+              disabled_at: 1_700_000_000,
+              consecutive_failures: 3,
+              last_error_at: 1_700_000_100,
+            },
+          ],
+        }),
+      ],
+    };
+    store.status = makeStatus({ provider_count: 1, auto_disabled_count: 1 });
+
+    // 广播到达：无任何用户操作。
+    await act(async () => {
+      for (const handler of configUpdateHandlers) {
+        handler({ payload: undefined });
+      }
+    });
+
+    await waitFor(() => {
+      const getConfigCallsAfter = invokeMock.mock.calls.filter(
+        ([command]) => command === "api_gateway_get_config",
+      ).length;
+      expect(getConfigCallsAfter).toBeGreaterThan(getConfigCallsBefore);
+    });
+
+    // 服务商卡片与运行时状态卡直接展示新状态。
+    expect(
+      await screen.findByTestId("api-gateway-provider-auto-disabled-models-p1"),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("api-gateway-auto-disabled-count"),
+      ).toHaveTextContent("1"),
+    );
+  });
+
+  it("api_gateway_page_releases_the_config_update_listener_on_unmount", async () => {
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus(),
+      targets: [],
+    };
+    mockStore(store);
+
+    const unlisten = vi.fn();
+    (
+      listenMock as unknown as {
+        mockImplementation: (
+          fn: (eventName: string) => Promise<() => void>,
+        ) => void;
+      }
+    ).mockImplementation(async (eventName: string) => {
+      if (eventName === API_GATEWAY_CONFIG_UPDATED_EVENT) {
+        return unlisten;
+      }
+      return vi.fn();
+    });
+
+    const { unmount } = renderWithProviders(<ApiGateway />);
+    await screen.findByTestId("api-gateway-providers");
+
+    expect(listenMock).toHaveBeenCalledWith(
+      API_GATEWAY_CONFIG_UPDATED_EVENT,
+      expect.any(Function),
+    );
+
+    unmount();
+
+    await waitFor(() => expect(unlisten).toHaveBeenCalledTimes(1));
   });
 });
