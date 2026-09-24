@@ -203,6 +203,7 @@ const resources = {
       messageSource_mail: "Mail",
       messageSource_launcher: "Launcher",
       messageSource_content: "Content",
+      messageSource_ai_gateway: "AI Gateway",
       messageSeverity_info: "Info",
       messageSeverity_success: "Success",
       messageSeverity_warning: "Warning",
@@ -939,6 +940,13 @@ const resources = {
       aiGatewayTemplateAutoRefreshInvalid:
         "Template auto refresh minutes must be 0 (disabled) or between 10 and 1440",
       aiGatewayTemplateAutoRefreshFailed: "Auto refresh failed: {{reason}}",
+      aiGatewayTemplateSyncNotificationTitle:
+        "Provider template {{template}} models changed",
+      aiGatewayTemplateSyncNotificationProviderCount:
+        "{{count}} provider(s) affected",
+      aiGatewayTemplateSyncNotificationAddedCount: "{{count}} added",
+      aiGatewayTemplateSyncNotificationDisabledCount: "{{count}} disabled",
+      aiGatewayTemplateSyncNotificationDetailProvider: "{{provider}}: {{models}}",
       protocolRouterTokenLabel: "Router Token",
       protocolRouterTokenDesc:
         "Claude profiles use this token to access the local router. Rotate it here if you need to invalidate older profile credentials.",
@@ -3978,6 +3986,7 @@ const resources = {
       messageSource_mail: "邮件",
       messageSource_launcher: "启动器",
       messageSource_content: "内容",
+      messageSource_ai_gateway: "AI 网关",
       messageSeverity_info: "信息",
       messageSeverity_success: "成功",
       messageSeverity_warning: "警告",
@@ -4822,6 +4831,11 @@ const resources = {
       aiGatewayTemplateAutoRefreshInvalid:
         "模板自动刷新分钟数必须为 0（禁用）或 10 到 1440 之间",
       aiGatewayTemplateAutoRefreshFailed: "自动刷新失败：{{reason}}",
+      aiGatewayTemplateSyncNotificationTitle: "服务商模板 {{template}} 模型已变更",
+      aiGatewayTemplateSyncNotificationProviderCount: "{{count}} 个服务商受影响",
+      aiGatewayTemplateSyncNotificationAddedCount: "新增 {{count}}",
+      aiGatewayTemplateSyncNotificationDisabledCount: "禁用 {{count}}",
+      aiGatewayTemplateSyncNotificationDetailProvider: "{{provider}}：{{models}}",
       protocolRouterTokenLabel: "Router Token",
       protocolRouterTokenDesc:
         "Claude Profile 会使用这个 Token 访问本地协议路由。如需让旧凭证失效，请在这里轮换。",

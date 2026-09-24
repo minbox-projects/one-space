@@ -46,6 +46,7 @@ const SOURCE_LABELS: Record<string, string> = {
   backup: "Backup",
   workspaces: "Workspaces",
   content: "Content",
+  ai_gateway: "AI Gateway",
 };
 
 function severityIcon(severity: MessageSeverity) {

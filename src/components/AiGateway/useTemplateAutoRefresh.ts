@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import i18n from "@/i18n";
 import {
+  aiGatewayGetConfig,
   aiGatewayProviderTemplates,
   aiGatewaySyncProviderTemplate,
   aiGatewayTemplateAutoRefreshGet,
   subscribeTemplateAutoRefreshIntervalChanged,
+  type GatewayConfig,
+  type GatewayProviderTemplateView,
 } from "@/lib/aiGateway";
+import { safeRecordMessage, type MessageCreateInput } from "@/lib/messages";
 
 // ---------------------------------------------------------------------------
 // Manual-sync in-flight registry
@@ -114,6 +119,117 @@ function describeAutoRefreshFailure(value: unknown): string {
   return String(value);
 }
 
+/** Aggregated qualifying changes for one template's bound providers. */
+interface TemplateSyncChange {
+  affectedProviderCount: number;
+  addedCount: number;
+  disabledCount: number;
+  detail: string;
+}
+
+/**
+ * Diff the providers bound to one template between two gateway configurations.
+ *
+ * Only model-mapping additions (an `upstream_model` absent before) and enables
+ * that turned into an explicit `false` qualify; field-only differences and
+ * providers not bound to the template produce nothing. Returns `null` when no
+ * provider qualified.
+ */
+function computeTemplateSyncChange(
+  previous: GatewayConfig,
+  current: GatewayConfig,
+  templateId: string,
+): TemplateSyncChange | null {
+  const affected: Array<{ name: string; identifiers: string[] }> = [];
+  let addedCount = 0;
+  let disabledCount = 0;
+
+  for (const provider of current.providers) {
+    if (provider.template_id !== templateId) continue;
+    const previousProvider = previous.providers.find(
+      (candidate) => candidate.id === provider.id,
+    );
+    const previousByUpstream = new Map(
+      (previousProvider?.mappings ?? []).map((mapping) => [
+        mapping.upstream_model,
+        mapping,
+      ]),
+    );
+
+    const identifiers: string[] = [];
+    for (const mapping of provider.mappings) {
+      const before = previousByUpstream.get(mapping.upstream_model);
+      if (before === undefined) {
+        addedCount += 1;
+      } else if (before.enabled !== false && mapping.enabled === false) {
+        disabledCount += 1;
+      } else {
+        continue;
+      }
+      const localModel = mapping.local_model.trim();
+      identifiers.push(localModel !== "" ? localModel : mapping.upstream_model);
+    }
+
+    if (identifiers.length > 0) {
+      affected.push({ name: provider.name, identifiers });
+    }
+  }
+
+  if (affected.length === 0) return null;
+
+  return {
+    affectedProviderCount: affected.length,
+    addedCount,
+    disabledCount,
+    detail: affected
+      .map(({ name, identifiers }) =>
+        i18n.t("aiGatewayTemplateSyncNotificationDetailProvider", {
+          provider: name,
+          models: identifiers.join(", "),
+        }),
+      )
+      .join("\n"),
+  };
+}
+
+/** Build the single message-center payload for one changed template. */
+function buildTemplateSyncMessage(
+  view: GatewayProviderTemplateView,
+  change: TemplateSyncChange,
+): MessageCreateInput {
+  const parts = [
+    i18n.t("aiGatewayTemplateSyncNotificationProviderCount", {
+      count: change.affectedProviderCount,
+    }),
+  ];
+  if (change.addedCount > 0) {
+    parts.push(
+      i18n.t("aiGatewayTemplateSyncNotificationAddedCount", {
+        count: change.addedCount,
+      }),
+    );
+  }
+  if (change.disabledCount > 0) {
+    parts.push(
+      i18n.t("aiGatewayTemplateSyncNotificationDisabledCount", {
+        count: change.disabledCount,
+      }),
+    );
+  }
+
+  return {
+    source: "ai_gateway",
+    category: "template_sync",
+    severity: "info",
+    title: i18n.t("aiGatewayTemplateSyncNotificationTitle", {
+      template: view.template.name,
+    }),
+    summary: parts.join("; "),
+    detail: change.detail,
+    target: { tab: "ai-gateway" },
+  };
+}
+
 /**
  * App-mounted scheduler that refreshes every URL-backed provider template on
  * the persisted interval. It reads the interval once on mount, recomputes the
@@ -145,6 +261,17 @@ export function useTemplateAutoRefresh(): void {
       }
       if (!Array.isArray(views)) return;
 
+      // Snapshot the gateway configuration once before the per-template loop so
+      // each successful sync can be compared against the pre-batch state. A
+      // failure here suppresses every notification in the batch but never
+      // blocks the syncs themselves.
+      let previous: GatewayConfig | null = null;
+      try {
+        previous = await aiGatewayGetConfig();
+      } catch {
+        previous = null;
+      }
+
       for (const view of views) {
         const templateId = view?.template?.id;
         if (!templateId) continue;
@@ -159,6 +286,29 @@ export function useTemplateAutoRefresh(): void {
             templateId,
             describeAutoRefreshFailure(error),
           );
+          continue;
+        }
+
+        // No usable pre-batch baseline: keep syncing, never notify this batch.
+        if (previous === null) continue;
+
+        let current: GatewayConfig;
+        try {
+          current = await aiGatewayGetConfig();
+        } catch {
+          // A read failure suppresses only this template's notification and
+          // leaves the baseline untouched for the next template.
+          continue;
+        }
+
+        const change = computeTemplateSyncChange(previous, current, templateId);
+        previous = current;
+        if (!change) continue;
+
+        try {
+          await safeRecordMessage(buildTemplateSyncMessage(view, change));
+        } catch {
+          // A message-store failure suppresses only this template's message.
         }
       }
     } finally {
