@@ -1059,7 +1059,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           prices={config.model_prices ?? []}
           busy={busy}
           onSave={(draft, prices) => void handleSaveProvider(draft, prices)}
-          onDelete={(providerId) => void handleDeleteProvider(providerId)}
+          onDelete={(providerId) => handleDeleteProvider(providerId)}
           templates={templates}
           onDeleteModel={(providerId, upstreamModel) =>
             void handleDeleteProviderModel(providerId, upstreamModel)

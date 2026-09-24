@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  AlertCircle,
   ArchiveRestore,
   Check,
   ChevronDown,
@@ -62,7 +63,7 @@ type ProviderDetailDialogProps = {
   prices?: ModelPrice[];
   busy: boolean;
   onSave: (provider: GatewayUpstreamProvider, prices: ModelPrice[]) => void;
-  onDelete?: (providerId: string) => void;
+  onDelete?: (providerId: string) => Promise<boolean | void> | void;
   templates?: GatewayProviderTemplateView[];
   availableTags?: string[];
   onDeleteModel?: (providerId: string, upstreamModel: string) => void;
@@ -120,8 +121,10 @@ export function ProviderDetailDialog({
   const [icon, setIcon] = useState<string>("");
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState<string>("");
+  const [confirmDeleting, setConfirmDeleting] = useState(false);
 
   useEffect(() => {
+    setConfirmDeleting(false);
     if (!provider) {
       setName("");
       setBaseUrl("");
@@ -426,14 +429,26 @@ export function ProviderDetailDialog({
 
   const handleDelete = () => {
     if (!provider.id || !onDelete) return;
-    onDelete(provider.id);
-    onOpenChange(false);
+    setConfirmDeleting(true);
+  };
+
+  const handleCancelDelete = () => {
+    setConfirmDeleting(false);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!provider.id || !onDelete) return;
+    setConfirmDeleting(false);
+    const result = await onDelete(provider.id);
+    if (result !== false) {
+      onOpenChange(false);
+    }
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-h-[90vh] w-full sm:max-w-6xl overflow-hidden flex flex-col sm:rounded-2xl p-0 gap-0"
+        className="relative max-h-[90vh] w-full sm:max-w-6xl overflow-hidden flex flex-col sm:rounded-2xl p-0 gap-0"
         data-testid="ai-gateway-provider-detail"
       >
         <DialogHeader className="pl-6 pr-14 py-4 border-b bg-card/80 backdrop-blur-sm shrink-0">
@@ -1324,6 +1339,54 @@ export function ProviderDetailDialog({
             </button>
           </div>
         </DialogFooter>
+
+        {confirmDeleting && (
+          <div
+            data-testid="ai-gateway-delete-provider-confirm-dialog"
+            className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4 animate-in fade-in-0 duration-150"
+          >
+            <div className="bg-card border rounded-xl shadow-lg w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-150">
+              <div className="p-5">
+                <div className="flex items-center gap-3 mb-3 text-destructive">
+                  <div className="bg-destructive/10 p-2 rounded-full">
+                    <AlertCircle className="w-5 h-5" />
+                  </div>
+                  <h3 className="font-semibold text-foreground">
+                    {t("aiGatewayDeleteProviderTitle", "Delete Provider")}
+                  </h3>
+                </div>
+                <p className="text-sm text-muted-foreground whitespace-pre-wrap break-words">
+                  {t(
+                    "aiGatewayDeleteProviderConfirm",
+                    'Are you sure you want to delete upstream provider "{{name}}"? This action cannot be undone.',
+                    { name: name.trim() || provider.name || provider.id },
+                  )}
+                </p>
+              </div>
+              <div className="p-4 bg-muted/30 border-t flex justify-end gap-3">
+                <button
+                  type="button"
+                  data-testid="ai-gateway-delete-provider-cancel"
+                  onClick={handleCancelDelete}
+                  disabled={busy}
+                  className="px-4 py-2 rounded-md text-sm font-medium hover:bg-muted transition-colors text-foreground"
+                >
+                  {t("cancel", "Cancel")}
+                </button>
+                <button
+                  type="button"
+                  data-testid="ai-gateway-delete-provider-confirm"
+                  onClick={handleConfirmDelete}
+                  disabled={busy}
+                  className="px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {t("delete", "Delete")}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

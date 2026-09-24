@@ -1,4 +1,4 @@
-import { act, screen, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -2256,6 +2256,74 @@ describe("ProviderDetailDialog 标签与自定义图标", () => {
 
     const dialog = screen.getByTestId("ai-gateway-provider-detail");
     expect(within(dialog).getAllByTestId("provider-icon-commandcode").length).toBeGreaterThanOrEqual(1);
+  });
+
+  describe("ProviderDetailDialog 删除服务商操作", () => {
+    it("点击删除按钮弹出二次确认浮层，点击取消关闭确认层且不调用 onDelete", async () => {
+      const onDelete = vi.fn();
+      const onOpenChange = vi.fn();
+      const provider = makeProvider({
+        id: "p1",
+        name: "DeepSeek",
+        base_url: "https://api.deepseek.com",
+      });
+
+      renderWithProviders(
+        <ProviderDetailDialog
+          open
+          provider={provider}
+          busy={false}
+          onSave={vi.fn()}
+          onDelete={onDelete}
+          onOpenChange={onOpenChange}
+        />,
+      );
+
+      const deleteBtn = screen.getByRole("button", { name: i18n.t("aiGatewayDelete") });
+      fireEvent.click(deleteBtn);
+
+      const confirmDialog = screen.getByTestId("ai-gateway-delete-provider-confirm-dialog");
+      expect(confirmDialog).toBeInTheDocument();
+      expect(within(confirmDialog).getByText(i18n.t("aiGatewayDeleteProviderTitle"))).toBeInTheDocument();
+      expect(within(confirmDialog).getByText(i18n.t("aiGatewayDeleteProviderConfirm", { name: "DeepSeek" }))).toBeInTheDocument();
+
+      const cancelBtn = screen.getByTestId("ai-gateway-delete-provider-cancel");
+      fireEvent.click(cancelBtn);
+
+      expect(screen.queryByTestId("ai-gateway-delete-provider-confirm-dialog")).not.toBeInTheDocument();
+      expect(onDelete).not.toHaveBeenCalled();
+      expect(onOpenChange).not.toHaveBeenCalled();
+    });
+
+    it("在二次确认浮层中确认删除，调用 onDelete 并关闭弹窗", async () => {
+      const onDelete = vi.fn().mockResolvedValue(true);
+      const onOpenChange = vi.fn();
+      const provider = makeProvider({
+        id: "p1",
+        name: "DeepSeek",
+        base_url: "https://api.deepseek.com",
+      });
+
+      renderWithProviders(
+        <ProviderDetailDialog
+          open
+          provider={provider}
+          busy={false}
+          onSave={vi.fn()}
+          onDelete={onDelete}
+          onOpenChange={onOpenChange}
+        />,
+      );
+
+      const deleteBtn = screen.getByRole("button", { name: i18n.t("aiGatewayDelete") });
+      fireEvent.click(deleteBtn);
+
+      const confirmBtn = screen.getByTestId("ai-gateway-delete-provider-confirm");
+      fireEvent.click(confirmBtn);
+
+      await waitFor(() => expect(onDelete).toHaveBeenCalledWith("p1"));
+      await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    });
   });
 });
 

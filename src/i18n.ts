@@ -631,6 +631,9 @@ const resources = {
       aiGatewayMappingCount: "{{count}} mappings configured",
       aiGatewayNoMappingsShort: "No mappings (default routing)",
       aiGatewayDeleteProviderAria: "Delete provider {{name}}",
+      aiGatewayDeleteProviderTitle: "Delete Provider",
+      aiGatewayDeleteProviderConfirm:
+        "Are you sure you want to delete upstream provider \"{{name}}\"? This action cannot be undone.",
       "aiGateway.provider.weight": "Weight",
       "aiGateway.provider.weightHint":
         "Routing weight: higher weight receives higher forwarding frequency (1-100).",
@@ -4517,6 +4520,9 @@ const resources = {
       aiGatewayMappingCount: "已配置 {{count}} 个映射",
       aiGatewayNoMappingsShort: "未配置映射（默认路由）",
       aiGatewayDeleteProviderAria: "删除服务商 {{name}}",
+      aiGatewayDeleteProviderTitle: "删除服务商",
+      aiGatewayDeleteProviderConfirm:
+        "确定要删除服务商 \"{{name}}\" 吗？此操作不可撤销。",
       "aiGateway.provider.weight": "权重",
       "aiGateway.provider.weightHint":
         "路由权重：权重越大被转发的频次越高（1-100）。",

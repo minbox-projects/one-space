@@ -159,6 +159,12 @@ function mockStore(store: Store) {
       case "ai_gateway_stop":
         store.status = { ...store.status, running: false };
         return store.status;
+      case "ai_gateway_delete_provider":
+        store.config = {
+          ...store.config,
+          providers: store.config.providers.filter((p) => p.id !== args?.providerId),
+        };
+        return store.config;
       case "ai_gateway_configure_terminal":
         return store.config.terminal_syncs;
       case "ai_gateway_sync_terminal":
@@ -2963,4 +2969,105 @@ describe("AiGateway 配置更新事件实时刷新", () => {
 
     await waitFor(() => expect(unlisten).toHaveBeenCalledTimes(1));
   });
+
+  describe("删除服务商二次确认", () => {
+    it("点击删除后弹出二次确认对话框，点击取消不执行删除", async () => {
+      const store: Store = {
+        config: makeConfig({
+          providers: [
+            makeProvider({
+              id: "p1",
+              name: "DeepSeek Provider",
+              base_url: "https://api.deepseek.com",
+            }),
+          ],
+        }),
+        status: makeStatus({ provider_count: 1 }),
+        targets: [openCodeTarget()],
+      };
+      mockStore(store);
+
+      renderWithProviders(<AiGateway />);
+
+      fireEvent.click(
+        await within(
+          await screen.findByTestId("ai-gateway-providers"),
+        ).findByText("DeepSeek Provider"),
+      );
+
+      const deleteBtn = await screen.findByRole("button", {
+        name: i18n.t("aiGatewayDelete"),
+      });
+      fireEvent.click(deleteBtn);
+
+      const confirmDialog = await screen.findByTestId("ai-gateway-delete-provider-confirm-dialog");
+      expect(confirmDialog).toBeInTheDocument();
+      expect(
+        within(confirmDialog).getByText(
+          i18n.t("aiGatewayDeleteProviderConfirm", { name: "DeepSeek Provider" }),
+        ),
+      ).toBeInTheDocument();
+
+      const cancelBtn = screen.getByTestId("ai-gateway-delete-provider-cancel");
+      fireEvent.click(cancelBtn);
+
+      expect(invokeMock).not.toHaveBeenCalledWith("ai_gateway_delete_provider", {
+        providerId: "p1",
+      });
+
+      expect(screen.getByTestId("ai-gateway-provider-detail")).toBeInTheDocument();
+    });
+
+    it("点击删除并在二次确认对话框中确认后，调用后端删除接口并关闭弹窗", async () => {
+      const store: Store = {
+        config: makeConfig({
+          providers: [
+            makeProvider({
+              id: "p1",
+              name: "DeepSeek Provider",
+              base_url: "https://api.deepseek.com",
+            }),
+          ],
+        }),
+        status: makeStatus({ provider_count: 1 }),
+        targets: [openCodeTarget()],
+      };
+      mockStore(store);
+
+      renderWithProviders(<AiGateway />);
+
+      fireEvent.click(
+        await within(
+          await screen.findByTestId("ai-gateway-providers"),
+        ).findByText("DeepSeek Provider"),
+      );
+
+      const deleteBtn = await screen.findByRole("button", {
+        name: i18n.t("aiGatewayDelete"),
+      });
+      fireEvent.click(deleteBtn);
+
+      const confirmDialog = await screen.findByTestId("ai-gateway-delete-provider-confirm-dialog");
+      expect(confirmDialog).toBeInTheDocument();
+      expect(
+        within(confirmDialog).getByText(
+          i18n.t("aiGatewayDeleteProviderConfirm", { name: "DeepSeek Provider" }),
+        ),
+      ).toBeInTheDocument();
+
+      const confirmDeleteBtn = screen.getByTestId("ai-gateway-delete-provider-confirm");
+      fireEvent.click(confirmDeleteBtn);
+
+      await waitFor(() =>
+        expect(invokeMock).toHaveBeenCalledWith("ai_gateway_delete_provider", {
+          providerId: "p1",
+        }),
+      );
+
+      await waitFor(() =>
+        expect(screen.queryByTestId("ai-gateway-provider-detail")).not.toBeInTheDocument(),
+      );
+    });
+  });
 });
+
