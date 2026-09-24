@@ -83,8 +83,10 @@ function mockQuotaResult(result: ProviderQuota | Error = FIXTURE) {
   });
 }
 
-function renderQuotaBlock(quotaProvider = makeProvider()) {
-  return renderWithProviders(<ProviderQuotaBlock provider={quotaProvider} />);
+function renderQuotaBlock(quotaProvider = makeProvider(), baseNow?: number | Date) {
+  return renderWithProviders(
+    <ProviderQuotaBlock provider={quotaProvider} baseNow={baseNow} />,
+  );
 }
 
 describe("ProviderQuotaBlock", () => {
@@ -198,8 +200,8 @@ describe("ProviderQuotaBlock", () => {
     const line = await screen.findByTestId(
       "ai-gateway-provider-quota-window-5h-quota-provider",
     );
-    expect(line).toHaveTextContent("$0.00");
-    expect(line).toHaveTextContent(i18n.t("aiGatewayQuotaExceeded"));
+    expect(line).toHaveTextContent("$0.00 / $14");
+    expect(line).not.toHaveTextContent(i18n.t("aiGatewayQuotaExceeded"));
   });
 
   it("AC-007 shows the localized low-balance warning", async () => {
@@ -231,11 +233,88 @@ describe("ProviderQuotaBlock", () => {
         "ai-gateway-provider-quota-window-5h-quota-provider",
       );
       expect(line).toHaveTextContent("$13.50 / $14");
+      expect(line).not.toHaveTextContent("1/1 08:00:00");
       expect(line).not.toHaveTextContent(
         i18n.t("aiGatewayQuotaReset", { time: "" }),
       );
     },
   );
+
+  it.each([0, "0", -1, "1970-01-01T00:00:00Z"] as const)(
+    "formats zero resetAt=%s as baseNow+5h for 5h window and baseNow+7d for weekly window",
+    async (resetAt) => {
+      const fixedBaseNow = new Date("2026-09-24T12:00:00.000Z").getTime();
+      mockQuotaResult({
+        ...FIXTURE,
+        windowLimits: {
+          limited: true,
+          fiveHour: { ...FIXTURE.windowLimits!.fiveHour!, resetAt },
+          weekly: { ...FIXTURE.windowLimits!.weekly!, resetAt },
+        },
+      });
+      renderQuotaBlock(makeProvider(), fixedBaseNow);
+
+      const fiveHour = await screen.findByTestId(
+        "ai-gateway-provider-quota-window-5h-quota-provider",
+      );
+      const weekly = screen.getByTestId(
+        "ai-gateway-provider-quota-window-weekly-quota-provider",
+      );
+
+      const expectedFiveHourTime = new Intl.DateTimeFormat(undefined, {
+        month: "numeric",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(new Date(fixedBaseNow + 5 * 3600 * 1000));
+
+      const expectedWeeklyTime = new Intl.DateTimeFormat(undefined, {
+        month: "numeric",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(new Date(fixedBaseNow + 7 * 24 * 3600 * 1000));
+
+      expect(fiveHour).toHaveTextContent(
+        i18n.t("aiGatewayQuotaReset", { time: expectedFiveHourTime }),
+      );
+      expect(weekly).toHaveTextContent(
+        i18n.t("aiGatewayQuotaReset", { time: expectedWeeklyTime }),
+      );
+      expect(fiveHour).not.toHaveTextContent("1/1 08:00:00");
+      expect(weekly).not.toHaveTextContent("1/1 08:00:00");
+    },
+  );
+
+  it("formats second-level timestamp correctly without showing 1970", async () => {
+    mockQuotaResult({
+      ...FIXTURE,
+      windowLimits: {
+        limited: true,
+        fiveHour: { ...FIXTURE.windowLimits!.fiveHour!, resetAt: 1758600000 },
+      },
+    });
+    renderQuotaBlock();
+
+    const line = await screen.findByTestId(
+      "ai-gateway-provider-quota-window-5h-quota-provider",
+    );
+    const expectedTime = new Intl.DateTimeFormat(undefined, {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(new Date(1758600000000));
+    expect(line).toHaveTextContent(
+      i18n.t("aiGatewayQuotaReset", { time: expectedTime }),
+    );
+  });
 
   it("AC-008 keeps the quota container and localized error visible after a rejected query", async () => {
     mockQuotaResult(new Error("HTTP 429"));
@@ -302,6 +381,54 @@ describe("ProviderQuotaBlock", () => {
         forceRefresh: true,
       }),
     );
+  });
+
+  it("renders Antigravity-style progress bars with dynamic color scaling", async () => {
+    // 5h window: used 0.5 / cap 14 -> remaining 13.5 (96%) -> bg-emerald-500
+    // weekly window: used 11 / cap 35 -> remaining 24 (69%) -> bg-emerald-500
+    renderQuotaBlock();
+
+    const fiveHour = await screen.findByTestId(
+      "ai-gateway-provider-quota-window-5h-quota-provider",
+    );
+    const fiveHourBar = fiveHour.querySelector(".bg-emerald-500");
+    expect(fiveHourBar).toBeInTheDocument();
+    expect(fiveHourBar).toHaveStyle({ width: "96%" });
+
+    const weekly = screen.getByTestId(
+      "ai-gateway-provider-quota-window-weekly-quota-provider",
+    );
+    const weeklyBar = weekly.querySelector(".bg-emerald-500");
+    expect(weeklyBar).toBeInTheDocument();
+    expect(weeklyBar).toHaveStyle({ width: "69%" });
+  });
+
+  it("renders amber progress bar for medium remaining and destructive for low or exceeded", async () => {
+    mockQuotaResult({
+      ...FIXTURE,
+      windowLimits: {
+        limited: true,
+        // used 8 / cap 10 -> remaining 2 (20% boundary / <50%) -> amber
+        fiveHour: { used: 7, cap: 10, exceeded: false },
+        // used 9.5 / cap 10 -> remaining 0.5 (5% < 20%) -> destructive
+        weekly: { used: 9.5, cap: 10, exceeded: false },
+      },
+    });
+    renderQuotaBlock();
+
+    const fiveHour = await screen.findByTestId(
+      "ai-gateway-provider-quota-window-5h-quota-provider",
+    );
+    const fiveHourBar = fiveHour.querySelector(".bg-amber-500");
+    expect(fiveHourBar).toBeInTheDocument();
+    expect(fiveHourBar).toHaveStyle({ width: "30%" });
+
+    const weekly = screen.getByTestId(
+      "ai-gateway-provider-quota-window-weekly-quota-provider",
+    );
+    const weeklyBar = weekly.querySelector(".bg-destructive");
+    expect(weeklyBar).toBeInTheDocument();
+    expect(weeklyBar).toHaveStyle({ width: "5%" });
   });
 
   it("AC-011 defines every quota copy key in both language dictionaries", () => {

@@ -46,6 +46,7 @@ import {
   PROVIDER_CUSTOM_ICON_OPTIONS,
   ProviderTemplateAvatar,
   ProviderTemplateIconPicker,
+  resolveEffectiveProviderIcon,
 } from "./ProviderTemplateIcon";
 
 type ProviderDetailDialogProps = {
@@ -437,26 +438,29 @@ export function ProviderDetailDialog({
       >
         <DialogHeader className="pl-6 pr-14 py-4 border-b bg-card/80 backdrop-blur-sm shrink-0">
           <div className="flex items-center gap-3 min-w-0">
-            {isTemplateBound ? (
-              <ProviderTemplateAvatar
-                icon={icon || boundTemplate?.icon}
-                templateId={boundTemplate?.id ?? provider.template_id}
-                templateName={name || boundTemplate?.name}
-                size={36}
-                className="shrink-0"
-              />
-            ) : icon ? (
-              <ProviderTemplateAvatar
-                icon={icon}
-                templateName={name}
-                size={36}
-                className="shrink-0"
-              />
-            ) : (
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-2xs">
-                <Server className="h-4.5 w-4.5" />
-              </div>
-            )}
+            {(() => {
+              const effectiveIcon = resolveEffectiveProviderIcon(
+                { icon, template_id: provider?.template_id, base_url: baseUrl, name, id: provider?.id },
+                boundTemplate,
+              );
+              if (effectiveIcon) {
+                return (
+                  <ProviderTemplateAvatar
+                    icon={effectiveIcon}
+                    templateId={boundTemplate?.id ?? provider?.template_id}
+                    templateName={name || boundTemplate?.name}
+                    baseUrl={baseUrl}
+                    size={36}
+                    className="shrink-0"
+                  />
+                );
+              }
+              return (
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-2xs">
+                  <Server className="h-4.5 w-4.5" />
+                </div>
+              );
+            })()}
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <DialogTitle className="truncate text-base font-semibold leading-5 text-foreground">
@@ -610,14 +614,21 @@ export function ProviderDetailDialog({
                 value={icon}
                 onChange={setIcon}
                 options={PROVIDER_CUSTOM_ICON_OPTIONS}
-                inheritedIcon={boundTemplate?.icon}
+                inheritedIcon={
+                  boundTemplate?.icon ||
+                  resolveEffectiveProviderIcon(
+                    { template_id: provider?.template_id, base_url: baseUrl, name, id: provider?.id },
+                    boundTemplate,
+                  )
+                }
                 autoLabel={
                   isTemplateBound
                     ? t("aiGatewayInheritTemplateIcon", "Inherit from template (Default)")
                     : t("aiGatewayDefaultIcon", "Default icon")
                 }
-                templateId={(boundTemplate?.id ?? provider.template_id) || undefined}
+                templateId={(boundTemplate?.id ?? provider?.template_id) || undefined}
                 templateName={name || boundTemplate?.name}
+                baseUrl={baseUrl}
                 triggerTestId="provider-edit-icon-trigger"
                 selectTestId="provider-edit-icon"
                 menuTestId="provider-edit-icon-menu"

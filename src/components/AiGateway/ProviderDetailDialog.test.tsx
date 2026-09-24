@@ -2233,6 +2233,30 @@ describe("ProviderDetailDialog 标签与自定义图标", () => {
       expect.any(Array),
     );
   });
+
+  it("renders inferred actual provider icon in dialog header when icon is not explicitly selected", () => {
+    const provider = makeProvider({
+      id: "p-cmd",
+      name: "CommandCode",
+      base_url: "https://api.commandcode.ai/provider/v1",
+      icon: null,
+      template_id: null,
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const dialog = screen.getByTestId("ai-gateway-provider-detail");
+    expect(within(dialog).getAllByTestId("provider-icon-commandcode").length).toBeGreaterThanOrEqual(1);
+  });
 });
 
 

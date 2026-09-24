@@ -169,4 +169,38 @@ describe("resolveEffectiveProviderIcon", () => {
       resolveEffectiveProviderIcon({ icon: "" }, { icon: "" }),
     ).toBeNull();
   });
+
+  it("infers provider icon from base_url or name when icon and template are not set", () => {
+    expect(
+      resolveEffectiveProviderIcon({
+        base_url: "https://api.commandcode.ai/provider/v1",
+        name: "My Gateway",
+      }),
+    ).toBe("commandcode");
+
+    expect(
+      resolveEffectiveProviderIcon({
+        base_url: "https://api.deepseek.com",
+        name: "DeepSeek Provider",
+      }),
+    ).toBe("builtin:deepseek");
+
+    expect(
+      resolveEffectiveProviderIcon({
+        name: "Claude Anthropic",
+      }),
+    ).toBe("builtin:claude");
+
+    expect(
+      resolveEffectiveProviderIcon({
+        base_url: "https://api.openai.com/v1",
+      }),
+    ).toBe("openai");
+
+    expect(
+      resolveEffectiveProviderIcon({
+        template_id: "commandcode",
+      }),
+    ).toBe("commandcode");
+  });
 });

@@ -5,19 +5,21 @@ import {
   ArrowRightLeft,
   Check,
   ChevronDown,
+  Cpu,
   Filter,
   Globe,
-  Pencil,
   Plus,
   RotateCcw,
   Server,
   Sparkles,
   Tag,
-  Trash2,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { ProviderQuotaBlock } from "./ProviderQuotaBlock";
-import { ProviderTemplateAvatar } from "./ProviderTemplateIcon";
+import {
+  ProviderTemplateAvatar,
+  resolveEffectiveProviderIcon,
+} from "./ProviderTemplateIcon";
 import {
   formatGatewayTimestamp,
   isCommandCodeProvider,
@@ -51,11 +53,12 @@ export function UpstreamProviderList({
   onSelect,
   onToggleEnabled,
   onAdd,
-  onDelete,
   onManageTemplates,
   templateSection,
 }: UpstreamProviderListProps) {
   const { t } = useTranslation();
+  // 计算所有服务商之前仅获取一次当前时间
+  const baseNow = useMemo(() => Date.now(), [providers]);
   const [statusFilter, setStatusFilter] = useState<ProviderStatusFilter>("all");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [tagFilterOpen, setTagFilterOpen] = useState(false);
@@ -454,7 +457,10 @@ export function UpstreamProviderList({
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-start gap-3 min-w-0 flex-1">
                       {(() => {
-                        const effectiveIcon = provider.icon || templateView?.template.icon;
+                        const effectiveIcon = resolveEffectiveProviderIcon(
+                          provider,
+                          templateView?.template,
+                        );
                         if (effectiveIcon) {
                           const isCustom = Boolean(provider.icon);
                           return (
@@ -474,8 +480,9 @@ export function UpstreamProviderList({
                             >
                               <ProviderTemplateAvatar
                                 icon={effectiveIcon}
-                                templateId={templateView?.template.id ?? provider.id}
+                                templateId={templateView?.template.id ?? provider.template_id ?? provider.id}
                                 templateName={provider.name}
+                                baseUrl={provider.base_url}
                                 size={36}
                               />
                             </span>
@@ -515,14 +522,6 @@ export function UpstreamProviderList({
                           >
                             {t("aiGateway.provider.weight", "Weight")}: {provider.weight ?? 1}
                           </span>
-                          {provider.default_model ? (
-                            <span
-                              className="inline-flex max-w-[150px] truncate rounded-md border bg-background px-1.5 py-0.5 font-mono text-[11px] font-medium leading-4 text-muted-foreground"
-                              title={`Default model: ${provider.default_model}`}
-                            >
-                              {provider.default_model}
-                            </span>
-                          ) : null}
                         </div>
                         {provider.tags && provider.tags.length > 0 ? (
                           <div
@@ -575,11 +574,20 @@ export function UpstreamProviderList({
                           : t("aiGatewayNoMappingsShort", "No mappings (default routing)")}
                       </span>
                     </div>
+
                   </div>
 
                   {isCommandCodeProvider(provider) ? (
-                    <ProviderQuotaBlock provider={provider} />
-                  ) : null}
+                    <ProviderQuotaBlock provider={provider} baseNow={baseNow} />
+                  ) : (
+                    <div
+                      data-testid={`ai-gateway-provider-placeholder-${provider.id}`}
+                      className="mt-2 flex h-[58px] items-center justify-center gap-1.5 rounded-lg border border-dashed border-border/60 bg-muted/10 text-xs text-muted-foreground/60"
+                    >
+                      <Cpu className="h-3.5 w-3.5 opacity-70" />
+                      <span>{t("aiGatewayQuotaNotSupported", "未接入额度监控")}</span>
+                    </div>
+                  )}
 
                   {/* 退休映射提示：模板同步移除模型后其派生映射被自动禁用 */}
                   {retiredMappings.length > 0 ? (
@@ -643,55 +651,6 @@ export function UpstreamProviderList({
                       </span>
                     </div>
                   ) : null}
-                </div>
-
-                {/* 卡片底栏操作按钮 */}
-                <div className="mt-3 flex items-center justify-between border-t pt-2.5">
-                  {isEnabled ? (
-                    <span
-                      data-testid={`ai-gateway-status-badge-${provider.id}`}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300"
-                    >
-                      <span className="relative flex h-1.5 w-1.5">
-                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75 duration-1000" />
-                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                      </span>
-                      <span>{t("aiGatewayEnabled", "Enabled")}</span>
-                    </span>
-                  ) : (
-                    <span
-                      data-testid={`ai-gateway-status-badge-${provider.id}`}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/25 bg-rose-500/10 px-2 py-0.5 text-[11px] font-medium text-rose-700 dark:text-rose-400"
-                    >
-                      <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
-                      <span>{t("aiGatewayDisabled", "Disabled")}</span>
-                    </span>
-                  )}
-                  <div className="flex items-center gap-1">
-                    {onDelete ? (
-                      <button
-                        type="button"
-                        onClick={() => onDelete(provider.id)}
-                        disabled={busy}
-                        aria-label={t("aiGatewayDeleteProviderAria", {
-                          name: provider.name,
-                          defaultValue: `Delete provider ${provider.name}`,
-                        })}
-                        title={t("aiGatewayDelete", "Delete")}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => onSelect(provider.id)}
-                      className="inline-flex h-7 items-center gap-1 rounded-md border bg-background px-2.5 text-xs font-medium shadow-sm transition hover:bg-muted"
-                    >
-                      <Pencil className="h-3 w-3" />
-                      {t("aiGatewayEdit", "Edit")}
-                    </button>
-                  </div>
                 </div>
               </div>
             );

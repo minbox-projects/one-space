@@ -2689,11 +2689,12 @@ describe("AiGateway 逐行自动禁用前端计数与重新启用入口", () => 
       }),
     ).not.toBeInTheDocument();
 
-    // 底栏徽章仍反映 enabled
-    const badge = within(providersSection).getByTestId(
-      "ai-gateway-status-badge-p1",
-    );
-    expect(badge).toHaveTextContent("Enabled");
+    // 服务商开关仍反映 enabled
+    expect(
+      within(providersSection).getByRole("switch", {
+        name: /Broken Provider/i,
+      }),
+    ).toBeChecked();
   });
 
   it("顶部操作栏默认 API Key 点击复制调用 clipboard 并展示成功", async () => {

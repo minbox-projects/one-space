@@ -120,26 +120,41 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
       />,
     );
 
-    // 已启用状态徽章包含绿色类名
-    const enabledBadge = screen.getByTestId("ai-gateway-status-badge-p-enabled");
-    expect(enabledBadge).toHaveTextContent("Enabled");
-    expect(enabledBadge.className).toContain("bg-emerald-500/10");
-    expect(enabledBadge.className).toContain("text-emerald-700");
+    // 右上角 Switch 控制启用状态
+    expect(screen.getByRole("switch", { name: /^Enable provider Enabled Provider$/i })).toBeChecked();
+    expect(screen.getByRole("switch", { name: /^Enable provider Disabled Provider$/i })).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: /^Enable provider Auto Disabled Provider$/i })).toBeChecked();
 
-    // 已禁用状态徽章包含红色类名
-    const disabledBadge = screen.getByTestId("ai-gateway-status-badge-p-disabled");
-    expect(disabledBadge).toHaveTextContent("Disabled");
-    expect(disabledBadge.className).toContain("bg-rose-500/10");
-    expect(disabledBadge.className).toContain("text-rose-700");
-
-    // Step 3: 底栏徽章只检查 provider.enabled，provider-level auto_disabled 不再控制；
-    // enabled=true → Enabled 徽章，无琥珀色
-    const legacyAutoBadge = screen.getByTestId("ai-gateway-status-badge-p-auto-legacy");
-    expect(legacyAutoBadge).toHaveTextContent("Enabled");
-    expect(legacyAutoBadge.className).toContain("bg-emerald-500/10");
+    // 底栏已启用/已禁用徽章已移除，避免与 Switch 重叠
+    expect(screen.queryByTestId("ai-gateway-status-badge-p-enabled")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-status-badge-p-disabled")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-status-badge-p-auto-legacy")).not.toBeInTheDocument();
 
     // 旧的全局 "Auto-disabled" 文本不应出现在底栏中：
     expect(screen.queryByText("Auto-disabled")).not.toBeInTheDocument();
+  });
+
+  it("服务商卡片头部不再显示默认模型 default_model", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({
+        id: "p-custom",
+        name: "Custom Provider",
+        default_model: "claude-3-5-sonnet",
+      }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("claude-3-5-sonnet")).not.toBeInTheDocument();
   });
 
   it("分段状态过滤器显示全部、已启用和已禁用选项及准确计数", () => {
@@ -283,8 +298,8 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
     expect(screen.getByTestId("filter-status-enabled")).toHaveTextContent("已启用");
     expect(screen.getByTestId("filter-status-disabled")).toHaveTextContent("已禁用");
 
-    expect(screen.getByTestId("ai-gateway-status-badge-p1")).toHaveTextContent("已启用");
-    expect(screen.getByTestId("ai-gateway-status-badge-p2")).toHaveTextContent("已禁用");
+    expect(screen.getByRole("switch", { name: /上游服务商 1/i })).toBeChecked();
+    expect(screen.getByRole("switch", { name: /上游服务商 2/i })).not.toBeChecked();
   });
 
   it("提供 templateSection 时渲染在服务商列表上方，不提供时行为不变", () => {
@@ -580,10 +595,8 @@ describe("UpstreamProviderList 逐行 auto-disabled 读提示", () => {
     // 提示文案应通过 i18n 键生成，包含 count 插值
     expect(hintEl.textContent).toContain("2");
 
-    // 底栏徽章反映 provider.enabled 而非 auto_disabled
-    const badge = screen.getByTestId("ai-gateway-status-badge-p-hint");
-    expect(badge).toHaveTextContent("Enabled");
-    expect(badge.className).toContain("bg-emerald-500/10");
+    // 右上角 Switch 反映 provider.enabled 而非 auto_disabled
+    expect(screen.getByRole("switch", { name: /Auto-disabled Provider/i })).toBeChecked();
 
     // 不应有整个服务商的 re-enable 按钮
     const reenableBtn = screen.queryByRole("button", {
@@ -620,9 +633,8 @@ describe("UpstreamProviderList 逐行 auto-disabled 读提示", () => {
     expect(
       screen.queryByTestId("ai-gateway-provider-auto-disabled-models-p-legacy"),
     ).not.toBeInTheDocument();
-    // 底栏徽章反映 enabled=true → Enabled
-    const badge = screen.getByTestId("ai-gateway-status-badge-p-legacy");
-    expect(badge).toHaveTextContent("Enabled");
+    // 右上角 Switch 反映 enabled=true → 选中
+    expect(screen.getByRole("switch", { name: /Legacy Only Flag/i })).toBeChecked();
   });
 
   it("所有行都 auto-disabled 时提示包含全量行数", () => {
@@ -653,9 +665,8 @@ describe("UpstreamProviderList 逐行 auto-disabled 读提示", () => {
       "ai-gateway-provider-auto-disabled-models-p-full",
     );
     expect(hintEl.textContent).toContain("2");
-    // 底栏徽章仍然是 Enabled（enabled=true）
-    const badge = screen.getByTestId("ai-gateway-status-badge-p-full");
-    expect(badge).toHaveTextContent("Enabled");
+    // 右上角 Switch 仍然是 Enabled（enabled=true）
+    expect(screen.getByRole("switch", { name: /All Auto-disabled/i })).toBeChecked();
   });
 });
 
@@ -1017,15 +1028,172 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
     const enableSwitch = within(providerCard).getByRole("switch", {
       name: "Enable provider CommandCode",
     });
-    const editButton = within(providerCard).getByRole("button", {
-      name: "Edit",
-    });
-    const deleteButton = within(providerCard).getByRole("button", {
-      name: "Delete provider CommandCode",
+    const nameButton = within(providerCard).getByRole("button", {
+      name: "CommandCode",
     });
 
     expect(enableSwitch).toBeEnabled();
-    expect(editButton).toBeEnabled();
-    expect(deleteButton).toBeEnabled();
+    expect(nameButton).toBeEnabled();
+    expect(within(providerCard).queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+    expect(within(providerCard).queryByRole("button", { name: /Delete provider/i })).not.toBeInTheDocument();
+  });
+
+  it("无模板绑定的 CommandCode 与 DeepSeek 服务商按实际推导渲染官方图标", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({
+        id: "p-cmd-actual",
+        name: "CommandCode Gateway",
+        base_url: "https://api.commandcode.ai/provider/v1",
+        template_id: null,
+        icon: null,
+      }),
+      makeProvider({
+        id: "p-deepseek-actual",
+        name: "DeepSeek API",
+        base_url: "https://api.deepseek.com",
+        template_id: null,
+        icon: null,
+      }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    const cmdIcon = screen.getByTestId("ai-gateway-provider-template-icon-p-cmd-actual");
+    expect(within(cmdIcon).getByTestId("provider-icon-commandcode")).toBeInTheDocument();
+
+    const dsIcon = screen.getByTestId("ai-gateway-provider-template-icon-p-deepseek-actual");
+    expect(within(dsIcon).getByAltText("DeepSeek")).toBeInTheDocument();
+  });
+
+  it("非 CommandCode 服务商渲染占位内容，不渲染模型标签预览，底栏删除按钮展示删除文字", () => {
+    const onDelete = vi.fn();
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({
+        id: "p-non-cmd",
+        name: "DeepSeek Provider",
+        base_url: "https://api.deepseek.com",
+        mappings: [
+          { local_model: "deepseek-chat", upstream_model: "deepseek-chat", enabled: true },
+          { local_model: "deepseek-reasoner", upstream_model: "deepseek-reasoner", enabled: true },
+        ],
+      }),
+      makeProvider({
+        id: "p-cmd",
+        name: "CommandCode",
+        base_url: "https://api.commandcode.ai/provider/v1",
+        mappings: [],
+      }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+
+    // 非 CommandCode 服务商展示占位区块（包含未接入额度监控文字与图标）
+    const placeholder = screen.getByTestId("ai-gateway-provider-placeholder-p-non-cmd");
+    expect(placeholder).toBeInTheDocument();
+    expect(placeholder).toHaveTextContent(i18n.t("aiGatewayQuotaNotSupported"));
+
+    // CommandCode 服务商渲染配额区块而非占位区块
+    expect(screen.getByTestId("ai-gateway-provider-quota-p-cmd")).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-provider-placeholder-p-cmd")).not.toBeInTheDocument();
+
+    // 不展示模型 ID 标签及 +N 预览
+    expect(screen.queryByTestId("ai-gateway-provider-model-tags-p-non-cmd")).not.toBeInTheDocument();
+
+    // 底栏删除与编辑按钮已移除
+    expect(screen.queryByRole("button", { name: /Delete provider/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Edit$/i })).not.toBeInTheDocument();
+  });
+
+  it("当服务商配额 resetAt 为 0 时，根据统一的 baseNow 格式化为当前时间+5小时与+7天", async () => {
+    const fixedNow = new Date("2026-09-24T10:00:00.000Z").getTime();
+    const dateSpy = vi.spyOn(Date, "now").mockReturnValue(fixedNow);
+
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({
+        id: "p-cmd-zero",
+        name: "CommandCode Zero",
+        base_url: "https://api.commandcode.ai/provider/v1",
+      }),
+    ];
+
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "ai_gateway_provider_quota") {
+        return {
+          ...COMMANDCODE_QUOTA_FIXTURE,
+          windowLimits: {
+            limited: true,
+            fiveHour: { used: 0, cap: 14, exceeded: false, resetAt: 0 },
+            weekly: { used: 0, cap: 35, exceeded: false, resetAt: "0" },
+          },
+        };
+      }
+      return undefined;
+    });
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    const fiveHour = await screen.findByTestId(
+      "ai-gateway-provider-quota-window-5h-p-cmd-zero",
+    );
+    const weekly = screen.getByTestId(
+      "ai-gateway-provider-quota-window-weekly-p-cmd-zero",
+    );
+
+    const expected5h = new Intl.DateTimeFormat(undefined, {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(new Date(fixedNow + 5 * 3600 * 1000));
+
+    const expectedWeekly = new Intl.DateTimeFormat(undefined, {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(new Date(fixedNow + 7 * 24 * 3600 * 1000));
+
+    expect(fiveHour).toHaveTextContent(
+      i18n.t("aiGatewayQuotaReset", { time: expected5h }),
+    );
+    expect(weekly).toHaveTextContent(
+      i18n.t("aiGatewayQuotaReset", { time: expectedWeekly }),
+    );
+    expect(fiveHour).not.toHaveTextContent("1/1 08:00:00");
+    expect(weekly).not.toHaveTextContent("1/1 08:00:00");
+
+    dateSpy.mockRestore();
   });
 });

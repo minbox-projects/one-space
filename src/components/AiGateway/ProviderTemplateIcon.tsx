@@ -8,6 +8,7 @@ import {
   OpenAIIcon,
   BUILTIN_PROVIDER_ICON_MAP,
   isBuiltinProviderIcon,
+  resolveBuiltinProviderIcon,
   type BuiltinProviderIconKey,
 } from "@/components/AiEnvironments/icons";
 
@@ -56,27 +57,11 @@ export const PROVIDER_CUSTOM_ICON_OPTIONS: readonly ProviderTemplateIconOption[]
   { id: "commandcode", labelKey: "aiGatewayTemplateIconCommandCode", fallbackLabel: "CommandCode" },
 ] as const;
 
-/**
- * Resolves the effective icon for an upstream provider:
- * 1. provider.icon (custom user icon)
- * 2. template?.icon (inherited from bound template)
- * 3. fallback (null)
- */
-export function resolveEffectiveProviderIcon(
-  provider?: { icon?: string | null; template_id?: string | null } | null,
-  template?: { icon?: string | null } | null,
-): string | null {
-  const custom = provider?.icon?.trim();
-  if (custom) return custom;
-  const inherited = template?.icon?.trim();
-  if (inherited) return inherited;
-  return null;
-}
-
 export function resolveProviderTemplateIcon(
   icon?: string | null,
   templateId?: string | null,
   templateName?: string | null,
+  baseUrl?: string | null,
 ): string | null {
   const explicit = icon?.trim().toLowerCase();
   if (explicit) {
@@ -88,6 +73,28 @@ export function resolveProviderTemplateIcon(
     if (isBuiltinProviderIcon(prefixed)) return prefixed;
   }
 
+  // 1. Detect from base_url domain keywords
+  if (baseUrl) {
+    const rawUrl = baseUrl.trim().toLowerCase();
+    if (rawUrl.includes("commandcode")) return "commandcode";
+    if (rawUrl.includes("opencode")) return "opencode";
+    if (rawUrl.includes("openai.com")) return "openai";
+    if (rawUrl.includes("deepseek.com")) return "builtin:deepseek";
+    if (rawUrl.includes("anthropic.com")) return "builtin:claude";
+    if (rawUrl.includes("moonshot.cn") || rawUrl.includes("kimi.ai")) return "builtin:kimi";
+    if (rawUrl.includes("bigmodel.cn") || rawUrl.includes("zhipuai.cn")) return "builtin:zhipu";
+    if (rawUrl.includes("minimax")) return "builtin:minimax";
+    if (rawUrl.includes("aliyun.com") || rawUrl.includes("dashscope")) return "builtin:bailian";
+    if (rawUrl.includes("volces.com") || rawUrl.includes("volcengine")) return "builtin:volcengine";
+    if (rawUrl.includes("baidu.com") || rawUrl.includes("qianfan")) return "builtin:baidu";
+    if (rawUrl.includes("tencent.com")) return "builtin:tencent";
+    if (rawUrl.includes("stepfun")) return "builtin:stepfun";
+    if (rawUrl.includes("xfyun")) return "builtin:xfyun";
+    if (rawUrl.includes("sensetime")) return "builtin:sensenova";
+    if (rawUrl.includes("lingyiwanwu") || rawUrl.includes("01.ai")) return "builtin:lingyi";
+  }
+
+  // 2. Direct string checks for legacy templates
   const text = `${templateId || ""} ${templateName || ""}`.toLowerCase();
   if (text.includes("commandcode") || text.includes("command code") || text.includes("command")) {
     return "commandcode";
@@ -98,6 +105,63 @@ export function resolveProviderTemplateIcon(
   if (text.includes("openai") || text.includes("gpt")) {
     return "openai";
   }
+
+  // 3. Fallback to builtin provider keyword matching
+  const builtin = resolveBuiltinProviderIcon({
+    name: templateName,
+    id: templateId,
+  });
+  if (builtin) {
+    if (builtin === "builtin:opencode") return "opencode";
+    if (builtin === "builtin:commandcode") return "commandcode";
+    if (builtin === "builtin:chatgpt") return "openai";
+    return builtin;
+  }
+
+  return null;
+}
+
+/**
+ * Resolves the effective icon for an upstream provider:
+ * 1. provider.icon (custom user icon)
+ * 2. template?.icon (inherited from bound template)
+ * 3. templateId inference
+ * 4. base_url inference (e.g. api.commandcode.ai, deepseek.com, etc.)
+ * 5. provider name / id inference using builtin provider keywords
+ * 6. fallback (null)
+ */
+export function resolveEffectiveProviderIcon(
+  provider?: {
+    icon?: string | null;
+    template_id?: string | null;
+    base_url?: string | null;
+    name?: string | null;
+    id?: string | null;
+  } | null,
+  template?: {
+    icon?: string | null;
+    id?: string | null;
+    name?: string | null;
+  } | null,
+): string | null {
+  const custom = provider?.icon?.trim();
+  if (custom) return custom;
+  const inherited = template?.icon?.trim();
+  if (inherited) return inherited;
+
+  const tplId = template?.id || provider?.template_id;
+  if (tplId) {
+    const tplIcon = resolveProviderTemplateIcon(null, tplId, template?.name);
+    if (tplIcon) return tplIcon;
+  }
+
+  const fromProvider = resolveProviderTemplateIcon(
+    null,
+    provider?.id,
+    provider?.name,
+    provider?.base_url,
+  );
+  if (fromProvider) return fromProvider;
 
   return null;
 }
@@ -145,6 +209,7 @@ export interface ProviderTemplateAvatarProps {
   icon?: string | null;
   templateId?: string | null;
   templateName?: string | null;
+  baseUrl?: string | null;
   size?: number;
   className?: string;
   style?: React.CSSProperties;
@@ -155,12 +220,13 @@ export function ProviderTemplateAvatar({
   icon,
   templateId,
   templateName,
+  baseUrl,
   size = 36,
   className,
   style,
   title,
 }: ProviderTemplateAvatarProps) {
-  const resolved = resolveProviderTemplateIcon(icon, templateId, templateName);
+  const resolved = resolveProviderTemplateIcon(icon, templateId, templateName, baseUrl);
   const radius = Math.max(8, Math.round(size * 0.28));
   const displayName = templateName || templateId || "";
   const fallbackChar = displayName.trim().charAt(0) || "?";
@@ -216,6 +282,7 @@ export interface ProviderTemplateIconPickerProps {
   onChange: (value: string) => void;
   templateId?: string;
   templateName?: string;
+  baseUrl?: string;
   disabled?: boolean;
   options?: readonly ProviderTemplateIconOption[];
   autoLabel?: string;
@@ -230,6 +297,7 @@ export function ProviderTemplateIconPicker({
   onChange,
   templateId,
   templateName,
+  baseUrl,
   disabled = false,
   options,
   autoLabel,
@@ -301,6 +369,7 @@ export function ProviderTemplateIconPicker({
             icon={effectiveAvatarIcon}
             templateId={templateId}
             templateName={templateName}
+            baseUrl={baseUrl}
             size={24}
           />
           <span className="truncate text-sm font-medium text-foreground">
