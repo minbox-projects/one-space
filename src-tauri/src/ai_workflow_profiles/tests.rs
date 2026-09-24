@@ -642,6 +642,54 @@ exit 1
     });
 }
 
+#[test]
+fn test_ai_workflow_save_profile_persists_yaml_without_cli_activation() {
+    with_temp_test_home("save-only", |home| {
+        let config_dir = home.join(".config/ai-workflow");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        let config_path = config_dir.join("config.yaml");
+        let original_config = "active_profile: existing-profile\n";
+        fs::write(&config_path, original_config).expect("write initial config");
+
+        // A save-only operation must not require or invoke the CLI.
+        std::env::set_var(
+            "AI_WORKFLOW_CLI_PATH",
+            home.join("missing-ai-workflow-cli"),
+        );
+
+        let rows = vec![AgentMatrixRow {
+            role: "backend".to_string(),
+            codex: Some(ModelEffort {
+                model: "gpt-6-astra".to_string(),
+                reasoning_effort: "medium".to_string(),
+            }),
+            claude: None,
+            opencode: None,
+        }];
+
+        save_profile("draft-profile", &rows, Some(home))
+            .expect("saving a valid profile must succeed without the CLI");
+
+        let profile_path = home
+            .join(".config/ai-workflow/profiles/draft-profile.yaml");
+        let content = fs::read_to_string(&profile_path).expect("read persisted profile YAML");
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str(&content).expect("persisted profile must be valid YAML");
+        assert_eq!(yaml["version"].as_str(), Some("1.0.0"));
+        assert_eq!(yaml["agents"]["backend"]["codex"]["model"].as_str(), Some("gpt-6-astra"));
+        assert_eq!(
+            yaml["agents"]["backend"]["codex"]["reasoning_effort"].as_str(),
+            Some("medium")
+        );
+
+        assert_eq!(
+            fs::read_to_string(&config_path).expect("read config after save"),
+            original_config,
+            "saving a profile must not change the active profile"
+        );
+    });
+}
+
 // ============================================================================
 // 5. activate_profile tests
 // ============================================================================
@@ -827,4 +875,3 @@ fn test_ai_workflow_delete_profile_removes_file_and_protects_active() {
         assert!(!profiles_dir.join("inactive-profile.yaml").exists());
     });
 }
-

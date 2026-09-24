@@ -541,14 +541,7 @@ pub fn activate_profile(
     parse_activation_report(&stdout_str)
 }
 
-/// Validates profile name, schema (version 1.0.0), effort levels,
-/// atomically writes the YAML omitting unconfigured roles, then activates the profile.
-/// Restores original YAML snapshot if activation fails.
-pub fn save_and_activate_profile(
-    name: &str,
-    matrix: &[AgentMatrixRow],
-    home_override: Option<&Path>,
-) -> Result<ProfileActivationReport, String> {
+fn serialize_profile_yaml(name: &str, matrix: &[AgentMatrixRow]) -> Result<String, String> {
     validate_profile_name(name)?;
 
     for row in matrix {
@@ -608,8 +601,33 @@ pub fn save_and_activate_profile(
         version: "1.0.0",
         agents: agents_map,
     };
-    let yaml_str =
-        serde_yaml::to_string(&doc).map_err(|e| format!("Failed to serialize YAML: {}", e))?;
+    serde_yaml::to_string(&doc).map_err(|e| format!("Failed to serialize YAML: {}", e))
+}
+
+/// Validates and atomically saves profile YAML without changing the active profile.
+pub fn save_profile(
+    name: &str,
+    matrix: &[AgentMatrixRow],
+    home_override: Option<&Path>,
+) -> Result<(), String> {
+    let yaml_str = serialize_profile_yaml(name, matrix)?;
+    let home = resolve_home_dir(home_override)?;
+    let profiles_dir = home.join(".config/ai-workflow/profiles");
+    fs::create_dir_all(&profiles_dir)
+        .map_err(|e| format!("Failed to create profiles directory: {}", e))?;
+    let target_file = profiles_dir.join(format!("{}.yaml", name));
+    write_file_atomic(&target_file, yaml_str.as_bytes())
+}
+
+/// Validates profile name, schema (version 1.0.0), effort levels,
+/// atomically writes the YAML omitting unconfigured roles, then activates the profile.
+/// Restores original YAML snapshot if activation fails.
+pub fn save_and_activate_profile(
+    name: &str,
+    matrix: &[AgentMatrixRow],
+    home_override: Option<&Path>,
+) -> Result<ProfileActivationReport, String> {
+    let yaml_str = serialize_profile_yaml(name, matrix)?;
 
     let home = resolve_home_dir(home_override)?;
     let profiles_dir = home.join(".config/ai-workflow/profiles");
@@ -736,6 +754,15 @@ pub fn ai_workflow_save_and_activate_profile(
 }
 
 #[tauri::command]
+pub fn ai_workflow_save_profile(
+    name: String,
+    matrix: Vec<AgentMatrixRow>,
+    home_override: Option<String>,
+) -> Result<(), String> {
+    save_profile(&name, &matrix, home_override.as_deref().map(Path::new))
+}
+
+#[tauri::command]
 pub fn ai_workflow_activate_profile(
     name: String,
     home_override: Option<String>,
@@ -759,4 +786,3 @@ pub fn ai_workflow_delete_profile(
 ) -> Result<(), String> {
     delete_profile(&name, home_override.as_deref().map(Path::new))
 }
-

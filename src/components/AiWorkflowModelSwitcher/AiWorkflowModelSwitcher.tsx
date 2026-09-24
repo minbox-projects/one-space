@@ -23,7 +23,7 @@ import {
   getModelSources,
   getProfileMatrix,
   listProfiles,
-  saveAndActivateProfile,
+  saveProfile,
   type AgentMatrixRow,
   type ModelSourcesResult,
   type ProfileActivationReport,
@@ -125,6 +125,9 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [activationReport, setActivationReport] =
     useState<ProfileActivationReport | null>(null);
+  const [unsavedCreatedProfiles, setUnsavedCreatedProfiles] = useState<Set<string>>(
+    () => new Set(),
+  );
 
   // 单元格编辑状态
   const [editingCell, setEditingCell] = useState<{
@@ -370,24 +373,45 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
     }
   };
 
-  const handleSaveAndActivate = async () => {
+  const handleSaveProfile = async () => {
     if (!selectedProfile) return;
+    const profileName = selectedProfile;
+    const matrixToSave = JSON.parse(JSON.stringify(matrix)) as AgentMatrixRow[];
     setIsActivating(true);
     setError(null);
     setActivationReport(null);
     try {
-      const report = await saveAndActivateProfile(
-        selectedProfile,
-        matrix,
-        homeOverride,
-      );
+      const shouldAsk = unsavedCreatedProfiles.has(profileName);
+
+      await saveProfile(profileName, matrixToSave, homeOverride);
+      setOriginalMatrix(matrixToSave);
+      setUnsavedCreatedProfiles((previous) => {
+        const next = new Set(previous);
+        next.delete(profileName);
+        return next;
+      });
+
+      const shouldActivate = shouldAsk
+        ? await confirmDialog(
+            t("aiWorkflow.saveNewProfilePrompt", { name: profileName }),
+            {
+              title: t("aiWorkflow.saveNewProfileTitle", "保存新方案"),
+              kind: "info",
+              okLabel: t("aiWorkflow.saveNewProfileYes", "是"),
+              cancelLabel: t("aiWorkflow.saveNewProfileNo", "否"),
+            },
+          )
+        : false;
+
+      if (!shouldActivate) return;
+
+      const report = await activateProfile(profileName, homeOverride);
       setActiveProfile(report.active_profile || selectedProfile);
-      setOriginalMatrix(JSON.parse(JSON.stringify(matrix)));
       setActivationReport(report);
       setProfiles((prev) =>
         prev.map((p) => ({
           ...p,
-          active: p.name === (report.active_profile || selectedProfile),
+          active: p.name === (report.active_profile || profileName),
         })),
       );
     } catch (err: unknown) {
@@ -434,6 +458,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
           ? selectedProfile
           : undefined;
       await createProfile(trimmed, copyFrom, homeOverride);
+      setUnsavedCreatedProfiles((previous) => new Set(previous).add(trimmed));
       pushToast({
         title: t("aiWorkflow.profileCreated", {
           name: trimmed,
@@ -474,6 +499,11 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
     try {
       setIsActivating(true);
       await deleteProfile(selectedProfile, homeOverride);
+      setUnsavedCreatedProfiles((previous) => {
+        const next = new Set(previous);
+        next.delete(selectedProfile);
+        return next;
+      });
       pushToast({
         title: t("aiWorkflow.profileDeleted", {
           name: selectedProfile,
@@ -737,7 +767,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
 
             <button
               type="button"
-              aria-label="Direct Activate"
+              aria-label={t("aiWorkflow.activate", "激活")}
               disabled={isActivating || !selectedProfile}
               title={
                 isDirty
@@ -751,18 +781,18 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
               className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground shadow-sm hover:bg-muted disabled:opacity-50"
             >
               <Zap className="h-3.5 w-3.5 text-primary" />
-              {t("aiWorkflow.directActivate", "直接激活")}
+              {t("aiWorkflow.activate", "激活")}
             </button>
 
             <button
               type="button"
-              aria-label="Save and Activate"
+              aria-label={t("aiWorkflow.save", "保存")}
               disabled={isActivating || !selectedProfile}
-              onClick={() => void handleSaveAndActivate()}
+              onClick={() => void handleSaveProfile()}
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-50"
             >
               <Save className="h-3.5 w-3.5" />
-              {t("aiWorkflow.saveAndActivate", "保存并激活")}
+              {t("aiWorkflow.save", "保存")}
             </button>
           </div>
         </div>

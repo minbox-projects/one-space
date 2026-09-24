@@ -482,6 +482,7 @@ pub fn run() {
             ai_workflow_profiles::ai_workflow_get_model_sources,
             ai_workflow_profiles::ai_workflow_activate_profile,
             ai_workflow_profiles::ai_workflow_save_and_activate_profile,
+            ai_workflow_profiles::ai_workflow_save_profile,
             ai_workflow_profiles::ai_workflow_create_profile,
             ai_workflow_profiles::ai_workflow_delete_profile
         ])
