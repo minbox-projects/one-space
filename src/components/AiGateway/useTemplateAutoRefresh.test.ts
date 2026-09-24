@@ -856,6 +856,49 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
     expect(message.detail).toContain("old");
   });
 
+  it("AC-006 明细优先使用非空 local_model 而非 upstream_model", async () => {
+    await setLanguage("en");
+    // 唯一的差异来源：一个新增映射，其 local_model 与 upstream_model 不同。
+    // 若实现总是输出 upstream_model，则 detail 会包含 "remote-alias"，本用例必须失败。
+    const before = makeConfig([
+      makeProvider({
+        id: "p1",
+        name: "Zen Upstream",
+        template_id: "opencode-zen",
+        mappings: [],
+      }),
+    ]);
+    const after = makeConfig([
+      makeProvider({
+        id: "p1",
+        name: "Zen Upstream",
+        template_id: "opencode-zen",
+        mappings: [
+          makeMapping({
+            local_model: "local-alias",
+            upstream_model: "remote-alias",
+            enabled: true,
+          }),
+        ],
+      }),
+    ]);
+    installInvoke({
+      interval: 10,
+      templates: [makeView("opencode-zen", "https://zen.test/models")],
+      sync: () => ({}),
+      configs: [before, after],
+    });
+
+    mountAutoRefresh();
+    await settle();
+    await settle(10 * 60_000);
+
+    const messages = recordedMessages();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].detail).toContain("local-alias");
+    expect(messages[0].detail).not.toContain("remote-alias");
+  });
+
   it("AC-008 两个连续周期的真实变更各自创建独立通知且无 dedupe_key", async () => {
     await setLanguage("en");
     const provider = makeProvider({
