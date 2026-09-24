@@ -5,9 +5,10 @@
 //! observable without making network requests.
 
 use crate::ai_gateway::quota::{
-    is_quota_cache_fresh, parse_provider_quota, provider_quota_with,
-    resolve_quota_request, ProviderQuota, QuotaCache, QuotaCredits, QuotaWindow,
-    QuotaWindowLimits, COMMANDCODE_QUOTA_URL, QUOTA_CACHE_TTL_MS,
+    ai_gateway_provider_quota_with, is_quota_cache_fresh, parse_provider_quota,
+    provider_quota_with, resolve_quota_request, ProviderQuota, QuotaCache,
+    QuotaCredits, QuotaWindow, QuotaWindowLimits, COMMANDCODE_QUOTA_URL,
+    QUOTA_CACHE_TTL_MS,
 };
 use crate::ai_gateway::{GatewayConfig, GatewayUpstreamProvider, UsageLogStore};
 use serde_json::json;
@@ -573,4 +574,113 @@ async fn quota_queries_do_not_write_config_or_usage_logs() {
         rows_before,
         "quota reads must not append usage rows"
     );
+}
+
+// AC-004 / AC-010 / AC-012: the production command-path seam reads persisted
+// configuration, reuses successful cache entries, and remains read-only.
+#[tokio::test]
+async fn quota_command_path_is_read_only_and_uses_the_shared_cache() {
+    let _home = TempHome::new();
+    let config = config_with_provider(quota_provider(
+        SECRET_KEY,
+        "https://api.commandcode.ai/provider/v1",
+    ));
+    crate::ai_gateway::storage::write_config(&config).expect("write initial gateway config");
+    let config_file = crate::ai_gateway::storage::config_path().expect("gateway config path");
+    let bytes_before = fs::read(&config_file).expect("read encrypted gateway config");
+    let store = UsageLogStore::default_store().expect("default usage store");
+    let rows_before = store.count().expect("count initial usage rows");
+
+    let cache = Mutex::new(QuotaCache::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let success_calls = Arc::clone(&calls);
+    let success = ai_gateway_provider_quota_with(
+        "quota-provider".to_string(),
+        None,
+        50_000,
+        &cache,
+        move |url, api_key| {
+            success_calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                assert_eq!(url, COMMANDCODE_QUOTA_URL);
+                assert_eq!(api_key, SECRET_KEY);
+                Ok(FIXTURE.to_string())
+            }
+        },
+    )
+    .await
+    .expect("read-only command-path query succeeds");
+    assert_eq!(success, expected_fixture());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let cached_calls = Arc::clone(&calls);
+    let cached = ai_gateway_provider_quota_with(
+        "quota-provider".to_string(),
+        None,
+        50_001,
+        &cache,
+        move |_, _| {
+            cached_calls.fetch_add(1, Ordering::SeqCst);
+            async { Err("unexpected cache-miss fetch".to_string()) }
+        },
+    )
+    .await
+    .expect("second command-path call reuses the cached quota");
+    assert_eq!(cached, expected_fixture());
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "cache hit must not fetch");
+
+    let failure_calls = Arc::clone(&calls);
+    let error = ai_gateway_provider_quota_with(
+        "quota-provider".to_string(),
+        Some(true),
+        50_002,
+        &cache,
+        move |_, _| {
+            failure_calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err("failed to fetch https://api.commandcode.ai/alpha/billing/credits: HTTP 503"
+                    .to_string())
+            }
+        },
+    )
+    .await
+    .expect_err("injected command-path failure propagates");
+    assert!(!error.contains(SECRET_KEY), "quota error leaked the stored key: {error}");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    let bytes_after = fs::read(&config_file).expect("read gateway config after quota queries");
+    assert_eq!(bytes_after, bytes_before, "quota reads must not write config");
+    assert_eq!(
+        store.count().expect("count usage rows after quota queries"),
+        rows_before,
+        "quota reads must not append usage rows"
+    );
+}
+
+// AC-012: a persisted CommandCode provider with no API key is rejected before fetch.
+#[tokio::test]
+async fn quota_command_path_rejects_empty_api_key_without_fetching() {
+    let _home = TempHome::new();
+    let config = config_with_provider(quota_provider(
+        "",
+        "https://api.commandcode.ai/provider/v1",
+    ));
+    crate::ai_gateway::storage::write_config(&config).expect("write empty-key gateway config");
+
+    let calls = AtomicUsize::new(0);
+    let error = ai_gateway_provider_quota_with(
+        "quota-provider".to_string(),
+        None,
+        50_000,
+        &Mutex::new(QuotaCache::new()),
+        |_, _| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(FIXTURE.to_string()) }
+        },
+    )
+    .await
+    .expect_err("empty persisted API key must be rejected");
+
+    assert!(!error.is_empty());
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "invalid credentials must not fetch");
 }

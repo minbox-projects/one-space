@@ -36,6 +36,18 @@ function formatCap(cap: number): string {
   }).format(cap)}`;
 }
 
+function formatQuotaError(
+  reason: string,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  if (/no api key/i.test(reason)) return t("aiGatewayQuotaErrorNoKey");
+  if (/timed out/i.test(reason)) return t("aiGatewayQuotaErrorTimeout");
+  const httpStatus = reason.match(/HTTP (\d{3})/);
+  if (httpStatus) return t("aiGatewayQuotaErrorHttp", { status: httpStatus[1] });
+  if (/invalid quota response/i.test(reason)) return t("aiGatewayQuotaErrorInvalid");
+  return t("aiGatewayQuotaError", { reason });
+}
+
 function QuotaWindowLine({
   window,
   label,
@@ -133,7 +145,7 @@ export function ProviderQuotaBlock({ provider }: ProviderQuotaBlockProps) {
           role="status"
           className="text-destructive"
         >
-          {t("aiGatewayQuotaError", { reason: state.reason })}
+          {formatQuotaError(state.reason, t)}
         </p>
       ) : null}
 

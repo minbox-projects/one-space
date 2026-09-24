@@ -6,8 +6,9 @@ use std::future::Future;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub const COMMANDCODE_QUOTA_URL: &str = "https://api.commandcode.ai/alpha/billing/credits";
-pub const QUOTA_CACHE_TTL_MS: u64 = 300_000;
+pub(in crate::ai_gateway) const COMMANDCODE_QUOTA_URL: &str =
+    "https://api.commandcode.ai/alpha/billing/credits";
+pub(in crate::ai_gateway) const QUOTA_CACHE_TTL_MS: u64 = 300_000;
 const QUOTA_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn deserialize_default_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
@@ -70,7 +71,7 @@ struct ProviderQuotaPayload {
     window_limits: Option<QuotaWindowLimits>,
 }
 
-pub fn parse_provider_quota(body: &str) -> Result<ProviderQuota, String> {
+pub(in crate::ai_gateway) fn parse_provider_quota(body: &str) -> Result<ProviderQuota, String> {
     let payload: ProviderQuotaPayload = serde_json::from_str(body)
         .map_err(|error| format!("invalid quota response: {error}"))?;
     let credits = payload
@@ -83,12 +84,12 @@ pub fn parse_provider_quota(body: &str) -> Result<ProviderQuota, String> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QuotaRequest {
-    pub url: String,
-    pub api_key: String,
+pub(in crate::ai_gateway) struct QuotaRequest {
+    pub(in crate::ai_gateway) url: String,
+    pub(in crate::ai_gateway) api_key: String,
 }
 
-pub fn resolve_quota_request(
+pub(in crate::ai_gateway) fn resolve_quota_request(
     provider: &GatewayUpstreamProvider,
 ) -> Result<QuotaRequest, String> {
     if provider.api_key.trim().is_empty() {
@@ -114,7 +115,7 @@ pub fn resolve_quota_request(
     })
 }
 
-pub fn is_quota_cache_fresh(cached_at_ms: u64, now_ms: u64) -> bool {
+pub(in crate::ai_gateway) fn is_quota_cache_fresh(cached_at_ms: u64, now_ms: u64) -> bool {
     now_ms.saturating_sub(cached_at_ms) < QUOTA_CACHE_TTL_MS
 }
 
@@ -125,18 +126,18 @@ struct CachedQuota {
     snapshot: ProviderQuota,
 }
 
-pub struct QuotaCache {
+pub(in crate::ai_gateway) struct QuotaCache {
     entries: HashMap<String, CachedQuota>,
 }
 
 impl QuotaCache {
-    pub fn new() -> Self {
+    pub(in crate::ai_gateway) fn new() -> Self {
         Self {
             entries: HashMap::new(),
         }
     }
 
-    pub fn get_fresh(
+    pub(in crate::ai_gateway) fn get_fresh(
         &self,
         provider_id: &str,
         api_key: &str,
@@ -155,7 +156,7 @@ impl QuotaCache {
         })
     }
 
-    pub fn store(
+    pub(in crate::ai_gateway) fn store(
         &mut self,
         provider_id: &str,
         api_key: &str,
@@ -175,7 +176,7 @@ impl QuotaCache {
     }
 }
 
-pub async fn provider_quota_with<F, Fut>(
+pub(in crate::ai_gateway) async fn provider_quota_with<F, Fut>(
     config: &GatewayConfig,
     provider_id: &str,
     force_refresh: bool,
@@ -226,21 +227,42 @@ where
 
 static QUOTA_CACHE: OnceLock<Mutex<QuotaCache>> = OnceLock::new();
 
+pub(in crate::ai_gateway) async fn ai_gateway_provider_quota_with<F, Fut>(
+    provider_id: String,
+    force_refresh: Option<bool>,
+    now_ms: u64,
+    cache: &std::sync::Mutex<QuotaCache>,
+    fetch: F,
+) -> Result<ProviderQuota, String>
+where
+    F: FnOnce(String, String) -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    let config = storage::read_config()?;
+    provider_quota_with(
+        &config,
+        &provider_id,
+        force_refresh.unwrap_or(false),
+        now_ms,
+        cache,
+        fetch,
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn ai_gateway_provider_quota(
     provider_id: String,
     force_refresh: Option<bool>,
 ) -> Result<ProviderQuota, String> {
-    let config = storage::read_config()?;
     let cache = QUOTA_CACHE.get_or_init(|| Mutex::new(QuotaCache::new()));
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "system clock is before the Unix epoch".to_string())?
         .as_millis() as u64;
-    provider_quota_with(
-        &config,
-        &provider_id,
-        force_refresh.unwrap_or(false),
+    ai_gateway_provider_quota_with(
+        provider_id,
+        force_refresh,
         now_ms,
         cache,
         fetch_quota_body,
@@ -251,6 +273,7 @@ pub async fn ai_gateway_provider_quota(
 async fn fetch_quota_body(url: String, api_key: String) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(QUOTA_REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| format!("failed to prepare a request for {url}"))?;
     let response = client
@@ -258,7 +281,13 @@ async fn fetch_quota_body(url: String, api_key: String) -> Result<String, String
         .bearer_auth(api_key)
         .send()
         .await
-        .map_err(|_| format!("failed to fetch {url}"))?;
+        .map_err(|error| {
+            if error.is_timeout() {
+                format!("timed out fetching {url}")
+            } else {
+                format!("failed to fetch {url}")
+            }
+        })?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!("failed to fetch {url}: HTTP {status}"));
@@ -266,5 +295,11 @@ async fn fetch_quota_body(url: String, api_key: String) -> Result<String, String
     response
         .text()
         .await
-        .map_err(|_| format!("failed to read response from {url}"))
+        .map_err(|error| {
+            if error.is_timeout() {
+                format!("timed out reading response from {url}")
+            } else {
+                format!("failed to read response from {url}")
+            }
+        })
 }

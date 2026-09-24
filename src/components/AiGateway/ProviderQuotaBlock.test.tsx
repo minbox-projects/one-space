@@ -44,6 +44,10 @@ const QUOTA_I18N_KEYS = [
   "aiGatewayQuotaRefreshAria",
   "aiGatewayQuotaLoading",
   "aiGatewayQuotaError",
+  "aiGatewayQuotaErrorNoKey",
+  "aiGatewayQuotaErrorTimeout",
+  "aiGatewayQuotaErrorHttp",
+  "aiGatewayQuotaErrorInvalid",
   "aiGatewayQuotaLowBalance",
   "aiGatewayQuotaExceeded",
 ] as const;
@@ -241,10 +245,42 @@ describe("ProviderQuotaBlock", () => {
       await screen.findByTestId(
         "ai-gateway-provider-quota-error-quota-provider",
       ),
-    ).toHaveTextContent(i18n.t("aiGatewayQuotaError", { reason: "HTTP 429" }));
+    ).toHaveTextContent(i18n.t("aiGatewayQuotaErrorHttp", { status: "429" }));
     expect(
       screen.getByTestId("ai-gateway-provider-quota-quota-provider"),
     ).toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      "no API key configured for this provider",
+      "aiGatewayQuotaErrorNoKey",
+      {},
+    ],
+    [
+      "timed out fetching https://api.commandcode.ai/alpha/billing/credits",
+      "aiGatewayQuotaErrorTimeout",
+      {},
+    ],
+    [
+      "invalid quota response: expected value at line 1",
+      "aiGatewayQuotaErrorInvalid",
+      {},
+    ],
+    [
+      "unexpected gateway response detail",
+      "aiGatewayQuotaError",
+      { reason: "unexpected gateway response detail" },
+    ],
+  ] as const)("AC-008 localizes quota failure reason %s", async (reason, key, options) => {
+    mockQuotaResult(new Error(reason));
+    renderQuotaBlock();
+
+    expect(
+      await screen.findByTestId(
+        "ai-gateway-provider-quota-error-quota-provider",
+      ),
+    ).toHaveTextContent(i18n.t(key, options));
   });
 
   it("AC-004 refresh requests the provider quota with forceRefresh=true", async () => {

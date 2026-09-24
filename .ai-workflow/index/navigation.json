@@ -2993,6 +2993,30 @@
           "name": "ai_gateway_provider_quota",
           "kind": "function",
           "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/quota.rs",
+          "name": "ProviderQuota",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/quota.rs",
+          "name": "QuotaCredits",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/quota.rs",
+          "name": "QuotaWindowLimits",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/quota.rs",
+          "name": "QuotaWindow",
+          "kind": "struct",
+          "visibility": "public"
         }
       ],
       "depends_on": [
