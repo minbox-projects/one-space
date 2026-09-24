@@ -485,7 +485,9 @@ pub fn run() {
             ai_workflow_profiles::ai_workflow_save_and_activate_profile,
             ai_workflow_profiles::ai_workflow_save_profile,
             ai_workflow_profiles::ai_workflow_create_profile,
-            ai_workflow_profiles::ai_workflow_delete_profile
+            ai_workflow_profiles::ai_workflow_delete_profile,
+            ai_workflow_profiles::ai_workflow_rename_profile
+
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

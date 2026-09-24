@@ -1011,9 +1011,11 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       // 点击删除按钮触发二次确认
       await user.click(deleteBtn);
 
-      // 确认弹窗出现，点击确认删除（精确匹配 "删除" 或 "Delete" 按钮）
-      const confirmOkBtn = await screen.findByRole("button", { name: /^删除$|^Delete$/i });
+      // 确认弹窗出现，点击确认删除（匹配弹窗内的确认按钮）
+      const deleteButtons = await screen.findAllByRole("button", { name: /^删除$|^Delete$/i });
+      const confirmOkBtn = deleteButtons[deleteButtons.length - 1];
       await user.click(confirmOkBtn);
+
 
       await waitFor(() => {
         expect(invokeMock).toHaveBeenCalledWith(
@@ -1025,7 +1027,125 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       });
     });
 
+    it("将新增方案按钮移动到与选择配置方案标题同级最右侧，并具备 onespace 统一的主按钮样式", async () => {
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      const createBtn = await screen.findByTestId("create-profile-trigger");
+      expect(createBtn).toBeInTheDocument();
+      // 样式应具备 onespace 实体主按钮类
+      expect(createBtn).toHaveClass("bg-primary", "text-primary-foreground");
+
+      // 验证与选择配置方案标题在同一个容器中
+      const headerTitle = screen.getByText("选择配置方案");
+      const headerContainer = headerTitle.closest("div.border-b");
+      expect(headerContainer).toContainElement(createBtn);
+    });
+
+    it("修改删除方案按钮名称为'删除'，在删除按钮前新增'编辑'按钮", async () => {
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      const deleteBtn = await screen.findByTestId("delete-profile-trigger");
+      // 验证删除按钮显示的文本为“删除”
+      expect(deleteBtn).toHaveTextContent(/^删除$/);
+
+      // 验证编辑按钮存在且在删除按钮前方
+      const editBtn = await screen.findByTestId("edit-profile-trigger");
+      expect(editBtn).toBeInTheDocument();
+      expect(editBtn).toHaveTextContent(/^编辑$/);
+
+      // DOM 顺序：editBtn 在 deleteBtn 前
+      expect(
+        editBtn.compareDocumentPosition(deleteBtn) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it("支持点击编辑按钮弹框修改方案名称，并完成校验与重命名保存", async () => {
+      const user = userEvent.setup();
+      let currentProfiles: ProfileSummary[] = [
+        { name: "onespace-ai-gateway", active: true },
+        { name: "baibai-40", active: false },
+      ];
+
+      invokeMock.mockImplementation(async (command: string, payload?: any) => {
+        if (command === "ai_workflow_list_profiles") {
+          return currentProfiles;
+        }
+        if (command === "ai_workflow_get_profile_matrix") {
+          return mockGatewayMatrix;
+        }
+        if (command === "ai_workflow_get_model_sources") {
+          return mockModelSources;
+        }
+        if (command === "ai_workflow_rename_profile") {
+          currentProfiles = currentProfiles.map((p) =>
+            p.name === payload?.oldName ? { ...p, name: payload.newName } : p,
+          );
+          return null;
+        }
+        return null;
+      });
+
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      const editBtn = await screen.findByTestId("edit-profile-trigger");
+      await user.click(editBtn);
+
+      // 弹框出现
+      expect(
+        await screen.findByRole("heading", { name: /编辑方案名称/ }),
+      ).toBeInTheDocument();
+      const input = screen.getByTestId(
+        "edit-profile-name-input",
+      ) as HTMLInputElement;
+      expect(input.value).toBe("onespace-ai-gateway");
+
+      // 1. 尝试清空并提交，提示非空
+      await user.clear(input);
+      await user.click(screen.getByTestId("edit-profile-submit"));
+      expect(screen.getByText("方案名称不能为空")).toBeInTheDocument();
+
+      // 2. 尝试非法字符并提交
+      await user.type(input, "invalid name!");
+      await user.click(screen.getByTestId("edit-profile-submit"));
+      expect(
+        screen.getByText("方案名称格式无效，仅支持字母、数字、短横线与点"),
+      ).toBeInTheDocument();
+
+      // 3. 尝试与其他方案重名
+      await user.clear(input);
+      await user.type(input, "baibai-40");
+      await user.click(screen.getByTestId("edit-profile-submit"));
+      expect(screen.getByText("该方案名称已存在")).toBeInTheDocument();
+
+      // 4. 输入新名称并成功提交
+      await user.clear(input);
+      await user.type(input, "onespace-v2");
+      await user.click(screen.getByTestId("edit-profile-submit"));
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith(
+          "ai_workflow_rename_profile",
+          expect.objectContaining({
+            oldName: "onespace-ai-gateway",
+            newName: "onespace-v2",
+          }),
+        );
+      });
+
+      // 弹窗关闭，且方案名更新为 onespace-v2
+      await waitFor(() => {
+        expect(
+          screen.queryByRole("heading", { name: /编辑方案名称/ }),
+        ).not.toBeInTheDocument();
+      });
+      expect(
+        await screen.findByRole("button", { name: /onespace-v2/ }),
+      ).toBeInTheDocument();
+    });
+
     it("整列填充支持模糊检索候选模型列表并点选", async () => {
+
       const user = userEvent.setup();
       renderWithProviders(<AiWorkflowModelSwitcher />);
 

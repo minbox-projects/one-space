@@ -165,3 +165,16 @@ export async function deleteProfile(
     homeOverride,
   });
 }
+
+export async function renameProfile(
+  oldName: string,
+  newName: string,
+  homeOverride?: string,
+): Promise<void> {
+  return invoke<void>("ai_workflow_rename_profile", {
+    oldName,
+    newName,
+    homeOverride,
+  });
+}
+

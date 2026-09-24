@@ -875,3 +875,74 @@ fn test_ai_workflow_delete_profile_removes_file_and_protects_active() {
         assert!(!profiles_dir.join("inactive-profile.yaml").exists());
     });
 }
+
+#[test]
+fn test_ai_workflow_rename_profile_success_and_updates_active() {
+    with_temp_test_home("rename-profile", |home| {
+        let profiles_dir = home.join(".config/ai-workflow/profiles");
+        fs::create_dir_all(&profiles_dir).expect("create profiles dir");
+
+        let active_content = "version: 1.0.0\nagents:\n  backend:\n    codex: { model: gpt-4, reasoning_effort: high }\n";
+        fs::write(profiles_dir.join("active-profile.yaml"), active_content).expect("write active");
+        fs::write(profiles_dir.join("other-profile.yaml"), "version: 1.0.0\n").expect("write other");
+
+        let config_dir = home.join(".config/ai-workflow");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::write(config_dir.join("config.yaml"), "active_profile: active-profile\n").expect("write config");
+
+        // 1. 重命名非激活方案
+        let res_other = rename_profile("other-profile", "renamed-other", Some(home));
+        assert!(res_other.is_ok(), "rename other profile should succeed: {:?}", res_other);
+        assert!(!profiles_dir.join("other-profile.yaml").exists());
+        assert!(profiles_dir.join("renamed-other.yaml").exists());
+
+        // 2. 重命名激活方案，config.yaml 中的 active_profile 同步更新
+        let res_active = rename_profile("active-profile", "renamed-active", Some(home));
+        assert!(res_active.is_ok(), "rename active profile should succeed: {:?}", res_active);
+        assert!(!profiles_dir.join("active-profile.yaml").exists());
+        assert!(profiles_dir.join("renamed-active.yaml").exists());
+
+        let new_content = fs::read_to_string(profiles_dir.join("renamed-active.yaml")).expect("read renamed");
+        assert_eq!(new_content, active_content);
+
+        // 校验 config.yaml 的 active_profile
+        let config_str = fs::read_to_string(config_dir.join("config.yaml")).expect("read config");
+        assert!(config_str.contains("active_profile: renamed-active"), "config.yaml must be updated to new name: {}", config_str);
+
+        // 校验 list_profiles 依然将 renamed-active 标识为 active
+        let list = list_profiles(Some(home)).expect("list profiles");
+        let active_entry = list.iter().find(|p| p.name == "renamed-active").expect("renamed-active should exist");
+        assert!(active_entry.active, "renamed-active must be active");
+    });
+}
+
+#[test]
+fn test_ai_workflow_rename_profile_validations() {
+    with_temp_test_home("rename-validations", |home| {
+        let profiles_dir = home.join(".config/ai-workflow/profiles");
+        fs::create_dir_all(&profiles_dir).expect("create profiles dir");
+
+        fs::write(profiles_dir.join("profile-a.yaml"), "version: 1.0.0\n").expect("write a");
+        fs::write(profiles_dir.join("profile-b.yaml"), "version: 1.0.0\n").expect("write b");
+
+        // 1. 新旧名称相同，返回 Ok(())
+        let res_same = rename_profile("profile-a", "profile-a", Some(home));
+        assert!(res_same.is_ok());
+
+        // 2. 原方案不存在，报错
+        let res_nonexistent = rename_profile("nonexistent", "new-name", Some(home));
+        assert!(res_nonexistent.is_err());
+        assert!(res_nonexistent.unwrap_err().contains("does not exist"));
+
+        // 3. 目标名称已存在，报错
+        let res_conflict = rename_profile("profile-a", "profile-b", Some(home));
+        assert!(res_conflict.is_err());
+        assert!(res_conflict.unwrap_err().contains("already exists"));
+
+        // 4. 名称格式非法，报错
+        let res_invalid = rename_profile("profile-a", "invalid name!", Some(home));
+        assert!(res_invalid.is_err());
+        assert!(res_invalid.unwrap_err().contains("Invalid profile name"));
+    });
+}
+

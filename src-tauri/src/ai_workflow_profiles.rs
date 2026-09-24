@@ -720,6 +720,72 @@ pub fn delete_profile(name: &str, home_override: Option<&Path>) -> Result<(), St
     Ok(())
 }
 
+/// Renames a profile YAML file.
+/// If the renamed profile is currently active, updates active_profile in config.yaml.
+pub fn rename_profile(
+    old_name: &str,
+    new_name: &str,
+    home_override: Option<&Path>,
+) -> Result<(), String> {
+    validate_profile_name(old_name)?;
+    validate_profile_name(new_name)?;
+
+    if old_name == new_name {
+        return Ok(());
+    }
+
+    let home = resolve_home_dir(home_override)?;
+    let profiles_dir = home.join(".config/ai-workflow/profiles");
+    let old_file = profiles_dir.join(format!("{}.yaml", old_name));
+    if !old_file.exists() {
+        return Err(format!("Profile '{}' does not exist", old_name));
+    }
+
+    let new_file = profiles_dir.join(format!("{}.yaml", new_name));
+    if new_file.exists() {
+        return Err(format!("Profile '{}' already exists", new_name));
+    }
+
+    fs::rename(&old_file, &new_file)
+        .map_err(|e| format!("Failed to rename profile '{}' to '{}': {}", old_name, new_name, e))?;
+
+    // Check if the renamed profile is active
+    let active_name = get_active_profile_name(&home);
+    if active_name.as_deref() == Some(old_name) {
+        let config_dir = home.join(".config/ai-workflow");
+        let config_file = config_dir.join("config.yaml");
+        let mut config_val = if config_file.exists() {
+            match fs::read_to_string(&config_file) {
+                Ok(content) => serde_yaml::from_str::<serde_yaml::Value>(&content)
+                    .unwrap_or_else(|_| serde_yaml::Value::Mapping(serde_yaml::Mapping::new())),
+                Err(_) => serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            }
+        } else {
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+        };
+
+        if let serde_yaml::Value::Mapping(ref mut map) = config_val {
+            map.insert(
+                serde_yaml::Value::String("active_profile".to_string()),
+                serde_yaml::Value::String(new_name.to_string()),
+            );
+        } else {
+            let mut map = serde_yaml::Mapping::new();
+            map.insert(
+                serde_yaml::Value::String("active_profile".to_string()),
+                serde_yaml::Value::String(new_name.to_string()),
+            );
+            config_val = serde_yaml::Value::Mapping(map);
+        }
+
+        if let Ok(yaml_str) = serde_yaml::to_string(&config_val) {
+            let _ = write_file_atomic(&config_file, yaml_str.as_bytes());
+        }
+    }
+
+    Ok(())
+}
+
 // Tauri commands
 
 #[tauri::command]
@@ -786,3 +852,13 @@ pub fn ai_workflow_delete_profile(
 ) -> Result<(), String> {
     delete_profile(&name, home_override.as_deref().map(Path::new))
 }
+
+#[tauri::command]
+pub fn ai_workflow_rename_profile(
+    old_name: String,
+    new_name: String,
+    home_override: Option<String>,
+) -> Result<(), String> {
+    rename_profile(&old_name, &new_name, home_override.as_deref().map(Path::new))
+}
+

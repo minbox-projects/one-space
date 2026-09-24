@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Layers,
+  Pencil,
   Plus,
   RotateCcw,
   Save,
@@ -23,7 +24,9 @@ import {
   getModelSources,
   getProfileMatrix,
   listProfiles,
+  renameProfile,
   saveProfile,
+
   type AgentMatrixRow,
   type ModelSourcesResult,
   type ProfileActivationReport,
@@ -158,6 +161,12 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
     "clone",
   );
   const [createError, setCreateError] = useState<string | null>(null);
+
+  // 编辑方案名称 Dialog 状态
+  const [isEditDialogOpen, setIsEditDialogOpen] = useState<boolean>(false);
+  const [editProfileName, setEditProfileName] = useState<string>("");
+  const [editError, setEditError] = useState<string | null>(null);
+
 
   // 聚合所有工具候选模型并集，供整行填充使用
   const allCandidateModels = useMemo(() => {
@@ -479,6 +488,82 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
     }
   };
 
+  // 方案重命名编辑
+  const handleOpenEditDialog = () => {
+    if (!selectedProfile) return;
+    setEditProfileName(selectedProfile);
+    setEditError(null);
+    setIsEditDialogOpen(true);
+  };
+
+  const handleEditProfileSubmit = async () => {
+    if (!selectedProfile) return;
+    const trimmed = editProfileName.trim();
+    if (!trimmed) {
+      setEditError(t("aiWorkflow.profileNameRequired", "方案名称不能为空"));
+      return;
+    }
+    if (trimmed === selectedProfile) {
+      setIsEditDialogOpen(false);
+      return;
+    }
+    const nameRegex = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/i;
+    if (!nameRegex.test(trimmed)) {
+      setEditError(
+        t(
+          "aiWorkflow.profileNameInvalid",
+          "方案名称格式无效，仅支持字母、数字、短横线与点",
+        ),
+      );
+      return;
+    }
+    if (
+      profiles.some(
+        (p) =>
+          p.name.toLowerCase() === trimmed.toLowerCase() &&
+          p.name.toLowerCase() !== selectedProfile.toLowerCase(),
+      )
+    ) {
+      setEditError(t("aiWorkflow.profileAlreadyExists", "该方案名称已存在"));
+      return;
+    }
+
+    try {
+      setIsActivating(true);
+      const oldName = selectedProfile;
+      await renameProfile(oldName, trimmed, homeOverride);
+      setUnsavedCreatedProfiles((previous) => {
+        const next = new Set(previous);
+        if (next.has(oldName)) {
+          next.delete(oldName);
+          next.add(trimmed);
+        }
+        return next;
+      });
+      pushToast({
+        title: t("aiWorkflow.profileRenamed", {
+          oldName,
+          newName: trimmed,
+          defaultValue: `方案 "${oldName}" 已重命名为 "${trimmed}"`,
+        }),
+        kind: "success",
+      });
+      setIsEditDialogOpen(false);
+      const updated = await listProfiles(homeOverride);
+      setProfiles(updated);
+      if (activeProfile === oldName) {
+        setActiveProfile(trimmed);
+      }
+      setSelectedProfile(trimmed);
+      await loadMatrix(trimmed);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setEditError(message);
+    } finally {
+      setIsActivating(false);
+    }
+  };
+
   // 方案删除
   const handleDeleteProfile = async () => {
     if (!selectedProfile || selectedProfile === activeProfile) return;
@@ -559,7 +644,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
       {/* 2. 方案选择与控制栏 */}
       <div className="rounded-xl border bg-card p-4 shadow-sm">
         {/* 状态层：标题与方案计数 */}
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-4">
           <div className="flex items-start gap-2">
             <Layers className="h-5 w-5 text-primary" />
             <div>
@@ -582,7 +667,19 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
               </p>
             </div>
           </div>
+
+          <button
+            type="button"
+            data-testid="create-profile-trigger"
+            onClick={handleOpenCreateDialog}
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
+            title={t("aiWorkflow.newProfile", "新建方案")}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>{t("aiWorkflow.newProfile", "新建方案")}</span>
+          </button>
         </div>
+
 
         {/* Row A：方案芯片 */}
         <div
@@ -650,17 +747,20 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
         {/* Row B：操作按钮 */}
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t pt-3">
           <div className="flex flex-wrap items-center gap-2">
-            {/* 新建方案按钮 */}
-            <button
-              type="button"
-              data-testid="create-profile-trigger"
-              onClick={handleOpenCreateDialog}
-              className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-dashed border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
-              title={t("aiWorkflow.newProfile", "新建方案")}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              <span>{t("aiWorkflow.newProfile", "新建方案")}</span>
-            </button>
+            {/* 编辑方案按钮 */}
+            {selectedProfile ? (
+              <button
+                type="button"
+                data-testid="edit-profile-trigger"
+                disabled={isActivating || !selectedProfile}
+                onClick={handleOpenEditDialog}
+                title={t("aiWorkflow.editProfile", "编辑")}
+                className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-background"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                <span>{t("aiWorkflow.editProfile", "编辑")}</span>
+              </button>
+            ) : null}
 
             {/* 删除方案按钮 */}
             {selectedProfile ? (
@@ -679,12 +779,12 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                         "aiWorkflow.cannotDeleteActiveProfile",
                         "无法删除当前已激活的方案",
                       )
-                    : t("aiWorkflow.deleteProfile", "删除方案")
+                    : t("aiWorkflow.deleteProfileConfirm", "删除配置方案")
                 }
                 className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-background"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                <span>{t("aiWorkflow.deleteProfile", "删除方案")}</span>
+                <span>{t("aiWorkflow.deleteProfile", "删除")}</span>
               </button>
             ) : null}
           </div>
@@ -1421,6 +1521,73 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 编辑配置方案名称 Dialog */}
+      <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>
+              {t("aiWorkflow.editProfileTitle", "编辑方案名称")}
+            </DialogTitle>
+            <DialogDescription>
+              {t(
+                "aiWorkflow.editProfileDesc",
+                "修改配置方案的名称。",
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2 text-sm">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                {t("aiWorkflow.profileName", "方案名称")}
+              </label>
+              <input
+                type="text"
+                data-testid="edit-profile-name-input"
+                value={editProfileName}
+                onChange={(e) => {
+                  setEditProfileName(e.target.value);
+                  setEditError(null);
+                }}
+                placeholder={t(
+                  "aiWorkflow.profileNamePlaceholder",
+                  "例如 my-new-profile",
+                )}
+                className="h-8 w-full rounded border bg-background px-2.5 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {t("aiWorkflow.profileNameHelp", "仅支持字母、数字、短横线与点")}
+              </p>
+            </div>
+            {editError && (
+              <div
+                role="alert"
+                className="rounded border border-destructive/20 bg-destructive/10 p-2 text-xs text-destructive"
+              >
+                {editError}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => setIsEditDialogOpen(false)}
+              className="rounded border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
+            >
+              {t("aiWorkflow.cancel", "取消")}
+            </button>
+            <button
+              type="button"
+              data-testid="edit-profile-submit"
+              onClick={() => void handleEditProfileSubmit()}
+              className="rounded bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              {t("save", "保存")}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
+
