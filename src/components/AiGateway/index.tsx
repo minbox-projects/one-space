@@ -729,6 +729,19 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
     ? resolveDefaultKeyId(config.keys, config.default_key_id)
     : null;
 
+  // 全部服务商已使用的标签，作为编辑弹窗「推荐标签」的候选，让用户能复用其他
+  // 服务商已有的标签，而不是只能手输。
+  const availableProviderTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const provider of config?.providers ?? []) {
+      for (const tag of provider.tags ?? []) {
+        const trimmed = tag.trim();
+        if (trimmed) set.add(trimmed);
+      }
+    }
+    return Array.from(set).sort();
+  }, [config?.providers]);
+
   if (!config) {
     return (
       <div className="h-full overflow-y-auto">
@@ -1056,6 +1069,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           }}
           provider={editingProvider}
           runtimeProvider={runtimeProvider}
+          availableTags={availableProviderTags}
           prices={config.model_prices ?? []}
           busy={busy}
           onSave={(draft, prices) => void handleSaveProvider(draft, prices)}

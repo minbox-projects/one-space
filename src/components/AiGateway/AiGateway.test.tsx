@@ -893,6 +893,36 @@ describe("AiGateway", () => {
     });
   });
 
+  it("编辑服务商时推荐标签包含其他服务商已有标签并可复用", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [
+          makeProvider({ id: "p1", name: "Upstream A", tags: ["alpha"] }),
+          makeProvider({ id: "p2", name: "Upstream B", tags: ["beta"] }),
+        ],
+      }),
+      status: makeStatus({ provider_count: 2 }),
+      targets: [],
+    };
+    mockStoreWithUpsert(store);
+
+    renderWithProviders(<AiGateway />);
+    fireEvent.click(
+      await within(
+        await screen.findByTestId("ai-gateway-providers"),
+      ).findByText("Upstream A"),
+    );
+
+    const otherProviderTagSuggestion = await screen.findByTestId(
+      "suggested-tag-beta",
+    );
+    expect(otherProviderTagSuggestion).toBeInTheDocument();
+    expect(screen.getByTestId("suggested-tag-alpha")).toBeInTheDocument();
+
+    fireEvent.click(otherProviderTagSuggestion);
+    expect(screen.getByTestId("provider-tag-badge-beta")).toBeInTheDocument();
+  });
+
   it("新增本地 Key 只需名称，值留空交由后端随机生成", async () => {
     const store: Store = {
       config: makeConfig({ keys: [], default_key_id: null }),

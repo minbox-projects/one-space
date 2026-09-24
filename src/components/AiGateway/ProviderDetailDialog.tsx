@@ -448,7 +448,7 @@ export function ProviderDetailDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="relative max-h-[90vh] w-full sm:max-w-6xl overflow-hidden flex flex-col sm:rounded-2xl p-0 gap-0"
+        className="max-h-[90vh] w-full sm:max-w-6xl overflow-hidden flex flex-col sm:rounded-2xl p-0 gap-0"
         data-testid="ai-gateway-provider-detail"
       >
         <DialogHeader className="pl-6 pr-14 py-4 border-b bg-card/80 backdrop-blur-sm shrink-0">
@@ -1343,7 +1343,7 @@ export function ProviderDetailDialog({
         {confirmDeleting && (
           <div
             data-testid="ai-gateway-delete-provider-confirm-dialog"
-            className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4 animate-in fade-in-0 duration-150"
+            className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4 animate-in fade-in-0 duration-150 sm:rounded-2xl"
           >
             <div className="bg-card border rounded-xl shadow-lg w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-150">
               <div className="p-5">
