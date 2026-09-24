@@ -15,27 +15,19 @@ import {
 import type {
   GatewayProviderTemplate,
   GatewayProviderTemplateView,
-  GatewayUpstreamProvider,
 } from "@/lib/aiGateway";
 import { ProviderTemplateAvatar } from "./ProviderTemplateIcon";
+import { protocolBadgeClass } from "./gatewayShared";
 
 export type ProviderTemplatePickerDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   templates: GatewayProviderTemplateView[];
-  providers?: GatewayUpstreamProvider[];
   busy: boolean;
   onSelectBlank: () => void;
   onSelectTemplate: (template: GatewayProviderTemplate) => void;
-  onEditTemplate?: (template: GatewayProviderTemplate) => void;
   onNewTemplate?: () => void;
 };
-
-function protocolBadgeClass(protocol: string): string {
-  return protocol === "responses"
-    ? "bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20"
-    : "bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20";
-}
 
 export function ProviderTemplatePickerDialog({
   open,
@@ -180,6 +172,7 @@ export function ProviderTemplatePickerDialog({
                           <span
                             className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-4 ${protocolBadgeClass(
                               template.protocol,
+                              { bordered: true },
                             )}`}
                           >
                             {protocolLabel}

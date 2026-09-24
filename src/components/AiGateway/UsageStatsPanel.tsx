@@ -29,6 +29,7 @@ import {
 } from "@/lib/aiGateway";
 import { errorToMessage } from "@/lib/messages";
 import { SelectDropdown } from "./SelectDropdown";
+import { RANGE_LABEL_FALLBACKS, RANGE_LABEL_KEYS } from "./gatewayShared";
 
 function formatCount(value: number): string {
   return new Intl.NumberFormat().format(value);
@@ -44,24 +45,6 @@ function formatCacheHitRate(rate: number | null): string {
 function formatCacheCoverage(eligible: number, successful: number): string {
   return `${formatCount(eligible)} / ${formatCount(successful)}`;
 }
-
-const RANGE_LABEL_KEYS: Record<UsageRangeKey, string> = {
-  today: "aiGatewayRangeToday",
-  yesterday: "aiGatewayRangeYesterday",
-  "7d": "aiGatewayRange7d",
-  "15d": "aiGatewayRange15d",
-  "30d": "aiGatewayRange30d",
-  all: "aiGatewayRangeAll",
-};
-
-const RANGE_LABEL_FALLBACKS: Record<UsageRangeKey, string> = {
-  today: "Today",
-  yesterday: "Yesterday",
-  "7d": "7d",
-  "15d": "15d",
-  "30d": "30d",
-  all: "All",
-};
 
 type TrendMetric = "tokens" | "requests" | "cost";
 

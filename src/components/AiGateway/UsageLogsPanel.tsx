@@ -29,29 +29,11 @@ import {
   type UsageRangeKey,
 } from "@/lib/aiGateway";
 import { errorToMessage } from "@/lib/messages";
-
-const RANGE_LABEL_KEYS: Record<UsageRangeKey, string> = {
-  today: "aiGatewayRangeToday",
-  yesterday: "aiGatewayRangeYesterday",
-  "7d": "aiGatewayRange7d",
-  "15d": "aiGatewayRange15d",
-  "30d": "aiGatewayRange30d",
-  all: "aiGatewayRangeAll",
-};
-
-const RANGE_LABEL_FALLBACKS: Record<UsageRangeKey, string> = {
-  today: "Today",
-  yesterday: "Yesterday",
-  "7d": "7d",
-  "15d": "15d",
-  "30d": "30d",
-  all: "All",
-};
+import { RANGE_LABEL_FALLBACKS, RANGE_LABEL_KEYS } from "./gatewayShared";
 
 const STATUS_FALLBACKS: Record<UsageLogResult, string> = {
   success: "Success",
   failure: "Failure",
-  cancelled: "Cancelled",
 };
 
 const GROUP_OPTIONS: Array<{
@@ -80,11 +62,6 @@ function statusBadgeStyle(result: UsageLogResult): {
       return {
         badge: "bg-destructive/10 text-destructive border-destructive/20",
         dot: "bg-destructive",
-      };
-    case "cancelled":
-      return {
-        badge: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
-        dot: "bg-amber-500",
       };
     default:
       return {
@@ -322,11 +299,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
     void load();
   }, [isActive, load]);
 
-  // Defensively drop legacy/ cancelled rows from stale or compatibility
-  // payloads before deriving the visible table and filter options.
-  const visibleRecords = (pageData?.records ?? []).filter(
-    (item) => item.result !== "cancelled",
-  );
+  const visibleRecords = pageData?.records ?? [];
 
   const modelOptions = [
     ...(pageData?.models ??

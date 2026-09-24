@@ -20,11 +20,11 @@ import {
   formatGatewayTimestamp,
   type CreateProviderFromTemplateRequest,
   type GatewayProviderTemplate,
-  type GatewayProviderTemplateModel,
   type GatewayProviderTemplateView,
 } from "@/lib/aiGateway";
 import { TemplateCreateDialog } from "./TemplateCreateDialog";
 import { ProviderTemplateAvatar } from "./ProviderTemplateIcon";
+import { protocolBadgeClass } from "./gatewayShared";
 import { useTemplateAutoRefreshFailures } from "./useTemplateAutoRefresh";
 
 export type ProviderTemplateSectionProps = {
@@ -36,17 +36,10 @@ export type ProviderTemplateSectionProps = {
   onEditTemplate?: (template: GatewayProviderTemplate) => void;
   onNewTemplate?: () => void;
   onResetBuiltin?: () => void;
-  hideTitle?: boolean;
   hideHeader?: boolean;
   expandedIds?: Record<string, boolean>;
   onToggleExpand?: (templateId: string) => void;
 };
-
-function protocolBadgeClass(protocol: GatewayProviderTemplateModel["protocol"]): string {
-  return protocol === "responses"
-    ? "bg-purple-500/10 text-purple-600 dark:text-purple-400"
-    : "bg-blue-500/10 text-blue-600 dark:text-blue-400";
-}
 
 type ProviderTemplateCardProps = {
   view: GatewayProviderTemplateView;
@@ -526,7 +519,6 @@ export function ProviderTemplateSection({
   onEditTemplate,
   onNewTemplate,
   onResetBuiltin,
-  hideTitle,
   hideHeader,
   expandedIds,
   onToggleExpand,
@@ -586,26 +578,15 @@ export function ProviderTemplateSection({
       {!hideHeader && (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-1">
           <div className="flex items-center gap-2.5">
-            {!hideTitle ? (
-              <>
-                <div className="flex items-center gap-1.5">
-                  <Sparkles className="h-4 w-4 text-primary" />
-                  <h3 className="text-sm font-semibold text-foreground">
-                    {t("aiGatewayProviderTemplates", "Provider Templates")}
-                  </h3>
-                </div>
-                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
-                  {templates.length}
-                </span>
-              </>
-            ) : (
-              <span className="text-xs text-muted-foreground font-medium">
-                {t("aiGatewayAvailableTemplatesCount", {
-                  count: templates.length,
-                  defaultValue: "共 {{count}} 个可用模板",
-                })}
-              </span>
-            )}
+            <div className="flex items-center gap-1.5">
+              <Sparkles className="h-4 w-4 text-primary" />
+              <h3 className="text-sm font-semibold text-foreground">
+                {t("aiGatewayProviderTemplates", "Provider Templates")}
+              </h3>
+            </div>
+            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
+              {templates.length}
+            </span>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">

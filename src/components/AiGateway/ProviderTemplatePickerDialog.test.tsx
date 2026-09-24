@@ -40,11 +40,9 @@ describe("ProviderTemplatePickerDialog", () => {
         open={true}
         onOpenChange={vi.fn()}
         templates={mockTemplates}
-        providers={[]}
         busy={false}
         onSelectBlank={vi.fn()}
         onSelectTemplate={vi.fn()}
-        onEditTemplate={vi.fn()}
         onNewTemplate={vi.fn()}
       />,
     );
@@ -61,11 +59,9 @@ describe("ProviderTemplatePickerDialog", () => {
         open={true}
         onOpenChange={vi.fn()}
         templates={mockTemplates}
-        providers={[]}
         busy={false}
         onSelectBlank={vi.fn()}
         onSelectTemplate={vi.fn()}
-        onEditTemplate={vi.fn()}
       />,
     );
 
@@ -86,11 +82,9 @@ describe("ProviderTemplatePickerDialog", () => {
         open={true}
         onOpenChange={vi.fn()}
         templates={mockTemplates}
-        providers={[]}
         busy={false}
         onSelectBlank={vi.fn()}
         onSelectTemplate={vi.fn()}
-        onEditTemplate={vi.fn()}
       />,
     );
 
@@ -109,11 +103,9 @@ describe("ProviderTemplatePickerDialog", () => {
         open={true}
         onOpenChange={vi.fn()}
         templates={mockTemplates}
-        providers={[]}
         busy={false}
         onSelectBlank={onSelectBlank}
         onSelectTemplate={vi.fn()}
-        onEditTemplate={vi.fn()}
       />,
     );
 
@@ -128,11 +120,9 @@ describe("ProviderTemplatePickerDialog", () => {
         open={true}
         onOpenChange={vi.fn()}
         templates={mockTemplates}
-        providers={[]}
         busy={false}
         onSelectBlank={vi.fn()}
         onSelectTemplate={onSelectTemplate}
-        onEditTemplate={vi.fn()}
       />,
     );
 
@@ -146,11 +136,9 @@ describe("ProviderTemplatePickerDialog", () => {
         open={true}
         onOpenChange={vi.fn()}
         templates={mockTemplates}
-        providers={[]}
         busy={false}
         onSelectBlank={vi.fn()}
         onSelectTemplate={vi.fn()}
-        onEditTemplate={vi.fn()}
       />,
     );
 
@@ -166,11 +154,9 @@ describe("ProviderTemplatePickerDialog", () => {
         open={true}
         onOpenChange={vi.fn()}
         templates={mockTemplates}
-        providers={[]}
         busy={false}
         onSelectBlank={vi.fn()}
         onSelectTemplate={vi.fn()}
-        onEditTemplate={vi.fn()}
         onNewTemplate={onNewTemplate}
       />,
     );
@@ -218,7 +204,6 @@ describe("ProviderTemplatePickerDialog", () => {
         open={true}
         onOpenChange={vi.fn()}
         templates={multiTemplates}
-        providers={[]}
         busy={false}
         onSelectBlank={vi.fn()}
         onSelectTemplate={vi.fn()}

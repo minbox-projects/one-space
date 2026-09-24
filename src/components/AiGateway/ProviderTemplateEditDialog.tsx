@@ -119,7 +119,7 @@ export function ProviderTemplateEditDialog({
           cache_read: m.cache_read ?? 0,
           cache_write: m.cache_write ?? 0,
           output: m.output ?? 0,
-          off_peaks: m.off_peaks ?? (m.off_peak ? [m.off_peak] : []),
+          off_peaks: m.off_peaks ?? [],
         };
         seeded.push(priceRowToDraft(priceRow, upstream, `price-${upstream}`));
       }

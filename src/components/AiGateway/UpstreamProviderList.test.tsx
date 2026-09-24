@@ -287,49 +287,6 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
     expect(screen.getByRole("switch", { name: /上游服务商 1/i })).toBeChecked();
     expect(screen.getByRole("switch", { name: /上游服务商 2/i })).not.toBeChecked();
   });
-
-  it("提供 templateSection 时渲染在服务商列表上方，不提供时行为不变", () => {
-    const providers: GatewayUpstreamProvider[] = [
-      makeProvider({ id: "p1", name: "Provider 1", enabled: true }),
-    ];
-
-    const { unmount } = renderWithProviders(
-      <UpstreamProviderList
-        providers={providers}
-        selectedProviderId={null}
-        busy={false}
-        onSelect={vi.fn()}
-        onToggleEnabled={vi.fn()}
-        onAdd={vi.fn()}
-        templateSection={<div data-testid="ai-gateway-template-slot">Templates</div>}
-      />,
-    );
-
-    const slot = screen.getByTestId("ai-gateway-template-slot");
-    const providerCard = screen.getByTestId("ai-gateway-provider-p1");
-    expect(slot).toBeInTheDocument();
-    expect(slot).toHaveTextContent("Templates");
-    // 插槽必须出现在服务商卡片之前（列表上方）
-    expect(
-      slot.compareDocumentPosition(providerCard) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-
-    // 不传 templateSection 时既有渲染不受影响，也不出现插槽
-    unmount();
-    renderWithProviders(
-      <UpstreamProviderList
-        providers={providers}
-        selectedProviderId={null}
-        busy={false}
-        onSelect={vi.fn()}
-        onToggleEnabled={vi.fn()}
-        onAdd={vi.fn()}
-      />,
-    );
-
-    expect(screen.queryByTestId("ai-gateway-template-slot")).not.toBeInTheDocument();
-    expect(screen.getByText("Provider 1")).toBeInTheDocument();
-  });
 });
 
 describe("UpstreamProviderList 模板头像与退休映射提示", () => {
@@ -891,7 +848,6 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
     provider: GatewayUpstreamProvider,
     overrides: {
       onToggleEnabled?: (provider: GatewayUpstreamProvider, enabled: boolean) => void;
-      onDelete?: (providerId: string) => void;
     } = {},
   ) {
     return renderWithProviders(
@@ -902,7 +858,6 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
         onSelect={vi.fn()}
         onToggleEnabled={overrides.onToggleEnabled ?? vi.fn()}
         onAdd={vi.fn()}
-        onDelete={overrides.onDelete ?? vi.fn()}
       />,
     );
   }
@@ -1029,7 +984,6 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
   });
 
   it("非 CommandCode 服务商渲染占位内容，不渲染模型标签预览，底栏删除按钮展示删除文字", () => {
-    const onDelete = vi.fn();
     const providers: GatewayUpstreamProvider[] = [
       makeProvider({
         id: "p-non-cmd",
@@ -1056,7 +1010,6 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
         onSelect={vi.fn()}
         onToggleEnabled={vi.fn()}
         onAdd={vi.fn()}
-        onDelete={onDelete}
       />,
     );
 
