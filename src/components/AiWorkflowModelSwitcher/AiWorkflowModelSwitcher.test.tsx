@@ -2,6 +2,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AiWorkflowModelSwitcher } from "./AiWorkflowModelSwitcher";
+import i18n from "@/i18n";
 import {
   SUPPORTED_ROLES,
   type AgentMatrixRow,
@@ -78,7 +79,8 @@ const mockActivationReport: ProfileActivationReport = {
 };
 
 describe("AiWorkflowModelSwitcher 行为测试", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("zh");
     localStorage.clear();
     resetTauriMocks();
     invokeMock.mockImplementation(async (command: string, args?: unknown) => {
@@ -101,8 +103,8 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       if (command === "ai_workflow_activate_profile") {
         return mockActivationReport;
       }
-      if (command === "ai_workflow_save_and_activate_profile") {
-        return mockActivationReport;
+      if (command === "ai_workflow_save_profile") {
+        return null;
       }
       if (command === "ai_workflow_create_profile") {
         return null;
@@ -373,28 +375,73 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
     });
   });
 
-  describe("AC-006 & AC-007: 直接激活与保存并激活", () => {
-    it("直接激活：未修改时直接调用 activateProfile，成功后展示报告", async () => {
+  describe("AC-006 & AC-007: 独立保存与激活", () => {
+    it("操作按钮提供可访问的激活与保存标签", async () => {
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      expect(
+        await screen.findByRole("button", { name: /^(激活|Activate)$/i }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /^(保存|Save)$/i }),
+      ).toBeInTheDocument();
+    });
+
+    it("英文界面使用 Activate 和 Save 标签", async () => {
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+      await screen.findByTestId("cell-backend-opencode");
+      await i18n.changeLanguage("en");
+
+      expect(
+        await screen.findByRole("button", { name: "Activate" }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+      await i18n.changeLanguage("zh");
+    });
+
+    it("激活：即使矩阵有未保存修改，也只调用 activate 命令且不保存修改", async () => {
       const user = userEvent.setup();
       renderWithProviders(<AiWorkflowModelSwitcher />);
 
-      expect(await screen.findByRole("button", { name: /直接激活|Direct Activate|激活/i })).toBeInTheDocument();
+      await user.click(await screen.findByRole("button", { name: /baibai-40/ }));
+      expect(await screen.findByTestId("cell-backend-opencode")).toHaveTextContent(
+        "baibai40/deepseek-v3",
+      );
+      await user.click(await screen.findByTestId("cell-backend-opencode"));
+      const input = await screen.findByTestId("manual-model-input-backend-opencode");
+      await user.clear(input);
+      await user.type(input, "unsaved-model");
 
-      // 点击激活
-      await user.click(screen.getByRole("button", { name: /直接激活|Direct Activate|激活/i }));
+      await user.click(
+        screen.getByRole("button", {
+          name: /^(激活|Activate)$/i,
+        }),
+      );
 
       await waitFor(() => {
         expect(invokeMock).toHaveBeenCalledWith("ai_workflow_activate_profile", {
-          name: "onespace-ai-gateway",
+          name: "baibai-40",
           homeOverride: undefined,
         });
       });
+      expect(invokeMock).not.toHaveBeenCalledWith(
+        "ai_workflow_save_profile",
+        expect.anything(),
+      );
+      expect(screen.getByTestId("matrix-dirty-indicator")).toBeInTheDocument();
 
       // 展示激活报告
       const report = await screen.findByTestId("activation-report");
       expect(report).toBeInTheDocument();
       expect(report).toHaveTextContent(/baibai-40/);
       expect(report).toHaveTextContent(/backend/);
+      expect(screen.getByRole("button", { name: /baibai-40/ })).toHaveAttribute(
+        "data-active",
+        "true",
+      );
+      expect(
+        screen.getByRole("button", { name: /onespace-ai-gateway/ }),
+      ).toHaveAttribute("data-active", "false");
     });
 
     it("空安装时展示无托管工具提示", async () => {
@@ -416,33 +463,36 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
 
       renderWithProviders(<AiWorkflowModelSwitcher />);
 
-      await user.click(await screen.findByRole("button", { name: /直接激活|Direct Activate|激活/i }));
+      await user.click(
+        await screen.findByRole("button", {
+          name: /^(激活|Activate)$/i,
+        }),
+      );
 
       const report = await screen.findByTestId("activation-report");
       expect(report).toHaveTextContent(/无托管工具|no tools are managed/i);
     });
 
-    it("保存并激活：编辑后调用 saveAndActivateProfile，提交 9 行矩阵并展示报告", async () => {
+    it("保存现有方案：提交选中的方案与编辑矩阵，只清除 dirty 且不激活", async () => {
       const user = userEvent.setup();
       renderWithProviders(<AiWorkflowModelSwitcher />);
 
+      await user.click(await screen.findByRole("button", { name: /baibai-40/ }));
       // 编辑某个单元格
-      await user.click(await screen.findByTestId("cell-backend-opencode"));
+      const opencodeCell = await screen.findByTestId("cell-backend-opencode");
+      expect(opencodeCell).toHaveTextContent("baibai40/deepseek-v3");
+      await user.click(opencodeCell);
       const input = await screen.findByTestId("manual-model-input-backend-opencode");
       await user.clear(input);
       await user.type(input, "new-gateway-model");
 
-      // 点击保存并激活
-      const saveAndActivateBtn = screen.getByRole("button", {
-        name: /保存并激活|Save and Activate/i,
-      });
-      await user.click(saveAndActivateBtn);
+      await user.click(screen.getByRole("button", { name: /^(保存|Save)$/i }));
 
       await waitFor(() => {
         expect(invokeMock).toHaveBeenCalledWith(
-          "ai_workflow_save_and_activate_profile",
+          "ai_workflow_save_profile",
           expect.objectContaining({
-            name: "onespace-ai-gateway",
+            name: "baibai-40",
             matrix: expect.arrayContaining([
               expect.objectContaining({
                 role: "backend",
@@ -454,10 +504,366 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
           }),
         );
       });
+      expect(invokeMock).not.toHaveBeenCalledWith(
+        "ai_workflow_activate_profile",
+        expect.anything(),
+      );
 
-      // 展示激活报告且 dirty 状态清除
-      expect(await screen.findByTestId("activation-report")).toBeInTheDocument();
+      // 保存不产生激活报告，也不改变当前激活方案。
+      expect(screen.queryByTestId("activation-report")).not.toBeInTheDocument();
       expect(screen.queryByTestId("matrix-dirty-indicator")).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /onespace-ai-gateway/ }),
+      ).toHaveAttribute("data-active", "true");
+      expect(screen.getByRole("button", { name: /baibai-40/ })).toHaveAttribute(
+        "data-active",
+        "false",
+      );
+    });
+
+    it("新建方案保存后选择否：方案已保存且保持未激活", async () => {
+      const user = userEvent.setup();
+      let currentProfiles = [...mockProfiles];
+      let saveCompleted = false;
+      invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+        const payload = args as Record<string, unknown> | undefined;
+        if (command === "ai_workflow_list_profiles") return currentProfiles;
+        if (command === "ai_workflow_get_profile_matrix") {
+          return payload?.name === "custom-plan-no"
+            ? { ...mockGatewayMatrix, name: "custom-plan-no" }
+            : mockGatewayMatrix;
+        }
+        if (command === "ai_workflow_get_model_sources") return mockModelSources;
+        if (command === "ai_workflow_create_profile") {
+          currentProfiles = [
+            ...currentProfiles,
+            { name: String(payload?.name), active: false },
+          ];
+          return null;
+        }
+        if (command === "ai_workflow_save_profile") {
+          return Promise.resolve().then(() => {
+            saveCompleted = true;
+            return null;
+          });
+        }
+        if (command === "ai_workflow_activate_profile") return mockActivationReport;
+        return null;
+      });
+
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+      await screen.findByTestId("cell-backend-opencode");
+      await i18n.changeLanguage("en");
+      await user.click(await screen.findByTestId("create-profile-trigger"));
+      await user.type(await screen.findByTestId("create-profile-name-input"), "custom-plan-no");
+      await user.click(screen.getByTestId("create-profile-submit"));
+
+      await screen.findByRole("button", { name: /custom-plan-no/ });
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(
+        await screen.findByText(/activate|激活/i, { selector: "p" }),
+      ).toBeInTheDocument();
+      const saveCompletedBeforePrompt = saveCompleted;
+      const noButton = await screen.findByRole("button", { name: "No" });
+      await user.click(noButton);
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith(
+          "ai_workflow_save_profile",
+          expect.objectContaining({ name: "custom-plan-no" }),
+        );
+      });
+      expect(invokeMock).not.toHaveBeenCalledWith(
+        "ai_workflow_activate_profile",
+        expect.anything(),
+      );
+      expect(screen.queryByTestId("activation-report")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("matrix-dirty-indicator")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /custom-plan-no/ })).toHaveAttribute(
+        "data-active",
+        "false",
+      );
+      expect(
+        screen.getByRole("button", { name: /onespace-ai-gateway/ }),
+      ).toHaveAttribute("data-active", "true");
+      expect(saveCompletedBeforePrompt).toBe(true);
+    });
+
+    it("新建方案首存选择否后再次保存不再询问激活", async () => {
+      const user = userEvent.setup();
+      let currentProfiles = [...mockProfiles];
+      let saveCompletions = 0;
+      invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+        const payload = args as Record<string, unknown> | undefined;
+        if (command === "ai_workflow_list_profiles") return currentProfiles;
+        if (command === "ai_workflow_get_profile_matrix") {
+          return payload?.name === "custom-plan-repeat"
+            ? { ...mockGatewayMatrix, name: "custom-plan-repeat" }
+            : mockGatewayMatrix;
+        }
+        if (command === "ai_workflow_get_model_sources") return mockModelSources;
+        if (command === "ai_workflow_create_profile") {
+          currentProfiles = [
+            ...currentProfiles,
+            { name: String(payload?.name), active: false },
+          ];
+          return null;
+        }
+        if (command === "ai_workflow_save_profile") {
+          return Promise.resolve().then(() => {
+            saveCompletions += 1;
+            return null;
+          });
+        }
+        return null;
+      });
+
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+      await screen.findByTestId("cell-backend-opencode");
+      await i18n.changeLanguage("en");
+      await user.click(await screen.findByTestId("create-profile-trigger"));
+      await user.type(await screen.findByTestId("create-profile-name-input"), "custom-plan-repeat");
+      await user.click(screen.getByTestId("create-profile-submit"));
+
+      await screen.findByRole("button", { name: /custom-plan-repeat/ });
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(await screen.findByRole("button", { name: "No" })).toBeInTheDocument();
+      const saveCompletedBeforePrompt = saveCompletions === 1;
+      await user.click(screen.getByRole("button", { name: "No" }));
+      await waitFor(() => expect(saveCompletions).toBe(1));
+
+      expect(screen.queryByRole("button", { name: "No" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(saveCompletions).toBe(2));
+
+      expect(screen.queryByRole("button", { name: "Yes" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "No" })).not.toBeInTheDocument();
+      expect(invokeMock.mock.calls.filter(([command]) => command === "ai_workflow_save_profile")).toHaveLength(2);
+      expect(invokeMock).not.toHaveBeenCalledWith(
+        "ai_workflow_activate_profile",
+        expect.anything(),
+      );
+      expect(saveCompletedBeforePrompt).toBe(true);
+      expect(screen.getByRole("button", { name: /custom-plan-repeat/ })).toHaveAttribute(
+        "data-active",
+        "false",
+      );
+      expect(
+        screen.getByRole("button", { name: /onespace-ai-gateway/ }),
+      ).toHaveAttribute("data-active", "true");
+    });
+
+    it("新建方案保存后选择是：先保存，再激活", async () => {
+      const user = userEvent.setup();
+      let currentProfiles = [...mockProfiles];
+      let saveCompleted = false;
+      invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+        const payload = args as Record<string, unknown> | undefined;
+        if (command === "ai_workflow_list_profiles") return currentProfiles;
+        if (command === "ai_workflow_get_profile_matrix") {
+          return payload?.name === "custom-plan-yes"
+            ? { ...mockGatewayMatrix, name: "custom-plan-yes" }
+            : mockGatewayMatrix;
+        }
+        if (command === "ai_workflow_get_model_sources") return mockModelSources;
+        if (command === "ai_workflow_create_profile") {
+          currentProfiles = [
+            ...currentProfiles,
+            { name: String(payload?.name), active: false },
+          ];
+          return null;
+        }
+        if (command === "ai_workflow_save_profile") {
+          return Promise.resolve().then(() => {
+            saveCompleted = true;
+            return null;
+          });
+        }
+        if (command === "ai_workflow_activate_profile") {
+          return { ...mockActivationReport, active_profile: "custom-plan-yes" };
+        }
+        return null;
+      });
+
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+      await screen.findByTestId("cell-backend-opencode");
+      await i18n.changeLanguage("en");
+      await user.click(await screen.findByTestId("create-profile-trigger"));
+      await user.type(await screen.findByTestId("create-profile-name-input"), "custom-plan-yes");
+      await user.click(screen.getByTestId("create-profile-submit"));
+
+      await screen.findByRole("button", { name: /custom-plan-yes/ });
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(
+        await screen.findByText(/activate|激活/i, { selector: "p" }),
+      ).toBeInTheDocument();
+      const saveCompletedBeforePrompt = saveCompleted;
+      const yesButton = await screen.findByRole("button", { name: "Yes" });
+      await user.click(yesButton);
+
+      await waitFor(() => {
+        const commands = invokeMock.mock.calls.map(([command]) => command);
+        expect(commands.indexOf("ai_workflow_save_profile")).toBeGreaterThan(-1);
+        expect(commands.indexOf("ai_workflow_activate_profile")).toBeGreaterThan(
+          commands.indexOf("ai_workflow_save_profile"),
+        );
+      });
+      expect(invokeMock).toHaveBeenCalledWith(
+        "ai_workflow_save_profile",
+        expect.objectContaining({ name: "custom-plan-yes" }),
+      );
+      expect(invokeMock).toHaveBeenCalledWith("ai_workflow_activate_profile", {
+        name: "custom-plan-yes",
+        homeOverride: undefined,
+      });
+      expect(await screen.findByTestId("activation-report")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /custom-plan-yes/ })).toHaveAttribute(
+        "data-active",
+        "true",
+      );
+      expect(saveCompletedBeforePrompt).toBe(true);
+    });
+
+    it("新建方案保存失败时显示错误且不询问激活", async () => {
+      const user = userEvent.setup();
+      let currentProfiles = [...mockProfiles];
+      let saveAttempted = false;
+      const saveError = "profile save failed";
+      invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+        const payload = args as Record<string, unknown> | undefined;
+        if (command === "ai_workflow_list_profiles") return currentProfiles;
+        if (command === "ai_workflow_get_profile_matrix") {
+          return payload?.name === "custom-plan-failed"
+            ? { ...mockGatewayMatrix, name: "custom-plan-failed" }
+            : mockGatewayMatrix;
+        }
+        if (command === "ai_workflow_get_model_sources") return mockModelSources;
+        if (command === "ai_workflow_create_profile") {
+          currentProfiles = [
+            ...currentProfiles,
+            { name: String(payload?.name), active: false },
+          ];
+          return null;
+        }
+        if (command === "ai_workflow_save_profile") {
+          saveAttempted = true;
+          throw new Error(saveError);
+        }
+        return null;
+      });
+
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+      await screen.findByTestId("cell-backend-opencode");
+      await i18n.changeLanguage("en");
+      await user.click(await screen.findByTestId("create-profile-trigger"));
+      await user.type(await screen.findByTestId("create-profile-name-input"), "custom-plan-failed");
+      await user.click(screen.getByTestId("create-profile-submit"));
+
+      await screen.findByRole("button", { name: /custom-plan-failed/ });
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      const promptWasShownBeforeSaveFailure =
+        screen.queryByRole("button", { name: "No" }) !== null;
+      if (promptWasShownBeforeSaveFailure) {
+        await user.click(screen.getByRole("button", { name: "No" }));
+      }
+      expect(await screen.findByRole("alert")).toHaveTextContent(saveError);
+      expect(saveAttempted).toBe(true);
+      expect(promptWasShownBeforeSaveFailure).toBe(false);
+      expect(screen.queryByRole("button", { name: "Yes" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "No" })).not.toBeInTheDocument();
+      expect(invokeMock).not.toHaveBeenCalledWith(
+        "ai_workflow_activate_profile",
+        expect.anything(),
+      );
+      expect(screen.getByRole("button", { name: /onespace-ai-gateway/ })).toHaveAttribute(
+        "data-active",
+        "true",
+      );
+    });
+
+    it("激活新方案失败时保留已保存矩阵且当前激活方案不变", async () => {
+      const user = userEvent.setup();
+      let currentProfiles = [...mockProfiles];
+      let saveCompleted = false;
+      let savedProfile: string | null = null;
+      let savedMatrix: AgentMatrixRow[] | null = null;
+      const activationError = "profile activation failed";
+      invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+        const payload = args as Record<string, unknown> | undefined;
+        if (command === "ai_workflow_list_profiles") return currentProfiles;
+        if (command === "ai_workflow_get_profile_matrix") {
+          return payload?.name === "custom-plan-activation-fails"
+            ? { ...mockGatewayMatrix, name: "custom-plan-activation-fails" }
+            : mockGatewayMatrix;
+        }
+        if (command === "ai_workflow_get_model_sources") return mockModelSources;
+        if (command === "ai_workflow_create_profile") {
+          currentProfiles = [
+            ...currentProfiles,
+            { name: String(payload?.name), active: false },
+          ];
+          return null;
+        }
+        if (command === "ai_workflow_save_profile") {
+          return Promise.resolve().then(() => {
+            saveCompleted = true;
+            savedProfile = String(payload?.name);
+            savedMatrix = payload?.matrix as AgentMatrixRow[];
+            return null;
+          });
+        }
+        if (command === "ai_workflow_activate_profile") {
+          throw new Error(activationError);
+        }
+        return null;
+      });
+
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+      await screen.findByTestId("cell-backend-opencode");
+      await i18n.changeLanguage("en");
+      await user.click(await screen.findByTestId("create-profile-trigger"));
+      await user.type(
+        await screen.findByTestId("create-profile-name-input"),
+        "custom-plan-activation-fails",
+      );
+      await user.click(screen.getByTestId("create-profile-submit"));
+
+      await screen.findByRole("button", { name: /custom-plan-activation-fails/ });
+      await user.click(await screen.findByTestId("cell-backend-opencode"));
+      const modelInput = await screen.findByTestId("manual-model-input-backend-opencode");
+      await user.clear(modelInput);
+      await user.type(modelInput, "saved-before-activation");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(await screen.findByRole("button", { name: "Yes" })).toBeInTheDocument();
+      const saveCompletedBeforePrompt = saveCompleted;
+      await user.click(screen.getByRole("button", { name: "Yes" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(activationError);
+      expect(saveCompletedBeforePrompt).toBe(true);
+      expect(saveCompleted).toBe(true);
+      expect(savedProfile).toBe("custom-plan-activation-fails");
+      expect(savedMatrix).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: "backend",
+            opencode: expect.objectContaining({ model: "saved-before-activation" }),
+          }),
+        ]),
+      );
+      expect(invokeMock).toHaveBeenCalledWith("ai_workflow_activate_profile", {
+        name: "custom-plan-activation-fails",
+        homeOverride: undefined,
+      });
+      expect(screen.getByRole("button", { name: /onespace-ai-gateway/ })).toHaveAttribute(
+        "data-active",
+        "true",
+      );
+      expect(
+        screen.getByRole("button", { name: /custom-plan-activation-fails/ }),
+      ).toHaveAttribute("data-active", "false");
+      expect(screen.queryByTestId("activation-report")).not.toBeInTheDocument();
     });
   });
 
@@ -477,7 +883,11 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
 
       renderWithProviders(<AiWorkflowModelSwitcher />);
 
-      await user.click(await screen.findByRole("button", { name: /直接激活|Direct Activate|激活/i }));
+      await user.click(
+        await screen.findByRole("button", {
+          name: /^(激活|Activate)$/i,
+        }),
+      );
 
       // 验证 verbatim 原样回显错误
       const alert = await screen.findByRole("alert");
@@ -501,7 +911,11 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
 
       renderWithProviders(<AiWorkflowModelSwitcher />);
 
-      await user.click(await screen.findByRole("button", { name: /直接激活|Direct Activate|激活/i }));
+      await user.click(
+        await screen.findByRole("button", {
+          name: /^(激活|Activate)$/i,
+        }),
+      );
 
       const alert = await screen.findByRole("alert");
       expect(alert).toHaveTextContent(binaryError);
@@ -802,5 +1216,3 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
     });
   });
 });
-
-

@@ -122,6 +122,18 @@ export async function saveAndActivateProfile(
   );
 }
 
+export async function saveProfile(
+  name: string,
+  matrix: AgentMatrixRow[],
+  homeOverride?: string,
+): Promise<void> {
+  return invoke<void>("ai_workflow_save_profile", {
+    name,
+    matrix,
+    homeOverride,
+  });
+}
+
 export async function activateProfile(
   name: string,
   homeOverride?: string,
@@ -153,4 +165,3 @@ export async function deleteProfile(
     homeOverride,
   });
 }
-
