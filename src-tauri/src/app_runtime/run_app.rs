@@ -331,6 +331,7 @@ pub fn run() {
             ai_gateway::ai_gateway_reset_provider_templates,
             ai_gateway::ai_gateway_template_auto_refresh_get,
             ai_gateway::ai_gateway_template_auto_refresh_save,
+            ai_gateway::ai_gateway_provider_quota,
             // New service_providers domain (replaces providers_*)
             app_store::service_providers_list,
             app_store::service_provider_read_opencode_config,
