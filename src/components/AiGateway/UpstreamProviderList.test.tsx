@@ -6,8 +6,34 @@ import { UpstreamProviderList } from "./UpstreamProviderList";
 import {
   type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
+  type ProviderQuota,
 } from "@/lib/aiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
+import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
+
+const COMMANDCODE_QUOTA_FIXTURE: ProviderQuota = {
+  credits: {
+    monthlyCredits: 42.5,
+    purchasedCredits: 1.25,
+    freeCredits: 0,
+    belowThreshold: false,
+  },
+  windowLimits: {
+    limited: true,
+    fiveHour: {
+      used: 0.5,
+      cap: 14,
+      exceeded: false,
+      resetAt: 1758600000000,
+    },
+    weekly: {
+      used: 11,
+      cap: 35,
+      exceeded: false,
+      resetAt: 1758600000000,
+    },
+  },
+};
 
 function makeProvider(
   overrides: Partial<GatewayUpstreamProvider> = {},
@@ -884,3 +910,122 @@ describe("UpstreamProviderList 标签展示与紧凑多选筛选 & 自定义图�
   });
 });
 
+describe("UpstreamProviderList CommandCode 配额区块集成", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "ai_gateway_provider_quota") {
+        return COMMANDCODE_QUOTA_FIXTURE;
+      }
+      return undefined;
+    });
+    await i18n.changeLanguage("en");
+  });
+
+  function renderProviderList(
+    provider: GatewayUpstreamProvider,
+    overrides: {
+      onToggleEnabled?: (provider: GatewayUpstreamProvider, enabled: boolean) => void;
+      onDelete?: (providerId: string) => void;
+    } = {},
+  ) {
+    return renderWithProviders(
+      <UpstreamProviderList
+        providers={[provider]}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={overrides.onToggleEnabled ?? vi.fn()}
+        onAdd={vi.fn()}
+        onDelete={overrides.onDelete ?? vi.fn()}
+      />,
+    );
+  }
+
+  it("AC-003 skips the quota block and command for a non-CommandCode provider", () => {
+    renderProviderList(
+      makeProvider({
+        id: "openai-provider",
+        base_url: "https://api.openai.com/v1",
+      }),
+    );
+
+    expect(
+      screen.queryByTestId("ai-gateway-provider-quota-openai-provider"),
+    ).not.toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "ai_gateway_provider_quota",
+      expect.anything(),
+    );
+  });
+
+  it("REQ-001 renders the quota block for a CommandCode base URL", async () => {
+    renderProviderList(
+      makeProvider({
+        id: "commandcode-provider",
+        base_url: "https://api.commandcode.ai/provider/v1",
+      }),
+    );
+
+    expect(
+      await screen.findByTestId(
+        "ai-gateway-provider-quota-commandcode-provider",
+      ),
+    ).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("ai_gateway_provider_quota", {
+      providerId: "commandcode-provider",
+      forceRefresh: false,
+    });
+  });
+
+  it("detects the CommandCode hostname without case sensitivity", async () => {
+    renderProviderList(
+      makeProvider({
+        id: "mixed-case-commandcode",
+        base_url: "https://API.CommandCode.AI/provider/v1",
+      }),
+    );
+
+    expect(
+      await screen.findByTestId(
+        "ai-gateway-provider-quota-mixed-case-commandcode",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("AC-008 keeps provider enable, edit, and delete controls available after quota failure", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "ai_gateway_provider_quota") {
+        throw new Error("HTTP 429");
+      }
+      return undefined;
+    });
+    const onToggleEnabled = vi.fn();
+    const provider = makeProvider({
+      id: "commandcode-error",
+      name: "CommandCode",
+      base_url: "https://api.commandcode.ai/provider/v1",
+    });
+    renderProviderList(provider, { onToggleEnabled });
+
+    await screen.findByTestId(
+      "ai-gateway-provider-quota-error-commandcode-error",
+    );
+    const providerCard = screen.getByTestId(
+      "ai-gateway-provider-commandcode-error",
+    );
+    const enableSwitch = within(providerCard).getByRole("switch", {
+      name: "Enable provider CommandCode",
+    });
+    const editButton = within(providerCard).getByRole("button", {
+      name: "Edit",
+    });
+    const deleteButton = within(providerCard).getByRole("button", {
+      name: "Delete provider CommandCode",
+    });
+
+    expect(enableSwitch).toBeEnabled();
+    expect(editButton).toBeEnabled();
+    expect(deleteButton).toBeEnabled();
+  });
+});

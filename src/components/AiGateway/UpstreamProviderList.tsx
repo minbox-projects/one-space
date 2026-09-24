@@ -16,9 +16,11 @@ import {
   Trash2,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
+import { ProviderQuotaBlock } from "./ProviderQuotaBlock";
 import { ProviderTemplateAvatar } from "./ProviderTemplateIcon";
 import {
   formatGatewayTimestamp,
+  isCommandCodeProvider,
   isMappingDeprecated,
   type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
@@ -574,6 +576,10 @@ export function UpstreamProviderList({
                       </span>
                     </div>
                   </div>
+
+                  {isCommandCodeProvider(provider) ? (
+                    <ProviderQuotaBlock provider={provider} />
+                  ) : null}
 
                   {/* 退休映射提示：模板同步移除模型后其派生映射被自动禁用 */}
                   {retiredMappings.length > 0 ? (

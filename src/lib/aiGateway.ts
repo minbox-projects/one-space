@@ -71,6 +71,31 @@ export interface GatewayUpstreamProvider {
   icon?: string | null;
 }
 
+export interface QuotaCredits {
+  monthlyCredits: number;
+  purchasedCredits: number;
+  freeCredits: number;
+  belowThreshold: boolean;
+}
+
+export interface QuotaWindow {
+  used: number;
+  cap: number;
+  exceeded: boolean;
+  resetAt?: string | number | null;
+}
+
+export interface QuotaWindowLimits {
+  limited: boolean;
+  fiveHour?: QuotaWindow | null;
+  weekly?: QuotaWindow | null;
+}
+
+export interface ProviderQuota {
+  credits: QuotaCredits;
+  windowLimits?: QuotaWindowLimits | null;
+}
+
 export interface GatewayKey {
   id: string;
   label: string;
@@ -412,6 +437,28 @@ export function aiGatewayStop() {
 
 export function aiGatewayStatus() {
   return invoke<GatewayStatus>("ai_gateway_status");
+}
+
+/** CommandCode is identified by the configured endpoint host, independent of path or port. */
+export function isCommandCodeProvider(provider: {
+  base_url?: string | null;
+}): boolean {
+  if (!provider.base_url?.trim()) return false;
+  try {
+    return new URL(provider.base_url).hostname.toLowerCase() === "api.commandcode.ai";
+  } catch {
+    return false;
+  }
+}
+
+export function aiGatewayProviderQuota(
+  providerId: string,
+  forceRefresh = false,
+): Promise<ProviderQuota> {
+  return invoke<ProviderQuota>("ai_gateway_provider_quota", {
+    providerId,
+    forceRefresh,
+  });
 }
 
 export function aiGatewayTerminalTargets() {
