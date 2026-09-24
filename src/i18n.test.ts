@@ -79,9 +79,39 @@ describe("Antigravity 终端工具国际化键名", () => {
   });
 });
 
+// REQ-007 / AC-011 guard: the plan removes these unreferenced bilingual keys.
+const REMOVED_AI_GATEWAY_BILINGUAL_KEYS = [
+  "aiGatewayStatusCancelled",
+  "aiGatewayProviderTemplatesDesc",
+  "aiGatewayTemplateProtocolChat",
+  "aiGatewayTemplateProtocolResponses",
+  "aiGateway.provider.weightInvalid",
+] as const;
+
+describe("AI 网关遗留双语文案键移除", () => {
+  it.each(["en", "zh"] as const)("为 %s 移除未引用的网关双语键", (language) => {
+    const keyPaths = new Set(collectKeyPaths(resourceBundle(language)));
+    for (const key of REMOVED_AI_GATEWAY_BILINGUAL_KEYS) {
+      expect(
+        keyPaths.has(key),
+        `${language} 中已移除键 ${key} 不应存在`,
+      ).toBe(false);
+    }
+  });
+
+  it("移除后 en 与 zh 的键路径集合仍完全一致", () => {
+    const enPaths = collectKeyPaths(resourceBundle("en"));
+    const zhPaths = collectKeyPaths(resourceBundle("zh"));
+    const enSet = new Set(enPaths);
+    const zhSet = new Set(zhPaths);
+    const onlyEn = enPaths.filter((path) => !zhSet.has(path));
+    const onlyZh = zhPaths.filter((path) => !enSet.has(path));
+    expect({ onlyEn, onlyZh }).toEqual({ onlyEn: [], onlyZh: [] });
+  });
+});
+
 const PROVIDER_TEMPLATE_KEYS = [
   "aiGatewayProviderTemplates",
-  "aiGatewayProviderTemplatesDesc",
   "aiGatewayTemplateModelsCount",
   "aiGatewayTemplateSource",
   "aiGatewayTemplateLastSync",

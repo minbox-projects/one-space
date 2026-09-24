@@ -227,7 +227,7 @@ describe("UsageLogsPanel", () => {
     ).toHaveTextContent("1m 5s");
   });
 
-  it("切换为 Day（UTC+8）分组展示分组列且错误数不含 cancelled", async () => {
+  it("切换为 Day（UTC+8）分组展示分组列与错误数", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (command: string, args?: any) => {
       if (command !== "ai_gateway_request_logs") {
@@ -237,12 +237,12 @@ describe("UsageLogsPanel", () => {
         return page({
           group_by: "day",
           records: [],
-          total: 3,
+          total: 2,
           groups: [
             {
               group: "2026-09-17",
-              request_count: 3,
-              // 3 requests: 1 failure + 1 success + 1 cancelled; cancelled is not an error.
+              request_count: 2,
+              // 2 requests: 1 failure + 1 success.
               error_count: 1,
               last_request_at_ms: Date.UTC(2026, 8, 17, 5, 0),
             },
@@ -274,7 +274,7 @@ describe("UsageLogsPanel", () => {
     const rows = within(grouped).getAllByTestId("ai-gateway-logs-group-row");
     expect(rows).toHaveLength(1);
     expect(within(rows[0]).getByText("2026-09-17")).toBeInTheDocument();
-    expect(within(rows[0]).getByText("3")).toBeInTheDocument();
+    expect(within(rows[0]).getByText("2")).toBeInTheDocument();
     expect(within(rows[0]).getByText("1")).toBeInTheDocument();
     expect(within(rows[0]).getByText("2026-09-17 13:00")).toBeInTheDocument();
     expect(within(grouped).queryByText("Ungrouped")).not.toBeInTheDocument();
@@ -326,9 +326,14 @@ describe("UsageLogsPanel", () => {
     await user.click(screen.getByRole("button", { name: "Filter" }));
     const panel = await screen.findByTestId("ai-gateway-logs-filter-panel");
 
-    // Only success and failure status buttons must be present.
-    expect(within(panel).getByRole("button", { name: "Success" })).toBeInTheDocument();
-    expect(within(panel).getByRole("button", { name: "Failure" })).toBeInTheDocument();
+    // The status filter offers exactly Any status, Success and Failure.
+    const statusGroup = within(panel).getByText("Status")
+      .parentElement as HTMLElement;
+    expect(
+      within(statusGroup)
+        .getAllByRole("button")
+        .map((button) => button.textContent?.trim()),
+    ).toEqual(["Any status", "Success", "Failure"]);
     expect(
       within(panel).queryByRole("button", { name: "Cancelled" }),
     ).not.toBeInTheDocument();
@@ -1018,21 +1023,13 @@ describe("UsageLogsPanel", () => {
       if (command !== "ai_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
       }
-      // A cancelled record is defensively omitted from the rendered table.
       return page({
-        total: 2,
+        total: 1,
         records: [
           record({
             timestamp_ms: Date.UTC(2026, 8, 17, 4, 0),
             result: "success",
             status: 200,
-            local_model: "gpt-4o",
-          }),
-          // Cancelled row in payload must be omitted by the panel.
-          record({
-            timestamp_ms: Date.UTC(2026, 8, 17, 3, 0),
-            result: "cancelled",
-            status: 0,
             local_model: "gpt-4o",
           }),
         ],
@@ -1043,7 +1040,6 @@ describe("UsageLogsPanel", () => {
     await screen.findByTestId("ai-gateway-logs-ungrouped");
 
     const rows = screen.getAllByTestId("ai-gateway-logs-row");
-    // Only the success record is rendered; cancelled is omitted.
     expect(rows).toHaveLength(1);
     expect(
       within(rows[0]).getByTestId("ai-gateway-logs-status-badge"),
@@ -1056,6 +1052,39 @@ describe("UsageLogsPanel", () => {
         within(row).queryByTestId("ai-gateway-logs-error-tooltip"),
       ).not.toBeInTheDocument();
     }
+  });
+
+  it("状态徽章按 payload 仅展示 success 与 failure", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 2,
+        records: [
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, 4, 0),
+            result: "success",
+            status: 200,
+          }),
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, 3, 0),
+            result: "failure",
+            status: 500,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("ai-gateway-logs-ungrouped");
+
+    const labels = screen
+      .getAllByTestId("ai-gateway-logs-status-badge")
+      .map(
+        (badge) => within(badge).getByText(/^(Success|Failure)$/).textContent,
+      );
+    expect(labels).toEqual(["Success", "Failure"]);
   });
 
   it("同一请求的终止成功行与其失败尝试行按后端顺序（最新在前）相邻展示", async () => {

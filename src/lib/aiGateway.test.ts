@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AI_GATEWAY_DEFAULT_PORT,
-  AI_GATEWAY_KEY_MASK,
   aggregateModels,
   aiGatewayConfigureTerminal,
   aiGatewayDeleteKey,
@@ -9,7 +8,6 @@ import {
   aiGatewayGetConfig,
   aiGatewayReenableProviderModel,
   aiGatewayReenableProviderModels,
-  aiGatewaySaveConfig,
   aiGatewaySetDefaultKey,
   aiGatewaySetProviderEnabled,
   aiGatewayStart,
@@ -46,7 +44,6 @@ import {
   resolveAggregatedModelName,
   resolveAggregatedReasoningEfforts,
   resolveDefaultKeyId,
-  resolveMappingPreview,
   subscribeTemplateAutoRefreshIntervalChanged,
   USAGE_RANGE_KEYS,
   usageStatusTranslationKey,
@@ -76,17 +73,12 @@ function provider(
     id: "p1",
     name: "Provider",
     base_url: "https://upstream.example",
-    api_key: AI_GATEWAY_KEY_MASK,
+    api_key: "********",
     default_model: null,
     mappings: [],
     enabled: true,
-    auto_disabled: false,
-    disabled_reason: null,
-    disabled_at: null,
-    consecutive_failures: 0,
-    last_error_at: null,
     ...overrides,
-  };
+  } as GatewayUpstreamProvider;
 }
 
 function config(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
@@ -107,17 +99,12 @@ describe("aiGateway 命令封装", () => {
   });
 
   it("按逐字命令名与 camelCase 参数调用配置读写", async () => {
-    const draft = config();
     await aiGatewayGetConfig();
-    await aiGatewaySaveConfig(draft);
     await aiGatewayUpsertProvider(provider());
     await aiGatewayDeleteProvider("p1");
     await aiGatewaySetProviderEnabled("p1", false);
 
     expect(invokeMock).toHaveBeenCalledWith("ai_gateway_get_config");
-    expect(invokeMock).toHaveBeenCalledWith("ai_gateway_save_config", {
-      config: draft,
-    });
     expect(invokeMock).toHaveBeenCalledWith("ai_gateway_upsert_provider", {
       provider: provider(),
       prices: null,
@@ -268,161 +255,6 @@ describe("isOpencodeGoProvider OpenCode Go provider 判定", () => {
 
   it("returns false when base_url is absent", () => {
     expect(isOpencodeGoProvider({})).toBe(false);
-  });
-});
-
-describe("resolveMappingPreview 模型解析预览", () => {
-  it("映射行协议优先于服务商协议", () => {
-    const p = provider({
-      protocol: "chat_completions",
-      mappings: [
-        { local_model: "local-a", upstream_model: "remote-a", protocol: "responses" },
-      ],
-      default_model: "remote-default",
-    });
-    expect(resolveMappingPreview(p, "local-a")).toEqual({
-      upstreamModel: "remote-a",
-      endpoint: "responses",
-    });
-  });
-
-  it("映射行未声明协议时继承服务商协议", () => {
-    const p = provider({
-      protocol: "responses",
-      mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
-      default_model: "remote-default",
-    });
-    expect(resolveMappingPreview(p, "local-a")).toEqual({
-      upstreamModel: "remote-a",
-      endpoint: "responses",
-    });
-  });
-
-  it("服务商与映射行都未声明协议时回落 chat_completions", () => {
-    const p = provider({
-      mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
-      default_model: "remote-default",
-    });
-    expect(resolveMappingPreview(p, "local-a")).toEqual({
-      upstreamModel: "remote-a",
-      endpoint: "chat_completions",
-    });
-  });
-
-  it("未命中映射时回退默认模型并使用服务商协议", () => {
-    const p = provider({
-      protocol: "responses",
-      mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
-      default_model: "remote-default",
-    });
-    expect(resolveMappingPreview(p, "local-unknown")).toEqual({
-      upstreamModel: "remote-default",
-      endpoint: "responses",
-    });
-  });
-
-  it("既无匹配映射也无默认模型时不可解析", () => {
-    const p = provider({ mappings: [], default_model: null });
-    expect(resolveMappingPreview(p, "local-a")).toBeNull();
-  });
-
-  it("远端模型为空白的映射行不构成命中", () => {
-    const p = provider({
-      protocol: "responses",
-      mappings: [
-        { local_model: "local-a", upstream_model: "   ", protocol: "chat_completions" },
-      ],
-      default_model: "remote-default",
-    });
-    expect(resolveMappingPreview(p, "local-a")).toEqual({
-      upstreamModel: "remote-default",
-      endpoint: "responses",
-    });
-
-    const noDefault = provider({
-      mappings: [{ local_model: "local-a", upstream_model: "   " }],
-      default_model: null,
-    });
-    expect(resolveMappingPreview(noDefault, "local-a")).toBeNull();
-  });
-
-  it("禁用映射行既不成命中也不回退默认模型", () => {
-    const p = provider({
-      mappings: [
-        { local_model: "local-a", upstream_model: "remote-a", enabled: false },
-      ],
-      default_model: "remote-default",
-    });
-    expect(
-      resolveMappingPreview(p, "local-a"),
-      "禁用映射不应命中，也不应回退到默认模型",
-    ).toBeNull();
-  });
-
-  it("显式启用映射行正常命中", () => {
-    const p = provider({
-      mappings: [
-        { local_model: "local-a", upstream_model: "remote-a", enabled: true },
-      ],
-      default_model: "remote-default",
-    });
-    expect(resolveMappingPreview(p, "local-a")).toEqual({
-      upstreamModel: "remote-a",
-      endpoint: "chat_completions",
-    });
-  });
-
-  // Step 3: auto-disabled rows block the default-model fallback (AC-007)
-  it("auto_disabled 的映射行既不成命中也不回退默认模型", () => {
-    const p = provider({
-      mappings: [
-        {
-          local_model: "local-a",
-          upstream_model: "remote-a",
-          auto_disabled: true,
-        },
-      ],
-      default_model: "remote-default",
-    });
-    expect(
-      resolveMappingPreview(p, "local-a"),
-      "auto_disabled 映射不应命中，也不应回退到默认模型",
-    ).toBeNull();
-  });
-
-  it("存在 healthy 映射时 auto_disabled 不干扰健康行的解析预览", () => {
-    const p = provider({
-      mappings: [
-        {
-          local_model: "local-a",
-          upstream_model: "remote-auto-disabled",
-          auto_disabled: true,
-        },
-        { local_model: "local-b", upstream_model: "remote-healthy" },
-      ],
-      default_model: "remote-default",
-    });
-    expect(resolveMappingPreview(p, "local-b")).toEqual({
-      upstreamModel: "remote-healthy",
-      endpoint: "chat_completions",
-    });
-  });
-
-  it("无匹配映射时依然回退到默认模型", () => {
-    const p = provider({
-      mappings: [
-        {
-          local_model: "local-a",
-          upstream_model: "remote-a",
-          auto_disabled: true,
-        },
-      ],
-      default_model: "fallback-model",
-    });
-    expect(resolveMappingPreview(p, "local-unknown")).toEqual({
-      upstreamModel: "fallback-model",
-      endpoint: "chat_completions",
-    });
   });
 });
 
@@ -711,12 +543,9 @@ describe("clampUsagePage 页码收敛", () => {
 });
 
 describe("usageStatusTranslationKey 状态展示", () => {
-  it("映射三种结果到稳定文案键", () => {
+  it("映射成功与失败结果到稳定文案键", () => {
     expect(usageStatusTranslationKey("success")).toBe("aiGatewayStatusSuccess");
     expect(usageStatusTranslationKey("failure")).toBe("aiGatewayStatusFailure");
-    expect(usageStatusTranslationKey("cancelled")).toBe(
-      "aiGatewayStatusCancelled",
-    );
   });
 });
 
@@ -819,7 +648,6 @@ describe("aggregateModels 聚合本地模型", () => {
       provider({
         id: "pd",
         name: "Delta",
-        auto_disabled: true,
         default_model: "auto-disabled-default",
         mappings: [
           {
@@ -913,7 +741,6 @@ describe("aggregateModels 聚合本地模型", () => {
         provider({
           id: "auto",
           name: "Auto",
-          auto_disabled: true,
           default_model: "y",
         }),
       ]),
@@ -1111,27 +938,6 @@ describe("aggregateModels 聚合本地模型", () => {
     ];
 
     expect(aggregateModels(providers)).toEqual([]);
-  });
-
-  it("provider-level auto_disabled 为 true 但存在 healthy 行时其映射仍正常产出", () => {
-    const providers: GatewayUpstreamProvider[] = [
-      provider({
-        id: "pa",
-        name: "Legacy Disabled Provider",
-        auto_disabled: true,
-        mappings: [
-          {
-            local_model: "shared-local",
-            upstream_model: "shared-upstream",
-          },
-        ],
-      }),
-    ];
-
-    const models = aggregateModels(providers);
-    expect(models).toHaveLength(1);
-    expect(models[0].model).toBe("shared-local");
-    expect(models[0].providers[0].providerId).toBe("pa");
   });
 });
 
@@ -1738,7 +1544,6 @@ describe("aiGateway provider price helpers", () => {
       output: 0,
       days: [1, 3],
     });
-    expect(echoedRow!.off_peak).toEqual(echoedRow!.off_peaks![0]);
 
     // 窗口某一档留空时应回退到草稿标准档位；用非零标准值证明是回退而非直接归零。
     const fallbackDraft = priceDraft({
@@ -1853,7 +1658,21 @@ describe("aiGateway provider price helpers", () => {
       "空 days 应省略该字段（旧数据形态）",
     ).not.toHaveProperty("days");
     expect(enabledRow!.off_peaks![1].days).toEqual([1, 5]);
-    expect(enabledRow!.off_peak).toEqual(enabledRow!.off_peaks![0]);
+  });
+
+  // REQ-003 / AC-007 guard: the built row must not carry the removed singular key.
+  it("draft_to_price_row_never_emits_the_singular_off_peak_key", () => {
+    const row = draftToPriceRow(
+      priceDraft({
+        output: "3",
+        enable_off_peak: true,
+        off_peaks: [priceDraftWindow({ input: "1" })],
+      }),
+    );
+
+    expect(row).not.toBeNull();
+    expect(row!).not.toHaveProperty("off_peak");
+    expect(row!.off_peaks).toHaveLength(1);
   });
 
   it("normalize_draft_days_filters_sorts_and_dedupes", () => {
@@ -1874,7 +1693,7 @@ describe("aiGateway provider price helpers", () => {
     expect(parsePriceNumber("NaN")).toBe(0);
   });
 
-  it("price_row_to_draft_handles_missing_and_legacy_off_peak", () => {
+  it("price_row_to_draft_handles_missing_price_and_ignores_singular_off_peak", () => {
     const blank = priceRowToDraft(null, "model-x", "row-9");
     expect(blank.upstream_model).toBe("model-x");
     expect(blank.input).toBe("");
@@ -1884,32 +1703,31 @@ describe("aiGateway provider price helpers", () => {
     expect(blank.enable_off_peak).toBe(false);
     expect(blank.off_peaks).toEqual([]);
 
-    const legacy = priceRowToDraft(
-      modelPrice({
+    // REQ-003 / AC-007 guard: a stored row carrying only the removed singular
+    // `off_peak` field must not seed an off-peak window anymore.
+    const legacyOnly = priceRowToDraft(
+      {
         upstream_model: "model-y",
+        input: 0,
+        cache_read: 0,
+        cache_write: 0,
         output: 3,
         off_peak: {
-          start_time: undefined as unknown as string,
-          end_time: undefined as unknown as string,
+          start_time: "00:30",
+          end_time: "08:30",
           input: 1,
           cache_read: 0.5,
-          cache_write: undefined as unknown as number,
+          cache_write: 0,
           output: 3,
         },
-      }),
+      } as unknown as ModelPrice,
       "model-y",
       "row-9",
     );
-    expect(legacy.upstream_model).toBe("model-y");
-    expect(legacy.output).toBe("3");
-    expect(legacy.enable_off_peak).toBe(true);
-    expect(legacy.off_peaks).toHaveLength(1);
-    expect(legacy.off_peaks[0].id).toBe("row-9-op-0");
-    expect(legacy.off_peaks[0].start_time).toBe("00:30");
-    expect(legacy.off_peaks[0].end_time).toBe("08:30");
-    expect(legacy.off_peaks[0].input).toBe("1");
-    expect(legacy.off_peaks[0].cache_read).toBe("0.5");
-    expect(legacy.off_peaks[0].cache_write).toBe("");
+    expect(legacyOnly.upstream_model).toBe("model-y");
+    expect(legacyOnly.output).toBe("3");
+    expect(legacyOnly.enable_off_peak).toBe(false);
+    expect(legacyOnly.off_peaks).toEqual([]);
   });
 
   it("upsert_provider_wrapper_passes_prices_through", async () => {

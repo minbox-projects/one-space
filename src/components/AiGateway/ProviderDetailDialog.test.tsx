@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { ProviderDetailDialog } from "@/components/AiGateway/ProviderDetailDialog";
 import {
-  AI_GATEWAY_KEY_MASK,
   type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
   type ModelPrice,
@@ -19,18 +18,13 @@ function makeProvider(
     id: "p1",
     name: "Upstream A",
     base_url: "https://api.a.example",
-    api_key: AI_GATEWAY_KEY_MASK,
+    api_key: "********",
     default_model: null,
     protocol: "chat_completions",
     mappings: [],
     enabled: true,
-    auto_disabled: false,
-    disabled_reason: null,
-    disabled_at: null,
-    consecutive_failures: 0,
-    last_error_at: null,
     ...overrides,
-  };
+  } as GatewayUpstreamProvider;
 }
 
 function renderProviderDialog({
@@ -345,10 +339,6 @@ describe("ProviderDetailDialog 模型映射", () => {
       start_time: "23:00",
       end_time: "07:00",
     });
-    expect(remoteA?.off_peak).toMatchObject({
-      start_time: "23:00",
-      end_time: "07:00",
-    });
     const remoteB = savedPrices.find((row) => row.upstream_model === "remote-b");
     expect(remoteB).toMatchObject({
       input: 0,
@@ -475,10 +465,6 @@ describe("ProviderDetailDialog 模型映射", () => {
     let prices = enabled.onSave.mock.calls[0][1] as ModelPrice[];
     expect(prices).toHaveLength(1);
     expect(prices[0].off_peaks).toHaveLength(1);
-    expect(prices[0].off_peak).toMatchObject({
-      start_time: "00:30",
-      end_time: "08:30",
-    });
     enabled.unmount();
 
     const disabled = renderProviderDialog({ provider });

@@ -47,13 +47,8 @@ function makeProvider(
     protocol: "chat_completions",
     mappings: [],
     enabled: true,
-    auto_disabled: false,
-    disabled_reason: null,
-    disabled_at: null,
-    consecutive_failures: 0,
-    last_error_at: null,
     ...overrides,
-  };
+  } as GatewayUpstreamProvider;
 }
 
 function makeTemplateView(
@@ -100,13 +95,6 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
     const providers: GatewayUpstreamProvider[] = [
       makeProvider({ id: "p-enabled", name: "Enabled Provider", enabled: true }),
       makeProvider({ id: "p-disabled", name: "Disabled Provider", enabled: false }),
-      makeProvider({
-        id: "p-auto-legacy",
-        name: "Auto Disabled Provider",
-        enabled: true,
-        auto_disabled: true,
-        disabled_reason: "rate limited",
-      }),
     ];
 
     renderWithProviders(
@@ -123,12 +111,10 @@ describe("UpstreamProviderList 状态展示与过滤", () => {
     // 右上角 Switch 控制启用状态
     expect(screen.getByRole("switch", { name: /^Enable provider Enabled Provider$/i })).toBeChecked();
     expect(screen.getByRole("switch", { name: /^Enable provider Disabled Provider$/i })).not.toBeChecked();
-    expect(screen.getByRole("switch", { name: /^Enable provider Auto Disabled Provider$/i })).toBeChecked();
 
     // 底栏已启用/已禁用徽章已移除，避免与 Switch 重叠
     expect(screen.queryByTestId("ai-gateway-status-badge-p-enabled")).not.toBeInTheDocument();
     expect(screen.queryByTestId("ai-gateway-status-badge-p-disabled")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("ai-gateway-status-badge-p-auto-legacy")).not.toBeInTheDocument();
 
     // 旧的全局 "Auto-disabled" 文本不应出现在底栏中：
     expect(screen.queryByText("Auto-disabled")).not.toBeInTheDocument();
@@ -595,7 +581,7 @@ describe("UpstreamProviderList 逐行 auto-disabled 读提示", () => {
     // 提示文案应通过 i18n 键生成，包含 count 插值
     expect(hintEl.textContent).toContain("2");
 
-    // 右上角 Switch 反映 provider.enabled 而非 auto_disabled
+    // 右上角 Switch 反映 provider.enabled
     expect(screen.getByRole("switch", { name: /Auto-disabled Provider/i })).toBeChecked();
 
     // 不应有整个服务商的 re-enable 按钮
@@ -603,38 +589,6 @@ describe("UpstreamProviderList 逐行 auto-disabled 读提示", () => {
       name: /Re-enable provider|Re-enable/i,
     });
     expect(reenableBtn).not.toBeInTheDocument();
-  });
-
-  it("provider-level auto_disabled 为 true 但无 auto-disabled 行时不显示提示", () => {
-    const providers: GatewayUpstreamProvider[] = [
-      makeProvider({
-        id: "p-legacy",
-        name: "Legacy Only Flag",
-        enabled: true,
-        auto_disabled: true,
-        mappings: [
-          { local_model: "a", upstream_model: "ra", enabled: true },
-        ],
-      }),
-    ];
-
-    renderWithProviders(
-      <UpstreamProviderList
-        providers={providers}
-        selectedProviderId={null}
-        busy={false}
-        onSelect={vi.fn()}
-        onToggleEnabled={vi.fn()}
-        onAdd={vi.fn()}
-      />,
-    );
-
-    // 不应出现逐行 auto-disabled 提示
-    expect(
-      screen.queryByTestId("ai-gateway-provider-auto-disabled-models-p-legacy"),
-    ).not.toBeInTheDocument();
-    // 右上角 Switch 反映 enabled=true → 选中
-    expect(screen.getByRole("switch", { name: /Legacy Only Flag/i })).toBeChecked();
   });
 
   it("所有行都 auto-disabled 时提示包含全量行数", () => {

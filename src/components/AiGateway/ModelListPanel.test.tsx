@@ -20,13 +20,8 @@ function makeProvider(
     default_model: null,
     mappings: [],
     enabled: true,
-    auto_disabled: false,
-    disabled_reason: null,
-    disabled_at: null,
-    consecutive_failures: 0,
-    last_error_at: null,
     ...overrides,
-  };
+  } as GatewayUpstreamProvider;
 }
 
 function renderPanel(
@@ -200,8 +195,7 @@ describe("ModelListPanel 本地模型列表", () => {
       }),
       makeProvider({
         id: "p-auto",
-        name: "Auto disabled provider",
-        auto_disabled: true,
+        name: "Enabled provider with mapping",
         default_model: "auto-default",
         mappings: [{ local_model: "auto-mapping", upstream_model: "up-auto" }],
       }),
@@ -221,7 +215,7 @@ describe("ModelListPanel 本地模型列表", () => {
       }),
     ]);
 
-    // p-disabled（服务商禁用）不产出行；p-auto（仅提供商级 auto_disabled，provider.enabled）产出行；p-keep 的 auto 行被跳过
+    // p-disabled（服务商禁用）不产出行；p-auto（服务商启用且行健康）产出行；p-keep 的 auto 行被跳过
     expect(rowModels()).toEqual(["auto-mapping", "keep"]);
     expect(screen.queryByTestId("ai-gateway-model-list-empty")).not.toBeInTheDocument();
   });
