@@ -2821,7 +2821,8 @@
         "src-tauri/src/ai_gateway/tests.rs",
         "src-tauri/src/ai_gateway/tests/quota.rs",
         "src-tauri/src/ai_gateway/tests/go_usage.rs",
-        "src-tauri/src/ai_gateway/tests/templates.rs"
+        "src-tauri/src/ai_gateway/tests/templates.rs",
+        "src-tauri/src/ai_gateway/tests/migration.rs"
       ],
       "symbols": [
         {
@@ -3134,6 +3135,7 @@
         "src-tauri/src/ai_gateway/tests/quota.rs",
         "src-tauri/src/ai_gateway/tests/go_usage.rs",
         "src-tauri/src/ai_gateway/tests/templates.rs",
+        "src-tauri/src/ai_gateway/tests/migration.rs",
         "src-tauri/src/ai_gateway/types_config.rs",
         "src-tauri/src/ai_gateway/usage_log.rs"
       ],

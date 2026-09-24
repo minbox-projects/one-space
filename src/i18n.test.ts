@@ -123,7 +123,6 @@ const PROVIDER_TEMPLATE_KEYS = [
   "aiGatewayTemplateExpand",
   "aiGatewayTemplateTab",
   "aiGatewayBoundTemplate",
-  "aiGatewayBoundTemplateDesc",
   "aiGatewayBoundTemplateBadge",
   "aiGatewayBoundTemplateNotFound",
   "aiGatewayBoundTemplatePresetModels",

@@ -508,6 +508,212 @@ fn versionless_config_already_in_new_shape_is_stamped_once() {
     );
 }
 
+/// Counterexample (REQ-001 / AC-004): a single global price row whose upstream
+/// model is reachable by two providers must be copied to BOTH providers — never
+/// dropped, never assigned to only one — and the global row must disappear. The
+/// two providers reach the same model through different rules: P through a
+/// mapping, Q through its `default_model`. The expected values are independent
+/// of each other so an "assigned to one provider only" regression fails both the
+/// count and the per-provider assertions.
+#[test]
+fn legacy_global_row_reachable_by_two_providers_is_copied_to_both() {
+    let _home = isolated_temp_home("migration-multi-provider-copy");
+    let fixture = json!({
+        "enabled": true,
+        "providers": [
+            {
+                "id": "p",
+                "name": "Provider P",
+                "base_url": "https://p.example.com/v1",
+                "api_key": "sk-p",
+                "protocol": "chat_completions",
+                "mappings": [
+                    {"local_model": "local-shared", "upstream_model": "shared-model", "enabled": true}
+                ]
+            },
+            {
+                "id": "q",
+                "name": "Provider Q",
+                "base_url": "https://q.example.com/v1",
+                "api_key": "sk-q",
+                "protocol": "chat_completions",
+                "default_model": "shared-model",
+                "mappings": [
+                    {"local_model": "local-other", "upstream_model": "other-model", "enabled": true}
+                ]
+            }
+        ],
+        "model_prices": [
+            {"upstream_model": "shared-model", "input": 1.25, "output": 2.5}
+        ]
+    });
+    write_encrypted_config(&fixture);
+
+    let migrated = read_config().expect("the legacy config must stay readable");
+
+    assert_eq!(
+        migrated.model_prices.len(),
+        2,
+        "the global row must become exactly one scoped row per reaching provider: {:?}",
+        migrated.model_prices
+    );
+    assert!(
+        migrated
+            .model_prices
+            .iter()
+            .all(|row| row.provider_id.is_some()),
+        "the global row must be gone and every row provider-scoped: {:?}",
+        migrated.model_prices
+    );
+    for provider_id in ["p", "q"] {
+        let row = migrated
+            .model_prices
+            .iter()
+            .find(|row| row.provider_id.as_deref() == Some(provider_id))
+            .unwrap_or_else(|| panic!("provider {provider_id} must receive the migrated row"));
+        assert_eq!(row.upstream_model, "shared-model");
+        assert_eq!(row.input, 1.25, "the copied row keeps its input tier");
+        assert_eq!(row.output, 2.5, "the copied row keeps its output tier");
+    }
+
+    // The rewrite must persist both scoped rows at the current version and no
+    // global row.
+    let on_disk = decrypted_config_json();
+    assert_eq!(
+        on_disk.get("schema_version").and_then(Value::as_u64),
+        Some(u64::from(crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION)),
+        "the migrated config must be persisted at the current version: {on_disk}"
+    );
+    let rows = on_disk["model_prices"]
+        .as_array()
+        .unwrap_or_else(|| panic!("on-disk model_prices must be an array: {on_disk}"));
+    assert_eq!(rows.len(), 2, "both scoped rows must be persisted: {on_disk}");
+    for row in rows {
+        let provider_id = row["provider_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("every on-disk row must be provider-scoped: {row}"));
+        assert!(
+            provider_id == "p" || provider_id == "q",
+            "unexpected provider id {provider_id}: {row}"
+        );
+        assert_eq!(row["upstream_model"], "shared-model");
+        assert_eq!(row["input"], 1.25);
+        assert_eq!(row["output"], 2.5);
+    }
+}
+
+/// Counterexample (REQ-001 / AC-004): a legacy price row carrying an explicit
+/// JSON `null` provider id must deserialize and migrate as a global row; the
+/// whole parse must never fail. The reachable null row is scoped to its provider
+/// and the unreachable null row is dropped by the normal reachability rule. A
+/// regression that narrowed null-tolerance, or mistook `null` for a scoped
+/// provider, would either error the read or leave P without its row.
+#[test]
+fn legacy_null_provider_id_deserializes_and_migrates_as_global() {
+    let _home = isolated_temp_home("migration-null-provider-id");
+    let fixture = json!({
+        "enabled": true,
+        "providers": [
+            {
+                "id": "p",
+                "name": "Provider P",
+                "base_url": "https://p.example.com/v1",
+                "api_key": "sk-p",
+                "protocol": "chat_completions",
+                "mappings": [
+                    {"local_model": "local-null", "upstream_model": "remote-null", "enabled": true}
+                ]
+            }
+        ],
+        "model_prices": [
+            {"provider_id": null, "upstream_model": "remote-null", "input": 3.0},
+            {"provider_id": null, "upstream_model": "remote-orphan", "input": 7.0}
+        ]
+    });
+    write_encrypted_config(&fixture);
+
+    let migrated = read_config().expect("a null provider_id must never fail the whole parse");
+
+    assert_eq!(
+        migrated.model_prices.len(),
+        1,
+        "only the reachable null row survives, scoped to P: {:?}",
+        migrated.model_prices
+    );
+    let row = &migrated.model_prices[0];
+    assert_eq!(row.provider_id.as_deref(), Some("p"));
+    assert_eq!(row.upstream_model, "remote-null");
+    assert_eq!(row.input, 3.0);
+
+    // The reachable null row is persisted scoped; the unreachable one is gone.
+    let on_disk = decrypted_config_json();
+    let rows = on_disk["model_prices"]
+        .as_array()
+        .unwrap_or_else(|| panic!("on-disk model_prices must be an array: {on_disk}"));
+    assert_eq!(rows.len(), 1, "only the scoped row may persist: {on_disk}");
+    assert_eq!(rows[0]["provider_id"], "p");
+    assert_eq!(rows[0]["upstream_model"], "remote-null");
+    assert_eq!(rows[0]["input"], 3.0);
+}
+
+/// Boundary: a configuration at a future/unknown schema version (here `2`) is
+/// read as-is. There is no downgrade, no rewrite and no deletion: values are
+/// preserved in memory — including a global price row the current migration
+/// would otherwise scope — and the raw file bytes stay byte-identical after the
+/// read. A regression that treated any non-current version as migratable would
+/// rewrite the bytes and scope the row.
+#[test]
+fn future_schema_version_config_is_read_without_downgrade_or_rewrite() {
+    let _home = isolated_temp_home("migration-future-version");
+    let fixture = json!({
+        "schema_version": 2,
+        "enabled": true,
+        "providers": [
+            {
+                "id": "p",
+                "name": "Provider P",
+                "base_url": "https://p.example.com/v1",
+                "api_key": "sk-p",
+                "protocol": "chat_completions",
+                "mappings": [
+                    {"local_model": "local-a", "upstream_model": "remote-a", "enabled": true}
+                ]
+            }
+        ],
+        "model_prices": [
+            {"upstream_model": "remote-a", "input": 4.0}
+        ],
+        "future_only_field": {"kept": true}
+    });
+    write_encrypted_config(&fixture);
+    let before = raw_config_bytes();
+
+    let loaded = read_config().expect("a future-version config must stay readable");
+
+    assert_eq!(
+        loaded.schema_version, 2,
+        "the future version must be preserved, not downgraded"
+    );
+    assert_eq!(loaded.providers.len(), 1, "providers must be preserved");
+    assert_eq!(
+        loaded.model_prices.len(),
+        1,
+        "the global price row must be preserved untouched"
+    );
+    assert_eq!(
+        loaded.model_prices[0].provider_id, None,
+        "no migration may scope a future-version config's rows"
+    );
+    assert_eq!(loaded.model_prices[0].upstream_model, "remote-a");
+    assert_eq!(loaded.model_prices[0].input, 4.0);
+
+    assert_eq!(
+        raw_config_bytes(),
+        before,
+        "reading a future-version config must not rewrite or delete anything"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Usage-database migration
 // ---------------------------------------------------------------------------

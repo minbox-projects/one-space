@@ -189,9 +189,9 @@ pub fn compute_cost(price: &ModelPrice, tokens: &UsageTokens) -> f64 {
 /// - When start_time > end_time: overnight window, [start_time, 24:00) or [00:00, end_time).
 /// - When start_time == end_time: zero duration window (evaluates to false).
 ///
-/// Retained as the weekday-less compatibility entry point; production pricing
-/// goes through [`is_off_peak_with_days`].
-#[allow(dead_code)]
+/// Test-only weekday-less compatibility entry point; production pricing goes
+/// through [`is_off_peak_with_days`].
+#[cfg(test)]
 pub fn is_off_peak(timestamp_ms: i64, start_time: &str, end_time: &str) -> bool {
     is_off_peak_with_days(timestamp_ms, start_time, end_time, None)
 }

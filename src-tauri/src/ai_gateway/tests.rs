@@ -712,8 +712,8 @@ enum MockReply {
 /// `crate::lock_test_home_env` mutex.
 ///
 /// Keep using this helper for tests that drive the global AI Gateway server
-/// (`start_server`/`stop_server`/`ai_gateway_start`/`ai_gateway_stop`/
-/// `ai_gateway_save_config`). The server reads its config from worker threads
+/// (`start_server`/`stop_server`/`ai_gateway_start`/`ai_gateway_stop`).
+/// The server reads its config from worker threads
 /// that cannot see the thread-local override, and its `RUNNING_SERVER` state is
 /// a process-wide singleton, so those tests must stay serialized.
 struct TempHome {

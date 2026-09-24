@@ -683,8 +683,6 @@ const resources = {
       aiGatewayTemplateResetSuccess: "Built-in templates restored.",
       aiGatewayTemplateTab: "Templates",
       aiGatewayBoundTemplate: "Associated Provider Template",
-      aiGatewayBoundTemplateDesc:
-        "This provider is created from a template. Models can be synced from the template, while custom mappings, prices, and API credentials are maintained here.",
       aiGatewayBoundTemplateBadge: "Template: {{name}}",
       aiGatewayBoundTemplateNotFound: "Template definition not found ({{id}})",
       aiGatewayBoundTemplatePresetModels: "{{count}} preset models",
@@ -4521,8 +4519,6 @@ const resources = {
       aiGatewayTemplateResetSuccess: "已恢复内置官方模板。",
       aiGatewayTemplateTab: "服务商模板",
       aiGatewayBoundTemplate: "关联服务商模板",
-      aiGatewayBoundTemplateDesc:
-        "此服务商基于预设服务商模板创建，模型列表支持由模板同步更新；自定义映射、价格与 API 凭据可在本页面独立维护。",
       aiGatewayBoundTemplateBadge: "模板: {{name}}",
       aiGatewayBoundTemplateNotFound: "未找到模板定义 ({{id}})",
       aiGatewayBoundTemplatePresetModels: "{{count}} 个预设模型",
