@@ -930,6 +930,7 @@
         "src/components/AiGateway/ProviderTemplateIcon.tsx",
         "src/components/AiGateway/ProviderTemplatePickerDialog.tsx",
         "src/components/AiGateway/ProviderTemplateSection.tsx",
+        "src/components/AiGateway/ProviderQuotaBlock.tsx",
         "src/components/AiGateway/RuntimeStatusCard.tsx",
         "src/components/AiGateway/SelectDropdown.tsx",
         "src/components/AiGateway/TemplateCreateDialog.tsx",
@@ -950,6 +951,7 @@
         "src/components/AiGateway/ProviderTemplateIcon.test.tsx",
         "src/components/AiGateway/ProviderTemplatePickerDialog.test.tsx",
         "src/components/AiGateway/ProviderTemplateSection.test.tsx",
+        "src/components/AiGateway/ProviderQuotaBlock.test.tsx",
         "src/components/AiGateway/SelectDropdown.test.tsx",
         "src/components/AiGateway/TerminalSyncPanel.test.tsx",
         "src/components/AiGateway/UpstreamProviderList.test.tsx",
@@ -968,6 +970,18 @@
         {
           "file": "src/lib/aiGateway.ts",
           "name": "resolveMappingPreview",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "isCommandCodeProvider",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "aiGatewayProviderQuota",
           "kind": "function",
           "visibility": "public"
         },
@@ -998,6 +1012,12 @@
         {
           "file": "src/components/AiGateway/MappingPriceEditor.tsx",
           "name": "MappingPriceEditor",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/AiGateway/ProviderQuotaBlock.tsx",
+          "name": "ProviderQuotaBlock",
           "kind": "function",
           "visibility": "public"
         },
@@ -1333,6 +1353,8 @@
         "src/components/AiGateway/ProviderTemplatePickerDialog.tsx",
         "src/components/AiGateway/ProviderTemplateSection.test.tsx",
         "src/components/AiGateway/ProviderTemplateSection.tsx",
+        "src/components/AiGateway/ProviderQuotaBlock.test.tsx",
+        "src/components/AiGateway/ProviderQuotaBlock.tsx",
         "src/components/AiGateway/RuntimeStatusCard.tsx",
         "src/components/AiGateway/SelectDropdown.test.tsx",
         "src/components/AiGateway/SelectDropdown.tsx",
@@ -2718,6 +2740,7 @@
         "src-tauri/src/ai_gateway/forwarding.rs",
         "src-tauri/src/ai_gateway/migration.rs",
         "src-tauri/src/ai_gateway/provider_templates.json",
+        "src-tauri/src/ai_gateway/quota.rs",
         "src-tauri/src/ai_gateway/runtime_http.rs",
         "src-tauri/src/ai_gateway/selection.rs",
         "src-tauri/src/ai_gateway/storage.rs",
@@ -2727,6 +2750,7 @@
       ],
       "tests": [
         "src-tauri/src/ai_gateway/tests.rs",
+        "src-tauri/src/ai_gateway/tests/quota.rs",
         "src-tauri/src/ai_gateway/tests/templates.rs"
       ],
       "symbols": [
@@ -2963,6 +2987,12 @@
           "name": "validate_template_auto_refresh_minutes",
           "kind": "function",
           "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/quota.rs",
+          "name": "ai_gateway_provider_quota",
+          "kind": "function",
+          "visibility": "public"
         }
       ],
       "depends_on": [
@@ -2975,11 +3005,13 @@
         "src-tauri/src/ai_gateway/forwarding.rs",
         "src-tauri/src/ai_gateway/migration.rs",
         "src-tauri/src/ai_gateway/provider_templates.json",
+        "src-tauri/src/ai_gateway/quota.rs",
         "src-tauri/src/ai_gateway/runtime_http.rs",
         "src-tauri/src/ai_gateway/selection.rs",
         "src-tauri/src/ai_gateway/storage.rs",
         "src-tauri/src/ai_gateway/templates.rs",
         "src-tauri/src/ai_gateway/tests.rs",
+        "src-tauri/src/ai_gateway/tests/quota.rs",
         "src-tauri/src/ai_gateway/tests/templates.rs",
         "src-tauri/src/ai_gateway/types_config.rs",
         "src-tauri/src/ai_gateway/usage_log.rs"
