@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-23-ai-gateway-rename.md
-2026-09-23-ai-gateway-rename.md: 0a8b729072b257e57cd0300e37cdce3b34c43131
-2026-09-23-ai-gateway-rename.zh.md: 411c21288ee92f4fb68d4cff4c3238e70621fb63
+2026-09-23-ai-gateway-rename.md: 69533808dd26700ad4e5d5aafb6caa7dc05d435b
+2026-09-23-ai-gateway-rename.zh.md: 3abc724e6e446b3ff5392fbe72b161a9f08d8e0a

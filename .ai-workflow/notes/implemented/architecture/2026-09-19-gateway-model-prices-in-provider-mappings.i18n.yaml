@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-19-gateway-model-prices-in-provider-mappings.md
-2026-09-19-gateway-model-prices-in-provider-mappings.md: 2ce5b6a445fccd16f65c55a3823c0b770d0c0108
-2026-09-19-gateway-model-prices-in-provider-mappings.zh.md: 52840ff8b3c0a823cfba6e31691bebf6bb99d742
+2026-09-19-gateway-model-prices-in-provider-mappings.md: c4f72c81084e23981843f2148ca926f7c20d37af
+2026-09-19-gateway-model-prices-in-provider-mappings.zh.md: 05f0ced06c53ff8ec7827a0018096dfe013ca7f1
