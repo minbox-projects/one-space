@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { ProviderQuotaBlock } from "./ProviderQuotaBlock";
+import { ProviderGoUsageBlock } from "./ProviderGoUsageBlock";
 import {
   ProviderTemplateAvatar,
   resolveEffectiveProviderIcon,
@@ -23,6 +24,7 @@ import {
 import {
   formatGatewayTimestamp,
   isCommandCodeProvider,
+  isOpencodeGoProvider,
   isMappingDeprecated,
   type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
@@ -57,7 +59,8 @@ export function UpstreamProviderList({
   templateSection,
 }: UpstreamProviderListProps) {
   const { t } = useTranslation();
-  // 计算所有服务商之前仅获取一次当前时间
+  // 计算所有服务商之前仅获取一次当前时间（有意读取时钟，providers 变化时重拍）
+  // eslint-disable-next-line react-hooks/purity -- baseNow 需要在 providers 变化时快照 Date.now()
   const baseNow = useMemo(() => Date.now(), [providers]);
   const [statusFilter, setStatusFilter] = useState<ProviderStatusFilter>("all");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
@@ -579,6 +582,8 @@ export function UpstreamProviderList({
 
                   {isCommandCodeProvider(provider) ? (
                     <ProviderQuotaBlock provider={provider} baseNow={baseNow} />
+                  ) : isOpencodeGoProvider(provider) ? (
+                    <ProviderGoUsageBlock provider={provider} baseNow={baseNow} />
                   ) : (
                     <div
                       data-testid={`ai-gateway-provider-placeholder-${provider.id}`}

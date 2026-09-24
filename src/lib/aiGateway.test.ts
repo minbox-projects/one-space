@@ -39,6 +39,7 @@ import {
   formatUtc8Day,
   formatUtc8Hour,
   isUnpricedOnly,
+  isOpencodeGoProvider,
   localBaseUrl,
   maskSecret,
   notifyTemplateAutoRefreshIntervalChanged,
@@ -247,6 +248,26 @@ describe("localBaseUrl 本地 Api 地址", () => {
       `http://127.0.0.1:${AI_GATEWAY_DEFAULT_PORT}/v1`,
     );
     expect(localBaseUrl(18000)).toBe("http://127.0.0.1:18000/v1");
+  });
+});
+
+describe("isOpencodeGoProvider OpenCode Go provider 判定", () => {
+  it.each([
+    ["https://opencode.ai/zen/go", true],
+    ["https://OPENCODE.AI/zen/GO", true],
+    ["https://opencode.ai/Zen/Go/subpath", true],
+    ["https://opencode.ai:8443/zen/go", true],
+    ["https://opencode.ai/zen/v1", false],
+    ["https://other.example/zen/go", false],
+    ["https://opencode.ai/zen/v1?next=/zen/go", false],
+    ["", false],
+    ["not a URL", false],
+  ] as const)("matches %s as %s", (base_url, expected) => {
+    expect(isOpencodeGoProvider({ base_url })).toBe(expected);
+  });
+
+  it("returns false when base_url is absent", () => {
+    expect(isOpencodeGoProvider({})).toBe(false);
   });
 });
 

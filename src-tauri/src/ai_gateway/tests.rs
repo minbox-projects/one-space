@@ -25,6 +25,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 mod templates;
 mod quota;
+mod go_usage;
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(

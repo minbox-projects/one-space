@@ -931,6 +931,7 @@
         "src/components/AiGateway/ProviderTemplatePickerDialog.tsx",
         "src/components/AiGateway/ProviderTemplateSection.tsx",
         "src/components/AiGateway/ProviderQuotaBlock.tsx",
+        "src/components/AiGateway/ProviderGoUsageBlock.tsx",
         "src/components/AiGateway/RuntimeStatusCard.tsx",
         "src/components/AiGateway/SelectDropdown.tsx",
         "src/components/AiGateway/TemplateCreateDialog.tsx",
@@ -940,7 +941,8 @@
         "src/components/AiGateway/UsageLogsPanel.tsx",
         "src/components/AiGateway/UsageStatsPanel.tsx",
         "src/components/AiGateway/useTemplateAutoRefresh.ts",
-        "src/lib/aiGateway.ts"
+        "src/lib/aiGateway.ts",
+        "src/i18n.ts"
       ],
       "tests": [
         "src/components/AiGateway/AiGateway.test.tsx",
@@ -952,6 +954,7 @@
         "src/components/AiGateway/ProviderTemplatePickerDialog.test.tsx",
         "src/components/AiGateway/ProviderTemplateSection.test.tsx",
         "src/components/AiGateway/ProviderQuotaBlock.test.tsx",
+        "src/components/AiGateway/ProviderGoUsageBlock.test.tsx",
         "src/components/AiGateway/SelectDropdown.test.tsx",
         "src/components/AiGateway/TerminalSyncPanel.test.tsx",
         "src/components/AiGateway/UpstreamProviderList.test.tsx",
@@ -1018,6 +1021,24 @@
         {
           "file": "src/components/AiGateway/ProviderQuotaBlock.tsx",
           "name": "ProviderQuotaBlock",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "isOpencodeGoProvider",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "aiGatewayProviderGoUsage",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/AiGateway/ProviderGoUsageBlock.tsx",
+          "name": "ProviderGoUsageBlock",
           "kind": "function",
           "visibility": "public"
         },
@@ -1355,6 +1376,8 @@
         "src/components/AiGateway/ProviderTemplateSection.tsx",
         "src/components/AiGateway/ProviderQuotaBlock.test.tsx",
         "src/components/AiGateway/ProviderQuotaBlock.tsx",
+        "src/components/AiGateway/ProviderGoUsageBlock.test.tsx",
+        "src/components/AiGateway/ProviderGoUsageBlock.tsx",
         "src/components/AiGateway/RuntimeStatusCard.tsx",
         "src/components/AiGateway/SelectDropdown.test.tsx",
         "src/components/AiGateway/SelectDropdown.tsx",
@@ -1372,7 +1395,8 @@
         "src/components/AiGateway/useTemplateAutoRefresh.test.ts",
         "src/components/AiGateway/useTemplateAutoRefresh.ts",
         "src/lib/aiGateway.test.ts",
-        "src/lib/aiGateway.ts"
+        "src/lib/aiGateway.ts",
+        "src/i18n.ts"
       ],
       "relations": [],
       "shared_entry": false
@@ -2787,9 +2811,11 @@
       "related_files": [
         "src-tauri/src/ai_gateway/commands.rs",
         "src-tauri/src/ai_gateway/forwarding.rs",
+        "src-tauri/src/ai_gateway/go_usage.rs",
         "src-tauri/src/ai_gateway/migration.rs",
         "src-tauri/src/ai_gateway/provider_templates.json",
         "src-tauri/src/ai_gateway/quota.rs",
+        "src-tauri/src/app_runtime/run_app.rs",
         "src-tauri/src/ai_gateway/runtime_http.rs",
         "src-tauri/src/ai_gateway/selection.rs",
         "src-tauri/src/ai_gateway/storage.rs",
@@ -2800,6 +2826,7 @@
       "tests": [
         "src-tauri/src/ai_gateway/tests.rs",
         "src-tauri/src/ai_gateway/tests/quota.rs",
+        "src-tauri/src/ai_gateway/tests/go_usage.rs",
         "src-tauri/src/ai_gateway/tests/templates.rs"
       ],
       "symbols": [
@@ -2831,6 +2858,30 @@
           "file": "src-tauri/src/ai_gateway/types_config.rs",
           "name": "DEFAULT_USAGE_RETENTION_DAYS",
           "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/go_usage.rs",
+          "name": "ai_gateway_provider_go_usage",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/go_usage.rs",
+          "name": "GoUsageWindow",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/go_usage.rs",
+          "name": "GoUsage",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/go_usage.rs",
+          "name": "ProviderGoUsage",
+          "kind": "type",
           "visibility": "public"
         },
         {
@@ -3076,15 +3127,18 @@
         "src-tauri/src/ai_gateway.rs",
         "src-tauri/src/ai_gateway/commands.rs",
         "src-tauri/src/ai_gateway/forwarding.rs",
+        "src-tauri/src/ai_gateway/go_usage.rs",
         "src-tauri/src/ai_gateway/migration.rs",
         "src-tauri/src/ai_gateway/provider_templates.json",
         "src-tauri/src/ai_gateway/quota.rs",
+        "src-tauri/src/app_runtime/run_app.rs",
         "src-tauri/src/ai_gateway/runtime_http.rs",
         "src-tauri/src/ai_gateway/selection.rs",
         "src-tauri/src/ai_gateway/storage.rs",
         "src-tauri/src/ai_gateway/templates.rs",
         "src-tauri/src/ai_gateway/tests.rs",
         "src-tauri/src/ai_gateway/tests/quota.rs",
+        "src-tauri/src/ai_gateway/tests/go_usage.rs",
         "src-tauri/src/ai_gateway/tests/templates.rs",
         "src-tauri/src/ai_gateway/types_config.rs",
         "src-tauri/src/ai_gateway/usage_log.rs"

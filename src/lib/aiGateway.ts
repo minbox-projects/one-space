@@ -96,6 +96,22 @@ export interface ProviderQuota {
   windowLimits?: QuotaWindowLimits | null;
 }
 
+export interface GoUsageWindow {
+  status: "ok" | "rate-limited";
+  percent: number;
+  resetsAt: string;
+}
+
+export interface GoUsage {
+  rolling: GoUsageWindow;
+  weekly: GoUsageWindow;
+  monthly: GoUsageWindow;
+}
+
+export interface ProviderGoUsage {
+  usage: GoUsage;
+}
+
 export interface GatewayKey {
   id: string;
   label: string;
@@ -456,6 +472,30 @@ export function aiGatewayProviderQuota(
   forceRefresh = false,
 ): Promise<ProviderQuota> {
   return invoke<ProviderQuota>("ai_gateway_provider_quota", {
+    providerId,
+    forceRefresh,
+  });
+}
+
+/** OpenCode Go is identified by its endpoint host and the `/zen/go` path. */
+export function isOpencodeGoProvider(provider: {
+  base_url?: string | null;
+}): boolean {
+  if (!provider.base_url?.trim()) return false;
+  try {
+    const url = new URL(provider.base_url);
+    return url.hostname.toLowerCase() === "opencode.ai" &&
+      url.pathname.toLowerCase().includes("/zen/go");
+  } catch {
+    return false;
+  }
+}
+
+export function aiGatewayProviderGoUsage(
+  providerId: string,
+  forceRefresh = false,
+): Promise<ProviderGoUsage> {
+  return invoke<ProviderGoUsage>("ai_gateway_provider_go_usage", {
     providerId,
     forceRefresh,
   });
