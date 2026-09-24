@@ -2037,14 +2037,15 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "AI Workflow subagent 角色模型切换工具箱工具：9×3 矩阵编辑、自动模型源候选、手动输入降级与 profile 激活",
+      "responsibility": "AI Workflow subagent 角色模型切换工具箱工具：9×3 矩阵编辑、自动模型源候选与手动输入降级；Activate 只激活已保存 YAML，Save 仅保存既有 profile，新建 profile 首次保存时提供一次 Yes/No 保存后激活确认，保存成功更新 dirty baseline",
       "entries": [
         "src/components/AiWorkflowModelSwitcher/index.ts"
       ],
       "related_files": [
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.tsx",
         "src/components/AiWorkflowModelSwitcher/SearchableModelCombobox.tsx",
-        "src/lib/aiWorkflowProfiles.ts"
+        "src/lib/aiWorkflowProfiles.ts",
+        "src-tauri/src/ai_workflow_profiles.rs"
       ],
       "tests": [
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx"
@@ -2071,6 +2072,12 @@
         {
           "file": "src/lib/aiWorkflowProfiles.ts",
           "name": "getModelSources",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "saveProfile",
           "kind": "function",
           "visibility": "public"
         },
@@ -2105,7 +2112,49 @@
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.tsx",
         "src/components/AiWorkflowModelSwitcher/SearchableModelCombobox.tsx",
         "src/lib/aiWorkflowProfiles.ts",
-        "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx"
+        "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx",
+        "src-tauri/src/ai_workflow_profiles.rs"
+      ],
+      "relations": [],
+      "shared_entry": false
+    },
+    {
+      "id": "ai-workflow-backend",
+      "name": "AI Workflow Backend",
+      "aliases": [
+        "ai-workflow-profiles-backend",
+        "profile-yaml"
+      ],
+      "module_root": "tauri-backend",
+      "owner_role": "backend",
+      "responsibility": "AI Workflow profile 与模型源后端：规范化 profile 矩阵，严格校验并原子保存 YAML；save-only 保存不运行 CLI 或改变 active profile，save-and-activate 在激活失败时回滚原始 YAML",
+      "entries": [
+        "src-tauri/src/ai_workflow_profiles.rs"
+      ],
+      "related_files": [
+        "src-tauri/src/ai_workflow_profiles/tests.rs"
+      ],
+      "tests": [
+        "src-tauri/src/ai_workflow_profiles/tests.rs"
+      ],
+      "symbols": [
+        {
+          "file": "src-tauri/src/ai_workflow_profiles.rs",
+          "name": "ai_workflow_save_profile",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_workflow_profiles.rs",
+          "name": "save_profile",
+          "kind": "function",
+          "visibility": "public"
+        }
+      ],
+      "depends_on": [],
+      "read_scope": [
+        "src-tauri/src/ai_workflow_profiles.rs",
+        "src-tauri/src/ai_workflow_profiles/tests.rs"
       ],
       "relations": [],
       "shared_entry": false
