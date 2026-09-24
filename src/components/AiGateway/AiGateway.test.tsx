@@ -22,6 +22,11 @@ import {
 import { renderWithProviders } from "@/test/mocks/render";
 import { emitMock, invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
 import {
+  recordMessageMock,
+  resetMessageMocks,
+  safeRecordMessageMock,
+} from "@/test/mocks/messages";
+import {
   clearTemplateAutoRefreshFailures,
   clearTemplateSyncInFlight,
   isTemplateSyncInFlight,
@@ -251,6 +256,7 @@ describe("AiGateway", () => {
 
   beforeEach(async () => {
     resetTauriMocks();
+    resetMessageMocks();
     await i18n.changeLanguage("en");
     writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
@@ -1893,6 +1899,18 @@ describe("AiGateway", () => {
     await waitFor(() =>
       expect(screen.getByTestId("ai-gateway-template-sync-t1")).toBeEnabled(),
     );
+
+    // AC-009：手动「同步模型列表」成功后绝不创建任何消息中心消息。
+    // 手动处理器会为 UI 刷新读取 ai_gateway_get_config，但那不是通知。
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.some(
+          ([command]) => command === "ai_gateway_get_config",
+        ),
+      ).toBe(true),
+    );
+    expect(safeRecordMessageMock).not.toHaveBeenCalled();
+    expect(recordMessageMock).not.toHaveBeenCalled();
   });
 
   it("syncTemplateRefreshesProviderConfiguration", async () => {

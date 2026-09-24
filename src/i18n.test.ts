@@ -386,3 +386,78 @@ describe("AI 网关快捷范围国际化键", () => {
   );
 });
 
+const TEMPLATE_SYNC_NOTIFICATION_KEYS = [
+  "aiGatewayTemplateSyncNotificationTitle",
+  "aiGatewayTemplateSyncNotificationProviderCount",
+  "aiGatewayTemplateSyncNotificationAddedCount",
+  "aiGatewayTemplateSyncNotificationDisabledCount",
+  "aiGatewayTemplateSyncNotificationDetailProvider",
+  "messageSource_ai_gateway",
+] as const;
+
+const TEMPLATE_SYNC_COUNT_KEYS = [
+  "aiGatewayTemplateSyncNotificationProviderCount",
+  "aiGatewayTemplateSyncNotificationAddedCount",
+  "aiGatewayTemplateSyncNotificationDisabledCount",
+] as const;
+
+describe("服务商模板自动同步通知国际化键", () => {
+  it.each(["en", "zh"] as const)(
+    "为 %s 提供全部自动同步通知键的真实文案",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      const fallbacks = TEMPLATE_SYNC_NOTIFICATION_KEYS.filter(
+        (key) => i18n.t(key) === key,
+      );
+      expect(fallbacks, `${language} 中回退为键名的通知键`).toEqual([]);
+    },
+  );
+
+  it.each(["en", "zh"] as const)(
+    "为 %s 的通知计数键保留 {{count}} 并正常插值",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      for (const key of TEMPLATE_SYNC_COUNT_KEYS) {
+        const raw = resourceBundle(language)[key];
+        expect(typeof raw, `${language} 中 ${key} 应为字符串`).toBe("string");
+        expect(
+          raw as string,
+          `${language} 中 ${key} 应保留 {{count}}`,
+        ).toContain("{{count}}");
+        expect(
+          i18n.t(key, { count: 2 }),
+          `${language} 中 ${key} 插值后不应残留 {{count}}`,
+        ).not.toContain("{{count}}");
+      }
+    },
+  );
+
+  it.each(["en", "zh"] as const)(
+    "为 %s 的通知标题保留 {{template}} 并正常插值",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      const raw = resourceBundle(language).aiGatewayTemplateSyncNotificationTitle;
+      expect(typeof raw, `${language} 中通知标题应为字符串`).toBe("string");
+      expect(raw as string).toContain("{{template}}");
+      expect(
+        i18n.t("aiGatewayTemplateSyncNotificationTitle", {
+          template: "opencode-zen",
+        }),
+      ).toContain("opencode-zen");
+    },
+  );
+
+  it.each(["en", "zh"] as const)(
+    "为 %s 的通知明细键插值 provider 与 models",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      const detail = i18n.t("aiGatewayTemplateSyncNotificationDetailProvider", {
+        provider: "Zen Upstream",
+        models: "m, n",
+      });
+      expect(detail).toContain("Zen Upstream");
+      expect(detail).toContain("m, n");
+    },
+  );
+});
+
