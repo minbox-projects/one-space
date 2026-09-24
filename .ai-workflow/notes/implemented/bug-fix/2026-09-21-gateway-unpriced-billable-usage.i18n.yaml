@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/bug-fix/2026-09-21-gateway-unpriced-billable-usage.md
-2026-09-21-gateway-unpriced-billable-usage.md: 786c2a524f7a75edcc4048036ed965f484d6c772
-2026-09-21-gateway-unpriced-billable-usage.zh.md: 211ded736fac497081b806974bfc361da74b2874
+2026-09-21-gateway-unpriced-billable-usage.md: f1fc53ab84df7edca14fe341157a7ea80a2a4758
+2026-09-21-gateway-unpriced-billable-usage.zh.md: 41bbd571cae594f45bf61a6b558544727b2735df

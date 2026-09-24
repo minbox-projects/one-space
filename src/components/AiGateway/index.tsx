@@ -103,11 +103,6 @@ function emptyProvider(): GatewayUpstreamProvider {
     protocol: "chat_completions",
     mappings: [],
     enabled: true,
-    auto_disabled: false,
-    disabled_reason: null,
-    disabled_at: null,
-    consecutive_failures: 0,
-    last_error_at: null,
   };
 }
 
@@ -947,7 +942,6 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
               void handleToggleProviderEnabled(provider, enabled)
             }
             onAdd={() => setIsTemplatePickerOpen(true)}
-            onDelete={(providerId) => void handleDeleteProvider(providerId)}
             onManageTemplates={() => setIsTemplateManageOpen(true)}
           />
         </div>
@@ -1107,7 +1101,6 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           open={isTemplatePickerOpen}
           onOpenChange={setIsTemplatePickerOpen}
           templates={templates}
-          providers={config.providers}
           busy={busy}
           onSelectBlank={() => {
             setIsTemplatePickerOpen(false);
@@ -1118,10 +1111,6 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           onSelectTemplate={(tpl) => {
             setIsTemplatePickerOpen(false);
             setCreatingTemplate(tpl);
-          }}
-          onEditTemplate={(tpl) => {
-            setEditingTemplate(tpl);
-            setIsTemplateEditOpen(true);
           }}
           onNewTemplate={() => {
             setEditingTemplate(null);

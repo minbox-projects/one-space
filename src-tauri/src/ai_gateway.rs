@@ -13,13 +13,10 @@ mod types_config;
 mod usage_log;
 
 pub use commands::*;
-pub use quota::{
-    ai_gateway_provider_quota, ProviderQuota, QuotaCredits, QuotaWindowLimits, QuotaWindow,
-};
+pub use quota::ai_gateway_provider_quota;
 pub(crate) use quota::__cmd__ai_gateway_provider_quota;
-pub use go_usage::{ai_gateway_provider_go_usage, GoUsage, GoUsageWindow, ProviderGoUsage};
+pub use go_usage::ai_gateway_provider_go_usage;
 pub(crate) use go_usage::__cmd__ai_gateway_provider_go_usage;
-pub use templates::*;
 pub use types_config::*;
 pub use usage_log::*;
 

@@ -85,13 +85,8 @@ function makeProvider(
     default_model: null,
     mappings: [],
     enabled: true,
-    auto_disabled: false,
-    disabled_reason: null,
-    disabled_at: null,
-    consecutive_failures: 0,
-    last_error_at: null,
     ...overrides,
-  };
+  } as GatewayUpstreamProvider;
 }
 
 function makeConfig(providers: GatewayUpstreamProvider[] = []): GatewayConfig {

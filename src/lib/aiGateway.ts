@@ -9,9 +9,6 @@ export const AI_GATEWAY_DEFAULT_PORT = import.meta.env.DEV
 export const AI_GATEWAY_STATUS_UPDATED_EVENT = "ai-gateway-status-update";
 export const AI_GATEWAY_CONFIG_UPDATED_EVENT = "ai-gateway-config-update";
 
-/** Sentinel mask the frontend submits to keep a stored provider api key or local key; the backend reads it as "preserve existing value" (or generate a new one) and does not echo masked secrets. */
-export const AI_GATEWAY_KEY_MASK = "********";
-
 /** Terminal tools AI Gateway is allowed to configure; claude/antigravity are excluded. */
 export const AI_GATEWAY_SUPPORTED_TERMINAL_TOOLS = ["opencode", "codex"] as const;
 
@@ -54,11 +51,6 @@ export interface GatewayUpstreamProvider {
   protocol?: GatewayUpstreamProtocol;
   mappings: GatewayModelMapping[];
   enabled: boolean;
-  auto_disabled: boolean;
-  disabled_reason: string | null;
-  disabled_at: number | null;
-  consecutive_failures: number;
-  last_error_at: number | null;
   /** Template this provider was created from; absent for manual providers. */
   template_id?: string | null;
   /** Template models the user deleted for this provider. */
@@ -192,55 +184,6 @@ export function resolveDefaultKeyId(
 /** Build the local OpenAI-compatible base address (with `/v1` suffix) the listener binds to. */
 export function localBaseUrl(port: number): string {
   return `http://127.0.0.1:${port}/v1`;
-}
-
-/** Resolved upstream model plus the endpoint family the request is sent to. */
-export interface GatewayMappingPreview {
-  upstreamModel: string;
-  endpoint: GatewayUpstreamProtocol;
-}
-
-/**
- * Resolve the upstream model and target endpoint for a requested local model.
- *
- * An exact, non-blank mapping match wins and may override the protocol per row;
- * user-disabled and auto-disabled rows are skipped. When every matching row is
- * user-disabled or auto-disabled the request is not served (no default-model
- * fallback); otherwise the provider default model is used with the provider
- * protocol.
- * `null` means the provider cannot serve the requested model.
- */
-export function resolveMappingPreview(
-  provider: {
-    protocol?: GatewayUpstreamProtocol;
-    mappings: GatewayModelMapping[];
-    default_model: string | null;
-  },
-  localModel: string,
-): GatewayMappingPreview | null {
-  const candidates = provider.mappings.filter(
-    (entry) =>
-      entry.local_model === localModel && entry.upstream_model.trim() !== "",
-  );
-  if (candidates.length > 0) {
-    const mapping = candidates.find(
-      (entry) => entry.enabled !== false && !entry.auto_disabled,
-    );
-    if (mapping) {
-      return {
-        upstreamModel: mapping.upstream_model,
-        endpoint: mapping.protocol ?? provider.protocol ?? "chat_completions",
-      };
-    }
-    return null;
-  }
-  if (provider.default_model) {
-    return {
-      upstreamModel: provider.default_model,
-      endpoint: provider.protocol ?? "chat_completions",
-    };
-  }
-  return null;
 }
 
 /** Trim, drop blanks and deduplicate reasoning efforts preserving first-seen order. */
@@ -381,10 +324,6 @@ export function formatGatewayTimestamp(ts: number | null | undefined): string | 
 
 export function aiGatewayGetConfig() {
   return invoke<GatewayConfig>("ai_gateway_get_config");
-}
-
-export function aiGatewaySaveConfig(config: GatewayConfig) {
-  return invoke<GatewayConfig>("ai_gateway_save_config", { config });
 }
 
 export function aiGatewayUpsertProvider(
@@ -582,7 +521,7 @@ export interface UsageStats extends UsageMetrics {
   unpriced_items?: UnpricedUsageItem[];
 }
 
-export type UsageLogResult = "success" | "failure" | "cancelled";
+export type UsageLogResult = "success" | "failure";
 
 export interface UsageLogRecord {
   timestamp_ms: number;
@@ -614,7 +553,7 @@ export interface UsageLogRecord {
 export interface UsageLogGroup {
   group: string;
   request_count: number;
-  /** Failure records only; cancelled is excluded. */
+  /** Failure records only. */
   error_count: number;
   last_request_at_ms: number;
 }
@@ -667,7 +606,6 @@ export interface ModelPrice {
   cache_write: number;
   output: number;
   off_peaks?: OffPeakPrice[];
-  off_peak?: OffPeakPrice | null;
 }
 
 /** Editable string-form off-peak window for one mapping-row price draft. */
@@ -748,12 +686,7 @@ export function priceRowToDraft(
     };
   }
 
-  const rawOffPeaks =
-    price.off_peaks && price.off_peaks.length > 0
-      ? price.off_peaks
-      : price.off_peak
-        ? [price.off_peak]
-        : [];
+  const rawOffPeaks = price.off_peaks ?? [];
 
   const stringifyTier = (value: number | null | undefined): string =>
     value !== undefined && value !== null ? String(value) : "";
@@ -814,7 +747,6 @@ export function draftToPriceRow(draft: GatewayPriceDraft): ModelPrice | null {
       };
     });
     row.off_peaks = offPeaks;
-    row.off_peak = offPeaks[0] ?? null;
   }
 
   return row;
@@ -990,8 +922,6 @@ export function usageStatusTranslationKey(result: UsageLogResult): string {
       return "aiGatewayStatusSuccess";
     case "failure":
       return "aiGatewayStatusFailure";
-    case "cancelled":
-      return "aiGatewayStatusCancelled";
   }
 }
 
@@ -1063,7 +993,6 @@ export interface GatewayProviderTemplateModel {
   cache_write?: number;
   output?: number;
   off_peaks?: OffPeakPrice[];
-  off_peak?: OffPeakPrice | null;
   reasoning_efforts?: string[];
 }
 

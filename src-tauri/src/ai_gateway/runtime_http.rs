@@ -64,9 +64,6 @@ fn captured_app_handle() -> Option<tauri::AppHandle> {
         .clone()
 }
 
-/// Same-thread recorder for emission observability in tests. The relay settles
-/// on a worker thread, so the process-wide handle slot is exercised separately;
-/// this only exists to make the transition broadcast deterministic to assert.
 #[cfg(test)]
 thread_local! {
     pub(in crate::ai_gateway) static CONFIG_UPDATE_EVENTS: std::cell::RefCell<Vec<String>> =
@@ -238,11 +235,9 @@ pub(in crate::ai_gateway) struct ForwardCapture {
 
 impl ForwardCapture {
     /// Final result classification: an HTTP 2xx is success only when the
-    /// request was not cancelled, all-unavailable or an upstream error.
+    /// request was not all-unavailable or an upstream error.
     pub(in crate::ai_gateway) fn result(&self) -> UsageResult {
-        if self.downstream_cancelled {
-            UsageResult::Cancelled
-        } else if self.all_unavailable || self.upstream_error || self.status >= 400 || self.status == 0 {
+        if self.all_unavailable || self.upstream_error || self.status >= 400 || self.status == 0 {
             UsageResult::Failure
         } else {
             UsageResult::Success
@@ -271,22 +266,6 @@ pub(in crate::ai_gateway) struct AttemptLog {
     /// (`false` for a missing or invalid/conflicting usage object).
     pub(in crate::ai_gateway) usage_valid: bool,
     pub(in crate::ai_gateway) duration_ms: u64,
-}
-
-impl Default for AttemptLog {
-    fn default() -> Self {
-        Self {
-            provider_id: String::new(),
-            provider_name: String::new(),
-            upstream_model: String::new(),
-            status: 0,
-            result: UsageResult::Failure,
-            error_message: None,
-            usage: None,
-            usage_valid: false,
-            duration_ms: 0,
-        }
-    }
 }
 
 /// Buffer one completed upstream attempt with its own elapsed time. The parsed
@@ -2081,7 +2060,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
     // whole buffer, including completed attempts, is discarded. Logging is
     // best-effort and never changes the caller-visible response.
     match outcome {
-        Some(Ok(capture)) if capture.result() != UsageResult::Cancelled => {
+        Some(Ok(capture)) if !capture.downstream_cancelled => {
             // Settle the binding once per request at this terminal outcome,
             // before the best-effort usage rows are persisted so the binding
             // is already settled when the caller observes the response. A

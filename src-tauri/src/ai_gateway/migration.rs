@@ -1,12 +1,17 @@
-//! One-release, best-effort migration of the on-disk state written before the
-//! AI Gateway rename.
+//! Permanent, version-gated migration of on-disk state written by older builds.
 //!
-//! This module is temporary and is deleted in the next version. It is the ONLY
-//! place that may name the legacy files and marker; every other module uses the
-//! `ai_gateway` names. Removing it must not change behavior once the migration
-//! window has passed.
+//! This module is the ONLY place that may name the legacy files, the legacy
+//! gateway marker and the legacy field shapes. Two version gates live here: a
+//! configuration older than [`super::GATEWAY_CONFIG_SCHEMA_VERSION`] is rewritten
+//! once with its global price rows scoped, its singular `off_peak` window folded
+//! into `off_peaks` and its provider-level runtime fields cleared; a usage
+//! database older than [`USAGE_DB_VERSION`] has its legacy `cancelled` rows
+//! deleted once. The legacy file renames and the legacy gateway-marker predicate
+//! stay as this module's permanent compatibility surface.
 
-use serde_json::Value;
+use rusqlite::Connection;
+use serde_json::{Map, Value};
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Legacy encrypted config file name, replaced by `super::CONFIG_FILE`.
@@ -16,6 +21,226 @@ pub(in crate::ai_gateway) const LEGACY_USAGE_DB_FILE_NAME: &str = "api_gateway_u
 /// Legacy gateway marker key, replaced by the marker written by
 /// `commands::build_gateway_provider`.
 pub(in crate::ai_gateway) const LEGACY_GATEWAY_MARKER_KEY: &str = "api_gateway_gateway";
+
+/// Usage-database version reached after the one-time cancelled-row cleanup.
+pub(in crate::ai_gateway) const USAGE_DB_VERSION: u32 = 1;
+
+/// Provider-level runtime health keys that only mapping rows may carry now.
+const LEGACY_PROVIDER_RUNTIME_KEYS: [&str; 5] = [
+    "auto_disabled",
+    "disabled_reason",
+    "disabled_at",
+    "consecutive_failures",
+    "last_error_at",
+];
+
+/// Legacy singular off-peak window key, superseded by the `off_peaks` list.
+const LEGACY_SINGULAR_OFF_PEAK_KEY: &str = "off_peak";
+const OFF_PEAKS_KEY: &str = "off_peaks";
+
+/// The provider ids together with the upstream models each provider reaches:
+/// every non-blank, retained mapping `upstream_model` plus its trimmed default
+/// model.
+fn reachable_provider_models(config: &Value) -> Vec<(String, HashSet<String>)> {
+    config
+        .get("providers")
+        .and_then(Value::as_array)
+        .map(|providers| {
+            providers
+                .iter()
+                .filter_map(|provider| {
+                    let provider = provider.as_object()?;
+                    let id = provider.get("id").and_then(Value::as_str)?.to_string();
+                    let mut models = HashSet::new();
+                    if let Some(mappings) = provider.get("mappings").and_then(Value::as_array) {
+                        for mapping in mappings {
+                            let local_is_set = mapping
+                                .get("local_model")
+                                .and_then(Value::as_str)
+                                .map(|value| !value.trim().is_empty())
+                                .unwrap_or(false);
+                            let upstream = mapping
+                                .get("upstream_model")
+                                .and_then(Value::as_str)
+                                .filter(|value| !value.trim().is_empty());
+                            if local_is_set {
+                                if let Some(upstream) = upstream {
+                                    models.insert(upstream.to_string());
+                                }
+                            }
+                        }
+                    }
+                    if let Some(default_model) =
+                        provider.get("default_model").and_then(Value::as_str)
+                    {
+                        let trimmed = default_model.trim();
+                        if !trimmed.is_empty() {
+                            models.insert(trimmed.to_string());
+                        }
+                    }
+                    Some((id, models))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A price row's provider id: absent, `null` or non-string means a legacy global
+/// row.
+fn price_row_provider_id(row: &Value) -> Option<String> {
+    match row.get("provider_id") {
+        Some(Value::String(provider_id)) => Some(provider_id.clone()),
+        _ => None,
+    }
+}
+
+/// Fold a legacy singular `off_peak` window into `off_peaks` when no multi-window
+/// list exists yet, preserving every tier and the weekday set. Reports whether
+/// the row changed.
+fn convert_singular_off_peak(row: &mut Map<String, Value>) -> bool {
+    let Some(off_peak) = row.remove(LEGACY_SINGULAR_OFF_PEAK_KEY) else {
+        return false;
+    };
+    if !off_peak.is_null() {
+        let has_off_peaks = row
+            .get(OFF_PEAKS_KEY)
+            .and_then(Value::as_array)
+            .map(|entries| !entries.is_empty())
+            .unwrap_or(false);
+        if !has_off_peaks {
+            row.insert(OFF_PEAKS_KEY.to_string(), Value::Array(vec![off_peak]));
+        }
+    }
+    true
+}
+
+/// Migrate a raw configuration value in place and report whether anything
+/// changed. The transformation reproduces the former per-read normalization:
+/// global rows are copied to every provider that reaches their model, scoped
+/// duplicates keep the first occurrence and rows whose provider/model is gone
+/// are dropped; the singular off-peak window becomes the first `off_peaks`
+/// entry; provider-level runtime keys are cleared. Missing fields are tolerated
+/// so a legacy shape can never fail the whole parse.
+pub(in crate::ai_gateway) fn migrate_legacy_config(config: &mut Value) -> bool {
+    let reachable = reachable_provider_models(config);
+    let Some(object) = config.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+
+    if let Some(providers) = object.get_mut("providers").and_then(Value::as_array_mut) {
+        for provider in providers.iter_mut() {
+            let Some(provider) = provider.as_object_mut() else {
+                continue;
+            };
+            for key in LEGACY_PROVIDER_RUNTIME_KEYS {
+                if provider.remove(key).is_some() {
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    let Some(rows) = object.get_mut("model_prices").and_then(Value::as_array_mut) else {
+        return changed;
+    };
+
+    for row in rows.iter_mut() {
+        if let Some(row) = row.as_object_mut() {
+            if convert_singular_off_peak(row) {
+                changed = true;
+            }
+        }
+    }
+
+    let global_rows: Vec<Value> = rows
+        .iter()
+        .filter(|row| price_row_provider_id(row).is_none())
+        .cloned()
+        .collect();
+    for global in global_rows {
+        let Some(upstream_model) = global
+            .get("upstream_model")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        for (provider_id, models) in &reachable {
+            if !models.contains(&upstream_model) {
+                continue;
+            }
+            let already_scoped = rows.iter().any(|existing| {
+                price_row_provider_id(existing).as_deref() == Some(provider_id.as_str())
+                    && existing.get("upstream_model").and_then(Value::as_str)
+                        == Some(upstream_model.as_str())
+            });
+            if already_scoped {
+                continue;
+            }
+            let mut migrated = global.clone();
+            if let Some(object) = migrated.as_object_mut() {
+                object.insert(
+                    "provider_id".to_string(),
+                    Value::String(provider_id.clone()),
+                );
+            }
+            rows.push(migrated);
+            changed = true;
+        }
+    }
+
+    let mut seen: Vec<(String, String)> = Vec::new();
+    let mut dropped = false;
+    rows.retain(|row| {
+        let Some(provider_id) = price_row_provider_id(row) else {
+            dropped = true;
+            return false;
+        };
+        let Some(upstream_model) = row.get("upstream_model").and_then(Value::as_str) else {
+            dropped = true;
+            return false;
+        };
+        let Some((_, models)) = reachable.iter().find(|(id, _)| id == &provider_id) else {
+            dropped = true;
+            return false;
+        };
+        if !models.contains(upstream_model) {
+            dropped = true;
+            return false;
+        }
+        let key = (provider_id, upstream_model.to_string());
+        if seen.contains(&key) {
+            dropped = true;
+            return false;
+        }
+        seen.push(key);
+        true
+    });
+    changed || dropped
+}
+
+/// Delete every legacy `result = 'cancelled'` row once, transactionally, and
+/// advance the database-level version marker; a later open does nothing.
+pub(in crate::ai_gateway) fn migrate_usage_database(connection: &Connection) -> Result<(), String> {
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if version >= USAGE_DB_VERSION as i64 {
+        return Ok(());
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute("DELETE FROM usage_logs WHERE result = 'cancelled'", [])
+        .map_err(|error| error.to_string())?;
+    transaction
+        .pragma_update(None, "user_version", USAGE_DB_VERSION as i64)
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(())
+}
 
 /// Rename one legacy file to its new name when the new file is absent and the
 /// legacy file exists, reporting whether a rename actually happened. A

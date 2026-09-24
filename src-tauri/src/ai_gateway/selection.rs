@@ -2,6 +2,7 @@ use super::{
     GatewayUpstreamProvider, ModelMapping, UpstreamProtocol, AUTO_DISABLE_PROBE_COOLDOWN_SECS,
     FAILURE_THRESHOLD,
 };
+#[cfg(test)]
 use rand::seq::SliceRandom;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
@@ -115,6 +116,8 @@ pub(in crate::ai_gateway) fn candidate_providers<'a>(
 }
 
 /// Uniformly shuffle a copy of the candidate list for one request attempt pass.
+/// Test-only: production candidate ordering goes through [`weighted_candidates`].
+#[cfg(test)]
 pub(in crate::ai_gateway) fn shuffled_candidates(
     candidates: &[GatewayUpstreamProvider],
 ) -> Vec<GatewayUpstreamProvider> {
@@ -130,6 +133,7 @@ fn weighted_scheduler() -> &'static Mutex<HashMap<String, i64>> {
 }
 
 /// Reset the global weighted round-robin scheduler state for tests.
+#[cfg(test)]
 pub(in crate::ai_gateway) fn reset_weighted_scheduler_for_test() {
     let mut map = weighted_scheduler().lock().unwrap_or_else(|e| e.into_inner());
     map.clear();
@@ -968,15 +972,10 @@ pub(in crate::ai_gateway) fn mapping_matches_key(
         && mapping.upstream_model.trim() == upstream_model.trim()
 }
 
-/// Manual re-enable clears the legacy provider runtime state and the runtime
-/// state of every auto-disabled row; the user's `enabled` intent is untouched
-/// and a row that is not auto-disabled keeps its counter.
+/// Manual re-enable clears the runtime state of every auto-disabled row; the
+/// user's `enabled` intent is untouched and a row that is not auto-disabled
+/// keeps its counter.
 pub(in crate::ai_gateway) fn manual_reenable(provider: &mut GatewayUpstreamProvider) {
-    provider.auto_disabled = false;
-    provider.disabled_reason = None;
-    provider.disabled_at = None;
-    provider.consecutive_failures = 0;
-    provider.last_error_at = None;
     for mapping in provider.mappings.iter_mut() {
         if mapping.auto_disabled {
             clear_mapping_runtime_state(mapping);

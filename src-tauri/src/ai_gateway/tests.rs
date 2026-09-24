@@ -26,6 +26,7 @@ use tokio::net::{TcpListener, TcpStream};
 mod templates;
 mod quota;
 mod go_usage;
+mod migration;
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -89,15 +90,11 @@ fn provider(id: &str) -> GatewayUpstreamProvider {
         mappings: Vec::new(),
         weight: 1,
         enabled: true,
-        auto_disabled: false,
-        disabled_reason: None,
-        disabled_at: None,
-        consecutive_failures: 0,
-        last_error_at: None,
         template_id: None,
         ignored_models: Vec::new(),
         tags: Vec::new(),
         icon: None,
+        ..GatewayUpstreamProvider::default()
     }
 }
 
@@ -428,11 +425,10 @@ fn candidate_providers_requires_enabled_active_and_resolvable() {
     disabled.default_model = Some("remote-default".to_string());
     disabled.enabled = false;
 
-    // Legacy provider-level auto_disabled=true does NOT exclude candidates;
-    // a healthy row in that provider still serves.
+    // A provider is never gated by a provider-level flag any more: only its
+    // mapping rows decide whether it can serve.
     let mut auto_disabled = provider("auto-disabled");
     auto_disabled.default_model = Some("remote-default".to_string());
-    auto_disabled.auto_disabled = true; // legacy flag — must be ignored
     auto_disabled.mappings = vec![mapping(
         "local-unknown", "remote-default", None,
     )];
@@ -447,7 +443,7 @@ fn candidate_providers_requires_enabled_active_and_resolvable() {
     );
     let ids: Vec<&str> = candidates.iter().map(|item| item.id.as_str()).collect();
     assert_eq!(ids, vec!["serving", "auto-disabled"],
-        "legacy provider-level auto_disabled must not filter candidates when a row serves");
+        "a provider with a healthy serving row must remain a candidate");
 }
 
 #[test]
@@ -567,8 +563,6 @@ fn auto_disable_threshold_immediate_disable_and_success_reset() {
     assert_eq!(threshold.mappings[0].consecutive_failures, 3);
     assert_eq!(threshold.mappings[0].disabled_reason.as_deref(), Some("boom"));
     assert_eq!(threshold.mappings[0].disabled_at, Some(12));
-    // Provider-level must NOT be written.
-    assert!(!threshold.auto_disabled);
 
     // DisableImmediately (401/403) — first call disables. Frozen Step 2 rule:
     // an immediate auth disable still records the reason/at/last_error_at but
@@ -593,7 +587,6 @@ fn auto_disable_threshold_immediate_disable_and_success_reset() {
         Some(5),
         "an immediate auth disable must still stamp last_error_at"
     );
-    assert!(!auth.auto_disabled, "AC-002: provider-level must stay clear");
 
     // Transient (404/429) — never counts or disables.
     let mut transient = provider("transient");
@@ -659,8 +652,6 @@ fn auto_disabled_state_persists_and_separates_from_user_enabled() {
             "an immediate auth disable must not persist a transient failure count"
         );
         assert_eq!(loaded.providers[0].mappings[0].last_error_at, Some(123));
-        // Provider-level legacy fields must be cleared by normalize_config on read.
-        assert!(!loaded.providers[0].auto_disabled, "provider-level must stay clear on read");
 
         // Direct field assignment simulates what step-2's re-enable command would do.
         loaded.providers[0].mappings[0].auto_disabled = false;
@@ -721,8 +712,8 @@ enum MockReply {
 /// `crate::lock_test_home_env` mutex.
 ///
 /// Keep using this helper for tests that drive the global AI Gateway server
-/// (`start_server`/`stop_server`/`ai_gateway_start`/`ai_gateway_stop`/
-/// `ai_gateway_save_config`). The server reads its config from worker threads
+/// (`start_server`/`stop_server`/`ai_gateway_start`/`ai_gateway_stop`).
+/// The server reads its config from worker threads
 /// that cannot see the thread-local override, and its `RUNNING_SERVER` state is
 /// a process-wide singleton, so those tests must stay serialized.
 struct TempHome {
@@ -909,15 +900,11 @@ fn upstream_provider(
         mappings: Vec::new(),
         weight: 1,
         enabled: true,
-        auto_disabled: false,
-        disabled_reason: None,
-        disabled_at: None,
-        consecutive_failures: 0,
-        last_error_at: None,
         template_id: None,
         ignored_models: Vec::new(),
         tags: Vec::new(),
         icon: None,
+        ..GatewayUpstreamProvider::default()
     }
 }
 
@@ -2691,8 +2678,8 @@ fn build_gateway_provider_ignores_disabled_and_auto_disabled_gateways() {
     row_disabled.mappings = vec![mapping("auto-local", "auto-remote", Some("Auto Disabled Row"))];
     row_disabled.mappings[0].auto_disabled = true;
 
-    // (c) Legacy provider-level auto_disabled=true is ignored — healthy rows still
-    // contribute; codex default-model fallback still works via this provider.
+    // (c) A provider with a healthy row contributes; provider-level runtime
+    // health no longer exists, so only the row's `auto_disabled` filters.
     let mut legacy = upstream_provider(
         "g3",
         "Legacy Auto Disabled",
@@ -2700,7 +2687,6 @@ fn build_gateway_provider_ignores_disabled_and_auto_disabled_gateways() {
         "sk",
         Some("legacy-default"),
     );
-    legacy.auto_disabled = true; // legacy flag — must be ignored
     legacy.mappings = vec![mapping("legacy-local", "legacy-remote", Some("Legacy"))];
 
     // Fully healthy enabled provider.
@@ -2724,7 +2710,7 @@ fn build_gateway_provider_ignores_disabled_and_auto_disabled_gateways() {
     )
     .expect("opencode provider must build");
     // g1 excluded (enabled=false), g2 excluded (mapping auto_disabled).
-    // g3 legacy auto_disabled ignored → maps contribute. g4 always contributes.
+    // g3 healthy rows contribute. g4 always contributes.
     assert_eq!(
         opencode["tool_config"]["models"],
         json!({
@@ -3420,28 +3406,28 @@ fn ac_010_provider_level_reenable_clears_all_auto_disabled() {
         let mut p1 = provider("p1");
 
         // Row A: auto-disabled + enabled (should be cleared and served again).
-        let mut mA = mapping("locA", "upA", None);
-        mA.enabled = true;
-        mA.auto_disabled = true;
-        mA.disabled_reason = Some("auth".to_string());
-        mA.consecutive_failures = 3;
-        mA.last_error_at = Some(100);
+        let mut m_a = mapping("locA", "upA", None);
+        m_a.enabled = true;
+        m_a.auto_disabled = true;
+        m_a.disabled_reason = Some("auth".to_string());
+        m_a.consecutive_failures = 3;
+        m_a.last_error_at = Some(100);
 
         // Row B: auto-disabled + user-disabled (runtime cleared, user intent stays off).
-        let mut mB = mapping("locB", "upB", None);
-        mB.enabled = false;
-        mB.auto_disabled = true;
-        mB.disabled_reason = Some("timeout".to_string());
-        mB.consecutive_failures = 2;
+        let mut m_b = mapping("locB", "upB", None);
+        m_b.enabled = false;
+        m_b.auto_disabled = true;
+        m_b.disabled_reason = Some("timeout".to_string());
+        m_b.consecutive_failures = 2;
 
         // Row C: user-disabled but NOT auto-disabled (counter must stay).
-        let mut mC = mapping("locC", "upC", None);
-        mC.enabled = false;
-        mC.auto_disabled = false;
-        mC.consecutive_failures = 5;
-        mC.last_error_at = Some(50);
+        let mut m_c = mapping("locC", "upC", None);
+        m_c.enabled = false;
+        m_c.auto_disabled = false;
+        m_c.consecutive_failures = 5;
+        m_c.last_error_at = Some(50);
 
-        p1.mappings = vec![mA, mB, mC];
+        p1.mappings = vec![m_a, m_b, m_c];
 
         // p2: must be entirely unaffected.
         let mut p2 = provider("p2");
@@ -3521,9 +3507,7 @@ fn provider_enable_command_only_changes_user_intent() {
     with_temp_home("provider-enable", |_home| {
         let mut config = GatewayConfig::default();
         let mut p = provider("p1");
-        // Simulate legacy-provider runtime state + a row-level auto-disabled mapping.
-        p.auto_disabled = true;
-        p.disabled_reason = Some("auth".to_string());
+        // Simulate a row-level auto-disabled mapping alongside a user toggle.
         p.mappings = vec![mapping("l", "r", None)];
         p.mappings[0].auto_disabled = true;
         p.mappings[0].disabled_reason = Some("old-auth".to_string());
@@ -3612,36 +3596,6 @@ fn new_keys_without_a_value_get_a_random_secret() {
     });
 }
 
-/// A brand-new key submitted with the UI mask placeholder must be treated the
-/// same as a blank value: the command generates a fresh secret instead of
-/// persisting the literal `"********"`.
-#[test]
-fn new_keys_with_mask_placeholder_get_a_random_secret() {
-    with_temp_home("key-mask-autogen", |_home| {
-        let created = super::commands::ai_gateway_upsert_key(GatewayKey {
-            id: String::new(),
-            label: "Masked".to_string(),
-            value: "********".to_string(),
-            enabled: true,
-            created_at: 0,
-        })
-        .unwrap();
-        let created_value = created.keys[0].value.clone();
-        assert_ne!(
-            created_value, "********",
-            "the mask placeholder must never be stored as a key value"
-        );
-        assert!(
-            created_value.starts_with("sk-gateway-"),
-            "a masked new key must receive a generated secret: {created_value}"
-        );
-        assert!(
-            created_value.len() > "sk-gateway-".len(),
-            "a generated secret must carry entropy after the prefix: {created_value}"
-        );
-    });
-}
-
 #[test]
 fn provider_delete_removes_ledger_entry() {
     with_temp_home("provider-delete", |_home| {
@@ -3670,7 +3624,6 @@ fn every_command_is_registered_in_the_invoke_handler() {
     assert!(LIB_SOURCE.contains("mod ai_gateway;"));
     let commands = [
         "ai_gateway_get_config",
-        "ai_gateway_save_config",
         "ai_gateway_upsert_provider",
         "ai_gateway_delete_provider",
         "ai_gateway_set_provider_enabled",
@@ -3745,6 +3698,17 @@ fn every_command_is_registered_in_the_invoke_handler() {
             "the removed command {removed} must not be exported from lib.rs"
         );
     }
+    // REQ-006: the whole-configuration save command is removed from the surface.
+    for removed in ["ai_gateway_save_config"] {
+        assert!(
+            !RUN_APP_SOURCE.contains(&format!("ai_gateway::{removed},")),
+            "the removed command {removed} must not be registered in generate_handler!"
+        );
+        assert!(
+            !LIB_SOURCE.contains(removed),
+            "the removed command {removed} must not be exported from lib.rs"
+        );
+    }
     // REQ-011: the standalone model-fetch command is removed together with its
     // frontend wrapper; its registration and export must be gone.
     for removed in ["ai_gateway_fetch_models"] {
@@ -3772,9 +3736,9 @@ fn every_command_is_registered_in_the_invoke_handler() {
 }
 
 /// AC-007 / REQ-005: saving a provider atomically replaces exactly its own
-/// price rows, drops blank-model, duplicate and unreachable rows, mirrors
-/// off-peak windows into both directions, and leaves its rows unchanged when
-/// no price list is submitted.
+/// price rows, drops blank-model, duplicate and unreachable rows, keeps both
+/// submitted off-peak windows, and leaves its rows unchanged when no price list
+/// is submitted.
 #[test]
 fn upsert_provider_replaces_exactly_its_own_price_rows() {
     with_temp_home("upsert-provider-price-rows", |_home| {
@@ -3827,7 +3791,7 @@ fn upsert_provider_replaces_exactly_its_own_price_rows() {
             cache_write: 0.0,
             output: 22.0,
             off_peaks: vec![op1.clone(), op2.clone()],
-            off_peak: None,
+            ..ModelPrice::default()
         };
         let blank_model = ModelPrice {
             upstream_model: "  ".to_string(),
@@ -3868,11 +3832,6 @@ fn upsert_provider_replaces_exactly_its_own_price_rows() {
         assert_eq!(a.provider_id.as_deref(), Some("p"));
         assert_eq!(a.input, 11.0, "the submitted edit must win");
         assert_eq!(a.output, 22.0);
-        assert_eq!(
-            a.off_peak,
-            Some(op1.clone()),
-            "the first window mirrors into off_peak"
-        );
         assert_eq!(
             a.off_peaks,
             vec![op1.clone(), op2.clone()],
@@ -3929,42 +3888,6 @@ fn upsert_provider_replaces_exactly_its_own_price_rows() {
         assert_eq!(
             before_rows, after_rows,
             "an absent price list must leave the provider's rows unchanged"
-        );
-
-        // Legacy `off_peak` must mirror into `off_peaks`.
-        let legacy_op = OffPeakPrice {
-            start_time: "01:00".to_string(),
-            end_time: "05:00".to_string(),
-            input: 0.25,
-            cache_read: 0.0,
-            cache_write: 0.0,
-            output: 0.5,
-            days: Some(vec![1, 2, 3]),
-        };
-        let legacy_row = ModelPrice {
-            provider_id: None,
-            upstream_model: "model-a".to_string(),
-            input: 12.0,
-            off_peak: Some(legacy_op.clone()),
-            off_peaks: Vec::new(),
-            ..ModelPrice::default()
-        };
-        let mirrored = super::commands::ai_gateway_upsert_provider(
-            updated.clone(),
-            Some(vec![legacy_row]),
-        )
-        .expect("upsert a legacy off_peak row");
-        let mirrored_row = mirrored
-            .model_prices
-            .iter()
-            .find(|row| {
-                row.provider_id.as_deref() == Some("p") && row.upstream_model == "model-a"
-            })
-            .expect("the mirrored row must exist");
-        assert_eq!(
-            mirrored_row.off_peaks,
-            vec![legacy_op],
-            "a legacy off_peak must mirror into off_peaks"
         );
     });
 }
@@ -5449,7 +5372,6 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         last_error_at: None,
     }];
     let mut auto_disabled = upstream_provider("p3", "Provider Three", &upstream_url, "sk", None);
-    auto_disabled.auto_disabled = true;
     auto_disabled.mappings = vec![ModelMapping {
         local_model: "local-auto".to_string(),
         upstream_model: "x".to_string(),
@@ -5480,13 +5402,13 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
     .await;
     assert_eq!(status, 200);
     let body: Value = serde_json::from_str(&text).unwrap();
-    let mut ids: Vec<String> = body["data"]
+    let ids: Vec<String> = body["data"]
         .as_array()
         .unwrap()
         .iter()
         .map(|item| item["id"].as_str().unwrap().to_string())
         .collect();
-    // Row-level: p3's mapping row is healthy (provider-level auto_disabled is legacy).
+    // Row-level: p3's mapping row is healthy, so its model is listed.
     assert_eq!(ids, vec!["local-a".to_string(), "local-auto".to_string(), "local-b".to_string()]);
     assert!(
         log.lock().unwrap().is_empty(),
@@ -8979,7 +8901,7 @@ async fn retry_stream_persistent_503_attempts_six_times_and_counts_health_once()
         headers: vec![("retry-after-ms", "0")],
     }])
     .await;
-    let (b_url, b_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
+    let (_b_url, _b_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
         status: 503,
         content_type: "application/json",
         body: br#"{"error":{"message":"still busy"}}"#.to_vec(),
@@ -9557,7 +9479,7 @@ fn gateway_config_accepts_older_json_and_round_trips_usage_fields() {
         cache_write: 3.0,
         output: 4.0,
         off_peaks: Vec::new(),
-        off_peak: None,
+        ..ModelPrice::default()
     });
     let encoded = serde_json::to_string(&updated).expect("encode config");
     let decoded: GatewayConfig = serde_json::from_str(&encoded).expect("round trip config");
@@ -9565,7 +9487,6 @@ fn gateway_config_accepts_older_json_and_round_trips_usage_fields() {
     assert_eq!(decoded.model_prices.len(), 1);
     assert_eq!(decoded.model_prices[0].upstream_model, "remote-a");
     assert_eq!(decoded.model_prices[0].output, 4.0);
-    assert_eq!(decoded.model_prices[0].off_peak, None);
     assert_eq!(decoded.model_prices[0].off_peaks.len(), 0);
 
     // Missing per-tier prices default to zero, not a deserialize error.
@@ -9576,10 +9497,9 @@ fn gateway_config_accepts_older_json_and_round_trips_usage_fields() {
     assert_eq!(partial.cache_read, 0.0);
     assert_eq!(partial.cache_write, 0.0);
     assert_eq!(partial.output, 0.0);
-    assert_eq!(partial.off_peak, None);
     assert_eq!(partial.off_peaks.len(), 0);
 
-    // OffPeak round trip test (single off_peak and off_peaks)
+    // OffPeak round trip test (off_peaks).
     let with_off_peak = ModelPrice {
         provider_id: Some("prov-test".to_string()),
         upstream_model: "remote-c".to_string(),
@@ -9607,32 +9527,12 @@ fn gateway_config_accepts_older_json_and_round_trips_usage_fields() {
                 days: None,
             },
         ],
-        off_peak: None,
+        ..ModelPrice::default()
     };
     let encoded_op = serde_json::to_string(&with_off_peak).unwrap();
     let decoded_op: ModelPrice = serde_json::from_str(&encoded_op).unwrap();
     assert_eq!(decoded_op.off_peaks, with_off_peak.off_peaks);
-    assert_eq!(decoded_op.effective_off_peaks().len(), 2);
-
-    // Backward compatibility: JSON with single `off_peak` deserializes and effective_off_peaks returns it
-    let single_json = serde_json::json!({
-        "upstream_model": "single-model",
-        "input": 1.0,
-        "cache_read": 0.5,
-        "cache_write": 1.0,
-        "output": 2.0,
-        "off_peak": {
-            "start_time": "00:00",
-            "end_time": "08:00",
-            "input": 0.5,
-            "cache_read": 0.25,
-            "cache_write": 0.5,
-            "output": 1.0
-        }
-    });
-    let single_decoded: ModelPrice = serde_json::from_value(single_json).unwrap();
-    assert_eq!(single_decoded.effective_off_peaks().len(), 1);
-    assert_eq!(single_decoded.effective_off_peaks()[0].start_time, "00:00");
+    assert_eq!(decoded_op.off_peaks.len(), 2);
 }
 
 /// AC-004 / AC-005 / REQ-004 / REQ-006: four-tier cost math and exact,
@@ -9647,7 +9547,7 @@ fn usage_pricing_matches_exact_model_and_sums_four_tiers() {
         cache_write: 2.0,
         output: 4.0,
         off_peaks: Vec::new(),
-        off_peak: None,
+        ..ModelPrice::default()
     };
     let prices = vec![price.clone()];
     assert_eq!(
@@ -9687,7 +9587,7 @@ fn provider_scoped_price_matching_never_uses_global_or_foreign_rows() {
         cache_write: 2.5,
         output: 10.0,
         off_peaks: Vec::new(),
-        off_peak: None,
+        ..ModelPrice::default()
     };
     let provider_a_price = ModelPrice {
         provider_id: Some("prov-a".to_string()),
@@ -9697,7 +9597,7 @@ fn provider_scoped_price_matching_never_uses_global_or_foreign_rows() {
         cache_write: 2.0,
         output: 8.0,
         off_peaks: Vec::new(),
-        off_peak: None,
+        ..ModelPrice::default()
     };
     let provider_b_price = ModelPrice {
         provider_id: Some("prov-b".to_string()),
@@ -9707,7 +9607,7 @@ fn provider_scoped_price_matching_never_uses_global_or_foreign_rows() {
         cache_write: 3.0,
         output: 12.0,
         off_peaks: Vec::new(),
-        off_peak: None,
+        ..ModelPrice::default()
     };
 
     let prices = vec![
@@ -9746,106 +9646,133 @@ fn provider_scoped_price_matching_never_uses_global_or_foreign_rows() {
     );
 }
 
-/// AC-006 / REQ-004: normalization copies each global row into a provider that
-/// reaches that model, never overwrites an existing scoped row, deletes
-/// unmatched/orphan/unreachable rows, deduplicates keeping the first, and is
-/// idempotent.
+/// AC-004 / REQ-001: reading a legacy encrypted config through `read_config`
+/// migrates each global row into a provider that reaches that model, never
+/// overwrites an existing scoped row, deletes unmatched/orphan/unreachable
+/// rows and deduplicates keeping the first; a second read is value-equivalent.
+///
+/// The fixture is raw JSON (not a `GatewayConfig` literal) so the test keeps
+/// compiling once provider-level legacy fields and the singular off-peak field
+/// are gone from the API.
 #[test]
-fn normalize_config_migrates_global_rows_and_drops_unreachable_rows() {
-    let mut p = provider("p");
-    p.mappings = vec![mapping("local-a", "remote-a", None)];
-    p.default_model = Some("remote-default".to_string());
-    let mut q = provider("q");
-    q.mappings = vec![mapping("local-q", "remote-q", None)];
+fn read_config_migrates_legacy_global_rows_and_drops_unreachable_rows() {
+    with_temp_home("legacy-global-row-migration", |_home| {
+        let legacy = json!({
+            "enabled": true,
+            "providers": [
+                {
+                    "id": "p",
+                    "name": "Provider P",
+                    "base_url": "https://p.example.com/v1",
+                    "api_key": "sk-p",
+                    "default_model": "remote-default",
+                    "protocol": "chat_completions",
+                    "mappings": [
+                        {"local_model": "local-a", "upstream_model": "remote-a", "enabled": true}
+                    ]
+                },
+                {
+                    "id": "q",
+                    "name": "Provider Q",
+                    "base_url": "https://q.example.com/v1",
+                    "api_key": "sk-q",
+                    "protocol": "chat_completions",
+                    "mappings": [
+                        {"local_model": "local-q", "upstream_model": "remote-q", "enabled": true}
+                    ]
+                }
+            ],
+            "model_prices": [
+                {"upstream_model": "remote-a", "input": 1.0},
+                {"upstream_model": "remote-default", "input": 2.0},
+                {"upstream_model": "no-provider-model", "input": 3.0},
+                {"provider_id": "p", "upstream_model": "remote-a", "input": 9.0},
+                {"provider_id": "ghost", "upstream_model": "remote-a", "input": 5.0},
+                {"provider_id": "p", "upstream_model": "unreachable", "input": 5.0},
+                {"provider_id": "q", "upstream_model": "remote-q", "input": 4.0},
+                {"provider_id": "q", "upstream_model": "remote-q", "input": 5.0}
+            ]
+        });
+        let password = crate::crypto::get_or_init_master_password().expect("master password");
+        let encrypted =
+            crate::crypto::encrypt(&legacy.to_string(), &password).expect("encrypt legacy config");
+        fs::write(config_path().expect("config path"), encrypted).expect("write legacy config");
 
-    let mut config = GatewayConfig::default();
-    config.providers.push(p);
-    config.providers.push(q);
-    config.model_prices = vec![
-        priced("remote-a", 1.0, 0.0, 0.0, 0.0),
-        priced("remote-default", 2.0, 0.0, 0.0, 0.0),
-        priced("no-provider-model", 3.0, 0.0, 0.0, 0.0),
-        priced_with_provider("p", "remote-a", 9.0, 0.0, 0.0, 0.0),
-        priced_with_provider("ghost", "remote-a", 5.0, 0.0, 0.0, 0.0),
-        priced_with_provider("p", "unreachable", 5.0, 0.0, 0.0, 0.0),
-        priced_with_provider("q", "remote-q", 4.0, 0.0, 0.0, 0.0),
-        priced_with_provider("q", "remote-q", 5.0, 0.0, 0.0, 0.0),
-    ];
+        let config = super::storage::read_config().expect("legacy config must stay readable");
 
-    super::storage::normalize_config(&mut config);
+        assert!(
+            config.model_prices.iter().all(|row| row.provider_id.is_some()),
+            "every row must carry a provider id: {:?}",
+            config.model_prices
+        );
+        assert!(
+            config
+                .model_prices
+                .iter()
+                .all(|row| row.provider_id.as_deref() != Some("ghost")),
+            "a row for a nonexistent provider must be dropped"
+        );
+        assert!(
+            config
+                .model_prices
+                .iter()
+                .all(|row| row.upstream_model != "no-provider-model"),
+            "an unmatched global row must be deleted"
+        );
+        assert!(
+            config.model_prices.iter().all(|row| {
+                !(row.provider_id.as_deref() == Some("p") && row.upstream_model == "unreachable")
+            }),
+            "a row unreachable from its provider must be dropped"
+        );
 
-    assert!(
-        config.model_prices.iter().all(|row| row.provider_id.is_some()),
-        "every row must carry a provider id: {:?}",
-        config.model_prices
-    );
-    assert!(
-        config
+        // P keeps its own scoped row and gains the migrated default-model row.
+        let p_rows: Vec<&ModelPrice> = config
             .model_prices
             .iter()
-            .all(|row| row.provider_id.as_deref() != Some("ghost")),
-        "a row for a nonexistent provider must be dropped"
-    );
-    assert!(
-        config
+            .filter(|row| row.provider_id.as_deref() == Some("p"))
+            .collect();
+        assert_eq!(
+            p_rows.len(),
+            2,
+            "P must hold exactly remote-a and remote-default: {p_rows:?}"
+        );
+        let p_remote_a = p_rows
+            .iter()
+            .find(|row| row.upstream_model == "remote-a")
+            .expect("P keeps its own remote-a row");
+        assert_eq!(
+            p_remote_a.input, 9.0,
+            "the pre-existing scoped row must not be overwritten or duplicated"
+        );
+        let p_default = p_rows
+            .iter()
+            .find(|row| row.upstream_model == "remote-default")
+            .expect("the global default-model row must migrate to P");
+        assert_eq!(p_default.input, 2.0);
+
+        // Q's two duplicate rows collapse to exactly one, keeping the first.
+        let q_rows: Vec<&ModelPrice> = config
             .model_prices
             .iter()
-            .all(|row| row.upstream_model != "no-provider-model"),
-        "an unmatched global row must be deleted"
-    );
-    assert!(
-        config.model_prices.iter().all(|row| {
-            !(row.provider_id.as_deref() == Some("p") && row.upstream_model == "unreachable")
-        }),
-        "a row unreachable from its provider must be dropped"
-    );
+            .filter(|row| row.provider_id.as_deref() == Some("q"))
+            .collect();
+        assert_eq!(
+            q_rows.len(),
+            1,
+            "duplicate rows must collapse to one: {q_rows:?}"
+        );
+        assert_eq!(q_rows[0].upstream_model, "remote-q");
+        assert_eq!(q_rows[0].input, 4.0, "deduplication keeps the first row");
 
-    // P keeps its own scoped row and gains the migrated default-model row.
-    let p_rows: Vec<&ModelPrice> = config
-        .model_prices
-        .iter()
-        .filter(|row| row.provider_id.as_deref() == Some("p"))
-        .collect();
-    assert_eq!(
-        p_rows.len(),
-        2,
-        "P must hold exactly remote-a and remote-default: {p_rows:?}"
-    );
-    let p_remote_a = p_rows
-        .iter()
-        .find(|row| row.upstream_model == "remote-a")
-        .expect("P keeps its own remote-a row");
-    assert_eq!(
-        p_remote_a.input, 9.0,
-        "the pre-existing scoped row must not be overwritten or duplicated"
-    );
-    let p_default = p_rows
-        .iter()
-        .find(|row| row.upstream_model == "remote-default")
-        .expect("the global default-model row must migrate to P");
-    assert_eq!(p_default.input, 2.0);
-
-    // Q's two duplicate rows collapse to exactly one, keeping the first.
-    let q_rows: Vec<&ModelPrice> = config
-        .model_prices
-        .iter()
-        .filter(|row| row.provider_id.as_deref() == Some("q"))
-        .collect();
-    assert_eq!(
-        q_rows.len(),
-        1,
-        "duplicate rows must collapse to one: {q_rows:?}"
-    );
-    assert_eq!(q_rows[0].upstream_model, "remote-q");
-    assert_eq!(q_rows[0].input, 4.0, "deduplication keeps the first row");
-
-    // Idempotence: a second normalization changes nothing.
-    let mut again = config.clone();
-    super::storage::normalize_config(&mut again);
-    assert_eq!(
-        again.model_prices, config.model_prices,
-        "normalization must be idempotent"
-    );
+        // A second read must return the same value.
+        let again = super::storage::read_config().expect("second read");
+        assert_eq!(
+            serde_json::to_value(&again).expect("second config"),
+            serde_json::to_value(&config).expect("first config"),
+            "reading the config again must be value-equivalent"
+        );
+    });
 }
 
 /// AC-006 counterexample / REQ-004: a legacy encrypted `ai_gateway.json`
@@ -10006,8 +9933,7 @@ fn compute_cost_at_time_applies_off_peak_pricing_when_active() {
         cache_read: 1.0,
         cache_write: 2.0,
         output: 4.0,
-        off_peaks: Vec::new(),
-        off_peak: Some(OffPeakPrice {
+        off_peaks: vec![OffPeakPrice {
             start_time: "00:30".to_string(),
             end_time: "08:30".to_string(),
             input: 1.0, // 50% discount
@@ -10015,7 +9941,8 @@ fn compute_cost_at_time_applies_off_peak_pricing_when_active() {
             cache_write: 1.0,
             output: 2.0,
             days: None,
-        }),
+        }],
+        ..ModelPrice::default()
     };
 
     let test_tokens = tokens(1_000_000, 1_000_000, 1_000_000, 1_000_000);
@@ -10034,7 +9961,7 @@ fn compute_cost_at_time_applies_off_peak_pricing_when_active() {
 
     // Price without off-peak always returns standard cost regardless of time
     let mut no_off_peak = standard_price.clone();
-    no_off_peak.off_peak = None;
+    no_off_peak.off_peaks = Vec::new();
     assert_eq!(compute_cost_at_time(&no_off_peak, &test_tokens, off_peak_ms), 9.0);
     assert_eq!(compute_cost_at_time(&no_off_peak, &test_tokens, peak_ms), 9.0);
 }
@@ -10078,7 +10005,7 @@ fn compute_cost_at_time_applies_multiple_off_peak_pricing_windows() {
                 days: None,
             },
         ],
-        off_peak: None,
+        ..ModelPrice::default()
     };
 
     let test_tokens = tokens(1_000_000, 1_000_000, 1_000_000, 1_000_000);
@@ -10163,7 +10090,7 @@ fn weekday_and_weekend_off_peak_price() -> ModelPrice {
                 days: Some(vec![0, 6]),
             },
         ],
-        off_peak: None,
+        ..ModelPrice::default()
     }
 }
 
@@ -10231,7 +10158,7 @@ fn legacy_off_peak_price(days: Option<Vec<u8>>) -> ModelPrice {
             output: 2.0,
             days,
         }],
-        off_peak: None,
+        ..ModelPrice::default()
     }
 }
 
@@ -10273,7 +10200,7 @@ fn compute_cost_at_time_off_peak_days_absent_reproduces_legacy_result() {
     );
 }
 
-/// REQ-008: with identical windows, the first `effective_off_peaks()` entry that
+/// REQ-008: with identical windows, the first `off_peaks` entry that
 /// matches wins. Window 1 is Sunday-only, window 2 is every day.
 #[test]
 fn compute_cost_at_time_off_peak_days_first_matching_window_wins() {
@@ -10304,7 +10231,7 @@ fn compute_cost_at_time_off_peak_days_first_matching_window_wins() {
                 days: Some(vec![]),
             },
         ],
-        off_peak: None,
+        ..ModelPrice::default()
     };
     let test_tokens = one_mega_each();
 
@@ -10345,7 +10272,7 @@ fn overnight_off_peak_price(days: Option<Vec<u8>>) -> ModelPrice {
             output: 2.0,
             days,
         }],
-        off_peak: None,
+        ..ModelPrice::default()
     }
 }
 
@@ -10396,7 +10323,7 @@ fn compute_cost_at_time_off_peak_days_zero_duration_never_matches() {
             output: 2.0,
             days: Some(vec![6]),
         }],
-        off_peak: None,
+        ..ModelPrice::default()
     };
 
     let saturday_08 = utc8_timestamp_ms(2026, 9, 19, 8, 0);
@@ -10429,7 +10356,7 @@ fn off_peak_days_round_trip_normalizes_sorts_and_drops_out_of_range() {
             output: 2.0,
             days: Some(vec![5, 1, 1, 9]),
         }],
-        off_peak: None,
+        ..ModelPrice::default()
     };
 
     let value = serde_json::to_value(&price).unwrap();
@@ -10475,7 +10402,7 @@ fn off_peak_days_all_invalid_become_none_and_apply_every_day() {
             output: 2.0,
             days: Some(vec![7, 9]),
         }],
-        off_peak: None,
+        ..ModelPrice::default()
     };
 
     let value = serde_json::to_value(&price).unwrap();
@@ -10791,7 +10718,7 @@ fn canonical_openai_record_is_priced_exactly_once_per_tier() {
         cache_write: 2.0,
         output: 4.0,
         off_peaks: Vec::new(),
-        off_peak: None,
+        ..ModelPrice::default()
     };
     let expected = (10.0 * 1.0 + 80.0 * 0.5 + 10.0 * 2.0 + 5.0 * 4.0) / 1_000_000.0;
     assert!(
@@ -11026,17 +10953,17 @@ fn usage_store_stats_aggregates_models_providers_and_utc8_buckets() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// AC-020 / AC-021 / AC-022: filtering, grouping (error excludes cancelled) and
-/// 50-row pagination with clamped pages.
+/// AC-020 / AC-021 / AC-022: filtering, grouping (only `failure` counts as an
+/// error) and 50-row pagination with clamped pages.
 #[test]
 fn usage_store_logs_filter_group_and_paginate() {
     let (dir, store) = usage_store("usage-logs");
     let base = rfc3339_millis("2026-09-16T08:00:00+08:00");
     for index in 0..120i64 {
-        let result = match index % 3 {
-            0 => UsageResult::Success,
-            1 => UsageResult::Failure,
-            _ => UsageResult::Cancelled,
+        let result = if index % 3 == 0 {
+            UsageResult::Success
+        } else {
+            UsageResult::Failure
         };
         let model = if index % 2 == 0 { "local-a" } else { "local-b" };
         store
@@ -11056,32 +10983,9 @@ fn usage_store_logs_filter_group_and_paginate() {
             .unwrap();
     }
 
-    // A cancelled-only row with a unique local_model must remain physically
-    // readable while being excluded from every user-visible facet.
-    store
-        .append(
-            &sample_record(
-                base + 200_000,
-                "cancelled-only-model",
-                "remote-canc",
-                "p1",
-                "Provider One",
-                UsageResult::Cancelled,
-                Some(0.1),
-                tokens(1, 0, 0, 1),
-            ),
-            365,
-        )
-        .unwrap();
-
-    // User-visible queries exclude cancelled rows.
-    // Raw all_records still returns all 121 physical rows.
+    // Every written row is a real business outcome and stays visible.
     let raw_all = store.all_records().unwrap_or_default();
-    assert_eq!(raw_all.len(), 121, "physical rows include cancelled");
-    assert!(
-        raw_all.iter().any(|r| r.local_model == "cancelled-only-model"),
-        "raw reader can see cancelled physical row"
-    );
+    assert_eq!(raw_all.len(), 120, "all written rows are physically present");
 
     let page_one = store
         .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
@@ -11089,37 +10993,32 @@ fn usage_store_logs_filter_group_and_paginate() {
     assert_eq!(USAGE_LOG_PAGE_SIZE, 50);
     assert_eq!(page_one.page_size, 50);
     assert_eq!(page_one.records.len(), 50);
-    assert_eq!(page_one.total, 80, "cancelled excluded from total (120 - 40)");
-    assert_eq!(page_one.total_pages, 2, "80 / 50 = 2 pages");
+    assert_eq!(page_one.total, 120);
+    assert_eq!(page_one.total_pages, 3, "120 / 50 = 3 pages");
     assert!(
         page_one.records[0].timestamp_ms > page_one.records[49].timestamp_ms,
         "newest first"
     );
 
-    // The models facet excludes cancelled-only model; only success/failure models appear.
     assert!(
         page_one.models.contains(&"local-a".to_string()),
-        "success/failure local-a must be in models facet"
+        "local-a must be in the models facet"
     );
     assert!(
         page_one.models.contains(&"local-b".to_string()),
-        "success/failure local-b must be in models facet"
-    );
-    assert!(
-        !page_one.models.contains(&"cancelled-only-model".to_string()),
-        "cancelled-only local_model must not leak into user-visible models facet"
+        "local-b must be in the models facet"
     );
 
     let page_two = store
         .query_logs(&TimeRange::default(), &LogFilter::default(), 2)
         .unwrap();
     assert_eq!(page_two.page, 2);
-    assert_eq!(page_two.records.len(), 30);
+    assert_eq!(page_two.records.len(), 50);
 
     let clamped = store
         .query_logs(&TimeRange::default(), &LogFilter::default(), 99)
         .unwrap();
-    assert_eq!(clamped.page, 2, "out-of-range page clamps to the last page");
+    assert_eq!(clamped.page, 3, "out-of-range page clamps to the last page");
 
     let failed = store
         .query_logs(
@@ -11131,7 +11030,7 @@ fn usage_store_logs_filter_group_and_paginate() {
             1,
         )
         .unwrap();
-    assert_eq!(failed.total, 40);
+    assert_eq!(failed.total, 80);
     assert!(failed.records.iter().all(|r| r.result == UsageResult::Failure));
 
     let local_b = store
@@ -11144,31 +11043,26 @@ fn usage_store_logs_filter_group_and_paginate() {
             1,
         )
         .unwrap();
-    assert_eq!(local_b.total, 20);
+    assert_eq!(local_b.total, 40);
     assert!(local_b
         .records
         .iter()
         .all(|r| r.local_model == "local-b" && r.result == UsageResult::Failure));
 
-    // Grouped results also exclude cancelled from request_count and last_request_at.
+    // Grouped results count every row and only `failure` as an error.
     let grouped = store
         .group_logs(&TimeRange::default(), &LogFilter::default(), "day")
         .unwrap();
     assert_eq!(grouped.len(), 1, "all records share one UTC+8 day");
     assert_eq!(grouped[0].group, "2026-09-16");
-    assert_eq!(grouped[0].request_count, 80, "cancelled excluded from grouped count");
-    assert_eq!(grouped[0].error_count, 40, "cancelled is not an error");
+    assert_eq!(grouped[0].request_count, 120);
+    assert_eq!(grouped[0].error_count, 80);
 
     let by_model = store
         .group_logs(&TimeRange::default(), &LogFilter::default(), "model")
         .unwrap();
     assert_eq!(by_model.len(), 2);
-    assert_eq!(by_model.iter().map(|g| g.request_count).sum::<u32>(), 80);
-    // Models facet includes only success/failure models (not cancelled-only).
-    assert!(
-        !page_one.models.contains(&"cancelled-only-model".to_string()),
-        "cancelled-only local_model must not leak into user-visible models facet"
-    );
+    assert_eq!(by_model.iter().map(|g| g.request_count).sum::<u32>(), 120);
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -11275,15 +11169,14 @@ fn usage_store_never_contains_credentials_headers_or_bodies() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// REQ-002 / AC-005 COMPAT: the legacy string→enum parser must accept
-/// "cancelled" so that commands which read user-input strings still construct
-/// `UsageResult::Cancelled` instead of failing. The existing query predicate
-/// (`result != 'cancelled'`) ensures this parsed value yields an empty page.
+/// REQ-002 / AC-006: the string→enum parser accepts only the surviving business
+/// outcomes. A historical `"cancelled"` value must no longer parse to an enum
+/// member: the compatibility chain is removed, so it falls through to `None`.
 #[test]
-fn usage_result_parse_cancelled_returns_some() {
+fn usage_result_parse_rejects_removed_cancelled() {
     assert_eq!(UsageResult::parse("success"), Some(UsageResult::Success));
     assert_eq!(UsageResult::parse("failure"), Some(UsageResult::Failure));
-    assert_eq!(UsageResult::parse("cancelled"), Some(UsageResult::Cancelled));
+    assert_eq!(UsageResult::parse("cancelled"), None);
     assert_eq!(UsageResult::parse("unknown"), None);
     assert_eq!(UsageResult::parse(""), None);
 }
@@ -11342,7 +11235,7 @@ fn priced(upstream_model: &str, input: f64, cache_read: f64, cache_write: f64, o
         cache_write,
         output,
         off_peaks: Vec::new(),
-        off_peak: None,
+        ..ModelPrice::default()
     }
 }
 
@@ -11363,7 +11256,7 @@ fn priced_with_provider(
         cache_write,
         output,
         off_peaks: Vec::new(),
-        off_peak: None,
+        ..ModelPrice::default()
     }
 }
 
@@ -12302,11 +12195,13 @@ fn config_json_with_template_interval(interval: Option<u32>) -> Value {
     value
 }
 
-/// AC-002 / REQ-002: an older `ai_gateway.json` without the interval field reads
-/// as 60 minutes with no migration, a fresh config defaults to 60, the field is
-/// always serialized, and the public constants pin the accepted range.
+/// AC-001 / AC-002 / REQ-001: an older `ai_gateway.json` without the interval
+/// field reads as 60 minutes and, on that first read, is rewritten exactly once
+/// at the current schema version; a current-version file without the interval
+/// also reads as 60 but is never rewritten. A fresh config defaults to 60, the
+/// field is always serialized, and the public constants pin the accepted range.
 #[test]
-fn template_auto_refresh_defaults_to_60_for_older_configs_and_new_configs() {
+fn template_auto_refresh_defaults_to_60_for_older_configs_and_new_configs_under_version_gate() {
     assert_eq!(super::DEFAULT_TEMPLATE_AUTO_REFRESH_MINUTES, 60);
     assert_eq!(super::MIN_TEMPLATE_AUTO_REFRESH_MINUTES, 10);
     assert_eq!(super::MAX_TEMPLATE_AUTO_REFRESH_MINUTES, 1440);
@@ -12324,18 +12219,41 @@ fn template_auto_refresh_defaults_to_60_for_older_configs_and_new_configs() {
     assert_eq!(encoded["template_auto_refresh_minutes"], json!(60));
 
     with_temp_home("template-auto-refresh-default", |_home| {
+        // A version-less ("older") file reads as 60 and is rewritten exactly
+        // once, stamped at the current schema version.
         seed_encrypted_config(&config_json_with_template_interval(None));
-        let bytes_before = fs::read(config_path().expect("config path")).expect("read raw config");
 
         let loaded = super::storage::read_config().expect("older config must load");
         assert_eq!(
             loaded.template_auto_refresh_minutes, 60,
-            "a missing interval must fall back to 60 without migration"
+            "a missing interval must fall back to 60"
+        );
+        let password = crate::crypto::get_or_init_master_password().expect("master password");
+        let raw = fs::read_to_string(config_path().expect("config path")).expect("read raw config");
+        let decrypted = crate::crypto::decrypt(raw.trim(), &password).expect("decrypt config");
+        let on_disk: Value = serde_json::from_str(&decrypted).expect("config json");
+        assert_eq!(
+            on_disk.get("schema_version").and_then(Value::as_u64),
+            Some(u64::from(super::GATEWAY_CONFIG_SCHEMA_VERSION)),
+            "reading an older config must stamp the current schema version: {on_disk}"
+        );
+
+        // A current-version file without the interval reads as 60 and must stay
+        // byte-identical: an already-migrated config is never rewritten.
+        let mut current = config_json_with_template_interval(None);
+        current["schema_version"] = json!(super::GATEWAY_CONFIG_SCHEMA_VERSION);
+        seed_encrypted_config(&current);
+        let bytes_before = fs::read(config_path().expect("config path")).expect("read raw config");
+
+        let loaded = super::storage::read_config().expect("current-version config must load");
+        assert_eq!(
+            loaded.template_auto_refresh_minutes, 60,
+            "a missing interval must fall back to 60"
         );
         assert_eq!(
             fs::read(config_path().expect("config path")).expect("read raw config"),
             bytes_before,
-            "reading an older config must not migrate or rewrite it"
+            "reading a current-version config must not rewrite it"
         );
     });
 }
@@ -12380,13 +12298,17 @@ fn config_json_with_raw_template_interval(interval: Value) -> Value {
 }
 
 /// REQ-002 / AC-002: a stored interval carrying the wrong JSON type or an
-/// out-of-`u32` number must not fail the whole config read. It normalizes to 60,
-/// the public get command reports 60, and reading never rewrites the file.
+/// out-of-`u32` number must not fail the whole config read. It normalizes to 60
+/// and the public get command reports 60; the no-rewrite guarantee applies to a
+/// current-version file, so the seeded base carries the current schema version
+/// and reading it never rewrites the file.
 #[test]
 fn template_auto_refresh_stored_type_invalid_values_read_as_sixty_without_rewriting() {
     with_temp_home("template-auto-refresh-type-invalid", |_home| {
         for bad in [json!(-5), json!(10.5), json!("60"), json!(4_294_967_296u64)] {
-            seed_encrypted_config(&config_json_with_raw_template_interval(bad.clone()));
+            let mut fixture = config_json_with_raw_template_interval(bad.clone());
+            fixture["schema_version"] = json!(super::GATEWAY_CONFIG_SCHEMA_VERSION);
+            seed_encrypted_config(&fixture);
             let bytes_before =
                 fs::read(config_path().expect("config path")).expect("read raw config");
 
@@ -13591,16 +13513,13 @@ fn logs_page_clamps_when_range_shrinks_and_defaults_to_first_page() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// AC-020 / REQ-017 / AC-004 / REQ-002: per-day grouping reports the last request
-/// time and counts only `failure` as an error (never `cancelled`); model grouping
-/// follows the same error rule. Cancelled rows are excluded from request_count,
-/// error_count and last_request_at in both groupings.
+/// AC-020 / REQ-017: per-day grouping reports the last request time and counts
+/// only `failure` as an error; model grouping follows the same error rule.
 #[test]
-fn grouped_rows_exclude_cancelled_from_errors_and_report_last_request() {
+fn grouped_rows_count_errors_and_report_last_request() {
     let (dir, store) = usage_store("usage-groups-errors");
     let day_one = rfc3339_millis("2026-09-15T10:00:00+08:00");
     let day_two = rfc3339_millis("2026-09-16T10:00:00+08:00");
-    let day_one_last = day_one + 3_000;
     let day_two_last = day_two + 2_000;
     store
         .append(&sample_record(day_one, "local-a", "remote-a", "p1", "Provider One", UsageResult::Success, Some(0.1), tokens(1, 0, 0, 1)), 365)
@@ -13608,15 +13527,12 @@ fn grouped_rows_exclude_cancelled_from_errors_and_report_last_request() {
     store
         .append(&sample_record(day_one + 1_000, "local-a", "remote-a", "p1", "Provider One", UsageResult::Failure, Some(0.1), tokens(1, 0, 0, 1)), 365)
         .unwrap();
-    store
-        .append(&sample_record(day_one_last, "local-a", "remote-a", "p1", "Provider One", UsageResult::Cancelled, Some(0.1), tokens(1, 0, 0, 1)), 365)
-        .unwrap();
     // Day two rows are inserted out of order to prove the last time is by value.
     store
         .append(&sample_record(day_two_last, "local-b", "remote-a", "p2", "Provider Two", UsageResult::Failure, Some(0.2), tokens(1, 0, 0, 1)), 365)
         .unwrap();
     store
-        .append(&sample_record(day_two, "local-b", "remote-a", "p2", "Provider Two", UsageResult::Cancelled, Some(0.2), tokens(1, 0, 0, 1)), 365)
+        .append(&sample_record(day_two, "local-b", "remote-a", "p2", "Provider Two", UsageResult::Success, Some(0.2), tokens(1, 0, 0, 1)), 365)
         .unwrap();
 
     let days = store
@@ -13627,16 +13543,16 @@ fn grouped_rows_exclude_cancelled_from_errors_and_report_last_request() {
         .iter()
         .find(|group| group.group == "2026-09-15")
         .expect("day one group");
-    assert_eq!(first.request_count, 2, "cancelled excluded from request count");
-    assert_eq!(first.error_count, 1, "cancelled is not an error");
-    assert_eq!(first.last_request_at_ms, day_one + 1_000, "cancelled timestamp excluded from last_request");
+    assert_eq!(first.request_count, 2);
+    assert_eq!(first.error_count, 1, "only the failure counts as an error");
+    assert_eq!(first.last_request_at_ms, day_one + 1_000);
     let second = days
         .iter()
         .find(|group| group.group == "2026-09-16")
         .expect("day two group");
-    assert_eq!(second.request_count, 1, "cancelled excluded from request count");
+    assert_eq!(second.request_count, 2);
     assert_eq!(second.error_count, 1);
-    assert_eq!(second.last_request_at_ms, day_two_last, "non-cancelled row determines last_request");
+    assert_eq!(second.last_request_at_ms, day_two_last);
 
     let models = store
         .group_logs(&TimeRange::default(), &LogFilter::default(), "model")
@@ -13645,34 +13561,32 @@ fn grouped_rows_exclude_cancelled_from_errors_and_report_last_request() {
         .iter()
         .find(|group| group.group == "local-a")
         .expect("local-a group");
-    assert_eq!(local_a.request_count, 2, "cancelled excluded from request count");
-    assert_eq!(local_a.error_count, 1, "cancelled is not an error");
+    assert_eq!(local_a.request_count, 2);
+    assert_eq!(local_a.error_count, 1);
     let local_b = models
         .iter()
         .find(|group| group.group == "local-b")
         .expect("local-b group");
-    assert_eq!(local_b.request_count, 1, "cancelled excluded from request count");
+    assert_eq!(local_b.request_count, 2);
     assert_eq!(local_b.error_count, 1);
     // Model groups are sorted by MAX(timestamp_ms) DESC, local_model ASC.
-    // local-b (day_two + 2_000 > day_one + 1_000) has a later non-cancelled
-    // maximum, so it appears first.
+    // local-b's latest row is later than local-a's, so it appears first.
     assert_eq!(models[0].group, "local-b");
     assert_eq!(models[1].group, "local-a", "model groups in stable descending-timestamp order");
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// AC-005 / REQ-002: a legacy `status="cancelled"` filter returns an empty page
-/// (total = 0, total_pages = 1, no records). Other filter combinations still
-/// work against non-cancelled rows.
+/// AC-005 / REQ-002: status and model filters compose. A filter combination with
+/// no matching row returns an empty, valid page.
 #[test]
-fn logs_filter_by_status_and_model_together_exclude_cancelled() {
+fn logs_filter_by_status_and_model_together() {
     let (dir, store) = usage_store("usage-filter-compose");
     let base = rfc3339_millis("2026-09-16T08:00:00+08:00");
     let cases = [
         ("local-a", UsageResult::Success),
         ("local-a", UsageResult::Failure),
-        ("local-a", UsageResult::Cancelled),
-        ("local-b", UsageResult::Cancelled),
+        ("local-a", UsageResult::Success),
+        ("local-b", UsageResult::Success),
         ("local-b", UsageResult::Failure),
         ("local-b", UsageResult::Failure),
     ];
@@ -13693,35 +13607,6 @@ fn logs_filter_by_status_and_model_together_exclude_cancelled() {
             )
             .unwrap();
     }
-
-    // A cancelled status filter returns an empty, valid page (REQ-002 / AC-005).
-    let cancelled = store
-        .query_logs(
-            &TimeRange::default(),
-            &LogFilter {
-                status: Some(UsageResult::Cancelled),
-                model: None,
-            },
-            1,
-        )
-        .unwrap();
-    assert_eq!(cancelled.total, 0, "cancelled excluded from user-visible queries");
-    assert_eq!(cancelled.total_pages, 1, "an empty result has one page");
-    assert!(cancelled.records.is_empty());
-    assert!(cancelled.models.is_empty(), "cancelled filter must yield no models facet");
-
-    let cancelled_b = store
-        .query_logs(
-            &TimeRange::default(),
-            &LogFilter {
-                status: Some(UsageResult::Cancelled),
-                model: Some("local-b".to_string()),
-            },
-            1,
-        )
-        .unwrap();
-    assert_eq!(cancelled_b.total, 0);
-    assert!(cancelled_b.records.is_empty());
 
     let failed_b = store
         .query_logs(
@@ -13745,9 +13630,28 @@ fn logs_filter_by_status_and_model_together_exclude_cancelled() {
             1,
         )
         .unwrap();
-    assert_eq!(none.total, 0);
-    assert!(none.records.is_empty());
+    assert_eq!(none.total, 1);
     assert_eq!(none.total_pages, 1);
+
+    let empty = store
+        .query_logs(
+            &TimeRange::default(),
+            &LogFilter {
+                status: Some(UsageResult::Failure),
+                model: Some("local-absent".to_string()),
+            },
+            1,
+        )
+        .unwrap();
+    assert_eq!(empty.total, 0, "an unmatched filter must yield an empty page");
+    assert_eq!(empty.total_pages, 1, "an empty result has one page");
+    assert!(empty.records.is_empty());
+    assert!(
+        empty.models.contains(&"local-a".to_string())
+            && empty.models.contains(&"local-b".to_string()),
+        "the models facet stays range-wide even for an unmatched filter: {:?}",
+        empty.models
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -13890,8 +13794,8 @@ async fn usage_log_zeroes_usage_for_error_response_with_usage_body() {
 }
 
 /// AC-005 / AC-008 (repair F4): `unpriced_count` counts only requests that
-/// reached an upstream model with no matching price row. Cancelled rows (and any
-/// row with an empty `upstream_model`) must not be counted or shown as unpriced.
+/// reached an upstream model with no matching price row. A row with an empty
+/// `upstream_model` must not be counted or shown as unpriced.
 #[test]
 fn usage_stats_unpriced_count_excludes_rows_without_upstream_model() {
     let (dir, store) = usage_store("usage-unpriced-upstream-model");
@@ -13912,16 +13816,16 @@ fn usage_stats_unpriced_count_excludes_rows_without_upstream_model() {
             365,
         )
         .unwrap();
-    // A cancelled request never reached an upstream model.
+    // A terminal failure never reached an upstream model.
     store
         .append(
             &sample_record(
                 base + 1_000,
-                "local-cancelled",
+                "local-no-upstream",
                 "",
                 "p1",
                 "Provider One",
-                UsageResult::Cancelled,
+                UsageResult::Failure,
                 None,
                 UsageTokens::default(),
             ),
@@ -13931,20 +13835,22 @@ fn usage_stats_unpriced_count_excludes_rows_without_upstream_model() {
 
     let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
     assert_eq!(
-        stats.totals.request_count, 1,
-        "only the request that reached an upstream model counts"
+        stats.totals.request_count, 2,
+        "every terminal row is still a request"
     );
     assert_eq!(
         stats.totals.unpriced_count, 1,
         "only the request that reached an unpriced upstream model is unpriced"
     );
 
-    assert!(
-        !stats
-            .models
-            .iter()
-            .any(|row| row.local_model == "local-cancelled"),
-        "a cancelled row with no upstream model is excluded from model statistics"
+    let no_upstream = stats
+        .models
+        .iter()
+        .find(|row| row.local_model == "local-no-upstream")
+        .expect("the no-upstream failure must stay visible in model statistics");
+    assert_eq!(
+        no_upstream.metrics.unpriced_count, 0,
+        "a row with no upstream model is never unpriced"
     );
 
     let unpriced = stats
@@ -14183,7 +14089,7 @@ fn usage_stats_unpriced_eligibility_requires_success_or_usage() {
 fn request_logs_page_exposes_in_range_model_facet() {
     let (dir, store) = usage_store("usage-model-facet");
     let base = rfc3339_millis("2026-09-16T08:00:00+08:00");
-    // Oldest row has no local model (e.g. a cancelled request).
+    // Oldest row has no local model (a no-candidate terminal failure).
     store
         .append(
             &sample_record(
@@ -14192,7 +14098,7 @@ fn request_logs_page_exposes_in_range_model_facet() {
                 "",
                 "p1",
                 "Provider One",
-                UsageResult::Cancelled,
+                UsageResult::Failure,
                 None,
                 UsageTokens::default(),
             ),
@@ -14328,75 +14234,6 @@ fn deleting_the_default_key_advances_to_the_next_enabled_key() {
             "the deleted key must be gone from the config"
         );
     });
-}
-
-/// Standards S2: `ai_gateway_save_config` must normalize brand-new keys whose
-/// submitted value is blank or the UI mask placeholder, generating a real
-/// `sk-gateway-` secret instead of persisting `""` or `"********"`.
-#[tokio::test]
-async fn save_config_generates_secret_for_new_keys_with_blank_or_masked_value() {
-    let _home = temp_home("save-config-key-normalize");
-
-    let mut config = GatewayConfig::default();
-    // Keep the listener off so the test never binds a real port.
-    config.enabled = false;
-    // Providers intentionally empty: only key normalization is under test.
-    config.keys.push(GatewayKey {
-        id: "brand-new-blank".to_string(),
-        label: "Brand New Blank".to_string(),
-        value: String::new(),
-        enabled: true,
-        created_at: 1,
-    });
-    config.keys.push(GatewayKey {
-        id: "brand-new-masked".to_string(),
-        label: "Brand New Masked".to_string(),
-        value: "********".to_string(),
-        enabled: true,
-        created_at: 2,
-    });
-
-    let saved = super::commands::save_config_inner(config, None)
-        .await
-        .expect("save config");
-
-    let blank = saved
-        .keys
-        .iter()
-        .find(|key| key.id == "brand-new-blank")
-        .expect("blank-valued key must be persisted");
-    assert!(
-        blank.value.starts_with("sk-gateway-"),
-        "a brand-new blank-valued key must receive a generated secret, got {:?}",
-        blank.value
-    );
-    assert_ne!(
-        blank.value, "********",
-        "the mask placeholder must never be stored as a key value"
-    );
-    assert!(
-        !blank.value.trim().is_empty(),
-        "a generated secret must not be empty"
-    );
-
-    let masked = saved
-        .keys
-        .iter()
-        .find(|key| key.id == "brand-new-masked")
-        .expect("masked-valued key must be persisted");
-    assert!(
-        masked.value.starts_with("sk-gateway-"),
-        "a brand-new masked key must receive a generated secret, got {:?}",
-        masked.value
-    );
-    assert_ne!(
-        masked.value, "********",
-        "the mask placeholder must never be stored as a key value"
-    );
-    assert!(
-        !masked.value.trim().is_empty(),
-        "a generated secret must not be empty"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -17201,16 +17038,14 @@ async fn attempt_buffer_discarded_on_downstream_disconnect() {
     );
 }
 
-/// 行为规格：`usage_stats` 的 totals/buckets/models/providers 必须排除
-/// `result='cancelled'` 的合成终态行。没有候选上游的 failure 行仍然计入
-/// totals/models 的失败计数，但它绝不产生 `provider_id=''` 的空白服务商行。
+/// 行为规格：`usage_stats` 的 totals/buckets/models/providers 计入每一条终态行。
+/// 没有候选上游的 failure 行仍然计入 totals/models 的失败计数，但它绝不产生
+/// `provider_id=''` 的空白服务商行。
 #[test]
-fn usage_stats_excludes_cancelled_and_hides_empty_provider() {
-    // (1) 同一模型下混合 success、无候选 failure 与 cancelled。
-    let (dir, store) = usage_store("usage-stats-cancelled-empty-provider");
+fn usage_stats_hides_empty_provider() {
+    let (dir, store) = usage_store("usage-stats-empty-provider");
     let success_at = rfc3339_millis("2026-09-15T10:00:00+08:00");
     let no_candidate_at = rfc3339_millis("2026-09-15T11:00:00+08:00");
-    let cancelled_at = rfc3339_millis("2026-09-17T10:00:00+08:00");
     store
         .append_batch(
             &[
@@ -17235,29 +17070,18 @@ fn usage_stats_excludes_cancelled_and_hides_empty_provider() {
                     None,
                     UsageTokens::default(),
                 ),
-                // 用户取消：合成终态行，绝不应进入用量统计。
-                sample_record(
-                    cancelled_at,
-                    "local-a",
-                    "",
-                    "",
-                    "",
-                    UsageResult::Cancelled,
-                    None,
-                    UsageTokens::default(),
-                ),
             ],
             365,
         )
         .expect("append_batch must store every row");
-    assert_eq!(store.count().unwrap(), 3);
+    assert_eq!(store.count().unwrap(), 2);
 
     let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
 
     let mut failures: Vec<String> = Vec::new();
     if stats.totals.request_count != 2 {
         failures.push(format!(
-            "totals.request_count = {} (expected 2: success + no-candidate failure, never the cancelled row)",
+            "totals.request_count = {} (expected 2: success + no-candidate failure)",
             stats.totals.request_count
         ));
     }
@@ -17285,7 +17109,7 @@ fn usage_stats_excludes_cancelled_and_hides_empty_provider() {
         Some(row) => {
             if row.metrics.request_count != 2 {
                 failures.push(format!(
-                    "models[local-a].request_count = {} (expected 2: cancelled excluded)",
+                    "models[local-a].request_count = {} (expected 2)",
                     row.metrics.request_count
                 ));
             }
@@ -17326,11 +17150,15 @@ fn usage_stats_excludes_cancelled_and_hides_empty_provider() {
         }
     }
 
-    if stats.buckets.iter().any(|bucket| bucket.label == "2026-09-17") {
-        failures.push(
-            "a cancelled-only UTC+8 day created a bucket (expected no 2026-09-17 bucket)"
-                .to_string(),
-        );
+    if stats.buckets.len() != 1 {
+        failures.push(format!(
+            "buckets = {:?} (expected exactly one UTC+8 day with data)",
+            stats
+                .buckets
+                .iter()
+                .map(|bucket| bucket.label.clone())
+                .collect::<Vec<_>>()
+        ));
     }
     match stats
         .buckets
@@ -17341,7 +17169,7 @@ fn usage_stats_excludes_cancelled_and_hides_empty_provider() {
         Some(bucket) => {
             if bucket.metrics.request_count != 2 {
                 failures.push(format!(
-                    "buckets[2026-09-15].request_count = {} (expected 2: cancelled excluded)",
+                    "buckets[2026-09-15].request_count = {} (expected 2)",
                     bucket.metrics.request_count
                 ));
             }
@@ -17349,69 +17177,8 @@ fn usage_stats_excludes_cancelled_and_hides_empty_provider() {
     }
     assert!(
         failures.is_empty(),
-        "usage_stats must exclude cancelled rows and blank providers:\n- {}",
+        "usage_stats must count terminal rows and hide blank providers:\n- {}",
         failures.join("\n- ")
-    );
-    let _ = fs::remove_dir_all(&dir);
-
-    // (2) 只有一条 cancelled 的请求：整份统计必须完全为空。
-    let (dir, only_cancelled) = usage_store("usage-stats-cancelled-only");
-    only_cancelled
-        .append(
-            &sample_record(
-                rfc3339_millis("2026-09-18T09:00:00+08:00"),
-                "local-cancelled",
-                "",
-                "",
-                "",
-                UsageResult::Cancelled,
-                None,
-                UsageTokens::default(),
-            ),
-            365,
-        )
-        .unwrap();
-    let empty = only_cancelled
-        .usage_stats(&TimeRange::default(), false)
-        .unwrap();
-
-    let mut cancelled_only: Vec<String> = Vec::new();
-    if empty.totals.request_count != 0 {
-        cancelled_only.push(format!(
-            "totals.request_count = {} (expected 0 for a cancelled-only request)",
-            empty.totals.request_count
-        ));
-    }
-    if empty.totals.total_tokens != 0 {
-        cancelled_only.push(format!(
-            "totals.total_tokens = {} (expected 0)",
-            empty.totals.total_tokens
-        ));
-    }
-    if !empty.models.is_empty() {
-        cancelled_only.push(format!(
-            "models = {:?} (a cancelled-only request must not create a model row)",
-            empty
-                .models
-                .iter()
-                .map(|row| row.local_model.clone())
-                .collect::<Vec<_>>()
-        ));
-    }
-    if !empty.buckets.is_empty() {
-        cancelled_only.push(format!(
-            "buckets = {:?} (a cancelled-only request must not create a bucket)",
-            empty
-                .buckets
-                .iter()
-                .map(|bucket| bucket.label.clone())
-                .collect::<Vec<_>>()
-        ));
-    }
-    assert!(
-        cancelled_only.is_empty(),
-        "a cancelled-only request must be invisible to usage stats:\n- {}",
-        cancelled_only.join("\n- ")
     );
     let _ = fs::remove_dir_all(&dir);
 }
@@ -19793,10 +19560,6 @@ fn ac_002_three_5xx_disable_row_not_provider() {
     assert_eq!(row_b.consecutive_failures, 0);
     assert_eq!(row_b.last_error_at, None);
 
-    // Provider-level fields are still cleared by normalize_config.
-    // register_mapping_* no longer writes provider-level fields.
-    assert!(!p.auto_disabled, "provider-level auto_disabled must NOT be set");
-
     // 401/403 disables immediately (first call). Frozen Step 2 rule: the immediate
     // disable records reason/at/last_error_at but leaves consecutive_failures at
     // zero, so the counter only ever tracks consecutive transient failures.
@@ -19816,9 +19579,6 @@ fn ac_002_three_5xx_disable_row_not_provider() {
         "an immediate auth disable must not increment the counter"
     );
     assert_eq!(auth_p.mappings[0].last_error_at, Some(10));
-
-    // Provider-level must remain healthy.
-    assert!(!auth_p.auto_disabled, "AC-002: provider-level must stay clear on immediate disable");
 }
 
 /// AC-003 / REQ-002: Transient (404/429) and ReturnToClient (other 4xx) count nothing.
@@ -19877,52 +19637,67 @@ fn ac_004_one_outcome_per_request() {
     assert_eq!(p.mappings[0].consecutive_failures, 0);
 }
 
-/// AC-005 / REQ-003: Legacy provider-level auto_disabled=true neither filters
-/// candidates nor survives a normal write. normalize_config clears legacy fields.
+/// AC-005 / REQ-004: an old config carrying provider-level runtime health fields
+/// still reads and serves. Those fields are absent from the type after cleanup,
+/// so they are ignored on read and never written back.
 #[test]
-fn ac_005_legacy_provider_auto_disabled_cleared_on_read() {
+fn ac_005_legacy_provider_runtime_fields_are_ignored_and_dropped() {
     with_temp_home("ac-005-legacy-provider", |_home| {
-        let mut config = GatewayConfig::default();
-        let mut p = provider("legacy-p");
-        p.auto_disabled = true; // legacy flag from old build
-        p.disabled_reason = Some("old-health-fail".to_string());
-        p.consecutive_failures = 2;
-        p.last_error_at = Some(999);
-        p.mappings = vec![ModelMapping {
-            local_model: "local-a".to_string(),
-            upstream_model: "remote-a".to_string(),
-            enabled: true,
-            protocol: None,
-            display_name: None,
-            reasoning_efforts: Vec::new(),
-            auto_disabled: false,
-            disabled_reason: None,
-            disabled_at: None,
-            consecutive_failures: 0,
-            last_error_at: None,
-        }];
-        config.providers.push(p);
-        super::storage::write_config(&config).expect("write legacy config");
+        let legacy = json!({
+            "enabled": true,
+            "providers": [{
+                "id": "legacy-p",
+                "name": "Legacy Provider",
+                "base_url": "https://legacy.example/v1",
+                "api_key": "sk-legacy",
+                "auto_disabled": true,
+                "disabled_reason": "old-health-fail",
+                "disabled_at": 111,
+                "consecutive_failures": 2,
+                "last_error_at": 999,
+                "mappings": [
+                    {"local_model": "local-a", "upstream_model": "remote-a", "enabled": true}
+                ]
+            }]
+        });
+        let password = crate::crypto::get_or_init_master_password().expect("master password");
+        let encrypted =
+            crate::crypto::encrypt(&legacy.to_string(), &password).expect("encrypt legacy config");
+        fs::write(config_path().expect("config path"), encrypted).expect("write legacy config");
 
-        // After reading back, normalize_config should have cleared the
-        // legacy provider-level runtime fields.
-        let loaded = super::storage::read_config().expect("read config");
+        let loaded = super::storage::read_config().expect("legacy config must stay readable");
         let legacy_p = &loaded.providers[0];
+        assert_eq!(legacy_p.id, "legacy-p");
+        assert!(legacy_p.enabled, "the provider's user intent must be preserved");
+        assert_eq!(legacy_p.mappings.len(), 1);
+        assert_eq!(legacy_p.mappings[0].upstream_model, "remote-a");
         assert!(
-            !legacy_p.auto_disabled,
-            "normalize_config must clear legacy provider auto_disabled"
+            !legacy_p.mappings[0].auto_disabled,
+            "the mapping row must read healthy"
         );
-        assert_eq!(
-            legacy_p.disabled_reason, None,
-            "normalize_config must clear legacy provider disabled_reason"
-        );
-        assert_eq!(legacy_p.consecutive_failures, 0);
-        assert_eq!(legacy_p.last_error_at, None);
+
+        // Writing the config back must drop the removed provider-level keys.
+        super::storage::write_config(&loaded).expect("write config");
+        let raw = fs::read_to_string(config_path().expect("config path")).expect("read bytes");
+        let decrypted = crate::crypto::decrypt(raw.trim(), &password).expect("decrypt");
+        let written: Value = serde_json::from_str(&decrypted).expect("json");
+        let provider = &written["providers"][0];
+        for key in [
+            "auto_disabled",
+            "disabled_reason",
+            "disabled_at",
+            "consecutive_failures",
+            "last_error_at",
+        ] {
+            assert!(
+                provider.get(key).is_none(),
+                "provider-level runtime key {key} must be gone from the written config: {provider}"
+            );
+        }
     });
 }
 
 /// AC-006 / REQ-003: Only auto-disabled rows are excluded; siblings keep serving.
-/// No provider-level runtime field is written.
 #[test]
 fn ac_006_sibling_rows_stay_healthy() {
     let mut p = provider("siblings");
@@ -19948,10 +19723,6 @@ fn ac_006_sibling_rows_stay_healthy() {
     assert!(!row_b.auto_disabled);
     assert!(row_b.enabled);
     assert_eq!(row_b.consecutive_failures, 0);
-
-    // Provider-level auto_disabled must NOT be set.
-    assert!(!p.auto_disabled, "AC-006: provider-level must not be written");
-    assert_eq!(p.consecutive_failures, 0);
 
     // Candidate selection must include this provider because row B can serve.
     let providers = vec![p];
@@ -20288,15 +20059,11 @@ fn ai_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
             }],
             weight: 1,
             enabled: true,
-            auto_disabled: false,
-            disabled_reason: None,
-            disabled_at: None,
-            consecutive_failures: 0,
-            last_error_at: None,
             template_id: None,
             ignored_models: Vec::new(),
             tags: Vec::new(),
             icon: None,
+            ..GatewayUpstreamProvider::default()
         };
         let mut initial_config = GatewayConfig::default();
         initial_config.providers.push(seeded.clone());
@@ -20326,15 +20093,11 @@ fn ai_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
                 }],
                 weight: 1,
                 enabled: true,
-                auto_disabled: false,
-                disabled_reason: None,
-                disabled_at: None,
-                consecutive_failures: 0,
-                last_error_at: None,
                 template_id: None,
                 ignored_models: Vec::new(),
                 tags: Vec::new(),
                 icon: None,
+                ..GatewayUpstreamProvider::default()
             },
             None,
         );
@@ -20425,15 +20188,11 @@ fn ai_gateway_upsert_clears_runtime_state_for_changed_key() {
             ],
             weight: 1,
             enabled: true,
-            auto_disabled: false,
-            disabled_reason: None,
-            disabled_at: None,
-            consecutive_failures: 0,
-            last_error_at: None,
             template_id: None,
             ignored_models: Vec::new(),
             tags: Vec::new(),
             icon: None,
+            ..GatewayUpstreamProvider::default()
         };
         let mut config = GatewayConfig::default();
         config.providers.push(seeded.clone());
@@ -20480,15 +20239,11 @@ fn ai_gateway_upsert_clears_runtime_state_for_changed_key() {
                 ],
                 weight: 1,
                 enabled: true,
-                auto_disabled: false,
-                disabled_reason: None,
-                disabled_at: None,
-                consecutive_failures: 0,
-                last_error_at: None,
                 template_id: None,
                 ignored_models: Vec::new(),
                 tags: Vec::new(),
                 icon: None,
+                ..GatewayUpstreamProvider::default()
             },
             None,
         );
@@ -20588,15 +20343,11 @@ fn ac_016_status_from_config_counts_rows_not_providers() {
         ],
         weight: 1,
         enabled: true,
-        auto_disabled: false, // provider-level stays clear.
-        disabled_reason: None,
-        disabled_at: None,
-        consecutive_failures: 0,
-        last_error_at: None,
         template_id: None,
         ignored_models: Vec::new(),
         tags: Vec::new(),
         icon: None,
+        ..GatewayUpstreamProvider::default()
     };
 
     // Make those rows truly auto-disabled via register.
@@ -20931,11 +20682,10 @@ fn swrr_excludes_disabled_provider() {
     super::selection::reset_weighted_scheduler_for_test();
     let mut p_a = provider("p_a");
     p_a.weight = 3;
-    // Auto-disabled row prevents provider from serving the model
+    // An auto-disabled row prevents the provider from serving the model
     let mut mapping_a = mapping("gpt-4o", "remote-a", None);
     mapping_a.auto_disabled = true;
     p_a.mappings = vec![mapping_a];
-    p_a.auto_disabled = true;
 
     let mut p_b = provider("p_b");
     p_b.weight = 1;

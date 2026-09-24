@@ -7,6 +7,7 @@ import {
   type GoUsageWindow,
   type ProviderGoUsage,
 } from "@/lib/aiGateway";
+import { formatResetTime } from "./gatewayShared";
 
 const GO_USAGE_I18N_KEYS = {
   rolling: "aiGatewayGoUsageRolling",
@@ -23,69 +24,6 @@ type UsageState =
   | { status: "loading" }
   | { status: "success"; data: ProviderGoUsage }
   | { status: "error"; reason: string };
-
-function formatResetTime(
-  resetAt: string | number | null | undefined,
-  defaultOffsetHours?: number,
-  baseNow?: number | Date,
-): string | null {
-  if (resetAt === null || resetAt === undefined || resetAt === "") return null;
-
-  let isZero = false;
-  let parsed: Date | null = null;
-
-  if (typeof resetAt === "number") {
-    if (!Number.isFinite(resetAt) || resetAt <= 0) {
-      isZero = true;
-    } else {
-      parsed = new Date(resetAt < 10_000_000_000 ? resetAt * 1000 : resetAt);
-    }
-  } else {
-    const trimmed = resetAt.trim();
-    if (trimmed === "" || trimmed === "0") {
-      isZero = true;
-    } else {
-      const num = Number(trimmed);
-      if (!Number.isNaN(num)) {
-        if (num <= 0) {
-          isZero = true;
-        } else {
-          parsed = new Date(num < 10_000_000_000 ? num * 1000 : num);
-        }
-      } else {
-        parsed = new Date(trimmed);
-      }
-    }
-  }
-
-  if (parsed && (Number.isNaN(parsed.getTime()) || parsed.getFullYear() < 2000)) {
-    if (!Number.isNaN(parsed.getTime()) && parsed.getFullYear() < 2000) {
-      isZero = true;
-    } else {
-      return null;
-    }
-  }
-
-  if (isZero) {
-    if (defaultOffsetHours === undefined) return null;
-    const nowMs = baseNow instanceof Date
-      ? baseNow.getTime()
-      : typeof baseNow === "number"
-        ? baseNow
-        : Date.now();
-    parsed = new Date(nowMs + defaultOffsetHours * 3600 * 1000);
-  }
-
-  if (!parsed || Number.isNaN(parsed.getTime())) return null;
-  return new Intl.DateTimeFormat(undefined, {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(parsed);
-}
 
 function formatUsageError(
   reason: string,

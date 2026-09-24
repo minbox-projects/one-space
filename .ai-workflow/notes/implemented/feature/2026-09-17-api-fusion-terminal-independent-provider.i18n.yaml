@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-09-17-api-fusion-terminal-independent-provider.md
-2026-09-17-api-fusion-terminal-independent-provider.md: 27ea1a2e07796c627ea0db553d4aeb1a72942273
-2026-09-17-api-fusion-terminal-independent-provider.zh.md: 1da3a96f2cefee41ea3dcddec539fea247b81d95
+2026-09-17-api-fusion-terminal-independent-provider.md: dab35acd0fb5f2ef25b90aa605c8bedf57c26477
+2026-09-17-api-fusion-terminal-independent-provider.zh.md: 1a0d19e844822dac14412503cc3c7f8548bc4ba4

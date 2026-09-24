@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
@@ -22,7 +22,6 @@ import {
   resolveEffectiveProviderIcon,
 } from "./ProviderTemplateIcon";
 import {
-  formatGatewayTimestamp,
   isCommandCodeProvider,
   isOpencodeGoProvider,
   isMappingDeprecated,
@@ -41,10 +40,7 @@ type UpstreamProviderListProps = {
   onSelect: (providerId: string) => void;
   onToggleEnabled: (provider: GatewayUpstreamProvider, enabled: boolean) => void;
   onAdd: () => void;
-  onDelete?: (providerId: string) => void;
   onManageTemplates?: () => void;
-  /** Optional content rendered above the provider list (e.g. the template area). */
-  templateSection?: ReactNode;
 };
 
 export function UpstreamProviderList({
@@ -56,7 +52,6 @@ export function UpstreamProviderList({
   onToggleEnabled,
   onAdd,
   onManageTemplates,
-  templateSection,
 }: UpstreamProviderListProps) {
   const { t } = useTranslation();
   // 计算所有服务商之前仅获取一次当前时间（有意读取时钟，providers 变化时重拍）
@@ -148,7 +143,6 @@ export function UpstreamProviderList({
 
   return (
     <section className="space-y-3.5" data-testid="ai-gateway-providers">
-      {templateSection}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-0.5">
           <div className="flex items-center gap-2">
@@ -428,7 +422,6 @@ export function UpstreamProviderList({
           {filteredProviders.map((provider) => {
             const isSelected = provider.id === selectedProviderId;
             const isEnabled = provider.enabled;
-            const disabledAt = formatGatewayTimestamp(provider.disabled_at);
             const mappingCount = provider.mappings?.length ?? 0;
             const autoDisabledMappings = (provider.mappings ?? []).filter(
               (mapping) => mapping.auto_disabled === true,
@@ -615,29 +608,6 @@ export function UpstreamProviderList({
                           defaultValue: `${retiredMappings.length} mapping(s) removed from template`,
                         })}
                       </span>
-                    </div>
-                  ) : null}
-
-                  {/* 旧版服务商级运行时状态（只读）：徽章与重启用按钮已移除，仅保留原因与时间信息 */}
-                  {provider.auto_disabled &&
-                  (provider.disabled_reason || disabledAt) ? (
-                    <div className="mt-2.5 space-y-0.5 rounded-lg border border-border/60 bg-muted/20 p-2 text-[11px] text-muted-foreground">
-                      {provider.disabled_reason ? (
-                        <div className="truncate">
-                          {t("aiGatewayDisabledReason", {
-                            reason: provider.disabled_reason,
-                            defaultValue: `Reason: ${provider.disabled_reason}`,
-                          })}
-                        </div>
-                      ) : null}
-                      {disabledAt ? (
-                        <div className="opacity-80">
-                          {t("aiGatewayDisabledAt", {
-                            time: disabledAt,
-                            defaultValue: `Disabled at ${disabledAt}`,
-                          })}
-                        </div>
-                      ) : null}
                     </div>
                   ) : null}
 

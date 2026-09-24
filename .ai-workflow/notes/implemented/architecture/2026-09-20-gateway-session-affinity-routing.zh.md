@@ -16,7 +16,7 @@ Status: implemented
 
 绑定绝不放宽候选集：它只重排候选过滤已经返回的结果，因此协议不一致、映射被用户禁用或自动禁用、或服务商被禁用的服务商绝不因为「它是绑定」而被尝试。绑定在每次请求的终局上游结果之后结算一次：当绑定服务商不在本次请求的可用候选中时，绑定立即被替换为实际完成该请求的服务商，未命中计数为零，且本次请求不因原绑定产生任何尝试或失败计数。绑定服务商仍可用时，一次在其他服务商上到达终局上游结果的请求记一次未命中，连续第二次未命中把绑定迁移到完成该次请求的服务商；由绑定服务商完成的请求把未命中计数归零，下游取消不记录任何内容。无会话头或无 trim 后非空模型的请求既不读取也不写入绑定；仅探测请求同样如此——它是找到合格半开探测并以空候选列表尝试该探测的零候选请求，见 [Gateway Auto-Disable Recovery Uses a Cooldown Half-Open Probe, a Post-Resume Transport Grace and a Transition Broadcast](2026-09-23-gateway-auto-disable-recovery.md)。
 
-空闲超过 30 分钟的绑定视为不存在，绑定表最多保存 1024 条，超出时逐出最近最少使用的一条。绑定只存在于进程内存：绝不落盘，重启后从无绑定开始，且头名列表、其优先级、两次未命中阈值、空闲过期与条目上限都是常量——`api_gateway.json` 保持 schema 不变、无需迁移。
+空闲超过 30 分钟的绑定视为不存在，绑定表最多保存 1024 条，超出时逐出最近最少使用的一条。绑定只存在于进程内存：绝不落盘，重启后从无绑定开始，且头名列表、其优先级、两次未命中阈值、空闲过期与条目上限都是常量；网关配置与用量数据库携带由版本门控迁移管理的 schema 与版本标记（[Gateway Migration Is Permanent and Version-Gated](2026-09-24-version-gated-gateway-migration.md)），该迁移不持久化任何绑定状态。
 
 缓存收益在上线后按同一模型与上线前对比衡量：用量分析中按服务商的 Cache read 命中率与请求数占比，取上线后第一周与之前一周对比。`UsageStatsPanel.tsx` 直接渲染后端持有的规范 `cache_hit_rate_percent`，因此显示的命中率是后端按 token 加权的结果，而不是前端估算；在该衡量口径确定时，面板仍在前端按 `cache_read / (input_tokens + cache_read)` 计算并低估 OpenAI 系服务商的命中率（其 `prompt_tokens` 已包含缓存命中的部分），该历史偏差在每个上游上稳定，因此依据仍是同一上游上线前后的趋势。
 
@@ -26,14 +26,14 @@ Status: implemented
 - 检查请求体寻找会话标识：未采纳，原因相同，且中继只负责转发请求体；从请求体推断出的身份不是终端发送的会话标识。
 - 把 `x-codex-turn-state`、`x-codex-window-id` 或 `originator` 用作键来源：未采纳，因为它们都不是终端发送的会话标识；只携带这些头的请求与不携带会话头的请求行为完全一致，绝不创建或复用绑定。
 - 区分父子会话：未采纳，因为 subagent 必须与其会话共用一个绑定，所以 `x-parent-session-id` 被忽略（它不在列表内），而不是拆分绑定。
-- 让头名列表、其优先级、阈值、过期或上限可配置：未采纳，因为本次改动不新增配置、也不新增界面；它们保持为常量，`api_gateway.json` 无需迁移。
+- 让头名列表、其优先级、阈值、过期或上限可配置：未采纳，因为本次改动不新增配置、也不新增界面；它们保持为常量，也不引入自己的迁移，网关级 schema 标记由 [Gateway Migration Is Permanent and Version-Gated](2026-09-24-version-gated-gateway-migration.md) 承载。
 
 ## Consequences
 
 - 携带任一已知会话头且模型 trim 后非空的请求，在绑定服务商仍可用时优先尝试它；不携带任何已知会话头、或值为空/全空白的请求与现有每请求洗牌完全一致，且既不读取也不写入绑定，因此未知或改名的头会退化到现状行为，而不是失败。
 - 各会话仍会分散到各账号：绑定按会话与模型隔离、由现有洗牌播种、空闲过期并有上限。持续失败的绑定在连续第二次未命中时迁移，而不是让每个请求都付一次失败尝试；不再可用的绑定在同一次请求内被实际服务的服务商替换，原服务商不产生任何尝试与失败计数。
 - 候选集、其余候选的顺序、失败分类、重试顺序与退避、冷却截止时间、自动禁用、`RequestHealth` 结算、错误信封、调用方可见的响应字节与用量日志行均保持不变；唯一差异是优先尝试哪个可用候选，且绑定绝不放宽候选集。
-- 绑定只存在于进程内存：绝不落盘，`api_gateway.json` 与 `api_gateway_usage.db` 保持 schema 不变，无需迁移或回填，回滚或重启后从无绑定开始，每请求洗牌再次成为唯一的选择规则。
+- 绑定只存在于进程内存：绝不落盘，无需迁移或回填，回滚或重启后从无绑定开始，每请求洗牌再次成为唯一的选择规则；网关级 schema 版本由 [Gateway Migration Is Permanent and Version-Gated](2026-09-24-version-gated-gateway-migration.md) 承载。
 - 交付的规则位于 `src-tauri/src/api_gateway/selection.rs`（`SESSION_ID_HEADERS`、`resolve_session_id`、`SessionAffinityStore`、`reorder_bound_first` 与进程级 `session_affinity` 表），并在 `src-tauri/src/api_gateway/runtime_http.rs` 中围绕既有的候选过滤与洗牌应用；`src-tauri/src/api_gateway/tests.rs` 中的行为测试覆盖解析器及其边界、按模型绑定、并发选择、重绑、迁移、重置、暂停时钟下的空闲过期、LRU 上限、取消与会话头失败路径。
 - `MEMORY.md` 在同一变更中记录亲和标准与初轮候选顺序的会话绑定例外；交付的符号都是模块私有（`pub(in crate::api_gateway)`）且没有文件路径变化，因此导航索引无需新增条目，`navigation.json` 与其生成的 `navigation.md` 保持权威且不变。
 - 取代评估：无取代。[Gateway Per-Model Mapping Disable Is an Explicit Exclusion](2026-09-18-gateway-per-mapping-disable.md) 保留并交叉链接，因为亲和重排只重排其排除规则已留下的候选集，其决策仍然有效；[Gateway Per-Model Auto-Disable Settles Health on the Mapping Row](2026-09-20-gateway-per-model-auto-disable.md) 出于同一原因保留并交叉链接，其结算的行运行时状态进一步收窄该候选集，而重排绝不放宽它；[Gateway Single-Candidate Fast Fail and Standard Error Responses](2026-09-18-gateway-fast-fail-and-standard-errors.md) 保留并交叉链接，因为亲和只改变其 fallback-first 调度中优先尝试哪个可用候选，其调度与错误信封决策仍然有效；[Gateway Per-Attempt Request Logging and Stored Error Text](2026-09-20-gateway-per-attempt-logging-and-error-text.md) 与候选选择无关，亲和的候选重排不改变其日志契约；[Gateway Auto-Disable Recovery Uses a Cooldown Half-Open Probe, a Post-Resume Transport Grace and a Transition Broadcast](2026-09-23-gateway-auto-disable-recovery.md) 被保留并交叉链接，因为仅探测请求以空候选列表尝试其探测且仍既不读取也不写入绑定，本记录的决策继续有效。用量统计、模型价格、服务商模板、终端同步、聚合模型、本地 Key 与双语文档记录均不相关，因此没有任何记录被取代。

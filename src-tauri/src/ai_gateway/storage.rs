@@ -1,7 +1,7 @@
 use super::migration::migrate_legacy_files;
 use super::{
     now_ts, resolve_port, GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelPrice,
-    CONFIG_FILE, MAX_PROVIDER_WEIGHT, MIN_PROVIDER_WEIGHT,
+    CONFIG_FILE, GATEWAY_CONFIG_SCHEMA_VERSION, MAX_PROVIDER_WEIGHT, MIN_PROVIDER_WEIGHT,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -21,8 +21,34 @@ fn read_config_file(path: &PathBuf) -> Result<Option<GatewayConfig>, String> {
     }
     let password = crate::crypto::get_or_init_master_password()?;
     let decrypted = crate::crypto::decrypt(content.trim(), &password)?;
-    let mut config: GatewayConfig = serde_json::from_str(&decrypted).map_err(|e| e.to_string())?;
+    let mut value: serde_json::Value =
+        serde_json::from_str(&decrypted).map_err(|e| e.to_string())?;
+    // A missing version field reads as 0, the legacy schema. Every file older
+    // than the current version always runs the legacy transformation and is
+    // unconditionally stamped and rewritten at the current version, even when no
+    // legacy shape had to change, so the version checkpoint always advances; an
+    // already-current file is left byte-identical.
+    let stored_version = value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as u32;
+    let needs_migration = stored_version < GATEWAY_CONFIG_SCHEMA_VERSION;
+    if needs_migration {
+        super::migration::migrate_legacy_config(&mut value);
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "schema_version".to_string(),
+                serde_json::Value::from(GATEWAY_CONFIG_SCHEMA_VERSION),
+            );
+        }
+    }
+    let mut config: GatewayConfig = serde_json::from_value(value).map_err(|e| e.to_string())?;
     normalize_config(&mut config);
+    if needs_migration {
+        // Best-effort: a failed rewrite keeps the previous complete bytes on
+        // disk and the next read retries the migration.
+        let _ = write_config(&config);
+    }
     Ok(Some(config))
 }
 
@@ -55,14 +81,10 @@ pub(in crate::ai_gateway) fn resolve_default_key_id(
     }
 }
 
-pub(in crate::ai_gateway) fn effective_default_key(
-    config: &GatewayConfig,
-) -> Option<&GatewayKey> {
-    let id = config.default_key_id.as_deref()?;
-    config.keys.iter().find(|key| key.id == id && key.enabled)
-}
-
-pub(in crate::ai_gateway) fn normalize_config(config: &mut GatewayConfig) {
+/// Canonicalize the stored-but-untrusted parts of a configuration without
+/// touching the price table: resolve the port for this profile, clamp weights,
+/// trim provider strings, drop unusable mappings and resolve the default key.
+fn normalize_stored_config(config: &mut GatewayConfig) {
     config.port = resolve_port(config.port, cfg!(debug_assertions));
     for provider in &mut config.providers {
         if provider.weight < MIN_PROVIDER_WEIGHT || provider.weight > MAX_PROVIDER_WEIGHT {
@@ -78,30 +100,23 @@ pub(in crate::ai_gateway) fn normalize_config(config: &mut GatewayConfig) {
         provider.mappings.retain(|mapping| {
             !mapping.local_model.trim().is_empty() && !mapping.upstream_model.trim().is_empty()
         });
-        // Provider-level runtime health is legacy: automatic disabling is per
-        // mapping row now, so drop any stale provider state in memory without a
-        // dedicated write. It disappears from disk on the next normal write.
-        provider.auto_disabled = false;
-        provider.disabled_reason = None;
-        provider.disabled_at = None;
-        provider.consecutive_failures = 0;
-        provider.last_error_at = None;
     }
     config.default_key_id = resolve_default_key_id(&config.keys, config.default_key_id.as_deref());
-    normalize_model_prices(config);
+}
+
+/// Read-path normalization: canonicalize stored fields and repopulate template
+/// prices/efforts. The price table is never migrated or dropped on a read; a
+/// legacy file is scoped by the version-gated migration before it is parsed.
+pub(in crate::ai_gateway) fn normalize_config(config: &mut GatewayConfig) {
+    normalize_stored_config(config);
     normalize_template_prices_and_efforts(config);
 }
 
-/// Migrate legacy global price rows into the providers that reach their model
-/// and drop rows that no longer belong to an existing, reachable provider/model.
-///
-/// A provider reaches every non-blank mapping upstream model plus its trimmed
-/// default model. A global row is copied into each reaching provider that has no
-/// scoped row for that model yet; then only provider-scoped, reachable rows are
-/// kept, deduplicated by `(provider_id, upstream_model)` keeping the first.
-/// Idempotent because the result is a function of the provider mappings and the
-/// first occurrence of each row.
-fn normalize_model_prices(config: &mut GatewayConfig) {
+/// Make every persisted price row provider-scoped: copy a legacy global row to
+/// each provider that reaches its model, keep the first occurrence of a scoped
+/// duplicate and drop rows whose provider/model is gone. Applied on the write
+/// path only; the read path relies on the version-gated migration instead.
+fn scope_model_prices(config: &mut GatewayConfig) {
     let reachable: Vec<(String, HashSet<String>)> = config
         .providers
         .iter()
@@ -307,7 +322,7 @@ pub(in crate::ai_gateway) fn normalize_template_prices_and_efforts(config: &mut 
                         model.output = price.output;
                         model.cache_read = price.cache_read;
                         model.cache_write = price.cache_write;
-                        model.off_peaks = price.effective_off_peaks().to_vec();
+                        model.off_peaks = price.off_peaks.clone();
                     }
                 }
             }
@@ -356,10 +371,15 @@ pub(in crate::ai_gateway) fn read_config() -> Result<GatewayConfig, String> {
 }
 
 /// Encrypt the entire configuration and write it atomically through a temp file
-/// plus rename so a partial write can never corrupt the on-disk state.
+/// plus rename so a partial write can never corrupt the on-disk state. Every
+/// write stamps the current schema version so an older file can never be
+/// re-written without it.
 pub(in crate::ai_gateway) fn write_config(config: &GatewayConfig) -> Result<(), String> {
     let mut next = config.clone();
-    normalize_config(&mut next);
+    normalize_stored_config(&mut next);
+    scope_model_prices(&mut next);
+    normalize_template_prices_and_efforts(&mut next);
+    next.schema_version = GATEWAY_CONFIG_SCHEMA_VERSION;
     let json = serde_json::to_string(&next).map_err(|e| e.to_string())?;
     let password = crate::crypto::get_or_init_master_password()?;
     let encrypted = crate::crypto::encrypt(&json, &password)?;

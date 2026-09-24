@@ -896,7 +896,6 @@ pub fn apply_create_provider_from_template(
                 cache_write: model.cache_write,
                 output: model.output,
                 off_peaks: model.off_peaks.clone(),
-                off_peak: None,
             });
         }
     }

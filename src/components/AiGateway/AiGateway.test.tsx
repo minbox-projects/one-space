@@ -4,7 +4,6 @@ import i18n from "@/i18n";
 import { AiGateway } from "@/components/AiGateway";
 import {
   AI_GATEWAY_CONFIG_UPDATED_EVENT,
-  AI_GATEWAY_KEY_MASK,
   formatGatewayTimestamp,
   maskSecret,
   type GatewayConfig,
@@ -238,17 +237,12 @@ function makeProvider(
     id: "p1",
     name: "Upstream A",
     base_url: "https://api.a.example",
-    api_key: AI_GATEWAY_KEY_MASK,
+    api_key: "********",
     default_model: null,
     mappings: [],
     enabled: true,
-    auto_disabled: false,
-    disabled_reason: null,
-    disabled_at: null,
-    consecutive_failures: 0,
-    last_error_at: null,
     ...overrides,
-  };
+  } as GatewayUpstreamProvider;
 }
 
 describe("AiGateway", () => {
@@ -268,7 +262,7 @@ describe("AiGateway", () => {
   it("只渲染受支持工具，且顶部不再渲染全局操作按钮", async () => {
     const store: Store = {
       config: makeConfig({
-        keys: [{ id: "k1", label: "Main", value: AI_GATEWAY_KEY_MASK, enabled: true, created_at: 1 }],
+        keys: [{ id: "k1", label: "Main", value: "********", enabled: true, created_at: 1 }],
         default_key_id: "k1",
       }),
       status: makeStatus({ key_count: 1, default_key_id: "k1" }),
@@ -313,7 +307,7 @@ describe("AiGateway", () => {
   it("待同步的行内显示添加，点击仅以该工具调用配置", async () => {
     const store: Store = {
       config: makeConfig({
-        keys: [{ id: "k1", label: "Main", value: AI_GATEWAY_KEY_MASK, enabled: true, created_at: 1 }],
+        keys: [{ id: "k1", label: "Main", value: "********", enabled: true, created_at: 1 }],
         default_key_id: "k1",
       }),
       status: makeStatus({ key_count: 1, default_key_id: "k1" }),
@@ -349,7 +343,7 @@ describe("AiGateway", () => {
   it("已添加的行内显示同步，点击仅以该工具调用同步", async () => {
     const store: Store = {
       config: makeConfig({
-        keys: [{ id: "k1", label: "Main", value: AI_GATEWAY_KEY_MASK, enabled: true, created_at: 1 }],
+        keys: [{ id: "k1", label: "Main", value: "********", enabled: true, created_at: 1 }],
         default_key_id: "k1",
       }),
       status: makeStatus({ key_count: 1, default_key_id: "k1" }),
@@ -399,7 +393,7 @@ describe("AiGateway", () => {
   it("已添加但 Key 或地址漂移（synced 为真且待同步）时行内显示同步并仅走同步通道", async () => {
     const store: Store = {
       config: makeConfig({
-        keys: [{ id: "k1", label: "Main", value: AI_GATEWAY_KEY_MASK, enabled: true, created_at: 1 }],
+        keys: [{ id: "k1", label: "Main", value: "********", enabled: true, created_at: 1 }],
         default_key_id: "k1",
       }),
       status: makeStatus({ key_count: 1, default_key_id: "k1" }),
@@ -445,7 +439,7 @@ describe("AiGateway", () => {
   it("网关服务商被删除但同步台账仍在（synced 为假且 synced_key_id/synced_at 非空）时行内显示同步并仅走同步通道", async () => {
     const store: Store = {
       config: makeConfig({
-        keys: [{ id: "k1", label: "Main", value: AI_GATEWAY_KEY_MASK, enabled: true, created_at: 1 }],
+        keys: [{ id: "k1", label: "Main", value: "********", enabled: true, created_at: 1 }],
         default_key_id: "k1",
       }),
       status: makeStatus({ key_count: 1, default_key_id: "k1" }),
@@ -522,7 +516,7 @@ describe("AiGateway", () => {
     const store: Store = {
       config: makeConfig({
         keys: [
-          { id: "k1", label: "Main", value: AI_GATEWAY_KEY_MASK, enabled: true, created_at: 1 },
+          { id: "k1", label: "Main", value: "********", enabled: true, created_at: 1 },
         ],
         default_key_id: "k1",
       }),
@@ -665,26 +659,16 @@ describe("AiGateway", () => {
     expect(codexSyncedEl).toHaveTextContent("Last sync");
   });
 
-  it("展示运行状态、端口、自动禁用原因与时间，并支持复制地址与掩码 Key", async () => {
-    const disabledAt = 1_700_000_000;
+  it("展示运行状态、端口与掩码 Key，并支持复制地址与 Key", async () => {
     const rawKey = "sk-live-secret-1234";
     const store: Store = {
       config: makeConfig({
         providers: [
-          {
+          makeProvider({
             id: "p1",
             name: "Upstream Broken",
             base_url: "https://api.broken.example",
-            api_key: AI_GATEWAY_KEY_MASK,
-            default_model: null,
-            mappings: [],
-            enabled: true,
-            auto_disabled: true,
-            disabled_reason: "HTTP 401",
-            disabled_at: disabledAt,
-            consecutive_failures: 3,
-            last_error_at: disabledAt,
-          },
+          }),
         ],
         keys: [{ id: "k1", label: "Main", value: rawKey, enabled: true, created_at: 1 }],
         default_key_id: "k1",
@@ -707,12 +691,6 @@ describe("AiGateway", () => {
     expect(screen.getByTestId("ai-gateway-local-address")).toHaveTextContent(
       "http://127.0.0.1:17688/v1",
     );
-    expect(screen.getByText(/Reason: HTTP 401/)).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        new RegExp(`Disabled at ${formatGatewayTimestamp(disabledAt)!}`),
-      ),
-    ).toBeInTheDocument();
     expect(screen.getByTestId("ai-gateway-auto-disabled-count")).toHaveTextContent("1");
 
     fireEvent.click(screen.getByRole("button", { name: /Copy local API address/ }));
@@ -1110,7 +1088,7 @@ describe("AiGateway", () => {
     const store: Store = {
       config: makeConfig({
         providers: [makeProvider()],
-        keys: [{ id: "k1", label: "Dev Key", value: AI_GATEWAY_KEY_MASK, enabled: true, created_at: 1 }],
+        keys: [{ id: "k1", label: "Dev Key", value: "********", enabled: true, created_at: 1 }],
       }),
       status: makeStatus({ provider_count: 1, key_count: 1 }),
       targets: [openCodeTarget()],
@@ -1144,7 +1122,7 @@ describe("AiGateway", () => {
     const store: Store = {
       config: makeConfig({
         providers: [makeProvider()],
-        keys: [{ id: "k1", label: "Dev Key", value: AI_GATEWAY_KEY_MASK, enabled: true, created_at: 1 }],
+        keys: [{ id: "k1", label: "Dev Key", value: "********", enabled: true, created_at: 1 }],
       }),
       status: makeStatus({ provider_count: 1, key_count: 1 }),
       targets: [openCodeTarget()],
@@ -1327,7 +1305,6 @@ describe("AiGateway", () => {
       id: "p1",
       name: "Provider 1",
       enabled: true,
-      auto_disabled: false,
       mappings: [
         { local_model: "gpt-4o", upstream_model: "gpt-4o-2024" },
         { local_model: "claude-3-7-sonnet", upstream_model: "claude-3-7" },
@@ -1338,7 +1315,6 @@ describe("AiGateway", () => {
       id: "p2",
       name: "Provider 2",
       enabled: false,
-      auto_disabled: false,
       mappings: [
         { local_model: "deepseek-v3", upstream_model: "deepseek-chat" },
       ],
@@ -1415,7 +1391,6 @@ describe("AiGateway", () => {
       name: "Provider 1",
       protocol: "chat_completions",
       enabled: true,
-      auto_disabled: false,
       default_model: "gpt-4o",
       mappings: [
         { local_model: "gpt-4o", upstream_model: "gpt-4o-2024" },
@@ -1426,7 +1401,6 @@ describe("AiGateway", () => {
       id: "p2",
       name: "Provider 2",
       enabled: false,
-      auto_disabled: false,
       mappings: [
         { local_model: "deepseek-v3", upstream_model: "deepseek-chat" },
       ],
@@ -1476,7 +1450,6 @@ describe("AiGateway", () => {
       name: "Provider 1",
       protocol: "chat_completions",
       enabled: true,
-      auto_disabled: false,
       default_model: "gpt-4o",
       mappings: [
         { local_model: "gpt-4o", upstream_model: "gpt-4o-2024" },
@@ -1552,7 +1525,6 @@ describe("AiGateway", () => {
       id: "p1",
       name: "Provider 1",
       enabled: false,
-      auto_disabled: false,
       default_model: "gpt-4o",
       mappings: [{ local_model: "gpt-4o", upstream_model: "gpt-4o-2024" }],
     });
@@ -1632,7 +1604,6 @@ describe("AiGateway", () => {
       id: "p1",
       name: "Provider 1",
       enabled: true,
-      auto_disabled: false,
       default_model: "d",
       mappings: [
         { local_model: "a", upstream_model: "ra", enabled: true },
@@ -1670,7 +1641,6 @@ describe("AiGateway", () => {
       id: "p1",
       name: "Provider 1",
       enabled: true,
-      auto_disabled: false,
       default_model: "gpt-4o",
       mappings: [
         { local_model: "gpt-4o", upstream_model: "gpt-4o-2024" },
@@ -1681,7 +1651,6 @@ describe("AiGateway", () => {
       id: "p2",
       name: "Provider 2",
       enabled: true,
-      auto_disabled: false,
       mappings: [
         { local_model: "deepseek-v3", upstream_model: "deepseek-chat" },
       ],
@@ -2441,7 +2410,7 @@ describe("AiGateway 逐行自动禁用前端计数与重新启用入口", () => 
     await i18n.changeLanguage("en");
   });
 
-  it("运行时状态卡按 enabled 统计服务商数量，不扣除 auto_disabled", async () => {
+  it("运行时状态卡按 enabled 统计服务商数量", async () => {
     const provider1 = makeProvider({
       id: "p1",
       name: "Healthy Provider",
@@ -2450,10 +2419,8 @@ describe("AiGateway 逐行自动禁用前端计数与重新启用入口", () => 
     });
     const provider2 = makeProvider({
       id: "p2",
-      name: "Auto-disabled Provider",
+      name: "Enabled Provider",
       enabled: true,
-      auto_disabled: true,
-      disabled_reason: "HTTP 401",
       mappings: [{ local_model: "claude-3", upstream_model: "remote-b" }],
     });
     const provider3 = makeProvider({
@@ -2472,7 +2439,7 @@ describe("AiGateway 逐行自动禁用前端计数与重新启用入口", () => 
 
     renderWithProviders(<AiGateway />);
 
-    // 健康率应为 2/3：provider1(enabled) + provider2(auto_disabled but enabled=true) / total 3
+    // 健康率应为 2/3：provider1(enabled) + provider2(enabled) / total 3
     // provider3(enabled=false) 被排除但不影响分母
     const healthCard = await screen.findByTestId("ai-gateway-metric-health");
     expect(within(healthCard).getByText(/2\/3/)).toBeInTheDocument();
@@ -2716,7 +2683,6 @@ describe("AiGateway 逐行自动禁用前端计数与重新启用入口", () => 
           makeProvider({
             id: "p1",
             name: "Broken Provider",
-            auto_disabled: true,
             mappings: [
               {
                 local_model: "m1",

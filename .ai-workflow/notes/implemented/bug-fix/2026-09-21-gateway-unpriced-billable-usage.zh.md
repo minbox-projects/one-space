@@ -24,5 +24,5 @@ Status: implemented
 
 - 未定价提示数现在与会产生用量成本的请求一致：`unpriced_count`、`unpriced_items` 与 `—` 显示排除零用量失败与无上游失败，同时保留零用量成功与带用量的失败。
 - 请求全部为零用量失败的用量行不再显示 `—`；其聚合金额为 0，在 `Cost ($)` 列显示为 `0.0000`。
-- 请求数、tokens、金额与终止行/取消行规则保持不变：`COUNT(*)`、token 与 amount 聚合、保留策略、按尝试行与取消行排除均维持既有行为。
+- 请求数、tokens、金额与终止行规则保持不变：`COUNT(*)`、token 与 amount 聚合、保留策略与按尝试行均维持既有行为；遗留 `cancelled` 行在旧数据库首次打开时被一次性删除，因此不再需要取消行排除（[Gateway Migration Is Permanent and Version-Gated](../architecture/2026-09-24-version-gated-gateway-migration.md)）。
 - 部分取代：[API Gateway Usage Stats and Request Logs](../architecture/2026-09-17-ai-gateway-usage-logs.md) 被保留并交叉链接；本记录只替换其未定价资格，包括「只有 2xx 上游响应计入 tokens 与花费」的旧表述——现已纠正为非流式只从 2xx 响应体解析，中途流失败保留已累积 usage——其 SQLite 日志、记录时价格冻结、保留、`group_by` 契约与 `local_model` 面决策仍然有效。

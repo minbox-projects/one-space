@@ -6,11 +6,11 @@ Status: implemented
 
 ## Problem
 
-带 `models_url` 的服务商模板此前只在操作者点击模板卡上的同步操作时才拉取模型清单。应用保持打开期间上游清单会漂移，每个派生服务商都会继续提供过期清单，直到有人想起来点击。因此自动刷新必须在应用运行期间按计划更新每个有 URL 的模板，但它绝不能成为第二份同步实现：用户禁用的映射必须保持禁用、`ignored_models` 条目绝不能被复活、价格行绝不能被写入。必须先确定两件事——计划运行在哪里（Rust 侧运行时循环，还是已经编排模板同步的前端），以及无人值守的失败如何展示而不打扰操作者——此外间隔本身必须持久化到 `api_gateway.json`、对既有文件默认 60 分钟且无需迁移、接受 `0` 表示禁用，并在前后端都保持校验。
+带 `models_url` 的服务商模板此前只在操作者点击模板卡上的同步操作时才拉取模型清单。应用保持打开期间上游清单会漂移，每个派生服务商都会继续提供过期清单，直到有人想起来点击。因此自动刷新必须在应用运行期间按计划更新每个有 URL 的模板，但它绝不能成为第二份同步实现：用户禁用的映射必须保持禁用、`ignored_models` 条目绝不能被复活、价格行绝不能被写入。必须先确定两件事——计划运行在哪里（Rust 侧运行时循环，还是已经编排模板同步的前端），以及无人值守的失败如何展示而不打扰操作者——此外间隔本身必须持久化到 `api_gateway.json`、对既有文件默认 60 分钟、接受 `0` 表示禁用，并在前后端都保持校验。
 
 ## Decision
 
-间隔持久化为 `GatewayConfig.template_auto_refresh_minutes: u32`（`src-tauri/src/api_gateway/types_config.rs`），带 `#[serde(default = "default_template_auto_refresh_minutes")]` 且始终序列化，因此旧 `api_gateway.json` 以 60 读取、无需迁移，而特性前的构建会忽略这个未知字段。公共常量 `DEFAULT_TEMPLATE_AUTO_REFRESH_MINUTES = 60`、`MIN_TEMPLATE_AUTO_REFRESH_MINUTES = 10` 与 `MAX_TEMPLATE_AUTO_REFRESH_MINUTES = 1440` 固定契约。读取时归一化（`normalize_template_auto_refresh_minutes`）保留 `0`（禁用）与 10–1440 的存储值，其余一律回退 60；保存时校验（`validate_template_auto_refresh_minutes`）只接受 `0` 或 10–1440，其余值在任何写入前以可操作错误拒绝。`src-tauri/src/api_gateway/commands.rs` 中的命令 `api_gateway_template_auto_refresh_get` 与 `api_gateway_template_auto_refresh_save(minutes: i64)` 只读取与替换该字段，注册于 `src-tauri/src/app_runtime/run_app.rs`，保存会返回写后重新读取的持久化值。
+间隔持久化为 `GatewayConfig.template_auto_refresh_minutes: u32`（`src-tauri/src/api_gateway/types_config.rs`），带 `#[serde(default = "default_template_auto_refresh_minutes")]` 且始终序列化，因此没有该字段的文件以 60 读取（更旧的文件由版本门控迁移一次性升级，[Gateway Migration Is Permanent and Version-Gated](../architecture/2026-09-24-version-gated-gateway-migration.md)），而特性前的构建会忽略这个未知字段。公共常量 `DEFAULT_TEMPLATE_AUTO_REFRESH_MINUTES = 60`、`MIN_TEMPLATE_AUTO_REFRESH_MINUTES = 10` 与 `MAX_TEMPLATE_AUTO_REFRESH_MINUTES = 1440` 固定契约。读取时归一化（`normalize_template_auto_refresh_minutes`）保留 `0`（禁用）与 10–1440 的存储值，其余一律回退 60；保存时校验（`validate_template_auto_refresh_minutes`）只接受 `0` 或 10–1440，其余值在任何写入前以可操作错误拒绝。`src-tauri/src/api_gateway/commands.rs` 中的命令 `api_gateway_template_auto_refresh_get` 与 `api_gateway_template_auto_refresh_save(minutes: i64)` 只读取与替换该字段，注册于 `src-tauri/src/app_runtime/run_app.rs`，保存会返回写后重新读取的持久化值。
 
 设置页 `ai-gateway` 分区（`src/components/SettingsView.tsx`）新增整分钟输入：`0` 禁用，否则 10–1440，并显示持久化值，因此没有该字段的配置显示 60。`parseTemplateAutoRefreshInput` 在调用任何命令前阻断空、非数字与越界输入并提示 `apiGatewayTemplateAutoRefreshInvalid`；后端拒绝被映射为同一本地化消息，而不是原始错误字符串。保存成功后视图重新读取 `apiGatewayTemplateAutoRefreshGet()` 并调用 `notifyTemplateAutoRefreshIntervalChanged()`。包装函数 `apiGatewayTemplateAutoRefreshGet` / `apiGatewayTemplateAutoRefreshSave` 与通知接缝 `notifyTemplateAutoRefreshIntervalChanged` / `subscribeTemplateAutoRefreshIntervalChanged` 位于 `src/lib/apiGateway.ts`。
 
@@ -28,7 +28,7 @@ Status: implemented
 
 ## Consequences
 
-- 间隔契约：没有该字段的配置读取为 60 且无需迁移，读取不会改写文件；存储的 `0` 与 10–1440 原样报告，其他存储值归一化为 60；保存只接受 `0` 或 10–1440，`5`、`-1`、`1441` 与非整数会被拒绝并返回指明可接受值的错误且不写入任何内容；`0` 停止计划，删除该字段恢复 60 分钟的启用默认值而不是禁用。
+- 间隔契约：没有该字段的配置读取为 60，当前版本的读取不会改写文件，更旧的文件由版本门控迁移一次性升级（[Gateway Migration Is Permanent and Version-Gated](../architecture/2026-09-24-version-gated-gateway-migration.md)）；存储的 `0` 与 10–1440 原样报告，其他存储值归一化为 60；保存只接受 `0` 或 10–1440，`5`、`-1`、`1441` 与非整数会被拒绝并返回指明可接受值的错误且不写入任何内容；`0` 停止计划，删除该字段恢复 60 分钟的启用默认值而不是禁用。
 - 自动刷新就是计时器下的人工同步：每个模板的拉取、替换与派生服务商传播都走未改动的 `api_gateway_sync_provider_template` / `apply_template_sync_with` 路径，因此用户禁用的映射绝不被重新启用，`ignored_models` 条目绝不被复活，绝不写入任何价格行，失败模板的存储条目与派生映射保持不变，而同一批次中的其他模板仍会应用；失败的刷新绝不触碰 `synced_at`。
 - 计划生命周期：计时器在启动时由持久化间隔推导，并在设置保存通知接缝后立即重算；`0` 停止它；批次进行期间到达的 tick 被跳过；手动同步进行中的模板被推迟到之后的 tick；模板按列出顺序串行执行。
 - 失败展示：自动失败只在内存中，并在匹配的模板卡上以 `Auto refresh failed: <reason>` / `自动刷新失败：<原因>` 内联渲染，绝不作为 toast；该模板的下一次成功（自动或人工）清除原因，应用重启后不显示陈旧原因。

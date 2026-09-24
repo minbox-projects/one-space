@@ -43,13 +43,8 @@ function makeProvider(overrides: Partial<GatewayUpstreamProvider> = {}): Gateway
     protocol: "chat_completions",
     mappings: [],
     enabled: true,
-    auto_disabled: false,
-    disabled_reason: null,
-    disabled_at: null,
-    consecutive_failures: 0,
-    last_error_at: null,
     ...overrides,
-  };
+  } as GatewayUpstreamProvider;
 }
 
 function mockUsageResult(result: ProviderGoUsage | Error = FIXTURE) {
