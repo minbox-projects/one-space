@@ -352,13 +352,15 @@ impl Drop for RestoreDirPermissions {
 fn failed_rewrite_is_retried_and_completed_by_a_later_read() {
     use std::os::unix::fs::PermissionsExt;
 
-    let home = isolated_temp_home("migration-readonly-retry");
+    let _home = isolated_temp_home("migration-readonly-retry");
     write_encrypted_config(&legacy_config_fixture());
     let legacy_bytes = raw_config_bytes();
 
-    let dir = home.path.clone();
+    // The rewrite writes `ai_gateway.tmp` inside the application directory, not
+    // the temp-home root: making the ancestor read-only would not block it.
+    let dir = crate::config::get_app_dir().expect("app dir");
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o500))
-        .expect("make the config directory read-only");
+        .expect("make the app directory read-only");
     let _restore = RestoreDirPermissions(dir.clone());
 
     let migrated = read_config().expect("the read must still return the migrated value");
@@ -379,6 +381,131 @@ fn failed_rewrite_is_retried_and_completed_by_a_later_read() {
         "the retried read must persist the migrated config: {on_disk}"
     );
     assert_on_disk_migrated(&on_disk);
+}
+
+/// An encrypted configuration without a schema version whose data is already in
+/// the current shape: a provider with an enabled mapping and a provider-scoped
+/// price row carrying a non-empty `off_peaks` list, with no singular `off_peak`
+/// key and no provider-level runtime keys. Nothing here needs a transformation,
+/// yet the read must still advance the version checkpoint once.
+fn versionless_current_shape_fixture() -> Value {
+    json!({
+        "enabled": true,
+        "providers": [
+            {
+                "id": "p",
+                "name": "Provider P",
+                "base_url": "https://p.example.com/v1",
+                "api_key": "sk-p",
+                "protocol": "chat_completions",
+                "mappings": [
+                    {"local_model": "local-a", "upstream_model": "remote-a", "enabled": true}
+                ]
+            }
+        ],
+        "model_prices": [
+            {
+                "provider_id": "p",
+                "upstream_model": "remote-a",
+                "input": 1.5,
+                "cache_read": 0.25,
+                "cache_write": 0.5,
+                "output": 3.0,
+                "off_peaks": [
+                    {
+                        "start_time": "00:00",
+                        "end_time": "08:00",
+                        "input": 0.75,
+                        "cache_read": 0.1,
+                        "cache_write": 0.2,
+                        "output": 1.5,
+                        "days": [1, 2, 3]
+                    }
+                ]
+            }
+        ]
+    })
+}
+
+/// Boundary: a configuration without a schema version whose data is already in
+/// the current shape migrates idempotently and changes no value. The first read
+/// must stamp the current schema version on disk even though the migration had
+/// nothing to rewrite, and the second read must write nothing.
+#[test]
+fn versionless_config_already_in_new_shape_is_stamped_once() {
+    let _home = isolated_temp_home("migration-versionless-current-shape");
+    let fixture = versionless_current_shape_fixture();
+    write_encrypted_config(&fixture);
+
+    let loaded = read_config().expect("the version-less config must stay readable");
+
+    // The first read must persist the current schema version even though every
+    // value already matches the new shape.
+    let first_on_disk = decrypted_config_json();
+    assert_eq!(
+        first_on_disk.get("schema_version").and_then(Value::as_u64),
+        Some(u64::from(crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION)),
+        "the first read must stamp the version-less configuration: {first_on_disk}"
+    );
+
+    // In-memory value: the current version with unchanged providers and prices.
+    assert_eq!(
+        loaded.schema_version,
+        crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION,
+        "the in-memory config must carry the current schema version"
+    );
+    let loaded_ids: Vec<&str> = loaded.providers.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(loaded_ids, vec!["p"], "the provider set must be unchanged");
+    assert!(
+        loaded.providers[0].mappings[0].enabled,
+        "the enabled mapping must be preserved"
+    );
+    let expected_prices: Vec<ModelPrice> =
+        serde_json::from_value(fixture["model_prices"].clone()).expect("expected price rows");
+    assert_eq!(
+        loaded.model_prices, expected_prices,
+        "the price rows must be unchanged by the stamping read"
+    );
+
+    // On-disk value: only the version checkpoint advanced; provider ids and
+    // every price row (including `off_peaks`) are untouched.
+    let fixture_ids: Vec<&str> = fixture["providers"]
+        .as_array()
+        .expect("fixture providers")
+        .iter()
+        .map(|provider| provider["id"].as_str().expect("fixture provider id"))
+        .collect();
+    let on_disk_ids: Vec<&str> = first_on_disk["providers"]
+        .as_array()
+        .expect("on-disk providers")
+        .iter()
+        .map(|provider| provider["id"].as_str().expect("on-disk provider id"))
+        .collect();
+    assert_eq!(on_disk_ids, fixture_ids, "the provider ids must be preserved");
+    assert_eq!(
+        first_on_disk["model_prices"], fixture["model_prices"],
+        "the persisted price rows must be value-identical: {first_on_disk}"
+    );
+    for row in first_on_disk["model_prices"].as_array().expect("on-disk rows") {
+        assert!(
+            row.get("off_peak").is_none(),
+            "no singular off_peak key may be introduced: {row}"
+        );
+        assert_eq!(
+            row["off_peaks"].as_array().map(Vec::len),
+            Some(1),
+            "the off_peaks list must be preserved: {row}"
+        );
+    }
+
+    // Idempotent: the second read writes nothing.
+    let stable_bytes = raw_config_bytes();
+    let _second = read_config().expect("the second read must succeed");
+    assert_eq!(
+        raw_config_bytes(),
+        stable_bytes,
+        "a second read must not write again"
+    );
 }
 
 // ---------------------------------------------------------------------------

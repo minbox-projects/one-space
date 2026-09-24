@@ -101,7 +101,6 @@ impl UsageTokens {
 pub enum UsageResult {
     Success,
     Failure,
-    Cancelled,
 }
 
 impl UsageResult {
@@ -109,7 +108,6 @@ impl UsageResult {
         match self {
             Self::Success => "success",
             Self::Failure => "failure",
-            Self::Cancelled => "cancelled",
         }
     }
 
@@ -117,7 +115,6 @@ impl UsageResult {
         match value {
             "success" => Some(Self::Success),
             "failure" => Some(Self::Failure),
-            "cancelled" => Some(Self::Cancelled),
             _ => None,
         }
     }
@@ -270,17 +267,17 @@ pub fn compute_cost_at_time(
     tokens: &UsageTokens,
     timestamp_ms: i64,
 ) -> f64 {
-    for off_peak in price.effective_off_peaks() {
+    for window in &price.off_peaks {
         if is_off_peak_with_days(
             timestamp_ms,
-            &off_peak.start_time,
-            &off_peak.end_time,
-            off_peak.days.as_deref(),
+            &window.start_time,
+            &window.end_time,
+            window.days.as_deref(),
         ) {
-            return (off_peak.input * tokens.input_tokens as f64
-                + off_peak.cache_read * tokens.cache_read_tokens as f64
-                + off_peak.cache_write * tokens.cache_write_tokens as f64
-                + off_peak.output * tokens.output_tokens as f64)
+            return (window.input * tokens.input_tokens as f64
+                + window.cache_read * tokens.cache_read_tokens as f64
+                + window.cache_write * tokens.cache_write_tokens as f64
+                + window.output * tokens.output_tokens as f64)
                 / 1_000_000.0;
         }
     }
@@ -973,18 +970,14 @@ fn record_from_row(row: &Row<'_>) -> rusqlite::Result<UsageLogRecord> {
 
 /// Build the `WHERE` clause shared by every user-visible log query.
 ///
-/// Every query excludes historical `result = 'cancelled'` rows: a downstream
-/// cancellation is a transport lifecycle event rather than a business outcome,
-/// so those physically retained rows stay readable only through raw test readers
-/// (REQ-002). A parsed `status = cancelled` filter therefore yields a valid
-/// empty page instead of matching them. `terminal_only` adds the
-/// statistics/grouping filter; the ungrouped list keeps every non-cancelled row.
+/// `terminal_only` adds the statistics/grouping filter; the ungrouped list keeps
+/// every row that survives the filter.
 fn bind(
     range: &TimeRange,
     filter: &LogFilter,
     terminal_only: bool,
 ) -> (String, Vec<rusqlite::types::Value>) {
-    let mut clauses: Vec<&str> = vec!["result != 'cancelled'"];
+    let mut clauses: Vec<&str> = Vec::new();
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
     if let Some(start) = range.start_ms {
         clauses.push("timestamp_ms >= ?");
@@ -1157,6 +1150,9 @@ impl UsageLogStore {
             .execute_batch(SCHEMA)
             .map_err(|error| error.to_string())?;
         migrate_usage_logs(&connection)?;
+        // The version-gated one-time cleanup lives in the permanent migration
+        // module; a later open finds the marker advanced and deletes nothing.
+        super::migration::migrate_usage_database(&connection)?;
         Ok(connection)
     }
 
@@ -1333,8 +1329,8 @@ impl UsageLogStore {
         })
     }
 
-    /// Grouped rows by `"model"` or `"day"` (UTC+8). Historical `cancelled` rows
-    /// are excluded from the groups, and `error_count` counts only `failure` rows.
+    /// Grouped rows by `"model"` or `"day"` (UTC+8). `error_count` counts only
+    /// `failure` rows.
     pub(in crate::ai_gateway) fn group_logs(
         &self,
         range: &TimeRange,
@@ -1414,8 +1410,7 @@ impl UsageLogStore {
         hour_buckets: bool,
     ) -> Result<UsageStats, String> {
         let connection = self.open()?;
-        // `bind` already excludes historical `cancelled` rows alongside the
-        // terminal filter, so every aggregate below shares that one rule.
+        // Every aggregate below shares this one terminal-only filter.
         let (stats_where, params) = bind(range, &LogFilter::default(), true);
         // A failed attempt with no candidate provider (`provider_id = ''`) still
         // counts toward totals/models, but must not leak a blank provider row.

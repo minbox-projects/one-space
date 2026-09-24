@@ -4,8 +4,8 @@ use super::selection::{
     clear_mapping_runtime_state, manual_reenable, mapping_matches_key, set_user_enabled,
 };
 use super::storage::{
-    effective_default_key, find_provider_mut, local_base_url, new_key_id, new_key_value,
-    new_provider_id, read_config, resolve_default_key_id, touch_key_created_at, write_config,
+    find_provider_mut, local_base_url, new_key_id, new_key_value, new_provider_id, read_config,
+    resolve_default_key_id, touch_key_created_at, write_config,
 };
 use super::templates::{
     apply_create_provider_from_template, apply_delete_provider_model,
@@ -230,7 +230,7 @@ pub(in crate::ai_gateway) fn default_key_for_sync(
     // Mirror the frontend `resolveDefaultKeyId` rule: the stored choice wins
     // while it points at an enabled key, otherwise fall through to the next
     // enabled key in list order (wrapping), so syncing still carries the
-    // default API key the UI shows.
+    // default API key the UI shows. A `None` result means no enabled key exists.
     let resolved = resolve_default_key_id(&config.keys, config.default_key_id.as_deref());
     match resolved.and_then(|id| {
         config
@@ -239,13 +239,10 @@ pub(in crate::ai_gateway) fn default_key_for_sync(
             .find(|key| key.id == id && key.enabled)
     }) {
         Some(key) => Ok((key.id.clone(), key.value.clone())),
-        None => match effective_default_key(config) {
-            Some(key) => Ok((key.id.clone(), key.value.clone())),
-            None => Err(
-                "no enabled local API key: add and enable a local key before configuring terminals"
-                    .to_string(),
-            ),
-        },
+        None => Err(
+            "no enabled local API key: add and enable a local key before configuring terminals"
+                .to_string(),
+        ),
     }
 }
 
@@ -255,59 +252,6 @@ fn api_err_to_string(error: crate::app_store::ApiErr) -> String {
 
 #[tauri::command]
 pub fn ai_gateway_get_config() -> Result<GatewayConfig, String> {
-    read_config()
-}
-
-#[tauri::command]
-pub async fn ai_gateway_save_config(
-    app: tauri::AppHandle,
-    config: GatewayConfig,
-) -> Result<GatewayConfig, String> {
-    save_config_inner(config, Some(app)).await
-}
-
-/// The full save-config behavior with the application handle injected: normalize
-/// masked secrets, validate weights, persist, then restart or stop the listener
-/// through [`start_inner`] so the runtime handle slot is refreshed.
-pub(in crate::ai_gateway) async fn save_config_inner(
-    config: GatewayConfig,
-    app: Option<tauri::AppHandle>,
-) -> Result<GatewayConfig, String> {
-    let existing = read_config()?;
-    let mut next = config;
-    for provider in &mut next.providers {
-        if provider.api_key.trim().is_empty() || provider.api_key == "********" {
-            if let Some(previous) = existing
-                .providers
-                .iter()
-                .find(|candidate| candidate.id == provider.id)
-            {
-                provider.api_key = previous.api_key.clone();
-            }
-        }
-    }
-    for key in &mut next.keys {
-        if key.value.trim().is_empty() || key.value == "********" {
-            if let Some(previous) = existing.keys.iter().find(|candidate| candidate.id == key.id) {
-                key.value = previous.value.clone();
-            } else {
-                key.value = new_key_value();
-            }
-        }
-    }
-    for provider in &next.providers {
-        if provider.weight < MIN_PROVIDER_WEIGHT || provider.weight > MAX_PROVIDER_WEIGHT {
-            return Err(format!(
-                "provider weight must be between {MIN_PROVIDER_WEIGHT} and {MAX_PROVIDER_WEIGHT}"
-            ));
-        }
-    }
-    write_config(&next)?;
-    if next.enabled {
-        start_inner(app.clone()).await?;
-    } else {
-        ai_gateway_stop().await?;
-    }
     read_config()
 }
 
@@ -327,7 +271,7 @@ pub fn ai_gateway_upsert_provider(
     }
     let provider_id = provider.id.clone();
     if let Some(existing) = find_provider_mut(&mut config, &provider_id) {
-        if provider.api_key.trim().is_empty() || provider.api_key == "********" {
+        if provider.api_key.trim().is_empty() {
             provider.api_key = existing.api_key.clone();
         }
         // Runtime health belongs to a trimmed `(local_model, upstream_model)`
@@ -370,13 +314,6 @@ pub fn ai_gateway_upsert_provider(
             }
             row.upstream_model = upstream_model;
             row.provider_id = Some(provider_id.clone());
-            if row.off_peaks.is_empty() {
-                if let Some(off_peak) = row.off_peak.clone() {
-                    row.off_peaks = vec![off_peak];
-                }
-            } else if row.off_peak.is_none() {
-                row.off_peak = row.off_peaks.first().cloned();
-            }
             normalized.push(row);
         }
         config
@@ -468,12 +405,12 @@ pub fn ai_gateway_upsert_key(mut key: GatewayKey) -> Result<GatewayConfig, Strin
         key.id = new_key_id();
     }
     if let Some(existing) = config.keys.iter_mut().find(|candidate| candidate.id == key.id) {
-        if key.value.trim().is_empty() || key.value == "********" {
+        if key.value.trim().is_empty() {
             key.value = existing.value.clone();
         }
         *existing = key;
     } else {
-        if key.value.trim().is_empty() || key.value == "********" {
+        if key.value.trim().is_empty() {
             key.value = new_key_value();
         }
         config.keys.push(key);

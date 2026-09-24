@@ -24,6 +24,11 @@ pub const MAX_TEMPLATE_AUTO_REFRESH_MINUTES: u32 = 1440;
 pub const MIN_PROVIDER_WEIGHT: u32 = 1;
 pub const MAX_PROVIDER_WEIGHT: u32 = 100;
 
+/// Current schema version of the persisted gateway configuration. A missing
+/// `schema_version` field reads as `0` (legacy) and triggers the one-time
+/// migration on the next configuration read; every write persists this value.
+pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 1;
+
 pub(in crate::ai_gateway) fn default_port() -> u16 {
     if cfg!(debug_assertions) {
         DEV_DEFAULT_PORT
@@ -213,8 +218,8 @@ impl UpstreamProtocol {
 
 /// An upstream OpenAI-compatible provider used as a forwarding target.
 ///
-/// `enabled` carries the user's intent while `auto_disabled` carries runtime health.
-/// They are persisted independently and must never overwrite one another.
+/// `enabled` carries the user's intent; runtime health lives on each mapping
+/// row (`ModelMapping`), so provider records persist no health state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayUpstreamProvider {
     pub id: String,
@@ -230,16 +235,6 @@ pub struct GatewayUpstreamProvider {
     pub mappings: Vec<ModelMapping>,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default)]
-    pub auto_disabled: bool,
-    #[serde(default)]
-    pub disabled_reason: Option<String>,
-    #[serde(default)]
-    pub disabled_at: Option<u64>,
-    #[serde(default)]
-    pub consecutive_failures: u32,
-    #[serde(default)]
-    pub last_error_at: Option<u64>,
     /// Template this provider was created from; `None` for manual providers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,
@@ -266,11 +261,6 @@ impl Default for GatewayUpstreamProvider {
             protocol: UpstreamProtocol::ChatCompletions,
             mappings: Vec::new(),
             enabled: true,
-            auto_disabled: false,
-            disabled_reason: None,
-            disabled_at: None,
-            consecutive_failures: 0,
-            last_error_at: None,
             template_id: None,
             ignored_models: Vec::new(),
             weight: 1,
@@ -380,18 +370,6 @@ pub struct GatewayKey {
     pub created_at: u64,
 }
 
-impl Default for GatewayKey {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            label: String::new(),
-            value: String::new(),
-            enabled: true,
-            created_at: now_ts(),
-        }
-    }
-}
-
 /// Ledger entry recording the last value written to a terminal provider record.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TerminalSyncRecord {
@@ -499,24 +477,6 @@ pub struct ModelPrice {
     pub output: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub off_peaks: Vec<OffPeakPrice>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub off_peak: Option<OffPeakPrice>,
-}
-
-impl ModelPrice {
-    /// Return the active off-peak configurations.
-    ///
-    /// If `off_peaks` contains entries, returns a slice to them; otherwise, falls back
-    /// to `off_peak` for backwards compatibility with older single-value configurations.
-    pub fn effective_off_peaks(&self) -> &[OffPeakPrice] {
-        if !self.off_peaks.is_empty() {
-            &self.off_peaks
-        } else if let Some(ref op) = self.off_peak {
-            std::slice::from_ref(op)
-        } else {
-            &[]
-        }
-    }
 }
 
 impl Default for ModelPrice {
@@ -529,7 +489,6 @@ impl Default for ModelPrice {
             cache_write: 0.0,
             output: 0.0,
             off_peaks: Vec::new(),
-            off_peak: None,
         }
     }
 }
@@ -537,6 +496,10 @@ impl Default for ModelPrice {
 /// Persisted AI Gateway configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
+    /// Persisted schema version; a missing field reads as `0` (legacy) and the
+    /// read path migrates once to [`GATEWAY_CONFIG_SCHEMA_VERSION`].
+    #[serde(default)]
+    pub schema_version: u32,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_port")]
@@ -576,6 +539,7 @@ pub struct GatewayConfig {
 impl Default for GatewayConfig {
     fn default() -> Self {
         Self {
+            schema_version: GATEWAY_CONFIG_SCHEMA_VERSION,
             enabled: false,
             port: default_port(),
             providers: Vec::new(),

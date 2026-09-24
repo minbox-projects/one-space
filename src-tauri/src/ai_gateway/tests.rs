@@ -12195,11 +12195,13 @@ fn config_json_with_template_interval(interval: Option<u32>) -> Value {
     value
 }
 
-/// AC-002 / REQ-002: an older `ai_gateway.json` without the interval field reads
-/// as 60 minutes with no migration, a fresh config defaults to 60, the field is
-/// always serialized, and the public constants pin the accepted range.
+/// AC-001 / AC-002 / REQ-001: an older `ai_gateway.json` without the interval
+/// field reads as 60 minutes and, on that first read, is rewritten exactly once
+/// at the current schema version; a current-version file without the interval
+/// also reads as 60 but is never rewritten. A fresh config defaults to 60, the
+/// field is always serialized, and the public constants pin the accepted range.
 #[test]
-fn template_auto_refresh_defaults_to_60_for_older_configs_and_new_configs() {
+fn template_auto_refresh_defaults_to_60_for_older_configs_and_new_configs_under_version_gate() {
     assert_eq!(super::DEFAULT_TEMPLATE_AUTO_REFRESH_MINUTES, 60);
     assert_eq!(super::MIN_TEMPLATE_AUTO_REFRESH_MINUTES, 10);
     assert_eq!(super::MAX_TEMPLATE_AUTO_REFRESH_MINUTES, 1440);
@@ -12217,18 +12219,41 @@ fn template_auto_refresh_defaults_to_60_for_older_configs_and_new_configs() {
     assert_eq!(encoded["template_auto_refresh_minutes"], json!(60));
 
     with_temp_home("template-auto-refresh-default", |_home| {
+        // A version-less ("older") file reads as 60 and is rewritten exactly
+        // once, stamped at the current schema version.
         seed_encrypted_config(&config_json_with_template_interval(None));
-        let bytes_before = fs::read(config_path().expect("config path")).expect("read raw config");
 
         let loaded = super::storage::read_config().expect("older config must load");
         assert_eq!(
             loaded.template_auto_refresh_minutes, 60,
-            "a missing interval must fall back to 60 without migration"
+            "a missing interval must fall back to 60"
+        );
+        let password = crate::crypto::get_or_init_master_password().expect("master password");
+        let raw = fs::read_to_string(config_path().expect("config path")).expect("read raw config");
+        let decrypted = crate::crypto::decrypt(raw.trim(), &password).expect("decrypt config");
+        let on_disk: Value = serde_json::from_str(&decrypted).expect("config json");
+        assert_eq!(
+            on_disk.get("schema_version").and_then(Value::as_u64),
+            Some(u64::from(super::GATEWAY_CONFIG_SCHEMA_VERSION)),
+            "reading an older config must stamp the current schema version: {on_disk}"
+        );
+
+        // A current-version file without the interval reads as 60 and must stay
+        // byte-identical: an already-migrated config is never rewritten.
+        let mut current = config_json_with_template_interval(None);
+        current["schema_version"] = json!(super::GATEWAY_CONFIG_SCHEMA_VERSION);
+        seed_encrypted_config(&current);
+        let bytes_before = fs::read(config_path().expect("config path")).expect("read raw config");
+
+        let loaded = super::storage::read_config().expect("current-version config must load");
+        assert_eq!(
+            loaded.template_auto_refresh_minutes, 60,
+            "a missing interval must fall back to 60"
         );
         assert_eq!(
             fs::read(config_path().expect("config path")).expect("read raw config"),
             bytes_before,
-            "reading an older config must not migrate or rewrite it"
+            "reading a current-version config must not rewrite it"
         );
     });
 }
@@ -12273,13 +12298,17 @@ fn config_json_with_raw_template_interval(interval: Value) -> Value {
 }
 
 /// REQ-002 / AC-002: a stored interval carrying the wrong JSON type or an
-/// out-of-`u32` number must not fail the whole config read. It normalizes to 60,
-/// the public get command reports 60, and reading never rewrites the file.
+/// out-of-`u32` number must not fail the whole config read. It normalizes to 60
+/// and the public get command reports 60; the no-rewrite guarantee applies to a
+/// current-version file, so the seeded base carries the current schema version
+/// and reading it never rewrites the file.
 #[test]
 fn template_auto_refresh_stored_type_invalid_values_read_as_sixty_without_rewriting() {
     with_temp_home("template-auto-refresh-type-invalid", |_home| {
         for bad in [json!(-5), json!(10.5), json!("60"), json!(4_294_967_296u64)] {
-            seed_encrypted_config(&config_json_with_raw_template_interval(bad.clone()));
+            let mut fixture = config_json_with_raw_template_interval(bad.clone());
+            fixture["schema_version"] = json!(super::GATEWAY_CONFIG_SCHEMA_VERSION);
+            seed_encrypted_config(&fixture);
             let bytes_before =
                 fs::read(config_path().expect("config path")).expect("read raw config");
 
