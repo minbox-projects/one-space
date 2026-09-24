@@ -24,6 +24,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 mod templates;
+mod quota;
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -25262,4 +25263,3 @@ fn template_sync_command_delegates_to_apply_terminal_sync() {
         "ai_gateway_sync_provider_template must delegate to apply_terminal_sync: {body}"
     );
 }
-

@@ -1,6 +1,7 @@
 mod commands;
 mod forwarding;
 mod migration;
+mod quota;
 mod runtime_http;
 mod selection;
 mod storage;
@@ -11,6 +12,10 @@ mod types_config;
 mod usage_log;
 
 pub use commands::*;
+pub use quota::{
+    ai_gateway_provider_quota, ProviderQuota, QuotaCredits, QuotaWindowLimits, QuotaWindow,
+};
+pub(crate) use quota::__cmd__ai_gateway_provider_quota;
 pub use templates::*;
 pub use types_config::*;
 pub use usage_log::*;
