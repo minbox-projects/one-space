@@ -26457,3 +26457,227 @@ async fn relay_redacts_every_pool_key_value_from_error_text_and_rows() {
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
 }
+
+/// AC-008 / REQ-008 boundary: a provider with an empty key pool has no usable
+/// key, so the request must not attempt it with an empty credential and must
+/// terminate promptly with the standard `all_providers_unavailable` envelope
+/// instead of looping forever on the key-scoped failure of that empty
+/// credential. The 2-second timeout is the RED signal while the loop exists.
+#[tokio::test]
+async fn empty_key_pool_provider_is_unserviceable_without_loop() {
+    let _home = isolated_temp_home("key-pool-empty-no-loop");
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(401, json!({"error": {"message": "invalid api key"}}))
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Empty",
+            &upstream_url,
+            Vec::new(),
+            vec![json_mapping("local-model", "remote-model", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+    let mut attempts = Vec::new();
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        super::runtime_http::attempt_non_streaming(
+            &live_candidates("local-model"),
+            "/v1/chat/completions",
+            &body,
+            Some("local-model"),
+            &HashMap::new(),
+            false,
+            None,
+            &mut attempts,
+        ),
+    )
+    .await;
+    let response = match outcome {
+        Ok(response) => response,
+        Err(_) => panic!(
+            "an empty key pool must terminate promptly with the standard error; \
+             the relay looped on it instead"
+        ),
+    };
+
+    assert_eq!(
+        response.status, 502,
+        "an unserviceable provider must yield the standard 502"
+    );
+    let text = String::from_utf8_lossy(&response.body).into_owned();
+    let body_json = assert_standard_error_envelope(&text);
+    assert_eq!(
+        body_json["error"]["code"], "all_providers_unavailable",
+        "unexpected body: {text}"
+    );
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "a provider with an empty key pool must never be contacted"
+    );
+    assert!(
+        attempts.is_empty(),
+        "no upstream attempt may be recorded for an empty key pool"
+    );
+
+    let stored = super::storage::read_config().expect("read persisted state");
+    let p1 = stored.providers.iter().find(|p| p.id == "p1").unwrap();
+    assert!(
+        !p1.mappings[0].auto_disabled,
+        "the skipped provider's mapping row must stay enabled"
+    );
+    assert_eq!(
+        p1.mappings[0].consecutive_failures, 0,
+        "a key-scoped skip must never register mapping health"
+    );
+}
+
+/// AC-008 / REQ-008: an empty key pool is unserviceable even when the upstream
+/// would accept the call, because the relay must never send an empty
+/// credential; it takes the standard 502 path without contacting the provider.
+#[tokio::test]
+async fn empty_key_pool_provider_never_serves_even_when_upstream_accepts() {
+    let _home = isolated_temp_home("key-pool-empty-no-serve");
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(200, json!({"id": "served-with-empty-credential"}))
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Empty",
+            &upstream_url,
+            Vec::new(),
+            vec![json_mapping("local-model", "remote-model", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-model"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-model"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(
+        response.status, 502,
+        "an empty key pool must not serve even a willing upstream"
+    );
+    let text = String::from_utf8_lossy(&response.body).into_owned();
+    let body_json = assert_standard_error_envelope(&text);
+    assert_eq!(
+        body_json["error"]["code"], "all_providers_unavailable",
+        "unexpected body: {text}"
+    );
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "a provider with an empty key pool must never be contacted"
+    );
+    assert!(
+        attempts.is_empty(),
+        "no upstream attempt may be recorded for an empty key pool"
+    );
+
+    let stored = super::storage::read_config().expect("read persisted state");
+    let p1 = stored.providers.iter().find(|p| p.id == "p1").unwrap();
+    assert!(
+        !p1.mappings[0].auto_disabled,
+        "the skipped provider's mapping row must stay enabled"
+    );
+    assert_eq!(
+        p1.mappings[0].consecutive_failures, 0,
+        "a key-scoped skip must never register mapping health"
+    );
+}
+
+/// AC-008 / REQ-008: an empty key pool is skipped and the ordered fallback
+/// serves the same local model; the empty-pool provider is never contacted and
+/// its mapping rows/counters are untouched. The first upstream answers 200 so
+/// the current-code failure is "served by the wrong provider", not a timeout.
+#[tokio::test]
+async fn empty_key_pool_provider_falls_back_to_healthy_provider() {
+    let _home = isolated_temp_home("key-pool-empty-fallback");
+    let (p1_url, p1_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "served-by-p1"}))).await;
+    let (p2_url, p2_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "served-by-p2"}))).await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![
+            pool_provider(
+                "p1",
+                "Empty",
+                &p1_url,
+                Vec::new(),
+                vec![json_mapping("local-model", "remote-model", None)],
+            ),
+            pool_provider(
+                "p2",
+                "Healthy",
+                &p2_url,
+                vec![pool_key("key-b", "B", "sk-healthy", true)],
+                vec![json_mapping("local-model", "remote-model", None)],
+            ),
+        ],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-model"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-model"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 200, "the healthy fallback must serve the request");
+    let text = String::from_utf8_lossy(&response.body).into_owned();
+    assert!(
+        text.contains("served-by-p2"),
+        "the empty-pool provider must be skipped in favor of the healthy one: {text}"
+    );
+    assert!(
+        p1_log.lock().unwrap().is_empty(),
+        "a provider with an empty key pool must never be contacted"
+    );
+    assert_eq!(
+        p2_log.lock().unwrap().len(),
+        1,
+        "the healthy provider must be contacted exactly once"
+    );
+
+    let stored = super::storage::read_config().expect("read persisted state");
+    let p1 = stored.providers.iter().find(|p| p.id == "p1").unwrap();
+    assert!(
+        !p1.mappings[0].auto_disabled,
+        "the skipped provider's mapping row must stay enabled"
+    );
+    assert_eq!(
+        p1.mappings[0].consecutive_failures, 0,
+        "the skipped provider's mapping health must stay untouched"
+    );
+    assert_eq!(
+        p1.mappings[0].disabled_reason, None,
+        "the skipped provider's mapping must keep no disable reason"
+    );
+}
