@@ -521,7 +521,7 @@ describe("AiEnvironments provider preset editor", () => {
     fireEvent.change(openCodeApiKeyInput(), { target: { value: "user-entered-key" } });
 
     await act(async () => {
-      runtime.resolve({ ok: true, data: { options: { apiKey: "late-runtime-key" }, models: {} } });
+      runtime.resolve({ ok: true, data: { options: { apiKey: "SAFE_FIXTURE_late-runtime-key" }, models: {} } });
       await runtime.promise;
     });
     expect(openCodeApiKeyInput()).toHaveValue("user-entered-key");
@@ -546,11 +546,11 @@ describe("AiEnvironments provider preset editor", () => {
     fireEvent.change(openCodeApiKeyInput(), { target: { value: "" } });
 
     await act(async () => {
-      runtime.resolve({ ok: true, data: { options: { apiKey: "late-runtime-key" }, models: {} } });
+      runtime.resolve({ ok: true, data: { options: { apiKey: "SAFE_FIXTURE_late-runtime-key" }, models: {} } });
       await runtime.promise;
     });
     expect(openCodeApiKeyInput()).toHaveValue("");
-    expect(openCodeJsonEditor().value).not.toContain("late-runtime-key");
+    expect(openCodeJsonEditor().value).not.toContain("SAFE_FIXTURE_late-runtime-key");
   });
 
   it("preserves Base URL and model edits made while the runtime request is pending when saving", async () => {
@@ -577,7 +577,7 @@ describe("AiEnvironments provider preset editor", () => {
       runtime.resolve({
         ok: true,
         data: {
-          options: { apiKey: "late-runtime-key", baseURL: "https://late.example/v1" },
+          options: { apiKey: "SAFE_FIXTURE_late-runtime-key", baseURL: "https://late.example/v1" },
           models: { "old-model": { name: "Late Model" } },
         },
       });
@@ -621,7 +621,7 @@ describe("AiEnvironments provider preset editor", () => {
     await act(async () => {
       runtime.resolve({
         ok: true,
-        data: { options: { apiKey: "late-runtime-key" }, models: { late: { name: "Late" } } },
+        data: { options: { apiKey: "SAFE_FIXTURE_late-runtime-key" }, models: { late: { name: "Late" } } },
       });
       await runtime.promise;
     });
@@ -657,12 +657,12 @@ describe("AiEnvironments provider preset editor", () => {
     fireEvent.change(identifier, { target: { value: "ChangedProvider" } });
 
     await act(async () => {
-      runtime.resolve({ ok: true, data: { options: { apiKey: "old-provider-key" }, models: {} } });
+      runtime.resolve({ ok: true, data: { options: { apiKey: "SAFE_FIXTURE_old-provider-key" }, models: {} } });
       await runtime.promise;
     });
     expect(identifier).toHaveValue("ChangedProvider");
     expect(openCodeApiKeyInput()).toHaveValue("");
-    expect(openCodeJsonEditor().value).not.toContain("old-provider-key");
+    expect(openCodeJsonEditor().value).not.toContain("SAFE_FIXTURE_old-provider-key");
   });
 
   it("ignores a late response after switching to another OpenCode provider", async () => {
@@ -695,7 +695,7 @@ describe("AiEnvironments provider preset editor", () => {
     expect(openCodeApiKeyInput()).toHaveValue("provider-b-key");
 
     await act(async () => {
-      firstRuntime.resolve({ ok: true, data: { options: { apiKey: "provider-a-late-key" }, models: {} } });
+      firstRuntime.resolve({ ok: true, data: { options: { apiKey: "SAFE_FIXTURE_provider-a-late-key" }, models: {} } });
       await firstRuntime.promise;
     });
     expect(openCodeApiKeyInput()).toHaveValue("provider-b-key");

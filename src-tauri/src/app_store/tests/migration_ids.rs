@@ -32,7 +32,7 @@ fn auto_import_system_provider_merges_without_reducing_existing_service_provider
         name: "Imported Antigravity Config".to_string(),
         tool: "antigravity".to_string(),
         code: Some("default-antigravity".to_string()),
-        api_key: "system-antigravity-key".to_string(),
+        api_key: "SAFE_FIXTURE_system-antigravity-key".to_string(),
         base_url: Some("https://antigravity.example.com".to_string()),
         ..ServiceProviderRecord::default()
     };

@@ -371,14 +371,14 @@ describe("ServiceProviderDetail OpenCode model form", () => {
       configurable: true,
       value: { writeText },
     });
-    renderOpenCode({ provider: { ...openCodeProvider, api_key: "complete-runtime-key" } });
+    renderOpenCode({ provider: { ...openCodeProvider, api_key: "SAFE_FIXTURE_complete-runtime-key" } });
 
-    expect(screen.getByDisplayValue("complete-runtime-key")).toHaveAttribute("type", "text");
+    expect(screen.getByDisplayValue("SAFE_FIXTURE_complete-runtime-key")).toHaveAttribute("type", "text");
     const copyButton = screen.getByRole("button", { name: /Copy API Key|复制 API Key/ });
     copyButton.focus();
     await user.keyboard("{Enter}");
 
-    expect(writeText).toHaveBeenCalledWith("complete-runtime-key");
+    expect(writeText).toHaveBeenCalledWith("SAFE_FIXTURE_complete-runtime-key");
     expect(await screen.findByRole("button", { name: /API Key copied|API Key 已复制/ })).toBeInTheDocument();
   });
 

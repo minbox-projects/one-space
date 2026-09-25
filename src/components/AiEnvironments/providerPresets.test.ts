@@ -163,7 +163,7 @@ describe("createProviderCopyDraft", () => {
         ],
         unknown: {
           passwordHint: "also-sensitive",
-          api_key: "snake-case-secret",
+          api_key: "SAFE_FIXTURE_snake-case-secret",
           nestedArray: [{ AuTh: "mixed-case-secret", region: "ap-south-1" }],
           transport: "fetch",
         },
@@ -203,7 +203,7 @@ describe("createProviderCopyDraft", () => {
     expect(JSON.stringify(draft)).not.toContain("access-token");
     expect(JSON.stringify(draft)).not.toContain("client-secret");
     expect(JSON.stringify(draft)).not.toContain("model-secret");
-    expect(JSON.stringify(draft)).not.toContain("snake-case-secret");
+    expect(JSON.stringify(draft)).not.toContain("SAFE_FIXTURE_snake-case-secret");
     expect(JSON.stringify(draft)).not.toContain("mixed-case-secret");
   });
 
