@@ -27,6 +27,7 @@ mod templates;
 mod quota;
 mod go_usage;
 mod migration;
+mod routing_hardening;
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
