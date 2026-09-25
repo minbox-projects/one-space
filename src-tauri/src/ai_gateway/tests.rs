@@ -25505,9 +25505,9 @@ async fn quota_429_rotates_without_leaking_key_value() {
 #[tokio::test]
 async fn transient_and_transport_failures_never_mark_or_rotate_keys() {
     for (name, reply_spec, expected_status) in [
-        ("transient-429", Some((429u16, "temporarily unavailable")), 429u16),
-        ("server-5xx", Some((500, "down")), 500),
-        ("not-found-404", Some((404, "missing")), 404),
+        ("transient-429", Some((429u16, "temporarily unavailable")), 502u16),
+        ("server-5xx", Some((500, "down")), 502),
+        ("not-found-404", Some((404, "missing")), 502),
         ("client-4xx", Some((422, "bad request")), 422),
         ("network-drop", None, 502),
     ] {
@@ -25761,53 +25761,41 @@ async fn quota_probe_after_cooldown_uses_the_oldest_marked_key() {
     drop(home);
 }
 
-/// AC-006 boundary: at 59 seconds a quota-marked key is still inside the
-/// cooldown, so the provider is skipped and never probed.
-#[tokio::test]
-async fn quota_probe_is_not_attempted_before_the_60_second_boundary() {
-    let home = temp_home("key-pool-probe-59s");
-    super::selection::reset_weighted_scheduler_for_test();
-    let port = free_port().await;
-    let (upstream_url, log) =
-        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-be-called"}))).await;
-
-    let marked_at = super::types_config::now_ts().saturating_sub(59);
-    write_raw_gateway_config(&pool_config(
-        port,
-        vec![pool_provider(
-            "p1",
-            "Provider One",
-            &upstream_url,
-            vec![pool_key_marked(
-                "key-a",
-                "A",
-                "sk-cooldown",
-                true,
-                "quota",
-                marked_at,
-                "weekly limit",
-            )],
-            vec![json_mapping("local-model", "remote-model", None)],
+/// AC-006 boundary / REQ-006: the explicit-`now` key-probe finder admits a
+/// quota-marked key only once the 60-second cooldown has fully elapsed — 59
+/// seconds yields no candidate and exactly 60 seconds yields the candidate — so
+/// the boundary is deterministic instead of wall-clock dependent. The
+/// relay-level end-to-end probe behavior stays covered by
+/// `quota_probe_after_cooldown_uses_the_oldest_marked_key`.
+#[test]
+fn quota_probe_is_not_attempted_before_the_60_second_boundary() {
+    let marked_at = 1_700_000_000u64;
+    let provider = typed_pool_provider(pool_provider(
+        "p1",
+        "Provider One",
+        "https://api.example.com/v1",
+        vec![pool_key_marked(
+            "key-a",
+            "A",
+            "SAFE_FIXTURE_cooldown_value",
+            true,
+            "quota",
+            marked_at,
+            "weekly limit",
         )],
+        vec![json_mapping("local-model", "remote-model", None)],
     ));
 
-    super::runtime_http::start_server(None).await.unwrap();
-    let (status, _content_type, text) = call_gateway(
-        port,
-        "POST",
-        "/v1/chat/completions",
-        &[("authorization", "Bearer local-key")],
-        Some(json!({"model": "local-model"})),
-    )
-    .await;
-    assert_eq!(status, 502, "a 59-second-old mark must not be probed: {text}");
     assert!(
-        log.lock().unwrap().is_empty(),
-        "no upstream attempt may happen before the 60-second boundary"
+        super::selection::find_key_probe_candidate(&provider, marked_at + 59).is_none(),
+        "a key 59 seconds into the cooldown must not be a probe candidate"
     );
-
-    super::runtime_http::stop_server().await.unwrap();
-    drop(home);
+    let eligible = super::selection::find_key_probe_candidate(&provider, marked_at + 60)
+        .expect("a key at exactly 60 seconds must become a probe candidate");
+    assert_eq!(
+        eligible.id, "key-a",
+        "the eligible candidate must be the quota-marked key"
+    );
 }
 
 /// REQ-007: creating a provider from a template stores its initial key as one
@@ -26099,4 +26087,373 @@ fn upsert_allows_an_empty_key_list() {
             "an empty key list must persist as an empty array"
         );
     });
+}
+
+// ---------------------------------------------------------------------------
+// Plan 20260924-ai-gateway-key-pool Step 2 completion coverage.
+//
+// The three Step 1 coverage items that needed the landed Step 2 API:
+// `ai_gateway_reenable_provider_key`, whole-pool error redaction and the
+// explicit-`now` key-probe boundary. Every fixture stays on the eight-field raw
+// key-pool contract and every assertion goes through a module-visible boundary
+// (`commands::ai_gateway_reenable_provider_key`,
+// `selection::find_key_probe_candidate`, or the mock-upstream relay).
+// ---------------------------------------------------------------------------
+
+/// AC-007 / REQ-006 / REQ-007: `ai_gateway_reenable_provider_key` clears every
+/// runtime mark of the named key but never rewrites the user's `enabled=false`
+/// intent, and the cleared state persists.
+#[test]
+fn reenable_provider_key_clears_runtime_state_without_enabling_a_disabled_key() {
+    with_temp_home("key-pool-reenable-disabled", |_home| {
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider One",
+                "https://api.example.com/v1",
+                vec![pool_key_marked(
+                    "key-a",
+                    "A",
+                    "SAFE_FIXTURE_disabled_pool_value",
+                    false,
+                    "authentication",
+                    1_700_000_000,
+                    "HTTP 401 denied",
+                )],
+                vec![],
+            )],
+        ));
+
+        let after = super::commands::ai_gateway_reenable_provider_key(
+            "p1".to_string(),
+            "key-a".to_string(),
+        )
+        .expect("re-enabling a known key must succeed");
+        let key = after
+            .providers
+            .iter()
+            .find(|provider| provider.id == "p1")
+            .expect("p1 must survive")
+            .keys
+            .iter()
+            .find(|key| key.id == "key-a")
+            .expect("key-a must survive");
+        assert!(!key.enabled, "a disabled key must never be re-enabled");
+        assert!(!key.auto_marked, "the runtime mark must be cleared");
+        assert_eq!(key.failure_kind, None, "the failure kind must be cleared");
+        assert_eq!(key.marked_at, None, "the marking time must be cleared");
+        assert_eq!(key.reason, None, "the failure reason must be cleared");
+
+        let on_disk = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+        assert_eq!(on_disk["enabled"], false, "the disabled intent must persist");
+        assert_eq!(
+            on_disk["auto_marked"], false,
+            "the runtime mark must be cleared on disk: {on_disk}"
+        );
+        assert_eq!(on_disk["failure_kind"], Value::Null);
+        assert_eq!(on_disk["marked_at"], Value::Null);
+        assert_eq!(on_disk["reason"], Value::Null);
+    });
+}
+
+/// AC-007 / REQ-006 / REQ-007: an auth-marked enabled key keeps its provider
+/// unavailable for the current request, and after
+/// `ai_gateway_reenable_provider_key` clears the mark the very next request
+/// serves through the real relay and contacts the upstream with that key.
+#[tokio::test]
+async fn reenable_provider_key_restores_an_auth_marked_key_for_the_next_request() {
+    let home = temp_home("key-pool-reenable-serves");
+    super::selection::reset_weighted_scheduler_for_test();
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|captured| match auth_header_of(captured) {
+        Some("Bearer SAFE_FIXTURE_recoverable_key_0001") => {
+            MockReply::Json(200, json!({"id": "served-after-reenable"}))
+        }
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+
+    let marked_at = super::types_config::now_ts().saturating_sub(10_000);
+    write_raw_gateway_config(&pool_config(
+        port,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![pool_key_marked(
+                "key-a",
+                "A",
+                "SAFE_FIXTURE_recoverable_key_0001",
+                true,
+                "authentication",
+                marked_at,
+                "HTTP 401 denied",
+            )],
+            vec![json_mapping("local-model", "remote-model", None)],
+        )],
+    ));
+
+    super::runtime_http::start_server(None).await.unwrap();
+
+    // While auth-marked, the only key is unusable: the relay answers the
+    // standard unavailable envelope and never contacts the upstream.
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-model"})),
+    )
+    .await;
+    assert_eq!(
+        status, 502,
+        "an auth-marked key must keep the provider unavailable: {text}"
+    );
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "an auth-marked key must never be attempted before a manual re-enable"
+    );
+
+    // The manual re-enable clears the runtime state of a still-enabled key.
+    let after = super::commands::ai_gateway_reenable_provider_key(
+        "p1".to_string(),
+        "key-a".to_string(),
+    )
+    .expect("re-enabling a known key must succeed");
+    let key = after
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p1")
+        .expect("p1 must survive")
+        .keys
+        .iter()
+        .find(|key| key.id == "key-a")
+        .expect("key-a must survive");
+    assert!(key.enabled, "the user's enabled intent must be preserved");
+    assert!(!key.auto_marked, "the runtime mark must be cleared");
+    assert_eq!(key.failure_kind, None);
+
+    // The next request serves through the recovered key.
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-model"})),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "the recovered key must serve the next request: {text}"
+    );
+    assert!(
+        text.contains("served-after-reenable"),
+        "the upstream response must reach the client: {text}"
+    );
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        1,
+        "the recovered key must contact the upstream exactly once: {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(
+        auth_header_of(&captured[0]),
+        Some("Bearer SAFE_FIXTURE_recoverable_key_0001"),
+        "the recovered key must be the one sent upstream"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-007 / REQ-006: an unknown provider id is an actionable error and writes
+/// nothing to the configuration file.
+#[test]
+fn reenable_provider_key_unknown_provider_errors_without_writing() {
+    with_temp_home("key-pool-reenable-unknown-provider", |_home| {
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider One",
+                "https://api.example.com/v1",
+                vec![pool_key("key-a", "A", "SAFE_FIXTURE_pool_value_one", true)],
+                vec![],
+            )],
+        ));
+        let config_file = config_path().expect("config path");
+        let before = fs::read(&config_file).expect("read config bytes before");
+
+        let error = super::commands::ai_gateway_reenable_provider_key(
+            "ghost-provider".to_string(),
+            "key-a".to_string(),
+        )
+        .expect_err("an unknown provider must be an actionable error");
+        assert!(
+            error.contains("ghost-provider"),
+            "the error must name the unknown provider: {error}"
+        );
+
+        let after = fs::read(&config_file).expect("read config bytes after");
+        assert_eq!(
+            after, before,
+            "an unknown provider must not rewrite the configuration"
+        );
+    });
+}
+
+/// AC-007 / REQ-006: an unknown key id is an actionable error naming both the
+/// key and the provider, and writes nothing to the configuration file.
+#[test]
+fn reenable_provider_key_unknown_key_errors_without_writing() {
+    with_temp_home("key-pool-reenable-unknown-key", |_home| {
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider One",
+                "https://api.example.com/v1",
+                vec![pool_key("key-a", "A", "SAFE_FIXTURE_pool_value_one", true)],
+                vec![],
+            )],
+        ));
+        let config_file = config_path().expect("config path");
+        let before = fs::read(&config_file).expect("read config bytes before");
+
+        let error = super::commands::ai_gateway_reenable_provider_key(
+            "p1".to_string(),
+            "ghost-key".to_string(),
+        )
+        .expect_err("an unknown key id must be an actionable error");
+        assert!(
+            error.contains("ghost-key"),
+            "the error must name the unknown key: {error}"
+        );
+        assert!(
+            error.contains("p1"),
+            "the error must name the provider: {error}"
+        );
+
+        let after = fs::read(&config_file).expect("read config bytes after");
+        assert_eq!(
+            after, before,
+            "an unknown key must not rewrite the configuration"
+        );
+    });
+}
+
+/// AC-011 / REQ-011: an upstream failure text that echoes every pool key value
+/// is redacted against the whole pool — the first and the second key both
+/// disappear from the returned error body and from the stored request-log
+/// `error_message` — never only the first key.
+#[tokio::test]
+async fn relay_redacts_every_pool_key_value_from_error_text_and_rows() {
+    const FIRST_KEY: &str = "SAFE_FIXTURE_pool_key_one_0001";
+    const SECOND_KEY: &str = "SAFE_FIXTURE_pool_key_two_0002";
+
+    let home = temp_home("key-pool-multi-key-redaction");
+    super::selection::reset_weighted_scheduler_for_test();
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(move |_captured| {
+        MockReply::Json(
+            500,
+            json!({"error": {
+                "message": format!("upstream echoed {FIRST_KEY} and {SECOND_KEY} back")
+            }}),
+        )
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        port,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-one", "One", FIRST_KEY, true),
+                pool_key("key-two", "Two", SECOND_KEY, true),
+            ],
+            vec![json_mapping("local-model", "remote-model", None)],
+        )],
+    ));
+
+    let before_rows = default_usage_store()
+        .all_records()
+        .unwrap_or_default()
+        .len();
+    super::runtime_http::start_server(None).await.unwrap();
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-model"})),
+    )
+    .await;
+
+    assert_eq!(
+        status, 502,
+        "the exhausted provider must answer with the standard envelope: {text}"
+    );
+    assert!(
+        text.contains("[redacted]"),
+        "the returned body must carry the redaction marker: {text}"
+    );
+    assert!(
+        !text.contains(FIRST_KEY),
+        "the returned body must never contain the first key: {text}"
+    );
+    assert!(
+        !text.contains(SECOND_KEY),
+        "the returned body must never contain the second key: {text}"
+    );
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        1,
+        "the first usable key is attempted exactly once: {}",
+        captured_summary(&captured)
+    );
+    let expected_auth = format!("Bearer {FIRST_KEY}");
+    assert_eq!(
+        auth_header_of(&captured[0]),
+        Some(expected_auth.as_str()),
+        "the relay must attempt the first pool key"
+    );
+
+    let records = wait_for_usage_logs((before_rows + 1) as u32).await;
+    let fresh = records.len() - before_rows;
+    assert_eq!(
+        fresh, 1,
+        "the failed request must write exactly one terminal row"
+    );
+    let mut saw_marker = false;
+    for record in records.iter().take(fresh) {
+        let message = record.error_message.as_deref().unwrap_or("");
+        assert!(
+            !message.contains(FIRST_KEY),
+            "the stored error_message must never contain the first key: {message}"
+        );
+        assert!(
+            !message.contains(SECOND_KEY),
+            "the stored error_message must never contain the second key: {message}"
+        );
+        saw_marker |= message.contains("[redacted]");
+    }
+    assert!(
+        saw_marker,
+        "the stored error_message must show the whole-pool redaction"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
 }
