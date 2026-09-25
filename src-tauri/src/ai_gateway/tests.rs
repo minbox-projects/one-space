@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -21103,6 +21103,170 @@ fn cachehit_storage_migration_adds_semantics_columns_idempotently_and_preserves_
     );
     assert_eq!(second.count().expect("count after second open"), 2);
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// Seed a usage-log database in the previous release's shape: the attempt
+/// columns (`error_message`, `terminal`, `reasoning_effort`) exist, but the
+/// additive usage-accounting columns (`usage_semantics`, `usage_present`,
+/// `cache_accounting_valid`) do not. The table's indexes are included so a
+/// concurrent open's `execute_batch(SCHEMA)` is a schema no-op and both
+/// connections reach the migration's check-then-`ALTER` window together.
+fn seed_pre_accounting_usage_db(path: &Path) {
+    let connection = rusqlite::Connection::open(path).expect("create pre-accounting db");
+    connection
+        .execute_batch(
+            "CREATE TABLE usage_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_ms INTEGER NOT NULL,
+                local_model TEXT NOT NULL,
+                upstream_model TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                result TEXT NOT NULL,
+                status INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL,
+                cache_write_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                amount REAL,
+                duration_ms INTEGER NOT NULL,
+                error_message TEXT,
+                terminal INTEGER NOT NULL DEFAULT 1,
+                reasoning_effort TEXT
+            );
+            CREATE INDEX idx_usage_logs_timestamp ON usage_logs(timestamp_ms);
+            CREATE INDEX idx_usage_logs_local_model ON usage_logs(local_model);",
+        )
+        .expect("create the pre-accounting schema");
+    connection
+        .execute(
+            "INSERT INTO usage_logs (
+                timestamp_ms, local_model, upstream_model, provider_id, provider_name,
+                result, status, input_tokens, cache_read_tokens, cache_write_tokens,
+                output_tokens, total_tokens, amount, duration_ms, error_message,
+                terminal, reasoning_effort
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, NULL)",
+            rusqlite::params![
+                rfc3339_millis("2026-09-15T10:00:00+08:00"),
+                "local-legacy",
+                "remote-legacy",
+                "p-legacy",
+                "Legacy Provider",
+                "success",
+                200i64,
+                10i64,
+                0i64,
+                0i64,
+                5i64,
+                15i64,
+                Some(0.5f64),
+                5i64,
+            ],
+        )
+        .expect("insert the pre-accounting success row");
+}
+
+/// Specification: two connections opening the same pre-accounting usage
+/// database concurrently must each migrate it to the current schema without a
+/// `duplicate column name` error. The migration reads `PRAGMA table_info` and
+/// then runs `ALTER TABLE ... ADD COLUMN`; a connection that read the old
+/// schema before another committed an `ALTER` would otherwise fail. Repeats
+/// with a fresh database per iteration because both connections must observe
+/// the legacy schema before either commits its first `ALTER`.
+#[test]
+fn concurrent_usage_log_store_opens_migrate_one_database_without_error() {
+    const ATTEMPTS: u32 = 40;
+    const OPENERS: usize = 2;
+    for attempt in 0..ATTEMPTS {
+        let dir = make_temp_dir(&format!("concurrent-usage-migration-{attempt}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let db_path = dir.join("ai_gateway_usage.db");
+        seed_pre_accounting_usage_db(&db_path);
+
+        let store = UsageLogStore::at(&db_path);
+        let barrier = Arc::new(Barrier::new(OPENERS));
+        let handles: Vec<_> = (0..OPENERS)
+            .map(|_| {
+                let store = store.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.count()
+                })
+            })
+            .collect();
+
+        let mut errors = Vec::new();
+        for handle in handles {
+            match handle.join().expect("opener thread must not panic") {
+                Ok(_) => {}
+                Err(error) => errors.push(error),
+            }
+        }
+        assert!(
+            errors.is_empty(),
+            "attempt {attempt}: concurrent opens of one legacy database must all migrate without error, got {errors:?}"
+        );
+
+        let columns = usage_log_table_columns(&db_path);
+        for required in ["usage_semantics", "usage_present", "cache_accounting_valid"] {
+            assert_eq!(
+                columns.iter().filter(|name| name.as_str() == required).count(),
+                1,
+                "attempt {attempt}: column {required} must be added exactly once: {columns:?}"
+            );
+        }
+        let distinct: HashSet<&String> = columns.iter().collect();
+        assert_eq!(
+            columns.len(),
+            distinct.len(),
+            "attempt {attempt}: concurrent migration must not duplicate columns: {columns:?}"
+        );
+
+        // The store stays usable after the concurrent opens: an append and a
+        // query both succeed and the migrated legacy row is retained.
+        store
+            .append(
+                &sample_record(
+                    rfc3339_millis("2026-09-15T11:00:00+08:00"),
+                    "local-new",
+                    "remote-new",
+                    "p-new",
+                    "New Provider",
+                    UsageResult::Success,
+                    Some(1.0),
+                    tokens(10, 0, 0, 5),
+                ),
+                365,
+            )
+            .expect("append after concurrent migration");
+        let page = store
+            .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+            .expect("query after concurrent migration");
+        assert_eq!(
+            page.total, 2,
+            "attempt {attempt}: the legacy row plus the appended row must both be present"
+        );
+        assert!(
+            page.records
+                .iter()
+                .any(|record| record.local_model == "local-legacy"),
+            "attempt {attempt}: the migrated legacy row must be retained"
+        );
+
+        let legacy_semantics: String = rusqlite::Connection::open(&db_path)
+            .expect("reopen migrated db")
+            .query_row(
+                "SELECT usage_semantics FROM usage_logs WHERE local_model = 'local-legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read the migrated legacy row semantics");
+        assert_eq!(legacy_semantics, "legacy");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 /// AC-007 / REQ-004 table: legacy success, new success without usage,
