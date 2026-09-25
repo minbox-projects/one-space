@@ -1556,15 +1556,34 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
     let mut _probe_guard: Option<ProbeGuard> = None;
     if let Some(candidate) = probe {
         if let Some(guard) = try_acquire_probe_guard(&candidate.target) {
+            // Hold the single-flight guard for the whole probe, including every
+            // in-probe key rotation below.
+            _probe_guard = Some(guard);
             let mut provider = candidate.provider.clone();
             sync_key_runtime_marks(&mut provider);
-            if let Some(selected) = select_attempt_key(&provider, now_ts(), key_probe_used) {
+            let model = candidate.upstream_model.as_str();
+            let mut last_key_failure: Option<String> = None;
+            loop {
+                let Some(selected) = select_attempt_key(&provider, now_ts(), key_probe_used) else {
+                    // No usable key remains after consuming the key-scoped
+                    // failures: re-arm the probe cooldown through the existing
+                    // probe-failure path and fall through to the exhausted path.
+                    if let Some(reason) = last_key_failure.take() {
+                        health.record_probe_failure(&candidate.target, now_ts(), false, &reason);
+                        record_provider_failure(&mut failures, &provider.name, reason);
+                        last_capture = Some(ForwardCapture {
+                            provider_id: provider.id.clone(),
+                            provider_name: provider.name.clone(),
+                            upstream_model: candidate.upstream_model.clone(),
+                            ..Default::default()
+                        });
+                    }
+                    break;
+                };
                 if selected.probe {
                     key_probe_used = true;
                 }
-                _probe_guard = Some(guard);
                 provider.attempt_key = selected.value.clone();
-                let model = candidate.upstream_model.as_str();
                 let (outcome, log) =
                     attempt_candidate(&provider, path, body, model, client_headers).await;
                 attempts.push(log);
@@ -1600,6 +1619,8 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                         ..
                     } => {
                         if selected.probe {
+                            // A key selected as the quota probe is never rotated:
+                            // its failure re-arms the probe and ends the probe.
                             settle_key_probe_failure(
                                 &mut provider,
                                 &selected,
@@ -1607,6 +1628,31 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                                 &reason,
                                 now_ts(),
                             );
+                            health.record_probe_failure(
+                                &candidate.target,
+                                now_ts(),
+                                transport,
+                                &reason,
+                            );
+                            record_provider_failure(&mut failures, &provider.name, reason);
+                            last_capture = Some(ForwardCapture {
+                                provider_id: provider.id.clone(),
+                                provider_name: provider.name.clone(),
+                                upstream_model: candidate.upstream_model.clone(),
+                                ..Default::default()
+                            });
+                            break;
+                        }
+                        if let Some(kind) = key_failure {
+                            // A normally selected usable key failed auth/quota
+                            // inside the probe: mark it and continue the same
+                            // probe on the provider's next usable key, without
+                            // registering mapping health or consuming the retry
+                            // budget.
+                            let at = now_ts();
+                            settle_key_failure(&mut provider, &selected, kind, &reason, at);
+                            last_key_failure = Some(reason);
+                            continue;
                         }
                         health.record_probe_failure(&candidate.target, now_ts(), transport, &reason);
                         record_provider_failure(&mut failures, &provider.name, reason);
@@ -1618,6 +1664,7 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                         });
                         // The probe is never requeued; fall through to the existing
                         // exhausted path so the 502 envelope names the provider.
+                        break;
                     }
                 }
             }
@@ -1696,7 +1743,11 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     // The optional half-open probe is taken at most once, after every healthy
     // candidate and bounded retry has failed. `_probe_guard` holds the
     // single-flight guard for the whole probe and releases it on return.
-    let mut pending_probe = probe;
+    let mut pending_probe: Option<ProbeCandidate> = probe.cloned();
+    // Last key-scoped failure reason of an in-probe rotation, used to re-arm the
+    // probe cooldown through the existing probe-failure path when no usable key
+    // remains.
+    let mut probe_key_failure_reason: Option<String> = None;
     let mut _probe_guard: Option<ProbeGuard> = None;
     loop {
         let (mut candidate, retry_index, probe_target, selected) = if let Some(mut provider) =
@@ -1732,32 +1783,39 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 continue;
             };
             (candidate, index, None, selected)
-        } else if let Some(candidate) = pending_probe.take() {
-            match try_acquire_probe_guard(&candidate.target) {
-                Some(guard) => {
-                    let mut provider = candidate.provider.clone();
-                    sync_key_runtime_marks(&mut provider);
-                    let Some(selected) = select_attempt_key(&provider, now_ts(), key_probe_used)
-                    else {
-                        break;
-                    };
-                    _probe_guard = Some(guard);
-                    (
-                        RetryCandidate {
-                            provider,
-                            model: candidate.upstream_model.clone(),
-                            attempts: 0,
-                            ready_at: None,
-                        },
-                        retries.len(),
-                        Some(candidate.target.clone()),
-                        selected,
-                    )
+        } else if let Some(probe_candidate) = pending_probe.take() {
+            // The single-flight guard is acquired once and then held across
+            // every in-probe key rotation, so a re-entry must not re-acquire it.
+            if _probe_guard.is_none() {
+                match try_acquire_probe_guard(&probe_candidate.target) {
+                    Some(guard) => _probe_guard = Some(guard),
+                    // Another request already probes this mapping key: continue
+                    // to the exhausted path without an attempt.
+                    None => break,
                 }
-                // Another request already probes this mapping key: continue to
-                // the exhausted path without an attempt.
-                None => break,
             }
+            let mut provider = probe_candidate.provider.clone();
+            sync_key_runtime_marks(&mut provider);
+            let Some(selected) = select_attempt_key(&provider, now_ts(), key_probe_used) else {
+                // No usable key remains after consuming the key-scoped failures:
+                // re-arm the probe cooldown and fall through to the exhausted path.
+                if let Some(reason) = probe_key_failure_reason.take() {
+                    health.record_probe_failure(&probe_candidate.target, now_ts(), false, &reason);
+                    record_provider_failure(&mut failures, &provider.name, reason);
+                }
+                break;
+            };
+            (
+                RetryCandidate {
+                    provider,
+                    model: probe_candidate.upstream_model.clone(),
+                    attempts: 0,
+                    ready_at: None,
+                },
+                retries.len(),
+                Some(probe_candidate.target.clone()),
+                selected,
+            )
         } else {
             break;
         };
@@ -2083,6 +2141,31 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             }
         };
         if let Some(target) = &probe_target {
+            if !selected.probe {
+                if let Some(kind) = key_failure {
+                    // A normally selected usable key failed auth/quota before the
+                    // first byte inside the probe: mark it and continue the same
+                    // probe on the provider's next usable key, without registering
+                    // mapping health or consuming the retry budget.
+                    let at = now_ts();
+                    persist_key_runtime_state(&provider.id, &selected.id, |key| {
+                        mark_key_failure(key, kind, &reason, at);
+                    });
+                    let mut next_provider = candidate.provider.clone();
+                    if let Some(key) = next_provider.keys.iter_mut().find(|key| key.id == selected.id)
+                    {
+                        mark_key_failure(key, kind, &reason, at);
+                    }
+                    record_provider_failure(&mut failures, &provider.name, reason.clone());
+                    probe_key_failure_reason = Some(reason);
+                    pending_probe = Some(ProbeCandidate {
+                        provider: next_provider,
+                        target: target.clone(),
+                        upstream_model: candidate.model.clone(),
+                    });
+                    continue;
+                }
+            }
             // A probe that failed before its first byte re-arms its cooldown,
             // names the provider in the all-unavailable message and is never
             // queued for retry or backoff (REQ-001/AC-002).
