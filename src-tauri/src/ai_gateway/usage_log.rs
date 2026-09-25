@@ -1006,11 +1006,27 @@ fn bind(
     (where_sql, params)
 }
 
+/// Run one additive `ALTER TABLE ... ADD COLUMN`, treating a concurrent
+/// `duplicate column name` failure as success: two openers can both observe the
+/// column as missing and race the same ALTER, and the first to commit wins. Every
+/// other error is returned unchanged.
+fn add_usage_log_column(connection: &Connection, sql: &str) -> Result<(), String> {
+    match connection.execute(sql, []) {
+        Ok(_) => Ok(()),
+        Err(error) if error.to_string().to_ascii_lowercase().contains("duplicate column name") => {
+            Ok(())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// Add the attempt/terminal columns to a database written before this change
 /// (REQ-005). The `PRAGMA table_info` inspection makes the migration idempotent:
 /// present columns are left alone, existing rows default to terminal with no
-/// message. A failure is returned so the caller swallows it like any other
-/// log-write error, and a later open retries the migration.
+/// message. A concurrent opener may still win the race between the inspection
+/// and an `ALTER TABLE`, so a `duplicate column name` failure from any additive
+/// statement is accepted as success; any other failure is returned so the caller
+/// swallows it like any other log-write error and a later open retries.
 fn migrate_usage_logs(connection: &Connection) -> Result<(), String> {
     let mut statement = connection
         .prepare("PRAGMA table_info(usage_logs)")
@@ -1023,50 +1039,41 @@ fn migrate_usage_logs(connection: &Connection) -> Result<(), String> {
     drop(statement);
     let has_column = |name: &str| columns.iter().any(|column| column == name);
     if !has_column("error_message") {
-        connection
-            .execute("ALTER TABLE usage_logs ADD COLUMN error_message TEXT", [])
-            .map_err(|error| error.to_string())?;
+        add_usage_log_column(connection, "ALTER TABLE usage_logs ADD COLUMN error_message TEXT")?;
     }
     if !has_column("terminal") {
-        connection
-            .execute(
-                "ALTER TABLE usage_logs ADD COLUMN terminal INTEGER NOT NULL DEFAULT 1",
-                [],
-            )
-            .map_err(|error| error.to_string())?;
+        add_usage_log_column(
+            connection,
+            "ALTER TABLE usage_logs ADD COLUMN terminal INTEGER NOT NULL DEFAULT 1",
+        )?;
     }
     if !has_column("reasoning_effort") {
-        connection
-            .execute("ALTER TABLE usage_logs ADD COLUMN reasoning_effort TEXT", [])
-            .map_err(|error| error.to_string())?;
+        add_usage_log_column(
+            connection,
+            "ALTER TABLE usage_logs ADD COLUMN reasoning_effort TEXT",
+        )?;
     }
     // Additive usage-accounting columns (REQ-004). Pre-existing rows default to
     // legacy semantics with no present/valid usage and stay excluded from the
     // new cache numerator/denominator; original tokens, totals, amounts and log
     // fields are never rewritten.
     if !has_column("usage_semantics") {
-        connection
-            .execute(
-                "ALTER TABLE usage_logs ADD COLUMN usage_semantics TEXT NOT NULL DEFAULT 'legacy'",
-                [],
-            )
-            .map_err(|error| error.to_string())?;
+        add_usage_log_column(
+            connection,
+            "ALTER TABLE usage_logs ADD COLUMN usage_semantics TEXT NOT NULL DEFAULT 'legacy'",
+        )?;
     }
     if !has_column("usage_present") {
-        connection
-            .execute(
-                "ALTER TABLE usage_logs ADD COLUMN usage_present INTEGER NOT NULL DEFAULT 0",
-                [],
-            )
-            .map_err(|error| error.to_string())?;
+        add_usage_log_column(
+            connection,
+            "ALTER TABLE usage_logs ADD COLUMN usage_present INTEGER NOT NULL DEFAULT 0",
+        )?;
     }
     if !has_column("cache_accounting_valid") {
-        connection
-            .execute(
-                "ALTER TABLE usage_logs ADD COLUMN cache_accounting_valid INTEGER NOT NULL DEFAULT 0",
-                [],
-            )
-            .map_err(|error| error.to_string())?;
+        add_usage_log_column(
+            connection,
+            "ALTER TABLE usage_logs ADD COLUMN cache_accounting_valid INTEGER NOT NULL DEFAULT 0",
+        )?;
     }
     Ok(())
 }
