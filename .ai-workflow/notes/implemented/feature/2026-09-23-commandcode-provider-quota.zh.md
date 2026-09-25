@@ -12,9 +12,9 @@ CommandCode 服务商卡片需要展示账户额度与已报告的使用窗口�
 
 仅当前端谓词 `isCommandCodeProvider` 接受该服务商时，才在映射摘要下方渲染 `ProviderQuotaBlock`。该谓词解析 `base_url` 并以不区分大小写的方式匹配主机名 `api.commandcode.ai`；路径和端口不影响匹配。后端在发起请求前通过 `resolve_quota_request` 再次执行同一主机名规则，因此前后端检测与后端守卫共享相同的主机边界。
 
-唯一数据源是 `GET https://api.commandcode.ai/alpha/billing/credits`。`ai_gateway_provider_quota` 命令使用该服务商保存的 API Key，在 `Authorization: Bearer` 请求头中发送，并设置 15 秒超时。原始 Key 还仅由每服务商五分钟缓存保留在进程内存中，唯一用途是在 Key 或基础 URL 变化时使快照失效。该 Key 绝不持久化、记录日志、出现在错误文本或返回字段中。前端封装 `aiGatewayProviderQuota` 位于 `src/lib/aiGateway.ts`。
+唯一数据源是 `GET https://api.commandcode.ai/alpha/billing/credits`。`ai_gateway_provider_quota` 命令使用该服务商固定的源 key——按列表顺序第一个启用的 key，全部禁用时取第一个；密钥池为空时沿用既有 no-key 错误——在 `Authorization: Bearer` 请求头中发送，并设置 15 秒超时。原始 Key 还仅由每服务商五分钟缓存保留在进程内存中，唯一用途是在该 key 的值或基础 URL 变化时使快照失效。该 Key 绝不持久化、记录日志、出现在错误文本或返回字段中。前端封装 `aiGatewayProviderQuota` 位于 `src/lib/aiGateway.ts`。
 
-成功快照按服务商缓存在进程内存中五分钟。API Key 或基础 URL 变更后，该服务商的快照不再符合复用条件；显式刷新会绕过缓存，失败永不缓存。额度查询为只读操作：不写配置、用量日志行或终端同步状态。错误以内联消息显示在额度区块内，不会禁用或重写服务商，也不会中断卡片操作或转发。
+成功快照按服务商缓存在进程内存中五分钟。固定的源 key 或基础 URL 变更后，该服务商的快照不再符合复用条件；显式刷新会绕过缓存，失败永不缓存。额度查询为只读操作：不写配置、用量日志行或终端同步状态。错误以内联消息显示在额度区块内，不会禁用或重写服务商，也不会中断卡片操作或转发。
 
 ## Alternatives considered
 
@@ -25,9 +25,9 @@ CommandCode 服务商卡片需要展示账户额度与已报告的使用窗口�
 
 ## Consequences
 
-- 服务商卡片只有一个额度数据源；不符合共享主机规则的服务商不会发起查询。命令守卫还会在创建请求前独立拒绝空 Key 或非 CommandCode 主机。
-- 五分钟缓存按服务商 ID 隔离，只有该服务商 API Key 与基础 URL 未变时才复用。强制刷新绕过缓存，失败的抓取或载荷解析结果不会缓存。
+- 服务商卡片只有一个额度数据源；不符合共享主机规则的服务商不会发起查询。命令守卫还会在创建请求前独立拒绝为空或全空白的固定源 key 或非 CommandCode 主机。
+- 五分钟缓存按服务商 ID 隔离，只有该服务商固定的源 key 与基础 URL 未变时才复用。强制刷新绕过缓存，失败的抓取或载荷解析结果不会缓存。
 - 端点变化或故障只影响内联额度消息；不会禁用或重写服务商，也不会影响转发。不写配置、用量日志或终端同步状态。
-- 请求使用 15 秒超时。保存的 Key 在 `Authorization: Bearer` 请求头中发送，并仅由每服务商五分钟缓存额外保留在进程内存中，唯一用途是在 Key 或基础 URL 变化时使快照失效；它绝不持久化、记录日志、出现在错误文本或返回字段中。
+- 请求使用 15 秒超时。固定的源 key 在 `Authorization: Bearer` 请求头中发送，并仅由每服务商五分钟缓存额外保留在进程内存中，唯一用途是在该 key 的值或基础 URL 变化时使快照失效；它绝不持久化、记录日志、出现在错误文本或返回字段中。
 - 验证由 `src-tauri/src/ai_gateway/tests/quota.rs` 中的额度命令、解析与缓存测试，`src/components/AiGateway/ProviderQuotaBlock.test.tsx` 中的渲染测试，以及服务商列表测试覆盖。
-- Supersession：无。授权的 implemented-feature 范围内相关的网关活动记录涉及模板刷新或终端同步，不会改变或取代本额度决策；这些记录仍然有效。
+- Supersession：部分取代。[Gateway Key Pool Rotation Is Ordered, Probe-Limited and Manual-Only for Auth](../architecture/2026-09-24-gateway-key-pool-rotation.md) 只取代本记录使用服务商单一保存 Key 的方式，改为固定查询第一个启用的 key（全部禁用时取第一个，空池沿用既有 no-key 错误）；端点、共享主机规则、五分钟缓存、只读边界与卡片形状继续有效。其余活动网关 feature 记录涉及模板刷新或终端同步，既不改变也不取代本额度决策。

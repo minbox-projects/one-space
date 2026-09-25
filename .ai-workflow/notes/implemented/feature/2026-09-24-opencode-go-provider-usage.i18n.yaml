@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-09-24-opencode-go-provider-usage.md
-2026-09-24-opencode-go-provider-usage.md: b5a465def38ba3d53e56534475d885cff17499ac
-2026-09-24-opencode-go-provider-usage.zh.md: a8d53660c9ff025343ce44e9808f0e62315a4f31
+2026-09-24-opencode-go-provider-usage.md: 379cbe3c1e580474e76b3aae6fdf3fd4d3fe093a
+2026-09-24-opencode-go-provider-usage.zh.md: c760e8f764161bd67cb64373520fa744945abb55

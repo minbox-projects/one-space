@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-09-23-commandcode-provider-quota.md
-2026-09-23-commandcode-provider-quota.md: 138aac93feb822c9fc84d0917b53658db30a1925
-2026-09-23-commandcode-provider-quota.zh.md: bb44327893318c36e847e6ef037ffc5bfa59b8d2
+2026-09-23-commandcode-provider-quota.md: d852d7c27012cd0ac4b739021081790946d01a21
+2026-09-23-commandcode-provider-quota.zh.md: d152961e345fb8875bf44bb74d7d960f25a8082e
