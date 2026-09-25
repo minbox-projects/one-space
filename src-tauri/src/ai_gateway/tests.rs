@@ -817,6 +817,10 @@ type CapturedLog = Arc<Mutex<Vec<Captured>>>;
 
 enum MockReply {
     Json(u16, Value),
+    /// JSON status/body with explicit response headers, so a test can drive
+    /// `Retry-After` handling for a status (such as 429) that the plain `Json`
+    /// arm does not attach a header to.
+    JsonWithHeaders(u16, Value, Vec<(String, String)>),
     Stream(String),
     /// Declare a larger content-length than the bytes sent, then close early.
     PartialStream(String, usize),
@@ -915,6 +919,19 @@ where
                             "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n{retry_after}\r\n",
                             body.len(),
                         );
+                        let _ = stream.write_all(header.as_bytes()).await;
+                        let _ = stream.write_all(&body).await;
+                    }
+                    MockReply::JsonWithHeaders(status, value, extra_headers) => {
+                        let body = serde_json::to_vec(&value).unwrap_or_default();
+                        let mut header = format!(
+                            "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n",
+                            body.len(),
+                        );
+                        for (name, header_value) in &extra_headers {
+                            header.push_str(&format!("{name}: {header_value}\r\n"));
+                        }
+                        header.push_str("\r\n");
                         let _ = stream.write_all(header.as_bytes()).await;
                         let _ = stream.write_all(&body).await;
                     }
@@ -4738,10 +4755,15 @@ async fn end_to_end_retryable_failures_auto_disable_at_threshold_and_stop_callin
     assert_eq!(status, 502);
     let body: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(body["error"]["code"], "all_providers_unavailable");
+    // Each of the three failed inbound requests exhausts the single candidate's
+    // bounded retry schedule (`1 + MAX_RETRIES_PER_PROVIDER` attempts, all with
+    // `retry-after-ms: 0`); health settles once per inbound request, so the row
+    // reaches the threshold after three requests. The auto-disabled provider is
+    // not contacted on the fourth request.
     assert_eq!(
         log.lock().unwrap().len(),
-        3,
-        "each of the three failed requests makes exactly one attempt for the single candidate; the auto-disabled provider is not contacted on the fourth request"
+        3 * single_provider_attempt_cap(),
+        "each failed request exhausts the bounded retry schedule exactly once"
     );
 
     super::runtime_http::stop_server().await.unwrap();
@@ -8743,17 +8765,21 @@ async fn retry_policy_stops_before_wait_exceeds_120s_budget() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 1 (20260918-gateway-retry-and-openai-errors): single-candidate fast fail
+// Step 1 (20260918-gateway-retry-and-openai-errors): single-candidate retries
+// (REQ-005 of 20260925-gateway-routing-and-config-hardening removes the
+// candidate-count gate, so a single candidate now receives the full bounded
+// retry schedule in both paths)
 // ---------------------------------------------------------------------------
 
-/// AC-001 / REQ-001 RED: exactly one serviceable candidate that returns HTTP 500
-/// must be attempted once and then fail the request immediately with the
-/// standard 502 envelope. Today the single candidate enters the retry queue, so
-/// the upstream is contacted six times (the `retry-after-ms: 0` header keeps
-/// this RED run fast and must never be consumed as a wait).
-#[tokio::test]
-async fn single_candidate_500_non_streaming_fails_fast_without_retry() {
+/// AC-023 / REQ-005: exactly one serviceable candidate that returns HTTP 500
+/// receives its first attempt plus at most `MAX_RETRIES_PER_PROVIDER` retries
+/// honoring the per-provider cap and `Retry-After`, and the request then ends in
+/// the standard 502 envelope. The `retry-after-ms: 0` header keeps the scheduled
+/// retries immediate on the paused clock.
+#[tokio::test(start_paused = true)]
+async fn single_candidate_500_non_streaming_uses_bounded_retry_schedule() {
     let _home = temp_home("single-candidate-500-non-streaming");
+    let _ticker = spawn_paused_clock_ticker();
     let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
         HeaderReply::new(500, json!({"error": {"message": "boom"}}))
             .header("retry-after-ms", "0"),
@@ -8780,13 +8806,13 @@ async fn single_candidate_500_non_streaming_fails_fast_without_retry() {
 
     assert_eq!(
         upstream_requests.load(Ordering::SeqCst),
-        1,
-        "a single candidate must be attempted exactly once with no backoff retry"
+        single_provider_attempt_cap(),
+        "a single candidate must receive one attempt plus the bounded retry cap"
     );
     assert_eq!(
         attempts.len(),
-        1,
-        "one entry for the single completed failure attempt"
+        single_provider_attempt_cap(),
+        "one entry per completed attempt of the bounded retry schedule"
     );
     assert_eq!(attempts[0].provider_id, "a");
     assert_eq!(attempts[0].provider_name, "Provider A");
@@ -8810,12 +8836,13 @@ async fn single_candidate_500_non_streaming_fails_fast_without_retry() {
     );
 }
 
-/// AC-002 / REQ-001 RED: exactly one serviceable candidate that returns HTTP 429
-/// with a valid `retry-after-ms` header must not consume that header for a wait;
-/// it is attempted once and the request fails with the standard 502 envelope.
-#[tokio::test]
-async fn single_candidate_429_with_retry_header_non_streaming_fails_fast_without_retry() {
+/// AC-023 / REQ-005: exactly one serviceable candidate that returns HTTP 429
+/// with a valid `retry-after-ms` header consumes that header for every retry of
+/// the bounded schedule (six attempts) and ends in the standard 502 envelope.
+#[tokio::test(start_paused = true)]
+async fn single_candidate_429_with_retry_header_non_streaming_uses_bounded_retry_schedule() {
     let _home = temp_home("single-candidate-429-header-non-streaming");
+    let _ticker = spawn_paused_clock_ticker();
     let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![
         HeaderReply::new(429, json!({"error": {"message": "slow down"}}))
             .header("retry-after-ms", "0"),
@@ -8842,10 +8869,10 @@ async fn single_candidate_429_with_retry_header_non_streaming_fails_fast_without
 
     assert_eq!(
         upstream_requests.load(Ordering::SeqCst),
-        1,
-        "a single 429 candidate must be attempted exactly once"
+        single_provider_attempt_cap(),
+        "a single 429 candidate must receive the bounded retry schedule"
     );
-    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts.len(), single_provider_attempt_cap());
     assert_eq!(attempts[0].provider_id, "a");
     assert_eq!(attempts[0].upstream_model, "remote-default");
     assert_eq!(attempts[0].status, 429);
@@ -8863,11 +8890,11 @@ async fn single_candidate_429_with_retry_header_non_streaming_fails_fast_without
     );
 }
 
-/// AC-002 / REQ-001 RED: a single-candidate 429 *without* a retry header must
-/// still be attempted exactly once and fail immediately; the paused clock keeps
-/// the default-backoff RED run fast (today it retries six times).
+/// AC-023/AC-024 / REQ-005: a single-candidate 429 *without* a retry header is
+/// retried on the default backoff schedule up to the per-provider cap and ends
+/// in the standard 502 envelope; the paused clock keeps the schedule instant.
 #[tokio::test(start_paused = true)]
-async fn single_candidate_429_without_retry_header_non_streaming_fails_fast_without_retry() {
+async fn single_candidate_429_without_retry_header_non_streaming_uses_bounded_retry_schedule() {
     let _home = temp_home("single-candidate-429-no-header-non-streaming");
     let _ticker = spawn_paused_clock_ticker();
     let (upstream_url, upstream_requests) = spawn_header_sequence_mock(vec![HeaderReply::new(
@@ -8896,10 +8923,10 @@ async fn single_candidate_429_without_retry_header_non_streaming_fails_fast_with
 
     assert_eq!(
         upstream_requests.load(Ordering::SeqCst),
-        1,
-        "a single 429 candidate must be attempted exactly once even without a retry header"
+        single_provider_attempt_cap(),
+        "a single 429 candidate must receive the bounded default-backoff schedule"
     );
-    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts.len(), single_provider_attempt_cap());
     assert_eq!(attempts[0].provider_id, "a");
     assert_eq!(attempts[0].status, 429);
     assert_eq!(attempts[0].result, UsageResult::Failure);
@@ -8916,14 +8943,14 @@ async fn single_candidate_429_without_retry_header_non_streaming_fails_fast_with
     );
 }
 
-/// AC-011 / REQ-001 + AC-005 / REQ-003: a single serviceable streaming
-/// candidate whose upstream fails retryably before any byte is contacted
-/// exactly once and the terminal transport is HTTP 502 + `application/json`
-/// with the standard envelope, never HTTP 200 SSE. `attempt_streaming_text`
-/// drives the real streaming path and drains the response, proving the single
-/// attempt does not hang.
+/// AC-025 / REQ-005: a single serviceable streaming candidate whose upstream
+/// fails retryably before any byte receives the full bounded retry schedule,
+/// and the terminal transport is HTTP 502 + `application/json` with the
+/// standard envelope, never HTTP 200 SSE. `attempt_streaming_text` drives the
+/// real streaming path and drains the response, proving the schedule does not
+/// hang.
 #[tokio::test]
-async fn single_candidate_streaming_retryable_failure_attempts_upstream_once() {
+async fn single_candidate_streaming_retryable_failure_uses_bounded_retry_schedule() {
     let _home = temp_home("single-candidate-streaming-fast-fail");
     let (upstream_url, upstream_requests) =
         spawn_streaming_sequence_mock(vec![StreamingReply::Status {
@@ -8943,8 +8970,8 @@ async fn single_candidate_streaming_retryable_failure_attempts_upstream_once() {
 
     assert_eq!(
         upstream_requests.load(Ordering::SeqCst),
-        1,
-        "a single streaming candidate must be attempted exactly once with no backoff retry"
+        single_provider_attempt_cap(),
+        "a single streaming candidate must receive one attempt plus the bounded retry cap"
     );
     let (status_line, body) = raw_http_status_and_body(&text);
     assert!(
@@ -12006,8 +12033,8 @@ async fn streaming_all_unavailable_network_error_logs_zero_status() {
     );
     assert_eq!(
         attempts.len(),
-        1,
-        "one entry for the single completed network failure"
+        single_provider_attempt_cap(),
+        "one entry per completed network failure of the bounded retry schedule"
     );
     assert_eq!(attempts[0].provider_id, "p1");
     assert_eq!(attempts[0].upstream_model, "remote-a");
@@ -16669,15 +16696,20 @@ async fn all_candidates_failed_request_writes_one_row_per_completed_attempt() {
     drop(home);
 }
 
-/// AC-003 / REQ-001 / REQ-003: exactly one serviceable candidate answering 429
-/// is attempted once with no backoff wait; its terminal row keeps the observed
-/// 429 and the upstream message, and the caller receives the standard 502.
+/// AC-023 / REQ-005: exactly one serviceable candidate answering 429 receives
+/// the bounded retry schedule (header-driven so it stays fast); the terminal row
+/// keeps the observed 429 and the upstream message, and the caller receives the
+/// standard 502.
 #[tokio::test]
 async fn single_candidate_429_failure_keeps_upstream_status_on_the_terminal_row() {
     let home = temp_home("usage-single-429-terminal");
     let port = free_port().await;
     let (upstream_url, log) = spawn_mock_upstream(|_| {
-        MockReply::Json(429, json!({"error": {"message": "slow down"}}))
+        MockReply::JsonWithHeaders(
+            429,
+            json!({"error": {"message": "slow down"}}),
+            vec![("retry-after-ms".to_string(), "0".to_string())],
+        )
     })
     .await;
 
@@ -16703,17 +16735,19 @@ async fn single_candidate_429_failure_keeps_upstream_status_on_the_terminal_row(
     assert_eq!(body["error"]["code"], "all_providers_unavailable");
     assert_eq!(
         log.lock().unwrap().len(),
-        1,
-        "a single candidate is attempted exactly once"
+        single_provider_attempt_cap(),
+        "a single candidate receives its first attempt plus the bounded retry cap"
     );
     assert!(
-        elapsed < std::time::Duration::from_millis(1500),
-        "the single-candidate path must not wait for a backoff, elapsed {elapsed:?}"
+        elapsed < std::time::Duration::from_secs(2),
+        "the retry-after-ms: 0 schedule must not wait for the default backoff, elapsed {elapsed:?}"
     );
 
-    let records = wait_for_exact_usage_logs(1).await;
-    let record = &records[0];
-    assert!(record.terminal);
+    let records = wait_for_exact_usage_logs(single_provider_attempt_cap() as u32).await;
+    let record = records
+        .iter()
+        .find(|record| record.terminal)
+        .expect("exactly one terminal row for the exhausted request");
     assert_eq!(record.result, UsageResult::Failure);
     assert_eq!(record.status, 429);
     assert_eq!(record.provider_id, "only");
@@ -22585,9 +22619,10 @@ fn mark_system_resume_activates_the_grace_for_the_current_instant() {
 /// REQ-004 / AC-006: a suppressed transport failure (connection refused) must
 /// leave the mapping row's counter and error stamp untouched and must not
 /// auto-disable it.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn suppressed_transport_failure_does_not_increment_the_mapping_row() {
     let _home = isolated_temp_home("grace-suppressed-transport");
+    let _ticker = spawn_paused_clock_ticker();
     let dead_url = closed_port_base_url().await;
     let provider = seed_single_mapped_row(&dead_url, 0, None);
     let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
@@ -22610,7 +22645,11 @@ async fn suppressed_transport_failure_does_not_increment_the_mapping_row() {
         "a transport failure must still fail the request: {}",
         String::from_utf8_lossy(&response.body)
     );
-    assert_eq!(attempts.len(), 1, "the single candidate is attempted once");
+    assert_eq!(
+        attempts.len(),
+        single_provider_attempt_cap(),
+        "the single candidate receives the bounded retry schedule"
+    );
     let stored = super::storage::read_config().expect("read persisted provider state");
     let row = persisted_mapping_row(&stored, "a");
     assert_eq!(
@@ -22762,12 +22801,12 @@ async fn http_500_failure_still_counts_inside_the_suppression_window() {
     .await;
 
     assert_eq!(response.status, 502, "a 5xx must still fail the request");
-    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts.len(), single_provider_attempt_cap());
     let stored = super::storage::read_config().expect("read persisted provider state");
     let row = persisted_mapping_row(&stored, "a");
     assert_eq!(
         row.consecutive_failures, 1,
-        "a 5xx inside the grace window must still count"
+        "a 5xx inside the grace window must still count once per inbound request"
     );
     assert!(
         row.last_error_at.is_some(),
@@ -22822,9 +22861,10 @@ async fn quota_429_failure_still_counts_inside_the_suppression_window() {
 
 /// REQ-004 / AC-006: a suppressed streaming transport failure still writes the
 /// pre-stream 502 but leaves the mapping row untouched.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn suppressed_streaming_transport_failure_leaves_the_row_and_pre_stream_502_unchanged() {
     let _home = isolated_temp_home("grace-suppressed-stream");
+    let _ticker = spawn_paused_clock_ticker();
     let dead_url = closed_port_base_url().await;
     let provider = seed_single_mapped_row(&dead_url, 0, None);
     let body = serde_json::to_vec(&json!({"model": "local-a", "stream": true})).unwrap();
@@ -22859,7 +22899,7 @@ async fn suppressed_streaming_transport_failure_leaves_the_row_and_pre_stream_50
         "a pre-stream failure must not answer SSE: {text}"
     );
     assert_eq!(capture.status, 0, "a network failure has no upstream HTTP status");
-    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts.len(), single_provider_attempt_cap());
     let stored = super::storage::read_config().expect("read persisted provider state");
     let row = persisted_mapping_row(&stored, "a");
     assert_eq!(
@@ -23845,8 +23885,8 @@ async fn probe_is_attempted_only_after_every_healthy_candidate_fails() {
     assert!(text.contains("probe-after-healthy"), "probe body missing: {text}");
     assert_eq!(
         healthy_log.lock().unwrap().len(),
-        1,
-        "the single healthy candidate is attempted once"
+        single_provider_attempt_cap(),
+        "the single healthy candidate exhausts its bounded retry schedule before the probe"
     );
     assert_eq!(
         probe_log.lock().unwrap().len(),
@@ -24650,7 +24690,7 @@ async fn threshold_flip_emits_exactly_one_config_update_event() {
     let response = attempt_without_probe(std::slice::from_ref(&provider), "cfg-local-threshold").await;
 
     assert_eq!(response.status, 502, "the exhausted request answers the existing 502");
-    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+    assert_eq!(upstream_log.lock().unwrap().len(), single_provider_attempt_cap());
     assert_eq!(
         recorded_config_update_events(),
         vec![CONFIG_UPDATE_EVENT_NAME.to_string()],
@@ -24686,7 +24726,7 @@ async fn counter_only_settlement_emits_no_config_update_event() {
     let response = attempt_without_probe(std::slice::from_ref(&provider), "cfg-local-counter").await;
 
     assert_eq!(response.status, 502);
-    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+    assert_eq!(upstream_log.lock().unwrap().len(), single_provider_attempt_cap());
     assert!(
         recorded_config_update_events().is_empty(),
         "a counter-only settlement must emit no config-update event"
@@ -25791,16 +25831,20 @@ async fn quota_429_rotates_without_leaking_key_value() {
     );
 }
 
-/// AC-005 / REQ-005: transient 429, 5xx, 404, other 4xx and network failures
-/// never mark a key and never rotate; the first key keeps serving the attempt.
-#[tokio::test]
-async fn transient_and_transport_failures_never_mark_or_rotate_keys() {
-    for (name, reply_spec, expected_status) in [
-        ("transient-429", Some((429u16, "temporarily unavailable")), 502u16),
-        ("server-5xx", Some((500, "down")), 502),
-        ("not-found-404", Some((404, "missing")), 502),
-        ("client-4xx", Some((422, "bad request")), 422),
-        ("network-drop", None, 502),
+/// AC-014 / REQ-005: 5xx, network, 404 and other returned 4xx failures never
+/// rotate a key and never mark one. The retryable classes (5xx, network) follow
+/// the single-candidate bounded retry schedule on the first key, while 404 is a
+/// per-request skip and 422 is returned to the caller, both without a retry.
+/// The first key serves every attempt of its class; the second key is never
+/// contacted and both keys stay unmarked.
+#[tokio::test(start_paused = true)]
+async fn ac014_server_network_404_and_returned_4xx_never_rotate_keys() {
+    let _ticker = spawn_paused_clock_ticker();
+    for (name, reply_spec, expected_status, expected_attempts) in [
+        ("server-5xx", Some((500u16, "down")), 502u16, single_provider_attempt_cap()),
+        ("not-found-404", Some((404, "missing")), 502, 1),
+        ("client-4xx", Some((422, "bad request")), 422, 1),
+        ("network-drop", None, 502, single_provider_attempt_cap()),
     ] {
         let _home = isolated_temp_home(&format!("key-pool-transient-{name}"));
         let (upstream_url, log) = spawn_mock_upstream(move |_| match reply_spec {
@@ -25840,16 +25884,23 @@ async fn transient_and_transport_failures_never_mark_or_rotate_keys() {
         assert_eq!(response.status, expected_status, "{name}: status mismatch");
 
         let captured = log.lock().unwrap().clone();
-        assert_eq!(captured.len(), 1, "{name}: exactly one attempt expected");
         assert_eq!(
-            auth_header_of(&captured[0]),
-            Some("Bearer sk-first-key"),
-            "{name}: the first key must serve the single attempt"
+            captured.len(),
+            expected_attempts,
+            "{name}: unexpected attempt count: {}",
+            captured_summary(&captured)
+        );
+        assert!(
+            captured
+                .iter()
+                .all(|entry| auth_header_of(entry) == Some("Bearer sk-first-key")),
+            "{name}: no failure class may rotate to the second key: {}",
+            captured_summary(&captured)
         );
         assert_eq!(
             attempts.len(),
-            1,
-            "{name}: no rotation may produce a second attempt"
+            expected_attempts,
+            "{name}: no rotation may produce a second key's attempt"
         );
 
         let first = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
@@ -25858,6 +25909,12 @@ async fn transient_and_transport_failures_never_mark_or_rotate_keys() {
         let second = on_disk_key_entry("p1", "key-b").expect("key-b must stay persisted");
         assert_eq!(second["auto_marked"], false, "{name}: the second key must stay unmarked");
     }
+}
+
+/// The full bounded retry schedule of one provider: the initial attempt plus
+/// the per-provider retry cap (REQ-005).
+fn single_provider_attempt_cap() -> usize {
+    1 + super::selection::MAX_RETRIES_PER_PROVIDER as usize
 }
 
 /// AC-008 / REQ-008: a provider whose keys are all auth-marked is skipped like
@@ -26710,22 +26767,25 @@ async fn relay_redacts_every_pool_key_value_from_error_text_and_rows() {
     let captured = log.lock().unwrap().clone();
     assert_eq!(
         captured.len(),
-        1,
-        "the first usable key is attempted exactly once: {}",
+        single_provider_attempt_cap(),
+        "a single-provider 5xx exhausts its bounded retry schedule on the first key: {}",
         captured_summary(&captured)
     );
     let expected_auth = format!("Bearer {FIRST_KEY}");
-    assert_eq!(
-        auth_header_of(&captured[0]),
-        Some(expected_auth.as_str()),
-        "the relay must attempt the first pool key"
+    assert!(
+        captured
+            .iter()
+            .all(|entry| auth_header_of(entry) == Some(expected_auth.as_str())),
+        "a 5xx must never rotate away from the first pool key: {}",
+        captured_summary(&captured)
     );
 
-    let records = wait_for_usage_logs((before_rows + 1) as u32).await;
+    let records = wait_for_usage_logs((before_rows + single_provider_attempt_cap()) as u32).await;
     let fresh = records.len() - before_rows;
     assert_eq!(
-        fresh, 1,
-        "the failed request must write exactly one terminal row"
+        fresh,
+        single_provider_attempt_cap(),
+        "the failed request must write one row per scheduled attempt with exactly one terminal row"
     );
     let mut saw_marker = false;
     for record in records.iter().take(fresh) {
@@ -27649,6 +27709,1126 @@ async fn mapping_probe_consumes_key_failures_and_continues_on_next_key() {
         assert!(
             String::from_utf8_lossy(&response.body).contains("served-by-b"),
             "{name}: B's body must reach the caller"
+        );
+    }
+}
+
+// ===========================================================================
+// Step 4 (20260925-gateway-routing-and-config-hardening) RED behavior tests for
+// key rotation, quota TTL recovery, single-candidate retries and query pinning
+// (AC-010 through AC-026).
+//
+// These observe the public/module-private relay boundary with raw encrypted
+// fixtures and mock upstreams. Time-sensitive cases use the paused clock and
+// the shared ticker helper; every config fixture lives in a thread-local temp
+// home.
+// ===========================================================================
+
+/// AC-010 / REQ-003: a bare 429 on the first key rotates the same request to the
+/// second key, which serves it; neither key is persisted as marked, exactly two
+/// attempt rows are logged and mapping health records no failure.
+#[tokio::test]
+async fn ac010_bare_429_rotates_to_the_next_key_and_both_stay_unmarked() {
+    let _home = isolated_temp_home("ac010-bare-429-rotation");
+    let (upstream_url, log) = spawn_mock_upstream(|captured| match auth_header_of(captured) {
+        Some("Bearer sk-ac010-a") => {
+            MockReply::Json(429, json!({"error": {"message": "temporarily unavailable"}}))
+        }
+        Some("Bearer sk-ac010-b") => MockReply::Json(200, json!({"id": "served-by-b"})),
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-ac010-a", true),
+                pool_key("key-b", "B", "sk-ac010-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(
+        response.status, 200,
+        "the bare-429 rotation must be served by the second key: {}",
+        String::from_utf8_lossy(&response.body)
+    );
+    assert!(
+        String::from_utf8_lossy(&response.body).contains("served-by-b"),
+        "B's body must reach the caller"
+    );
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        2,
+        "exactly two attempt rows are logged: {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(auth_header_of(&captured[0]), Some("Bearer sk-ac010-a"));
+    assert_eq!(auth_header_of(&captured[1]), Some("Bearer sk-ac010-b"));
+    assert_eq!(attempts.len(), 2, "one failed attempt plus the terminal success");
+    assert_eq!(attempts[0].status, 429);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
+
+    for key_id in ["key-a", "key-b"] {
+        let key = on_disk_key_entry("p1", key_id).expect("key must stay persisted");
+        assert_eq!(
+            key["auto_marked"], false,
+            "{key_id} must stay unmarked after a bare 429: {key}"
+        );
+        assert_eq!(key["failure_kind"], Value::Null, "{key_id}");
+        assert_eq!(key["marked_at"], Value::Null, "{key_id}");
+    }
+    let stored = super::storage::read_config().expect("read persisted state");
+    let provider = stored.providers.iter().find(|p| p.id == "p1").unwrap();
+    assert_eq!(
+        provider.mappings[0].consecutive_failures, 0,
+        "a bare 429 must not register mapping health"
+    );
+    assert!(!provider.mappings[0].auto_disabled);
+    assert_eq!(provider.mappings[0].last_error_at, None);
+}
+
+/// AC-011 / REQ-003: when every key answers a bare 429, each pass contacts each
+/// usable key at most once (A then B for a two-key pool) and the provider's full
+/// budget is `1 + MAX_RETRIES_PER_PROVIDER` passes, so the total upstream
+/// contacts are `key_count * (1 + cap)`.
+#[tokio::test(start_paused = true)]
+async fn ac011_all_keys_rate_limited_rotates_once_per_key_each_pass_within_the_pass_budget() {
+    let _home = isolated_temp_home("ac011-all-keys-rate-limited");
+    let _ticker = spawn_paused_clock_ticker();
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(429, json!({"error": {"message": "temporarily unavailable"}}))
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-ac011-a", true),
+                pool_key("key-b", "B", "sk-ac011-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    let captured = log.lock().unwrap().clone();
+    let key_count = 2usize;
+    let pass_count = single_provider_attempt_cap();
+    assert_eq!(
+        captured.len(),
+        key_count * pass_count,
+        "the provider's full budget is 1 + cap passes, each bounded by the usable-key count: {}",
+        captured_summary(&captured)
+    );
+    // Every pass restarts from the first usable key and rotates A -> B exactly
+    // once, so no key is contacted twice inside one pass.
+    for pass in 0..pass_count {
+        assert_eq!(
+            auth_header_of(&captured[pass * key_count]),
+            Some("Bearer sk-ac011-a"),
+            "pass {pass} must start on the first usable key: {}",
+            captured_summary(&captured)
+        );
+        assert_eq!(
+            auth_header_of(&captured[pass * key_count + 1]),
+            Some("Bearer sk-ac011-b"),
+            "pass {pass} must rotate once to the second key: {}",
+            captured_summary(&captured)
+        );
+    }
+
+    for key_id in ["key-a", "key-b"] {
+        let key = on_disk_key_entry("p1", key_id).expect("key must stay persisted");
+        assert_eq!(key["auto_marked"], false, "{key_id} must stay unmarked: {key}");
+    }
+    assert_eq!(
+        response.status, 502,
+        "an all-rate-limited provider ends in the standard 502"
+    );
+}
+
+/// AC-012 / REQ-003: a provider with one key answering a bare 429 never rotates
+/// and follows REQ-005's bounded retry path to the standard 502.
+#[tokio::test(start_paused = true)]
+async fn ac012_single_key_bare_429_does_not_rotate_and_follows_the_bounded_retry_path() {
+    let _home = isolated_temp_home("ac012-single-key-bare-429");
+    let _ticker = spawn_paused_clock_ticker();
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(429, json!({"error": {"message": "temporarily unavailable"}}))
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![pool_key("key-only", "Only", "sk-ac012-only", true)],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        single_provider_attempt_cap(),
+        "the single key follows the bounded retry path: {}",
+        captured_summary(&captured)
+    );
+    assert!(
+        captured
+            .iter()
+            .all(|entry| auth_header_of(entry) == Some("Bearer sk-ac012-only")),
+        "there is no other key to rotate to: {}",
+        captured_summary(&captured)
+    );
+    let key = on_disk_key_entry("p1", "key-only").expect("key must stay persisted");
+    assert_eq!(key["auto_marked"], false, "a bare 429 never persists a mark: {key}");
+    assert_eq!(response.status, 502);
+}
+
+/// AC-013 / REQ-003: a 401 and a quota-exhausted 429 persistently mark the
+/// attempted key exactly as today and rotate to the healthy key, while a bare
+/// 429 rotates without persisting any mark.
+#[tokio::test]
+async fn ac013_auth_and_quota_marks_persist_but_a_bare_429_persists_nothing() {
+    const QUOTA_MESSAGE: &str = "You've reached your weekly usage limit for your plan. Your limit resets at 2026-09-24T03:30:30.663Z. Please wait for the window to reset or upgrade your plan to continue.";
+    for (name, status, message, expected_kind) in [
+        ("authentication", 401u16, "invalid api key", Some("authentication")),
+        ("quota", 429u16, QUOTA_MESSAGE, Some("quota")),
+        ("bare-429", 429u16, "temporarily unavailable", None),
+    ] {
+        let _home = isolated_temp_home(&format!("ac013-key-persistence-{name}"));
+        let (upstream_url, log) = spawn_mock_upstream(move |captured| {
+            match auth_header_of(captured) {
+                Some("Bearer sk-ac013-a") => {
+                    MockReply::Json(status, json!({"error": {"message": message}}))
+                }
+                Some("Bearer sk-ac013-b") => MockReply::Json(200, json!({"id": "served-by-b"})),
+                other => MockReply::Json(
+                    500,
+                    json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+                ),
+            }
+        })
+        .await;
+
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider One",
+                &upstream_url,
+                vec![
+                    pool_key("key-a", "A", "sk-ac013-a", true),
+                    pool_key("key-b", "B", "sk-ac013-b", true),
+                ],
+                vec![json_mapping("local-a", "remote-a", None)],
+            )],
+        ));
+
+        let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+        let mut attempts = Vec::new();
+        let response = super::runtime_http::attempt_non_streaming(
+            &live_candidates("local-a"),
+            "/v1/chat/completions",
+            &body,
+            Some("local-a"),
+            &HashMap::new(),
+            false,
+            None,
+            &mut attempts,
+        )
+        .await;
+
+        assert_eq!(response.status, 200, "{name}: B must serve the rotated request");
+        let captured = log.lock().unwrap().clone();
+        assert_eq!(
+            captured.len(),
+            2,
+            "{name}: the attempted key rotates to B: {}",
+            captured_summary(&captured)
+        );
+        assert_eq!(auth_header_of(&captured[0]), Some("Bearer sk-ac013-a"));
+        assert_eq!(auth_header_of(&captured[1]), Some("Bearer sk-ac013-b"));
+
+        let key_a = on_disk_key_entry("p1", "key-a").expect("key-a must persist");
+        match expected_kind {
+            Some(kind) => {
+                assert_eq!(key_a["auto_marked"], true, "{name}: the key must persist its mark");
+                assert_eq!(key_a["failure_kind"], kind, "{name}");
+                assert!(key_a["marked_at"].as_u64().is_some(), "{name}");
+                assert!(key_a["reason"].as_str().is_some_and(|value| !value.is_empty()), "{name}");
+            }
+            None => {
+                assert_eq!(
+                    key_a["auto_marked"], false,
+                    "{name}: a bare 429 must never persist a mark: {key_a}"
+                );
+                assert_eq!(key_a["failure_kind"], Value::Null, "{name}");
+                assert_eq!(key_a["marked_at"], Value::Null, "{name}");
+            }
+        }
+        let key_b = on_disk_key_entry("p1", "key-b").expect("key-b must persist");
+        assert_eq!(key_b["auto_marked"], false, "{name}: B must stay unmarked");
+    }
+}
+
+/// AC-015 / REQ-003: a streaming bare 429 that arrives before the first
+/// forwarded byte rotates the same stream to the next usable key.
+#[tokio::test]
+async fn ac015_streaming_bare_429_rotates_before_the_first_forwarded_byte() {
+    let _home = isolated_temp_home("ac015-streaming-bare-429-rotation");
+    let sse = "data: {\"id\":\"served-by-b\"}\n\ndata: [DONE]\n\n".to_string();
+    let (upstream_url, log) = spawn_mock_upstream(move |captured| match auth_header_of(captured) {
+        Some("Bearer sk-ac015-a") => {
+            MockReply::Json(429, json!({"error": {"message": "temporarily unavailable"}}))
+        }
+        Some("Bearer sk-ac015-b") => MockReply::Stream(sse.clone()),
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-ac015-a", true),
+                pool_key("key-b", "B", "sk-ac015-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let ordered = live_candidates("local-a");
+    let body = serde_json::to_vec(&json!({"model": "local-a", "stream": true})).unwrap();
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
+    let capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        &ordered,
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await
+    .expect("streaming attempt");
+    drop(server);
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    let text = String::from_utf8_lossy(&out).into_owned();
+
+    assert_eq!(capture.status, 200, "B must serve the rotated stream: {text}");
+    assert!(text.contains("served-by-b"), "B's stream must reach the caller: {text}");
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        2,
+        "the pre-first-byte rotation logs exactly two attempts: {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(auth_header_of(&captured[0]), Some("Bearer sk-ac015-a"));
+    assert_eq!(auth_header_of(&captured[1]), Some("Bearer sk-ac015-b"));
+    for key_id in ["key-a", "key-b"] {
+        let key = on_disk_key_entry("p1", key_id).expect("key must persist");
+        assert_eq!(key["auto_marked"], false, "{key_id} must stay unmarked: {key}");
+    }
+}
+
+/// AC-015 / REQ-003: a streaming failure after the first forwarded byte keeps
+/// the stream-truncation path: no rotation and no candidate switch.
+#[tokio::test]
+async fn ac015_streaming_failure_after_the_first_byte_never_rotates_or_marks() {
+    let _home = isolated_temp_home("ac015-streaming-post-first-byte");
+    let partial = "data: {\"choices\":[{\"delta\":{\"content\":\"partial-a\"}}]}".to_string();
+    let declared = partial.len() + 500;
+    let (upstream_url, log) = spawn_mock_upstream(move |captured| match auth_header_of(captured) {
+        Some("Bearer sk-ac015b-a") => MockReply::PartialStream(partial.clone(), declared),
+        Some("Bearer sk-ac015b-b") => MockReply::Stream(
+            "data: {\"id\":\"served-by-b\"}\n\ndata: [DONE]\n\n".to_string(),
+        ),
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-ac015b-a", true),
+                pool_key("key-b", "B", "sk-ac015b-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let ordered = live_candidates("local-a");
+    let body = serde_json::to_vec(&json!({"model": "local-a", "stream": true})).unwrap();
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
+    let capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        &ordered,
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await
+    .expect("streaming attempt");
+    drop(server);
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    let text = String::from_utf8_lossy(&out).into_owned();
+
+    assert!(text.contains("partial-a"), "the first byte must reach the caller: {text}");
+    assert!(
+        !text.contains("served-by-b"),
+        "a post-first-byte failure must not rotate to B: {text}"
+    );
+    assert_eq!(capture.status, 502);
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        1,
+        "no key may be rotated after the first byte: {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(auth_header_of(&captured[0]), Some("Bearer sk-ac015b-a"));
+    let key_a = on_disk_key_entry("p1", "key-a").expect("key-a must persist");
+    assert_eq!(key_a["auto_marked"], false, "a post-first-byte failure must not mark: {key_a}");
+    let key_b = on_disk_key_entry("p1", "key-b").expect("key-b must persist");
+    assert_eq!(key_b["auto_marked"], false, "B must stay unmarked");
+}
+
+/// AC-016 / REQ-003: rotating away from a bare-429 key consumes none of the
+/// retry passes, so the retryable second key receives the full schedule. Every
+/// pass restarts from the first usable key (A bare 429) and rotates once to B
+/// (retryable 500); both keys are therefore contacted once per pass across the
+/// full `1 + MAX_RETRIES_PER_PROVIDER` pass budget.
+#[tokio::test(start_paused = true)]
+async fn ac016_rotation_consumes_no_retry_pass_and_the_second_key_gets_the_full_schedule() {
+    let _home = isolated_temp_home("ac016-rotation-keeps-budget");
+    let _ticker = spawn_paused_clock_ticker();
+    let (upstream_url, log) = spawn_mock_upstream(|captured| match auth_header_of(captured) {
+        Some("Bearer sk-ac016-a") => {
+            MockReply::Json(429, json!({"error": {"message": "temporarily unavailable"}}))
+        }
+        Some("Bearer sk-ac016-b") => MockReply::Json(500, json!({"error": {"message": "boom"}})),
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-ac016-a", true),
+                pool_key("key-b", "B", "sk-ac016-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    let captured = log.lock().unwrap().clone();
+    let pass_count = single_provider_attempt_cap();
+    let a_count = captured
+        .iter()
+        .filter(|entry| auth_header_of(entry) == Some("Bearer sk-ac016-a"))
+        .count();
+    let b_count = captured
+        .iter()
+        .filter(|entry| auth_header_of(entry) == Some("Bearer sk-ac016-b"))
+        .count();
+    assert_eq!(
+        captured.len(),
+        2 * pass_count,
+        "each pass contacts A then B across the full pass budget: {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(
+        a_count, pass_count,
+        "the bare-429 key is contacted once per pass: {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(
+        b_count, pass_count,
+        "rotation consumes no retry pass, so the second key receives the full schedule: {}",
+        captured_summary(&captured)
+    );
+    // Every pass restarts from the first usable key and rotates A -> B once.
+    for pass in 0..pass_count {
+        assert_eq!(
+            auth_header_of(&captured[pass * 2]),
+            Some("Bearer sk-ac016-a"),
+            "pass {pass} must start on A: {}",
+            captured_summary(&captured)
+        );
+        assert_eq!(
+            auth_header_of(&captured[pass * 2 + 1]),
+            Some("Bearer sk-ac016-b"),
+            "pass {pass} must rotate to B: {}",
+            captured_summary(&captured)
+        );
+    }
+    assert_eq!(response.status, 502);
+}
+
+// ---------------------------------------------------------------------------
+// AC-017 through AC-022: quota-mark TTL recovery and its exact boundaries.
+// ---------------------------------------------------------------------------
+
+/// A quota-marked key pool entry with an explicit marking time.
+fn quota_marked_key(id: &str, value: &str, marked_at: u64) -> Value {
+    pool_key_marked(id, id, value, true, "quota", marked_at, "weekly usage limit")
+}
+
+/// A quota-marked key pool entry without any marking time.
+fn quota_marked_key_without_time(id: &str, value: &str) -> Value {
+    json!({
+        "id": id,
+        "name": id,
+        "value": value,
+        "enabled": true,
+        "auto_marked": true,
+        "failure_kind": "quota",
+        "marked_at": null,
+        "reason": "weekly usage limit",
+    })
+}
+
+/// AC-017 / REQ-004: the TTL boundary is inclusive at exactly 1800 seconds and
+/// exclusive at 1799 seconds, using the literal 1800 (the Step 5 constant does
+/// not exist yet).
+#[tokio::test]
+async fn ac017_quota_mark_ttl_boundary_is_exact_at_1800_seconds() {
+    // Exactly 1800 seconds old: usable by list priority, mark cleared.
+    {
+        let _home = isolated_temp_home("ac017-ttl-1800");
+        let (upstream_url, log) = spawn_mock_upstream(|captured| match auth_header_of(captured) {
+            Some("Bearer sk-ac017-a") => MockReply::Json(200, json!({"id": "served-by-a"})),
+            Some("Bearer sk-ac017-b") => MockReply::Json(200, json!({"id": "served-by-b"})),
+            other => MockReply::Json(
+                500,
+                json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+            ),
+        })
+        .await;
+        let now = super::types_config::now_ts();
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider One",
+                &upstream_url,
+                vec![
+                    quota_marked_key("key-a", "sk-ac017-a", now.saturating_sub(1800)),
+                    pool_key("key-b", "B", "sk-ac017-b", true),
+                ],
+                vec![json_mapping("local-a", "remote-a", None)],
+            )],
+        ));
+
+        let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+        let mut attempts = Vec::new();
+        let response = super::runtime_http::attempt_non_streaming(
+            &live_candidates("local-a"),
+            "/v1/chat/completions",
+            &body,
+            Some("local-a"),
+            &HashMap::new(),
+            false,
+            None,
+            &mut attempts,
+        )
+        .await;
+
+        assert_eq!(response.status, 200);
+        let captured = log.lock().unwrap().clone();
+        assert_eq!(
+            auth_header_of(&captured[0]),
+            Some("Bearer sk-ac017-a"),
+            "at exactly 1800s the TTL-expired key is selected by list priority: {}",
+            captured_summary(&captured)
+        );
+        let key = on_disk_key_entry("p1", "key-a").expect("key-a must persist");
+        assert_eq!(
+            key["auto_marked"], false,
+            "selecting a TTL-expired key clears its runtime state: {key}"
+        );
+    }
+
+    // 1799 seconds old: still marked, the healthy key serves.
+    {
+        let _home = isolated_temp_home("ac017-ttl-1799");
+        let (upstream_url, log) = spawn_mock_upstream(|captured| match auth_header_of(captured) {
+            Some("Bearer sk-ac017c-a") => MockReply::Json(200, json!({"id": "served-by-a"})),
+            Some("Bearer sk-ac017c-b") => MockReply::Json(200, json!({"id": "served-by-b"})),
+            other => MockReply::Json(
+                500,
+                json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+            ),
+        })
+        .await;
+        let now = super::types_config::now_ts();
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider One",
+                &upstream_url,
+                vec![
+                    quota_marked_key("key-a", "sk-ac017c-a", now.saturating_sub(1799)),
+                    pool_key("key-b", "B", "sk-ac017c-b", true),
+                ],
+                vec![json_mapping("local-a", "remote-a", None)],
+            )],
+        ));
+
+        let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+        let mut attempts = Vec::new();
+        let response = super::runtime_http::attempt_non_streaming(
+            &live_candidates("local-a"),
+            "/v1/chat/completions",
+            &body,
+            Some("local-a"),
+            &HashMap::new(),
+            false,
+            None,
+            &mut attempts,
+        )
+        .await;
+
+        assert_eq!(response.status, 200);
+        let captured = log.lock().unwrap().clone();
+        assert_eq!(
+            auth_header_of(&captured[0]),
+            Some("Bearer sk-ac017c-b"),
+            "at 1799s the young quota mark keeps the key out of selection: {}",
+            captured_summary(&captured)
+        );
+        let key = on_disk_key_entry("p1", "key-a").expect("key-a must persist");
+        assert_eq!(
+            key["auto_marked"], true,
+            "a mark younger than the TTL must stay on disk: {key}"
+        );
+    }
+}
+
+/// AC-018 / REQ-004: selecting a TTL-expired quota-marked key clears its runtime
+/// state in memory and persists it, and the key serves by list priority.
+#[tokio::test]
+async fn ac018_selecting_a_ttl_expired_key_clears_and_persists_its_runtime_state() {
+    let _home = isolated_temp_home("ac018-ttl-clear-on-selection");
+    let (upstream_url, log) = spawn_mock_upstream(|captured| match auth_header_of(captured) {
+        Some("Bearer sk-ac018-a") => MockReply::Json(200, json!({"id": "served-by-a"})),
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+    let now = super::types_config::now_ts();
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                quota_marked_key("key-a", "sk-ac018-a", now.saturating_sub(3600)),
+                pool_key("key-b", "B", "sk-ac018-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 200);
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(auth_header_of(&captured[0]), Some("Bearer sk-ac018-a"));
+    let key = on_disk_key_entry("p1", "key-a").expect("key-a must persist");
+    assert_eq!(key["auto_marked"], false, "the TTL-expired mark must be cleared: {key}");
+    assert_eq!(key["failure_kind"], Value::Null, "{key}");
+    assert_eq!(key["marked_at"], Value::Null, "{key}");
+    assert_eq!(key["reason"], Value::Null, "{key}");
+    let key_b = on_disk_key_entry("p1", "key-b").expect("key-b must persist");
+    assert_eq!(key_b["auto_marked"], false, "the untouched key stays unmarked");
+}
+
+/// AC-019 / REQ-004: a TTL-expired key that is still exhausted is re-marked as
+/// quota and the same request continues on the next usable key, which serves.
+#[tokio::test]
+async fn ac019_ttl_expired_still_exhausted_key_remarks_and_continues_on_the_next_key() {
+    const QUOTA_MESSAGE: &str = "You've reached your weekly usage limit for your plan. Your limit resets at 2026-09-24T03:30:30.663Z. Please wait for the window to reset or upgrade your plan to continue.";
+    let _home = isolated_temp_home("ac019-ttl-remark");
+    let (upstream_url, log) = spawn_mock_upstream(move |captured| match auth_header_of(captured) {
+        Some("Bearer sk-ac019-a") => {
+            MockReply::Json(429, json!({"error": {"message": QUOTA_MESSAGE}}))
+        }
+        Some("Bearer sk-ac019-b") => MockReply::Json(200, json!({"id": "served-by-b"})),
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+    let before = super::types_config::now_ts();
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                quota_marked_key("key-a", "sk-ac019-a", before.saturating_sub(3600)),
+                pool_key("key-b", "B", "sk-ac019-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 200, "B must serve after A re-marks");
+    assert!(
+        String::from_utf8_lossy(&response.body).contains("served-by-b"),
+        "B's body must reach the caller"
+    );
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        2,
+        "A is attempted once and then B serves: {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(auth_header_of(&captured[0]), Some("Bearer sk-ac019-a"));
+    assert_eq!(auth_header_of(&captured[1]), Some("Bearer sk-ac019-b"));
+
+    let key = on_disk_key_entry("p1", "key-a").expect("key-a must persist");
+    assert_eq!(key["auto_marked"], true, "a still-exhausted TTL key is re-marked: {key}");
+    assert_eq!(key["failure_kind"], "quota", "{key}");
+    let rearmed_at = key["marked_at"].as_u64().expect("the fresh marking time must persist");
+    assert!(rearmed_at >= before, "the re-mark must move the marking time forward: {key}");
+}
+
+/// AC-020 / REQ-004: an auth-marked key of any age never becomes usable through
+/// the TTL and is never probed.
+#[tokio::test]
+async fn ac020_auth_marked_key_never_expires_through_the_ttl_and_is_never_probed() {
+    let _home = isolated_temp_home("ac020-auth-never-ttl");
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-be-called"}))).await;
+    let now = super::types_config::now_ts();
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![pool_key_marked(
+                "key-auth",
+                "Auth",
+                "sk-ac020-auth",
+                true,
+                "authentication",
+                now.saturating_sub(100_000),
+                "HTTP 401 denied",
+            )],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 502, "no usable key yields the standard error");
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "an auth-marked key must never be attempted or probed"
+    );
+    assert!(attempts.is_empty(), "no attempt row may be produced");
+    let key = on_disk_key_entry("p1", "key-auth").expect("key must persist");
+    assert_eq!(key["auto_marked"], true, "the auth mark must stay: {key}");
+    assert_eq!(key["failure_kind"], "authentication", "{key}");
+}
+
+/// AC-021 / REQ-004: a quota-marked key without a marking time never expires
+/// through the TTL, so a healthy sibling serves and the mark stays.
+#[tokio::test]
+async fn ac021_quota_mark_without_a_marking_time_never_expires() {
+    let _home = isolated_temp_home("ac021-quota-no-time");
+    let (upstream_url, log) = spawn_mock_upstream(|captured| match auth_header_of(captured) {
+        Some("Bearer sk-ac021-b") => MockReply::Json(200, json!({"id": "served-by-b"})),
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                quota_marked_key_without_time("key-a", "sk-ac021-a"),
+                pool_key("key-b", "B", "sk-ac021-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 200);
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        1,
+        "a key without a marking time must never be selected: {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(auth_header_of(&captured[0]), Some("Bearer sk-ac021-b"));
+    let key = on_disk_key_entry("p1", "key-a").expect("key-a must persist");
+    assert_eq!(key["auto_marked"], true, "the timeless quota mark stays: {key}");
+    assert_eq!(key["marked_at"], Value::Null, "{key}");
+}
+
+/// AC-022 / REQ-004: when every key is marked and none is TTL-expired, the
+/// existing 60-second single-probe rule still applies unchanged.
+#[tokio::test]
+async fn ac022_all_marked_without_ttl_expiry_keeps_the_single_probe_rule() {
+    let _home = isolated_temp_home("ac022-all-marked-probe");
+    let (upstream_url, log) = spawn_mock_upstream(|captured| match auth_header_of(captured) {
+        Some("Bearer sk-probe-oldest") => {
+            MockReply::Json(200, json!({"id": "served-by-oldest"}))
+        }
+        other => MockReply::Json(
+            429,
+            json!({"error": {"message": format!("weekly limit for {other:?}")}}),
+        ),
+    })
+    .await;
+    let now = super::types_config::now_ts();
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key_marked(
+                    "key-oldest",
+                    "Oldest",
+                    "sk-probe-oldest",
+                    true,
+                    "quota",
+                    now.saturating_sub(120),
+                    "weekly limit",
+                ),
+                pool_key_marked(
+                    "key-newer",
+                    "Newer",
+                    "sk-probe-newer",
+                    true,
+                    "quota",
+                    now.saturating_sub(61),
+                    "weekly limit",
+                ),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 200, "the eligible probe must serve");
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        1,
+        "exactly one key probe is attempted: {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(
+        auth_header_of(&captured[0]),
+        Some("Bearer sk-probe-oldest"),
+        "the oldest marking is probed first"
+    );
+    let oldest = on_disk_key_entry("p1", "key-oldest").expect("key-oldest must persist");
+    assert_eq!(oldest["auto_marked"], false, "a successful probe clears the mark");
+    let newer = on_disk_key_entry("p1", "key-newer").expect("key-newer must persist");
+    assert_eq!(newer["auto_marked"], true, "the unprobed key keeps its mark");
+}
+
+// ---------------------------------------------------------------------------
+// AC-024 through AC-026: single-candidate retry and non-retry boundaries.
+// ---------------------------------------------------------------------------
+
+/// AC-024 / REQ-005: a single serviceable candidate that fails on the network
+/// receives the same bounded retry schedule under a paused clock.
+#[tokio::test(start_paused = true)]
+async fn ac024_single_candidate_network_failure_uses_the_bounded_retry_schedule() {
+    let _home = isolated_temp_home("ac024-single-network");
+    let (upstream_url, log) = spawn_mock_upstream(|_| MockReply::Drop).await;
+    let provider = upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = GatewayConfig::default();
+    config.providers = vec![provider.clone()];
+    let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+
+    let (response, _elapsed) = attempt_non_streaming_paused(
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local"),
+        &mut config,
+    )
+    .await;
+
+    assert_eq!(
+        log.lock().unwrap().len(),
+        single_provider_attempt_cap(),
+        "a single network-failing candidate receives the bounded retry schedule"
+    );
+    assert_eq!(response.status, 502, "the exhausted request answers 502");
+    let parsed: Value =
+        serde_json::from_slice(&response.body).expect("standard JSON error envelope");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(|value| value.as_str()),
+        Some("all_providers_unavailable")
+    );
+}
+
+/// AC-025 / REQ-005: a single streaming candidate whose failure arrives after
+/// the first forwarded byte keeps the stream-truncation path with no retry,
+/// unlike a pre-first-byte failure which receives the bounded schedule.
+#[tokio::test]
+async fn ac025_single_candidate_streaming_post_first_byte_failure_does_not_retry() {
+    let _home = isolated_temp_home("ac025-streaming-single-post-byte");
+    let partial = "data: {\"choices\":[{\"delta\":{\"content\":\"partial-solo\"}}]}".to_string();
+    let declared = partial.len() + 500;
+    let (upstream_url, log) = spawn_mock_upstream(move |_| {
+        MockReply::PartialStream(partial.clone(), declared)
+    })
+    .await;
+    let provider =
+        upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+
+    let text = attempt_streaming_text(std::slice::from_ref(&provider), &mut config).await;
+
+    assert!(
+        text.contains("partial-solo"),
+        "the first forwarded byte must reach the caller: {text}"
+    );
+    assert!(
+        text.contains("upstream_stream_error"),
+        "the mid-stream failure must close the stream with the error fragment: {text}"
+    );
+    assert_eq!(
+        log.lock().unwrap().len(),
+        1,
+        "a post-first-byte failure must not be retried"
+    );
+}
+
+/// AC-026 / REQ-005: a single candidate with a 404, 400 or 422 keeps the
+/// existing skip / return-to-client behavior with no retry.
+#[tokio::test]
+async fn ac026_single_candidate_non_retryable_statuses_do_not_retry() {
+    for (status, expected_status) in [(404u16, 502u16), (400, 400), (422, 422)] {
+        let _home = isolated_temp_home(&format!("ac026-non-retryable-{status}"));
+        let (upstream_url, log) =
+            spawn_mock_upstream(move |_| {
+                MockReply::Json(status, json!({"error": {"message": "bad request"}}))
+            })
+            .await;
+        let provider =
+            upstream_provider("a", "Provider A", &upstream_url, "sk", Some("remote-default"));
+        let body = serde_json::to_vec(&json!({"model": "local"})).unwrap();
+        let mut attempts = Vec::new();
+        let response = super::runtime_http::attempt_non_streaming(
+            std::slice::from_ref(&provider),
+            "/v1/chat/completions",
+            &body,
+            Some("local"),
+            &HashMap::new(),
+            false,
+            None,
+            &mut attempts,
+        )
+        .await;
+
+        assert_eq!(
+            log.lock().unwrap().len(),
+            1,
+            "status {status} must not be retried"
+        );
+        assert_eq!(attempts.len(), 1, "status {status} produces one attempt row");
+        assert_eq!(
+            response.status, expected_status,
+            "status {status} keeps its existing terminal behavior"
         );
     }
 }
