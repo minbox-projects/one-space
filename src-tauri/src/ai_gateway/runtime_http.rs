@@ -9,7 +9,7 @@ use super::selection::{
     FailureClass, MappingTarget, ModelResolution, ProbeCandidate, ProbeGuard, SessionOrder,
     MAX_RETRIES_PER_PROVIDER,
 };
-use super::storage::{local_base_url, read_config, write_config};
+use super::storage::{local_base_url, modify_config, read_config};
 use super::usage_log::{
     compute_cost_at_time, extract_upstream_error_text, match_price_for_provider,
     normalize_retention_days, now_millis, parse_usage_from_response, sanitize_error_text,
@@ -625,25 +625,63 @@ fn all_unavailable_message(failures: &[(String, String)]) -> String {
 /// response or retry backoff can span tens of seconds), and a whole-file
 /// rewrite from it would silently discard those concurrent edits. Only the
 /// matching mapping rows are touched; a provider deleted mid-request stays
-/// deleted.
+/// deleted. The whole read-modify-write runs under the serialized configuration
+/// primitive, and a mutation that changes nothing never rewrites the file.
 fn apply_failure(target: &MappingTarget, class: FailureClass, reason: &str) {
     let at = now_ts();
-    let Ok(mut latest) = read_config() else {
-        return;
-    };
-    let mut flipped = false;
-    if let Some(stored) = latest
-        .providers
-        .iter_mut()
-        .find(|stored| stored.id == target.provider_id)
-    {
-        let before = auto_disabled_snapshot(stored, target);
+    let flipped = modify_config(|latest| {
+        let Some(stored) = latest
+            .providers
+            .iter_mut()
+            .find(|stored| stored.id == target.provider_id)
+        else {
+            return Ok((false, false));
+        };
+        let before_runtime = mapping_runtime_snapshot(stored, target);
+        let before_auto_disabled = auto_disabled_snapshot(stored, target);
         register_mapping_failure(stored, target, class, reason, at);
-        flipped = auto_disabled_flipped(stored, target, &before);
-    }
-    if write_config(&latest).is_ok() && flipped {
+        let changed = mapping_runtime_snapshot(stored, target) != before_runtime;
+        let flipped = auto_disabled_flipped(stored, target, &before_auto_disabled);
+        Ok((changed, flipped))
+    })
+    .unwrap_or(false);
+    if flipped {
         emit_config_updated();
     }
+}
+
+/// The persisted runtime-health fields of one mapping row, used to detect an
+/// actual state change so a settlement that changes nothing never rewrites the
+/// file (REQ-002/AC-009).
+#[derive(Clone, PartialEq)]
+struct MappingRuntimeState {
+    auto_disabled: bool,
+    disabled_reason: Option<String>,
+    disabled_at: Option<u64>,
+    consecutive_failures: u32,
+    last_error_at: Option<u64>,
+}
+
+/// Snapshot the runtime-health fields of every row matching `target`'s trimmed
+/// key, in row order.
+fn mapping_runtime_snapshot(
+    provider: &GatewayUpstreamProvider,
+    target: &MappingTarget,
+) -> Vec<MappingRuntimeState> {
+    provider
+        .mappings
+        .iter()
+        .filter(|mapping| {
+            mapping_matches_key(mapping, &target.local_model, &target.upstream_model)
+        })
+        .map(|mapping| MappingRuntimeState {
+            auto_disabled: mapping.auto_disabled,
+            disabled_reason: mapping.disabled_reason.clone(),
+            disabled_at: mapping.disabled_at,
+            consecutive_failures: mapping.consecutive_failures,
+            last_error_at: mapping.last_error_at,
+        })
+        .collect()
 }
 
 /// Snapshot the `auto_disabled` flags of the mapping rows matching `target`'s
@@ -866,103 +904,111 @@ impl RequestHealth {
     /// Merge this request's probe and non-probe outcomes into the latest on-disk
     /// configuration and persist it. Like [`apply_failure`], this never writes
     /// back a request-start snapshot, so concurrent provider/key/price/toggle
-    /// edits survive the settlement of an older in-flight request.
+    /// edits survive the settlement of an older in-flight request. The whole
+    /// read-modify-write runs under the serialized configuration primitive, and
+    /// a settlement that changes no field never rewrites the file
+    /// (REQ-002/AC-009).
     fn apply(&self) {
         let at = now_ts();
-        let Ok(mut latest) = read_config() else {
-            return;
-        };
-        let mut changed = false;
         // Whether any settled row flipped `auto_disabled` during this write:
         // exactly one transition event is emitted after a successful write even
         // when several rows flipped (REQ-005/AC-008).
-        let mut flipped = false;
-        // The half-open probe settles first: a success clears the row, a failure
-        // re-arms its cooldown without ever touching the counter. Details are
-        // refreshed unless the failure was a transport failure suppressed by the
-        // resume grace (REQ-004/AC-006).
-        if let Some(probe) = &self.probe {
-            if let Some(stored) = latest
-                .providers
-                .iter_mut()
-                .find(|stored| stored.id == probe.target.provider_id)
-            {
-                match &probe.result {
-                    ProbeResult::Succeeded => {
-                        for mapping in stored.mappings.iter_mut().filter(|mapping| {
-                            mapping_matches_key(
-                                mapping,
-                                &probe.target.local_model,
-                                &probe.target.upstream_model,
-                            )
-                        }) {
-                            if mapping.auto_disabled {
-                                flipped = true;
+        let flipped = modify_config(|latest| {
+            let mut changed = false;
+            let mut flipped = false;
+            // The half-open probe settles first: a success clears the row, a
+            // failure re-arms its cooldown without ever touching the counter.
+            // Details are refreshed unless the failure was a transport failure
+            // suppressed by the resume grace (REQ-004/AC-006).
+            if let Some(probe) = &self.probe {
+                if let Some(stored) = latest
+                    .providers
+                    .iter_mut()
+                    .find(|stored| stored.id == probe.target.provider_id)
+                {
+                    let before_runtime = mapping_runtime_snapshot(stored, &probe.target);
+                    let before_auto_disabled = auto_disabled_snapshot(stored, &probe.target);
+                    match &probe.result {
+                        ProbeResult::Succeeded => {
+                            for mapping in stored.mappings.iter_mut().filter(|mapping| {
+                                mapping_matches_key(
+                                    mapping,
+                                    &probe.target.local_model,
+                                    &probe.target.upstream_model,
+                                )
+                            }) {
+                                clear_mapping_runtime_state(mapping);
                             }
-                            clear_mapping_runtime_state(mapping);
-                            changed = true;
+                        }
+                        ProbeResult::Failed { transport, reason } => {
+                            let update_details =
+                                !(*transport && self.suppress_transport_failures);
+                            let matched = stored.mappings.iter().any(|mapping| {
+                                mapping_matches_key(
+                                    mapping,
+                                    &probe.target.local_model,
+                                    &probe.target.upstream_model,
+                                )
+                            });
+                            if matched {
+                                rearm_mapping_probe_cooldown(
+                                    stored,
+                                    &probe.target,
+                                    reason,
+                                    probe.at,
+                                    update_details,
+                                );
+                            }
                         }
                     }
-                    ProbeResult::Failed { transport, reason } => {
-                        let update_details = !(*transport && self.suppress_transport_failures);
-                        let matched = stored.mappings.iter().any(|mapping| {
-                            mapping_matches_key(
-                                mapping,
-                                &probe.target.local_model,
-                                &probe.target.upstream_model,
-                            )
-                        });
-                        if matched {
-                            let before = auto_disabled_snapshot(stored, &probe.target);
-                            rearm_mapping_probe_cooldown(
-                                stored,
-                                &probe.target,
-                                reason,
-                                probe.at,
-                                update_details,
-                            );
-                            if auto_disabled_flipped(stored, &probe.target, &before) {
-                                flipped = true;
-                            }
-                            changed = true;
-                        }
+                    if mapping_runtime_snapshot(stored, &probe.target) != before_runtime {
+                        changed = true;
+                    }
+                    if auto_disabled_flipped(stored, &probe.target, &before_auto_disabled) {
+                        flipped = true;
                     }
                 }
             }
-        }
-        for target in &self.order {
-            let Some(outcome) = self.outcomes.get(target) else {
-                continue;
-            };
-            if outcome.disable_immediately {
-                continue;
-            }
-            let Some(stored) = latest
-                .providers
-                .iter_mut()
-                .find(|stored| stored.id == target.provider_id)
-            else {
-                continue;
-            };
-            if outcome.succeeded {
-                register_mapping_success(stored, target);
-                changed = true;
-            } else if outcome.health_failure {
-                let before = auto_disabled_snapshot(stored, target);
-                register_mapping_failure(
-                    stored,
-                    target,
-                    FailureClass::Retryable,
-                    &outcome.reason,
-                    at,
-                );
-                if auto_disabled_flipped(stored, target, &before) {
+            for target in &self.order {
+                let Some(outcome) = self.outcomes.get(target) else {
+                    continue;
+                };
+                if outcome.disable_immediately {
+                    continue;
+                }
+                let Some(stored) = latest
+                    .providers
+                    .iter_mut()
+                    .find(|stored| stored.id == target.provider_id)
+                else {
+                    continue;
+                };
+                let before_runtime = mapping_runtime_snapshot(stored, target);
+                let before_auto_disabled = auto_disabled_snapshot(stored, target);
+                if outcome.succeeded {
+                    register_mapping_success(stored, target);
+                } else if outcome.health_failure {
+                    register_mapping_failure(
+                        stored,
+                        target,
+                        FailureClass::Retryable,
+                        &outcome.reason,
+                        at,
+                    );
+                } else {
+                    continue;
+                }
+                if mapping_runtime_snapshot(stored, target) != before_runtime {
+                    changed = true;
+                }
+                if auto_disabled_flipped(stored, target, &before_auto_disabled) {
                     flipped = true;
                 }
-                changed = true;
             }
-        }
-        if changed && write_config(&latest).is_ok() && flipped {
+            Ok((changed, flipped))
+        })
+        .unwrap_or(false);
+        if flipped {
             emit_config_updated();
         }
     }
@@ -1084,9 +1130,10 @@ fn sync_key_runtime_marks(provider: &mut GatewayUpstreamProvider) {
 }
 
 /// Apply `mutate` to one provider's key in the latest persisted configuration
-/// and write it back, preserving concurrent edits to every other field. A key
-/// mark never emits the config-update event, which stays scoped to mapping
-/// auto-disable flips.
+/// and write it back through the serialized primitive, preserving concurrent
+/// edits to every other field. A mutation that leaves the key unchanged does
+/// not rewrite the file, and a key mark never emits the config-update event,
+/// which stays scoped to mapping auto-disable flips.
 fn persist_key_runtime_state<F>(provider_id: &str, key_id: &str, mutate: F)
 where
     F: FnOnce(&mut super::UpstreamKey),
@@ -1094,21 +1141,21 @@ where
     if key_id.is_empty() {
         return;
     }
-    let Ok(mut latest) = read_config() else {
-        return;
-    };
-    let Some(provider) = latest
-        .providers
-        .iter_mut()
-        .find(|provider| provider.id == provider_id)
-    else {
-        return;
-    };
-    let Some(key) = provider.keys.iter_mut().find(|key| key.id == key_id) else {
-        return;
-    };
-    mutate(key);
-    let _ = write_config(&latest);
+    let _ = modify_config(|latest| {
+        let Some(provider) = latest
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == provider_id)
+        else {
+            return Ok((false, ()));
+        };
+        let Some(key) = provider.keys.iter_mut().find(|key| key.id == key_id) else {
+            return Ok((false, ()));
+        };
+        let before = key.clone();
+        mutate(key);
+        Ok((*key != before, ()))
+    });
 }
 
 /// Mark a non-probe key after a key-scoped failure and persist it.

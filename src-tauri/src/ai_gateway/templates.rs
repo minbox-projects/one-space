@@ -750,6 +750,22 @@ pub fn apply_template_sync_with(
     })
 }
 
+/// Apply one template sync from an already-fetched model-list body, with no
+/// network call and no nested persistence.
+///
+/// The caller performs the HTTP fetch outside the configuration write lock and
+/// then runs this inside the serialized mutation: the body is parsed against
+/// the latest persisted template exactly like [`apply_template_sync_with`], and
+/// every template/derived-provider change is committed to `config`. A parse
+/// failure writes nothing.
+pub(in crate::ai_gateway) fn apply_template_sync_from_body(
+    config: &mut GatewayConfig,
+    template_id: &str,
+    raw: &str,
+) -> Result<ProviderTemplateView, String> {
+    apply_template_sync_with(config, template_id, |_| Ok(raw.to_string()), |_| Ok(()))
+}
+
 /// Fetch a template's model list from its configured `models_url` through
 /// `reqwest` with a 15-second timeout and no credentials. A blank URL, non-2xx
 /// status, timeout and network error return an actionable error naming the URL
