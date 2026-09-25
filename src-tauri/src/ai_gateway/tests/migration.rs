@@ -302,7 +302,7 @@ fn legacy_config_read_drops_provider_runtime_keys() {
 fn current_version_config_read_is_side_effect_free() {
     let _home = isolated_temp_home("migration-current-version");
     let current = json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "enabled": true,
         "providers": [{
             "id": "p",
@@ -849,4 +849,269 @@ fn usage_store_first_open_deletes_legacy_cancelled_once() {
     );
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// Ordered named key pool migration (REQ-002 / AC-002)
+//
+// The key-pool fields are not on the typed provider yet, so the migrated shape
+// is asserted on the decrypted raw JSON. The fixtures carry the legacy
+// `api_key` field; the expected post-migration shape is schema version 2 with a
+// `keys` array and no `api_key`.
+// ---------------------------------------------------------------------------
+
+/// Encoded current key-pool schema version.
+const KEY_POOL_SCHEMA_VERSION: u32 = 2;
+
+/// One migrated `Default` key entry for `value`.
+fn expected_default_key(value: &str) -> Value {
+    json!({
+        "id": "default",
+        "name": "Default",
+        "value": value,
+        "enabled": true,
+        "auto_marked": false,
+        "failure_kind": null,
+        "marked_at": null,
+        "reason": null,
+    })
+}
+
+/// A version-less configuration whose first provider holds a legacy single
+/// credential and whose second provider holds a blank one.
+fn legacy_single_key_fixture() -> Value {
+    json!({
+        "enabled": true,
+        "providers": [
+            {
+                "id": "p",
+                "name": "Provider P",
+                "base_url": "https://p.example.com/v1",
+                "api_key": "sk-legacy-secret",
+                "protocol": "chat_completions",
+                "mappings": [
+                    {"local_model": "local-a", "upstream_model": "remote-a", "enabled": true}
+                ]
+            },
+            {
+                "id": "q",
+                "name": "Provider Q",
+                "base_url": "https://q.example.com/v1",
+                "api_key": "   ",
+                "protocol": "chat_completions",
+                "mappings": [
+                    {"local_model": "local-q", "upstream_model": "remote-q", "enabled": true}
+                ]
+            }
+        ]
+    })
+}
+
+/// AC-002 / REQ-002: the first read of a legacy single-key configuration
+/// converts it once into a one-entry pool named `Default`, removes the old
+/// credential field, stamps schema version 2 and writes atomically; the second
+/// read leaves the bytes identical and a blank legacy value yields an empty
+/// pool.
+#[test]
+fn legacy_single_key_migrates_to_default_named_pool_once() {
+    let _home = isolated_temp_home("keypool-legacy-single");
+    write_encrypted_config(&legacy_single_key_fixture());
+
+    let first = read_config().expect("the legacy key configuration must stay readable");
+    assert_eq!(
+        first.schema_version, KEY_POOL_SCHEMA_VERSION,
+        "the in-memory config must carry the key-pool schema version"
+    );
+
+    let on_disk = decrypted_config_json();
+    assert_eq!(
+        on_disk.get("schema_version").and_then(Value::as_u64),
+        Some(u64::from(KEY_POOL_SCHEMA_VERSION)),
+        "the rewrite must persist schema version 2: {on_disk}"
+    );
+    let providers = on_disk["providers"].as_array().expect("providers array");
+    let p = providers
+        .iter()
+        .find(|provider| provider["id"] == "p")
+        .expect("provider p must be persisted");
+    assert!(
+        p.get("api_key").is_none(),
+        "the old single credential field must be removed: {p}"
+    );
+    let keys = p["keys"]
+        .as_array()
+        .unwrap_or_else(|| panic!("provider p must carry a migrated keys array: {p}"));
+    assert_eq!(keys.len(), 1, "the legacy key must become exactly one entry");
+    assert_eq!(keys[0]["name"], "Default");
+    assert_eq!(keys[0]["value"], "sk-legacy-secret");
+    assert_eq!(keys[0]["enabled"], true);
+    assert!(
+        keys[0]["id"].as_str().is_some_and(|id| !id.trim().is_empty()),
+        "the migrated Default key must carry a stable non-empty id: {keys:?}"
+    );
+    assert_eq!(
+        keys[0]["auto_marked"], false,
+        "a migrated legacy key starts healthy: {keys:?}"
+    );
+
+    let q = providers
+        .iter()
+        .find(|provider| provider["id"] == "q")
+        .expect("provider q must be persisted");
+    assert!(q.get("api_key").is_none());
+    assert_eq!(
+        q["keys"].as_array().map(Vec::len),
+        Some(0),
+        "a blank legacy value must yield an empty pool: {q}"
+    );
+
+    let raw = fs::read(config_path().expect("config path")).expect("read raw config");
+    assert!(
+        !String::from_utf8_lossy(&raw).contains("sk-legacy-secret"),
+        "the migrated key value must never be stored in plaintext"
+    );
+
+    let stable = raw_config_bytes();
+    let _second = read_config().expect("the second read must succeed");
+    assert_eq!(
+        raw_config_bytes(),
+        stable,
+        "the second read of an already-migrated config must not write again"
+    );
+}
+
+/// AC-002 / REQ-002: a current-version configuration that already carries a key
+/// pool is read without any rewrite; the keys survive untouched.
+#[test]
+fn current_version_key_pool_file_is_not_rewritten() {
+    let _home = isolated_temp_home("keypool-current-version");
+    let fixture = json!({
+        "schema_version": KEY_POOL_SCHEMA_VERSION,
+        "enabled": true,
+        "providers": [{
+            "id": "p",
+            "name": "Provider P",
+            "base_url": "https://p.example.com/v1",
+            "protocol": "chat_completions",
+            "keys": [
+                expected_default_key("sk-current-secret"),
+                {
+                    "id": "key-b",
+                    "name": "B",
+                    "value": "sk-b",
+                    "enabled": false,
+                    "auto_marked": false,
+                    "failure_kind": null,
+                    "marked_at": null,
+                    "reason": null,
+                }
+            ],
+            "mappings": [
+                {"local_model": "local-a", "upstream_model": "remote-a", "enabled": true}
+            ]
+        }]
+    });
+    write_encrypted_config(&fixture);
+    let before = raw_config_bytes();
+
+    let loaded = read_config().expect("the current-version pool must stay readable");
+    assert_eq!(loaded.schema_version, KEY_POOL_SCHEMA_VERSION);
+    assert_eq!(
+        raw_config_bytes(),
+        before,
+        "reading a current-version key-pool file must not write"
+    );
+
+    let on_disk = decrypted_config_json();
+    let keys = on_disk["providers"][0]["keys"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the keys array must be preserved: {on_disk}"));
+    assert_eq!(keys.len(), 2);
+    assert_eq!(keys[0]["value"], "sk-current-secret");
+    assert_eq!(keys[1]["enabled"], false);
+}
+
+/// AC-002 / REQ-002 counterexample: a future/unknown version is read as-is
+/// without a downgrade, a rewrite or any field deletion.
+#[test]
+fn future_version_key_pool_file_is_left_untouched() {
+    let _home = isolated_temp_home("keypool-future-version");
+    let fixture = json!({
+        "schema_version": 99,
+        "enabled": true,
+        "providers": [{
+            "id": "p",
+            "name": "Provider P",
+            "base_url": "https://p.example.com/v1",
+            "api_key": "sk-legacy-untouched",
+            "protocol": "chat_completions",
+            "mappings": []
+        }],
+        "future_only_field": {"kept": true}
+    });
+    write_encrypted_config(&fixture);
+    let before = raw_config_bytes();
+
+    let loaded = read_config().expect("a future-version config must stay readable");
+    assert_eq!(loaded.schema_version, 99, "the future version must be preserved");
+    assert_eq!(
+        raw_config_bytes(),
+        before,
+        "a future-version file must never be rewritten or downgraded"
+    );
+
+    let on_disk = decrypted_config_json();
+    assert_eq!(on_disk["future_only_field"], json!({"kept": true}));
+    assert_eq!(
+        on_disk["providers"][0]["api_key"], "sk-legacy-untouched",
+        "no future-version field may be mutated"
+    );
+}
+
+/// AC-002: when the migration rewrite cannot complete the read still returns
+/// the migrated value, the on-disk file keeps its previous complete bytes and a
+/// later read completes the same migration.
+#[cfg(unix)]
+#[test]
+fn failed_key_pool_rewrite_keeps_previous_bytes_and_retries() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _home = isolated_temp_home("keypool-readonly-retry");
+    write_encrypted_config(&legacy_single_key_fixture());
+    let legacy_bytes = raw_config_bytes();
+
+    let dir = crate::config::get_app_dir().expect("app dir");
+    // The rewrite writes `ai_gateway.tmp` inside the application directory.
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500))
+        .expect("make the app directory read-only");
+    let _restore = RestoreDirPermissions(dir.clone());
+
+    let migrated = read_config().expect("the read must still return the migrated value");
+    assert_eq!(
+        migrated.schema_version, KEY_POOL_SCHEMA_VERSION,
+        "the in-memory value must be migrated even when the rewrite fails"
+    );
+    assert_eq!(
+        raw_config_bytes(),
+        legacy_bytes,
+        "a failed rewrite must keep the previous complete bytes"
+    );
+
+    drop(_restore);
+    let completed = read_config().expect("the retry read must succeed");
+    assert_eq!(completed.schema_version, KEY_POOL_SCHEMA_VERSION);
+
+    let on_disk = decrypted_config_json();
+    assert_eq!(
+        on_disk.get("schema_version").and_then(Value::as_u64),
+        Some(u64::from(KEY_POOL_SCHEMA_VERSION)),
+        "the retried read must persist the migration: {on_disk}"
+    );
+    let provider = &on_disk["providers"][0];
+    assert!(provider.get("api_key").is_none(), "the old field must be gone: {provider}");
+    let keys = provider["keys"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the retried migration must persist keys: {provider}"));
+    assert_eq!(keys[0]["name"], "Default");
+    assert_eq!(keys[0]["value"], "sk-legacy-secret");
 }

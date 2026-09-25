@@ -92,7 +92,6 @@ fn bound_provider(id: &str, template_id: &str) -> GatewayUpstreamProvider {
         id: id.to_string(),
         name: "Test Template".to_string(),
         base_url: "https://tpl.example.com/v1".to_string(),
-        api_key: "sk-test".to_string(),
         template_id: Some(template_id.to_string()),
         ..GatewayUpstreamProvider::default()
     }

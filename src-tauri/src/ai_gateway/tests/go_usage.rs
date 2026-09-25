@@ -25,10 +25,18 @@ const FIXTURE: &str = r#"{
 const SECRET_KEY: &str = "sk-secret-go-usage-key";
 
 fn go_provider(api_key: &str, base_url: &str) -> GatewayUpstreamProvider {
-    let mut provider = super::provider("go-provider");
-    provider.api_key = api_key.to_string();
-    provider.base_url = base_url.to_string();
-    provider
+    // Raw JSON carries the legacy single credential (current behavior) and the
+    // ordered pool the provider type will adopt, so the same fixture serves both.
+    serde_json::from_value(json!({
+        "id": "go-provider",
+        "name": "Provider go-provider",
+        "base_url": base_url,
+        "api_key": api_key,
+        "keys": [super::pool_key("key-default", "Default", api_key, true)],
+        "protocol": "chat_completions",
+        "enabled": true,
+    }))
+    .expect("go-usage provider fixture must deserialize")
 }
 
 fn config_with_provider(provider: GatewayUpstreamProvider) -> GatewayConfig {
@@ -245,6 +253,156 @@ async fn storage_command_path_rejects_empty_key_before_fetching() {
     )
     .await
     .expect_err("empty API key must be rejected");
+    assert_eq!(error, "no API key configured for this provider");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Pinned Go-usage source over the ordered key pool (REQ-010)
+//
+// Raw schema-2 fixtures keep the key-pool contract while the typed provider has
+// no key pool yet; the storage command seam observes which key was resolved.
+// ---------------------------------------------------------------------------
+
+fn go_pool_key(id: &str, value: &str, enabled: bool) -> serde_json::Value {
+    json!({
+        "id": id,
+        "name": id,
+        "value": value,
+        "enabled": enabled,
+        "auto_marked": false,
+        "failure_kind": null,
+        "marked_at": null,
+        "reason": null,
+    })
+}
+
+fn write_go_pool(keys: Vec<serde_json::Value>) {
+    super::write_raw_gateway_config(&json!({
+        "schema_version": 2,
+        "providers": [{
+            "id": "go-pool",
+            "name": "Go Pool",
+            "base_url": "https://opencode.ai/zen/go",
+            "protocol": "chat_completions",
+            "keys": keys,
+            "mappings": [],
+        }],
+    }));
+}
+
+/// REQ-010: the Go-usage block always queries the first enabled key in list
+/// order and invalidates its cache when that key changes.
+#[tokio::test]
+async fn go_usage_source_is_first_enabled_key_and_invalidates_on_key_change() {
+    let _home = super::isolated_temp_home("go-usage-pool-source");
+    write_go_pool(vec![
+        go_pool_key("key-disabled", "sk-disabled", false),
+        go_pool_key("key-a", "sk-first", true),
+        go_pool_key("key-b", "sk-second", true),
+    ]);
+
+    let cache = Mutex::new(GoUsageCache::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let first_calls = Arc::clone(&calls);
+    let first = ai_gateway_provider_go_usage_with(
+        "go-pool".to_string(),
+        None,
+        1_000,
+        &cache,
+        move |url, key| {
+            first_calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                assert_eq!(url, GO_USAGE_URL);
+                assert_eq!(key, "sk-first", "the first enabled key must be the source");
+                Ok(FIXTURE.to_string())
+            }
+        },
+    )
+    .await
+    .expect("the first enabled key must resolve the Go-usage request");
+    assert_eq!(first, expected_fixture());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    write_go_pool(vec![
+        go_pool_key("key-a", "sk-first", false),
+        go_pool_key("key-b", "sk-second", true),
+    ]);
+    let second_calls = Arc::clone(&calls);
+    ai_gateway_provider_go_usage_with(
+        "go-pool".to_string(),
+        None,
+        1_001,
+        &cache,
+        move |_, key| {
+            second_calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                assert_eq!(key, "sk-second", "the new first enabled key must be queried");
+                Ok(FIXTURE.to_string())
+            }
+        },
+    )
+    .await
+    .expect("a changed source key must invalidate the cache and refetch");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "a changed source key must force a fresh fetch"
+    );
+}
+
+/// REQ-010 boundary: with every key disabled the first key in list order stays
+/// the pinned Go-usage source.
+#[tokio::test]
+async fn go_usage_source_uses_first_key_when_all_are_disabled() {
+    let _home = super::isolated_temp_home("go-usage-pool-all-disabled");
+    write_go_pool(vec![
+        go_pool_key("key-a", "sk-first-disabled", false),
+        go_pool_key("key-b", "sk-second-disabled", false),
+    ]);
+
+    let calls = AtomicUsize::new(0);
+    ai_gateway_provider_go_usage_with(
+        "go-pool".to_string(),
+        None,
+        1_000,
+        &Mutex::new(GoUsageCache::new()),
+        |_, key| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                assert_eq!(
+                    key, "sk-first-disabled",
+                    "the first key must remain the pinned source when all are disabled"
+                );
+                Ok(FIXTURE.to_string())
+            }
+        },
+    )
+    .await
+    .expect("an all-disabled pool still resolves the first key");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+/// REQ-010 boundary: an empty pool keeps the existing no-key error and never
+/// fetches.
+#[tokio::test]
+async fn go_usage_source_empty_pool_keeps_the_no_key_error() {
+    let _home = super::isolated_temp_home("go-usage-pool-empty");
+    write_go_pool(vec![]);
+
+    let calls = AtomicUsize::new(0);
+    let error = ai_gateway_provider_go_usage_with(
+        "go-pool".to_string(),
+        None,
+        1_000,
+        &Mutex::new(GoUsageCache::new()),
+        |_, _| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(FIXTURE.to_string()) }
+        },
+    )
+    .await
+    .expect_err("an empty key pool must fail before fetching");
     assert_eq!(error, "no API key configured for this provider");
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }

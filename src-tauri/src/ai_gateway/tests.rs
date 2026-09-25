@@ -84,7 +84,6 @@ fn provider(id: &str) -> GatewayUpstreamProvider {
         id: id.to_string(),
         name: format!("Provider {id}"),
         base_url: "https://api.example.com/v1".to_string(),
-        api_key: "sk-test".to_string(),
         default_model: None,
         protocol: UpstreamProtocol::ChatCompletions,
         mappings: Vec::new(),
@@ -102,9 +101,16 @@ fn provider(id: &str) -> GatewayUpstreamProvider {
 fn gateway_config_round_trips_and_encrypts_secrets_on_disk() {
     with_temp_home("roundtrip", |_home| {
         let mut config = GatewayConfig::default();
-        let mut first = provider("p1");
-        first.api_key = "sk-super-secret-123".to_string();
-        first.default_model = Some("remote-default".to_string());
+        let mut first: GatewayUpstreamProvider = serde_json::from_value(json!({
+            "id": "p1",
+            "name": "Provider p1",
+            "base_url": "https://api.example.com/v1",
+            "keys": [pool_key("key-default", "Default", "sk-super-secret-123", true)],
+            "default_model": "remote-default",
+            "protocol": "chat_completions",
+            "enabled": true,
+        }))
+        .expect("provider fixture must deserialize");
         first.mappings = vec![ModelMapping {
             local_model: "local-a".to_string(),
             upstream_model: "remote-a".to_string(),
@@ -131,7 +137,9 @@ fn gateway_config_round_trips_and_encrypts_secrets_on_disk() {
 
         let loaded = super::storage::read_config().expect("read config");
         assert_eq!(loaded.providers.len(), 1);
-        assert_eq!(loaded.providers[0].api_key, "sk-super-secret-123");
+        let keys = on_disk_provider_keys("p1")
+            .expect("the provider credential must round-trip through the persisted key pool");
+        assert_eq!(keys[0]["value"], "sk-super-secret-123");
         assert_eq!(
             loaded.providers[0].mappings[0].upstream_model,
             "remote-a"
@@ -890,22 +898,22 @@ fn upstream_provider(
     api_key: &str,
     default_model: Option<&str>,
 ) -> GatewayUpstreamProvider {
-    GatewayUpstreamProvider {
-        id: id.to_string(),
-        name: name.to_string(),
-        base_url: base_url.to_string(),
-        api_key: api_key.to_string(),
-        default_model: default_model.map(str::to_string),
-        protocol: UpstreamProtocol::ChatCompletions,
-        mappings: Vec::new(),
-        weight: 1,
-        enabled: true,
-        template_id: None,
-        ignored_models: Vec::new(),
-        tags: Vec::new(),
-        icon: None,
-        ..GatewayUpstreamProvider::default()
-    }
+    // Raw JSON carries both the legacy single field (so the fixture keeps its
+    // current behavior before the key pool lands) and the ordered pool the
+    // provider type will adopt. `pool_key` is the shared key-entry fixture.
+    serde_json::from_value(json!({
+        "id": id,
+        "name": name,
+        "base_url": base_url,
+        "api_key": api_key,
+        "keys": [pool_key("key-default", "Default", api_key, true)],
+        "default_model": default_model,
+        "protocol": "chat_completions",
+        "mappings": [],
+        "weight": 1,
+        "enabled": true,
+    }))
+    .expect("upstream provider fixture must deserialize")
 }
 
 fn mapping(local_model: &str, upstream_model: &str, display_name: Option<&str>) -> ModelMapping {
@@ -1402,26 +1410,37 @@ async fn assert_truncated_auth_non_streaming(status: u16) {
     assert_eq!(attempts[1].error_message, None);
     assert!(attempts[1].duration_ms >= 1);
 
+    // REQ-004: a 401/403 is a key-scoped failure. The attempted key is marked
+    // with the auth failure kind while the mapping row stays untouched.
     let persisted = super::storage::read_config().expect("read persisted provider state");
     let auth_provider = persisted
         .providers
         .iter()
         .find(|provider| provider.id == "auth")
         .expect("auth provider state");
-    assert!(
-        auth_provider.mappings[0].auto_disabled,
-        "HTTP {status} must immediately persist auto_disabled on the mapping row despite the truncated body"
+    let auth_key = on_disk_key_entry("auth", "key-default")
+        .expect("the attempted key must stay persisted");
+    assert_eq!(
+        auth_key["auto_marked"], true,
+        "HTTP {status} must mark the attempted key"
     );
-    // Frozen Step 2 rule: an immediate auth disable never advances the
-    // transient-failure counter but still stamps last_error_at.
+    assert_eq!(auth_key["failure_kind"], "authentication");
+    assert!(
+        auth_key["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains(&status.to_string()),
+        "HTTP {status} key mark reason must name the status: {auth_key}"
+    );
+    assert!(
+        !auth_provider.mappings[0].auto_disabled,
+        "HTTP {status} must not auto-disable the mapping row for a key-scoped failure"
+    );
     assert_eq!(
         auth_provider.mappings[0].consecutive_failures, 0,
-        "HTTP {status} immediate disable must not increment consecutive_failures"
+        "HTTP {status} must not register mapping health"
     );
-    assert!(
-        auth_provider.mappings[0].last_error_at.is_some(),
-        "HTTP {status} immediate disable must still stamp last_error_at"
-    );
+    assert_eq!(auth_provider.mappings[0].last_error_at, None);
 }
 
 #[tokio::test]
@@ -1527,26 +1546,37 @@ async fn assert_truncated_auth_streaming(status: u16) {
     assert_eq!(attempts[1].error_message, None);
     assert!(attempts[1].duration_ms >= 1);
 
+    // REQ-004: a 401/403 is a key-scoped failure. The attempted key is marked
+    // with the auth failure kind while the mapping row stays untouched.
     let persisted = super::storage::read_config().expect("read persisted provider state");
     let auth_provider = persisted
         .providers
         .iter()
         .find(|provider| provider.id == "auth")
         .expect("auth provider state");
-    assert!(
-        auth_provider.mappings[0].auto_disabled,
-        "HTTP {status} must immediately persist auto_disabled on the mapping row despite the truncated body"
+    let auth_key = on_disk_key_entry("auth", "key-default")
+        .expect("the attempted key must stay persisted");
+    assert_eq!(
+        auth_key["auto_marked"], true,
+        "HTTP {status} must mark the attempted key"
     );
-    // Frozen Step 2 rule: an immediate auth disable never advances the
-    // transient-failure counter but still stamps last_error_at.
+    assert_eq!(auth_key["failure_kind"], "authentication");
+    assert!(
+        auth_key["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains(&status.to_string()),
+        "HTTP {status} key mark reason must name the status: {auth_key}"
+    );
+    assert!(
+        !auth_provider.mappings[0].auto_disabled,
+        "HTTP {status} must not auto-disable the mapping row for a key-scoped failure"
+    );
     assert_eq!(
         auth_provider.mappings[0].consecutive_failures, 0,
-        "HTTP {status} immediate disable must not increment consecutive_failures"
+        "HTTP {status} must not register mapping health"
     );
-    assert!(
-        auth_provider.mappings[0].last_error_at.is_some(),
-        "HTTP {status} immediate disable must still stamp last_error_at"
-    );
+    assert_eq!(auth_provider.mappings[0].last_error_at, None);
 }
 
 #[tokio::test]
@@ -4505,48 +4535,34 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
         assert_eq!(attempts[1].provider_id, "b");
         assert_eq!(attempts[1].status, 200);
 
+        // REQ-004: the 401/403 marks provider a's attempted key and the request
+        // continues on provider b; provider a's mapping health stays untouched.
         let live = super::storage::read_config().expect("read persisted provider state");
         let a_stored = live.providers.iter().find(|p| p.id == "a").unwrap();
-        assert!(a_stored.mappings[0].auto_disabled, "status {status} must auto-disable immediately");
+        let a_key = on_disk_key_entry("a", "key-default")
+            .expect("provider a's attempted key must stay persisted");
+        assert_eq!(
+            a_key["auto_marked"], true,
+            "status {status} must mark provider a's attempted key"
+        );
+        assert_eq!(a_key["failure_kind"], "authentication");
         assert!(
-            a_stored
-                .mappings[0]
-                .disabled_reason
-                .as_deref()
+            a_key["reason"]
+                .as_str()
                 .unwrap_or("")
                 .contains(&status.to_string()),
-            "reason must record the status: {:?}",
-            a_stored.mappings[0].disabled_reason
-        );
-        // F-04: pin the producer-side reason prefix. The probe discriminator
-        // (`selection::is_immediate_auth_disable_reason`) recognises legacy rows
-        // solely by a trimmed `disabled_reason` starting with `HTTP 401`/`HTTP 403`,
-        // so the producer must keep writing exactly that prefix.
-        let auth_reason = a_stored.mappings[0].disabled_reason.as_deref().unwrap_or("");
-        let expected_prefix = match status {
-            401 => "HTTP 401",
-            403 => "HTTP 403",
-            other => panic!("unexpected auth status {other}"),
-        };
-        assert!(
-            auth_reason.starts_with(expected_prefix),
-            "status {status} must persist a reason starting with `{expected_prefix}`: {auth_reason:?}"
-        );
-        assert!(a_stored.mappings[0].disabled_at.is_some());
-        // Frozen Step 2 rule: the immediate 401/403 disable records reason/at and
-        // last_error_at but must NOT advance consecutive_failures, so the counter
-        // can no longer reach the probe threshold through an auth disable.
-        assert_eq!(
-            a_stored.mappings[0].consecutive_failures, 0,
-            "status {status} immediate disable must not increment the counter"
+            "status {status} key mark reason must name the status: {a_key}"
         );
         assert!(
-            a_stored.mappings[0].last_error_at.is_some(),
-            "status {status} immediate disable must still stamp last_error_at"
+            !a_stored.mappings[0].auto_disabled,
+            "status {status} must not auto-disable the mapping row for a key-scoped failure"
         );
-        let live = super::storage::read_config().expect("read persisted provider state");
+        assert_eq!(a_stored.mappings[0].consecutive_failures, 0);
+        assert_eq!(a_stored.mappings[0].last_error_at, None);
         let b_stored = live.providers.iter().find(|p| p.id == "b").unwrap();
         assert!(!b_stored.mappings[0].auto_disabled);
+        let b_key = on_disk_key_entry("b", "key-default").expect("provider b key must persist");
+        assert_eq!(b_key["auto_marked"], false, "the fallback key must stay unmarked");
         drop(home);
     }
 }
@@ -4783,23 +4799,26 @@ async fn health_settlement_preserves_providers_added_mid_request() {
     let merged = super::storage::read_config().expect("read merged config after 401");
     assert!(
         merged.providers.iter().any(|p| p.id == "late-manual-2"),
-        "a provider saved mid-request must survive immediate-disable settlement"
+        "a provider saved mid-request must survive key-mark settlement"
     );
     let auth_merged = merged.providers.iter().find(|p| p.id == "auth").expect("auth provider");
-    assert!(auth_merged.mappings[0].auto_disabled, "401 must still disable immediately");
-    assert_eq!(
-        auth_merged.mappings[0].consecutive_failures, 0,
-        "an immediate 401 disable must not increment the transient-failure counter"
+    let auth_key = on_disk_key_entry("auth", "key-default").expect("auth key must persist");
+    assert_eq!(auth_key["auto_marked"], true, "a 401 must mark the attempted key");
+    assert!(
+        !auth_merged.mappings[0].auto_disabled,
+        "a key-scoped 401 must not auto-disable the mapping row"
     );
-    assert!(auth_merged.mappings[0].last_error_at.is_some());
+    assert_eq!(auth_merged.mappings[0].consecutive_failures, 0);
+    assert_eq!(auth_merged.mappings[0].last_error_at, None);
 }
 
 #[tokio::test]
-async fn end_to_end_quota_429_counts_and_disables_while_rate_limit_429_does_not() {
-    // Quota-exhausted 429 (weekly usage limit) counts toward mapping health and
-    // auto-disables at the threshold even though a healthy fallback serves every
-    // request; a plain rate-limit 429 never counts.
-    for (name, message, should_disable) in [
+async fn end_to_end_quota_429_marks_the_key_while_rate_limit_429_does_not() {
+    // REQ-004 / REQ-005: a quota-exhausted 429 marks the attempted key and the
+    // provider is skipped while that mark stands, while a plain rate-limit 429
+    // never marks a key and the provider keeps serving. Mapping health is
+    // untouched by either failure class.
+    for (name, message, quota_scoped) in [
         (
             "quota",
             "You've reached your weekly usage limit for your plan. Your limit resets at 2026-09-24T03:30:30.663Z. Please wait for the window to reset or upgrade your plan to continue.",
@@ -4834,8 +4853,6 @@ async fn end_to_end_quota_429_counts_and_disables_while_rate_limit_429_does_not(
 
         for _ in 0..3 {
             let mut attempts = Vec::new();
-            // Re-resolve candidates from the persisted state each round so an
-            // auto-disabled row drops out.
             let live = super::storage::read_config().expect("read persisted provider state");
             let candidates: Vec<GatewayUpstreamProvider> = candidate_providers(
                 &live.providers,
@@ -4861,26 +4878,35 @@ async fn end_to_end_quota_429_counts_and_disables_while_rate_limit_429_does_not(
 
         let live = super::storage::read_config().expect("read persisted provider state");
         let stored = live.providers.iter().find(|p| p.id == "a").unwrap();
-        assert_eq!(
-            stored.mappings[0].auto_disabled, should_disable,
-            "{name}: auto_disabled mismatch"
+        assert!(
+            !stored.mappings[0].auto_disabled,
+            "{name}: a key-scoped/transient failure must not auto-disable the mapping"
         );
         assert_eq!(
-            stored.mappings[0].consecutive_failures,
-            if should_disable { 3 } else { 0 },
-            "{name}: consecutive_failures mismatch"
+            stored.mappings[0].consecutive_failures, 0,
+            "{name}: a key-scoped/transient failure must not register mapping health"
         );
-        if should_disable {
+        let limited_key = on_disk_key_entry("a", "key-default").expect("provider a key must persist");
+        if quota_scoped {
+            assert_eq!(
+                limited_key["auto_marked"], true,
+                "a quota-exhausted 429 must mark the attempted key"
+            );
+            assert_eq!(limited_key["failure_kind"], "quota");
             assert_eq!(
                 limited_log.lock().unwrap().len(),
-                3,
-                "quota provider is contacted once per request until disabled"
+                1,
+                "a quota-marked single-key provider is skipped on later requests"
             );
         } else {
             assert_eq!(
+                limited_key["auto_marked"], false,
+                "a rate-limit 429 must never mark the key"
+            );
+            assert_eq!(
                 limited_log.lock().unwrap().len(),
                 3,
-                "rate-limited provider keeps serving as fallback candidate"
+                "a rate-limited provider keeps serving as a fallback candidate"
             );
         }
     }
@@ -6755,6 +6781,7 @@ fn json_provider(
         "name": name,
         "base_url": base_url,
         "api_key": "sk-upstream",
+        "keys": [pool_key("key-default", "Default", "sk-upstream", true)],
         "default_model": default_model,
         "protocol": protocol,
         "mappings": mappings,
@@ -9029,22 +9056,26 @@ async fn retry_stream_html_401_and_403_disable_immediately() {
         assert!(text.contains(&format!("healthy-after-{status}")), "stream: {text}");
         let live = super::storage::read_config().expect("read persisted provider state");
         let stored = live.providers.iter().find(|item| item.id == "a").unwrap();
-        assert!(stored.mappings[0].auto_disabled, "HTML {status} must immediately disable");
-        assert!(
-            stored.mappings[0].disabled_reason.as_deref().unwrap_or("").contains(&status.to_string()),
-            "HTML {status} disable reason: {:?}",
-            stored.mappings[0].disabled_reason
-        );
-        // Frozen Step 2 rule: the immediate auth disable does not count as a
-        // transient failure, so the counter stays zero for a 401/403 row.
+        let auth_key = on_disk_key_entry("a", "key-default")
+            .expect("the auth provider's attempted key must persist");
         assert_eq!(
-            stored.mappings[0].consecutive_failures, 0,
-            "HTML {status} immediate disable must not increment the counter"
+            auth_key["auto_marked"], true,
+            "HTML {status} must mark the attempted key"
+        );
+        assert_eq!(auth_key["failure_kind"], "authentication");
+        assert!(
+            auth_key["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains(&status.to_string()),
+            "HTML {status} key mark reason: {auth_key}"
         );
         assert!(
-            stored.mappings[0].last_error_at.is_some(),
-            "HTML {status} immediate disable must still stamp last_error_at"
+            !stored.mappings[0].auto_disabled,
+            "HTML {status} must not auto-disable the mapping row for a key-scoped failure"
         );
+        assert_eq!(stored.mappings[0].consecutive_failures, 0);
+        assert_eq!(stored.mappings[0].last_error_at, None);
     }
 }
 
@@ -12103,15 +12134,12 @@ fn upsert_provider_with_prices_preserves_existing_config_fields() {
         let reloaded = super::storage::read_config().expect("reload config");
         assert_eq!(reloaded.providers.len(), 2);
         assert!(reloaded.providers.iter().any(|candidate| candidate.id == "q"));
-        assert_eq!(
-            reloaded
-                .providers
-                .iter()
-                .find(|candidate| candidate.id == "p1")
-                .expect("p1 must remain")
-                .api_key,
-            "sk-test"
-        );
+        let p1 = reloaded
+            .providers
+            .iter()
+            .find(|candidate| candidate.id == "p1")
+            .expect("p1 must remain");
+        assert_eq!(p1.mappings[0].upstream_model, "remote-a");
         assert_eq!(reloaded.keys.len(), 1);
         assert_eq!(reloaded.keys[0].value, "value-k1");
         assert_eq!(reloaded.default_key_id.as_deref(), Some("k1"));
@@ -19906,7 +19934,6 @@ fn ac_017_default_model_records_no_outcome() {
         id: "dm-test".to_string(),
         name: "DM Test".to_string(),
         base_url: "https://example.com".to_string(),
-        api_key: "sk".to_string(),
         default_model: Some("remote-dm".to_string()),
         protocol: UpstreamProtocol::ChatCompletions,
         mappings: vec![mapping("mapped-local", "mapped-remote", None)],
@@ -20041,7 +20068,6 @@ fn ai_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
             id: "p-upsert-keep".to_string(),
             name: "Upsert Keep".to_string(),
             base_url: "https://api.example.com/v1".to_string(),
-            api_key: "sk-seeded".to_string(),
             default_model: None,
             protocol: UpstreamProtocol::ChatCompletions,
             mappings: vec![ModelMapping {
@@ -20075,7 +20101,6 @@ fn ai_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
                 id: seeded.id.clone(),
                 name: "Upsert Keep Renamed".to_string(),
                 base_url: seeded.base_url.clone(),
-                api_key: "sk-new".to_string(),
                 default_model: None,
                 protocol: UpstreamProtocol::ChatCompletions,
                 mappings: vec![ModelMapping {
@@ -20114,7 +20139,6 @@ fn ai_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
             "Upsert Keep Renamed",
             "display_name update must apply"
         );
-        assert_eq!(provider.api_key, "sk-new", "API key must be updated");
 
         // Runtime state must be preserved despite sender claiming healthy.
         let mapping = &provider.mappings[0];
@@ -20155,7 +20179,6 @@ fn ai_gateway_upsert_clears_runtime_state_for_changed_key() {
             id: "p-upsert-reset".to_string(),
             name: "Upsert Reset".to_string(),
             base_url: "https://api.example.com/v1".to_string(),
-            api_key: "sk-seeded".to_string(),
             default_model: None,
             protocol: UpstreamProtocol::ChatCompletions,
             mappings: vec![
@@ -20204,7 +20227,6 @@ fn ai_gateway_upsert_clears_runtime_state_for_changed_key() {
                 id: seeded.id.clone(),
                 name: "Upsert Reset Updated".to_string(),
                 base_url: seeded.base_url.clone(),
-                api_key: "sk-changed".to_string(),
                 default_model: None,
                 protocol: UpstreamProtocol::ChatCompletions,
                 mappings: vec![
@@ -20310,7 +20332,6 @@ fn ac_016_status_from_config_counts_rows_not_providers() {
         id: "multi-rows".to_string(),
         name: "Multi Rows Provider".to_string(),
         base_url: "https://api.example.com/v1".to_string(),
-        api_key: "sk-test".to_string(),
         default_model: None,
         protocol: UpstreamProtocol::ChatCompletions,
         mappings: vec![
@@ -22495,14 +22516,17 @@ async fn quota_429_failure_still_counts_inside_the_suppression_window() {
     assert_eq!(attempts.len(), 1);
     let stored = super::storage::read_config().expect("read persisted provider state");
     let row = persisted_mapping_row(&stored, "a");
-    assert_eq!(
-        row.consecutive_failures, 1,
-        "a quota-exhausted 429 inside the grace window must still count"
-    );
     assert!(
-        row.last_error_at.is_some(),
-        "a counted quota 429 must stamp last_error_at"
+        !row.auto_disabled && row.consecutive_failures == 0,
+        "a quota-exhausted 429 is key-scoped and must not register mapping health"
     );
+    assert_eq!(row.last_error_at, None);
+    let key = on_disk_key_entry("a", "key-default").expect("the attempted key must persist");
+    assert_eq!(
+        key["auto_marked"], true,
+        "a quota-exhausted 429 inside the grace window must still mark the key"
+    );
+    assert_eq!(key["failure_kind"], "quota");
 }
 
 /// REQ-004 / AC-006: a suppressed streaming transport failure still writes the
@@ -24505,53 +24529,94 @@ async fn probe_rearm_emits_no_config_update_event() {
     clear_config_update_events();
 }
 
-/// AC-008 / REQ-005: a fresh 401 disables a healthy row and records one event;
-/// a repeated 401 settlement on the already-disabled row records none.
+/// AC-008 / REQ-005 / REQ-008 (key-pool contract): a fresh 401 marks the
+/// attempted upstream key instead of touching mapping health, so the request
+/// ends through the standard 502 path and no `ai-gateway-config-update` event is
+/// recorded; a later request over the same persisted snapshot skips the provider
+/// because its only key is auth-marked and auth-marked keys are never probed.
 #[tokio::test]
-async fn fresh_immediate_disable_emits_one_event_and_repeat_emits_none() {
+async fn fresh_auth_marking_leaves_mapping_health_and_events_untouched() {
     let _home = isolated_temp_home("config-update-immediate-auth");
     let (upstream_url, upstream_log) =
         spawn_mock_upstream(|_| MockReply::Json(401, json!({"error": {"message": "unauthorized"}})))
             .await;
 
-    let provider = health_counter_provider(
-        "cfg-auth",
-        &upstream_url,
-        "cfg-local-auth",
-        "cfg-remote-auth",
+    write_raw_gateway_config(&pool_config(
         0,
-    );
-    let mut config = GatewayConfig::default();
-    config.providers.push(provider.clone());
-    super::storage::write_config(&config).expect("seed config");
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![pool_key("key-a", "A", "sk-only-key", true)],
+            vec![json_mapping("local-model", "remote-model", None)],
+        )],
+    ));
 
     clear_config_update_events();
-    let first = attempt_without_probe(std::slice::from_ref(&provider), "cfg-local-auth").await;
-    assert_eq!(first.status, 502);
-    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+
+    // First request over the seeded provider snapshot: the single enabled key is
+    // usable, so the auth path runs. The 401 is key-scoped: it marks the key
+    // rather than auto-disabling the mapping row, and the request still ends in
+    // the standard 502 envelope once no usable key remains.
+    let first = attempt_without_probe(&live_candidates("local-model"), "local-model").await;
+    assert_eq!(first.status, 502, "the marked key leaves no usable candidate");
+    let first_text = String::from_utf8_lossy(&first.body);
+    let first_body = assert_standard_error_envelope(&first_text);
+    assert_eq!(first_body["error"]["code"], "all_providers_unavailable");
     assert_eq!(
-        recorded_config_update_events(),
-        vec![CONFIG_UPDATE_EVENT_NAME.to_string()],
-        "a fresh immediate disable must record exactly one config-update event"
-    );
-    let row = stored_probe_row("cfg-auth");
-    assert!(row.auto_disabled, "a 401 must disable the row");
-    // F-04: the fresh-401 producer path must write the exact `HTTP 401` prefix
-    // the probe discriminator depends on.
-    let reason = row.disabled_reason.as_deref().unwrap_or("");
-    assert!(
-        reason.starts_with("HTTP 401"),
-        "a fresh 401 must persist a reason starting with `HTTP 401`: {reason:?}"
+        upstream_log.lock().unwrap().len(),
+        1,
+        "the single seeded key must be contacted exactly once"
     );
 
-    let second = attempt_without_probe(std::slice::from_ref(&provider), "cfg-local-auth").await;
-    assert_eq!(second.status, 502);
-    assert_eq!(upstream_log.lock().unwrap().len(), 2);
-    assert_eq!(
-        recorded_config_update_events(),
-        vec![CONFIG_UPDATE_EVENT_NAME.to_string()],
-        "re-disabling an already-disabled row must not emit another event"
+    let key = on_disk_key_entry("p1", "key-a").expect("the attempted key must stay persisted");
+    assert_eq!(key["auto_marked"], true, "a 401 must mark the attempted key");
+    assert_eq!(key["failure_kind"], "authentication");
+    assert!(
+        key["marked_at"].as_u64().is_some(),
+        "the marking time must be recorded: {key}"
     );
+    assert!(
+        !key["reason"].as_str().unwrap_or("").is_empty(),
+        "the marking reason must be a non-empty string: {key}"
+    );
+
+    let row = stored_probe_row("p1");
+    assert!(
+        !row.auto_disabled,
+        "a key-scoped auth failure must never auto-disable the mapping row"
+    );
+    assert_eq!(
+        row.consecutive_failures, 0,
+        "a key-scoped auth failure must never register mapping health"
+    );
+    assert_eq!(row.last_error_at, None);
+    assert_eq!(row.disabled_at, None);
+    assert!(
+        recorded_config_update_events().is_empty(),
+        "key marking must not emit a config-update event: {:?}",
+        recorded_config_update_events()
+    );
+
+    // Second request: candidates are re-resolved from the same persisted
+    // snapshot, which now carries the auth mark. Because the only key is
+    // auth-marked (never probed), the provider is skipped: the upstream must not
+    // be contacted again and the standard envelope is returned.
+    let second = attempt_without_probe(&live_candidates("local-model"), "local-model").await;
+    assert_eq!(second.status, 502);
+    let second_text = String::from_utf8_lossy(&second.body);
+    let second_body = assert_standard_error_envelope(&second_text);
+    assert_eq!(second_body["error"]["code"], "all_providers_unavailable");
+    assert_eq!(
+        upstream_log.lock().unwrap().len(),
+        1,
+        "an auth-marked key must never be probed on a later request"
+    );
+    assert!(
+        recorded_config_update_events().is_empty(),
+        "skipping the provider must not emit a config-update event"
+    );
+
     clear_config_update_events();
 }
 
@@ -25013,4 +25078,1025 @@ fn template_sync_command_delegates_to_apply_terminal_sync() {
         body.contains("apply_terminal_sync"),
         "ai_gateway_sync_provider_template must delegate to apply_terminal_sync: {body}"
     );
+}
+
+// ===========================================================================
+// Ordered named upstream key pool (REQ-001/003/004/005/006/007/008)
+//
+// The key-pool fields do not exist on the typed provider yet, so every fixture
+// is raw JSON written straight into the encrypted `ai_gateway.json` and every
+// persistence assertion reads the decrypted raw JSON back. The runtime behavior
+// is driven through the real relay seam (`attempt_non_streaming`) and the real
+// listener so the tests stay behavior-level and fail only because the pool is
+// absent.
+//
+// Encoded key-entry contract (schema version 2):
+//   id, name, value, enabled, auto_marked, failure_kind, marked_at, reason
+// `failure_kind` is `"authentication"` or `"quota"`.
+// ===========================================================================
+
+/// The current key-pool schema version written by the fixtures.
+const KEY_POOL_SCHEMA_VERSION: u64 = 2;
+
+/// Every persisted key-entry field, in contract order.
+const KEY_ENTRY_FIELDS: [&str; 8] = [
+    "id",
+    "name",
+    "value",
+    "enabled",
+    "auto_marked",
+    "failure_kind",
+    "marked_at",
+    "reason",
+];
+
+/// Encrypt and write a raw configuration `Value` directly to the config path,
+/// bypassing the typed `GatewayConfig` so fields the current type does not know
+/// yet survive the fixture round trip.
+fn write_raw_gateway_config(value: &Value) {
+    let password = crate::crypto::get_or_init_master_password().expect("master password");
+    let encrypted = crate::crypto::encrypt(&value.to_string(), &password).expect("encrypt");
+    fs::write(
+        super::storage::config_path().expect("config path"),
+        encrypted,
+    )
+    .expect("write raw config");
+}
+
+/// Decrypt and parse the current `ai_gateway.json` as a raw `Value`.
+fn read_raw_gateway_config() -> Value {
+    let password = crate::crypto::get_or_init_master_password().expect("master password");
+    let raw = fs::read_to_string(super::storage::config_path().expect("config path"))
+        .expect("read raw config");
+    let decrypted = crate::crypto::decrypt(raw.trim(), &password).expect("decrypt raw config");
+    serde_json::from_str(&decrypted).expect("raw config json")
+}
+
+/// One healthy key entry.
+fn pool_key(id: &str, name: &str, value: &str, enabled: bool) -> Value {
+    json!({
+        "id": id,
+        "name": name,
+        "value": value,
+        "enabled": enabled,
+        "auto_marked": false,
+        "failure_kind": null,
+        "marked_at": null,
+        "reason": null,
+    })
+}
+
+/// One runtime-marked key entry.
+fn pool_key_marked(
+    id: &str,
+    name: &str,
+    value: &str,
+    enabled: bool,
+    failure_kind: &str,
+    marked_at: u64,
+    reason: &str,
+) -> Value {
+    json!({
+        "id": id,
+        "name": name,
+        "value": value,
+        "enabled": enabled,
+        "auto_marked": true,
+        "failure_kind": failure_kind,
+        "marked_at": marked_at,
+        "reason": reason,
+    })
+}
+
+/// A provider carrying an ordered key pool and mappings.
+fn pool_provider(
+    id: &str,
+    name: &str,
+    base_url: &str,
+    keys: Vec<Value>,
+    mappings: Vec<Value>,
+) -> Value {
+    json!({
+        "id": id,
+        "name": name,
+        "base_url": base_url,
+        "protocol": "chat_completions",
+        "enabled": true,
+        "keys": keys,
+        "mappings": mappings,
+    })
+}
+
+/// A schema-2 configuration with one local relay key and the given providers.
+fn pool_config(port: u16, providers: Vec<Value>) -> Value {
+    json!({
+        "schema_version": KEY_POOL_SCHEMA_VERSION,
+        "port": port,
+        "keys": [{
+            "id": "k1",
+            "label": "k1",
+            "value": "local-key",
+            "enabled": true,
+            "created_at": 1,
+        }],
+        "providers": providers,
+    })
+}
+
+/// Parse a raw provider value through the current typed contract. Unknown
+/// key-pool fields are dropped while the pool model is absent, which is exactly
+/// the pre-implementation behavior these tests must observe.
+fn typed_pool_provider(value: Value) -> GatewayUpstreamProvider {
+    serde_json::from_value(value).expect("provider fixture must deserialize")
+}
+
+/// The persisted `keys` array of one provider, if the field is present.
+fn on_disk_provider_keys(provider_id: &str) -> Option<Vec<Value>> {
+    let on_disk = read_raw_gateway_config();
+    let provider = on_disk
+        .get("providers")?
+        .as_array()?
+        .iter()
+        .find(|provider| provider.get("id").and_then(Value::as_str) == Some(provider_id))?;
+    provider.get("keys")?.as_array().cloned()
+}
+
+/// One persisted key entry of one provider from the decrypted config.
+fn on_disk_key_entry(provider_id: &str, key_id: &str) -> Option<Value> {
+    on_disk_provider_keys(provider_id)?
+        .into_iter()
+        .find(|key| key.get("id").and_then(Value::as_str) == Some(key_id))
+}
+
+fn auth_header_of(captured: &Captured) -> Option<&str> {
+    captured.headers.get("authorization").map(String::as_str)
+}
+
+/// Candidate providers resolved from the persisted config, mirroring the
+/// production selection boundary.
+fn live_candidates(requested: &str) -> Vec<GatewayUpstreamProvider> {
+    let live = super::storage::read_config().expect("read persisted config");
+    candidate_providers(
+        &live.providers,
+        Some(requested),
+        UpstreamProtocol::ChatCompletions,
+    )
+    .into_iter()
+    .cloned()
+    .collect()
+}
+
+/// AC-001 / REQ-001: an ordered pool with names, values, enabled flags and
+/// runtime state round-trips through the encrypted configuration and never
+/// stores a plaintext value on disk.
+#[test]
+fn key_pool_round_trips_through_encrypted_config() {
+    with_temp_home("key-pool-roundtrip", |_home| {
+        let fixture = pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider One",
+                "https://api.example.com/v1",
+                vec![
+                    pool_key_marked(
+                        "key-a",
+                        "Primary",
+                        "sk-primary-secret",
+                        true,
+                        "quota",
+                        1_700_000_000,
+                        "weekly usage limit reached",
+                    ),
+                    pool_key("key-b", "Secondary", "sk-secondary-secret", false),
+                ],
+                vec![json_mapping("local-a", "remote-a", None)],
+            )],
+        );
+        write_raw_gateway_config(&fixture);
+
+        let loaded = super::storage::read_config().expect("read config");
+        assert_eq!(loaded.providers.len(), 1);
+        super::storage::write_config(&loaded).expect("write config");
+
+        let keys = on_disk_provider_keys("p1")
+            .expect("the provider record must persist an ordered keys array");
+        assert_eq!(keys.len(), 2, "both keys must survive the round trip: {keys:?}");
+        let first = &keys[0];
+        for field in KEY_ENTRY_FIELDS {
+            assert!(
+                first.get(field).is_some(),
+                "key entry must carry the contract field {field}: {first}"
+            );
+        }
+        assert_eq!(first["id"], "key-a");
+        assert_eq!(first["name"], "Primary");
+        assert_eq!(first["value"], "sk-primary-secret");
+        assert_eq!(first["enabled"], true);
+        assert_eq!(first["auto_marked"], true);
+        assert_eq!(first["failure_kind"], "quota");
+        assert_eq!(first["marked_at"], 1_700_000_000u64);
+        assert_eq!(first["reason"], "weekly usage limit reached");
+        assert_eq!(keys[1]["id"], "key-b");
+        assert_eq!(keys[1]["name"], "Secondary");
+        assert_eq!(keys[1]["value"], "sk-secondary-secret");
+        assert_eq!(keys[1]["enabled"], false, "the disabled flag must round-trip");
+        assert_eq!(keys[1]["auto_marked"], false);
+
+        let raw = fs::read_to_string(super::storage::config_path().unwrap()).unwrap();
+        assert!(
+            !raw.contains("sk-primary-secret") && !raw.contains("sk-secondary-secret"),
+            "upstream key values must never be stored in plaintext"
+        );
+    });
+}
+
+/// AC-003 / REQ-003 / REQ-004: a 401 on the first usable key marks it
+/// auth-failed with a reason and time, never attempts the user-disabled key, and
+/// continues the same request on the next usable key; mapping health is
+/// untouched.
+#[tokio::test]
+async fn auth_failure_rotates_to_next_key_and_skips_disabled() {
+    let _home = isolated_temp_home("key-pool-auth-rotation");
+    let (upstream_url, log) = spawn_mock_upstream(|captured| match auth_header_of(captured) {
+        Some("Bearer sk-key-a") => {
+            MockReply::Json(401, json!({"error": {"message": "invalid api key"}}))
+        }
+        Some("Bearer sk-key-b") => {
+            MockReply::Json(200, json!({"id": "served-by-b"}))
+        }
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-disabled", "Disabled", "sk-key-disabled", false),
+                pool_key("key-a", "A", "sk-key-a", true),
+                pool_key("key-b", "B", "sk-key-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 200, "the second usable key must serve the request");
+    assert!(
+        String::from_utf8_lossy(&response.body).contains("served-by-b"),
+        "B's response must reach the client"
+    );
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        2,
+        "the disabled key must be skipped: {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(
+        auth_header_of(&captured[0]),
+        Some("Bearer sk-key-a"),
+        "the first usable key must be attempted first"
+    );
+    assert_eq!(
+        auth_header_of(&captured[1]),
+        Some("Bearer sk-key-b"),
+        "the same request must continue on the next usable key"
+    );
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0].status, 401);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
+
+    let key_a = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+    assert_eq!(key_a["auto_marked"], true, "the failed key must be marked");
+    assert_eq!(key_a["failure_kind"], "authentication");
+    assert!(
+        key_a["marked_at"].as_u64().is_some(),
+        "the marking time must be recorded: {key_a}"
+    );
+    assert!(
+        key_a["reason"].as_str().unwrap_or("").contains("401"),
+        "the readable reason must name the failure: {key_a}"
+    );
+    let disabled = on_disk_key_entry("p1", "key-disabled").unwrap();
+    assert_eq!(disabled["auto_marked"], false, "the disabled key must be untouched");
+
+    let stored = super::storage::read_config().expect("read persisted state");
+    let provider = stored.providers.iter().find(|p| p.id == "p1").unwrap();
+    assert!(
+        !provider.mappings[0].auto_disabled,
+        "a key-scoped auth failure must never auto-disable the mapping row"
+    );
+    assert_eq!(
+        provider.mappings[0].consecutive_failures, 0,
+        "a key-scoped failure must never register mapping health"
+    );
+    assert_eq!(provider.mappings[0].disabled_reason, None);
+}
+
+/// AC-004 / REQ-004: a quota-exhausted 429 rotates to the next key, marks the
+/// exhausted key, and never leaks its value into the stored reason, the attempt
+/// rows or any error text.
+#[tokio::test]
+async fn quota_429_rotates_without_leaking_key_value() {
+    let _home = isolated_temp_home("key-pool-quota-rotation");
+    const QUOTA_MESSAGE: &str = "You've reached your weekly usage limit for your plan. Your limit resets at 2026-09-24T03:30:30.663Z. Please wait for the window to reset or upgrade your plan to continue.";
+    let (upstream_url, log) = spawn_mock_upstream(move |captured| {
+        match auth_header_of(captured) {
+            Some("Bearer sk-quota-a") => {
+                MockReply::Json(429, json!({"error": {"message": QUOTA_MESSAGE}}))
+            }
+            Some("Bearer sk-quota-b") => MockReply::Json(200, json!({"id": "served-by-b"})),
+            other => MockReply::Json(
+                500,
+                json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+            ),
+        }
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-quota-a", true),
+                pool_key("key-b", "B", "sk-quota-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 200, "the healthy key must serve after the quota 429");
+    assert!(String::from_utf8_lossy(&response.body).contains("served-by-b"));
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(captured.len(), 2, "{}", captured_summary(&captured));
+    assert_eq!(auth_header_of(&captured[0]), Some("Bearer sk-quota-a"));
+    assert_eq!(auth_header_of(&captured[1]), Some("Bearer sk-quota-b"));
+
+    assert_eq!(attempts.len(), 2, "one failed attempt plus one terminal success row");
+    assert_eq!(attempts[0].status, 429);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert!(
+        !attempts[0]
+            .error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("sk-quota-a"),
+        "the attempt row must never contain the key value"
+    );
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
+
+    let key_a = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+    assert_eq!(key_a["auto_marked"], true);
+    assert_eq!(key_a["failure_kind"], "quota");
+    assert!(
+        !key_a["reason"].as_str().unwrap_or("").contains("sk-quota-a"),
+        "the stored reason must not expose the key value: {key_a}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&response.body).contains("sk-quota-a"),
+        "no error text may expose the key value"
+    );
+}
+
+/// AC-005 / REQ-005: transient 429, 5xx, 404, other 4xx and network failures
+/// never mark a key and never rotate; the first key keeps serving the attempt.
+#[tokio::test]
+async fn transient_and_transport_failures_never_mark_or_rotate_keys() {
+    for (name, reply_spec, expected_status) in [
+        ("transient-429", Some((429u16, "temporarily unavailable")), 429u16),
+        ("server-5xx", Some((500, "down")), 500),
+        ("not-found-404", Some((404, "missing")), 404),
+        ("client-4xx", Some((422, "bad request")), 422),
+        ("network-drop", None, 502),
+    ] {
+        let _home = isolated_temp_home(&format!("key-pool-transient-{name}"));
+        let (upstream_url, log) = spawn_mock_upstream(move |_| match reply_spec {
+            Some((status, message)) => MockReply::Json(status, json!({"error": {"message": message}})),
+            None => MockReply::Drop,
+        })
+        .await;
+
+        let second_value = format!("sk-second-{name}");
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider One",
+                &upstream_url,
+                vec![
+                    pool_key("key-a", "A", "sk-first-key", true),
+                    pool_key("key-b", "B", &second_value, true),
+                ],
+                vec![json_mapping("local-a", "remote-a", None)],
+            )],
+        ));
+
+        let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+        let mut attempts = Vec::new();
+        let response = super::runtime_http::attempt_non_streaming(
+            &live_candidates("local-a"),
+            "/v1/chat/completions",
+            &body,
+            Some("local-a"),
+            &HashMap::new(),
+            false,
+            None,
+            &mut attempts,
+        )
+        .await;
+        assert_eq!(response.status, expected_status, "{name}: status mismatch");
+
+        let captured = log.lock().unwrap().clone();
+        assert_eq!(captured.len(), 1, "{name}: exactly one attempt expected");
+        assert_eq!(
+            auth_header_of(&captured[0]),
+            Some("Bearer sk-first-key"),
+            "{name}: the first key must serve the single attempt"
+        );
+        assert_eq!(
+            attempts.len(),
+            1,
+            "{name}: no rotation may produce a second attempt"
+        );
+
+        let first = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+        assert_eq!(first["auto_marked"], false, "{name}: the first key must stay unmarked");
+        assert_eq!(first["failure_kind"], Value::Null, "{name}");
+        let second = on_disk_key_entry("p1", "key-b").expect("key-b must stay persisted");
+        assert_eq!(second["auto_marked"], false, "{name}: the second key must stay unmarked");
+    }
+}
+
+/// AC-008 / REQ-008: a provider whose keys are all auth-marked is skipped like
+/// an unavailable provider; selection falls through to the second provider and
+/// the first provider's mapping health is untouched.
+#[tokio::test]
+async fn provider_with_no_usable_key_is_skipped_and_fallback_continues() {
+    let home = temp_home("key-pool-skip-fallback");
+    super::selection::reset_weighted_scheduler_for_test();
+    let port = free_port().await;
+    let (p1_url, p1_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-be-called"}))).await;
+    let (p2_url, _p2_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "served-by-p2"}))).await;
+
+    let marked_at = super::types_config::now_ts().saturating_sub(10_000);
+    write_raw_gateway_config(&pool_config(
+        port,
+        vec![
+            pool_provider(
+                "p1",
+                "Dead",
+                &p1_url,
+                vec![pool_key_marked(
+                    "key-a",
+                    "A",
+                    "sk-dead",
+                    true,
+                    "authentication",
+                    marked_at,
+                    "HTTP 401 denied",
+                )],
+                vec![json_mapping("local-model", "remote-model", None)],
+            ),
+            pool_provider(
+                "p2",
+                "Healthy",
+                &p2_url,
+                vec![pool_key("key-b", "B", "sk-healthy", true)],
+                vec![json_mapping("local-model", "remote-model", None)],
+            ),
+        ],
+    ));
+
+    super::runtime_http::start_server(None).await.unwrap();
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-model"})),
+    )
+    .await;
+    assert_eq!(status, 200, "the healthy provider must serve: {text}");
+    assert!(text.contains("served-by-p2"), "unexpected body: {text}");
+    assert!(
+        p1_log.lock().unwrap().is_empty(),
+        "a provider with no usable key must never be contacted"
+    );
+
+    let stored = super::storage::read_config().expect("read persisted state");
+    let p1 = stored.providers.iter().find(|p| p.id == "p1").unwrap();
+    assert_eq!(
+        p1.mappings[0].consecutive_failures, 0,
+        "the skipped provider's mapping health must stay untouched"
+    );
+    assert!(!p1.mappings[0].auto_disabled);
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-008 boundary: a provider whose only key is auth-marked takes the standard
+/// unavailable path without an upstream attempt and without auto-probing.
+#[tokio::test]
+async fn auth_marked_key_is_never_probed_and_takes_the_standard_error_path() {
+    let home = temp_home("key-pool-auth-never-probe");
+    super::selection::reset_weighted_scheduler_for_test();
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-be-called"}))).await;
+
+    let marked_at = super::types_config::now_ts().saturating_sub(10_000);
+    write_raw_gateway_config(&pool_config(
+        port,
+        vec![pool_provider(
+            "p1",
+            "Dead",
+            &upstream_url,
+            vec![pool_key_marked(
+                "key-a",
+                "A",
+                "sk-dead",
+                true,
+                "authentication",
+                marked_at,
+                "HTTP 403 denied",
+            )],
+            vec![json_mapping("local-model", "remote-model", None)],
+        )],
+    ));
+
+    super::runtime_http::start_server(None).await.unwrap();
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-model"})),
+    )
+    .await;
+    assert_eq!(status, 502, "no usable key must yield the standard error: {text}");
+    let body = assert_standard_error_envelope(&text);
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("all")
+            || body["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("unavailable"),
+        "unexpected message: {text}"
+    );
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "an auth-marked key must never be auto-probed"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-006 / REQ-006: after the 60-second cooldown an all-quota-marked provider
+/// probes exactly one key, chooses the oldest marking, clears its mark on
+/// success and serves the request.
+#[tokio::test]
+async fn quota_probe_after_cooldown_uses_the_oldest_marked_key() {
+    let home = temp_home("key-pool-probe-oldest");
+    super::selection::reset_weighted_scheduler_for_test();
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|captured| match auth_header_of(captured) {
+        Some("Bearer sk-oldest") => MockReply::Json(200, json!({"id": "served-by-oldest"})),
+        other => MockReply::Json(
+            429,
+            json!({"error": {"message": format!("weekly limit for {other:?}")}}),
+        ),
+    })
+    .await;
+
+    let now = super::types_config::now_ts();
+    write_raw_gateway_config(&pool_config(
+        port,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key_marked("key-oldest", "Oldest", "sk-oldest", true, "quota", now - 120, "weekly limit"),
+                pool_key_marked("key-newer", "Newer", "sk-newer", true, "quota", now - 60, "weekly limit"),
+            ],
+            vec![json_mapping("local-model", "remote-model", None)],
+        )],
+    ));
+
+    super::runtime_http::start_server(None).await.unwrap();
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-model"})),
+    )
+    .await;
+    assert_eq!(status, 200, "the eligible probe must serve: {text}");
+    assert!(text.contains("served-by-oldest"), "unexpected body: {text}");
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(captured.len(), 1, "exactly one probe attempt is allowed");
+    assert_eq!(
+        auth_header_of(&captured[0]),
+        Some("Bearer sk-oldest"),
+        "the oldest marking must be probed first"
+    );
+
+    let oldest = on_disk_key_entry("p1", "key-oldest").expect("key-oldest persisted");
+    assert_eq!(oldest["auto_marked"], false, "a successful probe clears the mark");
+    let newer = on_disk_key_entry("p1", "key-newer").expect("key-newer persisted");
+    assert_eq!(newer["auto_marked"], true, "the unprobed key keeps its mark");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-006 boundary: at 59 seconds a quota-marked key is still inside the
+/// cooldown, so the provider is skipped and never probed.
+#[tokio::test]
+async fn quota_probe_is_not_attempted_before_the_60_second_boundary() {
+    let home = temp_home("key-pool-probe-59s");
+    super::selection::reset_weighted_scheduler_for_test();
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-be-called"}))).await;
+
+    let marked_at = super::types_config::now_ts().saturating_sub(59);
+    write_raw_gateway_config(&pool_config(
+        port,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![pool_key_marked(
+                "key-a",
+                "A",
+                "sk-cooldown",
+                true,
+                "quota",
+                marked_at,
+                "weekly limit",
+            )],
+            vec![json_mapping("local-model", "remote-model", None)],
+        )],
+    ));
+
+    super::runtime_http::start_server(None).await.unwrap();
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-model"})),
+    )
+    .await;
+    assert_eq!(status, 502, "a 59-second-old mark must not be probed: {text}");
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "no upstream attempt may happen before the 60-second boundary"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// REQ-007: creating a provider from a template stores its initial key as one
+/// pool entry named `Default`.
+#[test]
+fn template_creation_stores_one_default_named_key() {
+    with_temp_home("key-pool-template-default", |_home| {
+        super::commands::ai_gateway_create_provider_from_template(
+            "opencode-zen".to_string(),
+            "My Zen".to_string(),
+            "https://my-zen.example.com/v1".to_string(),
+            UpstreamProtocol::ChatCompletions,
+            "sk-create-secret".to_string(),
+        )
+        .expect("template creation must succeed");
+
+        let on_disk = read_raw_gateway_config();
+        let provider = on_disk["providers"]
+            .as_array()
+            .and_then(|providers| providers.first())
+            .expect("the created provider must be persisted");
+        assert!(
+            provider.get("api_key").is_none(),
+            "the old single credential field must not be written: {provider}"
+        );
+        let keys = provider["keys"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the created provider must carry a keys array: {provider}"));
+        assert_eq!(keys.len(), 1, "creation stores exactly one key: {keys:?}");
+        assert_eq!(keys[0]["name"], "Default");
+        assert_eq!(keys[0]["value"], "sk-create-secret");
+        assert_eq!(keys[0]["enabled"], true);
+        assert_eq!(keys[0]["auto_marked"], false);
+    });
+}
+
+/// REQ-007: a blank key name rejects the upsert with a readable error.
+#[test]
+fn upsert_rejects_blank_key_name() {
+    with_temp_home("key-pool-upsert-blank-name", |_home| {
+        let provider = typed_pool_provider(pool_provider(
+            "p1",
+            "Provider One",
+            "https://api.example.com/v1",
+            vec![pool_key("key-a", "   ", "sk-a", true)],
+            vec![],
+        ));
+        let error = super::commands::ai_gateway_upsert_provider(provider, None)
+            .expect_err("a blank key name must be rejected");
+        assert!(
+            !error.trim().is_empty(),
+            "the rejection must carry an actionable message"
+        );
+    });
+}
+
+/// REQ-007: a blank value on a new key rejects the upsert.
+#[test]
+fn upsert_rejects_blank_new_key_value() {
+    with_temp_home("key-pool-upsert-blank-new-value", |_home| {
+        let provider = typed_pool_provider(pool_provider(
+            "p1",
+            "Provider One",
+            "https://api.example.com/v1",
+            vec![pool_key("", "New Key", "   ", true)],
+            vec![],
+        ));
+        let error = super::commands::ai_gateway_upsert_provider(provider, None)
+            .expect_err("a blank new key value must be rejected");
+        assert!(!error.trim().is_empty());
+    });
+}
+
+/// REQ-007: editing a stored key with a blank value keeps the stored value.
+#[test]
+fn upsert_blank_value_edit_keeps_the_stored_value() {
+    with_temp_home("key-pool-upsert-blank-edit", |_home| {
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider One",
+                "https://api.example.com/v1",
+                vec![pool_key("key-a", "A", "sk-stored-secret", true)],
+                vec![],
+            )],
+        ));
+
+        let provider = typed_pool_provider(pool_provider(
+            "p1",
+            "Provider One",
+            "https://api.example.com/v1",
+            vec![pool_key("key-a", "A", "", true)],
+            vec![],
+        ));
+        super::commands::ai_gateway_upsert_provider(provider, None)
+            .expect("a blank value edit must be accepted");
+
+        let key = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+        assert_eq!(
+            key["value"], "sk-stored-secret",
+            "a blank edit must keep the stored value: {key}"
+        );
+    });
+}
+
+/// REQ-007: a value edit clears that key's runtime state while preserving its
+/// enabled flag (the manual-recovery proxy for the not-yet-existing re-enable
+/// command).
+#[test]
+fn upsert_value_edit_clears_runtime_state_without_changing_enabled() {
+    with_temp_home("key-pool-upsert-value-edit", |_home| {
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider One",
+                "https://api.example.com/v1",
+                vec![pool_key_marked(
+                    "key-a",
+                    "A",
+                    "sk-old-secret",
+                    false,
+                    "quota",
+                    4_242,
+                    "weekly limit",
+                )],
+                vec![],
+            )],
+        ));
+
+        let provider = typed_pool_provider(pool_provider(
+            "p1",
+            "Provider One",
+            "https://api.example.com/v1",
+            vec![pool_key("key-a", "A", "sk-new-secret", false)],
+            vec![],
+        ));
+        super::commands::ai_gateway_upsert_provider(provider, None)
+            .expect("a value edit must be accepted");
+
+        let key = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+        assert_eq!(key["value"], "sk-new-secret");
+        assert_eq!(key["enabled"], false, "a value edit must not change the enabled flag");
+        assert_eq!(
+            key["auto_marked"], false,
+            "a value edit must clear the runtime mark: {key}"
+        );
+        assert_eq!(key["failure_kind"], Value::Null);
+        assert_eq!(key["marked_at"], Value::Null);
+        assert_eq!(key["reason"], Value::Null);
+    });
+}
+
+/// REQ-007: renaming a key (same value) preserves its runtime state.
+#[test]
+fn upsert_rename_preserves_runtime_state() {
+    with_temp_home("key-pool-upsert-rename", |_home| {
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider One",
+                "https://api.example.com/v1",
+                vec![pool_key_marked(
+                    "key-a",
+                    "Old Name",
+                    "sk-kept-secret",
+                    true,
+                    "quota",
+                    7_777,
+                    "weekly limit",
+                )],
+                vec![],
+            )],
+        ));
+
+        let provider = typed_pool_provider(pool_provider(
+            "p1",
+            "Provider One",
+            "https://api.example.com/v1",
+            vec![pool_key_marked(
+                "key-a",
+                "New Name",
+                "sk-kept-secret",
+                true,
+                "quota",
+                7_777,
+                "weekly limit",
+            )],
+            vec![],
+        ));
+        super::commands::ai_gateway_upsert_provider(provider, None)
+            .expect("a rename must be accepted");
+
+        let key = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+        assert_eq!(key["name"], "New Name");
+        assert_eq!(key["auto_marked"], true, "a rename must preserve runtime state: {key}");
+        assert_eq!(key["failure_kind"], "quota");
+        assert_eq!(key["marked_at"], 7_777u64);
+        assert_eq!(key["reason"], "weekly limit");
+    });
+}
+
+/// REQ-007: reordering keys and disabling an unchanged key preserve every
+/// unchanged key's runtime state and the new priority order.
+#[test]
+fn upsert_reorder_and_disable_preserve_runtime_state() {
+    with_temp_home("key-pool-upsert-reorder", |_home| {
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider One",
+                "https://api.example.com/v1",
+                vec![
+                    pool_key_marked(
+                        "key-a",
+                        "A",
+                        "sk-a-secret",
+                        true,
+                        "quota",
+                        1_111,
+                        "weekly limit",
+                    ),
+                    pool_key("key-b", "B", "sk-b-secret", true),
+                ],
+                vec![],
+            )],
+        ));
+
+        let mut key_b = pool_key("key-b", "B", "sk-b-secret", false);
+        key_b["enabled"] = Value::Bool(false);
+        let provider = typed_pool_provider(pool_provider(
+            "p1",
+            "Provider One",
+            "https://api.example.com/v1",
+            vec![
+                key_b,
+                pool_key_marked(
+                    "key-a",
+                    "A",
+                    "sk-a-secret",
+                    true,
+                    "quota",
+                    1_111,
+                    "weekly limit",
+                ),
+            ],
+            vec![],
+        ));
+        super::commands::ai_gateway_upsert_provider(provider, None)
+            .expect("a reorder/disable edit must be accepted");
+
+        let keys = on_disk_provider_keys("p1").expect("keys array must persist");
+        let ids: Vec<&str> = keys
+            .iter()
+            .map(|key| key["id"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(ids, vec!["key-b", "key-a"], "the new order is the priority order");
+        let disabled = keys.iter().find(|key| key["id"] == "key-b").unwrap();
+        assert_eq!(disabled["enabled"], false);
+        assert_eq!(disabled["auto_marked"], false);
+        let kept = keys.iter().find(|key| key["id"] == "key-a").unwrap();
+        assert_eq!(
+            kept["auto_marked"], true,
+            "an unchanged key keeps its runtime state through a reorder: {kept}"
+        );
+        assert_eq!(kept["marked_at"], 1_111u64);
+    });
+}
+
+/// REQ-007: saving an empty key list is allowed and persists an empty pool.
+#[test]
+fn upsert_allows_an_empty_key_list() {
+    with_temp_home("key-pool-upsert-empty", |_home| {
+        let provider = typed_pool_provider(pool_provider(
+            "p-new",
+            "Provider New",
+            "https://api.example.com/v1",
+            vec![],
+            vec![],
+        ));
+        super::commands::ai_gateway_upsert_provider(provider, None)
+            .expect("an empty key list must be accepted");
+        assert_eq!(
+            on_disk_provider_keys("p-new"),
+            Some(Vec::new()),
+            "an empty key list must persist as an empty array"
+        );
+    });
 }
