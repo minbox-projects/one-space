@@ -29,6 +29,7 @@ import {
   aiGatewayDeleteProviderTemplate,
   aiGatewayGetConfig,
   aiGatewayProviderTemplates,
+  aiGatewayReenableProviderKey,
   aiGatewayReenableProviderModel,
   aiGatewayReenableProviderModels,
   aiGatewayRequestLogs,
@@ -56,6 +57,7 @@ import {
   type GatewayStatus,
   type GatewayTerminalTarget,
   type GatewayUpstreamProvider,
+  type GatewayUpstreamProviderWithKeys,
   type ModelPrice,
   type UsageStats,
 } from "@/lib/aiGateway";
@@ -93,12 +95,12 @@ type AiGatewayTab =
 
 type UsageSubTab = "stats" | "logs";
 
-function emptyProvider(): GatewayUpstreamProvider {
+function emptyProvider(): GatewayUpstreamProviderWithKeys {
   return {
     id: "",
     name: "",
     base_url: "",
-    api_key: "",
+    keys: [],
     default_model: null,
     protocol: "chat_completions",
     mappings: [],
@@ -417,8 +419,17 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       );
     }, t("aiGatewaySaved", "Saved."));
 
+  const handleReenableProviderKey = (providerId: string, keyId: string) =>
+    runAction(async () => {
+      const next = await aiGatewayReenableProviderKey(providerId, keyId);
+      await applyConfig(next);
+      setEditingProvider(
+        next.providers.find((provider) => provider.id === providerId) ?? null,
+      );
+    }, t("aiGatewaySaved", "Saved."));
+
   const handleSaveProvider = (
-    draft: GatewayUpstreamProvider,
+    draft: GatewayUpstreamProviderWithKeys,
     prices: ModelPrice[],
   ) =>
     runAction(async () => {
@@ -1084,6 +1095,9 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           }
           onReenableModels={(providerId) =>
             void handleReenableProviderModels(providerId)
+          }
+          onReenableKey={(providerId, keyId) =>
+            void handleReenableProviderKey(providerId, keyId)
           }
         />
 

@@ -10,6 +10,7 @@ import {
   Eye,
   EyeOff,
   Info,
+  KeyRound,
   Plus,
   RotateCcw,
   Server,
@@ -34,12 +35,18 @@ import {
   mappedUpstreamModels,
   normalizeReasoningEfforts,
   priceRowToDraft,
+  providerKeyPool,
+  providerKeyState,
+  PROVIDER_KEY_STATE_TRANSLATION_KEYS,
   resolveProviderPriceRow,
   type GatewayModelMapping,
   type GatewayPriceDraft,
+  type GatewayProviderKey,
+  type GatewayProviderKeyState,
   type GatewayProviderTemplateView,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
+  type GatewayUpstreamProviderWithKeys,
   type ModelPrice,
 } from "@/lib/aiGateway";
 import { MappingPriceEditor } from "./MappingPriceEditor";
@@ -76,6 +83,8 @@ type ProviderDetailDialogProps = {
   ) => void;
   /** Clear every auto-disabled row of this provider (no `enabled` change). */
   onReenableModels?: (providerId: string) => void;
+  /** Clear one upstream key's runtime state (no `enabled` change). */
+  onReenableKey?: (providerId: string, keyId: string) => void;
 };
 
 const mappingInputClass =
@@ -85,6 +94,39 @@ const mappingInputClass =
 function runtimeMappingKey(localModel: string, upstreamModel: string): string {
   return JSON.stringify([localModel.trim(), upstreamModel.trim()]);
 }
+
+/** Editable key-pool row: persisted fields plus a client-only `isNew` marker. */
+type ProviderKeyDraft = GatewayProviderKey & { isNew?: boolean };
+
+let providerKeyDraftCounter = 0;
+
+/** Build a blank new-key draft with a client-generated stable id. */
+function newProviderKeyDraft(): ProviderKeyDraft {
+  providerKeyDraftCounter += 1;
+  return {
+    id: `new-key-${Date.now()}-${providerKeyDraftCounter}`,
+    name: "",
+    value: "",
+    enabled: true,
+    auto_marked: false,
+    failure_kind: null,
+    marked_at: null,
+    reason: null,
+    isNew: true,
+  };
+}
+
+const providerKeyStateClass: Record<GatewayProviderKeyState, string> = {
+  usable:
+    "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  disabled: "border-border bg-muted text-muted-foreground",
+  quota:
+    "border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  auth: "border-rose-500/20 bg-rose-500/10 text-rose-600 dark:text-rose-400",
+};
+
+const providerKeyInputClass =
+  "h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/50";
 
 export function ProviderDetailDialog({
   open,
@@ -101,18 +143,20 @@ export function ProviderDetailDialog({
   onRestoreModel,
   onReenableModel,
   onReenableModels,
+  onReenableKey,
 }: ProviderDetailDialogProps) {
   const { t } = useTranslation();
 
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
+  const [keyDrafts, setKeyDrafts] = useState<ProviderKeyDraft[]>([]);
+  const [keyNameError, setKeyNameError] = useState(false);
+  const [keyValueError, setKeyValueError] = useState(false);
   const [defaultModel, setDefaultModel] = useState("");
   const [protocol, setProtocol] = useState<GatewayUpstreamProtocol>("chat_completions");
   const [mappings, setMappings] = useState<GatewayModelMapping[]>([]);
   const [priceDrafts, setPriceDrafts] = useState<GatewayPriceDraft[]>([]);
   const [autoAddedModel, setAutoAddedModel] = useState<string | null>(null);
-  const [revealApiKey, setRevealApiKey] = useState(false);
   const [expandedMappings, setExpandedMappings] = useState<Record<number, boolean>>(
     {},
   );
@@ -128,13 +172,14 @@ export function ProviderDetailDialog({
     if (!provider) {
       setName("");
       setBaseUrl("");
-      setApiKey("");
+      setKeyDrafts([]);
+      setKeyNameError(false);
+      setKeyValueError(false);
       setDefaultModel("");
       setProtocol("chat_completions");
       setMappings([]);
       setPriceDrafts([]);
       setAutoAddedModel(null);
-      setRevealApiKey(false);
       setExpandedMappings({});
       setEffortInputs({});
       setWeight(1);
@@ -182,13 +227,16 @@ export function ProviderDetailDialog({
 
     setName(provider.name);
     setBaseUrl(provider.base_url);
-    setApiKey(provider.api_key);
+    setKeyDrafts(
+      providerKeyPool(provider).map((key) => ({ ...key, isNew: false })),
+    );
+    setKeyNameError(false);
+    setKeyValueError(false);
     setDefaultModel(provider.default_model ?? "");
     setProtocol(provider.protocol ?? "chat_completions");
     setMappings(nextMappings);
     setPriceDrafts(seeded);
     setAutoAddedModel(nextAutoAdded);
-    setRevealApiKey(false);
     setExpandedMappings({});
     setEffortInputs({});
     setWeight(provider.weight ?? 1);
@@ -270,6 +318,42 @@ export function ProviderDetailDialog({
           disabled_at: runtime.disabled_at,
           consecutive_failures: runtime.consecutive_failures,
           last_error_at: runtime.last_error_at,
+        };
+      });
+      return changed ? next : prev;
+    });
+  });
+
+  // 密钥运行时合并：与映射行同一约定，只把 `runtimeProvider` 中同 id 密钥的运行时
+  // 字段并入草稿，保留用户未保存的名称、值与启用开关。幂等，故可每次渲染后运行，
+  // 也能捕获手动重新启用后快照被原地清空（引用不变）的情况。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!open || !runtimeProvider) return;
+    const runtimeById = new Map<string, GatewayProviderKey>();
+    for (const key of providerKeyPool(runtimeProvider)) {
+      runtimeById.set(key.id, key);
+    }
+    setKeyDrafts((prev) => {
+      let changed = false;
+      const next = prev.map((draft) => {
+        const runtime = runtimeById.get(draft.id);
+        if (!runtime) return draft;
+        if (
+          draft.auto_marked === runtime.auto_marked &&
+          draft.failure_kind === runtime.failure_kind &&
+          draft.marked_at === runtime.marked_at &&
+          draft.reason === runtime.reason
+        ) {
+          return draft;
+        }
+        changed = true;
+        return {
+          ...draft,
+          auto_marked: runtime.auto_marked,
+          failure_kind: runtime.failure_kind,
+          marked_at: runtime.marked_at,
+          reason: runtime.reason,
         };
       });
       return changed ? next : prev;
@@ -379,7 +463,63 @@ export function ProviderDetailDialog({
     }
   };
 
+  const handleAddKey = () => {
+    setKeyNameError(false);
+    setKeyValueError(false);
+    setKeyDrafts((prev) => [...prev, newProviderKeyDraft()]);
+  };
+
+  const updateKey = (index: number, patch: Partial<ProviderKeyDraft>) => {
+    if (patch.name !== undefined) setKeyNameError(false);
+    if (patch.value !== undefined) setKeyValueError(false);
+    setKeyDrafts((prev) =>
+      prev.map((entry, entryIndex) =>
+        entryIndex === index ? { ...entry, ...patch } : entry,
+      ),
+    );
+  };
+
+  const removeKey = (index: number) => {
+    setKeyDrafts((prev) => prev.filter((_, entryIndex) => entryIndex !== index));
+    setKeyNameError(false);
+    setKeyValueError(false);
+  };
+
+  const moveKey = (index: number, direction: -1 | 1) => {
+    setKeyDrafts((prev) => {
+      const target = index + direction;
+      if (target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  };
+
   const handleSave = () => {
+    // A name is always required; a brand-new key additionally needs a value,
+    // while a blank edit of an existing key keeps the stored value backend-side.
+    if (keyDrafts.some((key) => key.name.trim() === "")) {
+      setKeyNameError(true);
+      setKeyValueError(false);
+      return;
+    }
+    if (keyDrafts.some((key) => key.isNew && key.value.trim() === "")) {
+      setKeyValueError(true);
+      setKeyNameError(false);
+      return;
+    }
+    setKeyNameError(false);
+    setKeyValueError(false);
+    const savedKeys: GatewayProviderKey[] = keyDrafts.map((key) => ({
+      id: key.id,
+      name: key.name.trim(),
+      value: key.value,
+      enabled: key.enabled,
+      auto_marked: key.auto_marked,
+      failure_kind: key.failure_kind,
+      marked_at: key.marked_at,
+      reason: key.reason,
+    }));
     const savedMappings = mappings.map((mapping) => {
       const reasoningEfforts = normalizeReasoningEfforts(mapping.reasoning_efforts);
       return {
@@ -404,26 +544,24 @@ export function ProviderDetailDialog({
       if (!row) continue;
       submittedPrices.push(provider.id ? { ...row, provider_id: provider.id } : row);
     }
-    onSave(
-      {
-        ...provider,
-        name: name.trim(),
-        base_url: baseUrl.trim(),
-        api_key: apiKey,
-        default_model: defaultModel.trim() ? defaultModel.trim() : null,
-        protocol,
-        mappings: savedMappings,
-        weight:
-          Number.isInteger(Number(weight)) &&
-          Number(weight) >= 1 &&
-          Number(weight) <= 100
-            ? Number(weight)
-            : 1,
-        icon: icon.trim() ? icon.trim() : null,
-        tags: Array.from(new Set(tags.map((t) => t.trim()).filter(Boolean))),
-      },
-      submittedPrices,
-    );
+    const draft: GatewayUpstreamProviderWithKeys = {
+      ...provider,
+      name: name.trim(),
+      base_url: baseUrl.trim(),
+      keys: savedKeys,
+      default_model: defaultModel.trim() ? defaultModel.trim() : null,
+      protocol,
+      mappings: savedMappings,
+      weight:
+        Number.isInteger(Number(weight)) &&
+        Number(weight) >= 1 &&
+        Number(weight) <= 100
+          ? Number(weight)
+          : 1,
+      icon: icon.trim() ? icon.trim() : null,
+      tags: Array.from(new Set(tags.map((t) => t.trim()).filter(Boolean))),
+    };
+    onSave(draft, submittedPrices);
     onOpenChange(false);
   };
 
@@ -765,31 +903,191 @@ export function ProviderDetailDialog({
               </p>
             </div>
 
-            {/* 第 4 行：API Key 独占一行 */}
+            {/* 第 4 行：上游密钥池编辑（有序、可增删改与排序） */}
             <div className="field full-span">
-              <label>{t("aiGatewayApiKey", "API key")}</label>
-              <div className="relative">
-                <input
-                  type={revealApiKey ? "text" : "password"}
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                  placeholder="sk-..."
-                  aria-label={t("aiGatewayApiKey", "API key")}
-                  className="pr-10 font-mono"
-                />
+              <label className="inline-flex items-center justify-between w-full">
+                <span className="inline-flex items-center gap-1.5">
+                  <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span>{t("aiGatewayProviderKeys", "Upstream keys")}</span>
+                  <span className="text-[11px] font-normal text-muted-foreground">
+                    ({keyDrafts.length})
+                  </span>
+                </span>
                 <button
                   type="button"
-                  onClick={() => setRevealApiKey((prev) => !prev)}
-                  aria-label={
-                    revealApiKey
-                      ? t("aiGatewayHideSecret", "Hide secret")
-                      : t("aiGatewayShowSecret", "Show secret")
-                  }
-                  className="absolute right-1 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                  data-testid="ai-gateway-add-key"
+                  onClick={handleAddKey}
+                  disabled={busy}
+                  className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-xs font-medium text-foreground transition hover:bg-muted disabled:opacity-50"
                 >
-                  {revealApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  <Plus className="h-3 w-3" />
+                  {t("aiGatewayProviderKeyAdd", "Add key")}
                 </button>
+              </label>
+
+              <div
+                data-testid="ai-gateway-provider-keys"
+                className="mt-1.5 space-y-2"
+              >
+                {keyDrafts.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t(
+                      "aiGatewayNoKeys",
+                      "No local keys yet. Add a key to route traffic.",
+                    )}
+                  </p>
+                ) : (
+                  keyDrafts.map((key, index) => {
+                    const state = providerKeyState(key);
+                    const markedTime = formatGatewayTimestamp(key.marked_at);
+                    return (
+                      <div
+                        key={key.id}
+                        data-testid={`ai-gateway-key-${index}`}
+                        className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-2"
+                      >
+                        <input
+                          data-testid={`ai-gateway-key-name-${index}`}
+                          type="text"
+                          value={key.name}
+                          onChange={(event) =>
+                            updateKey(index, { name: event.target.value })
+                          }
+                          placeholder={t("aiGatewayKeyLabel", "Name")}
+                          aria-label={t("aiGatewayProviderKeyNameAria", {
+                            index: index + 1,
+                            defaultValue: `Key name ${index + 1}`,
+                          })}
+                          className={providerKeyInputClass}
+                        />
+                        <input
+                          data-testid={`ai-gateway-key-value-${index}`}
+                          type="password"
+                          value={key.value}
+                          onChange={(event) =>
+                            updateKey(index, { value: event.target.value })
+                          }
+                          placeholder="sk-..."
+                          aria-label={t("aiGatewayProviderKeyValueAria", {
+                            index: index + 1,
+                            defaultValue: `Key value ${index + 1}`,
+                          })}
+                          className={`${providerKeyInputClass} font-mono`}
+                        />
+                        <span
+                          data-testid={`ai-gateway-key-state-${index}`}
+                          className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-4 ${providerKeyStateClass[state]}`}
+                        >
+                          <span>
+                            {t(PROVIDER_KEY_STATE_TRANSLATION_KEYS[state])}
+                          </span>
+                          {markedTime ? (
+                            <span className="font-normal opacity-80">
+                              {t("aiGatewayProviderKeyMarkedAt", {
+                                time: markedTime,
+                                defaultValue: `Marked at ${markedTime}`,
+                              })}
+                            </span>
+                          ) : null}
+                        </span>
+                        <Switch
+                          data-testid={`ai-gateway-key-toggle-${index}`}
+                          aria-label={t("aiGatewayProviderKeyToggleAria", {
+                            index: index + 1,
+                            defaultValue: `Enable key ${index + 1}`,
+                          })}
+                          checked={key.enabled}
+                          disabled={busy}
+                          onCheckedChange={(checked) =>
+                            updateKey(index, { enabled: checked })
+                          }
+                        />
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            data-testid={`ai-gateway-key-up-${index}`}
+                            onClick={() => moveKey(index, -1)}
+                            disabled={busy || index === 0}
+                            aria-label={t("aiGatewayProviderKeyMoveUpAria", {
+                              index: index + 1,
+                              defaultValue: `Move key up ${index + 1}`,
+                            })}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
+                          >
+                            <ChevronUp className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`ai-gateway-key-down-${index}`}
+                            onClick={() => moveKey(index, 1)}
+                            disabled={busy || index === keyDrafts.length - 1}
+                            aria-label={t("aiGatewayProviderKeyMoveDownAria", {
+                              index: index + 1,
+                              defaultValue: `Move key down ${index + 1}`,
+                            })}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
+                          >
+                            <ChevronDown className="h-3.5 w-3.5" />
+                          </button>
+                          {key.auto_marked ? (
+                            <button
+                              type="button"
+                              data-testid={`ai-gateway-reenable-key-${index}`}
+                              onClick={() => onReenableKey?.(provider.id, key.id)}
+                              disabled={busy}
+                              className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2 text-[11px] font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
+                            >
+                              <RotateCcw className="h-3 w-3" />
+                              {t(
+                                "aiGatewayProviderKeyReenable",
+                                "Re-enable",
+                              )}
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            data-testid={`ai-gateway-key-remove-${index}`}
+                            onClick={() => removeKey(index)}
+                            disabled={busy}
+                            aria-label={t("aiGatewayProviderKeyRemoveAria", {
+                              index: index + 1,
+                              defaultValue: `Remove key ${index + 1}`,
+                            })}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
+
+              {keyNameError ? (
+                <p
+                  data-testid="ai-gateway-key-name-error"
+                  role="alert"
+                  className="mt-1 text-xs text-destructive"
+                >
+                  {t(
+                    "aiGatewayProviderKeyNameRequired",
+                    "Enter a key name.",
+                  )}
+                </p>
+              ) : null}
+              {keyValueError ? (
+                <p
+                  data-testid="ai-gateway-key-value-error"
+                  role="alert"
+                  className="mt-1 text-xs text-destructive"
+                >
+                  {t(
+                    "aiGatewayProviderKeyValueRequired",
+                    "Enter a value for the new key.",
+                  )}
+                </p>
+              ) : null}
             </div>
 
             {/* 第 5 行：标签区块（非必填，支持多选） */}

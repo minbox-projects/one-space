@@ -42,11 +42,57 @@ export interface GatewayModelMapping {
 /** Upstream endpoint family a provider exposes; request bodies are not translated. */
 export type GatewayUpstreamProtocol = "chat_completions" | "responses";
 
+/** Key-scoped failure kinds that persist a runtime mark on one upstream key. */
+export type GatewayProviderKeyFailureKind = "authentication" | "quota";
+
+/**
+ * One entry of a provider's ordered upstream credential pool.
+ *
+ * `enabled` is the user's intent; `auto_marked` with `failure_kind` is runtime
+ * state the backend owns. The list order is the persisted priority order.
+ */
+export interface GatewayProviderKey {
+  id: string;
+  /** Required non-blank name that also serves as the key's remark. */
+  name: string;
+  value: string;
+  enabled: boolean;
+  auto_marked: boolean;
+  failure_kind: GatewayProviderKeyFailureKind | null;
+  marked_at: number | null;
+  reason: string | null;
+}
+
+/** Derived per-key display state shared by the editor and the provider card. */
+export type GatewayProviderKeyState = "usable" | "disabled" | "quota" | "auth";
+
+/** i18n keys for each derived key state. */
+export const PROVIDER_KEY_STATE_TRANSLATION_KEYS: Record<
+  GatewayProviderKeyState,
+  string
+> = {
+  usable: "aiGatewayProviderKeyStateUsable",
+  disabled: "aiGatewayProviderKeyStateDisabled",
+  quota: "aiGatewayProviderKeyStateQuota",
+  auth: "aiGatewayProviderKeyStateAuth",
+};
+
+/**
+ * Derive a key's display state. The user's `enabled` flag wins over any runtime
+ * mark; an auto-marked key is quota-exhausted unless it failed authentication.
+ */
+export function providerKeyState(key: GatewayProviderKey): GatewayProviderKeyState {
+  if (!key.enabled) return "disabled";
+  if (key.auto_marked) {
+    return key.failure_kind === "authentication" ? "auth" : "quota";
+  }
+  return "usable";
+}
+
 export interface GatewayUpstreamProvider {
   id: string;
   name: string;
   base_url: string;
-  api_key: string;
   default_model: string | null;
   protocol?: GatewayUpstreamProtocol;
   mappings: GatewayModelMapping[];
@@ -61,6 +107,26 @@ export interface GatewayUpstreamProvider {
   tags?: string[];
   /** Optional custom icon override; if not set, defaults to inheriting from template. */
   icon?: string | null;
+}
+
+/**
+ * A provider record carrying its ordered upstream key pool.
+ *
+ * The pool is a separate optional extension of the base record so the
+ * pre-pool fixture shapes used across the suites stay assignable; the backend
+ * always serializes `keys`, including an empty array.
+ */
+export type GatewayUpstreamProviderWithKeys = GatewayUpstreamProvider & {
+  keys?: GatewayProviderKey[];
+};
+
+/** Read a provider's ordered key pool; a legacy or missing field yields an empty list. */
+export function providerKeyPool(
+  provider: GatewayUpstreamProvider | null | undefined,
+): GatewayProviderKey[] {
+  return (
+    (provider as GatewayUpstreamProviderWithKeys | null | undefined)?.keys ?? []
+  );
 }
 
 export interface QuotaCredits {
@@ -367,6 +433,14 @@ export function aiGatewayReenableProviderModel(
 export function aiGatewayReenableProviderModels(providerId: string) {
   return invoke<GatewayConfig>("ai_gateway_reenable_provider_models", {
     providerId,
+  });
+}
+
+/** Clear one upstream key's runtime state (`providerId`, `keyId`) and return the updated config. */
+export function aiGatewayReenableProviderKey(providerId: string, keyId: string) {
+  return invoke<GatewayConfig>("ai_gateway_reenable_provider_key", {
+    providerId,
+    keyId,
   });
 }
 
