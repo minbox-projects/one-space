@@ -132,9 +132,9 @@ fn build_request(
             },
         )
         .body(rewritten);
-    let api_key = provider.api_key.trim();
-    if !api_key.is_empty() {
-        request = request.header("authorization", format!("Bearer {api_key}"));
+    let attempt_key = provider.attempt_key.trim();
+    if !attempt_key.is_empty() {
+        request = request.header("authorization", format!("Bearer {attempt_key}"));
     }
     Ok(request)
 }

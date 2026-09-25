@@ -91,7 +91,6 @@ fn normalize_stored_config(config: &mut GatewayConfig) {
             provider.weight = provider.weight.clamp(MIN_PROVIDER_WEIGHT, MAX_PROVIDER_WEIGHT);
         }
         provider.base_url = provider.base_url.trim().to_string();
-        provider.api_key = provider.api_key.trim().to_string();
         provider.default_model = provider
             .default_model
             .take()

@@ -1,11 +1,13 @@
 use super::forwarding::{forward_non_streaming, open_streaming_response};
 use super::selection::{
-    candidate_providers, classify_failure_with_message, clear_mapping_runtime_state,
-    default_retry_delay, find_probe_candidate, is_quota_exceeded_message, is_retryable_with_message,
-    mapping_matches_key, rearm_mapping_probe_cooldown, register_mapping_failure,
+    candidate_providers, classify_failure_with_message, clear_key_runtime_state,
+    clear_mapping_runtime_state, default_retry_delay, find_key_probe_candidate,
+    find_probe_candidate, is_quota_exceeded_message, is_retryable_with_message, mapping_matches_key,
+    mark_key_failure, rearm_key_probe, rearm_mapping_probe_cooldown, register_mapping_failure,
     register_mapping_success, resolve_model_for_protocol, resolve_session_id, retry_header_delay,
-    session_affinity, try_acquire_probe_guard, weighted_candidates, FailureClass, MappingTarget,
-    ModelResolution, ProbeCandidate, ProbeGuard, SessionOrder, MAX_RETRIES_PER_PROVIDER,
+    select_usable_key, session_affinity, try_acquire_probe_guard, weighted_candidates,
+    FailureClass, MappingTarget, ModelResolution, ProbeCandidate, ProbeGuard, SessionOrder,
+    MAX_RETRIES_PER_PROVIDER,
 };
 use super::storage::{local_base_url, read_config, write_config};
 use super::usage_log::{
@@ -14,10 +16,13 @@ use super::usage_log::{
     CanonicalUsage, SseUsageAccumulator, UsageAccounting, UsageLogEntry, UsageLogRecord,
     UsageLogStore, UsageResult, UsageTokens,
 };
-use super::{now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, UpstreamProtocol};
+use super::{
+    now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, KeyFailureKind,
+    UpstreamProtocol,
+};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
@@ -725,6 +730,12 @@ enum AttemptResult {
         transport: bool,
         reason: String,
         retry_delay: Option<Duration>,
+        /// The upstream status of the failure (0 for a transport failure).
+        status: u16,
+        /// When set, the failure is key-scoped: the attempted key must be
+        /// marked and the request continues on the next usable key instead of
+        /// registering mapping health or requeuing.
+        key_failure: Option<KeyFailureKind>,
     },
 }
 
@@ -987,6 +998,166 @@ fn settle_success(
     }
 }
 
+/// One key chosen for an upstream attempt.
+struct SelectedKey {
+    id: String,
+    value: String,
+    /// True when this key is a half-open quota probe rather than a normal
+    /// selection; a probe is never rotated and re-arms on failure.
+    probe: bool,
+}
+
+/// Choose the key for one upstream attempt in list order: the first enabled
+/// unmarked key; else, only when no such key remains, at most one eligible
+/// quota probe per request; else no key at all. A provider with an empty pool
+/// is a no-key provider and is still attempted with an empty credential so
+/// records that predate the pool keep their behavior.
+fn select_attempt_key(
+    provider: &GatewayUpstreamProvider,
+    now: u64,
+    probe_used: bool,
+) -> Option<SelectedKey> {
+    if let Some(key) = select_usable_key(provider) {
+        return Some(SelectedKey {
+            id: key.id.clone(),
+            value: key.value.clone(),
+            probe: false,
+        });
+    }
+    if provider.keys.is_empty() {
+        return Some(SelectedKey {
+            id: String::new(),
+            value: String::new(),
+            probe: false,
+        });
+    }
+    if !probe_used {
+        if let Some(key) = find_key_probe_candidate(provider, now) {
+            return Some(SelectedKey {
+                id: key.id.clone(),
+                value: key.value.clone(),
+                probe: true,
+            });
+        }
+    }
+    None
+}
+
+/// Classify a pre-first-byte HTTP failure as key-scoped: 401/403 mark the key
+/// authentication-failed and a quota-classified 429 marks it quota-exhausted.
+/// Every other status is not key-scoped.
+fn key_failure_kind(status: u16, error_message: Option<&str>) -> Option<KeyFailureKind> {
+    match status {
+        401 | 403 => Some(KeyFailureKind::Authentication),
+        429 if is_quota_exceeded_message(error_message) => Some(KeyFailureKind::Quota),
+        _ => None,
+    }
+}
+
+/// Redact every non-empty key value of the pool from one upstream error text.
+fn sanitize_provider_error_text(
+    text: &str,
+    provider: &GatewayUpstreamProvider,
+) -> Option<String> {
+    let mut current = Some(text.to_string());
+    for key in &provider.keys {
+        if key.value.trim().is_empty() {
+            continue;
+        }
+        current = current.and_then(|value| sanitize_error_text(&value, &key.value));
+    }
+    current
+}
+
+/// Copy the persisted runtime marks of a provider's keys into `provider` by key
+/// id, so a request handed a stale snapshot still honors a mark written by an
+/// earlier request or attempt. Keys absent from the persisted record keep the
+/// snapshot's state; user intent (`enabled`) and values are never copied.
+fn sync_key_runtime_marks(provider: &mut GatewayUpstreamProvider) {
+    let Ok(latest) = read_config() else {
+        return;
+    };
+    let Some(stored) = latest.providers.iter().find(|stored| stored.id == provider.id) else {
+        return;
+    };
+    for key in &mut provider.keys {
+        if let Some(stored_key) = stored.keys.iter().find(|stored| stored.id == key.id) {
+            key.auto_marked = stored_key.auto_marked;
+            key.failure_kind = stored_key.failure_kind;
+            key.marked_at = stored_key.marked_at;
+            key.reason = stored_key.reason.clone();
+        }
+    }
+}
+
+/// Apply `mutate` to one provider's key in the latest persisted configuration
+/// and write it back, preserving concurrent edits to every other field. A key
+/// mark never emits the config-update event, which stays scoped to mapping
+/// auto-disable flips.
+fn persist_key_runtime_state<F>(provider_id: &str, key_id: &str, mutate: F)
+where
+    F: FnOnce(&mut super::UpstreamKey),
+{
+    if key_id.is_empty() {
+        return;
+    }
+    let Ok(mut latest) = read_config() else {
+        return;
+    };
+    let Some(provider) = latest
+        .providers
+        .iter_mut()
+        .find(|provider| provider.id == provider_id)
+    else {
+        return;
+    };
+    let Some(key) = provider.keys.iter_mut().find(|key| key.id == key_id) else {
+        return;
+    };
+    mutate(key);
+    let _ = write_config(&latest);
+}
+
+/// Mark a non-probe key after a key-scoped failure and persist it.
+fn settle_key_failure(
+    provider: &mut GatewayUpstreamProvider,
+    selected: &SelectedKey,
+    kind: KeyFailureKind,
+    reason: &str,
+    at: u64,
+) {
+    if let Some(key) = provider.keys.iter_mut().find(|key| key.id == selected.id) {
+        mark_key_failure(key, kind, reason, at);
+    }
+    persist_key_runtime_state(&provider.id, &selected.id, |key| {
+        mark_key_failure(key, kind, reason, at);
+    });
+}
+
+/// Re-arm a failed probe's cooldown and persist it.
+fn settle_key_probe_failure(
+    provider: &mut GatewayUpstreamProvider,
+    selected: &SelectedKey,
+    kind: Option<KeyFailureKind>,
+    reason: &str,
+    at: u64,
+) {
+    if let Some(key) = provider.keys.iter_mut().find(|key| key.id == selected.id) {
+        rearm_key_probe(key, kind, reason, at);
+    }
+    persist_key_runtime_state(&provider.id, &selected.id, |key| {
+        rearm_key_probe(key, kind, reason, at);
+    });
+}
+
+/// Clear a successful probe's runtime state and persist it.
+fn settle_key_probe_success(provider: &mut GatewayUpstreamProvider, selected: &SelectedKey) {
+    if let Some(key) = provider.keys.iter_mut().find(|key| key.id == selected.id) {
+        clear_key_runtime_state(key);
+    }
+    persist_key_runtime_state(&provider.id, &selected.id, clear_key_runtime_state);
+}
+
 async fn attempt_candidate(
     provider: &GatewayUpstreamProvider,
     path: &str,
@@ -1012,9 +1183,9 @@ async fn attempt_candidate(
             let error_message = if served {
                 None
             } else {
-                sanitize_error_text(
+                sanitize_provider_error_text(
                     &extract_upstream_error_text(&response.body).unwrap_or_default(),
-                    &provider.api_key,
+                    provider,
                 )
             };
             let log = build_attempt_log(
@@ -1090,6 +1261,8 @@ async fn attempt_candidate(
                     transport: false,
                     reason: failure_reason(response.status, response.parsed, error_message.as_deref()),
                     retry_delay: retry_header_delay(&response.headers),
+                    status: response.status,
+                    key_failure: key_failure_kind(response.status, error_message.as_deref()),
                 },
                 log,
             )
@@ -1102,7 +1275,7 @@ async fn attempt_candidate(
                 started,
                 0,
                 UsageResult::Failure,
-                sanitize_error_text(&reason, &provider.api_key),
+                sanitize_provider_error_text(&reason, provider),
                 None,
             );
             (
@@ -1112,6 +1285,8 @@ async fn attempt_candidate(
                     transport: true,
                     reason,
                     retry_delay: None,
+                    status: 0,
+                    key_failure: None,
                 },
                 log,
             )
@@ -1126,6 +1301,19 @@ fn record_provider_failure(failures: &mut Vec<(String, String)>, name: &str, rea
         entry.1 = reason;
     } else {
         failures.push((name.to_string(), reason));
+    }
+}
+
+/// Record a provider failure only when the provider has no entry yet. A provider
+/// already exhausted by a key-scoped failure keeps that real upstream reason
+/// instead of being replaced by a generic "no usable key" message.
+fn record_provider_failure_if_absent(
+    failures: &mut Vec<(String, String)>,
+    name: &str,
+    reason: &str,
+) {
+    if !failures.iter().any(|(provider, _)| provider == name) {
+        failures.push((name.to_string(), reason.to_string()));
     }
 }
 
@@ -1152,62 +1340,110 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
         ..Default::default()
     };
     let mut retries: Vec<RetryCandidate> = Vec::new();
+    // Whether this request has already used its single key probe.
+    let mut key_probe_used = false;
     // Last attempted provider/model, reported when every candidate is unavailable.
     let mut last_capture: Option<ForwardCapture> = None;
 
     // Initial pass (REQ-001): every candidate is tried once, in order, without
     // waiting for any backoff, so a healthy later candidate answers before a
-    // retry delay is paid.
-    for provider in ordered {
-        let model = match resolve_model_for_protocol(provider, requested, protocol) {
+    // retry delay is paid. Within one provider slot, a key-scoped failure marks
+    // the attempted key and immediately continues on the next usable key
+    // without backoff, retry-budget consumption or mapping-health registration.
+    for provider_snapshot in ordered {
+        let model = match resolve_model_for_protocol(provider_snapshot, requested, protocol) {
             ModelResolution::Serve(model) => model,
             ModelResolution::ProtocolMismatch(_) | ModelResolution::NoMatch => continue,
         };
-        let (outcome, log) =
-            attempt_candidate(provider, path, body, &model, client_headers).await;
-        attempts.push(log);
-        match outcome {
-            AttemptResult::Success(response) => {
-                settle_success(&mut health, provider, requested, &model);
-                health.apply();
-                return response;
-            }
-            AttemptResult::ReturnToClient(response) => {
-                health.apply();
-                return response;
-            }
-            AttemptResult::Failure {
-                class,
-                retryable,
-                transport,
-                reason,
-                retry_delay,
-            } => {
-                settle_failure(
-                    &mut health,
-                    provider,
-                    requested,
-                    &model,
-                    class,
-                    &reason,
-                    transport,
+        let mut provider = provider_snapshot.clone();
+        sync_key_runtime_marks(&mut provider);
+        loop {
+            let Some(selected) = select_attempt_key(&provider, now_ts(), key_probe_used) else {
+                record_provider_failure_if_absent(
+                    &mut failures,
+                    &provider.name,
+                    "no usable upstream key",
                 );
-                record_provider_failure(&mut failures, &provider.name, reason);
                 last_capture = Some(ForwardCapture {
                     provider_id: provider.id.clone(),
                     provider_name: provider.name.clone(),
                     upstream_model: model.clone(),
                     ..Default::default()
                 });
-                if retryable && ordered.len() > 1 {
-                    retries.push(RetryCandidate {
-                        provider: provider.clone(),
-                        model,
-                        attempts: 1,
-                        ready_at: Instant::now().checked_add(
-                            retry_delay.unwrap_or_else(|| default_retry_delay(1)),
-                        ),
+                break;
+            };
+            if selected.probe {
+                key_probe_used = true;
+            }
+            provider.attempt_key = selected.value.clone();
+            let (outcome, log) =
+                attempt_candidate(&provider, path, body, &model, client_headers).await;
+            attempts.push(log);
+            match outcome {
+                AttemptResult::Success(response) => {
+                    if selected.probe {
+                        settle_key_probe_success(&mut provider, &selected);
+                    }
+                    settle_success(&mut health, &provider, requested, &model);
+                    health.apply();
+                    return response;
+                }
+                AttemptResult::ReturnToClient(response) => {
+                    health.apply();
+                    return response;
+                }
+                AttemptResult::Failure {
+                    class,
+                    retryable,
+                    transport,
+                    reason,
+                    retry_delay,
+                    key_failure,
+                    ..
+                } => {
+                    record_provider_failure(&mut failures, &provider.name, reason.clone());
+                    last_capture = Some(ForwardCapture {
+                        provider_id: provider.id.clone(),
+                        provider_name: provider.name.clone(),
+                        upstream_model: model.clone(),
+                        ..Default::default()
                     });
+                    if selected.probe {
+                        // A failed quota probe re-arms its cooldown and is never
+                        // rotated; the next candidate continues the request.
+                        settle_key_probe_failure(
+                            &mut provider,
+                            &selected,
+                            key_failure,
+                            &reason,
+                            now_ts(),
+                        );
+                        break;
+                    }
+                    if let Some(kind) = key_failure {
+                        settle_key_failure(&mut provider, &selected, kind, &reason, now_ts());
+                        continue;
+                    }
+                    settle_failure(
+                        &mut health,
+                        &provider,
+                        requested,
+                        &model,
+                        class,
+                        &reason,
+                        transport,
+                    );
+                    if retryable && ordered.len() > 1 {
+                        retries.push(RetryCandidate {
+                            provider: provider.clone(),
+                            model,
+                            attempts: 1,
+                            ready_at: Instant::now().checked_add(
+                                retry_delay.unwrap_or_else(|| default_retry_delay(1)),
+                            ),
+                        });
+                    }
+                    break;
                 }
             }
         }
@@ -1222,59 +1458,96 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
             break;
         };
         let mut candidate = retries.remove(index);
-        let (outcome, log) = attempt_candidate(
-            &candidate.provider,
-            path,
-            body,
-            &candidate.model,
-            client_headers,
-        )
-        .await;
-        attempts.push(log);
-        match outcome {
-            AttemptResult::Success(response) => {
-                settle_success(
-                    &mut health,
-                    &candidate.provider,
-                    requested,
-                    &candidate.model,
+        let model = candidate.model.clone();
+        loop {
+            sync_key_runtime_marks(&mut candidate.provider);
+            let Some(selected) = select_attempt_key(&candidate.provider, now_ts(), key_probe_used)
+            else {
+                record_provider_failure_if_absent(
+                    &mut failures,
+                    &candidate.provider.name,
+                    "no usable upstream key",
                 );
-                health.apply();
-                return response;
+                break;
+            };
+            if selected.probe {
+                key_probe_used = true;
             }
-            AttemptResult::ReturnToClient(response) => {
-                health.apply();
-                return response;
-            }
-            AttemptResult::Failure {
-                class,
-                retryable,
-                transport,
-                reason,
-                retry_delay,
-            } => {
-                settle_failure(
-                    &mut health,
-                    &candidate.provider,
-                    requested,
-                    &candidate.model,
-                    class,
-                    &reason,
-                    transport,
-                );
-                record_provider_failure(&mut failures, &candidate.provider.name, reason);
-                last_capture = Some(ForwardCapture {
-                    provider_id: candidate.provider.id.clone(),
-                    provider_name: candidate.provider.name.clone(),
-                    upstream_model: candidate.model.clone(),
-                    ..Default::default()
-                });
-                candidate.attempts += 1;
-                if retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
-                    candidate.ready_at = Instant::now().checked_add(
-                        retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
+            candidate.provider.attempt_key = selected.value.clone();
+            let (outcome, log) =
+                attempt_candidate(&candidate.provider, path, body, &model, client_headers).await;
+            attempts.push(log);
+            match outcome {
+                AttemptResult::Success(response) => {
+                    if selected.probe {
+                        settle_key_probe_success(&mut candidate.provider, &selected);
+                    }
+                    settle_success(
+                        &mut health,
+                        &candidate.provider,
+                        requested,
+                        &model,
                     );
-                    retries.insert(index, candidate);
+                    health.apply();
+                    return response;
+                }
+                AttemptResult::ReturnToClient(response) => {
+                    health.apply();
+                    return response;
+                }
+                AttemptResult::Failure {
+                    class,
+                    retryable,
+                    transport,
+                    reason,
+                    retry_delay,
+                    key_failure,
+                    ..
+                } => {
+                    record_provider_failure(&mut failures, &candidate.provider.name, reason.clone());
+                    last_capture = Some(ForwardCapture {
+                        provider_id: candidate.provider.id.clone(),
+                        provider_name: candidate.provider.name.clone(),
+                        upstream_model: model.clone(),
+                        ..Default::default()
+                    });
+                    if selected.probe {
+                        settle_key_probe_failure(
+                            &mut candidate.provider,
+                            &selected,
+                            key_failure,
+                            &reason,
+                            now_ts(),
+                        );
+                        break;
+                    }
+                    if let Some(kind) = key_failure {
+                        settle_key_failure(
+                            &mut candidate.provider,
+                            &selected,
+                            kind,
+                            &reason,
+                            now_ts(),
+                        );
+                        continue;
+                    }
+                    settle_failure(
+                        &mut health,
+                        &candidate.provider,
+                        requested,
+                        &model,
+                        class,
+                        &reason,
+                        transport,
+                    );
+                    candidate.attempts += 1;
+                    if retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
+                        candidate.ready_at = Instant::now().checked_add(
+                            retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
+                        );
+                        retries.insert(index, candidate);
+                    }
+                    break;
                 }
             }
         }
@@ -1290,42 +1563,69 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
     let mut _probe_guard: Option<ProbeGuard> = None;
     if let Some(candidate) = probe {
         if let Some(guard) = try_acquire_probe_guard(&candidate.target) {
-            _probe_guard = Some(guard);
-            let provider = &candidate.provider;
-            let model = candidate.upstream_model.as_str();
-            let (outcome, log) =
-                attempt_candidate(provider, path, body, model, client_headers).await;
-            attempts.push(log);
-            match outcome {
-                AttemptResult::Success(response) => {
-                    health.record_probe_success(&candidate.target);
-                    health.apply();
-                    return response;
+            let mut provider = candidate.provider.clone();
+            sync_key_runtime_marks(&mut provider);
+            if let Some(selected) = select_attempt_key(&provider, now_ts(), key_probe_used) {
+                if selected.probe {
+                    key_probe_used = true;
                 }
-                AttemptResult::ReturnToClient(response) => {
-                    let status = response.status;
-                    health.record_probe_failure(
-                        &candidate.target,
-                        now_ts(),
-                        false,
-                        &format!("HTTP {status} returned to client"),
-                    );
-                    health.apply();
-                    return response;
-                }
-                AttemptResult::Failure {
-                    transport, reason, ..
-                } => {
-                    health.record_probe_failure(&candidate.target, now_ts(), transport, &reason);
-                    record_provider_failure(&mut failures, &provider.name, reason);
-                    last_capture = Some(ForwardCapture {
-                        provider_id: provider.id.clone(),
-                        provider_name: provider.name.clone(),
-                        upstream_model: candidate.upstream_model.clone(),
-                        ..Default::default()
-                    });
-                    // The probe is never requeued; fall through to the existing
-                    // exhausted path so the 502 envelope names the provider.
+                _probe_guard = Some(guard);
+                provider.attempt_key = selected.value.clone();
+                let model = candidate.upstream_model.as_str();
+                let (outcome, log) =
+                    attempt_candidate(&provider, path, body, model, client_headers).await;
+                attempts.push(log);
+                match outcome {
+                    AttemptResult::Success(response) => {
+                        if selected.probe {
+                            settle_key_probe_success(&mut provider, &selected);
+                        }
+                        health.record_probe_success(&candidate.target);
+                        health.apply();
+                        return response;
+                    }
+                    AttemptResult::ReturnToClient(response) => {
+                        let status = response.status;
+                        let reason = format!("HTTP {status} returned to client");
+                        if selected.probe {
+                            settle_key_probe_failure(
+                                &mut provider,
+                                &selected,
+                                None,
+                                &reason,
+                                now_ts(),
+                            );
+                        }
+                        health.record_probe_failure(&candidate.target, now_ts(), false, &reason);
+                        health.apply();
+                        return response;
+                    }
+                    AttemptResult::Failure {
+                        transport,
+                        reason,
+                        key_failure,
+                        ..
+                    } => {
+                        if selected.probe {
+                            settle_key_probe_failure(
+                                &mut provider,
+                                &selected,
+                                key_failure,
+                                &reason,
+                                now_ts(),
+                            );
+                        }
+                        health.record_probe_failure(&candidate.target, now_ts(), transport, &reason);
+                        record_provider_failure(&mut failures, &provider.name, reason);
+                        last_capture = Some(ForwardCapture {
+                            provider_id: provider.id.clone(),
+                            provider_name: provider.name.clone(),
+                            upstream_model: candidate.upstream_model.clone(),
+                            ..Default::default()
+                        });
+                        // The probe is never requeued; fall through to the existing
+                        // exhausted path so the 502 envelope names the provider.
+                    }
                 }
             }
         }
@@ -1388,7 +1688,9 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     };
     let mut retries = Vec::new();
     let mut remaining_wait = Duration::from_secs(120);
-    let mut initial = ordered.iter();
+    let mut ordered_queue: VecDeque<GatewayUpstreamProvider> = ordered.iter().cloned().collect();
+    // Whether this request has already used its single key probe.
+    let mut key_probe_used = false;
     // Read-only usage parser fed from the relay's own passthrough loop; it never
     // influences the bytes written to the caller.
     let mut usage = SseUsageAccumulator::default();
@@ -1404,36 +1706,59 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     let mut pending_probe = probe;
     let mut _probe_guard: Option<ProbeGuard> = None;
     loop {
-        let (mut candidate, retry_index, probe_target) = if let Some(provider) = initial.next() {
-            let model = match resolve_model_for_protocol(provider, requested, protocol) {
+        let (mut candidate, retry_index, probe_target, selected) = if let Some(mut provider) =
+            ordered_queue.pop_front()
+        {
+            let model = match resolve_model_for_protocol(&provider, requested, protocol) {
                 ModelResolution::Serve(model) => model,
                 ModelResolution::ProtocolMismatch(_) | ModelResolution::NoMatch => continue,
             };
+            sync_key_runtime_marks(&mut provider);
+            let Some(selected) = select_attempt_key(&provider, now_ts(), key_probe_used) else {
+                // A provider with no usable key and no eligible probe is never
+                // contacted; continue the request on the next candidate.
+                continue;
+            };
             (
                 RetryCandidate {
-                    provider: provider.clone(),
+                    provider,
                     model,
                     attempts: 0,
                     ready_at: None,
                 },
                 retries.len(),
                 None,
+                selected,
             )
         } else if let Some(index) = RetryCandidate::next_ready(&retries, &mut remaining_wait).await {
-            (retries.remove(index), index, None)
+            let mut candidate = retries.remove(index);
+            sync_key_runtime_marks(&mut candidate.provider);
+            let Some(selected) =
+                select_attempt_key(&candidate.provider, now_ts(), key_probe_used)
+            else {
+                continue;
+            };
+            (candidate, index, None, selected)
         } else if let Some(candidate) = pending_probe.take() {
             match try_acquire_probe_guard(&candidate.target) {
                 Some(guard) => {
+                    let mut provider = candidate.provider.clone();
+                    sync_key_runtime_marks(&mut provider);
+                    let Some(selected) = select_attempt_key(&provider, now_ts(), key_probe_used)
+                    else {
+                        break;
+                    };
                     _probe_guard = Some(guard);
                     (
                         RetryCandidate {
-                            provider: candidate.provider.clone(),
+                            provider,
                             model: candidate.upstream_model.clone(),
                             attempts: 0,
                             ready_at: None,
                         },
                         retries.len(),
                         Some(candidate.target.clone()),
+                        selected,
                     )
                 }
                 // Another request already probes this mapping key: continue to
@@ -1443,12 +1768,16 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         } else {
             break;
         };
+        if selected.probe {
+            key_probe_used = true;
+        }
+        candidate.provider.attempt_key = selected.value.clone();
         capture.provider_id = candidate.provider.id.clone();
         capture.provider_name = candidate.provider.name.clone();
         capture.upstream_model = candidate.model.clone();
         let provider = &candidate.provider;
         let started = Instant::now();
-        let (class, retryable, reason, retry_delay, transport) = 'attempt: {
+        let (class, retryable, reason, retry_delay, transport, key_failure) = 'attempt: {
             let streamed = open_streaming_response(
                 provider, path, body, &candidate.model, client_headers,
             ).await;
@@ -1463,10 +1792,10 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         started,
                         0,
                         UsageResult::Failure,
-                        sanitize_error_text(&reason, &provider.api_key),
+                        sanitize_provider_error_text(&reason, provider),
                         None,
                     ));
-                    break 'attempt (FailureClass::Retryable, true, reason, None, true);
+                    break 'attempt (FailureClass::Retryable, true, reason, None, true, None);
                 }
             };
             let status = response.status().as_u16();
@@ -1476,22 +1805,23 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 // status (especially immediate disabling for 401/403).
                 let bytes = response.bytes().await.unwrap_or_default();
                 let parsed = serde_json::from_slice::<Value>(&bytes).is_ok();
-                let error_message = sanitize_error_text(
+                let error_message = sanitize_provider_error_text(
                     &extract_upstream_error_text(&bytes).unwrap_or_default(),
-                    &provider.api_key,
+                    provider,
                 );
                 let class =
                     classify_failure_with_message(status, false, parsed, error_message.as_deref());
                 if class == FailureClass::ReturnToClient {
+                    let reason = failure_reason(status, parsed, error_message.as_deref());
                     if let Some(target) = &probe_target {
                         // A probe that returns the upstream 4xx unchanged still
                         // re-arms its cooldown (REQ-001).
-                        health.record_probe_failure(
-                            target,
-                            now_ts(),
-                            false,
-                            &failure_reason(status, parsed, error_message.as_deref()),
-                        );
+                        health.record_probe_failure(target, now_ts(), false, &reason);
+                    }
+                    if selected.probe {
+                        persist_key_runtime_state(&provider.id, &selected.id, |key| {
+                            rearm_key_probe(key, None, &reason, now_ts());
+                        });
                     }
                     health.apply();
                     capture.status = status;
@@ -1533,6 +1863,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 // into the attempt log.
                 let retryable =
                     is_retryable_with_message(class, status, error_message.as_deref());
+                let key_failure = key_failure_kind(status, error_message.as_deref());
                 attempts.push(build_attempt_log(
                     provider,
                     &candidate.model,
@@ -1542,7 +1873,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     error_message,
                     None,
                 ));
-                break 'attempt (class, retryable, reason, retry_delay, false);
+                break 'attempt (class, retryable, reason, retry_delay, false, key_failure);
             }
 
             let content_type = response
@@ -1567,13 +1898,20 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                             started,
                             502,
                             UsageResult::Failure,
-                            sanitize_error_text(
+                            sanitize_provider_error_text(
                                 &extract_upstream_error_text(&first).unwrap_or_default(),
-                                &provider.api_key,
+                                provider,
                             ),
                             None,
                         ));
-                        break 'attempt (FailureClass::Retryable, true, reason, retry_delay, false);
+                        break 'attempt (
+                            FailureClass::Retryable,
+                            true,
+                            reason,
+                            retry_delay,
+                            false,
+                            None,
+                        );
                     }
                     if let Err(error) = write_stream_headers(writer, status).await {
                         health.apply();
@@ -1625,6 +1963,11 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                         true,
                                     );
                                 }
+                                if selected.probe {
+                                    persist_key_runtime_state(&provider.id, &selected.id, |key| {
+                                        rearm_key_probe(key, None, &reason, now_ts());
+                                    });
+                                }
                                 health.apply();
                                 // The attempt is complete: its stream ended with
                                 // an error and keeps the usage accumulated so far
@@ -1635,7 +1978,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     started,
                                     502,
                                     UsageResult::Failure,
-                                    sanitize_error_text(&reason, &provider.api_key),
+                                    sanitize_provider_error_text(&reason, provider),
                                     usage.canonical_usage(),
                                 ));
                                 // Complete the SSE event boundary so the error
@@ -1674,6 +2017,13 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                         &candidate.model,
                                     );
                                 }
+                                if selected.probe {
+                                    persist_key_runtime_state(
+                                        &provider.id,
+                                        &selected.id,
+                                        clear_key_runtime_state,
+                                    );
+                                }
                                 health.apply();
                                 capture.status = status;
                                 capture.usage = usage.usage();
@@ -1702,10 +2052,17 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         started,
                         0,
                         UsageResult::Failure,
-                        sanitize_error_text(&reason, &provider.api_key),
+                        sanitize_provider_error_text(&reason, provider),
                         None,
                     ));
-                    break 'attempt (FailureClass::Retryable, true, reason, retry_delay, true);
+                    break 'attempt (
+                        FailureClass::Retryable,
+                        true,
+                        reason,
+                        retry_delay,
+                        true,
+                        None,
+                    );
                 }
                 None => {
                     last_failure_status = Some(502);
@@ -1721,7 +2078,14 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         None,
                         None,
                     ));
-                    break 'attempt (FailureClass::Retryable, true, reason, retry_delay, false);
+                    break 'attempt (
+                        FailureClass::Retryable,
+                        true,
+                        reason,
+                        retry_delay,
+                        false,
+                        None,
+                    );
                 }
             }
         };
@@ -1730,7 +2094,33 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             // names the provider in the all-unavailable message and is never
             // queued for retry or backoff (REQ-001/AC-002).
             health.record_probe_failure(target, now_ts(), transport, &reason);
+            if selected.probe {
+                persist_key_runtime_state(&provider.id, &selected.id, |key| {
+                    rearm_key_probe(key, key_failure, &reason, now_ts());
+                });
+            }
             record_provider_failure(&mut failures, &provider.name, reason);
+        } else if selected.probe {
+            // A failed quota probe re-arms its cooldown and is never rotated or
+            // requeued, exactly like the mapping probe.
+            persist_key_runtime_state(&provider.id, &selected.id, |key| {
+                rearm_key_probe(key, key_failure, &reason, now_ts());
+            });
+            record_provider_failure(&mut failures, &provider.name, reason);
+        } else if let Some(kind) = key_failure {
+            // Key-scoped failure before the first byte: mark the key and retry
+            // the same provider immediately on its next usable key, consuming
+            // no retry budget and registering no mapping health.
+            let at = now_ts();
+            persist_key_runtime_state(&provider.id, &selected.id, |key| {
+                mark_key_failure(key, kind, &reason, at);
+            });
+            record_provider_failure(&mut failures, &provider.name, reason.clone());
+            let mut next_provider = candidate.provider.clone();
+            if let Some(key) = next_provider.keys.iter_mut().find(|key| key.id == selected.id) {
+                mark_key_failure(key, kind, &reason, at);
+            }
+            ordered_queue.push_front(next_provider);
         } else {
             settle_failure(
                 &mut health,

@@ -9,7 +9,7 @@
 use super::storage::new_provider_id;
 use super::types_config::{
     now_ts, GatewayConfig, GatewayUpstreamProvider, ModelMapping, ModelPrice, OffPeakPrice,
-    ProviderTemplate, ProviderTemplateModel, ProviderTemplateState, UpstreamProtocol,
+    ProviderTemplate, ProviderTemplateModel, ProviderTemplateState, UpstreamKey, UpstreamProtocol,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -865,7 +865,13 @@ pub fn apply_create_provider_from_template(
         } else {
             base_url.to_string()
         },
-        api_key: api_key.to_string(),
+        keys: vec![UpstreamKey {
+            id: "default".to_string(),
+            name: "Default".to_string(),
+            value: api_key.to_string(),
+            enabled: true,
+            ..UpstreamKey::default()
+        }],
         template_id: Some(template_id.to_string()),
         protocol,
         mappings: template

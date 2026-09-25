@@ -1,7 +1,8 @@
 use super::migration::migrate_legacy_files;
 use super::runtime_http::{autostart, server_status, start_server, stop_server};
 use super::selection::{
-    clear_mapping_runtime_state, manual_reenable, mapping_matches_key, set_user_enabled,
+    clear_key_runtime_state, clear_mapping_runtime_state, manual_reenable, mapping_matches_key,
+    set_user_enabled,
 };
 use super::storage::{
     find_provider_mut, local_base_url, new_key_id, new_key_value, new_provider_id, read_config,
@@ -250,6 +251,68 @@ fn api_err_to_string(error: crate::app_store::ApiErr) -> String {
     format!("{}: {}", error.code, error.message)
 }
 
+/// Validate and normalize a brand-new provider's pool: every key gets a stable
+/// id when missing, every key must carry a value, and every key starts healthy.
+fn prepare_new_provider_keys(provider: &mut GatewayUpstreamProvider) -> Result<(), String> {
+    for key in &mut provider.keys {
+        if key.id.trim().is_empty() {
+            key.id = new_key_id();
+        }
+        if key.value.trim().is_empty() {
+            return Err(format!(
+                "a new upstream key '{}' requires a value",
+                key.name.trim()
+            ));
+        }
+        clear_key_runtime_state(key);
+    }
+    Ok(())
+}
+
+/// Merge an incoming pool into the stored one by key id. A blank value keeps
+/// the stored value and runtime state, an unchanged value preserves the stored
+/// runtime state, a changed value clears it (the user revalued the key), and an
+/// unknown id starts a healthy new key. Deleting is by omission: a stored id
+/// absent from the incoming list is dropped with its runtime state.
+fn merge_provider_keys(
+    existing: &GatewayUpstreamProvider,
+    provider: &mut GatewayUpstreamProvider,
+) -> Result<(), String> {
+    for key in &mut provider.keys {
+        let stored = if key.id.trim().is_empty() {
+            None
+        } else {
+            existing.keys.iter().find(|stored| stored.id == key.id)
+        };
+        match stored {
+            None => {
+                if key.id.trim().is_empty() {
+                    key.id = new_key_id();
+                }
+                if key.value.trim().is_empty() {
+                    return Err(format!(
+                        "a new upstream key '{}' requires a value",
+                        key.name.trim()
+                    ));
+                }
+                clear_key_runtime_state(key);
+            }
+            Some(stored) => {
+                if key.value.trim().is_empty() || key.value == stored.value {
+                    key.value = stored.value.clone();
+                    key.auto_marked = stored.auto_marked;
+                    key.failure_kind = stored.failure_kind;
+                    key.marked_at = stored.marked_at;
+                    key.reason = stored.reason.clone();
+                } else {
+                    clear_key_runtime_state(key);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn ai_gateway_get_config() -> Result<GatewayConfig, String> {
     read_config()
@@ -265,15 +328,19 @@ pub fn ai_gateway_upsert_provider(
             "provider weight must be between {MIN_PROVIDER_WEIGHT} and {MAX_PROVIDER_WEIGHT}"
         ));
     }
+    // A key name is required and may repeat; reject before anything is staged.
+    for key in &provider.keys {
+        if key.name.trim().is_empty() {
+            return Err("an upstream key requires a non-blank name".to_string());
+        }
+    }
     let mut config = read_config()?;
     if provider.id.trim().is_empty() {
         provider.id = new_provider_id();
     }
     let provider_id = provider.id.clone();
     if let Some(existing) = find_provider_mut(&mut config, &provider_id) {
-        if provider.api_key.trim().is_empty() {
-            provider.api_key = existing.api_key.clone();
-        }
+        merge_provider_keys(existing, &mut provider)?;
         // Runtime health belongs to a trimmed `(local_model, upstream_model)`
         // key: an unchanged key keeps the stored state, a new or changed key
         // starts healthy, and a deleted row drops its state with the replacement.
@@ -293,7 +360,9 @@ pub fn ai_gateway_upsert_provider(
         }
         *existing = provider;
     } else {
-        // A brand-new provider has no stored key, so every row starts healthy.
+        // A brand-new provider has no stored keys or rows, so every key and row
+        // starts healthy; a new key still needs a value.
+        prepare_new_provider_keys(&mut provider)?;
         for mapping in &mut provider.mappings {
             clear_mapping_runtime_state(mapping);
         }
@@ -393,6 +462,27 @@ pub fn ai_gateway_reenable_provider_models(provider_id: String) -> Result<Gatewa
     let provider = find_provider_mut(&mut config, &provider_id)
         .ok_or_else(|| format!("provider not found: {provider_id}"))?;
     manual_reenable(provider);
+    write_config(&config)?;
+    read_config()
+}
+
+/// Clear one upstream key's runtime state without changing its `enabled` flag,
+/// so a manual re-enable restores an auth- or quota-marked key. An unknown
+/// provider or key id is an actionable error that writes nothing.
+#[tauri::command]
+pub fn ai_gateway_reenable_provider_key(
+    provider_id: String,
+    key_id: String,
+) -> Result<GatewayConfig, String> {
+    let mut config = read_config()?;
+    let provider = find_provider_mut(&mut config, &provider_id)
+        .ok_or_else(|| format!("provider not found: {provider_id}"))?;
+    let key = provider
+        .keys
+        .iter_mut()
+        .find(|key| key.id == key_id)
+        .ok_or_else(|| format!("no upstream key matches '{key_id}' for provider '{provider_id}'"))?;
+    clear_key_runtime_state(key);
     write_config(&config)?;
     read_config()
 }

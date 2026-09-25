@@ -1,6 +1,6 @@
 use super::{
-    GatewayUpstreamProvider, ModelMapping, UpstreamProtocol, AUTO_DISABLE_PROBE_COOLDOWN_SECS,
-    FAILURE_THRESHOLD,
+    GatewayUpstreamProvider, KeyFailureKind, ModelMapping, UpstreamKey, UpstreamProtocol,
+    AUTO_DISABLE_PROBE_COOLDOWN_SECS, FAILURE_THRESHOLD, KEY_PROBE_COOLDOWN_SECS,
 };
 #[cfg(test)]
 use rand::seq::SliceRandom;
@@ -989,4 +989,96 @@ pub(in crate::ai_gateway) fn set_user_enabled(
     enabled: bool,
 ) {
     provider.enabled = enabled;
+}
+
+/// First key usable for a normal upstream attempt: enabled and not
+/// runtime-marked, in list order. A user-disabled or runtime-marked key never
+/// participates in selection.
+pub(in crate::ai_gateway) fn select_usable_key(
+    provider: &GatewayUpstreamProvider,
+) -> Option<&UpstreamKey> {
+    provider
+        .keys
+        .iter()
+        .find(|key| key.enabled && !key.auto_marked)
+}
+
+/// The single quota-marked key eligible for one half-open probe.
+///
+/// Eligibility requires the key to be enabled and runtime-marked with
+/// [`KeyFailureKind::Quota`] at least [`KEY_PROBE_COOLDOWN_SECS`] seconds before
+/// the explicit `now` (`now - marked_at >= cooldown`). Auth-marked keys are
+/// never returned; a missing `marked_at` is never eligible. At most one key is
+/// chosen: the oldest `marked_at` first, ties by list order.
+pub(in crate::ai_gateway) fn find_key_probe_candidate(
+    provider: &GatewayUpstreamProvider,
+    now: u64,
+) -> Option<&UpstreamKey> {
+    provider
+        .keys
+        .iter()
+        .filter(|key| key.enabled && key.auto_marked)
+        .filter(|key| key.failure_kind == Some(KeyFailureKind::Quota))
+        .filter(|key| {
+            key.marked_at
+                .is_some_and(|marked_at| now.saturating_sub(marked_at) >= KEY_PROBE_COOLDOWN_SECS)
+        })
+        .min_by_key(|key| key.marked_at.unwrap_or(u64::MAX))
+}
+
+/// Mark a key with a key-scoped failure: it leaves the usable pool and carries
+/// the failure kind, marking time and readable reason. The user's `enabled`
+/// intent is untouched.
+pub(in crate::ai_gateway) fn mark_key_failure(
+    key: &mut UpstreamKey,
+    kind: KeyFailureKind,
+    reason: &str,
+    at: u64,
+) {
+    key.auto_marked = true;
+    key.failure_kind = Some(kind);
+    key.marked_at = Some(at);
+    key.reason = Some(reason.to_string());
+}
+
+/// Re-arm a failed probe's cooldown: the key stays runtime-marked and moves its
+/// `marked_at` to `at`. An auth failure switches the mark kind to
+/// authentication; any other failure keeps the existing quota kind.
+pub(in crate::ai_gateway) fn rearm_key_probe(
+    key: &mut UpstreamKey,
+    kind: Option<KeyFailureKind>,
+    reason: &str,
+    at: u64,
+) {
+    key.auto_marked = true;
+    match kind {
+        Some(kind) => key.failure_kind = Some(kind),
+        None => {
+            key.failure_kind.get_or_insert(KeyFailureKind::Quota);
+        }
+    }
+    key.marked_at = Some(at);
+    key.reason = Some(reason.to_string());
+}
+
+/// The key a read-only quota/usage query is pinned to: the first enabled key in
+/// list order, or the first key when every key is disabled. An empty pool has no
+/// pinned key. This source never follows the serving key.
+pub(in crate::ai_gateway) fn pinned_key_value(
+    provider: &GatewayUpstreamProvider,
+) -> Option<&str> {
+    provider
+        .keys
+        .iter()
+        .find(|key| key.enabled)
+        .or_else(|| provider.keys.first())
+        .map(|key| key.value.as_str())
+}
+
+/// Clear a key's runtime state without touching the user's `enabled` flag.
+pub(in crate::ai_gateway) fn clear_key_runtime_state(key: &mut UpstreamKey) {
+    key.auto_marked = false;
+    key.failure_kind = None;
+    key.marked_at = None;
+    key.reason = None;
 }

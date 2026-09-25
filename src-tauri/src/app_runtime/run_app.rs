@@ -307,6 +307,7 @@ pub fn run() {
             ai_gateway::ai_gateway_set_provider_enabled,
             ai_gateway::ai_gateway_reenable_provider_model,
             ai_gateway::ai_gateway_reenable_provider_models,
+            ai_gateway::ai_gateway_reenable_provider_key,
             ai_gateway::ai_gateway_upsert_key,
             ai_gateway::ai_gateway_delete_key,
             ai_gateway::ai_gateway_set_default_key,

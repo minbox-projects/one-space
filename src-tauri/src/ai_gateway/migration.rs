@@ -38,6 +38,50 @@ const LEGACY_PROVIDER_RUNTIME_KEYS: [&str; 5] = [
 const LEGACY_SINGULAR_OFF_PEAK_KEY: &str = "off_peak";
 const OFF_PEAKS_KEY: &str = "off_peaks";
 
+/// Legacy provider-level single credential field, superseded by the ordered
+/// `keys` pool. This is the only non-test production source allowed to name it.
+const LEGACY_SINGLE_KEY_FIELD: &str = "api_key";
+/// Current ordered upstream key pool field.
+const KEYS_FIELD: &str = "keys";
+/// Name of the single entry a migrated legacy credential produces.
+const MIGRATED_DEFAULT_KEY_NAME: &str = "Default";
+const MIGRATED_DEFAULT_KEY_ID: &str = "default";
+
+/// Convert one raw provider object to the key-pool shape and report whether
+/// anything changed.
+///
+/// Precedence follows the persisted contract: an existing `keys` array is
+/// authoritative and only the legacy field is removed; otherwise a non-blank
+/// legacy `api_key` becomes exactly one enabled `Default` entry with no runtime
+/// state, and a blank or missing legacy value yields an empty pool. Missing
+/// fields are tolerated so a legacy shape can never fail the whole parse.
+fn convert_provider_keys(provider: &mut Map<String, Value>) -> bool {
+    let legacy = provider.remove(LEGACY_SINGLE_KEY_FIELD);
+    if provider.get(KEYS_FIELD).and_then(Value::as_array).is_some() {
+        return legacy.is_some();
+    }
+    let legacy_value = legacy
+        .as_ref()
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let keys = match legacy_value {
+        Some(value) => Value::Array(vec![serde_json::json!({
+            "id": MIGRATED_DEFAULT_KEY_ID,
+            "name": MIGRATED_DEFAULT_KEY_NAME,
+            "value": value,
+            "enabled": true,
+            "auto_marked": false,
+            "failure_kind": null,
+            "marked_at": null,
+            "reason": null,
+        })]),
+        None => Value::Array(Vec::new()),
+    };
+    provider.insert(KEYS_FIELD.to_string(), keys);
+    true
+}
+
 /// The provider ids together with the upstream models each provider reaches:
 /// every non-blank, retained mapping `upstream_model` plus its trimmed default
 /// model.
@@ -137,6 +181,9 @@ pub(in crate::ai_gateway) fn migrate_legacy_config(config: &mut Value) -> bool {
                 if provider.remove(key).is_some() {
                     changed = true;
                 }
+            }
+            if convert_provider_keys(provider) {
+                changed = true;
             }
         }
     }

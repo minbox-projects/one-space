@@ -92,9 +92,10 @@ pub(in crate::ai_gateway) struct QuotaRequest {
 pub(in crate::ai_gateway) fn resolve_quota_request(
     provider: &GatewayUpstreamProvider,
 ) -> Result<QuotaRequest, String> {
-    if provider.api_key.trim().is_empty() {
-        return Err("no API key configured for this provider".to_string());
-    }
+    let api_key = super::selection::pinned_key_value(provider)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "no API key configured for this provider".to_string())?;
 
     let base_url = provider.base_url.trim();
     if base_url.is_empty() {
@@ -111,7 +112,7 @@ pub(in crate::ai_gateway) fn resolve_quota_request(
 
     Ok(QuotaRequest {
         url: COMMANDCODE_QUOTA_URL.to_string(),
-        api_key: provider.api_key.clone(),
+        api_key: api_key.to_string(),
     })
 }
 
@@ -193,7 +194,7 @@ where
         .iter()
         .find(|provider| provider.id == provider_id)
         .ok_or_else(|| format!("unknown provider: {provider_id}"))?;
-    let request = resolve_quota_request(provider)?;
+    let QuotaRequest { url, api_key } = resolve_quota_request(provider)?;
 
     {
         let cache = cache
@@ -201,7 +202,7 @@ where
             .map_err(|_| "quota cache is unavailable".to_string())?;
         if let Some(snapshot) = cache.get_fresh(
             provider_id,
-            &request.api_key,
+            &api_key,
             &provider.base_url,
             now_ms,
             force_refresh,
@@ -210,14 +211,14 @@ where
         }
     }
 
-    let body = fetch(request.url, request.api_key).await?;
+    let body = fetch(url, api_key.clone()).await?;
     let snapshot = parse_provider_quota(&body)?;
     cache
         .lock()
         .map_err(|_| "quota cache is unavailable".to_string())?
         .store(
             provider_id,
-            &provider.api_key,
+            &api_key,
             &provider.base_url,
             now_ms,
             snapshot.clone(),
