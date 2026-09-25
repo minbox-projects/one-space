@@ -38,13 +38,24 @@ function makeProvider(overrides: Partial<GatewayUpstreamProvider> = {}): Gateway
     id: "go-provider",
     name: "OpenCode Go",
     base_url: "https://opencode.ai/zen/go",
-    api_key: "sk-test",
+    keys: [
+      {
+        id: "k1",
+        name: "Default",
+        value: "sk-test",
+        enabled: true,
+        auto_marked: false,
+        failure_kind: null,
+        marked_at: null,
+        reason: null,
+      },
+    ],
     default_model: null,
     protocol: "chat_completions",
     mappings: [],
     enabled: true,
     ...overrides,
-  } as GatewayUpstreamProvider;
+  } as unknown as GatewayUpstreamProvider;
 }
 
 function mockUsageResult(result: ProviderGoUsage | Error = FIXTURE) {

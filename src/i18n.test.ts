@@ -490,3 +490,90 @@ describe("服务商模板自动同步通知国际化键", () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// Step 3: ordered upstream key-pool bilingual copy.
+// RED assertions: Step 4 must add every pinned key to both dictionaries.
+// ---------------------------------------------------------------------------
+
+const PROVIDER_KEY_POOL_I18N_KEYS = [
+  "aiGatewayProviderKeys",
+  "aiGatewayProviderKeyAdd",
+  "aiGatewayProviderKeyNameAria",
+  "aiGatewayProviderKeyValueAria",
+  "aiGatewayProviderKeyToggleAria",
+  "aiGatewayProviderKeyMoveUpAria",
+  "aiGatewayProviderKeyMoveDownAria",
+  "aiGatewayProviderKeyRemoveAria",
+  "aiGatewayProviderKeyReenable",
+  "aiGatewayProviderKeyNameRequired",
+  "aiGatewayProviderKeyValueRequired",
+  "aiGatewayProviderKeyStateUsable",
+  "aiGatewayProviderKeyStateDisabled",
+  "aiGatewayProviderKeyStateQuota",
+  "aiGatewayProviderKeyStateAuth",
+  "aiGatewayProviderKeyMarkedAt",
+  "aiGatewayProviderKeysSummary",
+] as const;
+
+describe("AI 网关上游密钥池国际化键", () => {
+  it.each(["en", "zh"] as const)(
+    "为 %s 提供全部上游密钥池真实文案",
+    (language) => {
+      for (const key of PROVIDER_KEY_POOL_I18N_KEYS) {
+        const translation = i18n.getResource(language, "translation", key);
+        expect(typeof translation, `${language}:${key} 应为字符串`).toBe(
+          "string",
+        );
+        expect(
+          (translation as string).trim(),
+          `${language}:${key} 不应为空`,
+        ).not.toBe("");
+        expect(translation, `${language}:${key} 不应回退为键名`).not.toBe(key);
+      }
+    },
+  );
+
+  it.each(["en", "zh"] as const)(
+    "为 %s 的标记时间与数量文案保留占位符并正常插值",
+    (language) => {
+      const markedAt = i18n.getResource(
+        language,
+        "translation",
+        "aiGatewayProviderKeyMarkedAt",
+      );
+      expect(typeof markedAt, `${language}:markedAt 应为字符串`).toBe("string");
+      expect(markedAt as string, `${language}:markedAt 应保留 {{time}}`).toContain(
+        "{{time}}",
+      );
+      expect(
+        i18n.t("aiGatewayProviderKeyMarkedAt", { time: "2026-09-25 10:00" }),
+      ).toContain("2026-09-25 10:00");
+
+      const summary = i18n.getResource(
+        language,
+        "translation",
+        "aiGatewayProviderKeysSummary",
+      );
+      expect(typeof summary, `${language}:summary 应为字符串`).toBe("string");
+      expect(
+        summary as string,
+        `${language}:summary 应保留 {{count}}`,
+      ).toContain("{{count}}");
+      expect(
+        i18n.t("aiGatewayProviderKeysSummary", { count: 2 }),
+      ).not.toContain("{{count}}");
+    },
+  );
+
+  it("新增密钥池键后 en 与 zh 的键路径集合仍完全一致", () => {
+    const enPaths = collectKeyPaths(resourceBundle("en"));
+    const zhPaths = collectKeyPaths(resourceBundle("zh"));
+    const enSet = new Set(enPaths);
+    const zhSet = new Set(zhPaths);
+    expect({
+      onlyEn: enPaths.filter((path) => !zhSet.has(path)),
+      onlyZh: zhPaths.filter((path) => !enSet.has(path)),
+    }).toEqual({ onlyEn: [], onlyZh: [] });
+  });
+});
+

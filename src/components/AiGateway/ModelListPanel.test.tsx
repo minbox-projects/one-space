@@ -16,12 +16,23 @@ function makeProvider(
     id: "provider-1",
     name: "Provider 1",
     base_url: "https://api.example.com",
-    api_key: "********",
+    keys: [
+      {
+        id: "k1",
+        name: "Default",
+        value: "********",
+        enabled: true,
+        auto_marked: false,
+        failure_kind: null,
+        marked_at: null,
+        reason: null,
+      },
+    ],
     default_model: null,
     mappings: [],
     enabled: true,
     ...overrides,
-  } as GatewayUpstreamProvider;
+  } as unknown as GatewayUpstreamProvider;
 }
 
 function renderPanel(

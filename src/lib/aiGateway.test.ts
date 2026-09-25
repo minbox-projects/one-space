@@ -6,6 +6,8 @@ import {
   aiGatewayDeleteKey,
   aiGatewayDeleteProvider,
   aiGatewayGetConfig,
+  aiGatewayProviderGoUsage,
+  aiGatewayProviderQuota,
   aiGatewayReenableProviderModel,
   aiGatewayReenableProviderModels,
   aiGatewaySetDefaultKey,
@@ -66,19 +68,41 @@ function key(overrides: Partial<GatewayKey> = {}): GatewayKey {
   };
 }
 
+/**
+ * Raw ordered key-pool entry, built as a shape-only record so this suite keeps
+ * compiling against the pre-Step-4 `GatewayUpstreamProvider` type while
+ * pinning the delivered backend wire contract (field order included).
+ */
+type RawProviderKey = Record<string, unknown>;
+
+function providerKey(overrides: RawProviderKey = {}): RawProviderKey {
+  return {
+    id: "k1",
+    name: "Default",
+    value: "sk-provider-key",
+    enabled: true,
+    auto_marked: false,
+    failure_kind: null,
+    marked_at: null,
+    reason: null,
+    ...overrides,
+  };
+}
+
 function provider(
-  overrides: Partial<GatewayUpstreamProvider> = {},
+  overrides: Partial<GatewayUpstreamProvider> & { keys?: RawProviderKey[] } = {},
 ): GatewayUpstreamProvider {
+  const { keys, ...rest } = overrides;
   return {
     id: "p1",
     name: "Provider",
     base_url: "https://upstream.example",
-    api_key: "********",
+    keys: keys ?? [providerKey()],
     default_model: null,
     mappings: [],
     enabled: true,
-    ...overrides,
-  } as GatewayUpstreamProvider;
+    ...rest,
+  } as unknown as GatewayUpstreamProvider;
 }
 
 function config(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
@@ -1855,5 +1879,101 @@ describe("aiGateway template auto refresh wrappers", () => {
       listener,
       "取消订阅后通知不应再触达旧监听器",
     ).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 3: ordered upstream key-pool wire contract and wrapper signatures.
+// RED tests for the frozen interface contract. Only this test file is touched.
+// ---------------------------------------------------------------------------
+
+describe("AI Gateway 上游密钥池契约", () => {
+  beforeEach(() => {
+    resetTauriMocks();
+  });
+
+  it("provider 记录以 keys 数组承载有序密钥且字段顺序与后端契约一致", () => {
+    const entry = providerKey();
+    expect(Object.keys(entry)).toEqual([
+      "id",
+      "name",
+      "value",
+      "enabled",
+      "auto_marked",
+      "failure_kind",
+      "marked_at",
+      "reason",
+    ]);
+
+    const p = provider({
+      keys: [
+        providerKey({ id: "k1", name: "Primary" }),
+        providerKey({ id: "k2", name: "Backup" }),
+      ],
+    }) as unknown as { keys: RawProviderKey[] };
+    expect(p.keys.map((item) => item.id)).toEqual(["k1", "k2"]);
+  });
+
+  it("upsert 包装函数原样传递有序 keys 数组与启用标记", async () => {
+    const keys = [
+      providerKey({ id: "k1", name: "Primary", value: "sk-one", enabled: true }),
+      providerKey({ id: "k2", name: "Backup", value: "sk-two", enabled: false }),
+    ];
+    const p = provider({ id: "p1", keys });
+    const saved = config({ providers: [p] });
+    invokeMock.mockResolvedValueOnce(saved);
+
+    const result = await aiGatewayUpsertProvider(p);
+
+    expect(invokeMock).toHaveBeenCalledWith("ai_gateway_upsert_provider", {
+      provider: expect.objectContaining({
+        keys: [keys[0], keys[1]],
+      }),
+      prices: null,
+    });
+    expect(result).toBe(saved);
+  });
+
+  it("重新启用单个上游密钥包装为 ai_gateway_reenable_provider_key", async () => {
+    const gatewayModule = await import("@/lib/aiGateway");
+    const reenable = (gatewayModule as Record<string, unknown>)
+      .aiGatewayReenableProviderKey as
+      | ((providerId: string, keyId: string) => Promise<GatewayConfig>)
+      | undefined;
+    expect(
+      typeof reenable,
+      "aiGatewayReenableProviderKey 包装函数必须导出",
+    ).toBe("function");
+
+    const saved = config({
+      providers: [provider({ keys: [providerKey({ id: "k1" })] })],
+    });
+    invokeMock.mockResolvedValueOnce(saved);
+
+    await reenable!("p1", "k1");
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "ai_gateway_reenable_provider_key",
+      { providerId: "p1", keyId: "k1" },
+    );
+  });
+
+  it("配额与 Go 用量包装函数保持 providerId/forceRefresh 签名且不携带密钥参数", async () => {
+    await aiGatewayProviderQuota("p1", true);
+    await aiGatewayProviderGoUsage("p1", false);
+
+    expect(invokeMock).toHaveBeenCalledWith("ai_gateway_provider_quota", {
+      providerId: "p1",
+      forceRefresh: true,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("ai_gateway_provider_go_usage", {
+      providerId: "p1",
+      forceRefresh: false,
+    });
+    for (const call of invokeMock.mock.calls) {
+      const payload = (call[1] ?? {}) as Record<string, unknown>;
+      expect(Object.keys(payload)).not.toContain("keyId");
+      expect(Object.keys(payload)).not.toContain("key_id");
+    }
   });
 });

@@ -230,19 +230,36 @@ function mockStoreWithUpsert(store: Store) {
   });
 }
 
+type RawProviderKey = Record<string, unknown>;
+
+function providerKey(overrides: RawProviderKey = {}): RawProviderKey {
+  return {
+    id: "k1",
+    name: "Default",
+    value: "sk-default",
+    enabled: true,
+    auto_marked: false,
+    failure_kind: null,
+    marked_at: null,
+    reason: null,
+    ...overrides,
+  };
+}
+
 function makeProvider(
-  overrides: Partial<GatewayUpstreamProvider> = {},
+  overrides: Partial<GatewayUpstreamProvider> & { keys?: RawProviderKey[] } = {},
 ): GatewayUpstreamProvider {
+  const { keys, ...rest } = overrides;
   return {
     id: "p1",
     name: "Upstream A",
     base_url: "https://api.a.example",
-    api_key: "********",
+    keys: keys ?? [providerKey()],
     default_model: null,
     mappings: [],
     enabled: true,
-    ...overrides,
-  } as GatewayUpstreamProvider;
+    ...rest,
+  } as unknown as GatewayUpstreamProvider;
 }
 
 describe("AiGateway", () => {
@@ -3082,6 +3099,89 @@ describe("AiGateway 配置更新事件实时刷新", () => {
         expect(screen.queryByTestId("ai-gateway-provider-detail")).not.toBeInTheDocument(),
       );
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 3: UI wiring for manual upstream-key re-enable.
+// RED test for the frozen interface contract. Only this test file is touched.
+// ---------------------------------------------------------------------------
+
+describe("AiGateway 上游密钥池 UI 接线", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    resetMessageMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("UI→重新启用上游密钥命令并刷新开放弹窗", async () => {
+    const p1 = makeProvider({
+      id: "p1",
+      name: "Keyed Provider",
+      keys: [
+        providerKey({
+          id: "k1",
+          name: "Primary",
+          value: "sk-one",
+          auto_marked: true,
+          failure_kind: "quota",
+          marked_at: 1_700_000_000,
+        }),
+      ],
+    });
+
+    const store: Store = {
+      config: makeConfig({ providers: [p1] }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [openCodeTarget()],
+    };
+    mockStore(store);
+
+    const originalImpl = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === "ai_gateway_reenable_provider_key") {
+          const { providerId, keyId } = args as {
+            providerId: string;
+            keyId: string;
+          };
+          const provider = store.config.providers.find(
+            (entry) => entry.id === providerId,
+          ) as unknown as { keys?: RawProviderKey[] } | undefined;
+          const key = provider?.keys?.find((entry) => entry.id === keyId);
+          if (key) {
+            key.auto_marked = false;
+            key.failure_kind = null;
+            key.marked_at = null;
+            key.reason = null;
+          }
+          return store.config;
+        }
+        return originalImpl(command, args);
+      },
+    );
+
+    renderWithProviders(<AiGateway />);
+
+    await screen.findByTestId("ai-gateway-providers");
+    const providerCard = screen.getByTestId("ai-gateway-provider-p1");
+    fireEvent.click(within(providerCard).getByText("Keyed Provider"));
+
+    await screen.findByTestId("ai-gateway-provider-detail");
+    fireEvent.click(screen.getByTestId("ai-gateway-reenable-key-0"));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "ai_gateway_reenable_provider_key",
+        { providerId: "p1", keyId: "k1" },
+      ),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("ai-gateway-reenable-key-0"),
+      ).not.toBeInTheDocument(),
+    );
   });
 });
 

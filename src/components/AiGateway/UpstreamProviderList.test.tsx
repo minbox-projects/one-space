@@ -35,20 +35,37 @@ const COMMANDCODE_QUOTA_FIXTURE: ProviderQuota = {
   },
 };
 
+type RawProviderKey = Record<string, unknown>;
+
+function providerKey(overrides: RawProviderKey = {}): RawProviderKey {
+  return {
+    id: "k1",
+    name: "Default",
+    value: "sk-test",
+    enabled: true,
+    auto_marked: false,
+    failure_kind: null,
+    marked_at: null,
+    reason: null,
+    ...overrides,
+  };
+}
+
 function makeProvider(
-  overrides: Partial<GatewayUpstreamProvider> = {},
+  overrides: Partial<GatewayUpstreamProvider> & { keys?: RawProviderKey[] } = {},
 ): GatewayUpstreamProvider {
+  const { keys, ...rest } = overrides;
   return {
     id: "p1",
     name: "Provider 1",
     base_url: "https://api.example.com",
-    api_key: "sk-test",
+    keys: keys ?? [providerKey()],
     default_model: "gpt-4o",
     protocol: "chat_completions",
     mappings: [],
     enabled: true,
-    ...overrides,
-  } as GatewayUpstreamProvider;
+    ...rest,
+  } as unknown as GatewayUpstreamProvider;
 }
 
 function makeTemplateView(
@@ -1102,5 +1119,86 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
     expect(weekly).not.toHaveTextContent("1/1 08:00:00");
 
     dateSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 3: provider-card upstream key-pool summary.
+// RED test for the frozen interface contract. Only this test file is touched.
+// ---------------------------------------------------------------------------
+
+describe("UpstreamProviderList 上游密钥池摘要", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("服务商卡片汇总密钥名称与状态", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({
+        id: "p-keys",
+        name: "Keyed Provider",
+        keys: [
+          providerKey({ id: "k1", name: "Primary Key", enabled: true }),
+          providerKey({
+            id: "k2",
+            name: "Quota Key",
+            auto_marked: true,
+            failure_kind: "quota",
+            marked_at: 1_700_000_000,
+          }),
+        ],
+      }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    const summary = screen.getByTestId("ai-gateway-provider-keys-p-keys");
+    expect(summary).toHaveTextContent("Primary Key");
+    expect(summary).toHaveTextContent("Quota Key");
+    expect(summary).toHaveTextContent(
+      i18n.t("aiGatewayProviderKeyStateUsable"),
+    );
+    expect(summary).toHaveTextContent(
+      i18n.t("aiGatewayProviderKeyStateQuota"),
+    );
+    expect(summary).toHaveTextContent(
+      i18n.t("aiGatewayProviderKeysSummary", { count: 2 }),
+    );
+  });
+
+  it("全部密钥禁用时卡片摘要展示已禁用状态", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({
+        id: "p-off",
+        name: "Disabled Keys Provider",
+        keys: [providerKey({ id: "k1", name: "Off Key", enabled: false })],
+      }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    const summary = screen.getByTestId("ai-gateway-provider-keys-p-off");
+    expect(summary).toHaveTextContent("Off Key");
+    expect(summary).toHaveTextContent(
+      i18n.t("aiGatewayProviderKeyStateDisabled"),
+    );
   });
 });

@@ -43,13 +43,24 @@ function makeProvider(overrides: Partial<GatewayUpstreamProvider> = {}): Gateway
     id: "p1",
     name: "My Provider",
     base_url: "https://api.com",
-    api_key: "sk-test",
+    keys: [
+      {
+        id: "k1",
+        name: "Default",
+        value: "sk-test",
+        enabled: true,
+        auto_marked: false,
+        failure_kind: null,
+        marked_at: null,
+        reason: null,
+      },
+    ],
     default_model: null,
     protocol: "chat_completions",
     mappings: [],
     enabled: true,
     ...overrides,
-  } as GatewayUpstreamProvider;
+  } as unknown as GatewayUpstreamProvider;
 }
 
 function renderDialog(overrides: {

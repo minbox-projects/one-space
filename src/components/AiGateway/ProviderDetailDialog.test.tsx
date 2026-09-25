@@ -1,30 +1,53 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useState, type ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { ProviderDetailDialog } from "@/components/AiGateway/ProviderDetailDialog";
 import {
+  formatGatewayTimestamp,
   type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
   type ModelPrice,
 } from "@/lib/aiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 
+/**
+ * Raw ordered key-pool entry, built as a shape-only record so this suite keeps
+ * compiling against the pre-Step-4 `GatewayUpstreamProvider` type while pinning
+ * the delivered backend wire contract (field order and camel/snake naming).
+ */
+type RawProviderKey = Record<string, unknown>;
+
+function providerKey(overrides: RawProviderKey = {}): RawProviderKey {
+  return {
+    id: "k1",
+    name: "Default",
+    value: "sk-default",
+    enabled: true,
+    auto_marked: false,
+    failure_kind: null,
+    marked_at: null,
+    reason: null,
+    ...overrides,
+  };
+}
+
 function makeProvider(
-  overrides: Partial<GatewayUpstreamProvider> = {},
+  overrides: Partial<GatewayUpstreamProvider> & { keys?: RawProviderKey[] } = {},
 ): GatewayUpstreamProvider {
+  const { keys, ...rest } = overrides;
   return {
     id: "p1",
     name: "Upstream A",
     base_url: "https://api.a.example",
-    api_key: "********",
+    keys: keys ?? [providerKey()],
     default_model: null,
     protocol: "chat_completions",
     mappings: [],
     enabled: true,
-    ...overrides,
-  } as GatewayUpstreamProvider;
+    ...rest,
+  } as unknown as GatewayUpstreamProvider;
 }
 
 function renderProviderDialog({
@@ -2310,6 +2333,266 @@ describe("ProviderDetailDialog 标签与自定义图标", () => {
       await waitFor(() => expect(onDelete).toHaveBeenCalledWith("p1"));
       await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 3: provider-dialog ordered key-pool editor and validation.
+// RED tests for the frozen interface contract. Only this test file is touched.
+// ---------------------------------------------------------------------------
+
+describe("ProviderDetailDialog 上游密钥池编辑", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  function renderKeyDialog({
+    provider,
+    onSave = vi.fn(),
+    onReenableKey = vi.fn(),
+    busy = false,
+  }: {
+    provider: GatewayUpstreamProvider;
+    onSave?: ReturnType<typeof vi.fn>;
+    onReenableKey?: ReturnType<typeof vi.fn>;
+    busy?: boolean;
+  }) {
+    const props = {
+      open: true,
+      provider,
+      busy,
+      onSave,
+      onReenableKey,
+      onDelete: vi.fn(),
+      onOpenChange: vi.fn(),
+    } as unknown as ComponentProps<typeof ProviderDetailDialog>;
+    const view = renderWithProviders(<ProviderDetailDialog {...props} />);
+    return { ...view, onSave, onReenableKey };
+  }
+
+  function savedKeys(onSave: ReturnType<typeof vi.fn>): RawProviderKey[] {
+    const saved = onSave.mock.calls[0][0] as unknown as {
+      keys: RawProviderKey[];
+    };
+    return saved.keys;
+  }
+
+  it("新增密钥提交空白名称时拒绝保存并给出可操作错误", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderKeyDialog({ provider: makeProvider({ keys: [] }) });
+
+    await user.click(screen.getByTestId("ai-gateway-add-key"));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByTestId("ai-gateway-key-name-error")).toHaveTextContent(
+      i18n.t("aiGatewayProviderKeyNameRequired"),
+    );
+  });
+
+  it("新增密钥提交空白值但名称非空时以密钥值错误拒绝保存", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderKeyDialog({ provider: makeProvider({ keys: [] }) });
+
+    await user.click(screen.getByTestId("ai-gateway-add-key"));
+    await user.type(screen.getByTestId("ai-gateway-key-name-0"), "Backup");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByTestId("ai-gateway-key-value-error")).toHaveTextContent(
+      i18n.t("aiGatewayProviderKeyValueRequired"),
+    );
+  });
+
+  it("保存按编辑器顺序提交完整有序密钥列表", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({ id: "k1", name: "Primary", value: "sk-one" }),
+          providerKey({ id: "k2", name: "Backup", value: "sk-two" }),
+        ],
+      }),
+    });
+
+    await user.click(screen.getByTestId("ai-gateway-key-up-1"));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const keys = savedKeys(onSave);
+    expect(keys.map((entry) => entry.id)).toEqual(["k2", "k1"]);
+    expect(keys.map((entry) => entry.name)).toEqual(["Backup", "Primary"]);
+    expect(keys.map((entry) => entry.value)).toEqual(["sk-two", "sk-one"]);
+    expect(keys.map((entry) => entry.enabled)).toEqual([true, true]);
+  });
+
+  it("清空既有密钥值后保存以空白值提交（后端保留已存值）", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({
+            id: "k1",
+            name: "Primary",
+            value: "sk-stored",
+            auto_marked: true,
+            failure_kind: "quota",
+            marked_at: 1_700_000_000,
+          }),
+        ],
+      }),
+    });
+
+    await user.clear(screen.getByTestId("ai-gateway-key-value-0"));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(savedKeys(onSave)[0]).toMatchObject({
+      id: "k1",
+      name: "Primary",
+      value: "",
+    });
+  });
+
+  it("改写既有密钥值时以相同 id 提交新值（后端据此清除运行时状态）", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({
+            id: "k1",
+            name: "Primary",
+            value: "sk-old",
+            auto_marked: true,
+            failure_kind: "authentication",
+            marked_at: 1_700_000_000,
+          }),
+        ],
+      }),
+    });
+
+    const valueInput = screen.getByTestId("ai-gateway-key-value-0");
+    await user.clear(valueInput);
+    await user.type(valueInput, "sk-new");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(savedKeys(onSave)[0]).toMatchObject({ id: "k1", value: "sk-new" });
+  });
+
+  it("仅重命名既有密钥时 id 与已存值不变（后端据此保留运行时状态）", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({
+            id: "k1",
+            name: "Primary",
+            value: "sk-stored",
+            auto_marked: true,
+            failure_kind: "quota",
+            marked_at: 1_700_000_000,
+          }),
+        ],
+      }),
+    });
+
+    const nameInput = screen.getByTestId("ai-gateway-key-name-0");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Renamed");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(savedKeys(onSave)[0]).toMatchObject({
+      id: "k1",
+      name: "Renamed",
+      value: "sk-stored",
+    });
+  });
+
+  it("渲染每个密钥的状态徽章与标记时间", () => {
+    const markedAt = 1_700_000_000;
+    renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({ id: "k-usable", name: "Usable Key", enabled: true }),
+          providerKey({ id: "k-disabled", name: "Disabled Key", enabled: false }),
+          providerKey({
+            id: "k-quota",
+            name: "Quota Key",
+            auto_marked: true,
+            failure_kind: "quota",
+            marked_at: markedAt,
+          }),
+          providerKey({
+            id: "k-auth",
+            name: "Auth Key",
+            auto_marked: true,
+            failure_kind: "authentication",
+            marked_at: markedAt,
+          }),
+        ],
+      }),
+    });
+
+    expect(screen.getByTestId("ai-gateway-key-state-0")).toHaveTextContent(
+      i18n.t("aiGatewayProviderKeyStateUsable"),
+    );
+    expect(screen.getByTestId("ai-gateway-key-state-1")).toHaveTextContent(
+      i18n.t("aiGatewayProviderKeyStateDisabled"),
+    );
+    expect(screen.getByTestId("ai-gateway-key-state-2")).toHaveTextContent(
+      i18n.t("aiGatewayProviderKeyStateQuota"),
+    );
+    expect(screen.getByTestId("ai-gateway-key-state-3")).toHaveTextContent(
+      i18n.t("aiGatewayProviderKeyStateAuth"),
+    );
+
+    const markedTime = formatGatewayTimestamp(markedAt)!;
+    expect(screen.getByTestId("ai-gateway-key-state-2")).toHaveTextContent(
+      markedTime,
+    );
+    expect(screen.getByTestId("ai-gateway-key-state-3")).toHaveTextContent(
+      markedTime,
+    );
+  });
+
+  it("关闭启用开关后保存该密钥 enabled=false 且其他密钥不受影响", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({ id: "k1", name: "Primary", value: "sk-one" }),
+          providerKey({ id: "k2", name: "Backup", value: "sk-two" }),
+        ],
+      }),
+    });
+
+    await user.click(screen.getByTestId("ai-gateway-key-toggle-1"));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    const keys = savedKeys(onSave);
+    expect(keys[0]).toMatchObject({ id: "k1", enabled: true });
+    expect(keys[1]).toMatchObject({ id: "k2", enabled: false });
+  });
+
+  it("自动标记的密钥提供重新启用按钮并回调对应 providerId/keyId", async () => {
+    const user = userEvent.setup();
+    const { onReenableKey } = renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({
+            id: "k1",
+            name: "Quota Key",
+            auto_marked: true,
+            failure_kind: "quota",
+            marked_at: 1_700_000_000,
+          }),
+        ],
+      }),
+    });
+
+    await user.click(screen.getByTestId("ai-gateway-reenable-key-0"));
+
+    expect(onReenableKey).toHaveBeenCalledWith("p1", "k1");
   });
 });
 
