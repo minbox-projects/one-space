@@ -690,6 +690,117 @@ fn user_toggle_does_not_mask_auto_disabled_state() {
 }
 
 // ---------------------------------------------------------------------------
+// 20260925-gateway-routing-and-config-hardening Step 1: serialized config seam
+// ---------------------------------------------------------------------------
+
+/// AC-006 seam: a panic inside the serialized configuration mutation poisons
+/// the process-global write lock, but the next mutation must recover through
+/// the poisoned guard, persist, and leave the configuration readable.
+#[test]
+fn poisoned_config_write_lock_is_recovered_and_later_writes_persist() {
+    let home = temp_home("config-write-lock-poison-recovery");
+    let mut seed = GatewayConfig::default();
+    seed.keys.push(key_named("k-before", "value-before"));
+    super::storage::write_config(&seed).expect("seed config");
+
+    let panicked = std::thread::spawn(|| {
+        let _ = super::storage::modify_config::<()>(|_config| {
+            panic!("intentional configuration writer panic")
+        });
+    })
+    .join();
+    assert!(
+        panicked.is_err(),
+        "the mutation panic must unwind through the primitive"
+    );
+
+    super::storage::modify_config::<()>(|config| {
+        config.keys.push(key_named("k-after", "value-after"));
+        Ok((true, ()))
+    })
+    .expect("a later write must recover from the poisoned lock");
+
+    let loaded = super::storage::read_config().expect("configuration must stay readable");
+    assert!(
+        loaded.keys.iter().any(|item| item.id == "k-before"),
+        "the seeded key must survive"
+    );
+    assert!(
+        loaded.keys.iter().any(|item| item.id == "k-after"),
+        "the later write through the primitive must persist"
+    );
+
+    drop(home);
+}
+
+/// AC-007 seam: the serialized configuration write must not be blocked by an
+/// in-flight relay request waiting on a withholding upstream. The write
+/// completes while the upstream response is still withheld, and the relay then
+/// completes once the upstream is released.
+#[tokio::test]
+async fn config_write_completes_while_relay_waits_on_a_slow_upstream() {
+    let home = temp_home("config-write-not-blocked-by-upstream-wait");
+    let arrived = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let arrived_for_mock = arrived.clone();
+    let release_for_mock = release.clone();
+    let (upstream_url, _log) = spawn_mock_upstream(move |_| {
+        MockReply::Withhold(
+            arrived_for_mock.clone(),
+            release_for_mock.clone(),
+            200,
+            json!({"id": "held"}),
+        )
+    })
+    .await;
+
+    let mut config = GatewayConfig::default();
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(upstream_provider(
+        "p1",
+        "Held Provider",
+        &upstream_url,
+        "sk",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&config).expect("write relay config");
+
+    let (client, mut handler) = spawn_handle_connection(false).await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), arrived.notified())
+        .await
+        .expect("the relay request must reach the held upstream");
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::task::spawn_blocking(|| {
+            super::storage::modify_config::<()>(|config| {
+                config.keys.push(key_named("k-marker", "marker-value"));
+                Ok((true, ()))
+            })
+        }),
+    )
+    .await
+    .expect("the configuration write must complete while the upstream is withheld")
+    .expect("the configuration write task must not panic")
+    .expect("the configuration write must succeed");
+
+    assert!(
+        !handler.is_finished(),
+        "the relay request must still wait on the held upstream when the write returns"
+    );
+
+    release.notify_one();
+    let relay = tokio::time::timeout(std::time::Duration::from_secs(5), &mut handler)
+        .await
+        .expect("the relay request must complete after the upstream is released")
+        .expect("the relay handler task must not panic");
+    assert!(relay.is_ok(), "the relay request must succeed: {relay:?}");
+
+    drop(client);
+    drop(home);
+}
+
+// ---------------------------------------------------------------------------
 // Step 3: HTTP runtime and pass-through forwarding (mock upstream)
 // ---------------------------------------------------------------------------
 
@@ -712,6 +823,10 @@ enum MockReply {
     PartialRaw(u16, &'static str, Vec<u8>, usize),
     /// Arbitrary status and content type with a raw (possibly non-JSON) body.
     Raw(u16, &'static str, Vec<u8>),
+    /// Announce receipt on the first `Notify`, hold the response until the
+    /// second `Notify` is signalled, then answer with the given JSON. Used to
+    /// keep an upstream attempt in flight while a configuration write runs.
+    Withhold(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>, u16, Value),
     /// Close the connection without answering.
     Drop,
 }
@@ -834,6 +949,17 @@ where
                         };
                         let header = format!(
                             "HTTP/1.1 {status} OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n{retry_after}\r\n",
+                            body.len(),
+                        );
+                        let _ = stream.write_all(header.as_bytes()).await;
+                        let _ = stream.write_all(&body).await;
+                    }
+                    MockReply::Withhold(arrived, release, status, value) => {
+                        arrived.notify_one();
+                        release.notified().await;
+                        let body = serde_json::to_vec(&value).unwrap_or_default();
+                        let header = format!(
+                            "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                             body.len(),
                         );
                         let _ = stream.write_all(header.as_bytes()).await;

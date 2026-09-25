@@ -5,7 +5,9 @@ use super::{
 };
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 pub(in crate::ai_gateway) fn config_path() -> Result<PathBuf, String> {
     Ok(crate::config::get_app_dir()?.join(CONFIG_FILE))
@@ -374,6 +376,42 @@ pub(in crate::ai_gateway) fn read_config() -> Result<GatewayConfig, String> {
 /// write stamps the current schema version so an older file can never be
 /// re-written without it.
 pub(in crate::ai_gateway) fn write_config(config: &GatewayConfig) -> Result<(), String> {
+    let path = config_path()?;
+    let tmp = path.with_extension("tmp");
+    write_config_through_temp(config, &path, &tmp)
+}
+
+/// Process-global configuration write lock.
+///
+/// Every serialized read-modify-write sequence runs under it so concurrent
+/// writers cannot lose each other's changes. A panic inside a mutation poisons
+/// the mutex; later writers recover through the poisoned guard instead of
+/// failing permanently.
+static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Monotonic suffix that keeps every serialized write's temporary file unique.
+static CONFIG_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A temporary path in the configuration directory that no other write can
+/// pick: the process id plus a process-monotonic sequence keeps concurrent
+/// writers from colliding on one temp file.
+fn unique_config_temp_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| CONFIG_FILE.to_string());
+    let sequence = CONFIG_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    path.with_file_name(format!("{file_name}.{}.{sequence}.tmp", std::process::id()))
+}
+
+/// Canonicalize, encrypt and atomically publish `config` at `path` through the
+/// caller-owned temporary file `tmp`. The caller owns temp-path uniqueness and,
+/// when serializing writers, the write lock.
+fn write_config_through_temp(
+    config: &GatewayConfig,
+    path: &Path,
+    tmp: &Path,
+) -> Result<(), String> {
     let mut next = config.clone();
     normalize_stored_config(&mut next);
     scope_model_prices(&mut next);
@@ -382,12 +420,35 @@ pub(in crate::ai_gateway) fn write_config(config: &GatewayConfig) -> Result<(), 
     let json = serde_json::to_string(&next).map_err(|e| e.to_string())?;
     let password = crate::crypto::get_or_init_master_password()?;
     let encrypted = crate::crypto::encrypt(&json, &password)?;
-    let path = config_path()?;
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, encrypted).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    fs::write(tmp, encrypted).map_err(|e| e.to_string())?;
+    fs::rename(tmp, path).map_err(|e| e.to_string())?;
     migrate_legacy_files();
     Ok(())
+}
+
+/// Serialized configuration read-modify-write entry point.
+///
+/// `mutate` runs under the process-global write lock and receives the current
+/// configuration. It returns `(changed, value)`: the mutated configuration is
+/// persisted only when `changed` is true, through a per-write unique temp file,
+/// and `value` is handed back to the caller. A writer panic poisons the lock
+/// but the next call recovers through the poisoned guard. The closure must stay
+/// local and must not wait on the network, so the lock is never held across an
+/// upstream wait.
+pub(in crate::ai_gateway) fn modify_config<T>(
+    mutate: impl FnOnce(&mut GatewayConfig) -> Result<(bool, T), String>,
+) -> Result<T, String> {
+    let _guard = CONFIG_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut config = read_config()?;
+    let (changed, value) = mutate(&mut config)?;
+    if changed {
+        let path = config_path()?;
+        let tmp = unique_config_temp_path(&path);
+        write_config_through_temp(&config, &path, &tmp)?;
+    }
+    Ok(value)
 }
 
 pub(in crate::ai_gateway) fn new_provider_id() -> String {

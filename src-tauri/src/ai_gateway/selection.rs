@@ -139,6 +139,20 @@ pub(in crate::ai_gateway) fn reset_weighted_scheduler_for_test() {
     map.clear();
 }
 
+/// Test-only observation seam (AC-035): the number of weighted-scheduler
+/// entries currently tracked for `provider_id`. The scheduler map is keyed by
+/// provider id today, so the count is 0 or 1; later accounting changes adapt
+/// this accessor to the composite key shape.
+#[cfg(test)]
+#[allow(dead_code)]
+pub(in crate::ai_gateway) fn weighted_scheduler_entry_count(provider_id: &str) -> usize {
+    weighted_scheduler()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(provider_id)
+        .is_some() as usize
+}
+
 /// Smooth Weighted Round-Robin (SWRR) candidate scheduling.
 ///
 /// Returns all candidates ordered with the SWRR primary candidate at index 0,
