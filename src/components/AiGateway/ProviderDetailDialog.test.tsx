@@ -2594,6 +2594,31 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
 
     expect(onReenableKey).toHaveBeenCalledWith("p1", "k1");
   });
+
+  it("删除其中一个密钥后保存，提交载荷省略该密钥并保留另一个", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({ id: "k1", name: "Primary", value: "sk-one" }),
+          providerKey({ id: "k2", name: "Backup", value: "sk-two" }),
+        ],
+      }),
+    });
+
+    await user.click(screen.getByTestId("ai-gateway-key-remove-0"));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const keys = savedKeys(onSave);
+    expect(keys.map((entry) => entry.id)).toEqual(["k2"]);
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toMatchObject({
+      id: "k2",
+      name: "Backup",
+      value: "sk-two",
+    });
+  });
 });
 
 

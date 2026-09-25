@@ -26681,3 +26681,683 @@ async fn empty_key_pool_provider_falls_back_to_healthy_provider() {
         "the skipped provider's mapping must keep no disable reason"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Review-repair coverage (plan 20260924-ai-gateway-key-pool): AC-004 streaming
+// rotation, AC-006 probe re-arm/tie-break, AC-007 delete/no-write, AC-009
+// terminal-sync byte equality and the RED mapping-probe key-failure defect.
+// ---------------------------------------------------------------------------
+
+/// AC-004 / REQ-004: a quota-exhausted 429 on the first streaming key rotates to
+/// the next usable key, marks the exhausted key and lets the second key serve the
+/// stream. Exactly two upstream attempts occur (A then B) and the attempt log
+/// carries the failed attempt plus the terminal success.
+#[tokio::test]
+async fn streaming_quota_429_rotates_to_next_key_and_marks_first() {
+    const QUOTA_MESSAGE: &str = "You've reached your weekly usage limit for your plan. Your limit resets at 2026-09-24T03:30:30.663Z. Please wait for the window to reset or upgrade your plan to continue.";
+    let _home = isolated_temp_home("key-pool-streaming-quota-rotation");
+    let sse = "data: {\"id\":\"served-by-b\"}\n\ndata: [DONE]\n\n".to_string();
+    let (upstream_url, log) = spawn_mock_upstream(move |captured| match auth_header_of(captured) {
+        Some("Bearer sk-stream-quota-a") => {
+            MockReply::Json(429, json!({"error": {"message": QUOTA_MESSAGE}}))
+        }
+        Some("Bearer sk-stream-quota-b") => MockReply::Stream(sse.clone()),
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-stream-quota-a", true),
+                pool_key("key-b", "B", "sk-stream-quota-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let ordered = live_candidates("local-a");
+    let body = serde_json::to_vec(&json!({"model": "local-a", "stream": true})).unwrap();
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
+    let capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        &ordered,
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await
+    .expect("streaming attempt");
+    drop(server);
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    let text = String::from_utf8_lossy(&out).into_owned();
+
+    assert_eq!(capture.status, 200, "B must serve the rotated stream: {text}");
+    assert!(
+        text.contains("served-by-b"),
+        "the served stream must reach the client: {text}"
+    );
+    assert!(
+        text.contains("data: [DONE]"),
+        "the served stream must terminate normally: {text}"
+    );
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        2,
+        "exactly two upstream attempts (A then B): {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(
+        auth_header_of(&captured[0]),
+        Some("Bearer sk-stream-quota-a"),
+        "the first usable key must be attempted first"
+    );
+    assert_eq!(
+        auth_header_of(&captured[1]),
+        Some("Bearer sk-stream-quota-b"),
+        "the same streaming request must continue on the next usable key"
+    );
+
+    assert_eq!(
+        attempts.len(),
+        2,
+        "one failed attempt plus one terminal success row"
+    );
+    assert_eq!(attempts[0].status, 429);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
+
+    let key_a = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+    assert_eq!(
+        key_a["auto_marked"], true,
+        "the exhausted key must be marked: {key_a}"
+    );
+    assert_eq!(key_a["failure_kind"], "quota");
+    assert!(
+        key_a["marked_at"].as_u64().is_some(),
+        "the marking time must be recorded: {key_a}"
+    );
+}
+
+/// AC-004 boundary / REQ-004: once the first streaming byte is written a
+/// mid-stream failure must never rotate keys or mark either key, so the request
+/// produces exactly one upstream attempt.
+#[tokio::test]
+async fn streaming_first_byte_failure_does_not_rotate_or_mark_keys() {
+    let _home = isolated_temp_home("key-pool-streaming-first-byte");
+    let partial = "data: {\"choices\":[{\"delta\":{\"content\":\"partial-a\"}}]}".to_string();
+    let declared = partial.len() + 500;
+    let (upstream_url, log) = spawn_mock_upstream(move |captured| match auth_header_of(captured) {
+        Some("Bearer sk-first-a") => MockReply::PartialStream(partial.clone(), declared),
+        Some("Bearer sk-first-b") => MockReply::Stream(
+            "data: {\"id\":\"served-by-b\"}\n\ndata: [DONE]\n\n".to_string(),
+        ),
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-first-a", true),
+                pool_key("key-b", "B", "sk-first-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let ordered = live_candidates("local-a");
+    let body = serde_json::to_vec(&json!({"model": "local-a", "stream": true})).unwrap();
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
+    let capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        &ordered,
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await
+    .expect("streaming attempt");
+    drop(server);
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    let text = String::from_utf8_lossy(&out).into_owned();
+
+    assert!(text.contains("partial-a"), "the first byte must reach the client: {text}");
+    assert!(
+        !text.contains("served-by-b"),
+        "a post-first-byte failure must not rotate to B: {text}"
+    );
+    assert_eq!(capture.status, 502, "a mid-stream failure is recorded as 502");
+    assert_eq!(
+        attempts.len(),
+        1,
+        "a post-first-byte failure is the request's only completed attempt"
+    );
+    assert_eq!(attempts[0].status, 502);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert!(
+        attempts[0]
+            .error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("stream failed after first byte"),
+        "the attempt must record the post-first-byte failure: {:?}",
+        attempts[0].error_message
+    );
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        1,
+        "no key may be rotated after the first byte: {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(auth_header_of(&captured[0]), Some("Bearer sk-first-a"));
+
+    let key_a = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+    assert_eq!(
+        key_a["auto_marked"], false,
+        "a post-first-byte failure must not mark the key: {key_a}"
+    );
+    assert_eq!(key_a["failure_kind"], Value::Null);
+    let key_b = on_disk_key_entry("p1", "key-b").expect("key-b must stay persisted");
+    assert_eq!(key_b["auto_marked"], false);
+}
+
+/// AC-006 / REQ-006: a failed key quota probe stays marked and re-arms its
+/// cooldown to the probe time, so the key is ineligible 59 seconds later and
+/// eligible again at exactly 60 seconds.
+#[tokio::test]
+async fn key_probe_failure_rearms_cooldown_and_blocks_second_probe() {
+    const QUOTA_MESSAGE: &str = "You've reached your weekly usage limit for your plan. Your limit resets at 2026-09-24T03:30:30.663Z. Please wait for the window to reset or upgrade your plan to continue.";
+    let _home = isolated_temp_home("key-pool-key-probe-rearm");
+    let (upstream_url, log) = spawn_mock_upstream(move |_| {
+        MockReply::Json(429, json!({"error": {"message": QUOTA_MESSAGE}}))
+    })
+    .await;
+
+    let now = probe_now();
+    let initial_marked_at = now.saturating_sub(120);
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![pool_key_marked(
+                "key-old",
+                "Old",
+                "sk-probe-old",
+                true,
+                "quota",
+                initial_marked_at,
+                "weekly limit",
+            )],
+            vec![json_mapping("local-probe", "remote-probe", None)],
+        )],
+    ));
+
+    let before = super::types_config::now_ts();
+    let body = serde_json::to_vec(&json!({"model": "local-probe"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-probe"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-probe"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 502, "a failed key probe answers the standard 502");
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(captured.len(), 1, "exactly one key probe attempt");
+    assert_eq!(auth_header_of(&captured[0]), Some("Bearer sk-probe-old"));
+    assert_eq!(attempts.len(), 1, "the failed probe is the only completed attempt");
+
+    let key = on_disk_key_entry("p1", "key-old").expect("key-old must stay persisted");
+    assert_eq!(
+        key["auto_marked"], true,
+        "a failed probe keeps the key marked: {key}"
+    );
+    assert_eq!(key["failure_kind"], "quota");
+    let rearmed_at = key["marked_at"]
+        .as_u64()
+        .expect("the cooldown must be re-armed to the probe time");
+    assert!(
+        rearmed_at >= before,
+        "the marking time must move forward to the attempt time: {rearmed_at} vs {before}"
+    );
+    assert!(
+        rearmed_at > initial_marked_at,
+        "the marking time must move past the seed: {rearmed_at} vs {initial_marked_at}"
+    );
+
+    let stored = super::storage::read_config().expect("read persisted config");
+    let provider = stored.providers.iter().find(|p| p.id == "p1").unwrap();
+    assert!(
+        super::selection::find_key_probe_candidate(provider, rearmed_at + 59).is_none(),
+        "59 seconds after the re-arm the key must not be probe-eligible"
+    );
+    assert!(
+        super::selection::find_key_probe_candidate(provider, rearmed_at + 60).is_some(),
+        "exactly 60 seconds after the re-arm the key must be eligible again"
+    );
+}
+
+/// AC-006 / REQ-006: two quota-marked keys sharing the same `marked_at` break the
+/// tie by list order, so the first listed key is the single probe candidate.
+#[test]
+fn key_probe_tie_break_prefers_the_first_listed_key() {
+    let marked_at = 1_700_000_000u64;
+    let provider = typed_pool_provider(pool_provider(
+        "p1",
+        "Provider One",
+        "https://api.example.com/v1",
+        vec![
+            pool_key_marked(
+                "key-first",
+                "First",
+                "SAFE_FIXTURE_tie_first",
+                true,
+                "quota",
+                marked_at,
+                "weekly limit",
+            ),
+            pool_key_marked(
+                "key-second",
+                "Second",
+                "SAFE_FIXTURE_tie_second",
+                true,
+                "quota",
+                marked_at,
+                "weekly limit",
+            ),
+        ],
+        vec![json_mapping("local-model", "remote-model", None)],
+    ));
+
+    let chosen = super::selection::find_key_probe_candidate(&provider, marked_at + 60)
+        .expect("two equally old quota-marked keys must yield one candidate");
+    assert_eq!(
+        chosen.id, "key-first",
+        "an equal marking time must break the tie by list order"
+    );
+}
+
+/// AC-007 / REQ-007: deleting a key is by omission — an upsert without it drops
+/// it while unrelated provider fields survive; an empty list persists empty and
+/// the provider stays stored.
+#[test]
+fn upsert_delete_by_omission_and_empty_list_keep_provider() {
+    with_temp_home("key-pool-upsert-delete-omission", |_home| {
+        fn rich_provider(keys: Vec<Value>) -> Value {
+            json!({
+                "id": "p1",
+                "name": "Provider One",
+                "base_url": "https://api.example.com/v1",
+                "protocol": "chat_completions",
+                "enabled": true,
+                "default_model": "remote-default",
+                "weight": 3,
+                "tags": ["Official", "Fast"],
+                "icon": "openai",
+                "keys": keys,
+                "mappings": [json_mapping("local-a", "remote-a", None)],
+            })
+        }
+
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![rich_provider(vec![
+                pool_key_marked(
+                    "key-a",
+                    "A",
+                    "sk-a-secret",
+                    true,
+                    "quota",
+                    1_700_000_000,
+                    "weekly limit",
+                ),
+                pool_key("key-b", "B", "sk-b-secret", true),
+            ])],
+        ));
+
+        // Upsert with only key-a present: key-b is deleted by omission.
+        let incoming = typed_pool_provider(rich_provider(vec![pool_key_marked(
+            "key-a",
+            "A",
+            "sk-a-secret",
+            true,
+            "quota",
+            1_700_000_000,
+            "weekly limit",
+        )]));
+        super::commands::ai_gateway_upsert_provider(incoming, None)
+            .expect("a delete-by-omission upsert must succeed");
+
+        let keys = on_disk_provider_keys("p1").expect("keys must persist");
+        assert_eq!(keys.len(), 1, "the omitted key must be dropped: {keys:?}");
+        assert_eq!(keys[0]["id"], "key-a");
+        assert_eq!(keys[0]["value"], "sk-a-secret");
+        assert_eq!(
+            keys[0]["auto_marked"], true,
+            "an unchanged key keeps its runtime state through the delete: {keys:?}"
+        );
+
+        let on_disk = read_raw_gateway_config();
+        let provider = on_disk["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|provider| provider["id"] == "p1")
+            .expect("p1 must stay stored");
+        assert_eq!(provider["name"], "Provider One");
+        assert_eq!(provider["base_url"], "https://api.example.com/v1");
+        assert_eq!(provider["default_model"], "remote-default");
+        assert_eq!(provider["weight"], 3);
+        assert_eq!(provider["tags"], json!(["Official", "Fast"]));
+        assert_eq!(provider["icon"], "openai");
+        assert_eq!(provider["mappings"][0]["local_model"], "local-a");
+
+        // Upsert with an empty list: allowed, persists empty, provider stays.
+        let incoming_empty = typed_pool_provider(rich_provider(vec![]));
+        super::commands::ai_gateway_upsert_provider(incoming_empty, None)
+            .expect("an empty key list must be accepted");
+        assert_eq!(
+            on_disk_provider_keys("p1"),
+            Some(Vec::new()),
+            "an empty key list must persist as an empty array"
+        );
+        let on_disk = read_raw_gateway_config();
+        assert!(
+            on_disk["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|provider| provider["id"] == "p1"),
+            "the provider must stay stored with an empty key pool"
+        );
+    });
+}
+
+/// AC-007 / REQ-007: a rejected blank-name and a rejected blank-new-value upsert
+/// each leave the encrypted configuration bytes untouched.
+#[test]
+fn upsert_rejection_writes_no_bytes() {
+    with_temp_home("key-pool-upsert-no-write", |_home| {
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider One",
+                "https://api.example.com/v1",
+                vec![pool_key("key-a", "A", "SAFE_FIXTURE_stored_value", true)],
+                vec![],
+            )],
+        ));
+        let config_file = config_path().expect("config path");
+
+        let blank_name = typed_pool_provider(pool_provider(
+            "p1",
+            "Provider One",
+            "https://api.example.com/v1",
+            vec![pool_key("key-a", "   ", "", true)],
+            vec![],
+        ));
+        let before = fs::read(&config_file).expect("read config bytes before blank name");
+        super::commands::ai_gateway_upsert_provider(blank_name, None)
+            .expect_err("a blank key name must be rejected");
+        assert_eq!(
+            fs::read(&config_file).expect("read config bytes after blank name"),
+            before,
+            "a rejected blank name must not rewrite the configuration"
+        );
+
+        let blank_value = typed_pool_provider(pool_provider(
+            "p1",
+            "Provider One",
+            "https://api.example.com/v1",
+            vec![pool_key("", "New Key", "   ", true)],
+            vec![],
+        ));
+        let before = fs::read(&config_file).expect("read config bytes before blank value");
+        super::commands::ai_gateway_upsert_provider(blank_value, None)
+            .expect_err("a blank new key value must be rejected");
+        assert_eq!(
+            fs::read(&config_file).expect("read config bytes after blank value"),
+            before,
+            "a rejected blank new value must not rewrite the configuration"
+        );
+    });
+}
+
+/// AC-009 / REQ-009: a terminal-sync run is byte-identical when only the upstream
+/// provider's key pool changes, and no upstream key value reaches the submitted
+/// tool configuration.
+#[tokio::test]
+async fn terminal_sync_bytes_ignore_upstream_key_pool_changes() {
+    let _home = isolated_temp_home("terminal-sync-key-pool-bytes");
+    let port = 19000;
+    let providers_data = terminal_providers_payload();
+    let tools = vec!["opencode".to_string()];
+
+    fn sync_config(port: u16, keys: Vec<Value>) -> GatewayConfig {
+        let mut config = GatewayConfig::default();
+        config.port = port;
+        config.keys.push(key_named("k1", "local-key-123"));
+        config.providers.push(typed_pool_provider(pool_provider(
+            "g1",
+            "Gateway A",
+            "https://upstream.example/v1",
+            keys,
+            vec![
+                json_mapping("gpt-4o", "gpt-4o-2024", None),
+                json_mapping("ds", "deepseek-chat", None),
+            ],
+        )));
+        config.terminal_syncs.push(TerminalSyncRecord {
+            provider_id: "managed-oc".to_string(),
+            tool: "opencode".to_string(),
+            synced_key_id: "k1".to_string(),
+            synced_base_url: super::storage::local_base_url(port),
+            synced_at: 1,
+        });
+        config
+    }
+
+    super::storage::write_config(&sync_config(
+        port,
+        vec![
+            pool_key("key-one", "One", "SAFE_FIXTURE_upstream_pool_one", true),
+            pool_key("key-two", "Two", "SAFE_FIXTURE_upstream_pool_two", true),
+        ],
+    ))
+    .expect("seed config A");
+    let (first, _) = capture_terminal_sync(&providers_data, tools.clone()).await;
+    assert_eq!(first.len(), 1, "one payload per requested tool");
+
+    super::storage::write_config(&sync_config(
+        port,
+        vec![
+            pool_key("key-alpha", "Alpha", "SAFE_FIXTURE_upstream_pool_alpha", true),
+            pool_key("key-beta", "Beta", "SAFE_FIXTURE_upstream_pool_beta", false),
+            pool_key("key-gamma", "Gamma", "SAFE_FIXTURE_upstream_pool_gamma", true),
+        ],
+    ))
+    .expect("seed config B");
+    let (second, _) = capture_terminal_sync(&providers_data, tools).await;
+    assert_eq!(second.len(), 1);
+
+    let bytes_first = serde_json::to_vec(&first).expect("serialize first payload");
+    let bytes_second = serde_json::to_vec(&second).expect("serialize second payload");
+    assert_eq!(
+        bytes_first, bytes_second,
+        "changing only the upstream key pool must not change the terminal payload"
+    );
+
+    let text = String::from_utf8_lossy(&bytes_first).into_owned();
+    assert!(
+        text.contains("local-key-123"),
+        "the local gateway key must stay in the payload: {text}"
+    );
+    for value in [
+        "SAFE_FIXTURE_upstream_pool_one",
+        "SAFE_FIXTURE_upstream_pool_two",
+        "SAFE_FIXTURE_upstream_pool_alpha",
+        "SAFE_FIXTURE_upstream_pool_beta",
+        "SAFE_FIXTURE_upstream_pool_gamma",
+    ] {
+        assert!(
+            !text.contains(value),
+            "no upstream pool value may reach the terminal payload: {value}"
+        );
+    }
+}
+
+/// Standards-6 / REQ-004 (EXPECTED RED on current code): a half-open mapping
+/// probe that selects a normal usable key must still consume that key's
+/// key-scoped failure — mark the key and continue the same request on the next
+/// usable key. The current probe branch skips `key_failure`, so A stays unmarked
+/// and B is never tried. The test must pass after the backend repair; it is not
+/// weakened to match current behavior.
+#[tokio::test]
+async fn mapping_probe_consumes_key_failures_and_continues_on_next_key() {
+    const QUOTA_MESSAGE: &str = "You've reached your weekly usage limit for your plan. Your limit resets at 2026-09-24T03:30:30.663Z. Please wait for the window to reset or upgrade your plan to continue.";
+    for (name, status, message, expected_kind) in [
+        ("authentication", 401u16, "invalid api key", "authentication"),
+        ("quota", 429u16, QUOTA_MESSAGE, "quota"),
+    ] {
+        let _home = isolated_temp_home(&format!("mapping-probe-key-failure-{name}"));
+        let (upstream_url, log) =
+            spawn_mock_upstream(move |captured| match auth_header_of(captured) {
+                Some("Bearer sk-probe-a") => {
+                    MockReply::Json(status, json!({"error": {"message": message}}))
+                }
+                Some("Bearer sk-probe-b") => MockReply::Json(200, json!({"id": "served-by-b"})),
+                other => MockReply::Json(
+                    500,
+                    json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+                ),
+            })
+            .await;
+
+        let now = probe_now();
+        let raw_provider = pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-probe-a", true),
+                pool_key("key-b", "B", "sk-probe-b", true),
+            ],
+            vec![json!({
+                "local_model": "local-probe",
+                "upstream_model": "remote-probe",
+                "enabled": true,
+                "auto_disabled": true,
+                "disabled_reason": "HTTP 500 upstream error",
+                "disabled_at": now.saturating_sub(120),
+                "consecutive_failures": super::FAILURE_THRESHOLD,
+            })],
+        );
+        write_raw_gateway_config(&pool_config(0, vec![raw_provider.clone()]));
+        let provider = typed_pool_provider(raw_provider);
+
+        let candidate = super::selection::find_probe_candidate(
+            std::slice::from_ref(&provider),
+            Some("local-probe"),
+            UpstreamProtocol::ChatCompletions,
+            &[],
+            now,
+        )
+        .expect("the auto-disabled row must be a probe-eligible mapping");
+
+        let body = serde_json::to_vec(&json!({"model": "local-probe"})).unwrap();
+        let mut attempts = Vec::new();
+        let response = super::runtime_http::attempt_non_streaming(
+            &[],
+            "/v1/chat/completions",
+            &body,
+            Some("local-probe"),
+            &HashMap::new(),
+            false,
+            Some(&candidate),
+            &mut attempts,
+        )
+        .await;
+
+        let key_a = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+        assert_eq!(
+            key_a["auto_marked"], true,
+            "{name}: the mapping-probe path must consume A's key-scoped failure and mark it: {key_a}"
+        );
+        assert_eq!(
+            key_a["failure_kind"], expected_kind,
+            "{name}: the failure kind must be persisted: {key_a}"
+        );
+        assert!(
+            key_a["marked_at"].as_u64().is_some(),
+            "{name}: the marking time must be recorded: {key_a}"
+        );
+
+        let captured = log.lock().unwrap().clone();
+        assert_eq!(
+            captured.len(),
+            2,
+            "{name}: the same request must continue on B: {}",
+            captured_summary(&captured)
+        );
+        assert_eq!(auth_header_of(&captured[0]), Some("Bearer sk-probe-a"));
+        assert_eq!(auth_header_of(&captured[1]), Some("Bearer sk-probe-b"));
+        assert_eq!(
+            attempts.len(),
+            2,
+            "{name}: one failed key attempt plus the served continuation"
+        );
+        assert_eq!(attempts[0].status, status);
+        assert_eq!(attempts[0].result, UsageResult::Failure);
+        assert_eq!(attempts[1].status, 200);
+        assert_eq!(attempts[1].result, UsageResult::Success);
+        assert_eq!(
+            response.status, 200,
+            "{name}: B must serve the probe's continuation"
+        );
+        assert!(
+            String::from_utf8_lossy(&response.body).contains("served-by-b"),
+            "{name}: B's body must reach the caller"
+        );
+    }
+}
