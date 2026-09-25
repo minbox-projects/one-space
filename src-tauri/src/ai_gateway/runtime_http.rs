@@ -1010,8 +1010,8 @@ struct SelectedKey {
 /// Choose the key for one upstream attempt in list order: the first enabled
 /// unmarked key; else, only when no such key remains, at most one eligible
 /// quota probe per request; else no key at all. A provider with an empty pool
-/// is a no-key provider and is still attempted with an empty credential so
-/// records that predate the pool keep their behavior.
+/// has no usable key and no probe candidate, so it is never attempted and the
+/// surrounding loop skips it to the next candidate (REQ-008).
 fn select_attempt_key(
     provider: &GatewayUpstreamProvider,
     now: u64,
@@ -1021,13 +1021,6 @@ fn select_attempt_key(
         return Some(SelectedKey {
             id: key.id.clone(),
             value: key.value.clone(),
-            probe: false,
-        });
-    }
-    if provider.keys.is_empty() {
-        return Some(SelectedKey {
-            id: String::new(),
-            value: String::new(),
             probe: false,
         });
     }
