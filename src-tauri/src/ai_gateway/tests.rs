@@ -28839,3 +28839,423 @@ async fn ac026_single_candidate_non_retryable_statuses_do_not_retry() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Frozen plan 20260925-gateway-routing-and-config-hardening Step 6 (RED):
+// scheduler accounting scope across models and protocols (AC-032 .. AC-036).
+//
+// Every case is driven through real relay requests (`start_server` +
+// `call_gateway`) so the accounting key chosen at the request entry point is
+// exercised end to end. The tests never call `weighted_candidates` directly, so
+// they keep compiling when Step 7 changes its signature to a composite key.
+// Provider ids are unique per case so a concurrently running relay test cannot
+// collide with this case's scheduler entries; the process-wide `temp_home` lock
+// serializes the global-server tests, and `swrr_test_lock` serializes the
+// existing direct scheduler unit tests that reset the same global map.
+// ---------------------------------------------------------------------------
+
+/// A 200 upstream that names itself in the response body, so a relay response
+/// identifies the provider that served the request.
+async fn spawn_winner_mock(id: &'static str) -> String {
+    let (url, _log) =
+        spawn_mock_upstream(move |_| MockReply::Json(200, json!({ "id": id }))).await;
+    url
+}
+
+/// Relay one chat/responses request and return the `id` of the serving upstream.
+/// The mocks answer 200, so the SWRR primary candidate always serves.
+async fn relay_winner(port: u16, path: &str, model: &str) -> String {
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        path,
+        &[("authorization", "Bearer local-key")],
+        Some(json!({ "model": model, "messages": [] })),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "relay request for {model} on {path} must be served: {text}"
+    );
+    let body: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|error| panic!("serving body must be JSON ({error}): {text}"));
+    body.get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("serving body must carry an id: {text}"))
+        .to_string()
+}
+
+/// One raw provider with a single healthy key, the given weight and mappings.
+fn weighted_provider(id: &str, base_url: &str, weight: u32, mappings: Vec<Value>) -> Value {
+    let mut provider = pool_provider(
+        id,
+        id,
+        base_url,
+        vec![pool_key("key-default", "Default", "sk", true)],
+        mappings,
+    );
+    provider["weight"] = json!(weight);
+    provider
+}
+
+/// AC-032: local model M1 maps to {A, B} and M2 maps to {A, B, C} with equal
+/// weights. Interleaving the two models must not let one model's selections
+/// consume the other's accounting: M1 alternates A, B, A while M2 rotates
+/// A, B, C. Today both models share one provider-id accounting map, so the
+/// interleave skews each sequence.
+#[tokio::test(start_paused = true)]
+async fn ac032_mixed_candidate_sets_do_not_skew_per_model() {
+    let _ticker = spawn_paused_clock_ticker();
+    let _swrr = swrr_test_lock();
+    let home = temp_home("ac032-scheduler-model-scope");
+    super::selection::reset_weighted_scheduler_for_test();
+    super::selection::reset_session_affinity_for_test();
+    let port = free_port().await;
+
+    let url_a = spawn_winner_mock("ac032-winner-a").await;
+    let url_b = spawn_winner_mock("ac032-winner-b").await;
+    let url_c = spawn_winner_mock("ac032-winner-c").await;
+
+    let provider_a = weighted_provider(
+        "ac032-a",
+        &url_a,
+        1,
+        vec![
+            json_mapping("ac032-m1", "a-m1", None),
+            json_mapping("ac032-m2", "a-m2", None),
+        ],
+    );
+    let provider_b = weighted_provider(
+        "ac032-b",
+        &url_b,
+        1,
+        vec![
+            json_mapping("ac032-m1", "b-m1", None),
+            json_mapping("ac032-m2", "b-m2", None),
+        ],
+    );
+    let provider_c = weighted_provider(
+        "ac032-c",
+        &url_c,
+        1,
+        vec![json_mapping("ac032-m2", "c-m2", None)],
+    );
+
+    write_raw_gateway_config(&pool_config(port, vec![provider_a, provider_b, provider_c]));
+    super::runtime_http::start_server(None).await.unwrap();
+
+    let mut m1 = Vec::new();
+    let mut m2 = Vec::new();
+    for _ in 0..3 {
+        m1.push(relay_winner(port, "/v1/chat/completions", "ac032-m1").await);
+        m2.push(relay_winner(port, "/v1/chat/completions", "ac032-m2").await);
+    }
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+
+    assert_eq!(
+        m1,
+        vec!["ac032-winner-a", "ac032-winner-b", "ac032-winner-a"],
+        "AC-032: M1 (candidates A, B) must alternate A, B, A independently of M2"
+    );
+    assert_eq!(
+        m2,
+        vec!["ac032-winner-a", "ac032-winner-b", "ac032-winner-c"],
+        "AC-032: M2 (candidates A, B, C) must rotate A, B, C independently of M1"
+    );
+}
+
+/// AC-033: same-set smoothness must not regress: A (weight 3) and B (weight 1)
+/// as the only candidates for one model select A, A, B, A. This is the existing
+/// behavior the Step 7 accounting change must preserve.
+#[tokio::test(start_paused = true)]
+async fn ac033_same_set_smoothness_is_unchanged() {
+    let _ticker = spawn_paused_clock_ticker();
+    let _swrr = swrr_test_lock();
+    let home = temp_home("ac033-scheduler-smoothness");
+    super::selection::reset_weighted_scheduler_for_test();
+    super::selection::reset_session_affinity_for_test();
+    let port = free_port().await;
+
+    let url_a = spawn_winner_mock("ac033-winner-a").await;
+    let url_b = spawn_winner_mock("ac033-winner-b").await;
+
+    let provider_a = weighted_provider(
+        "ac033-a",
+        &url_a,
+        3,
+        vec![json_mapping("ac033-model", "a-remote", None)],
+    );
+    let provider_b = weighted_provider(
+        "ac033-b",
+        &url_b,
+        1,
+        vec![json_mapping("ac033-model", "b-remote", None)],
+    );
+
+    write_raw_gateway_config(&pool_config(port, vec![provider_a, provider_b]));
+    super::runtime_http::start_server(None).await.unwrap();
+
+    let mut picks = Vec::new();
+    for _ in 0..4 {
+        picks.push(relay_winner(port, "/v1/chat/completions", "ac033-model").await);
+    }
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+
+    assert_eq!(
+        picks,
+        vec![
+            "ac033-winner-a",
+            "ac033-winner-a",
+            "ac033-winner-b",
+            "ac033-winner-a"
+        ],
+        "AC-033: weights 3:1 must keep the sequence A, A, B, A"
+    );
+}
+
+/// AC-034: one provider and one local model are reachable through both the
+/// `chat_completions` and `responses` mappings, with a peer mapped only to one
+/// protocol. Interleaved requests for both protocols must keep independent
+/// winner sequences matching each protocol's own candidate set:
+/// chat rotates P, Q, P and responses rotates P, R, P. Today one provider-id
+/// accounting map ignores the protocol, so the responses sequence starts with R.
+#[tokio::test(start_paused = true)]
+async fn ac034_protocols_keep_independent_winner_sequences() {
+    let _ticker = spawn_paused_clock_ticker();
+    let _swrr = swrr_test_lock();
+    let home = temp_home("ac034-scheduler-protocol-scope");
+    super::selection::reset_weighted_scheduler_for_test();
+    super::selection::reset_session_affinity_for_test();
+    let port = free_port().await;
+
+    let url_p = spawn_winner_mock("ac034-winner-p").await;
+    let url_q = spawn_winner_mock("ac034-winner-q").await;
+    let url_r = spawn_winner_mock("ac034-winner-r").await;
+
+    let shared = weighted_provider(
+        "ac034-p",
+        &url_p,
+        1,
+        vec![
+            json_mapping("ac034-model", "shared-chat", Some("chat_completions")),
+            json_mapping("ac034-model", "shared-responses", Some("responses")),
+        ],
+    );
+    let chat_peer = weighted_provider(
+        "ac034-q",
+        &url_q,
+        1,
+        vec![json_mapping(
+            "ac034-model",
+            "chat-peer",
+            Some("chat_completions"),
+        )],
+    );
+    let responses_peer = weighted_provider(
+        "ac034-r",
+        &url_r,
+        1,
+        vec![json_mapping("ac034-model", "responses-peer", Some("responses"))],
+    );
+
+    write_raw_gateway_config(&pool_config(
+        port,
+        vec![shared, chat_peer, responses_peer],
+    ));
+    super::runtime_http::start_server(None).await.unwrap();
+
+    let mut chat = Vec::new();
+    let mut responses = Vec::new();
+    for _ in 0..3 {
+        chat.push(relay_winner(port, "/v1/chat/completions", "ac034-model").await);
+        responses.push(relay_winner(port, "/v1/responses", "ac034-model").await);
+    }
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+
+    assert_eq!(
+        chat,
+        vec![
+            "ac034-winner-p",
+            "ac034-winner-q",
+            "ac034-winner-p"
+        ],
+        "AC-034: chat_completions must rotate its own candidate set P, Q, P"
+    );
+    assert_eq!(
+        responses,
+        vec![
+            "ac034-winner-p",
+            "ac034-winner-r",
+            "ac034-winner-p"
+        ],
+        "AC-034: responses must rotate its own candidate set P, R, P without consuming chat's accounting"
+    );
+}
+
+/// AC-035: scheduler state exists for a provider id; deleting that provider
+/// through the real persisted command path must prune its scheduler entries
+/// (observed through the Step 1 accessor) and reusing the id must start from
+/// fresh state. Today nothing prunes, so the deleted id's stale current-weight
+/// survives and the second request is served by B.
+#[tokio::test(start_paused = true)]
+async fn ac035_deleted_providers_are_pruned_from_scheduler_state() {
+    let _ticker = spawn_paused_clock_ticker();
+    let _swrr = swrr_test_lock();
+    let home = temp_home("ac035-scheduler-prune");
+    super::selection::reset_weighted_scheduler_for_test();
+    super::selection::reset_session_affinity_for_test();
+    let port = free_port().await;
+
+    let url_a = spawn_winner_mock("ac035-winner-a").await;
+    let url_b = spawn_winner_mock("ac035-winner-b").await;
+
+    let provider_a = weighted_provider(
+        "ac035-a",
+        &url_a,
+        2,
+        vec![json_mapping("ac035-model", "a-remote", None)],
+    );
+    let provider_b = weighted_provider(
+        "ac035-b",
+        &url_b,
+        1,
+        vec![json_mapping("ac035-model", "b-remote", None)],
+    );
+
+    write_raw_gateway_config(&pool_config(port, vec![provider_a, provider_b]));
+    super::runtime_http::start_server(None).await.unwrap();
+
+    let first = relay_winner(port, "/v1/chat/completions", "ac035-model").await;
+    let entries_a_before = super::selection::weighted_scheduler_entry_count("ac035-a");
+    let entries_b_before = super::selection::weighted_scheduler_entry_count("ac035-b");
+
+    super::commands::ai_gateway_delete_provider("ac035-a".to_string())
+        .expect("deleting the provider must persist");
+    let entries_a_after_delete = super::selection::weighted_scheduler_entry_count("ac035-a");
+    let providers_after_delete: Vec<String> = super::storage::read_config()
+        .expect("read the persisted configuration")
+        .providers
+        .iter()
+        .map(|provider| provider.id.clone())
+        .collect();
+
+    let mut re_added = typed_pool_provider(pool_provider(
+        "ac035-a",
+        "ac035-a",
+        &url_a,
+        vec![pool_key("key-default", "Default", "sk", true)],
+        vec![json_mapping("ac035-model", "a-remote", None)],
+    ));
+    re_added.weight = 2;
+    super::commands::ai_gateway_upsert_provider(re_added, None)
+        .expect("re-adding the provider id must persist");
+    let second = relay_winner(port, "/v1/chat/completions", "ac035-model").await;
+    let entries_a_after_readd = super::selection::weighted_scheduler_entry_count("ac035-a");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+
+    assert_eq!(
+        first, "ac035-winner-a",
+        "the weight-2 provider must win the first request"
+    );
+    assert!(
+        entries_a_before > 0,
+        "AC-035: the first request must create scheduler state for ac035-a"
+    );
+    assert!(
+        entries_b_before > 0,
+        "AC-035: the first request must create scheduler state for ac035-b"
+    );
+    assert!(
+        !providers_after_delete.contains(&"ac035-a".to_string()),
+        "AC-035: the deleted provider must be gone from the persisted configuration"
+    );
+    assert_eq!(
+        entries_a_after_delete, 0,
+        "AC-035: deleting the provider must prune its scheduler entries"
+    );
+    assert_eq!(
+        second, "ac035-winner-a",
+        "AC-035: reusing the provider id must start from fresh scheduler state"
+    );
+    assert!(
+        entries_a_after_readd > 0,
+        "AC-035: the reused provider id must create fresh scheduler state again"
+    );
+}
+
+/// AC-036: zero or one candidate for a model is returned directly without
+/// mutating scheduler state (observed through the Step 1 accessor). This is the
+/// existing bypass the Step 7 accounting change must preserve.
+#[tokio::test(start_paused = true)]
+async fn ac036_zero_or_single_candidate_bypasses_scheduler_state() {
+    let _ticker = spawn_paused_clock_ticker();
+    let _swrr = swrr_test_lock();
+    let home = temp_home("ac036-scheduler-bypass");
+    super::selection::reset_weighted_scheduler_for_test();
+    super::selection::reset_session_affinity_for_test();
+    let port = free_port().await;
+
+    let url_a = spawn_winner_mock("ac036-winner-a").await;
+    let url_b = spawn_winner_mock("ac036-winner-b").await;
+
+    let provider_a = weighted_provider(
+        "ac036-a",
+        &url_a,
+        1,
+        vec![json_mapping("ac036-solo-a", "a-remote", None)],
+    );
+    let provider_b = weighted_provider(
+        "ac036-b",
+        &url_b,
+        1,
+        vec![json_mapping("ac036-solo-b", "b-remote", None)],
+    );
+
+    write_raw_gateway_config(&pool_config(port, vec![provider_a, provider_b]));
+    super::runtime_http::start_server(None).await.unwrap();
+
+    let solo_a = relay_winner(port, "/v1/chat/completions", "ac036-solo-a").await;
+    let solo_b = relay_winner(port, "/v1/chat/completions", "ac036-solo-b").await;
+    let (absent_status, _content_type, absent_text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({ "model": "ac036-absent", "messages": [] })),
+    )
+    .await;
+    let entries_a = super::selection::weighted_scheduler_entry_count("ac036-a");
+    let entries_b = super::selection::weighted_scheduler_entry_count("ac036-b");
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+
+    assert_eq!(
+        solo_a, "ac036-winner-a",
+        "a single-candidate model must be served by its only provider"
+    );
+    assert_eq!(
+        solo_b, "ac036-winner-b",
+        "a single-candidate model must be served by its only provider"
+    );
+    assert_eq!(
+        absent_status, 502,
+        "a model with no candidate must take the standard unavailable path: {absent_text}"
+    );
+    assert_eq!(
+        entries_a, 0,
+        "AC-036: a single-candidate selection must not create scheduler state"
+    );
+    assert_eq!(
+        entries_b, 0,
+        "AC-036: a single-candidate selection must not create scheduler state"
+    );
+}
