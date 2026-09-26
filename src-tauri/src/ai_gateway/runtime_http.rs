@@ -3,11 +3,11 @@ use super::selection::{
     candidate_providers, classify_failure_with_message, clear_key_runtime_state,
     clear_mapping_runtime_state, default_retry_delay, find_key_probe_candidate,
     find_probe_candidate, is_quota_exceeded_message, is_retryable_with_message, mapping_matches_key,
-    mark_key_failure, rearm_key_probe, rearm_mapping_probe_cooldown, register_mapping_failure,
-    register_mapping_success, resolve_model_for_protocol, resolve_session_id, retry_header_delay,
-    select_usable_key, session_affinity, try_acquire_probe_guard, weighted_candidates,
-    FailureClass, MappingTarget, ModelResolution, ProbeCandidate, ProbeGuard, SessionOrder,
-    MAX_RETRIES_PER_PROVIDER,
+    mark_key_failure, quota_mark_expired, rearm_key_probe, rearm_mapping_probe_cooldown,
+    register_mapping_failure, register_mapping_success, resolve_model_for_protocol,
+    resolve_session_id, retry_header_delay, select_usable_key, session_affinity,
+    try_acquire_probe_guard, weighted_candidates, FailureClass, MappingTarget, ModelResolution,
+    ProbeCandidate, ProbeGuard, SessionOrder, MAX_RETRIES_PER_PROVIDER,
 };
 use super::storage::{local_base_url, modify_config, read_config};
 use super::usage_log::{
@@ -22,7 +22,7 @@ use super::{
 };
 use futures_util::StreamExt;
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
@@ -723,10 +723,14 @@ fn auto_disabled_flipped(
 struct RetryCandidate {
     provider: GatewayUpstreamProvider,
     model: String,
-    /// Upstream attempts already made for this provider in this request.
+    /// Upstream passes already made for this provider in this request. One pass
+    /// attempts each usable key at most once under in-request rotation.
     attempts: u32,
     // None represents a valid header delay beyond the clock's range.
     ready_at: Option<Instant>,
+    /// Keys already attempted in the current pass, so a bare-429 rotation never
+    /// contacts the same key twice within one pass. Cleared at every new pass.
+    attempted_keys: HashSet<String>,
 }
 
 impl RetryCandidate {
@@ -774,6 +778,10 @@ enum AttemptResult {
         /// marked and the request continues on the next usable key instead of
         /// registering mapping health or requeuing.
         key_failure: Option<KeyFailureKind>,
+        /// True for a bare rate-limit 429: the request rotates to the next
+        /// usable key of the same provider inside the pass without persisting a
+        /// mark, registering mapping health or consuming the retry budget.
+        bare_rotation: bool,
     },
 }
 
@@ -1051,23 +1059,29 @@ struct SelectedKey {
     /// True when this key is a half-open quota probe rather than a normal
     /// selection; a probe is never rotated and re-arms on failure.
     probe: bool,
+    /// True when this key was selected through a TTL-expired quota mark, so its
+    /// runtime state must be cleared in memory and persisted.
+    ttl_cleared: bool,
 }
 
 /// Choose the key for one upstream attempt in list order: the first enabled
-/// unmarked key; else, only when no such key remains, at most one eligible
-/// quota probe per request; else no key at all. A provider with an empty pool
-/// has no usable key and no probe candidate, so it is never attempted and the
-/// surrounding loop skips it to the next candidate (REQ-008).
+/// usable key not yet attempted in this pass (an unmarked key, or a
+/// TTL-expired quota-marked key); else, only when no such key remains, at most
+/// one eligible quota probe per request; else no key at all. A provider with an
+/// empty pool has no usable key and no probe candidate, so it is never
+/// attempted and the surrounding loop skips it to the next candidate (REQ-008).
 fn select_attempt_key(
     provider: &GatewayUpstreamProvider,
     now: u64,
     probe_used: bool,
+    attempted: &HashSet<String>,
 ) -> Option<SelectedKey> {
-    if let Some(key) = select_usable_key(provider) {
+    if let Some(key) = select_usable_key(provider, now, attempted) {
         return Some(SelectedKey {
             id: key.id.clone(),
             value: key.value.clone(),
             probe: false,
+            ttl_cleared: quota_mark_expired(key, now),
         });
     }
     if !probe_used {
@@ -1076,11 +1090,26 @@ fn select_attempt_key(
                 id: key.id.clone(),
                 value: key.value.clone(),
                 probe: true,
+                ttl_cleared: false,
             });
         }
     }
     None
 }
+
+/// Clear a TTL-expired key's runtime state in memory and persist it through the
+/// serialized configuration write helper.
+fn clear_ttl_expired_key_runtime_state(
+    provider: &mut GatewayUpstreamProvider,
+    selected: &SelectedKey,
+) {
+    if let Some(key) = provider.keys.iter_mut().find(|key| key.id == selected.id) {
+        clear_key_runtime_state(key);
+    }
+    persist_key_runtime_state(&provider.id, &selected.id, clear_key_runtime_state);
+}
+
+
 
 /// Classify a pre-first-byte HTTP failure as key-scoped: 401/403 mark the key
 /// authentication-failed and a quota-classified 429 marks it quota-exhausted.
@@ -1290,6 +1319,7 @@ async fn attempt_candidate(
                     log,
                 );
             }
+            let key_failure = key_failure_kind(response.status, error_message.as_deref());
             (
                 AttemptResult::Failure {
                     class,
@@ -1302,7 +1332,8 @@ async fn attempt_candidate(
                     reason: failure_reason(response.status, response.parsed, error_message.as_deref()),
                     retry_delay: retry_header_delay(&response.headers),
                     status: response.status,
-                    key_failure: key_failure_kind(response.status, error_message.as_deref()),
+                    bare_rotation: response.status == 429 && key_failure.is_none(),
+                    key_failure,
                 },
                 log,
             )
@@ -1327,6 +1358,7 @@ async fn attempt_candidate(
                     retry_delay: None,
                     status: 0,
                     key_failure: None,
+                    bare_rotation: false,
                 },
                 log,
             )
@@ -1387,9 +1419,11 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
 
     // Initial pass (REQ-001): every candidate is tried once, in order, without
     // waiting for any backoff, so a healthy later candidate answers before a
-    // retry delay is paid. Within one provider slot, a key-scoped failure marks
-    // the attempted key and immediately continues on the next usable key
-    // without backoff, retry-budget consumption or mapping-health registration.
+    // retry delay is paid. Within one provider slot, a persistent key-scoped
+    // failure marks the attempted key and immediately continues on the next
+    // usable key without backoff, retry-budget consumption or mapping-health
+    // registration, while a bare rate-limit 429 rotates to the next
+    // unattempted usable key in the same pass without persisting any mark.
     for provider_snapshot in ordered {
         let model = match resolve_model_for_protocol(provider_snapshot, requested, protocol) {
             ModelResolution::Serve(model) => model,
@@ -1397,23 +1431,24 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
         };
         let mut provider = provider_snapshot.clone();
         sync_key_runtime_marks(&mut provider);
+        let mut attempted_keys: HashSet<String> = HashSet::new();
+        // Retryable failure recorded by the last bare-429 rotation of a pass
+        // that then ran out of unattempted keys, so the provider still enters
+        // the bounded retry schedule with its budget intact.
+        let mut pass_retry: Option<(bool, Option<Duration>)> = None;
+        let mut selected_none = false;
         loop {
-            let Some(selected) = select_attempt_key(&provider, now_ts(), key_probe_used) else {
-                record_provider_failure_if_absent(
-                    &mut failures,
-                    &provider.name,
-                    "no usable upstream key",
-                );
-                last_capture = Some(ForwardCapture {
-                    provider_id: provider.id.clone(),
-                    provider_name: provider.name.clone(),
-                    upstream_model: model.clone(),
-                    ..Default::default()
-                });
+            let Some(selected) =
+                select_attempt_key(&provider, now_ts(), key_probe_used, &attempted_keys)
+            else {
+                selected_none = true;
                 break;
             };
             if selected.probe {
                 key_probe_used = true;
+            }
+            if selected.ttl_cleared {
+                clear_ttl_expired_key_runtime_state(&mut provider, &selected);
             }
             provider.attempt_key = selected.value.clone();
             let (outcome, log) =
@@ -1439,6 +1474,7 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                     reason,
                     retry_delay,
                     key_failure,
+                    bare_rotation,
                     ..
                 } => {
                     record_provider_failure(&mut failures, &provider.name, reason.clone());
@@ -1458,10 +1494,21 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                             &reason,
                             now_ts(),
                         );
+                        pass_retry = None;
+                        attempted_keys.insert(selected.id.clone());
                         break;
                     }
                     if let Some(kind) = key_failure {
                         settle_key_failure(&mut provider, &selected, kind, &reason, now_ts());
+                        pass_retry = None;
+                        attempted_keys.insert(selected.id.clone());
+                        continue;
+                    }
+                    if bare_rotation {
+                        // Rotate inside the pass; the failure is remembered so
+                        // an exhausted pass still enters the retry schedule.
+                        pass_retry = Some((retryable, retry_delay));
+                        attempted_keys.insert(selected.id.clone());
                         continue;
                     }
                     settle_failure(
@@ -1473,25 +1520,56 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                         &reason,
                         transport,
                     );
-                    if retryable && ordered.len() > 1 {
+                    pass_retry = None;
+                    if retryable {
                         retries.push(RetryCandidate {
                             provider: provider.clone(),
-                            model,
+                            model: model.clone(),
                             attempts: 1,
                             ready_at: Instant::now().checked_add(
                                 retry_delay.unwrap_or_else(|| default_retry_delay(1)),
                             ),
+                            attempted_keys: HashSet::new(),
                         });
                     }
                     break;
                 }
             }
         }
+        // A pass exhausted by bare-429 rotation still hands the failure to the
+        // existing bounded retry scheduler with the full budget; a provider
+        // that had no usable key at all keeps the existing skip message.
+        if let Some((retryable, retry_delay)) = pass_retry.take() {
+            if retryable {
+                retries.push(RetryCandidate {
+                    provider: provider.clone(),
+                    model,
+                    attempts: 1,
+                    ready_at: Instant::now().checked_add(
+                        retry_delay.unwrap_or_else(|| default_retry_delay(1)),
+                    ),
+                    attempted_keys: HashSet::new(),
+                });
+            }
+        } else if selected_none {
+            record_provider_failure_if_absent(
+                &mut failures,
+                &provider.name,
+                "no usable upstream key",
+            );
+            last_capture = Some(ForwardCapture {
+                provider_id: provider.id.clone(),
+                provider_name: provider.name.clone(),
+                upstream_model: model.clone(),
+                ..Default::default()
+            });
+        }
     }
 
     // Bounded retries (REQ-002): serial, earliest deadline first, ties keep the
     // initial candidate order. A 404 never enters this queue and 401/403 stop the
-    // provider; only retryable classes are rescheduled.
+    // provider; only retryable classes are rescheduled. Each retry is a fresh
+    // pass that restarts key selection from the first usable key.
     let mut remaining_wait = Duration::from_secs(120);
     loop {
         let Some(index) = RetryCandidate::next_ready(&retries, &mut remaining_wait).await else {
@@ -1499,19 +1577,25 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
         };
         let mut candidate = retries.remove(index);
         let model = candidate.model.clone();
+        let mut pass_retry: Option<(bool, Option<Duration>)> = None;
+        let mut selected_none = false;
+        let mut schedule = false;
         loop {
             sync_key_runtime_marks(&mut candidate.provider);
-            let Some(selected) = select_attempt_key(&candidate.provider, now_ts(), key_probe_used)
-            else {
-                record_provider_failure_if_absent(
-                    &mut failures,
-                    &candidate.provider.name,
-                    "no usable upstream key",
-                );
+            let Some(selected) = select_attempt_key(
+                &candidate.provider,
+                now_ts(),
+                key_probe_used,
+                &candidate.attempted_keys,
+            ) else {
+                selected_none = true;
                 break;
             };
             if selected.probe {
                 key_probe_used = true;
+            }
+            if selected.ttl_cleared {
+                clear_ttl_expired_key_runtime_state(&mut candidate.provider, &selected);
             }
             candidate.provider.attempt_key = selected.value.clone();
             let (outcome, log) =
@@ -1542,6 +1626,7 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                     reason,
                     retry_delay,
                     key_failure,
+                    bare_rotation,
                     ..
                 } => {
                     record_provider_failure(&mut failures, &candidate.provider.name, reason.clone());
@@ -1559,6 +1644,8 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                             &reason,
                             now_ts(),
                         );
+                        pass_retry = None;
+                        candidate.attempted_keys.insert(selected.id.clone());
                         break;
                     }
                     if let Some(kind) = key_failure {
@@ -1569,6 +1656,13 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                             &reason,
                             now_ts(),
                         );
+                        pass_retry = None;
+                        candidate.attempted_keys.insert(selected.id.clone());
+                        continue;
+                    }
+                    if bare_rotation {
+                        candidate.attempted_keys.insert(selected.id.clone());
+                        pass_retry = Some((retryable, retry_delay));
                         continue;
                     }
                     settle_failure(
@@ -1580,16 +1674,38 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                         &reason,
                         transport,
                     );
+                    pass_retry = None;
                     candidate.attempts += 1;
                     if retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
                         candidate.ready_at = Instant::now().checked_add(
                             retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
                         );
-                        retries.insert(index, candidate);
+                        schedule = true;
                     }
                     break;
                 }
             }
+        }
+        // A pass exhausted by bare-429 rotation still schedules the provider's
+        // next retry with its budget intact.
+        if let Some((retryable, retry_delay)) = pass_retry.take() {
+            candidate.attempts += 1;
+            if retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
+                candidate.ready_at = Instant::now().checked_add(
+                    retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
+                );
+                schedule = true;
+            }
+        } else if selected_none {
+            record_provider_failure_if_absent(
+                &mut failures,
+                &candidate.provider.name,
+                "no usable upstream key",
+            );
+        }
+        if schedule {
+            candidate.attempted_keys.clear();
+            retries.insert(index, candidate);
         }
     }
 
@@ -1610,8 +1726,11 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
             sync_key_runtime_marks(&mut provider);
             let model = candidate.upstream_model.as_str();
             let mut last_key_failure: Option<String> = None;
+            let mut probe_attempted: HashSet<String> = HashSet::new();
             loop {
-                let Some(selected) = select_attempt_key(&provider, now_ts(), key_probe_used) else {
+                let Some(selected) =
+                    select_attempt_key(&provider, now_ts(), key_probe_used, &probe_attempted)
+                else {
                     // No usable key remains after consuming the key-scoped
                     // failures: re-arm the probe cooldown through the existing
                     // probe-failure path and fall through to the exhausted path.
@@ -1629,6 +1748,9 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                 };
                 if selected.probe {
                     key_probe_used = true;
+                }
+                if selected.ttl_cleared {
+                    clear_ttl_expired_key_runtime_state(&mut provider, &selected);
                 }
                 provider.attempt_key = selected.value.clone();
                 let (outcome, log) =
@@ -1698,6 +1820,7 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                             // budget.
                             let at = now_ts();
                             settle_key_failure(&mut provider, &selected, kind, &reason, at);
+                            probe_attempted.insert(selected.id.clone());
                             last_key_failure = Some(reason);
                             continue;
                         }
@@ -1775,7 +1898,19 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     };
     let mut retries = Vec::new();
     let mut remaining_wait = Duration::from_secs(120);
-    let mut ordered_queue: VecDeque<GatewayUpstreamProvider> = ordered.iter().cloned().collect();
+    let mut ordered_queue: VecDeque<RetryCandidate> = ordered
+        .iter()
+        .filter_map(|provider| match resolve_model_for_protocol(provider, requested, protocol) {
+            ModelResolution::Serve(model) => Some(RetryCandidate {
+                provider: provider.clone(),
+                model,
+                attempts: 0,
+                ready_at: None,
+                attempted_keys: HashSet::new(),
+            }),
+            ModelResolution::ProtocolMismatch(_) | ModelResolution::NoMatch => None,
+        })
+        .collect();
     // Whether this request has already used its single key probe.
     let mut key_probe_used = false;
     // Read-only usage parser fed from the relay's own passthrough loop; it never
@@ -1797,77 +1932,84 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     let mut probe_key_failure_reason: Option<String> = None;
     let mut _probe_guard: Option<ProbeGuard> = None;
     loop {
-        let (mut candidate, retry_index, probe_target, selected) = if let Some(mut provider) =
-            ordered_queue.pop_front()
-        {
-            let model = match resolve_model_for_protocol(&provider, requested, protocol) {
-                ModelResolution::Serve(model) => model,
-                ModelResolution::ProtocolMismatch(_) | ModelResolution::NoMatch => continue,
-            };
-            sync_key_runtime_marks(&mut provider);
-            let Some(selected) = select_attempt_key(&provider, now_ts(), key_probe_used) else {
-                // A provider with no usable key and no eligible probe is never
-                // contacted; continue the request on the next candidate.
-                continue;
-            };
-            (
-                RetryCandidate {
-                    provider,
-                    model,
-                    attempts: 0,
-                    ready_at: None,
-                },
-                retries.len(),
-                None,
-                selected,
-            )
-        } else if let Some(index) = RetryCandidate::next_ready(&retries, &mut remaining_wait).await {
-            let mut candidate = retries.remove(index);
-            sync_key_runtime_marks(&mut candidate.provider);
-            let Some(selected) =
-                select_attempt_key(&candidate.provider, now_ts(), key_probe_used)
-            else {
-                continue;
-            };
-            (candidate, index, None, selected)
-        } else if let Some(probe_candidate) = pending_probe.take() {
-            // The single-flight guard is acquired once and then held across
-            // every in-probe key rotation, so a re-entry must not re-acquire it.
-            if _probe_guard.is_none() {
-                match try_acquire_probe_guard(&probe_candidate.target) {
-                    Some(guard) => _probe_guard = Some(guard),
-                    // Another request already probes this mapping key: continue
-                    // to the exhausted path without an attempt.
-                    None => break,
+        let (mut candidate, retry_index, probe_target, selected) =
+            if let Some(mut candidate) = ordered_queue.pop_front() {
+                sync_key_runtime_marks(&mut candidate.provider);
+                let Some(selected) = select_attempt_key(
+                    &candidate.provider,
+                    now_ts(),
+                    key_probe_used,
+                    &candidate.attempted_keys,
+                ) else {
+                    // A provider with no usable key and no eligible probe is never
+                    // contacted; continue the request on the next candidate.
+                    continue;
+                };
+                (candidate, retries.len(), None, selected)
+            } else if let Some(index) =
+                RetryCandidate::next_ready(&retries, &mut remaining_wait).await
+            {
+                let mut candidate = retries.remove(index);
+                sync_key_runtime_marks(&mut candidate.provider);
+                let Some(selected) = select_attempt_key(
+                    &candidate.provider,
+                    now_ts(),
+                    key_probe_used,
+                    &candidate.attempted_keys,
+                ) else {
+                    continue;
+                };
+                (candidate, index, None, selected)
+            } else if let Some(probe_candidate) = pending_probe.take() {
+                // The single-flight guard is acquired once and then held across
+                // every in-probe key rotation, so a re-entry must not re-acquire it.
+                if _probe_guard.is_none() {
+                    match try_acquire_probe_guard(&probe_candidate.target) {
+                        Some(guard) => _probe_guard = Some(guard),
+                        // Another request already probes this mapping key: continue
+                        // to the exhausted path without an attempt.
+                        None => break,
+                    }
                 }
-            }
-            let mut provider = probe_candidate.provider.clone();
-            sync_key_runtime_marks(&mut provider);
-            let Some(selected) = select_attempt_key(&provider, now_ts(), key_probe_used) else {
-                // No usable key remains after consuming the key-scoped failures:
-                // re-arm the probe cooldown and fall through to the exhausted path.
-                if let Some(reason) = probe_key_failure_reason.take() {
-                    health.record_probe_failure(&probe_candidate.target, now_ts(), false, &reason);
-                    record_provider_failure(&mut failures, &provider.name, reason);
-                }
+                let mut provider = probe_candidate.provider.clone();
+                sync_key_runtime_marks(&mut provider);
+                let probe_attempted: HashSet<String> = HashSet::new();
+                let Some(selected) =
+                    select_attempt_key(&provider, now_ts(), key_probe_used, &probe_attempted)
+                else {
+                    // No usable key remains after consuming the key-scoped failures:
+                    // re-arm the probe cooldown and fall through to the exhausted path.
+                    if let Some(reason) = probe_key_failure_reason.take() {
+                        health.record_probe_failure(
+                            &probe_candidate.target,
+                            now_ts(),
+                            false,
+                            &reason,
+                        );
+                        record_provider_failure(&mut failures, &provider.name, reason);
+                    }
+                    break;
+                };
+                (
+                    RetryCandidate {
+                        provider,
+                        model: probe_candidate.upstream_model.clone(),
+                        attempts: 0,
+                        ready_at: None,
+                        attempted_keys: probe_attempted,
+                    },
+                    retries.len(),
+                    Some(probe_candidate.target.clone()),
+                    selected,
+                )
+            } else {
                 break;
             };
-            (
-                RetryCandidate {
-                    provider,
-                    model: probe_candidate.upstream_model.clone(),
-                    attempts: 0,
-                    ready_at: None,
-                },
-                retries.len(),
-                Some(probe_candidate.target.clone()),
-                selected,
-            )
-        } else {
-            break;
-        };
         if selected.probe {
             key_probe_used = true;
+        }
+        if selected.ttl_cleared {
+            clear_ttl_expired_key_runtime_state(&mut candidate.provider, &selected);
         }
         candidate.provider.attempt_key = selected.value.clone();
         capture.provider_id = candidate.provider.id.clone();
@@ -1875,7 +2017,8 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         capture.upstream_model = candidate.model.clone();
         let provider = &candidate.provider;
         let started = Instant::now();
-        let (class, retryable, reason, retry_delay, transport, key_failure) = 'attempt: {
+        let (class, retryable, reason, retry_delay, transport, key_failure, bare_rotation) =
+            'attempt: {
             let streamed = open_streaming_response(
                 provider, path, body, &candidate.model, client_headers,
             ).await;
@@ -1893,7 +2036,15 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         sanitize_provider_error_text(&reason, provider),
                         None,
                     ));
-                    break 'attempt (FailureClass::Retryable, true, reason, None, true, None);
+                    break 'attempt (
+                        FailureClass::Retryable,
+                        true,
+                        reason,
+                        None,
+                        true,
+                        None,
+                        false,
+                    );
                 }
             };
             let status = response.status().as_u16();
@@ -1962,6 +2113,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 let retryable =
                     is_retryable_with_message(class, status, error_message.as_deref());
                 let key_failure = key_failure_kind(status, error_message.as_deref());
+                let bare_rotation = status == 429 && key_failure.is_none();
                 attempts.push(build_attempt_log(
                     provider,
                     &candidate.model,
@@ -1971,7 +2123,15 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     error_message,
                     None,
                 ));
-                break 'attempt (class, retryable, reason, retry_delay, false, key_failure);
+                break 'attempt (
+                    class,
+                    retryable,
+                    reason,
+                    retry_delay,
+                    false,
+                    key_failure,
+                    bare_rotation,
+                );
             }
 
             let content_type = response
@@ -2009,6 +2169,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                             retry_delay,
                             false,
                             None,
+                            false,
                         );
                     }
                     if let Err(error) = write_stream_headers(writer, status).await {
@@ -2160,6 +2321,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         retry_delay,
                         true,
                         None,
+                        false,
                     );
                 }
                 None => {
@@ -2183,6 +2345,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         retry_delay,
                         false,
                         None,
+                        false,
                     );
                 }
             }
@@ -2243,7 +2406,34 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             if let Some(key) = next_provider.keys.iter_mut().find(|key| key.id == selected.id) {
                 mark_key_failure(key, kind, &reason, at);
             }
-            ordered_queue.push_front(next_provider);
+            candidate.provider = next_provider;
+            candidate.attempted_keys.insert(selected.id.clone());
+            // Continue the same pass on the provider's next usable key; when no
+            // unattempted usable key remains the pass simply ends.
+            if select_usable_key(&candidate.provider, now_ts(), &candidate.attempted_keys).is_some()
+            {
+                ordered_queue.push_front(candidate);
+            }
+        } else if bare_rotation {
+            // A bare rate-limit 429 rotates within the pass without persisting a
+            // mark, registering mapping health or consuming the retry budget.
+            candidate.attempted_keys.insert(selected.id.clone());
+            record_provider_failure(&mut failures, &provider.name, reason);
+            if select_usable_key(&candidate.provider, now_ts(), &candidate.attempted_keys).is_some()
+            {
+                ordered_queue.push_front(candidate);
+            } else {
+                // The pass exhausted every usable key: hand the failure to the
+                // bounded retry scheduler with the full budget.
+                candidate.attempts += 1;
+                if retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
+                    candidate.ready_at = Instant::now().checked_add(
+                        retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
+                    );
+                    candidate.attempted_keys.clear();
+                    retries.insert(retry_index, candidate);
+                }
+            }
         } else {
             settle_failure(
                 &mut health,
@@ -2256,10 +2446,11 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             );
             record_provider_failure(&mut failures, &provider.name, reason);
             candidate.attempts += 1;
-            if retryable && ordered.len() > 1 && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
+            if retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
                 candidate.ready_at = Instant::now().checked_add(
                     retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
                 );
+                candidate.attempted_keys.clear();
                 retries.insert(retry_index, candidate);
             }
         }

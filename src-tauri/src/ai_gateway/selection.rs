@@ -1,6 +1,7 @@
 use super::{
     GatewayUpstreamProvider, KeyFailureKind, ModelMapping, UpstreamKey, UpstreamProtocol,
     AUTO_DISABLE_PROBE_COOLDOWN_SECS, FAILURE_THRESHOLD, KEY_PROBE_COOLDOWN_SECS,
+    KEY_QUOTA_MARK_TTL_SECS,
 };
 #[cfg(test)]
 use rand::seq::SliceRandom;
@@ -1005,16 +1006,33 @@ pub(in crate::ai_gateway) fn set_user_enabled(
     provider.enabled = enabled;
 }
 
-/// First key usable for a normal upstream attempt: enabled and not
-/// runtime-marked, in list order. A user-disabled or runtime-marked key never
-/// participates in selection.
-pub(in crate::ai_gateway) fn select_usable_key(
-    provider: &GatewayUpstreamProvider,
-) -> Option<&UpstreamKey> {
-    provider
-        .keys
-        .iter()
-        .find(|key| key.enabled && !key.auto_marked)
+/// Whether a quota mark is old enough to make the key usable again through
+/// normal list-order selection. Eligibility is inclusive at exactly
+/// [`KEY_QUOTA_MARK_TTL_SECS`] seconds and exclusive below it. Auth marks and
+/// quota marks without a marking time never expire this way.
+pub(in crate::ai_gateway) fn quota_mark_expired(key: &UpstreamKey, now: u64) -> bool {
+    key.auto_marked
+        && key.failure_kind == Some(KeyFailureKind::Quota)
+        && key.marked_at.is_some_and(|marked_at| {
+            now.saturating_sub(marked_at) >= KEY_QUOTA_MARK_TTL_SECS
+        })
+}
+
+/// First key usable for a normal upstream attempt: enabled, not already
+/// attempted in the current pass, and either unmarked or carrying a
+/// TTL-expired quota mark, in list order. A user-disabled or runtime-marked
+/// key never participates in selection; `attempted` lets one request pass try
+/// each usable key at most once under in-request bare-429 rotation.
+pub(in crate::ai_gateway) fn select_usable_key<'a>(
+    provider: &'a GatewayUpstreamProvider,
+    now: u64,
+    attempted: &HashSet<String>,
+) -> Option<&'a UpstreamKey> {
+    provider.keys.iter().find(|key| {
+        key.enabled
+            && !attempted.contains(&key.id)
+            && (!key.auto_marked || quota_mark_expired(key, now))
+    })
 }
 
 /// The single quota-marked key eligible for one half-open probe.
@@ -1075,16 +1093,18 @@ pub(in crate::ai_gateway) fn rearm_key_probe(
     key.reason = Some(reason.to_string());
 }
 
-/// The key a read-only quota/usage query is pinned to: the first enabled key in
-/// list order, or the first key when every key is disabled. An empty pool has no
-/// pinned key. This source never follows the serving key.
+/// The key a read-only quota/usage query is pinned to: the first enabled
+/// unmarked key in list order, then the first enabled key when every enabled key
+/// is marked, then the first stored key when no key is enabled. An empty pool
+/// has no pinned key. This source never follows the serving key.
 pub(in crate::ai_gateway) fn pinned_key_value(
     provider: &GatewayUpstreamProvider,
 ) -> Option<&str> {
     provider
         .keys
         .iter()
-        .find(|key| key.enabled)
+        .find(|key| key.enabled && !key.auto_marked)
+        .or_else(|| provider.keys.iter().find(|key| key.enabled))
         .or_else(|| provider.keys.first())
         .map(|key| key.value.as_str())
 }

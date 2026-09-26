@@ -11956,10 +11956,12 @@ async fn streaming_all_unavailable_logs_real_upstream_status() {
     let body = assert_standard_error_envelope(&text);
     assert_eq!(body["error"]["code"], "all_providers_unavailable");
 
-    let records = wait_for_usage_logs(1).await;
-    assert_eq!(records.len(), 1);
-    let record = &records[0];
-    assert!(record.terminal, "the completed attempt is the terminal row");
+    let records = wait_for_usage_logs(single_provider_attempt_cap() as u32).await;
+    assert_eq!(records.len(), single_provider_attempt_cap());
+    let record = records
+        .iter()
+        .find(|record| record.terminal)
+        .expect("the completed request has exactly one terminal row");
     assert_eq!(record.result, UsageResult::Failure);
     assert_eq!(
         record.status, 503,
@@ -22668,9 +22670,10 @@ async fn suppressed_transport_failure_does_not_increment_the_mapping_row() {
 
 /// REQ-004 / AC-006: a suppressed transport failure on a row one failure below
 /// the threshold keeps the original counter and error stamp and stays enabled.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn suppressed_transport_failure_at_threshold_minus_one_does_not_auto_disable() {
     let _home = isolated_temp_home("grace-suppressed-threshold");
+    let _ticker = spawn_paused_clock_ticker();
     let dead_url = closed_port_base_url().await;
     let provider = seed_single_mapped_row(&dead_url, super::FAILURE_THRESHOLD - 1, Some(4242));
     let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
@@ -22708,9 +22711,10 @@ async fn suppressed_transport_failure_at_threshold_minus_one_does_not_auto_disab
 
 /// REQ-004 / AC-007: without suppression a transport failure counts normally and
 /// stamps last_error_at.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn unsuppressed_transport_failure_increments_and_stamps_the_mapping_row() {
     let _home = isolated_temp_home("grace-unsuppressed-transport");
+    let _ticker = spawn_paused_clock_ticker();
     let dead_url = closed_port_base_url().await;
     let provider = seed_single_mapped_row(&dead_url, 0, None);
     let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
@@ -22744,9 +22748,10 @@ async fn unsuppressed_transport_failure_increments_and_stamps_the_mapping_row() 
 
 /// REQ-004 / AC-007: without suppression a transport failure one below the
 /// threshold auto-disables the row.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn unsuppressed_transport_failure_at_threshold_minus_one_auto_disables_the_row() {
     let _home = isolated_temp_home("grace-unsuppressed-threshold");
+    let _ticker = spawn_paused_clock_ticker();
     let dead_url = closed_port_base_url().await;
     let provider = seed_single_mapped_row(&dead_url, super::FAILURE_THRESHOLD - 1, Some(4242));
     let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
@@ -22914,9 +22919,10 @@ async fn suppressed_streaming_transport_failure_leaves_the_row_and_pre_stream_50
 
 /// REQ-004 / AC-007: an unsuppressed streaming transport failure counts on the
 /// mapping row.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn unsuppressed_streaming_transport_failure_counts_on_the_mapping_row() {
     let _home = isolated_temp_home("grace-unsuppressed-stream");
+    let _ticker = spawn_paused_clock_ticker();
     let dead_url = closed_port_base_url().await;
     let provider = seed_single_mapped_row(&dead_url, 0, None);
     let body = serde_json::to_vec(&json!({"model": "local-a", "stream": true})).unwrap();
@@ -22954,21 +22960,29 @@ async fn unsuppressed_streaming_transport_failure_counts_on_the_mapping_row() {
 
 /// One real relay request against a single enabled, mapped provider whose base
 /// URL refuses connections. Arms the given resume timestamp (or clears it),
-/// drives the real gateway, and reports the persisted row afterwards. The
-/// caller must hold `temp_home` so the process-wide server reads the same
-/// isolated configuration.
+/// drives the real `handle_connection` relay handler on the current paused
+/// runtime so the bounded retry backoff is simulated instead of waited, and
+/// reports the persisted row afterwards. The caller holds the thread-local temp
+/// home, which the current-thread runtime's handler task shares.
 async fn relay_one_dead_upstream_request(
     resume_at: Option<std::time::SystemTime>,
 ) -> (u16, u32, Option<u64>) {
     crate::app_runtime::set_system_resume_at_for_tests(resume_at);
-    let port = free_port().await;
     let dead_url = closed_port_base_url().await;
     let mut provider = upstream_provider("a", "Provider A", &dead_url, "sk-a", Some("remote-a"));
     provider.mappings = vec![mapping("local-a", "remote-a", None)];
-    let mut config = config_with_key(port);
+    let mut config = config_with_key(0);
     config.providers.push(provider);
     super::storage::write_config(&config).expect("seed gateway config");
-    super::runtime_http::start_server(None).await.expect("start gateway");
+
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind relay loopback");
+    let port = listener.local_addr().expect("relay loopback address").port();
+    let handler = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept relay loopback");
+        super::runtime_http::handle_connection(stream).await
+    });
     let (status, _content_type, _text) = call_gateway(
         port,
         "POST",
@@ -22977,17 +22991,20 @@ async fn relay_one_dead_upstream_request(
         Some(json!({"model": "local-a"})),
     )
     .await;
+    let _ = handler.await;
     let stored = super::storage::read_config().expect("read persisted provider state");
     let row = persisted_mapping_row(&stored, "a");
-    super::runtime_http::stop_server().await.expect("stop gateway");
     (status, row.consecutive_failures, row.last_error_at)
 }
 
 /// REQ-004 / AC-006: a relay request that starts inside the resume grace settles
 /// its transport failure without touching the mapping row.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn relay_request_starting_inside_the_resume_grace_does_not_count_a_transport_failure() {
-    let home = temp_home("grace-relay-inside");
+    // `temp_home` holds the process-wide HOME lock, which serializes these tests
+    // against every other test that mutates the global resume signal.
+    let _home = temp_home("grace-relay-inside");
+    let _ticker = spawn_paused_clock_ticker();
     let _reset = ResumeSignalGuard;
     let (status, failures, last_error_at) =
         relay_one_dead_upstream_request(Some(std::time::SystemTime::now())).await;
@@ -23001,14 +23018,14 @@ async fn relay_request_starting_inside_the_resume_grace_does_not_count_a_transpo
         "a transport failure inside the grace must not stamp last_error_at"
     );
     drop(_reset);
-    drop(home);
 }
 
 /// REQ-004 / AC-007: a relay request that starts more than 60 seconds after the
 /// detected resume counts the transport failure as before.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn relay_request_starting_after_the_resume_grace_counts_a_transport_failure() {
-    let home = temp_home("grace-relay-expired");
+    let _home = temp_home("grace-relay-expired");
+    let _ticker = spawn_paused_clock_ticker();
     let _reset = ResumeSignalGuard;
     let (status, failures, last_error_at) = relay_one_dead_upstream_request(Some(
         std::time::SystemTime::now() - std::time::Duration::from_secs(61),
@@ -23024,14 +23041,14 @@ async fn relay_request_starting_after_the_resume_grace_counts_a_transport_failur
         "a counted transport failure must stamp last_error_at"
     );
     drop(_reset);
-    drop(home);
 }
 
 /// REQ-004 / AC-007: with no detected resume at all every transport failure
 /// counts.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn relay_request_without_a_resume_signal_counts_a_transport_failure() {
-    let home = temp_home("grace-relay-no-signal");
+    let _home = temp_home("grace-relay-no-signal");
+    let _ticker = spawn_paused_clock_ticker();
     let _reset = ResumeSignalGuard;
     let (status, failures, last_error_at) = relay_one_dead_upstream_request(None).await;
     assert_eq!(status, 502, "an unreachable upstream must answer all-unavailable");
@@ -23044,7 +23061,6 @@ async fn relay_request_without_a_resume_signal_counts_a_transport_failure() {
         "a counted transport failure must stamp last_error_at"
     );
     drop(_reset);
-    drop(home);
 }
 
 // ===========================================================================
@@ -24985,7 +25001,11 @@ async fn relay_settlement_without_a_captured_handle_still_persists() {
     )
     .await;
     assert_eq!(status, 502, "the exhausted relay answers the existing 502: {text}");
-    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+    assert_eq!(
+        upstream_log.lock().unwrap().len(),
+        single_provider_attempt_cap(),
+        "the single candidate exhausts its first attempt plus the bounded retry cap"
+    );
 
     let row = stored_probe_row("cfg-no-handle");
     assert!(
@@ -28296,8 +28316,10 @@ fn quota_marked_key_without_time(id: &str, value: &str) -> Value {
 }
 
 /// AC-017 / REQ-004: the TTL boundary is inclusive at exactly 1800 seconds and
-/// exclusive at 1799 seconds, using the literal 1800 (the Step 5 constant does
-/// not exist yet).
+/// exclusive at 1799 seconds, using the literal 1800. The expired side is also
+/// exercised through the relay (selected by list priority, mark cleared); the
+/// exact boundary and the auth / missing-time exclusions use the explicit-`now`
+/// predicate so the 1799 side is deterministic.
 #[tokio::test]
 async fn ac017_quota_mark_ttl_boundary_is_exact_at_1800_seconds() {
     // Exactly 1800 seconds old: usable by list priority, mark cleared.
@@ -28356,61 +28378,46 @@ async fn ac017_quota_mark_ttl_boundary_is_exact_at_1800_seconds() {
         );
     }
 
-    // 1799 seconds old: still marked, the healthy key serves.
-    {
-        let _home = isolated_temp_home("ac017-ttl-1799");
-        let (upstream_url, log) = spawn_mock_upstream(|captured| match auth_header_of(captured) {
-            Some("Bearer sk-ac017c-a") => MockReply::Json(200, json!({"id": "served-by-a"})),
-            Some("Bearer sk-ac017c-b") => MockReply::Json(200, json!({"id": "served-by-b"})),
-            other => MockReply::Json(
-                500,
-                json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+    // 1799 seconds old: the explicit boundary predicate keeps the key marked and
+    // out of selection. The explicit `now` makes the exact 1799/1800 boundary
+    // deterministic, independent of how long the relay takes to reach selection.
+    let boundary_provider = typed_pool_provider(pool_provider(
+        "p1",
+        "Provider One",
+        "https://api.example.com/v1",
+        vec![
+            quota_marked_key("key-quota", "SAFE_FIXTURE_ttl_quota", 1_700_000_000),
+            pool_key_marked(
+                "key-auth",
+                "Auth",
+                "SAFE_FIXTURE_ttl_auth",
+                true,
+                "authentication",
+                1_700_000_000,
+                "HTTP 401 denied",
             ),
-        })
-        .await;
-        let now = super::types_config::now_ts();
-        write_raw_gateway_config(&pool_config(
-            0,
-            vec![pool_provider(
-                "p1",
-                "Provider One",
-                &upstream_url,
-                vec![
-                    quota_marked_key("key-a", "sk-ac017c-a", now.saturating_sub(1799)),
-                    pool_key("key-b", "B", "sk-ac017c-b", true),
-                ],
-                vec![json_mapping("local-a", "remote-a", None)],
-            )],
-        ));
-
-        let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
-        let mut attempts = Vec::new();
-        let response = super::runtime_http::attempt_non_streaming(
-            &live_candidates("local-a"),
-            "/v1/chat/completions",
-            &body,
-            Some("local-a"),
-            &HashMap::new(),
-            false,
-            None,
-            &mut attempts,
-        )
-        .await;
-
-        assert_eq!(response.status, 200);
-        let captured = log.lock().unwrap().clone();
-        assert_eq!(
-            auth_header_of(&captured[0]),
-            Some("Bearer sk-ac017c-b"),
-            "at 1799s the young quota mark keeps the key out of selection: {}",
-            captured_summary(&captured)
-        );
-        let key = on_disk_key_entry("p1", "key-a").expect("key-a must persist");
-        assert_eq!(
-            key["auto_marked"], true,
-            "a mark younger than the TTL must stay on disk: {key}"
-        );
-    }
+            quota_marked_key_without_time("key-no-time", "SAFE_FIXTURE_ttl_no_time"),
+        ],
+        vec![],
+    ));
+    let marked_at = 1_700_000_000u64;
+    let quota = &boundary_provider.keys[0];
+    assert!(
+        !super::selection::quota_mark_expired(quota, marked_at + 1799),
+        "1799 seconds after marking must stay below the TTL and out of selection"
+    );
+    assert!(
+        super::selection::quota_mark_expired(quota, marked_at + 1800),
+        "exactly 1800 seconds after marking must make the key usable"
+    );
+    assert!(
+        !super::selection::quota_mark_expired(&boundary_provider.keys[1], marked_at + 100_000),
+        "an auth mark must never expire through the TTL"
+    );
+    assert!(
+        !super::selection::quota_mark_expired(&boundary_provider.keys[2], u64::MAX),
+        "a quota mark without a marking time must never expire through the TTL"
+    );
 }
 
 /// AC-018 / REQ-004: selecting a TTL-expired quota-marked key clears its runtime
