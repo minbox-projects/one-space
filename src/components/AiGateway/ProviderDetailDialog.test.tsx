@@ -2619,6 +2619,81 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
       value: "sk-two",
     });
   });
+
+  it("默认隐藏密钥并提供显示密钥按钮，点击后显示密钥明文，再次点击隐藏", async () => {
+    const user = userEvent.setup();
+    renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({ id: "k1", name: "Primary", value: "sk-secret-123" }),
+        ],
+      }),
+    });
+
+    const valueInput = screen.getByTestId("ai-gateway-key-value-0") as HTMLInputElement;
+    expect(valueInput.type).toBe("password");
+
+    const toggleBtn = screen.getByTestId("ai-gateway-key-toggle-visibility-0");
+    expect(toggleBtn).toBeInTheDocument();
+    expect(toggleBtn).toHaveAttribute("aria-label", "Show secret");
+
+    await user.click(toggleBtn);
+    expect(valueInput.type).toBe("text");
+    expect(toggleBtn).toHaveAttribute("aria-label", "Hide secret");
+
+    await user.click(toggleBtn);
+    expect(valueInput.type).toBe("password");
+    expect(toggleBtn).toHaveAttribute("aria-label", "Show secret");
+  });
+
+  it("多个密钥项显隐状态相互独立", async () => {
+    const user = userEvent.setup();
+    renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({ id: "k1", name: "Primary", value: "sk-one" }),
+          providerKey({ id: "k2", name: "Backup", value: "sk-two" }),
+        ],
+      }),
+    });
+
+    const input0 = screen.getByTestId("ai-gateway-key-value-0") as HTMLInputElement;
+    const input1 = screen.getByTestId("ai-gateway-key-value-1") as HTMLInputElement;
+    expect(input0.type).toBe("password");
+    expect(input1.type).toBe("password");
+
+    const toggleBtn0 = screen.getByTestId("ai-gateway-key-toggle-visibility-0");
+    const toggleBtn1 = screen.getByTestId("ai-gateway-key-toggle-visibility-1");
+
+    await user.click(toggleBtn0);
+    expect(input0.type).toBe("text");
+    expect(input1.type).toBe("password");
+
+    await user.click(toggleBtn1);
+    expect(input0.type).toBe("text");
+    expect(input1.type).toBe("text");
+  });
+
+  it("密钥名称输入框具有缩小宽度且单行排版不独占一行，密钥输入框占满剩余空间", () => {
+    renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({ id: "k1", name: "Primary", value: "sk-one" }),
+        ],
+      }),
+    });
+
+    const keyRow = screen.getByTestId("ai-gateway-key-0");
+    expect(keyRow.className).toContain("flex items-center");
+    expect(keyRow.className).not.toContain("flex-wrap");
+
+    const nameInput = screen.getByTestId("ai-gateway-key-name-0");
+    expect(nameInput.className).toContain("shrink-0");
+    expect(nameInput.className).toContain("!w-");
+
+    const valueInput = screen.getByTestId("ai-gateway-key-value-0");
+    expect(valueInput.parentElement?.className).toContain("flex-1");
+  });
 });
 
 

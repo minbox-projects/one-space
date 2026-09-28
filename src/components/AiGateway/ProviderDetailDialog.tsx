@@ -125,8 +125,11 @@ const providerKeyStateClass: Record<GatewayProviderKeyState, string> = {
   auth: "border-rose-500/20 bg-rose-500/10 text-rose-600 dark:text-rose-400",
 };
 
-const providerKeyInputClass =
-  "h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/50";
+const providerKeyNameInputClass =
+  "h-9 !w-32 sm:!w-36 shrink-0 rounded-lg border border-border bg-background px-2.5 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/50";
+
+const providerKeyValueInputClass =
+  "h-9 w-full rounded-lg border border-border bg-background pl-2.5 pr-8 text-sm text-foreground font-mono outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/50";
 
 export function ProviderDetailDialog({
   open,
@@ -166,6 +169,7 @@ export function ProviderDetailDialog({
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState<string>("");
   const [confirmDeleting, setConfirmDeleting] = useState(false);
+  const [revealedKeyIds, setRevealedKeyIds] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     setConfirmDeleting(false);
@@ -186,6 +190,7 @@ export function ProviderDetailDialog({
       setIcon("");
       setTags([]);
       setTagInput("");
+      setRevealedKeyIds({});
       return;
     }
     const providerPrices = prices ?? [];
@@ -243,6 +248,7 @@ export function ProviderDetailDialog({
     setIcon(provider.icon ?? "");
     setTags(provider.tags ?? []);
     setTagInput("");
+    setRevealedKeyIds({});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider, open]);
 
@@ -493,6 +499,13 @@ export function ProviderDetailDialog({
       [next[index], next[target]] = [next[target], next[index]];
       return next;
     });
+  };
+
+  const toggleKeyVisibility = (keyId: string) => {
+    setRevealedKeyIds((prev) => ({
+      ...prev,
+      [keyId]: !prev[keyId],
+    }));
   };
 
   const handleSave = () => {
@@ -904,8 +917,8 @@ export function ProviderDetailDialog({
             </div>
 
             {/* 第 4 行：上游密钥池编辑（有序、可增删改与排序） */}
-            <div className="field full-span">
-              <label className="inline-flex items-center justify-between w-full">
+            <div className="full-span space-y-1.5">
+              <label className="inline-flex items-center justify-between w-full text-xs font-semibold text-foreground">
                 <span className="inline-flex items-center gap-1.5">
                   <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
                   <span>{t("aiGatewayProviderKeys", "Upstream keys")}</span>
@@ -944,7 +957,7 @@ export function ProviderDetailDialog({
                       <div
                         key={key.id}
                         data-testid={`ai-gateway-key-${index}`}
-                        className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-2"
+                        className="flex items-center gap-2 rounded-lg border border-border bg-card p-2"
                       >
                         <input
                           data-testid={`ai-gateway-key-name-${index}`}
@@ -958,22 +971,42 @@ export function ProviderDetailDialog({
                             index: index + 1,
                             defaultValue: `Key name ${index + 1}`,
                           })}
-                          className={providerKeyInputClass}
+                          className={providerKeyNameInputClass}
                         />
-                        <input
-                          data-testid={`ai-gateway-key-value-${index}`}
-                          type="password"
-                          value={key.value}
-                          onChange={(event) =>
-                            updateKey(index, { value: event.target.value })
-                          }
-                          placeholder="sk-..."
-                          aria-label={t("aiGatewayProviderKeyValueAria", {
-                            index: index + 1,
-                            defaultValue: `Key value ${index + 1}`,
-                          })}
-                          className={`${providerKeyInputClass} font-mono`}
-                        />
+                        <div className="relative min-w-0 flex-1">
+                          <input
+                            data-testid={`ai-gateway-key-value-${index}`}
+                            type={revealedKeyIds[key.id] ? "text" : "password"}
+                            value={key.value}
+                            onChange={(event) =>
+                              updateKey(index, { value: event.target.value })
+                            }
+                            placeholder="sk-..."
+                            aria-label={t("aiGatewayProviderKeyValueAria", {
+                              index: index + 1,
+                              defaultValue: `Key value ${index + 1}`,
+                            })}
+                            className={providerKeyValueInputClass}
+                          />
+                          <button
+                            type="button"
+                            data-testid={`ai-gateway-key-toggle-visibility-${index}`}
+                            onClick={() => toggleKeyVisibility(key.id)}
+                            disabled={busy}
+                            aria-label={
+                              revealedKeyIds[key.id]
+                                ? t("aiGatewayHideSecret", "Hide secret")
+                                : t("aiGatewayShowSecret", "Show secret")
+                            }
+                            className="absolute right-1.5 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
+                          >
+                            {revealedKeyIds[key.id] ? (
+                              <EyeOff className="h-3.5 w-3.5" />
+                            ) : (
+                              <Eye className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        </div>
                         <span
                           data-testid={`ai-gateway-key-state-${index}`}
                           className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-4 ${providerKeyStateClass[state]}`}
