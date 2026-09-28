@@ -864,12 +864,17 @@ pub struct UsageLogsPage {
     /// current page and of the active model filter. Empty for grouped responses.
     #[serde(default)]
     pub models: Vec<String>,
+    /// Distinct, non-empty in-range `provider_name` values, independent of the
+    /// current page and of the active provider filter. Empty for grouped responses.
+    #[serde(default)]
+    pub providers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(in crate::ai_gateway) struct LogFilter {
     pub status: Option<UsageResult>,
     pub model: Option<String>,
+    pub provider: Option<String>,
 }
 
 /// SQL predicate selecting a cache-eligible row (REQ-002/REQ-004): an in-range
@@ -997,6 +1002,14 @@ fn bind(
     if let Some(model) = filter.model.as_deref().filter(|model| !model.is_empty()) {
         clauses.push("local_model = ?");
         params.push(model.to_string().into());
+    }
+    if let Some(provider) = filter
+        .provider
+        .as_deref()
+        .filter(|provider| !provider.trim().is_empty())
+    {
+        clauses.push("provider_name = ?");
+        params.push(provider.to_string().into());
     }
     let where_sql = if clauses.is_empty() {
         String::new()
@@ -1302,23 +1315,53 @@ impl UsageLogStore {
             .map_err(|error| error.to_string())?;
         // The model facet spans the whole range and ignores the model filter, so
         // the filter selector can offer in-range models absent from this page.
-        let facet_filter = LogFilter {
+        // It honors the active status and provider filters.
+        let model_facet_filter = LogFilter {
             status: filter.status,
             model: None,
+            provider: filter.provider.clone(),
         };
-        let (facet_where_sql, facet_params) = bind(range, &facet_filter, false);
-        let facet_where = if facet_where_sql.is_empty() {
+        let (model_facet_where_sql, model_facet_params) = bind(range, &model_facet_filter, false);
+        let model_facet_where = if model_facet_where_sql.is_empty() {
             " WHERE local_model <> ''".to_string()
         } else {
-            format!("{facet_where_sql} AND local_model <> ''")
+            format!("{model_facet_where_sql} AND local_model <> ''")
         };
-        let mut facet_statement = connection
+        let mut model_facet_statement = connection
             .prepare(&format!(
-                "SELECT DISTINCT local_model FROM usage_logs{facet_where} ORDER BY local_model ASC"
+                "SELECT DISTINCT local_model FROM usage_logs{model_facet_where} ORDER BY local_model ASC"
             ))
             .map_err(|error| error.to_string())?;
-        let models = facet_statement
-            .query_map(params_from_iter(facet_params.iter()), |row| {
+        let models = model_facet_statement
+            .query_map(params_from_iter(model_facet_params.iter()), |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?;
+        // The provider facet spans the whole range, ignores the provider filter
+        // itself so the selection can be changed without clearing it, and honors
+        // the active status and model filters. Blank names (the synthetic
+        // no-provider row) are excluded.
+        let provider_facet_filter = LogFilter {
+            status: filter.status,
+            model: filter.model.clone(),
+            provider: None,
+        };
+        let (provider_facet_where_sql, provider_facet_params) =
+            bind(range, &provider_facet_filter, false);
+        let provider_facet_where = if provider_facet_where_sql.is_empty() {
+            " WHERE provider_name <> ''".to_string()
+        } else {
+            format!("{provider_facet_where_sql} AND provider_name <> ''")
+        };
+        let mut provider_facet_statement = connection
+            .prepare(&format!(
+                "SELECT DISTINCT provider_name FROM usage_logs{provider_facet_where} ORDER BY provider_name ASC"
+            ))
+            .map_err(|error| error.to_string())?;
+        let providers = provider_facet_statement
+            .query_map(params_from_iter(provider_facet_params.iter()), |row| {
                 row.get::<_, String>(0)
             })
             .map_err(|error| error.to_string())?
@@ -1333,11 +1376,12 @@ impl UsageLogStore {
             records,
             groups: Vec::new(),
             models,
+            providers,
         })
     }
 
-    /// Grouped rows by `"model"` or `"day"` (UTC+8). `error_count` counts only
-    /// `failure` rows.
+    /// Grouped rows by `"model"`, `"provider"` or `"day"` (UTC+8). `error_count`
+    /// counts only `failure` rows.
     pub(in crate::ai_gateway) fn group_logs(
         &self,
         range: &TimeRange,
@@ -1372,6 +1416,36 @@ impl UsageLogStore {
                     row.map_err(|error| error.to_string())?;
                 groups.push(UsageLogGroupRow {
                     group: day_index_label(index),
+                    request_count: request_count as u32,
+                    error_count: error_count as u32,
+                    last_request_at_ms,
+                });
+            }
+        } else if group_by == "provider" {
+            let sql = format!(
+                "SELECT provider_name,
+                        COUNT(*),
+                        COALESCE(SUM(CASE WHEN result = 'failure' THEN 1 ELSE 0 END), 0),
+                        COALESCE(MAX(timestamp_ms), 0)
+                 FROM usage_logs{where_sql}
+                 GROUP BY provider_name ORDER BY MAX(timestamp_ms) DESC, provider_name ASC"
+            );
+            let mut statement = connection.prepare(&sql).map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map(params_from_iter(params.iter()), |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .map_err(|error| error.to_string())?;
+            for row in rows {
+                let (group, request_count, error_count, last_request_at_ms) =
+                    row.map_err(|error| error.to_string())?;
+                groups.push(UsageLogGroupRow {
+                    group,
                     request_count: request_count as u32,
                     error_count: error_count as u32,
                     last_request_at_ms,

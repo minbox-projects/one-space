@@ -915,26 +915,28 @@ pub fn ai_gateway_usage_stats(range: Option<String>) -> Result<UsageStats, Strin
 }
 
 /// One page (50 rows, newest first) of request logs, or grouped rows when
-/// `group_by` is `"model"` or `"day"`. Range resolution, grouping, filtering and
-/// pagination all happen here in the backend.
+/// `group_by` is `"model"`, `"provider"` or `"day"`. Range resolution, grouping,
+/// filtering and pagination all happen here in the backend.
 #[tauri::command]
 pub fn ai_gateway_request_logs(
     range: Option<String>,
     group_by: Option<String>,
     status: Option<String>,
     model: Option<String>,
+    provider: Option<String>,
     page: Option<u32>,
 ) -> Result<UsageLogsPage, String> {
     let range = resolve_range_selector(range.as_deref(), now_millis())?.range;
     let filter = LogFilter {
         status: status.as_deref().and_then(UsageResult::parse),
         model: model.filter(|model| !model.trim().is_empty()),
+        provider: provider.filter(|value| !value.trim().is_empty()),
     };
     let store = UsageLogStore::default_store()?;
     let group = group_by.as_deref().unwrap_or("none");
     match group {
         "none" | "" => store.query_logs(&range, &filter, page.unwrap_or(1)),
-        "model" | "day" => {
+        "model" | "provider" | "day" => {
             let groups = store.group_logs(&range, &filter, group)?;
             Ok(UsageLogsPage {
                 page: 1,
@@ -945,10 +947,11 @@ pub fn ai_gateway_request_logs(
                 records: Vec::new(),
                 groups,
                 models: Vec::new(),
+                providers: Vec::new(),
             })
         }
         other => Err(format!(
-            "unsupported group_by '{other}': expected 'none', 'model' or 'day'"
+            "unsupported group_by '{other}': expected 'none', 'model', 'provider' or 'day'"
         )),
     }
 }

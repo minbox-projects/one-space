@@ -11057,6 +11057,7 @@ fn usage_store_logs_filter_group_and_paginate() {
             &LogFilter {
                 status: Some(UsageResult::Failure),
                 model: None,
+                provider: None,
             },
             1,
         )
@@ -11070,6 +11071,7 @@ fn usage_store_logs_filter_group_and_paginate() {
             &LogFilter {
                 status: Some(UsageResult::Failure),
                 model: Some("local-b".to_string()),
+                provider: None,
             },
             1,
         )
@@ -12508,7 +12510,7 @@ fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
             super::commands::ai_gateway_usage_stats(Some("today".to_string())).unwrap();
         assert_eq!(today.granularity, "hour", "today buckets by hour");
 
-        let page = super::commands::ai_gateway_request_logs(None, None, None, None, None).unwrap();
+        let page = super::commands::ai_gateway_request_logs(None, None, None, None, None, None).unwrap();
         assert_eq!(page.total, 2);
         assert_eq!(page.page, 1);
         assert_eq!(page.page_size, 50);
@@ -12524,6 +12526,7 @@ fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
             Some("failure".to_string()),
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(failed.total, 1);
@@ -12532,6 +12535,7 @@ fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         let by_model = super::commands::ai_gateway_request_logs(
             None,
             Some("model".to_string()),
+            None,
             None,
             None,
             None,
@@ -12547,6 +12551,7 @@ fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(by_day.groups.len(), 1);
@@ -12554,6 +12559,7 @@ fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert_eq!(by_day.groups[0].error_count, 1);
 
         let clamped = super::commands::ai_gateway_request_logs(
+            None,
             None,
             None,
             None,
@@ -12570,6 +12576,7 @@ fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
             Some("failure".to_string()),
             Some("does-not-exist".to_string()),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(empty.total, 0);
@@ -12579,6 +12586,7 @@ fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert!(super::commands::ai_gateway_request_logs(
             None,
             Some("bogus".to_string()),
+            None,
             None,
             None,
             None,
@@ -12658,6 +12666,7 @@ fn ai_gateway_yesterday_range_counts_only_yesterday_hourly() {
             None,
             None,
             None,
+            None,
         )
         .expect("yesterday request logs");
         assert_eq!(page.total, 2);
@@ -12728,6 +12737,7 @@ fn ai_gateway_usage_range_selector_rejects_unknown_and_accepts_all_time() {
                 None,
                 None,
                 None,
+                None,
             )
             .is_err(),
             "3d must fail for request logs too"
@@ -12739,6 +12749,7 @@ fn ai_gateway_usage_range_selector_rejects_unknown_and_accepts_all_time() {
         assert!(
             super::commands::ai_gateway_request_logs(
                 Some("bogus".to_string()),
+                None,
                 None,
                 None,
                 None,
@@ -12756,7 +12767,7 @@ fn ai_gateway_usage_range_selector_rejects_unknown_and_accepts_all_time() {
                 "all-time must include the day-before-yesterday record"
             );
             let page =
-                super::commands::ai_gateway_request_logs(all, None, None, None, None)
+                super::commands::ai_gateway_request_logs(all, None, None, None, None, None)
                     .expect("all-time request logs");
             assert_eq!(page.total, 3);
         }
@@ -12809,6 +12820,7 @@ fn ai_gateway_seven_day_range_matches_previous_days_window() {
 
         let page = super::commands::ai_gateway_request_logs(
             Some("7d".to_string()),
+            None,
             None,
             None,
             None,
@@ -13642,6 +13654,7 @@ fn logs_filter_by_status_and_model_together() {
             &LogFilter {
                 status: Some(UsageResult::Failure),
                 model: Some("local-b".to_string()),
+                provider: None,
             },
             1,
         )
@@ -13654,6 +13667,7 @@ fn logs_filter_by_status_and_model_together() {
             &LogFilter {
                 status: Some(UsageResult::Success),
                 model: Some("local-b".to_string()),
+                provider: None,
             },
             1,
         )
@@ -13667,6 +13681,7 @@ fn logs_filter_by_status_and_model_together() {
             &LogFilter {
                 status: Some(UsageResult::Failure),
                 model: Some("local-absent".to_string()),
+                provider: None,
             },
             1,
         )
@@ -14203,6 +14218,7 @@ fn request_logs_page_exposes_in_range_model_facet() {
             &LogFilter {
                 status: None,
                 model: Some("local-visible".to_string()),
+                provider: None,
             },
             1,
         )
@@ -16045,7 +16061,7 @@ fn usage_store_migrates_pre_upgrade_database_and_exposes_new_fields() {
         );
 
         // The request-log command payload carries both stored fields.
-        let command_page = super::commands::ai_gateway_request_logs(None, None, None, None, None)
+        let command_page = super::commands::ai_gateway_request_logs(None, None, None, None, None, None)
             .expect("request-log command");
         let payload = serde_json::to_value(&command_page).expect("serialize the command payload");
         assert_eq!(payload["total"], json!(4));
@@ -16248,6 +16264,7 @@ fn usage_log_store_persists_and_queries_reasoning_effort() {
         let filter = LogFilter {
             status: None,
             model: None,
+            provider: None,
         };
         let page = store.query_logs(&range, &filter, 1).expect("query logs");
         assert_eq!(page.records.len(), 2);
@@ -16296,6 +16313,7 @@ async fn wait_for_model_usage_logs(local_model: &str, expected: u32) -> Vec<Usag
     let filter = LogFilter {
         status: None,
         model: Some(local_model.to_string()),
+        provider: None,
     };
     for _ in 0..400 {
         let page = store
@@ -27524,4 +27542,633 @@ async fn mapping_probe_consumes_key_failures_and_continues_on_next_key() {
             "{name}: B's body must reach the caller"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 20260928-ai-gateway-log-provider-grouping-filter Step 1 (RED): provider
+// grouping, the exact provider filter, the provider facet and the grouped-page
+// empty-facet contract (AC-001..AC-008).
+// ---------------------------------------------------------------------------
+
+/// AC-001 / REQ-001: provider grouping aggregates terminal rows by the recorded
+/// display name, orders groups by the newest request descending then name
+/// ascending, includes the blank-named group and merges two provider ids that
+/// share one display name.
+#[test]
+fn ac001_provider_groups_aggregate_order_and_merge_same_display_name() {
+    let (dir, store) = usage_store("usage-provider-grouping");
+    let now = super::now_millis();
+
+    let alpha = |offset: i64, result: UsageResult| {
+        sample_record(
+            now - offset,
+            "local-a",
+            "remote-a",
+            "pa",
+            "Alpha",
+            result,
+            Some(0.1),
+            tokens(1, 0, 0, 1),
+        )
+    };
+    store.append(&alpha(5_000, UsageResult::Success), 365).unwrap();
+    store.append(&alpha(4_000, UsageResult::Failure), 365).unwrap();
+    store.append(&alpha(1_000, UsageResult::Success), 365).unwrap();
+    store
+        .append(
+            &sample_record(
+                now - 9_000,
+                "local-a",
+                "remote-a",
+                "pb",
+                "Beta",
+                UsageResult::Success,
+                Some(0.1),
+                tokens(1, 0, 0, 1),
+            ),
+            365,
+        )
+        .unwrap();
+    // Requests that reached no provider form one blank-named group.
+    store
+        .append(
+            &sample_record(
+                now - 12_000,
+                "local-a",
+                "remote-a",
+                "p-none",
+                "",
+                UsageResult::Success,
+                Some(0.1),
+                tokens(1, 0, 0, 1),
+            ),
+            365,
+        )
+        .unwrap();
+    // Two distinct provider ids that share one display name must merge.
+    store
+        .append(
+            &sample_record(
+                now - 21_000,
+                "local-a",
+                "remote-a",
+                "ps1",
+                "Shared",
+                UsageResult::Success,
+                Some(0.1),
+                tokens(1, 0, 0, 1),
+            ),
+            365,
+        )
+        .unwrap();
+    store
+        .append(
+            &sample_record(
+                now - 20_000,
+                "local-a",
+                "remote-a",
+                "ps2",
+                "Shared",
+                UsageResult::Success,
+                Some(0.1),
+                tokens(1, 0, 0, 1),
+            ),
+            365,
+        )
+        .unwrap();
+
+    let groups = store
+        .group_logs(&TimeRange::default(), &LogFilter::default(), "provider")
+        .unwrap();
+    assert_eq!(groups.len(), 4);
+    assert_eq!(groups[0].group, "Alpha");
+    assert_eq!(groups[0].request_count, 3);
+    assert_eq!(groups[0].error_count, 1, "only the failure counts as an error");
+    assert_eq!(groups[0].last_request_at_ms, now - 1_000);
+    assert_eq!(groups[1].group, "Beta");
+    assert_eq!(groups[1].request_count, 1);
+    assert_eq!(groups[1].error_count, 0);
+    assert_eq!(groups[1].last_request_at_ms, now - 9_000);
+    assert_eq!(groups[2].group, "");
+    assert_eq!(groups[2].request_count, 1);
+    assert_eq!(groups[2].error_count, 0);
+    assert_eq!(groups[2].last_request_at_ms, now - 12_000);
+    assert_eq!(groups[3].group, "Shared");
+    assert_eq!(groups[3].request_count, 2, "two provider ids share one name");
+    assert_eq!(groups[3].error_count, 0);
+    assert_eq!(groups[3].last_request_at_ms, now - 20_000);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-002 / REQ-001: an unsupported grouping value returns an actionable error
+/// naming every supported value and never yields a page.
+#[test]
+fn ac002_unsupported_group_by_is_rejected_with_supported_vocabulary() {
+    with_temp_home("ac002-provider-grouping-reject", |_home| {
+        let result = super::commands::ai_gateway_request_logs(
+            None,
+            Some("providerx".to_string()),
+            None,
+            None,
+            None,
+            None,
+        );
+        let error = match result {
+            Ok(_) => panic!("an unsupported group_by must not yield a page"),
+            Err(error) => error,
+        };
+        for name in ["none", "model", "provider", "day"] {
+            assert!(error.contains(name), "error must name '{name}': {error}");
+        }
+    });
+}
+
+/// AC-003 / REQ-002: the provider selector narrows the ungrouped records and
+/// the provider-grouped aggregates, composing with the status filter.
+#[test]
+fn ac003_provider_filter_narrows_records_and_groups() {
+    let (dir, store) = usage_store("usage-provider-filter");
+    let now = super::now_millis();
+    let rows = [
+        (5_000, "local-a", "Alpha", UsageResult::Failure),
+        (4_000, "local-b", "Alpha", UsageResult::Success),
+        (3_000, "local-a", "Alpha", UsageResult::Failure),
+        (2_000, "local-a", "Beta", UsageResult::Failure),
+        (1_000, "local-b", "Beta", UsageResult::Success),
+    ];
+    for (offset, model, provider, result) in rows {
+        store
+            .append(
+                &sample_record(
+                    now - offset,
+                    model,
+                    "remote-a",
+                    provider,
+                    provider,
+                    result,
+                    Some(0.1),
+                    tokens(1, 0, 0, 1),
+                ),
+                365,
+            )
+            .unwrap();
+    }
+
+    let filter = LogFilter {
+        status: Some(UsageResult::Failure),
+        model: None,
+        provider: Some("Alpha".to_string()),
+    };
+    let page = store.query_logs(&TimeRange::default(), &filter, 1).unwrap();
+    assert_eq!(page.total, 2);
+    assert_eq!(page.records.len(), 2);
+    assert_eq!(
+        page.records
+            .iter()
+            .map(|record| record.timestamp_ms)
+            .collect::<Vec<_>>(),
+        vec![now - 3_000, now - 5_000],
+        "newest first, only provider A's failure rows"
+    );
+    assert!(page
+        .records
+        .iter()
+        .all(|record| record.provider_name == "Alpha" && record.result == UsageResult::Failure));
+
+    let groups = store
+        .group_logs(&TimeRange::default(), &filter, "provider")
+        .unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].group, "Alpha");
+    assert_eq!(groups[0].request_count, 2);
+    assert_eq!(groups[0].error_count, 2);
+    assert_eq!(groups[0].last_request_at_ms, now - 3_000);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-004 / REQ-002: empty and whitespace-only provider selectors are inert,
+/// and a value matching no row yields an empty, error-free page.
+#[test]
+fn ac004_provider_filter_edge_values_are_inert_or_empty() {
+    let (dir, store) = usage_store("usage-provider-edges");
+    let now = super::now_millis();
+    store
+        .append(
+            &sample_record(
+                now - 3_000,
+                "local-a",
+                "remote-a",
+                "pa",
+                "Alpha",
+                UsageResult::Success,
+                Some(0.1),
+                tokens(1, 0, 0, 1),
+            ),
+            365,
+        )
+        .unwrap();
+    store
+        .append(
+            &sample_record(
+                now - 2_000,
+                "local-b",
+                "remote-b",
+                "pb",
+                "Beta",
+                UsageResult::Failure,
+                Some(0.1),
+                tokens(1, 0, 0, 1),
+            ),
+            365,
+        )
+        .unwrap();
+    store
+        .append(
+            &sample_record(
+                now - 1_000,
+                "local-a",
+                "remote-a",
+                "pa",
+                "Alpha",
+                UsageResult::Failure,
+                Some(0.1),
+                tokens(1, 0, 0, 1),
+            ),
+            365,
+        )
+        .unwrap();
+
+    let baseline = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .unwrap();
+    assert_eq!(baseline.total, 3);
+    let baseline_timestamps: Vec<i64> = baseline
+        .records
+        .iter()
+        .map(|record| record.timestamp_ms)
+        .collect();
+    let baseline_models: Vec<String> = baseline
+        .records
+        .iter()
+        .map(|record| record.local_model.clone())
+        .collect();
+
+    for selector in ["", "   "] {
+        let page = store
+            .query_logs(
+                &TimeRange::default(),
+                &LogFilter {
+                    status: None,
+                    model: None,
+                    provider: Some(selector.to_string()),
+                },
+                1,
+            )
+            .unwrap();
+        assert_eq!(page.total, baseline.total, "selector {selector:?} is inert");
+        assert_eq!(
+            page.records
+                .iter()
+                .map(|record| record.timestamp_ms)
+                .collect::<Vec<_>>(),
+            baseline_timestamps
+        );
+        assert_eq!(
+            page.records
+                .iter()
+                .map(|record| record.local_model.clone())
+                .collect::<Vec<_>>(),
+            baseline_models
+        );
+    }
+
+    let unmatched = store
+        .query_logs(
+            &TimeRange::default(),
+            &LogFilter {
+                status: None,
+                model: None,
+                provider: Some("NoSuchProvider".to_string()),
+            },
+            1,
+        )
+        .unwrap();
+    assert_eq!(unmatched.total, 0);
+    assert!(unmatched.records.is_empty());
+    assert_eq!(unmatched.total_pages, 1);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-005 / REQ-002: the provider selector composes with the model and status
+/// filters using AND.
+#[test]
+fn ac005_provider_filter_composes_with_model_and_status() {
+    let (dir, store) = usage_store("usage-provider-compose");
+    let now = super::now_millis();
+    // Provider A serves models M and N; provider B serves model M only.
+    let rows = [
+        (4_000, "model-m", "Alpha", UsageResult::Success),
+        (3_000, "model-m", "Alpha", UsageResult::Failure),
+        (2_000, "model-n", "Alpha", UsageResult::Success),
+        (1_000, "model-m", "Beta", UsageResult::Success),
+    ];
+    for (offset, model, provider, result) in rows {
+        store
+            .append(
+                &sample_record(
+                    now - offset,
+                    model,
+                    "remote-a",
+                    provider,
+                    provider,
+                    result,
+                    Some(0.1),
+                    tokens(1, 0, 0, 1),
+                ),
+                365,
+            )
+            .unwrap();
+    }
+
+    let by_provider_model = store
+        .query_logs(
+            &TimeRange::default(),
+            &LogFilter {
+                status: None,
+                model: Some("model-m".to_string()),
+                provider: Some("Alpha".to_string()),
+            },
+            1,
+        )
+        .unwrap();
+    assert_eq!(by_provider_model.total, 2);
+    assert!(by_provider_model
+        .records
+        .iter()
+        .all(|record| record.local_model == "model-m" && record.provider_name == "Alpha"));
+    assert_eq!(
+        by_provider_model
+            .records
+            .iter()
+            .map(|record| record.timestamp_ms)
+            .collect::<Vec<_>>(),
+        vec![now - 3_000, now - 4_000],
+        "only model M rows recorded on provider A"
+    );
+
+    let by_provider_status = store
+        .query_logs(
+            &TimeRange::default(),
+            &LogFilter {
+                status: Some(UsageResult::Failure),
+                model: None,
+                provider: Some("Alpha".to_string()),
+            },
+            1,
+        )
+        .unwrap();
+    assert_eq!(by_provider_status.total, 1);
+    assert_eq!(by_provider_status.records[0].timestamp_ms, now - 3_000);
+    assert_eq!(by_provider_status.records[0].local_model, "model-m");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-006 / REQ-003: the provider facet spans the whole range (including rows
+/// beyond page 1), excludes blank names and honors the status and model filters.
+#[test]
+fn ac006_provider_facet_spans_range_and_honors_other_filters() {
+    let (dir, store) = usage_store("usage-provider-facet-range");
+    let now = super::now_millis();
+    // Provider A: 55 in-range rows, so some land beyond the 50-row first page.
+    for index in 0..55i64 {
+        let result = if index % 5 == 0 {
+            UsageResult::Failure
+        } else {
+            UsageResult::Success
+        };
+        store
+            .append(
+                &sample_record(
+                    now - 200_000 + index * 1_000,
+                    "local-a",
+                    "remote-a",
+                    "pa",
+                    "Alpha",
+                    result,
+                    Some(0.1),
+                    tokens(1, 0, 0, 1),
+                ),
+                365,
+            )
+            .unwrap();
+    }
+    // Provider B served only model M, which A never served, with successes only.
+    for index in 0..3i64 {
+        store
+            .append(
+                &sample_record(
+                    now - 50_000 + index * 1_000,
+                    "local-m",
+                    "remote-m",
+                    "pb",
+                    "Beta",
+                    UsageResult::Success,
+                    Some(0.1),
+                    tokens(1, 0, 0, 1),
+                ),
+                365,
+            )
+            .unwrap();
+    }
+    // The synthetic no-provider row must never become a selectable option.
+    store
+        .append(
+            &sample_record(
+                now - 40_000,
+                "local-z",
+                "remote-z",
+                "p-none",
+                "",
+                UsageResult::Success,
+                Some(0.1),
+                tokens(1, 0, 0, 1),
+            ),
+            365,
+        )
+        .unwrap();
+
+    let first = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .unwrap();
+    assert_eq!(first.total, 59);
+    assert_eq!(first.total_pages, 2);
+    assert_eq!(
+        first.providers,
+        vec!["Alpha".to_string(), "Beta".to_string()],
+        "the provider facet is range-wide, ascending and excludes blank names"
+    );
+
+    let second = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 2)
+        .unwrap();
+    assert_eq!(second.page, 2);
+    assert!(
+        !second.records.is_empty(),
+        "provider A must have rows beyond page 1"
+    );
+    assert!(second.records.iter().all(|record| record.provider_name == "Alpha"));
+
+    let model_m = store
+        .query_logs(
+            &TimeRange::default(),
+            &LogFilter {
+                status: None,
+                model: Some("local-m".to_string()),
+                provider: None,
+            },
+            1,
+        )
+        .unwrap();
+    assert_eq!(model_m.providers, vec!["Beta".to_string()]);
+    assert!(!model_m.providers.contains(&"Alpha".to_string()));
+
+    let failures = store
+        .query_logs(
+            &TimeRange::default(),
+            &LogFilter {
+                status: Some(UsageResult::Failure),
+                model: None,
+                provider: None,
+            },
+            1,
+        )
+        .unwrap();
+    assert_eq!(failures.providers, vec!["Alpha".to_string()]);
+    assert!(!failures.providers.contains(&"Beta".to_string()));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-007 / REQ-003: the provider facet ignores its own filter while the model
+/// facet honors the active provider filter, exercised through the command.
+#[test]
+fn ac007_provider_facet_ignores_own_filter_and_model_facet_honors_it() {
+    with_temp_home("ac007-provider-cross-filter", |_home| {
+        let store = UsageLogStore::default_store().expect("usage store");
+        let now = super::now_millis();
+        // Model M is served only by A and model N only by B.
+        let rows = [
+            (4_000i64, "model-m", "Alpha"),
+            (3_000, "model-m", "Alpha"),
+            (2_000, "model-n", "Beta"),
+            (1_000, "model-n", "Beta"),
+        ];
+        for (offset, model, provider) in rows {
+            store
+                .append(
+                    &sample_record(
+                        now - offset,
+                        model,
+                        "remote-a",
+                        provider,
+                        provider,
+                        UsageResult::Success,
+                        Some(0.1),
+                        tokens(1, 0, 0, 1),
+                    ),
+                    365,
+                )
+                .unwrap();
+        }
+
+        let page = super::commands::ai_gateway_request_logs(
+            None,
+            None,
+            None,
+            None,
+            Some("Beta".to_string()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(page.total, 2, "only the selected provider's rows are returned");
+        assert!(page.records.iter().all(|record| record.provider_name == "Beta"));
+        assert_eq!(
+            page.providers,
+            vec!["Alpha".to_string(), "Beta".to_string()],
+            "the provider facet must ignore the active provider filter"
+        );
+        assert!(
+            page.models.contains(&"model-n".to_string()),
+            "the model facet must honor the active provider filter: {:?}",
+            page.models
+        );
+        assert!(
+            !page.models.contains(&"model-m".to_string()),
+            "a model the selected provider never served must be gone: {:?}",
+            page.models
+        );
+    });
+}
+
+/// AC-008 / REQ-003: grouped responses keep both facet lists empty.
+#[test]
+fn ac008_grouped_responses_keep_empty_facets() {
+    with_temp_home("ac008-grouped-empty-facets", |_home| {
+        let store = UsageLogStore::default_store().expect("usage store");
+        let now = super::now_millis();
+        store
+            .append(
+                &sample_record(
+                    now - 2_000,
+                    "model-m",
+                    "remote-a",
+                    "pa",
+                    "Alpha",
+                    UsageResult::Success,
+                    Some(0.1),
+                    tokens(1, 0, 0, 1),
+                ),
+                365,
+            )
+            .unwrap();
+        store
+            .append(
+                &sample_record(
+                    now - 1_000,
+                    "model-n",
+                    "remote-b",
+                    "pb",
+                    "Beta",
+                    UsageResult::Failure,
+                    Some(0.1),
+                    tokens(1, 0, 0, 1),
+                ),
+                365,
+            )
+            .unwrap();
+
+        for group_by in ["model", "provider", "day"] {
+            let page = super::commands::ai_gateway_request_logs(
+                None,
+                Some(group_by.to_string()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(page.group_by.as_deref(), Some(group_by));
+            assert!(
+                !page.groups.is_empty(),
+                "{group_by} grouping must still aggregate rows"
+            );
+            assert!(
+                page.models.is_empty(),
+                "{group_by} grouped response must carry no models facet"
+            );
+            assert!(
+                page.providers.is_empty(),
+                "{group_by} grouped response must carry no providers facet"
+            );
+        }
+    });
 }
