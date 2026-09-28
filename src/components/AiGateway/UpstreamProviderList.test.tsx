@@ -1444,4 +1444,65 @@ describe("UpstreamProviderList 批量刷新当前筛选结果额度", () => {
       forcedInvocations("ai_gateway_provider_quota", "cc-hidden"),
     ).toHaveLength(0);
   });
+
+  it("自动刷新成功后展示最后刷新时间，手动刷新后时间戳更新", async () => {
+    const user = userEvent.setup();
+    renderList([
+      makeProvider({
+        id: "cc-auto",
+        name: "CC Auto",
+        base_url: "https://api.commandcode.ai/provider/v1",
+      }),
+    ]);
+
+    // 1. 自动挂载拉取成功后，Toolbar 右侧展示最后刷新时间
+    const lastRefreshedEl = await screen.findByTestId(
+      "ai-gateway-providers-last-refreshed",
+    );
+    expect(lastRefreshedEl).toBeInTheDocument();
+    // 英文环境下包含 "Last refreshed:"
+    expect(lastRefreshedEl.textContent).toMatch(/Last refreshed:\s*\d{2}:\d{2}:\d{2}/i);
+
+    // 2. 点击手动刷新
+    const refreshBtn = screen.getByTestId("ai-gateway-providers-refresh");
+    await user.click(refreshBtn);
+
+    await waitFor(() =>
+      expect(
+        forcedInvocations("ai_gateway_provider_quota", "cc-auto"),
+      ).toHaveLength(1),
+    );
+
+    // 手动刷新后时间元素依然存在并展示有效时间
+    expect(screen.getByTestId("ai-gateway-providers-last-refreshed").textContent).toMatch(
+      /Last refreshed:\s*\d{2}:\d{2}:\d{2}/i,
+    );
+  });
+
+  it("服务商列表布局解耦：Header 放置新建与模板，Toolbar 放置筛选与刷新运维", () => {
+    renderList([
+      makeProvider({
+        id: "cc-layout",
+        name: "CC Layout",
+        base_url: "https://api.commandcode.ai/provider/v1",
+      }),
+    ]);
+
+    const toolbar = screen.getByTestId("ai-gateway-providers-toolbar");
+    expect(toolbar).toBeInTheDocument();
+
+    // 工具栏内应包含状态筛选与刷新额度按钮
+    expect(
+      within(toolbar).getByTestId("ai-gateway-provider-status-filter"),
+    ).toBeInTheDocument();
+    expect(
+      within(toolbar).getByTestId("ai-gateway-providers-refresh"),
+    ).toBeInTheDocument();
+
+    // 新增服务商按钮与模板管理按钮不在工具栏内部，而在头部主操作区
+    expect(
+      within(toolbar).queryByRole("button", { name: /Add provider/i }),
+    ).not.toBeInTheDocument();
+  });
 });
+

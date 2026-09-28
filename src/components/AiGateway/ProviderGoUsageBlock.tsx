@@ -20,6 +20,7 @@ type ProviderGoUsageBlockProps = {
   provider: GatewayUpstreamProvider;
   baseNow?: number | Date;
   refreshToken?: number;
+  onRefreshed?: (timestamp: number) => void;
 };
 
 type UsageState =
@@ -96,7 +97,12 @@ function UsageWindowLine({
   );
 }
 
-export function ProviderGoUsageBlock({ provider, baseNow, refreshToken = 0 }: ProviderGoUsageBlockProps) {
+export function ProviderGoUsageBlock({
+  provider,
+  baseNow,
+  refreshToken = 0,
+  onRefreshed,
+}: ProviderGoUsageBlockProps) {
   const { t } = useTranslation();
   const [state, setState] = useState<UsageState>({ status: "loading" });
   const [refreshNow, setRefreshNow] = useState<number | null>(null);
@@ -111,13 +117,14 @@ export function ProviderGoUsageBlock({ provider, baseNow, refreshToken = 0 }: Pr
         throw new Error("invalid or missing usage response");
       }
       setState({ status: "success", data });
+      onRefreshed?.(Date.now());
     } catch (error) {
       setState({
         status: "error",
         reason: error instanceof Error ? error.message : String(error),
       });
     }
-  }, [provider.id]);
+  }, [provider.id, onRefreshed]);
 
   useEffect(() => {
     void loadUsage();

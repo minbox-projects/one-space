@@ -111,3 +111,19 @@ export const RANGE_LABEL_FALLBACKS: Record<UsageRangeKey, string> = {
   "30d": "30d",
   all: "All",
 };
+
+/**
+ * Format a timestamp (milliseconds or Date) as `HH:mm:ss`.
+ */
+export function formatTimeHms(ts: number | Date | null | undefined): string | null {
+  if (ts === null || ts === undefined) return null;
+  const d = typeof ts === "number" ? new Date(ts) : ts;
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(d);
+}
+
