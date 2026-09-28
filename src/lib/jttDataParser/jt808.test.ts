@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { analyzeJt808, jt808Modes } from "./jt808";
+import { analyzeJt808, buildJt808LocationNodes, jt808Modes } from "./jt808";
 import {
   JT808_BAD_CHECKSUM,
   JT808_BAD_ESCAPE,
@@ -18,10 +18,22 @@ import {
   JT808_MISS_FRAGMENT_1,
   JT808_MISS_FRAGMENT_3,
   JT808_NO_START,
+  JT808_POSITION_0200,
   JT808_POSITION_0704_TWO_FRAMES,
   JT808_TRUNCATED,
 } from "./fixtures";
+import { parseJt808Wire } from "./frame";
 import { findNode, findNodeValue, nodeLabels } from "./testUtils";
+
+function readUint32BE(bytes: number[], offset: number): number {
+  return (
+    (((bytes[offset] << 24) |
+      (bytes[offset + 1] << 16) |
+      (bytes[offset + 2] << 8) |
+      bytes[offset + 3]) >>>
+      0)
+  );
+}
 
 describe("analyzeJt808", () => {
   it("parses an escaped 2013 0x0801 frame and decodes the escaped bytes", () => {
@@ -189,6 +201,20 @@ describe("analyzeJt808", () => {
     const [record] = analyzeJt808(input, "automatic");
     expect(record.kind).toBe("error");
     expect(record.error).toBe(error);
+  });
+
+  it("labels the 0x0200 position block with latitude at byte offset 8 and longitude at byte offset 12", () => {
+    const parsed = parseJt808Wire(JT808_POSITION_0200);
+    if (!parsed.ok) throw new Error(parsed.error);
+
+    const body = parsed.header.body;
+    const expectedLatitude = readUint32BE(body, 8);
+    const expectedLongitude = readUint32BE(body, 12);
+
+    const nodes = buildJt808LocationNodes(body);
+
+    expect(findNodeValue(nodes, "纬度")).toBe(String(expectedLatitude));
+    expect(findNodeValue(nodes, "经度")).toBe(String(expectedLongitude));
   });
 
   it("exposes only the five public modes and excludes Ruiding and GPS51", () => {

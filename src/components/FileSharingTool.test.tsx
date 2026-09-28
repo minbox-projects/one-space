@@ -7,6 +7,18 @@ import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
 
+const { pushToastMock } = vi.hoisted(() => ({ pushToastMock: vi.fn() }));
+
+vi.mock("@/components/ToastProvider", async () => {
+  const actual = await vi.importActual<
+    typeof import("@/components/ToastProvider")
+  >("@/components/ToastProvider");
+  return {
+    ...actual,
+    useToast: () => ({ pushToast: pushToastMock, dismissToast: vi.fn() }),
+  };
+});
+
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("qrcode.react", () => ({ QRCodeSVG: ({ value }: { value: string }) => <div data-testid="qr-code">{value}</div> }));
 
@@ -153,5 +165,73 @@ describe("FileSharingTool", () => {
     expect(screen.queryByTestId("qr-code")).not.toBeInTheDocument();
     expect(screen.getByText(/Completed 1|已完成 1/)).toBeInTheDocument();
     expect(screen.getAllByText(/report.txt/)).toHaveLength(2);
+  });
+
+  it("在 isVisible=false 时不因 file-sharing-updated 事件刷新状态", async () => {
+    renderWithProviders(
+      <FileSharingTool
+        {...({ isVisible: false } as Record<string, unknown>)}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    invokeMock.mockClear();
+
+    const listener = (
+      listenMock.mock.calls as unknown as Array<
+        [string, (event: unknown) => void]
+      >
+    )[0]?.[1];
+    listener?.({ payload: { kind: "transfer" } });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(invokeMock).not.toHaveBeenCalledWith("file_sharing_status");
+  });
+
+  it("复制共享链接失败时通过 toast 通道提示本地化错误", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "file_sharing_networks") {
+        return [
+          {
+            id: "en0:192.168.1.2",
+            interfaceName: "en0",
+            address: "192.168.1.2",
+          },
+        ];
+      }
+      if (command === "file_sharing_status") {
+        return {
+          ...stopped,
+          running: true,
+          shareUrl: "http://192.168.1.2:1234/s/token/",
+        };
+      }
+      return stopped;
+    });
+
+    renderWithProviders(<FileSharingTool />);
+    await user.click(
+      await screen.findByRole("button", { name: /Copy link|复制链接/ }),
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(pushToastMock).toHaveBeenCalled();
+    const pushed = pushToastMock.mock.calls
+      .map(([toast]) => JSON.stringify(toast))
+      .join(" ");
+    expect(pushed).toMatch(/copy|复制/i);
   });
 });

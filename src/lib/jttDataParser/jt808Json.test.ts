@@ -22,6 +22,16 @@ function batchItems(json: Record<string, unknown>): Array<Record<string, unknown
   return dataBody["数据项列表"] as Array<Record<string, unknown>>;
 }
 
+function readUint32BE(bytes: number[], offset: number): number {
+  return (
+    (((bytes[offset] << 24) |
+      (bytes[offset + 1] << 16) |
+      (bytes[offset + 2] << 8) |
+      bytes[offset + 3]) >>>
+      0)
+  );
+}
+
 const REFERENCE_JSON = `{
   "[7E]开始": 126,
   "[0200]消息Id": 512,
@@ -210,6 +220,29 @@ describe("buildJt808PositionJson", () => {
     if (!parsed.ok) throw new Error(parsed.error);
 
     expect(JSON.stringify(buildJt808PositionJson(parsed.header), null, 2)).toBe(REFERENCE_JSON);
+  });
+
+  it("keeps latitude at byte offset 8 and longitude at byte offset 12 in the JSON path", () => {
+    const parsed = parseJt808Wire(JT808_POSITION_0200);
+    if (!parsed.ok) throw new Error(parsed.error);
+
+    const body = parsed.header.body;
+    const expectedLatitude = readUint32BE(body, 8);
+    const expectedLongitude = readUint32BE(body, 12);
+
+    const json = buildJt808PositionJson(parsed.header) as Record<string, unknown>;
+    const dataBody = json["数据体对象"] as Record<string, unknown>;
+    const latitudeKey = Object.keys(dataBody).find((key) =>
+      key.endsWith("]纬度"),
+    );
+    const longitudeKey = Object.keys(dataBody).find((key) =>
+      key.endsWith("]经度"),
+    );
+
+    expect(latitudeKey).toBeDefined();
+    expect(longitudeKey).toBeDefined();
+    expect(dataBody[latitudeKey as string]).toBe(expectedLatitude);
+    expect(dataBody[longitudeKey as string]).toBe(expectedLongitude);
   });
 
   it("reports the 0x0200 frame as a success record carrying the JSON in automatic mode", () => {

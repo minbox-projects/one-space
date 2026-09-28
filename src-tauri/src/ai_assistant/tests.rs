@@ -165,8 +165,30 @@ fn builtin_tools_do_not_include_legacy_web_search_tool() {
     let names = tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
 
     assert!(names.contains(&"workspace_read".to_string()));
-    assert!(names.contains(&"notes_search".to_string()));
     assert!(!names.contains(&"web_search".to_string()));
+}
+
+#[test]
+fn builtin_tools_do_not_include_notes_search() {
+    let tools = build_builtin_tools(&AgentToolPolicy {
+        web_search: true,
+        workspace_read: true,
+        notes_search: true,
+    });
+    let names = tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
+
+    assert!(!names.contains(&"notes_search".to_string()));
+}
+
+#[test]
+fn default_agents_do_not_advertise_notes_search_capability() {
+    let agent = default_agents()
+        .into_iter()
+        .next()
+        .expect("a default agent is always seeded");
+    let capability = capability_snapshot_from_agent(Some(&agent), false);
+
+    assert!(!capability.notes_search);
 }
 
 #[test]

@@ -129,5 +129,31 @@ describe("launcherToolVisibility", () => {
       isLauncherToolVisible("ai-workflow-model-switcher"),
     ).toBe(true);
   });
+
+  it("以 kebab-case 记录隐藏 MD5 工具", () => {
+    localStorage.setItem(
+      LAUNCHER_TOOL_VISIBILITY_KEY,
+      JSON.stringify({ "md5-encryption": false }),
+    );
+
+    const visibility = readLauncherToolVisibility() as unknown as Record<
+      string,
+      boolean | undefined
+    >;
+    expect(visibility["md5-encryption"]).toBe(false);
+  });
+
+  it("忽略遗留 camelCase MD5 记录并回退到默认显示", () => {
+    localStorage.setItem(
+      LAUNCHER_TOOL_VISIBILITY_KEY,
+      JSON.stringify({ md5Encryption: false }),
+    );
+
+    const visibility = readLauncherToolVisibility() as unknown as Record<
+      string,
+      boolean | undefined
+    >;
+    expect(visibility["md5-encryption"]).toBe(true);
+  });
 });
 

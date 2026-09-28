@@ -6,7 +6,10 @@ import {
   MORE_TOOLS_ORDER_KEY,
   writeSavedOrder,
 } from "@/lib/launcherToolOrder";
-import { LAUNCHER_TOOL_VISIBILITY_KEY } from "@/lib/launcherToolVisibility";
+import {
+  LAUNCHER_TOOL_VISIBILITY_KEY,
+  LAUNCHER_TOOL_VISIBILITY_UPDATED_EVENT,
+} from "@/lib/launcherToolVisibility";
 import { renderWithProviders } from "@/test/mocks/render";
 
 vi.mock("./Bookmarks", () => ({
@@ -40,7 +43,12 @@ vi.mock("./ShortLinkTool", () => ({
   ShortLinkTool: () => <div>Short Link detail</div>,
 }));
 vi.mock("./FileSharingTool", () => ({
-  FileSharingTool: () => <div>File Sharing detail</div>,
+  FileSharingTool: ({ isVisible }: { isVisible?: boolean }) => (
+    <div>
+      File Sharing detail
+      <span data-testid="file-sharing-is-visible">{String(isVisible)}</span>
+    </div>
+  ),
 }));
 vi.mock("./JttDataParserTool", () => ({
   JttDataParserTool: ({ initialTab }: { initialTab?: string }) => (
@@ -194,7 +202,7 @@ describe("MoreToolsHub", () => {
   });
 
 
-  it("按 md5Encryption 可见性隐藏 MD5 卡片但保留直接详情入口", () => {
+  it("忽略遗留 md5Encryption 记录并在网格中保留 MD5 卡片", () => {
     localStorage.setItem(
       LAUNCHER_TOOL_VISIBILITY_KEY,
       JSON.stringify({ md5Encryption: false }),
@@ -204,8 +212,8 @@ describe("MoreToolsHub", () => {
     );
 
     expect(
-      screen.queryByRole("button", { name: /MD5 Encryption|MD5 加密/ }),
-    ).not.toBeInTheDocument();
+      screen.getByTestId("more-tool-card-md5-encryption"),
+    ).toBeInTheDocument();
 
     rerender(
       <MoreToolsHub
@@ -219,7 +227,43 @@ describe("MoreToolsHub", () => {
       screen.getByRole("switch", {
         name: /Show in Launcher|在启动台展示/,
       }),
-    ).toHaveAttribute("aria-checked", "false");
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("在可见性更新事件后无需重挂载即刷新 MD5 卡片", () => {
+    renderWithProviders(
+      <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
+    );
+    expect(
+      screen.getByTestId("more-tool-card-md5-encryption"),
+    ).toBeInTheDocument();
+
+    localStorage.setItem(
+      LAUNCHER_TOOL_VISIBILITY_KEY,
+      JSON.stringify({ "md5-encryption": false }),
+    );
+    act(() => {
+      window.dispatchEvent(new Event(LAUNCHER_TOOL_VISIBILITY_UPDATED_EVENT));
+    });
+
+    expect(
+      screen.queryByTestId("more-tool-card-md5-encryption"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Hub 隐藏时将 isVisible=false 传给当前活动工具", () => {
+    renderWithProviders(
+      <MoreToolsHub
+        activeTool="file-sharing"
+        onSelectTool={vi.fn()}
+        onBack={vi.fn()}
+        {...({ isVisible: false } as Record<string, unknown>)}
+      />,
+    );
+
+    expect(screen.getByTestId("file-sharing-is-visible")).toHaveTextContent(
+      "false",
+    );
   });
 
   it.each([

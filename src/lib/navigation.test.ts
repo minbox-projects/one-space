@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as navigation from "@/lib/navigation";
 import { isMoreToolsTab, resolveNavigationTarget } from "@/lib/navigation";
 
 describe("snippets and notes navigation", () => {
@@ -69,6 +70,20 @@ describe("AI Workflow model switcher navigation", () => {
       moreToolsSection: "ai-workflow-model-switcher",
     });
     expect(isMoreToolsTab("ai-workflow-model-switcher")).toBe(true);
+  });
+});
+
+describe("removed more-tools ghost targets", () => {
+  it.each(["cloud", "backup"])(
+    "does not resolve %s into the more-tools surface",
+    (target) => {
+      expect(resolveNavigationTarget(target).tab).not.toBe("more-tools");
+    },
+  );
+
+  it("does not export the legacy navigation compatibility helper", () => {
+    const navigationModule = navigation as unknown as Record<string, unknown>;
+    expect("normalizeLegacyTabTarget" in navigationModule).toBe(false);
   });
 });
 
