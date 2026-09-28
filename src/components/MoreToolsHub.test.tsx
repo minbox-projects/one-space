@@ -62,6 +62,26 @@ vi.mock("./AiWorkflowModelSwitcher", () => ({
 }));
 
 
+type RegistryToolDescriptor = {
+  id: string;
+  surfaces: readonly string[];
+};
+
+type RegistryModule = {
+  TOOLBOX_TOOLS: readonly RegistryToolDescriptor[];
+  listToolboxTools: (surface: string) => RegistryToolDescriptor[];
+  getToolboxTool: (id: string) => RegistryToolDescriptor | undefined;
+};
+
+/**
+ * Loaded lazily so the task-001 guards in this suite still run while the
+ * registry module is unavailable.
+ */
+async function loadRegistry(): Promise<RegistryModule> {
+  const specifier = ["@/toolbox", "registry"].join("/");
+  return (await import(/* @vite-ignore */ specifier)) as RegistryModule;
+}
+
 describe("MoreToolsHub", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -300,6 +320,9 @@ describe("MoreToolsHub", () => {
 
   it("在 MD5 详情中持久化唯一可见性字段", async () => {
     const user = userEvent.setup();
+    const registry = await loadRegistry();
+    const md5Tool = registry.getToolboxTool("md5-encryption");
+    expect(md5Tool).toBeDefined();
     renderWithProviders(
       <MoreToolsHub
         activeTool="md5-encryption"
@@ -313,7 +336,7 @@ describe("MoreToolsHub", () => {
     );
     expect(
       JSON.parse(localStorage.getItem(LAUNCHER_TOOL_VISIBILITY_KEY) || "{}"),
-    ).toMatchObject({ md5Encryption: false });
+    ).toMatchObject({ [md5Tool!.id]: false });
   });
 
   it("目录卡片不再渲染辅助工具或启动台标签", () => {
@@ -626,6 +649,70 @@ describe("MoreToolsHub", () => {
       fireEvent.click(screen.getByTestId("more-tool-card-ssh"));
       expect(onSelectTool).toHaveBeenCalledWith("ssh");
       vi.useRealTimers();
+    });
+  });
+
+  describe("注册表驱动的 hub 面板", () => {
+    it("为注册表 hub 面板的每个工具渲染卡片", async () => {
+      const registry = await loadRegistry();
+      const hubTools = registry.listToolboxTools("hub");
+      expect(hubTools.length).toBeGreaterThan(0);
+
+      renderWithProviders(
+        <MoreToolsHub
+          activeTool={null}
+          onSelectTool={vi.fn()}
+          onBack={vi.fn()}
+        />,
+      );
+
+      for (const tool of hubTools) {
+        expect(
+          screen.getByTestId(`more-tool-card-${tool.id}`),
+        ).toBeInTheDocument();
+      }
+    });
+
+    it("不把非 hub 面板的注册表工具渲染为卡片", async () => {
+      const registry = await loadRegistry();
+      const nonHubTools = registry.TOOLBOX_TOOLS.filter(
+        (tool) => !tool.surfaces.includes("hub"),
+      );
+      expect(nonHubTools.length).toBeGreaterThan(0);
+
+      renderWithProviders(
+        <MoreToolsHub
+          activeTool={null}
+          onSelectTool={vi.fn()}
+          onBack={vi.fn()}
+        />,
+      );
+
+      for (const tool of nonHubTools) {
+        expect(
+          screen.queryByTestId(`more-tool-card-${tool.id}`),
+        ).not.toBeInTheDocument();
+      }
+    });
+
+    it("选择任一 hub 卡片时通知其注册表稳定 id", async () => {
+      const user = userEvent.setup();
+      const registry = await loadRegistry();
+      const onSelectTool = vi.fn();
+
+      renderWithProviders(
+        <MoreToolsHub
+          activeTool={null}
+          onSelectTool={onSelectTool}
+          onBack={vi.fn()}
+        />,
+      );
+
+      for (const tool of registry.listToolboxTools("hub")) {
+        onSelectTool.mockClear();
+        await user.click(screen.getByTestId(`more-tool-card-${tool.id}`));
+        expect(onSelectTool).toHaveBeenCalledWith(tool.id);
+      }
     });
   });
 });

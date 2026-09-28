@@ -30,10 +30,8 @@ import {
   AlertCircle,
   ArrowUpCircle,
   Check,
-  Code2,
   Copy,
   Menu,
-  NotebookPen,
   X,
   Route,
   BarChart3,
@@ -117,6 +115,11 @@ import {
   type MoreToolsSection,
   type SmartWorkspaceSection,
 } from "./lib/navigation";
+import {
+  getToolboxTool,
+  listToolboxTools,
+  resolveToolboxText,
+} from "./toolbox/registry";
 import { deriveSshTunnelHeaderSummary } from "./lib/sshTunnelSummary";
 import {
   errorToMessage,
@@ -389,8 +392,13 @@ function App() {
     i18n.language === "zh" ? "AI 工作台" : "AI Workspace";
   const moreToolsLabel =
     i18n.language === "zh" ? "更多工具" : "More Tools";
-  const moreToolsSectionTitle =
-    moreToolsSection === "short-link" ? t("shortLink", "Short Link") : null;
+  const moreToolsSectionTitle = useMemo(() => {
+    if (!moreToolsSection) return null;
+    const descriptor = getToolboxTool(moreToolsSection);
+    return descriptor
+      ? resolveToolboxText(descriptor.labelText, descriptor.labelKey, t)
+      : null;
+  }, [moreToolsSection, t]);
 
   const navigateToTab = useCallback((target: string) => {
     setMobileNavigationOpen(false);
@@ -1619,18 +1627,17 @@ function App() {
         id: "tools",
         label: i18n.language === "zh" ? "工具" : "Tools",
         items: [
-          {
-            id: "snippets",
-            name: t("snippets", "Snippets"),
-            icon: Code2,
-            count: counts.snippets,
-          },
-          {
-            id: "notes",
-            name: t("notes", "Notes"),
-            icon: NotebookPen,
-            count: counts.notes,
-          },
+          ...listToolboxTools("sidebar").map((tool) => ({
+            id: tool.id,
+            name: resolveToolboxText(tool.labelText, tool.labelKey, t),
+            icon: tool.icon,
+            count:
+              tool.id === "snippets"
+                ? counts.snippets
+                : tool.id === "notes"
+                  ? counts.notes
+                  : undefined,
+          })),
           {
             id: "more-tools",
             name: moreToolsLabel,
@@ -2005,6 +2012,7 @@ function App() {
               onBack={handleMoreToolsBack}
               backToLauncher={moreToolsReturnTab === "launcher"}
               jttParserTab={jttParserTab ?? undefined}
+              isVisible={activeTab === "more-tools"}
             />
           </div>
         )}

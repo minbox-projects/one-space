@@ -6,6 +6,26 @@ import {
   setLauncherToolVisible,
 } from "@/lib/launcherToolVisibility";
 
+type RegistryToolDescriptor = {
+  id: string;
+  defaultVisible: boolean;
+  surfaces: readonly string[];
+};
+
+type RegistryModule = {
+  listToolboxTools: (surface: string) => RegistryToolDescriptor[];
+  getToolboxTool: (id: string) => RegistryToolDescriptor | undefined;
+};
+
+/**
+ * Loaded lazily so this suite still runs the task-001 guards while the
+ * registry module is unavailable.
+ */
+async function loadRegistry(): Promise<RegistryModule> {
+  const specifier = ["@/toolbox", "registry"].join("/");
+  return (await import(/* @vite-ignore */ specifier)) as RegistryModule;
+}
+
 describe("launcherToolVisibility", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -16,7 +36,10 @@ describe("launcherToolVisibility", () => {
     expect(isLauncherToolVisible("short-link")).toBe(true);
   });
 
-  it("以完整默认值补充旧对象中的新增字段并保留有效显式偏好", () => {
+  it("以完整默认值补充旧对象中的新增字段并保留有效显式偏好", async () => {
+    const registry = await loadRegistry();
+    const md5Tool = registry.getToolboxTool("md5-encryption");
+    expect(md5Tool).toBeDefined();
     localStorage.setItem(
       LAUNCHER_TOOL_VISIBILITY_KEY,
       JSON.stringify({
@@ -32,7 +55,7 @@ describe("launcherToolVisibility", () => {
       cloud: true,
       "protocol-router": false,
       "json-parser": true,
-      md5Encryption: true,
+      [md5Tool!.id]: true,
       "short-link": true,
     });
   });
@@ -96,7 +119,10 @@ describe("launcherToolVisibility", () => {
   it.each([
     [null, null],
     ["损坏 JSON", "{"],
-  ])("对%s配置沿用完整默认值回退", (_label, storedValue) => {
+  ])("对%s配置沿用完整默认值回退", async (_label, storedValue) => {
+    const registry = await loadRegistry();
+    const md5Tool = registry.getToolboxTool("md5-encryption");
+    expect(md5Tool).toBeDefined();
     if (storedValue !== null) {
       localStorage.setItem(LAUNCHER_TOOL_VISIBILITY_KEY, storedValue);
     }
@@ -104,7 +130,7 @@ describe("launcherToolVisibility", () => {
     expect(readLauncherToolVisibility()).toMatchObject({
       bookmarks: true,
       "protocol-router": true,
-      md5Encryption: true,
+      [md5Tool!.id]: true,
       "short-link": true,
     });
   });
@@ -154,6 +180,44 @@ describe("launcherToolVisibility", () => {
       boolean | undefined
     >;
     expect(visibility["md5-encryption"]).toBe(true);
+  });
+});
+
+describe("registry-derived visibility defaults", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("derives every launcher-quick tool default from the registry", async () => {
+    const registry = await loadRegistry();
+    const quickTools = registry.listToolboxTools("launcher-quick");
+    expect(quickTools.length).toBeGreaterThan(0);
+
+    const visibility = readLauncherToolVisibility() as unknown as Record<
+      string,
+      boolean | undefined
+    >;
+    for (const tool of quickTools) {
+      expect(visibility[tool.id]).toBe(tool.defaultVisible);
+      expect(
+        isLauncherToolVisible(
+          tool.id as unknown as Parameters<typeof isLauncherToolVisible>[0],
+        ),
+      ).toBe(tool.defaultVisible);
+    }
+  });
+
+  it("falls back to registry defaults for launcher-quick tools on corruption", async () => {
+    const registry = await loadRegistry();
+    localStorage.setItem(LAUNCHER_TOOL_VISIBILITY_KEY, "{ not json");
+
+    const visibility = readLauncherToolVisibility() as unknown as Record<
+      string,
+      boolean | undefined
+    >;
+    for (const tool of registry.listToolboxTools("launcher-quick")) {
+      expect(visibility[tool.id]).toBe(tool.defaultVisible);
+    }
   });
 });
 

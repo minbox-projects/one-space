@@ -14,6 +14,26 @@ import {
   safeRecordMessageMock,
 } from "@/test/mocks/messages";
 
+type RegistryToolDescriptor = {
+  id: string;
+  surfaces: readonly string[];
+};
+
+type RegistryModule = {
+  TOOLBOX_TOOLS: readonly RegistryToolDescriptor[];
+  listToolboxTools: (surface: string) => RegistryToolDescriptor[];
+  getToolboxTool: (id: string) => RegistryToolDescriptor | undefined;
+};
+
+/**
+ * Loaded lazily so the task-001 guards in this suite still run while the
+ * registry module is unavailable.
+ */
+async function loadRegistry(): Promise<RegistryModule> {
+  const specifier = ["@/toolbox", "registry"].join("/");
+  return (await import(/* @vite-ignore */ specifier)) as RegistryModule;
+}
+
 const launcherItems = [
   {
     id: "script-1",
@@ -249,10 +269,13 @@ describe("Launcher", () => {
   });
 
   it("根据持久化可见性过滤更多工具", async () => {
+    const registry = await loadRegistry();
+    const md5Tool = registry.getToolboxTool("md5-encryption");
+    expect(md5Tool).toBeDefined();
     renderWithProviders(<Launcher />);
 
     act(() => {
-      for (const tool of [
+      const toolsToHide: Array<Parameters<typeof setLauncherToolVisible>[0] | string> = [
         "bookmarks",
         "cloud",
         "ssh",
@@ -260,11 +283,15 @@ describe("Launcher", () => {
         "protocol-router",
         "random-password",
         "json-parser",
-        "md5Encryption",
+        md5Tool!.id,
         "short-link",
         "file-sharing",
-      ] as const) {
-        setLauncherToolVisible(tool, false);
+      ];
+      for (const tool of toolsToHide) {
+        setLauncherToolVisible(
+          tool as Parameters<typeof setLauncherToolVisible>[0],
+          false,
+        );
       }
     });
 
@@ -587,6 +614,40 @@ describe("Launcher", () => {
       );
       expect(setActiveTab).toHaveBeenCalledWith("ssh");
       vi.useRealTimers();
+    });
+  });
+
+  describe("注册表驱动的启动台面板", () => {
+    it("为注册表 launcher-quick 面板的每个工具渲染快捷入口", async () => {
+      const registry = await loadRegistry();
+      const quickTools = registry.listToolboxTools("launcher-quick");
+      expect(quickTools.length).toBeGreaterThan(0);
+
+      renderWithProviders(<Launcher />);
+      await screen.findByText("Danger Script");
+
+      for (const tool of quickTools) {
+        expect(
+          screen.getByTestId(`launcher-tool-icon-${tool.id}`),
+        ).toBeInTheDocument();
+      }
+    });
+
+    it("不把非 launcher-quick 面板的注册表工具渲染为快捷入口", async () => {
+      const registry = await loadRegistry();
+      const nonQuickTools = registry.TOOLBOX_TOOLS.filter(
+        (tool) => !tool.surfaces.includes("launcher-quick"),
+      );
+      expect(nonQuickTools.length).toBeGreaterThan(0);
+
+      renderWithProviders(<Launcher />);
+      await screen.findByText("Danger Script");
+
+      for (const tool of nonQuickTools) {
+        expect(
+          screen.queryByTestId(`launcher-tool-icon-${tool.id}`),
+        ).not.toBeInTheDocument();
+      }
     });
   });
 });

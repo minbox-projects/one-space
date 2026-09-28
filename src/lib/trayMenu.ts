@@ -7,6 +7,8 @@ import {
 } from "@tauri-apps/api/menu";
 import { TrayIcon } from "@tauri-apps/api/tray";
 
+import { getToolboxTool, resolveToolboxText } from "@/toolbox/registry";
+
 export type TrayMenuSeparator = { kind: "separator" };
 
 export interface TrayMenuItem {
@@ -122,6 +124,17 @@ function menuItem(
   return node;
 }
 
+function toolboxTrayLabel(
+  t: TrayTranslate,
+  toolId: string,
+  fallbackKey: string,
+): string {
+  const descriptor = getToolboxTool(toolId);
+  return descriptor
+    ? resolveToolboxText(descriptor.labelText, descriptor.labelKey, t)
+    : t(fallbackKey);
+}
+
 function buildMorePagesMenu(t: TrayTranslate): TrayMenuNode[] {
   return [
     menuItem("workspaces", t("tray.workspaces")),
@@ -135,8 +148,8 @@ function buildMorePagesMenu(t: TrayTranslate): TrayMenuNode[] {
     menuItem("ai-news", t("tray.aiNews")),
     menuItem("bookmarks", t("tray.bookmarks")),
     menuItem("mail", t("tray.mail")),
-    menuItem("snippets", t("tray.snippets")),
-    menuItem("notes", t("tray.notes")),
+    menuItem("snippets", toolboxTrayLabel(t, "snippets", "tray.snippets")),
+    menuItem("notes", toolboxTrayLabel(t, "notes", "tray.notes")),
     menuItem("documentation", t("tray.documentation")),
     menuItem("more-tools", t("tray.moreTools")),
   ];

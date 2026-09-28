@@ -30,6 +30,7 @@ import {
   Workflow,
   Loader2,
   GripVertical,
+  type LucideIcon,
 } from "lucide-react";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { useToast } from "./ToastProvider";
@@ -47,7 +48,7 @@ import {
   writeSavedOrder,
 } from "@/lib/launcherToolOrder";
 import { useCardDragReorder } from "@/lib/useCardDragReorder";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { listToolboxTools, resolveToolboxText } from "@/toolbox/registry";
 
 interface LauncherItem {
   id: string;
@@ -599,227 +600,88 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   };
 
   const quickInternalTools = useMemo(() => {
-    const shortLinkSearchText = ["en", "zh"]
-      .flatMap((language) => {
-        const translate = i18n.getFixedT(language);
-        return [
-          translate("shortLink", "Short Link"),
-          translate(
-            "shortLinkLauncherDesc",
-            "Create a TinyURL short link.",
-          ),
-        ];
-      })
-      .join(" ");
-    const allTools = [
-      {
-        id: "quick-bookmarks",
-        name: t("bookmarks", "Bookmarks"),
-        description: t(
-          "launcherBookmarksDesc",
-          "Save the links and resources you revisit often.",
+    type QuickToolEntry = {
+      id: string;
+      name: string;
+      description: string;
+      target: string;
+      icon: LucideIcon;
+      iconClassName: string;
+      statusBadge: React.ReactNode;
+      visible: boolean;
+      aliasOnly?: boolean;
+      searchText?: string;
+    };
+
+    const entries: QuickToolEntry[] = [];
+
+    for (const tool of listToolboxTools("launcher-quick")) {
+      const bilingualSearchText = ["en", "zh"]
+        .flatMap((language) => {
+          const translate = i18n.getFixedT(language);
+          return [
+            resolveToolboxText(
+              tool.labelText,
+              tool.labelKey,
+              translate,
+              language,
+            ),
+            resolveToolboxText(
+              tool.descriptionText,
+              tool.descriptionKey,
+              translate,
+              language,
+            ),
+          ];
+        })
+        .join(" ");
+
+      entries.push({
+        id: `quick-${tool.id}`,
+        name: resolveToolboxText(tool.labelText, tool.labelKey, t),
+        description: resolveToolboxText(
+          tool.descriptionText,
+          tool.descriptionKey,
+          t,
         ),
-        target: "bookmarks",
-        ...getMoreToolPresentation("bookmarks"),
-        statusBadge: null,
-        visible: toolVisibility.bookmarks,
-      },
-      {
-        id: "quick-cloud",
-        name: t("cloud", "Cloud Drive"),
-        description: t(
-          "launcherCloudDriveDesc",
-          "Browse and organize synced cloud files.",
-        ),
-        target: "cloud",
-        ...getMoreToolPresentation("cloud"),
-        statusBadge: null,
-        visible: toolVisibility.cloud,
-      },
-      {
-        id: "quick-ssh",
-        name: t("sshServers", "SSH Servers"),
-        description:
-          t(
-            "launcherSshServersDesc",
-            "Open saved SSH hosts, history, and custom connections quickly.",
-          ),
-        target: "ssh",
-        ...getMoreToolPresentation("ssh"),
-        statusBadge: null,
-        visible: toolVisibility.ssh,
-      },
-      {
-        id: "quick-ssh-tunnels",
-        name: t("sshTunnels", "SSH Tunnels"),
-        description:
-          t(
-            "launcherSshTunnelsDesc",
-            "Manage local, remote, and dynamic SOCKS5 SSH tunnels with built-in connectivity checks.",
-          ),
-        target: "ssh-tunnels",
-        ...getMoreToolPresentation("ssh-tunnels"),
-        statusBadge: renderSshTunnelStatus(sshTunnelSummary),
-        visible: toolVisibility["ssh-tunnels"],
-      },
-      {
-        id: "quick-protocol-router",
-        name: t("protocolRouter", "Protocol Router"),
-        description: t(
-          "launcherProtocolRouterDesc",
-          "Expose local Anthropic-compatible routes for Claude profiles and OpenAI-compatible providers.",
-        ),
-        target: "protocol-router",
-        ...getMoreToolPresentation("protocol-router"),
-        statusBadge: renderProtocolRouterStatus(protocolRouterStatusState),
-        visible: toolVisibility["protocol-router"],
-      },
-      {
-        id: "quick-random-password",
-        name: t("randomPassword", "Random Password"),
-        description: t(
-          "randomPasswordToolDesc",
-          "Generate passwords locally with the character groups you need.",
-        ),
-        target: "random-password",
-        ...getMoreToolPresentation("random-password"),
-        statusBadge: null,
-        visible: toolVisibility["random-password"],
-      },
-      {
-        id: "quick-json-parser",
-        name: t("jsonParser", "JSON Parser"),
-        description: t(
-          "jsonParserToolDesc",
-          "Validate and format JSON locally in one editable workspace.",
-        ),
-        target: "json-parser",
-        ...getMoreToolPresentation("json-parser"),
-        statusBadge: null,
-        visible: toolVisibility["json-parser"],
-      },
-      {
-        id: "quick-md5-encryption",
-        name: t("md5Encryption.title", "MD5 Encryption"),
-        description: t(
-          "md5Encryption.description",
-          "Calculate common MD5 hash formats locally from text.",
-        ),
-        target: "md5-encryption",
-        ...getMoreToolPresentation("md5-encryption"),
-        statusBadge: null,
-        visible: toolVisibility.md5Encryption,
-      },
-      {
-        id: "quick-short-link",
-        name: t("shortLink", "Short Link"),
-        description: t(
-          "shortLinkLauncherDesc",
-          "Create a TinyURL short link.",
-        ),
-        target: "short-link",
-        searchText: shortLinkSearchText,
-        ...getMoreToolPresentation("short-link"),
-        statusBadge: null,
-        visible: toolVisibility["short-link"],
-      },
-      {
-        id: "quick-file-sharing",
-        name: t("fileSharing", "File Sharing"),
-        description: t("fileSharingLauncherDesc", "Share selected files on a trusted local network."),
-        target: "file-sharing",
-        ...getMoreToolPresentation("file-sharing"),
-        statusBadge: null,
-        visible: toolVisibility["file-sharing"],
-      },
-      {
-        id: "quick-jtt-data-parser",
-        name: i18n.language === "zh" ? "JT/T 数据解析" : "JT/T Data Parser",
-        description:
-          i18n.language === "zh"
-            ? "本地解析 JT/T 808、809、1078 报文并转换十六进制。"
-            : "Parse JT/T 808, 809, 1078 packets and convert hex locally.",
-        target: "jtt-data-parser",
-        ...getMoreToolPresentation("jtt-data-parser"),
-        statusBadge: null,
-        visible: toolVisibility["jtt-data-parser"],
-      },
-      {
-        id: "quick-jtt-808",
-        name: "JT/T 808",
-        description:
-          i18n.language === "zh"
-            ? "打开 JT808 解析标签页。"
-            : "Open the JT808 parser tab.",
-        target: "808",
-        ...getMoreToolPresentation("jtt-data-parser"),
-        statusBadge: null,
-        visible: toolVisibility["jtt-data-parser"],
-        aliasOnly: true,
-      },
-      {
-        id: "quick-jtt-809",
-        name: "JT/T 809",
-        description:
-          i18n.language === "zh"
-            ? "打开 JT809 解析标签页。"
-            : "Open the JT809 parser tab.",
-        target: "809",
-        ...getMoreToolPresentation("jtt-data-parser"),
-        statusBadge: null,
-        visible: toolVisibility["jtt-data-parser"],
-        aliasOnly: true,
-      },
-      {
-        id: "quick-jtt-1078",
-        name: "JT/T 1078",
-        description:
-          i18n.language === "zh"
-            ? "打开 JT1078 解析标签页。"
-            : "Open the JT1078 parser tab.",
-        target: "1078",
-        ...getMoreToolPresentation("jtt-data-parser"),
-        statusBadge: null,
-        visible: toolVisibility["jtt-data-parser"],
-        aliasOnly: true,
-      },
-      {
-        id: "quick-jtt-hex",
-        name: "JT/T Hex",
-        description:
-          i18n.language === "zh"
-            ? "打开 Hex 转换标签页。"
-            : "Open the Hex conversion tab.",
-        target: "hex",
-        ...getMoreToolPresentation("jtt-data-parser"),
-        statusBadge: null,
-        visible: toolVisibility["jtt-data-parser"],
-        aliasOnly: true,
-      },
-      {
-        id: "quick-ai-workflow-model-switcher",
-        name: t("aiWorkflowModelSwitcher", "AI Workflow Model Switcher"),
-        description: t(
-          "aiWorkflowModelSwitcherDesc",
-          "Manage and switch AI agent models and reasoning effort across tools.",
-        ),
-        target: "ai-workflow-model-switcher",
-        ...getMoreToolPresentation("ai-workflow-model-switcher"),
-        statusBadge: null,
-        visible: toolVisibility["ai-workflow-model-switcher"],
-      },
-    ];
+        target: tool.id,
+        icon: tool.icon,
+        iconClassName: tool.iconClassName,
+        statusBadge:
+          tool.id === "ssh-tunnels"
+            ? renderSshTunnelStatus(sshTunnelSummary)
+            : tool.id === "protocol-router"
+              ? renderProtocolRouterStatus(protocolRouterStatusState)
+              : null,
+        visible: toolVisibility[tool.id],
+        searchText: bilingualSearchText,
+      });
+
+      for (const alias of tool.aliases) {
+        if (alias.target === tool.id) continue;
+        entries.push({
+          id: `quick-${tool.id}-${alias.target}`,
+          name: `JT/T ${alias.target}`,
+          description: `Open the ${alias.target} parser tab.`,
+          target: alias.target,
+          icon: tool.icon,
+          iconClassName: tool.iconClassName,
+          statusBadge: null,
+          visible: toolVisibility[tool.id],
+          aliasOnly: true,
+        });
+      }
+    }
 
     const term = searchTerm.trim().toLowerCase();
-    const visibleItems = allTools.filter(
-      (item) =>
-        item.visible && (term !== "" || !(item as { aliasOnly?: boolean }).aliasOnly),
+    const visibleItems = entries.filter(
+      (item) => item.visible && (term !== "" || !item.aliasOnly),
     );
     const orderedItems = applySavedOrder(visibleItems, internalToolsOrder);
 
     if (!term) return orderedItems;
     return orderedItems.filter((item) => {
-      const searchText = "searchText" in item ? item.searchText : "";
+      const searchText = item.searchText ?? "";
       return `${item.name} ${item.description} ${item.target} ${searchText}`
         .toLowerCase()
         .includes(term);

@@ -2,6 +2,75 @@ import { describe, expect, it } from "vitest";
 import * as navigation from "@/lib/navigation";
 import { isMoreToolsTab, resolveNavigationTarget } from "@/lib/navigation";
 
+type RegistryToolDescriptor = {
+  id: string;
+  surfaces: readonly string[];
+  aliases: readonly { target: string; jttParserTab?: string }[];
+};
+
+type RegistryModule = {
+  TOOLBOX_TOOLS: readonly RegistryToolDescriptor[];
+  listToolboxTools: (surface: string) => RegistryToolDescriptor[];
+  resolveToolboxNavigationAlias: (
+    target: string,
+  ) =>
+    | { toolId: string; tab: string; moreToolsSection?: string; jttParserTab?: string }
+    | undefined;
+};
+
+/**
+ * The registry is loaded lazily on purpose: while the module is absent this
+ * suite must still load so the task-001 guards keep producing their own
+ * per-test RED evidence instead of a file-level import failure.
+ */
+async function loadRegistry(): Promise<RegistryModule> {
+  const specifier = ["@/toolbox", "registry"].join("/");
+  return (await import(/* @vite-ignore */ specifier)) as RegistryModule;
+}
+
+describe("registry-derived navigation aliases", () => {
+  it("resolves every registry hub id to its own more-tools section", async () => {
+    const registry = await loadRegistry();
+    const hubTools = registry.listToolboxTools("hub");
+    expect(hubTools.length).toBeGreaterThan(0);
+
+    for (const tool of hubTools) {
+      expect(resolveNavigationTarget(tool.id)).toEqual({
+        tab: "more-tools",
+        moreToolsSection: tool.id,
+      });
+      expect(isMoreToolsTab(tool.id)).toBe(true);
+    }
+  });
+
+  it("resolves ssh-tunnels to its more-tools detail", () => {
+    expect(resolveNavigationTarget("ssh-tunnels")).toEqual({
+      tab: "more-tools",
+      moreToolsSection: "ssh-tunnels",
+    });
+  });
+
+  it("carries the JT/T parser tab payload from the registry alias", async () => {
+    const registry = await loadRegistry();
+    for (const alias of ["808", "809", "1078", "hex"]) {
+      const resolved = registry.resolveToolboxNavigationAlias(alias);
+      expect(resolved).toBeDefined();
+      expect(resolveNavigationTarget(alias)).toEqual({
+        tab: "more-tools",
+        moreToolsSection: "jtt-data-parser",
+        jttParserTab: resolved!.jttParserTab,
+      });
+    }
+  });
+
+  it("passes an unknown target through as a standalone tab", () => {
+    expect(resolveNavigationTarget("__unknown-target__")).toEqual({
+      tab: "__unknown-target__",
+    });
+    expect(isMoreToolsTab("__unknown-target__")).toBe(false);
+  });
+});
+
 describe("snippets and notes navigation", () => {
   it.each([
     ["snippets", "snippets"],
