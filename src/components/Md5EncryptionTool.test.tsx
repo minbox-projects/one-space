@@ -11,6 +11,23 @@ vi.mock("@/lib/md5", async (importOriginal) => {
   return { ...original, md5Hex: vi.fn(original.md5Hex) };
 });
 
+vi.mock("@/toolbox/registry", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/toolbox/registry")>();
+  const { KeyRound } = await import("lucide-react");
+  return {
+    ...actual,
+    getToolboxTool: (id: string) => {
+      const descriptor = actual.getToolboxTool(id);
+      if (id !== "md5-encryption" || !descriptor) return descriptor;
+      return {
+        ...descriptor,
+        icon: KeyRound,
+        iconClassName: "test-registry-accent",
+      };
+    },
+  };
+});
+
 const RESULT_LABELS = {
   lower32: "32-bit lowercase",
   upper32: "32-bit uppercase",
@@ -532,6 +549,14 @@ describe("Md5EncryptionTool", () => {
     expect(copyButtons[0]).toHaveFocus();
     await user.keyboard("{Enter}");
     expect(writeText).toHaveBeenCalledWith("d41d8cd98f00b204e9800998ecf8427e");
+  });
+
+  it("takes the header icon and accent from the md5-encryption registry descriptor", () => {
+    const { container } = renderWithProviders(<Md5EncryptionTool />);
+
+    const iconContainer = container.querySelector(".test-registry-accent");
+    expect(iconContainer).not.toBeNull();
+    expect(iconContainer?.querySelector("svg")).toHaveClass("lucide-key-round");
   });
 
   it.each(["en", "zh"] as const)("resolves all required %s translations", async (language) => {

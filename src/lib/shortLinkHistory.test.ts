@@ -66,6 +66,46 @@ describe("short link history", () => {
     expect(result.records.at(-1)?.id).toBe("id-2");
   });
 
+  it("加载顺序被打乱的存储记录时仍按真实时间倒序返回", () => {
+    const records = [
+      record(1, "2026-01-01T00:00:00.000Z"),
+      record(3, "2026-01-03T00:00:00.000Z"),
+      record(2, "2026-01-02T00:00:00.000Z"),
+    ];
+    localStorage.setItem(SHORT_LINK_HISTORY_KEY, JSON.stringify(records));
+
+    const result = loadShortLinkHistory();
+
+    expect(result.status).toBe("success");
+    expect(result.records.map((item) => item.id)).toEqual([
+      "id-3",
+      "id-2",
+      "id-1",
+    ]);
+  });
+
+  it("新增记录超过上限时仍返回最新 50 条且最新在前", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-01T00:00:00.000Z"));
+    const records = Array.from({ length: 50 }, (_, index) =>
+      record(index, new Date(Date.UTC(2026, 0, index + 1)).toISOString()),
+    ).reverse();
+    localStorage.setItem(SHORT_LINK_HISTORY_KEY, JSON.stringify(records));
+    vi.spyOn(crypto, "randomUUID").mockReturnValueOnce(
+      "00000000-0000-4000-8000-000000000099",
+    );
+
+    const result = addShortLinkHistory(
+      "https://example.com/newest",
+      "https://tinyurl.com/newest",
+    );
+
+    expect(result.status).toBe("success");
+    expect(result.records).toHaveLength(50);
+    expect(result.records[0]?.id).toBe("00000000-0000-4000-8000-000000000099");
+    expect(result.records.at(-1)?.id).toBe("id-1");
+  });
+
   it.each([
     ["损坏 JSON", "{"],
     ["非数组", JSON.stringify({})],

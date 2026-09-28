@@ -13,6 +13,7 @@ import { useTranslation } from "react-i18next";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { useToast } from "./ToastProvider";
 import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 import {
   ShortLinkError,
   shortLinkConfigStatus,
@@ -74,6 +75,14 @@ export function ShortLinkTool() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const recoveryNotifiedRef = useRef(false);
   const [copiedTarget, setCopiedTarget] = useState<string | null>(null);
+  const { copied, copy: copyToClipboard } = useCopyToClipboard({
+    onSuccess: () => pushToast({ title: t("shortLinkCopied", "Short link copied."), kind: "success" }),
+    onError: () =>
+      pushToast({
+        title: t("shortLinkCopyFailed", "Unable to copy the short link to the clipboard."),
+        kind: "error",
+      }),
+  });
   const tokenVisibilityLabel = tokenVisible
     ? t("shortLinkTokenHide", "Hide Token")
     : t("shortLinkTokenShow", "Show Token");
@@ -257,19 +266,8 @@ export function ShortLinkTool() {
   };
 
   const copyShortUrl = async (shortUrl: string, target: string) => {
-    try {
-      await navigator.clipboard.writeText(shortUrl);
-      setCopiedTarget(target);
-      pushToast({ title: t("shortLinkCopied", "Short link copied."), kind: "success" });
-    } catch {
-      pushToast({
-        title: t(
-          "shortLinkCopyFailed",
-          "Unable to copy the short link to the clipboard.",
-        ),
-        kind: "error",
-      });
-    }
+    setCopiedTarget(target);
+    await copyToClipboard(shortUrl);
   };
 
   const deleteHistoryRecord = async (record: ShortLinkHistoryRecord) => {
@@ -546,7 +544,7 @@ export function ShortLinkTool() {
                       aria-label={t("shortLinkCopy", "Copy short link")}
                       title={t("shortLinkCopy", "Copy short link")}
                     >
-                      {copiedTarget === "current" ? (
+                      {copied && copiedTarget === "current" ? (
                         <Check className="h-4 w-4 text-emerald-600" />
                       ) : (
                         <Copy className="h-4 w-4" />
@@ -615,7 +613,7 @@ export function ShortLinkTool() {
                         aria-label={t("shortLinkHistoryCopy", "Copy history item")}
                         title={t("shortLinkHistoryCopy", "Copy history item")}
                       >
-                        {copiedTarget === record.id ? (
+                        {copied && copiedTarget === record.id ? (
                           <Check className="h-4 w-4 text-emerald-600" />
                         ) : (
                           <Copy className="h-4 w-4" />

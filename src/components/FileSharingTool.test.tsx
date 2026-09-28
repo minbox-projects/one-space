@@ -22,7 +22,7 @@ vi.mock("@/components/ToastProvider", async () => {
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("qrcode.react", () => ({ QRCodeSVG: ({ value }: { value: string }) => <div data-testid="qr-code">{value}</div> }));
 
-const stopped: FileSharingSnapshot = { running: false, sessionId: null, address: null, port: null, shareUrl: null, startedAt: null, stoppedAt: null, files: [], transfers: [], summary: { activeTransfers: 0, completedTransfers: 0, failedTransfers: 0, cancelledTransfers: 0, bytesSent: 0, droppedTransferRecords: 0 }, lastError: null };
+const stopped: FileSharingSnapshot = { running: false, sessionId: null, shareUrl: null, startedAt: null, files: [], transfers: [], summary: { activeTransfers: 0, completedTransfers: 0, failedTransfers: 0, cancelledTransfers: 0, bytesSent: 0, droppedTransferRecords: 0 } };
 
 describe("FileSharingTool", () => {
   beforeEach(() => {
@@ -137,8 +137,7 @@ describe("FileSharingTool", () => {
       ...running,
       running: false,
       shareUrl: null,
-      stoppedAt: 1,
-      transfers: [{ id: "transfer-1", fileId: "file-1", fileName: "report.txt", clientAddress: "127.0.0.1", state: "completed", startedAt: 0, finishedAt: 1, bytesSent: 12, responseBytes: 12, error: null }],
+      transfers: [{ id: "transfer-1", fileName: "report.txt", clientAddress: "127.0.0.1", state: "completed", bytesSent: 12 }],
       summary: { activeTransfers: 0, completedTransfers: 1, failedTransfers: 0, cancelledTransfers: 0, bytesSent: 12, droppedTransferRecords: 0 },
     };
     let resolveStale: (value: FileSharingSnapshot) => void = () => {};
@@ -233,5 +232,31 @@ describe("FileSharingTool", () => {
       .map(([toast]) => JSON.stringify(toast))
       .join(" ");
     expect(pushed).toMatch(/copy|复制/i);
+  });
+
+  it("renders the empty state without an active share and does not throw", async () => {
+    renderWithProviders(<FileSharingTool />);
+
+    expect(
+      await screen.findByText(
+        /Choose one or more files to share|请选择一个或多个要共享的文件/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("never invokes window.confirm during mount or interactions", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    renderWithProviders(<FileSharingTool />);
+
+    await user.click(
+      await screen.findByRole("button", { name: /Rescan|重新扫描/ }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: /Choose files|选择文件/ }),
+    );
+    await user.click(screen.getByRole("button", { name: /Clear|清空/ }));
+
+    expect(confirmSpy).not.toHaveBeenCalled();
   });
 });

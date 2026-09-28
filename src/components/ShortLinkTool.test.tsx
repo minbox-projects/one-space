@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
@@ -54,6 +54,7 @@ async function generate(url = "https://example.com/a/long/path") {
 describe("ShortLinkTool", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
     localStorage.clear();
     resetTauriMocks();
     await i18n.changeLanguage("en");
@@ -252,6 +253,43 @@ describe("ShortLinkTool", () => {
 
     expect(await screen.findByText("Unable to copy the short link to the clipboard.")).toBeInTheDocument();
     expect(result).toHaveTextContent("https://tinyurl.com/copy-failure");
+  });
+
+  it("复制成功后复制反馈在 1600 毫秒后重置", async () => {
+    vi.useFakeTimers();
+    shortLinkCreateMock.mockResolvedValue({
+      longUrl: "https://example.com/reset",
+      shortUrl: "https://tinyurl.com/reset",
+    });
+    renderWithProviders(<ShortLinkTool />);
+
+    fireEvent.change(screen.getByLabelText("Long URL"), {
+      target: { value: "https://example.com/reset" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Generate short link" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const result = screen.getByTestId("short-link-current-result");
+    const copyButton = within(result).getByRole("button", {
+      name: "Copy short link",
+    });
+    fireEvent.click(copyButton);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(copyButton.querySelector("svg")).toHaveClass("lucide-check");
+
+    act(() => {
+      vi.advanceTimersByTime(1700);
+    });
+
+    expect(copyButton.querySelector("svg")).toHaveClass("lucide-copy");
   });
 
   it("reloads at most 50 newest records and copies, deletes, and clears only local history", async () => {

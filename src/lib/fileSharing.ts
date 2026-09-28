@@ -29,25 +29,17 @@ export type FileSharingFile = {
 
 export type FileSharingTransfer = {
   id: string;
-  fileId: string;
   fileName: string;
   clientAddress: string;
   state: FileSharingTransferState;
-  startedAt: number;
-  finishedAt: number | null;
   bytesSent: number;
-  responseBytes: number;
-  error: string | null;
 };
 
 export type FileSharingSnapshot = {
   running: boolean;
   sessionId: string | null;
-  address: string | null;
-  port: number | null;
   shareUrl: string | null;
   startedAt: number | null;
-  stoppedAt: number | null;
   files: FileSharingFile[];
   transfers: FileSharingTransfer[];
   summary: {
@@ -58,7 +50,6 @@ export type FileSharingSnapshot = {
     bytesSent: number;
     droppedTransferRecords: number;
   };
-  lastError: string | null;
 };
 
 export type FileSharingUpdate = { kind: "session" | "transfer" };

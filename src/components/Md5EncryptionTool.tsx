@@ -1,8 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AlertTriangle, Copy, Hash, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { ToolShell } from "@/components/toolbox/ToolShell";
 import { useToast } from "./ToastProvider";
+import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 import { md5Hex } from "@/lib/md5";
+import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 
 type Md5Results = {
   lower32: string;
@@ -148,6 +151,7 @@ function applyTextareaEdit(
 export function Md5EncryptionTool() {
   const { t } = useTranslation();
   const { pushToast } = useToast();
+  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("md5-encryption");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const rawInputRef = useRef("");
   const pendingEditRef = useRef<PendingTextareaEdit | null>(null);
@@ -157,6 +161,29 @@ export function Md5EncryptionTool() {
   const pendingSelectionRef = useRef<TextareaSelection | null>(null);
   const [input, setInput] = useState("");
   const [results, setResults] = useState<Md5Results | null>(null);
+  const lastCopiedRef = useRef<keyof Md5Results | null>(null);
+  const { copy } = useCopyToClipboard({
+    onSuccess: () => {
+      const resultKey = lastCopiedRef.current;
+      if (!resultKey) return;
+      pushToast({
+        title: t("md5Encryption.copySuccess", {
+          label: t(`md5Encryption.results.${resultKey}`),
+        }),
+        kind: "success",
+      });
+    },
+    onError: () => {
+      const resultKey = lastCopiedRef.current;
+      if (!resultKey) return;
+      pushToast({
+        title: t("md5Encryption.copyFailed", {
+          label: t(`md5Encryption.results.${resultKey}`),
+        }),
+        kind: "error",
+      });
+    },
+  });
 
   const updateInput = (nextInput: string) => {
     rawInputRef.current = nextInput;
@@ -267,22 +294,10 @@ export function Md5EncryptionTool() {
     });
   };
 
-  const copyResult = async (resultKey: keyof Md5Results) => {
+  const copyResult = (resultKey: keyof Md5Results) => {
     if (!results) return;
-
-    const label = t(`md5Encryption.results.${resultKey}`);
-    try {
-      await navigator.clipboard.writeText(results[resultKey]);
-      pushToast({
-        title: t("md5Encryption.copySuccess", { label }),
-        kind: "success",
-      });
-    } catch {
-      pushToast({
-        title: t("md5Encryption.copyFailed", { label }),
-        kind: "error",
-      });
-    }
+    lastCopiedRef.current = resultKey;
+    void copy(results[resultKey]);
   };
 
   const clear = () => {
@@ -310,22 +325,17 @@ export function Md5EncryptionTool() {
   };
 
   return (
-    <section className="space-y-5 pb-5" aria-labelledby="md5-encryption-title">
-      <div className="flex items-start gap-3">
-        <div className="rounded-lg bg-teal-500/10 p-2 text-teal-600">
-          <Hash className="h-5 w-5" aria-hidden="true" />
-        </div>
-        <div className="min-w-0">
-          <h2 id="md5-encryption-title" className="text-lg font-semibold">
-            {t("md5Encryption.title")}
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            {t("md5Encryption.description")}
-          </p>
-        </div>
+    <div className="flex items-start gap-3">
+      <div className={`rounded-lg p-2 ${iconClassName}`}>
+        <ToolIcon className="h-5 w-5" aria-hidden="true" />
       </div>
-
-      <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+      <div className="min-w-0 flex-1">
+        <ToolShell
+          titleId="md5-encryption-title"
+          title={t("md5Encryption.title")}
+          description={t("md5Encryption.description")}
+        >
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
         <p>{t("md5Encryption.securityNotice")}</p>
       </div>
@@ -407,6 +417,8 @@ export function Md5EncryptionTool() {
           </p>
         )}
       </section>
-    </section>
+        </ToolShell>
+      </div>
+    </div>
   );
 }
