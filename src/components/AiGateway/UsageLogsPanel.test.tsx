@@ -86,6 +86,7 @@ describe("UsageLogsPanel", () => {
         groupBy: "none",
         status: null,
         model: null,
+        provider: null,
         page: 1,
       }),
     );
@@ -101,6 +102,7 @@ describe("UsageLogsPanel", () => {
         groupBy: "none",
         status: null,
         model: null,
+        provider: null,
         page: 1,
       }),
     );
@@ -306,6 +308,7 @@ describe("UsageLogsPanel", () => {
         groupBy: "none",
         status: "failure",
         model: "gpt-4o",
+        provider: null,
         page: 1,
       }),
     );
@@ -388,6 +391,7 @@ describe("UsageLogsPanel", () => {
         groupBy: "none",
         status: null,
         model: null,
+        provider: null,
         page: 2,
       }),
     );
@@ -422,6 +426,7 @@ describe("UsageLogsPanel", () => {
         groupBy: "model",
         status: null,
         model: null,
+        provider: null,
         page: 1,
       }),
     );
@@ -455,6 +460,7 @@ describe("UsageLogsPanel", () => {
         groupBy: "none",
         status: null,
         model: null,
+        provider: null,
         page: 1,
       }),
     );
@@ -490,7 +496,8 @@ describe("UsageLogsPanel", () => {
     const pageOneCalls = invokeMock.mock.calls.filter(
       ([command, args]) =>
         command === "ai_gateway_request_logs" &&
-        (args as { page?: number }).page === 1,
+        (args as { page?: number }).page === 1 &&
+        (args as { provider?: string | null }).provider === null,
     );
     expect(pageOneCalls.length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByText("No matching requests.")).not.toBeInTheDocument();
@@ -549,6 +556,7 @@ describe("UsageLogsPanel", () => {
         groupBy: "none",
         status: null,
         model: "hidden-model",
+        provider: null,
         page: 1,
       }),
     );
@@ -1360,6 +1368,252 @@ describe("UsageLogsPanel", () => {
     await waitFor(() => {
       expect(screen.getByTestId("ai-gateway-logs-total-count")).toHaveTextContent("Total 15 requests");
     });
+  });
+
+  it("切换为 Provider 分组按服务商聚合，空名分组展示破折号且四类分组选项保持可选", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      if (args?.groupBy === "provider") {
+        return page({
+          group_by: "provider",
+          records: [],
+          total: 6,
+          groups: [
+            {
+              group: "Alpha",
+              request_count: 3,
+              error_count: 1,
+              last_request_at_ms: Date.UTC(2026, 8, 17, 5, 0),
+            },
+            {
+              group: "Beta",
+              request_count: 2,
+              error_count: 0,
+              last_request_at_ms: Date.UTC(2026, 8, 17, 4, 0),
+            },
+            {
+              group: "",
+              request_count: 1,
+              error_count: 0,
+              last_request_at_ms: Date.UTC(2026, 8, 17, 3, 0),
+            },
+          ],
+        });
+      }
+      return page();
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("ai-gateway-logs-ungrouped");
+
+    const groupTrigger = screen.getByTestId("ai-gateway-logs-group-trigger");
+    await user.click(groupTrigger);
+    expect(
+      screen.getAllByRole("option").map((option) => option.textContent?.trim()),
+    ).toEqual(["No grouping", "Model", "Provider", "Day (UTC+8)"]);
+    await user.click(screen.getByRole("option", { name: "Provider" }));
+    expect(groupTrigger).toHaveTextContent("Provider");
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "provider",
+        status: null,
+        model: null,
+        provider: null,
+        page: 1,
+      }),
+    );
+
+    const grouped = await screen.findByTestId("ai-gateway-logs-grouped");
+    const rows = within(grouped).getAllByTestId("ai-gateway-logs-group-row");
+    expect(rows).toHaveLength(3);
+    const groupLabel = (row: HTMLElement) => row.querySelectorAll("td")[0];
+    expect(groupLabel(rows[0])).toHaveTextContent("Alpha");
+    expect(groupLabel(rows[1])).toHaveTextContent("Beta");
+    expect(groupLabel(rows[2])).toHaveTextContent("—");
+
+    // The other three grouping options remain offered after switching.
+    await user.click(groupTrigger);
+    expect(
+      screen.getAllByRole("option").map((option) => option.textContent?.trim()),
+    ).toEqual(["No grouping", "Model", "Provider", "Day (UTC+8)"]);
+  });
+
+  it("选择服务商并应用后请求 provider 且回到第 1 页，切换分组保持筛选，清除后重置筛选", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      const provider: string | null = args?.provider ?? null;
+      const groupBy: string | null = args?.groupBy ?? null;
+      if (groupBy === "provider") {
+        return page({
+          group_by: "provider",
+          records: [],
+          total: provider === "Beta" ? 1 : 2,
+          providers: [],
+          groups:
+            provider === "Beta"
+              ? [
+                  {
+                    group: "Beta",
+                    request_count: 1,
+                    error_count: 0,
+                    last_request_at_ms: Date.UTC(2026, 8, 17, 4, 0),
+                  },
+                ]
+              : [
+                  {
+                    group: "Alpha",
+                    request_count: 1,
+                    error_count: 0,
+                    last_request_at_ms: Date.UTC(2026, 8, 17, 3, 0),
+                  },
+                  {
+                    group: "Beta",
+                    request_count: 1,
+                    error_count: 0,
+                    last_request_at_ms: Date.UTC(2026, 8, 17, 4, 0),
+                  },
+                ],
+        });
+      }
+      if (provider === "Beta") {
+        return page({
+          total: 1,
+          providers: ["Alpha", "Beta"],
+          records: [record({ provider_name: "Beta", local_model: "beta-only" })],
+        });
+      }
+      return page({
+        total: 2,
+        providers: ["Alpha", "Beta"],
+        records: [record({ provider_name: "Alpha", local_model: "alpha-only" })],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("ai-gateway-logs-ungrouped");
+    expect(screen.getByText("alpha-only")).toBeInTheDocument();
+
+    const filterTrigger = screen.getByTestId("ai-gateway-logs-filter-trigger");
+    await user.click(filterTrigger);
+    const panel = await screen.findByTestId("ai-gateway-logs-filter-panel");
+    // The provider chips are driven by the response `providers` list.
+    expect(
+      within(panel).getByRole("button", { name: "Alpha" }),
+    ).toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "Beta" }));
+    await user.click(within(panel).getByRole("button", { name: "Apply" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "none",
+        status: null,
+        model: null,
+        provider: "Beta",
+        page: 1,
+      }),
+    );
+    await waitFor(() => expect(filterTrigger).toHaveTextContent("Beta"));
+    expect(await screen.findByText("beta-only")).toBeInTheDocument();
+    expect(screen.queryByText("alpha-only")).not.toBeInTheDocument();
+
+    // The provider filter survives switching the grouping mode.
+    const groupTrigger = screen.getByTestId("ai-gateway-logs-group-trigger");
+    await user.click(groupTrigger);
+    await user.click(screen.getByRole("option", { name: "Provider" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "provider",
+        status: null,
+        model: null,
+        provider: "Beta",
+        page: 1,
+      }),
+    );
+    const grouped = await screen.findByTestId("ai-gateway-logs-grouped");
+    expect(
+      within(grouped).getByTestId("ai-gateway-logs-group-row"),
+    ).toHaveTextContent("Beta");
+
+    // Clearing resets status, model and provider and returns to page 1.
+    await user.click(filterTrigger);
+    const reopenedPanel = await screen.findByTestId(
+      "ai-gateway-logs-filter-panel",
+    );
+    await user.click(
+      within(reopenedPanel).getByRole("button", { name: "Clear" }),
+    );
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "provider",
+        status: null,
+        model: null,
+        provider: null,
+        page: 1,
+      }),
+    );
+  });
+
+  it("响应缺少服务商清单时仅展示 Any provider 且不报错，新增分组与筛选文案具备中英文", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page();
+    });
+
+    const english = renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("ai-gateway-logs-ungrouped");
+
+    await user.click(screen.getByTestId("ai-gateway-logs-group-trigger"));
+    expect(
+      screen.getByRole("option", { name: "Provider" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByTestId("ai-gateway-logs-filter-trigger"));
+    const panel = await screen.findByTestId("ai-gateway-logs-filter-panel");
+    const providerSection = within(panel).getByText("Provider")
+      .parentElement as HTMLElement;
+    expect(
+      within(providerSection)
+        .getAllByRole("button")
+        .map((button) => button.textContent?.trim()),
+    ).toEqual(["Any provider"]);
+    // The list is never derived from visible records.
+    expect(
+      within(panel).queryByRole("button", { name: "Provider A" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    english.unmount();
+    await i18n.changeLanguage("zh");
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("ai-gateway-logs-ungrouped");
+
+    await user.click(screen.getByTestId("ai-gateway-logs-group-trigger"));
+    expect(
+      screen.getByRole("option", { name: "服务商" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByTestId("ai-gateway-logs-filter-trigger"));
+    const zhPanel = await screen.findByTestId("ai-gateway-logs-filter-panel");
+    const zhProviderSection = within(zhPanel).getByText("服务商")
+      .parentElement as HTMLElement;
+    expect(
+      within(zhProviderSection)
+        .getAllByRole("button")
+        .map((button) => button.textContent?.trim()),
+    ).toEqual(["全部服务商"]);
   });
 });
 

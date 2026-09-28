@@ -632,7 +632,7 @@ export interface UsageLogGroup {
   last_request_at_ms: number;
 }
 
-export type UsageGroupBy = "none" | "model" | "day";
+export type UsageGroupBy = "none" | "model" | "provider" | "day";
 
 export interface UsageLogsPage {
   page: number;
@@ -647,6 +647,11 @@ export interface UsageLogsPage {
    * filter. Optional for responses/fixtures that predate the facet.
    */
   models?: string[];
+  /**
+   * Distinct non-empty in-range provider names, independent of page and
+   * provider filter. Optional for responses/fixtures that predate the facet.
+   */
+  providers?: string[];
 }
 
 export interface UsageLogsQuery {
@@ -654,6 +659,7 @@ export interface UsageLogsQuery {
   groupBy?: UsageGroupBy | null;
   status?: UsageLogResult | null;
   model?: string | null;
+  provider?: string | null;
   page?: number;
 }
 
@@ -1004,13 +1010,14 @@ export function aiGatewayUsageStats(range: UsageRangeKey) {
   return invoke<UsageStats>("ai_gateway_usage_stats", { range });
 }
 
-/** Paged request logs, optionally grouped by model or UTC+8 day. */
+/** Paged request logs, optionally grouped by model, provider or UTC+8 day. */
 export function aiGatewayRequestLogs(query: UsageLogsQuery) {
   return invoke<UsageLogsPage>("ai_gateway_request_logs", {
     range: query.range,
     groupBy: query.groupBy ?? null,
     status: query.status ?? null,
     model: query.model ?? null,
+    provider: query.provider ?? null,
     page: query.page ?? 1,
   });
 }

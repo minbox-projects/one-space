@@ -2297,6 +2297,7 @@ describe("AiGateway", () => {
       groupBy: "day",
       status: null,
       model: null,
+      provider: null,
       page: 1,
     });
   });

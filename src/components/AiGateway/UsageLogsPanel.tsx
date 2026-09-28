@@ -43,6 +43,7 @@ const GROUP_OPTIONS: Array<{
 }> = [
   { key: "none", labelKey: "aiGatewayGroupNone", fallback: "No grouping" },
   { key: "model", labelKey: "aiGatewayGroupModel", fallback: "Model" },
+  { key: "provider", labelKey: "aiGatewayGroupProvider", fallback: "Provider" },
   { key: "day", labelKey: "aiGatewayGroupDay", fallback: "Day (UTC+8)" },
 ];
 
@@ -225,6 +226,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
   const [groupBy, setGroupBy] = useState<UsageGroupBy>("none");
   const [status, setStatus] = useState<UsageLogResult | null>(null);
   const [model, setModel] = useState<string | null>(null);
+  const [provider, setProvider] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageData, setPageData] = useState<UsageLogsPage | null>(null);
   const [loading, setLoading] = useState(false);
@@ -233,6 +235,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
   const [filterOpen, setFilterOpen] = useState(false);
   const [draftStatus, setDraftStatus] = useState<UsageLogResult | null>(null);
   const [draftModel, setDraftModel] = useState<string | null>(null);
+  const [draftProvider, setDraftProvider] = useState<string | null>(null);
   const requestSeqRef = useRef(0);
   const filterRef = useRef<HTMLDivElement>(null);
 
@@ -272,6 +275,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
           groupBy,
           status,
           model,
+          provider,
           page,
         });
         if (requestSeqRef.current !== seq) return;
@@ -291,7 +295,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
         }
       }
     },
-    [groupBy, model, page, range, status],
+    [groupBy, model, page, provider, range, status],
   );
 
   useEffect(() => {
@@ -306,6 +310,8 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
       Array.from(new Set(visibleRecords.map((item) => item.local_model)))),
   ].sort();
 
+  const providerOptions = [...(pageData?.providers ?? [])].sort();
+
   const records = [...visibleRecords].sort(
     (first, second) => second.timestamp_ms - first.timestamp_ms,
   );
@@ -316,6 +322,7 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
   const openFilter = () => {
     setDraftStatus(status);
     setDraftModel(model);
+    setDraftProvider(provider);
     setFilterOpen((prev) => !prev);
   };
 
@@ -331,9 +338,16 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
     setPage(1);
   };
 
+  const selectProvider = (newProvider: string | null) => {
+    setDraftProvider(newProvider);
+    setProvider(newProvider);
+    setPage(1);
+  };
+
   const applyFilters = () => {
     setStatus(draftStatus);
     setModel(draftModel);
+    setProvider(draftProvider);
     setPage(1);
     setFilterOpen(false);
   };
@@ -341,15 +355,19 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
   const clearFilters = () => {
     setDraftStatus(null);
     setDraftModel(null);
+    setDraftProvider(null);
     setStatus(null);
     setModel(null);
+    setProvider(null);
     setPage(1);
     setFilterOpen(false);
   };
 
   const activeStatus = draftStatus ?? status;
   const activeModel = draftModel ?? model;
-  const hasActiveFilter = activeStatus !== null || activeModel !== null;
+  const activeProvider = draftProvider ?? provider;
+  const hasActiveFilter =
+    activeStatus !== null || activeModel !== null || activeProvider !== null;
 
   const filterLabel = (() => {
     const parts: string[] = [];
@@ -358,6 +376,9 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
     }
     if (activeModel) {
       parts.push(activeModel);
+    }
+    if (activeProvider) {
+      parts.push(activeProvider);
     }
     return parts.length > 0 ? parts.join(" · ") : t("aiGatewayFilter", "Filter");
   })();
@@ -497,6 +518,41 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
                         aria-pressed={activeModel === option}
                         className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
                           activeModel === option
+                            ? "border-primary bg-primary text-primary-foreground font-medium shadow-sm"
+                            : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                        }`}
+                      >
+                        {option}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="text-xs font-semibold text-muted-foreground">
+                    {t("aiGatewayFilterProvider", "Provider")}
+                  </div>
+                  <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
+                    <button
+                      type="button"
+                      onClick={() => selectProvider(null)}
+                      aria-pressed={activeProvider === null}
+                      className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
+                        activeProvider === null
+                          ? "border-primary bg-primary text-primary-foreground font-medium shadow-sm"
+                          : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                      }`}
+                    >
+                      {t("aiGatewayFilterAnyProvider", "Any provider")}
+                    </button>
+                    {providerOptions.map((option) => (
+                      <button
+                        key={option}
+                        type="button"
+                        onClick={() => selectProvider(option)}
+                        aria-pressed={activeProvider === option}
+                        className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
+                          activeProvider === option
                             ? "border-primary bg-primary text-primary-foreground font-medium shadow-sm"
                             : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
                         }`}

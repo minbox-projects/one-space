@@ -586,6 +586,7 @@ describe("用量与日志命令封装", () => {
       groupBy: "day",
       status: "failure",
       model: "gpt-4o",
+      provider: "OpenAI Direct",
       page: 2,
     });
     await aiGatewayUsageRetentionGet();
@@ -602,6 +603,7 @@ describe("用量与日志命令封装", () => {
       groupBy: "day",
       status: "failure",
       model: "gpt-4o",
+      provider: "OpenAI Direct",
       page: 2,
     });
     expect(invokeMock).toHaveBeenCalledWith("ai_gateway_usage_retention_get");
@@ -624,6 +626,7 @@ describe("用量与日志命令封装", () => {
       groupBy: null,
       status: null,
       model: null,
+      provider: null,
       page: 1,
     });
   });
