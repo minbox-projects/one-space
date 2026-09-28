@@ -619,49 +619,6 @@ pub fn save_profile(
     write_file_atomic(&target_file, yaml_str.as_bytes())
 }
 
-/// Validates profile name, schema (version 1.0.0), effort levels,
-/// atomically writes the YAML omitting unconfigured roles, then activates the profile.
-/// Restores original YAML snapshot if activation fails.
-pub fn save_and_activate_profile(
-    name: &str,
-    matrix: &[AgentMatrixRow],
-    home_override: Option<&Path>,
-) -> Result<ProfileActivationReport, String> {
-    let yaml_str = serialize_profile_yaml(name, matrix)?;
-
-    let home = resolve_home_dir(home_override)?;
-    let profiles_dir = home.join(".config/ai-workflow/profiles");
-    fs::create_dir_all(&profiles_dir)
-        .map_err(|e| format!("Failed to create profiles directory: {}", e))?;
-    let target_file = profiles_dir.join(format!("{}.yaml", name));
-
-    let original_bytes = if target_file.exists() {
-        Some(
-            fs::read(&target_file)
-                .map_err(|e| format!("Failed to read existing profile: {}", e))?,
-        )
-    } else {
-        None
-    };
-
-    write_file_atomic(&target_file, yaml_str.as_bytes())?;
-
-    match activate_profile(name, home_override) {
-        Ok(report) => Ok(report),
-        Err(err) => {
-            match original_bytes {
-                Some(bytes) => {
-                    let _ = write_file_atomic(&target_file, &bytes);
-                }
-                None => {
-                    let _ = fs::remove_file(&target_file);
-                }
-            }
-            Err(err)
-        }
-    }
-}
-
 /// Creates a new profile YAML file.
 /// If copy_from is specified, copies content from that existing profile.
 /// Otherwise creates a valid minimal schema.
@@ -808,15 +765,6 @@ pub fn ai_workflow_get_model_sources(
     home_override: Option<String>,
 ) -> Result<ModelSourcesResult, String> {
     get_model_sources(home_override.as_deref().map(Path::new))
-}
-
-#[tauri::command]
-pub fn ai_workflow_save_and_activate_profile(
-    name: String,
-    matrix: Vec<AgentMatrixRow>,
-    home_override: Option<String>,
-) -> Result<ProfileActivationReport, String> {
-    save_and_activate_profile(&name, &matrix, home_override.as_deref().map(Path::new))
 }
 
 #[tauri::command]

@@ -6,14 +6,10 @@ import { useTranslation } from 'react-i18next';
 import { Server, AlertCircle, Loader2, ArrowRight, Plus, History, Key, Lock, FolderOpen, Terminal, Star, EyeOff, Eye } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { formatDistanceToNow } from 'date-fns';
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
-
-interface SshHost {
-  name: string;
-  host_name: string;
-  user: string;
-  port: number;
-}
+import { getToolboxTool } from "@/toolbox/registry";
+import { isToolboxInvokeAvailable } from "@/toolbox/invoke";
+import { sshHostsList } from "@/lib/sshTunnels";
+import type { SshHost } from "./sshTunnels/types";
 
 interface SshHistoryEntry {
   id: string;
@@ -30,7 +26,7 @@ interface SshHistoryEntry {
 
 export function SshServers() {
   const { t } = useTranslation();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("ssh");
+  const { icon: ToolIcon, iconClassName } = getToolboxTool("ssh")!;
   const isWindows =
     typeof navigator !== 'undefined' &&
     navigator.userAgent.toLowerCase().includes('windows');
@@ -54,10 +50,13 @@ export function SshServers() {
   const [customAuthType, setCustomAuthType] = useState<'password' | 'key'>('password');
   const [customAuthVal, setCustomAuthVal] = useState('');
 
-  const isTauri = '__TAURI_INTERNALS__' in window;
+  const windowsHint = t(
+    'sshServersWindowsHint',
+    'SSH Servers launches native terminal SSH sessions only on macOS. On Windows, please use SSH Tunnels instead.',
+  );
 
   const loadData = async () => {
-    if (!isTauri) {
+    if (!isToolboxInvokeAvailable()) {
       setLoading(false);
       setError(t('notInTauri'));
       return;
@@ -68,7 +67,7 @@ export function SshServers() {
       setError(null);
       
       // Load config hosts
-      const res: SshHost[] = await invoke('get_ssh_hosts');
+      const res = await sshHostsList<SshHost[]>();
       setHosts(res);
 
       // Load history from secure storage
@@ -134,7 +133,9 @@ export function SshServers() {
     }
 
     setHistory(newHistory);
-    await invoke('save_secret', { key: 'onespace_ssh_history', value: JSON.stringify(newHistory) });
+    if (isToolboxInvokeAvailable()) {
+      await invoke('save_secret', { key: 'onespace_ssh_history', value: JSON.stringify(newHistory) });
+    }
   };
 
   const toggleFavorite = async (e: React.MouseEvent, name: string) => {
@@ -143,7 +144,9 @@ export function SshServers() {
       ? favorites.filter(f => f !== name)
       : [...favorites, name];
     setFavorites(newFavs);
-    await invoke('save_secret', { key: 'onespace_ssh_favorites', value: JSON.stringify(newFavs) });
+    if (isToolboxInvokeAvailable()) {
+      await invoke('save_secret', { key: 'onespace_ssh_favorites', value: JSON.stringify(newFavs) });
+    }
   };
 
   const toggleIgnore = async (e: React.MouseEvent, name: string) => {
@@ -152,18 +155,15 @@ export function SshServers() {
       ? ignored.filter(i => i !== name)
       : [...ignored, name];
     setIgnored(newIgnored);
-    await invoke('save_secret', { key: 'onespace_ssh_ignored', value: JSON.stringify(newIgnored) });
+    if (isToolboxInvokeAvailable()) {
+      await invoke('save_secret', { key: 'onespace_ssh_ignored', value: JSON.stringify(newIgnored) });
+    }
   };
 
   const handleConnectConfig = async (host: SshHost) => {
-    if (!isTauri) return;
+    if (!isToolboxInvokeAvailable()) return;
     if (isWindows) {
-      setError(
-        t(
-          'sshServersWindowsHint',
-          'SSH Servers currently launches native terminal SSH sessions only on macOS. On Windows, please use SSH Tunnels instead.',
-        ),
-      );
+      setError(windowsHint);
       return;
     }
     try {
@@ -183,14 +183,9 @@ export function SshServers() {
   };
 
   const handleConnectCustom = async () => {
-    if (!isTauri || !customHost || !customUser || !customPort) return;
+    if (!isToolboxInvokeAvailable() || !customHost || !customUser || !customPort) return;
     if (isWindows) {
-      setError(
-        t(
-          'sshServersWindowsHint',
-          'SSH Servers currently launches native terminal SSH sessions only on macOS. On Windows, please use SSH Tunnels instead.',
-        ),
-      );
+      setError(windowsHint);
       return;
     }
     
@@ -228,6 +223,7 @@ export function SshServers() {
     if (entry.type === 'config') {
       handleConnectConfig(entry);
     } else {
+      if (!isToolboxInvokeAvailable()) return;
       try {
         await invoke('connect_ssh_custom', { 
           user: entry.user,
@@ -253,8 +249,13 @@ export function SshServers() {
       if (selected && typeof selected === 'string') {
         setCustomAuthVal(selected);
       }
-    } catch (err: any) {
-      console.error(err);
+    } catch {
+      setError(
+        t(
+          'sshServersKeyFileError',
+          'Could not open the selected key file. Please choose another file.',
+        ),
+      );
     }
   };
 
@@ -353,12 +354,7 @@ export function SshServers() {
       {isWindows && (
         <div className="bg-amber-500/10 text-amber-700 text-sm p-4 rounded-md flex items-start gap-3 border border-amber-500/20">
           <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-          <div>
-            {t(
-              'sshServersWindowsHint',
-              'SSH Servers currently launches native terminal SSH sessions only on macOS. On Windows, please use SSH Tunnels instead.',
-            )}
-          </div>
+          <div>{windowsHint}</div>
         </div>
       )}
 

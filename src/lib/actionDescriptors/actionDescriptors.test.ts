@@ -9,6 +9,7 @@ import {
   buildCleanupBackupsActionDescriptor,
   buildCreateBackupActionDescriptor,
   buildDeleteBackupActionDescriptor,
+  buildRestoreBackupActionDescriptor,
 } from "@/lib/actionDescriptors/backup";
 import { buildDeleteMcpServerActionDescriptor } from "@/lib/actionDescriptors/mcpServers";
 import { buildUninstallSkillActionDescriptor } from "@/lib/actionDescriptors/skills";
@@ -125,6 +126,20 @@ describe("actionDescriptors", () => {
       dedupeKey: "backup:cleanup:30",
       metadata: { retention_days: 30 },
     });
+  });
+
+  it("points every backup action descriptor at the real backup home", () => {
+    const descriptors = [
+      buildCreateBackupActionDescriptor(t, "skills"),
+      buildRestoreBackupActionDescriptor(t, "entry-1"),
+      buildDeleteBackupActionDescriptor(t, "entry-1"),
+      buildCleanupBackupsActionDescriptor(t, 30),
+    ];
+
+    for (const descriptor of descriptors) {
+      expect(descriptor.target?.tab).toBe("mcp-servers");
+      expect(descriptor.target?.section ?? null).not.toBe("backup");
+    }
   });
 
   it("builds workspace/module delete and connect descriptors", () => {

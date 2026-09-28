@@ -5,7 +5,6 @@ import {
   Brain,
   FolderOpen,
   Globe,
-  NotebookPen,
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -21,8 +20,6 @@ interface CapabilityBadgesProps {
   mcpServerCards?: McpServerCardItem[];
   workspaceReadEnabled: boolean;
   onWorkspaceReadToggle?: () => void;
-  notesSearchEnabled: boolean;
-  onNotesSearchToggle?: () => void;
   memoryEnabled: boolean;
   onMemoryToggle?: () => void;
   webSearchEnabled: boolean;
@@ -148,8 +145,6 @@ export function CapabilityBadges({
   mcpServerCards = [],
   workspaceReadEnabled,
   onWorkspaceReadToggle,
-  notesSearchEnabled,
-  onNotesSearchToggle,
   memoryEnabled,
   onMemoryToggle,
   webSearchEnabled,
@@ -262,14 +257,6 @@ export function CapabilityBadges({
         icon={FolderOpen}
         onClick={onWorkspaceReadToggle}
         title={t("workspaceReadLabel", "Workspace Read")}
-      />
-
-      <IconButton
-        active={notesSearchEnabled}
-        ariaLabel={t("notesSearchLabel", "Notes Search")}
-        icon={NotebookPen}
-        onClick={onNotesSearchToggle}
-        title={t("notesSearchLabel", "Notes Search")}
       />
 
       <IconButton

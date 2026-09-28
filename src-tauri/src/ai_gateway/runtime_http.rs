@@ -872,8 +872,6 @@ enum AttemptResult {
         transport: bool,
         reason: String,
         retry_delay: Option<Duration>,
-        /// The upstream status of the failure (0 for a transport failure).
-        status: u16,
         /// When set, the failure is key-scoped: the attempted key must be
         /// marked and the request continues on the next usable key instead of
         /// registering mapping health or requeuing.
@@ -1490,7 +1488,6 @@ async fn attempt_candidate(
                     transport: false,
                     reason: failure_reason(response.status, response.parsed, error_message.as_deref()),
                     retry_delay: retry_header_delay(&response.headers),
-                    status: response.status,
                     bare_rotation: response.status == 429 && key_failure.is_none(),
                     key_failure,
                 },
@@ -1515,7 +1512,6 @@ async fn attempt_candidate(
                     transport: true,
                     reason,
                     retry_delay: None,
-                    status: 0,
                     key_failure: None,
                     bare_rotation: false,
                 },

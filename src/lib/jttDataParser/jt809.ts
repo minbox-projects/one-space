@@ -6,7 +6,8 @@ import type {
   ResultNode,
 } from "./types";
 import { buildJt808LocationNodes } from "./jt808";
-import { trimAsciiWhitespace } from "./lexing";
+import { HEX_DIGIT_PATTERN, bcdTime, bytesToHex, hexByte, hexToBytes, hexWord } from "./hex";
+import { stripInlineAsciiWhitespace, trimAsciiWhitespace } from "./lexing";
 
 export const JT809_VERSIONS: Jt809Version[] = ["2011", "2019"];
 export const JT809_CRYPTO_MODES: Jt809CryptoMode[] = ["unencrypted", "encrypted"];
@@ -66,25 +67,6 @@ export function validateJt809Params(params: {
   return result;
 }
 
-function hexByte(byte: number): string {
-  return `0x${byte.toString(16).toUpperCase().padStart(2, "0")}`;
-}
-
-function hexWord(value: number): string {
-  return `0x${value.toString(16).toUpperCase().padStart(4, "0")}`;
-}
-
-function bcdTime(bytes: number[]): string {
-  let digits = "";
-  for (const byte of bytes) {
-    digits += ((byte >> 4) & 0x0f).toString();
-    digits += (byte & 0x0f).toString();
-  }
-  const parts = digits.match(/.{2}/g) ?? [];
-  const [year, month, day, hour, minute, second] = parts;
-  return `20${year}-${month}-${day} ${hour}:${minute}:${second}`;
-}
-
 function crc16Ccitt(bytes: number[]): number {
   let crc = 0xffff;
   for (const byte of bytes) {
@@ -94,10 +76,6 @@ function crc16Ccitt(bytes: number[]): number {
     }
   }
   return crc;
-}
-
-function bytesToHex(bytes: number[]): string {
-  return bytes.map((byte) => byte.toString(16).toUpperCase().padStart(2, "0")).join("");
 }
 
 type Jt809Header = {
@@ -116,14 +94,11 @@ type Jt809Header = {
 type ParsedJt809 = { ok: true; header: Jt809Header } | { ok: false; error: string };
 
 function parseJt809(hexText: string): ParsedJt809 {
-  const compact = hexText.replace(/[\s]+/g, "");
-  if (!/^[0-9A-Fa-f]+$/.test(compact)) {
+  const compact = stripInlineAsciiWhitespace(hexText);
+  if (!HEX_DIGIT_PATTERN.test(compact)) {
     return { ok: false, error: "包含非十六进制字符" };
   }
-  const bytes: number[] = [];
-  for (let index = 0; index < compact.length; index += 2) {
-    bytes.push(parseInt(compact.slice(index, index + 2), 16));
-  }
+  const bytes = hexToBytes(compact);
 
   if (bytes.length < 2 || bytes[bytes.length - 2] !== 0x7b || bytes[bytes.length - 1] !== 0x7e) {
     return { ok: false, error: "缺少结束标志 0x7B 0x7E" };
@@ -138,7 +113,7 @@ function parseJt809(hexText: string): ParsedJt809 {
   if (bytes.length !== 4 + length + 2) {
     return { ok: false, error: "报文长度与数据不符" };
   }
-  if (crcPosition < 22 || crcPosition + 2 > bytes.length) {
+  if (crcPosition < 22) {
     return { ok: false, error: "报文长度不足，帧被截断" };
   }
 

@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RandomPasswordTool } from "@/components/RandomPasswordTool";
@@ -18,6 +18,7 @@ function deferred<T>() {
 describe("RandomPasswordTool", () => {
   beforeEach(() => {
     let toastId = 0;
+    vi.useRealTimers();
     localStorage.clear();
     resetTauriMocks();
     invokeMock.mockResolvedValue(null);
@@ -170,19 +171,51 @@ describe("RandomPasswordTool", () => {
     ]);
   });
 
-  it("migrates valid legacy history only after saving it to protected storage", async () => {
+  it("复制成功后复制反馈在 1600 毫秒后重置", async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    renderWithProviders(<RandomPasswordTool />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Generate|生成/ }));
+    const row = screen.getAllByTestId("generated-password-row")[0];
+    const copyButton = within(row).getByRole("button", {
+      name: /Copy password|复制密码/,
+    });
+    fireEvent.click(copyButton);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(copyButton.querySelector("svg")).toHaveClass("lucide-check");
+
+    act(() => {
+      vi.advanceTimersByTime(1700);
+    });
+
+    expect(copyButton.querySelector("svg")).toHaveClass("lucide-copy");
+  });
+
+  it("treats a legacy localStorage history as invalid, clears it, and does not migrate it", async () => {
     localStorage.setItem(PASSWORD_HISTORY_KEY, JSON.stringify(["legacy-password"]));
     renderWithProviders(<RandomPasswordTool />);
 
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("save_secret", {
-        key: PASSWORD_HISTORY_KEY,
-        value: JSON.stringify(["legacy-password"]),
-      }),
+      expect(localStorage.getItem(PASSWORD_HISTORY_KEY)).toBeNull(),
     );
 
-    expect(localStorage.getItem(PASSWORD_HISTORY_KEY)).toBeNull();
-    expect(screen.getByText("legacy-password")).toBeInTheDocument();
+    expect(screen.queryByText("legacy-password")).not.toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith("save_secret", expect.anything());
   });
 
   it("saves copied passwords to protected secrets storage without writing localStorage", async () => {

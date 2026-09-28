@@ -72,7 +72,6 @@ export interface AiWorkspaceSettings {
 export interface AssistantCapabilitySnapshot {
   web_search: boolean;
   workspace_read: boolean;
-  notes_search: boolean;
   knowledge_base_ids: string[];
   mcp_server_ids: string[];
   memory_enabled: boolean;
@@ -91,7 +90,6 @@ export interface AssistantPreset {
   tool_policy: {
     web_search: boolean;
     workspace_read: boolean;
-    notes_search: boolean;
   };
   knowledge_base_ids: string[];
   mcp_server_ids: string[];

@@ -35,9 +35,10 @@ import {
   type SupportedTool,
   type ValidEffort,
 } from "@/lib/aiWorkflowProfiles";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { getToolboxTool } from "@/toolbox/registry";
 import { useConfirmDialog } from "../ConfirmDialogProvider";
 import { useToast } from "../ToastProvider";
+import { ToolErrorBanner } from "@/components/toolbox/ToolErrorBanner";
 import {
   Dialog,
   DialogContent,
@@ -49,8 +50,11 @@ import {
 import { SearchableModelCombobox } from "./SearchableModelCombobox";
 
 export interface AiWorkflowModelSwitcherProps {
-  homeOverride?: string;
+  isVisible?: boolean;
 }
+
+const PROFILE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/i;
+const DEFAULT_REASONING_EFFORT: ValidEffort = "medium";
 
 const ROLE_BADGE_STYLES: Record<SupportedRole, { badge: string; dot: string }> =
   {
@@ -105,15 +109,13 @@ const ROLE_BADGE_FALLBACK = {
 const getRoleStyle = (role: string) =>
   ROLE_BADGE_STYLES[role as SupportedRole] ?? ROLE_BADGE_FALLBACK;
 
-export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
-  homeOverride,
-}) => {
+export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = () => {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const { pushToast } = useToast();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation(
+  const { icon: ToolIcon, iconClassName } = getToolboxTool(
     "ai-workflow-model-switcher",
-  );
+  )!;
 
   const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
@@ -201,7 +203,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
     async (profileName: string) => {
       try {
         setError(null);
-        const data = await getProfileMatrix(profileName, homeOverride);
+        const data = await getProfileMatrix(profileName);
         const normalized = normalizeRows(data.rows || []);
         setMatrix(normalized);
         setOriginalMatrix(JSON.parse(JSON.stringify(normalized)));
@@ -212,7 +214,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
         setOriginalMatrix([]);
       }
     },
-    [homeOverride, normalizeRows],
+    [normalizeRows],
   );
 
   const loadInitialData = useCallback(async () => {
@@ -220,8 +222,8 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
     setError(null);
     try {
       const [profileList, sources] = await Promise.all([
-        listProfiles(homeOverride),
-        getModelSources(homeOverride),
+        listProfiles(),
+        getModelSources(),
       ]);
       setProfiles(profileList);
       setModelSources(sources);
@@ -242,7 +244,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
     } finally {
       setIsLoading(false);
     }
-  }, [homeOverride, loadMatrix]);
+  }, [loadMatrix]);
 
   useEffect(() => {
     void loadInitialData();
@@ -278,7 +280,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
         if (row.role !== role) return row;
         const current = row[tool] || {
           model: "",
-          reasoning_effort: "medium",
+          reasoning_effort: DEFAULT_REASONING_EFFORT,
         };
         return {
           ...row,
@@ -300,7 +302,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
       prev.map((row) => {
         const current = row[tool] || {
           model: "",
-          reasoning_effort: "medium",
+          reasoning_effort: DEFAULT_REASONING_EFFORT,
         };
         return {
           ...row,
@@ -324,15 +326,15 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
           ...row,
           codex: {
             model: batchRowValue.trim(),
-            reasoning_effort: row.codex?.reasoning_effort || "medium",
+            reasoning_effort: row.codex?.reasoning_effort || DEFAULT_REASONING_EFFORT,
           },
           claude: {
             model: batchRowValue.trim(),
-            reasoning_effort: row.claude?.reasoning_effort || "medium",
+            reasoning_effort: row.claude?.reasoning_effort || DEFAULT_REASONING_EFFORT,
           },
           opencode: {
             model: batchRowValue.trim(),
-            reasoning_effort: row.opencode?.reasoning_effort || "medium",
+            reasoning_effort: row.opencode?.reasoning_effort || DEFAULT_REASONING_EFFORT,
           },
         };
       }),
@@ -365,7 +367,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
     setError(null);
     setActivationReport(null);
     try {
-      const report = await activateProfile(selectedProfile, homeOverride);
+      const report = await activateProfile(selectedProfile);
       setActiveProfile(report.active_profile || selectedProfile);
       setActivationReport(report);
       setProfiles((prev) =>
@@ -392,7 +394,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
     try {
       const shouldAsk = unsavedCreatedProfiles.has(profileName);
 
-      await saveProfile(profileName, matrixToSave, homeOverride);
+      await saveProfile(profileName, matrixToSave);
       setOriginalMatrix(matrixToSave);
       setUnsavedCreatedProfiles((previous) => {
         const next = new Set(previous);
@@ -414,7 +416,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
 
       if (!shouldActivate) return;
 
-      const report = await activateProfile(profileName, homeOverride);
+      const report = await activateProfile(profileName);
       setActiveProfile(report.active_profile || selectedProfile);
       setActivationReport(report);
       setProfiles((prev) =>
@@ -445,8 +447,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
       setCreateError(t("aiWorkflow.profileNameRequired", "方案名称不能为空"));
       return;
     }
-    const nameRegex = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/i;
-    if (!nameRegex.test(trimmed)) {
+    if (!PROFILE_NAME_PATTERN.test(trimmed)) {
       setCreateError(
         t(
           "aiWorkflow.profileNameInvalid",
@@ -466,7 +467,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
         createSourceMode === "clone" && selectedProfile
           ? selectedProfile
           : undefined;
-      await createProfile(trimmed, copyFrom, homeOverride);
+      await createProfile(trimmed, copyFrom);
       setUnsavedCreatedProfiles((previous) => new Set(previous).add(trimmed));
       pushToast({
         title: t("aiWorkflow.profileCreated", {
@@ -476,7 +477,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
         kind: "success",
       });
       setIsCreateDialogOpen(false);
-      const updated = await listProfiles(homeOverride);
+      const updated = await listProfiles();
       setProfiles(updated);
       setSelectedProfile(trimmed);
       await loadMatrix(trimmed);
@@ -507,8 +508,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
       setIsEditDialogOpen(false);
       return;
     }
-    const nameRegex = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/i;
-    if (!nameRegex.test(trimmed)) {
+    if (!PROFILE_NAME_PATTERN.test(trimmed)) {
       setEditError(
         t(
           "aiWorkflow.profileNameInvalid",
@@ -531,7 +531,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
     try {
       setIsActivating(true);
       const oldName = selectedProfile;
-      await renameProfile(oldName, trimmed, homeOverride);
+      await renameProfile(oldName, trimmed);
       setUnsavedCreatedProfiles((previous) => {
         const next = new Set(previous);
         if (next.has(oldName)) {
@@ -549,7 +549,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
         kind: "success",
       });
       setIsEditDialogOpen(false);
-      const updated = await listProfiles(homeOverride);
+      const updated = await listProfiles();
       setProfiles(updated);
       if (activeProfile === oldName) {
         setActiveProfile(trimmed);
@@ -583,7 +583,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
 
     try {
       setIsActivating(true);
-      await deleteProfile(selectedProfile, homeOverride);
+      await deleteProfile(selectedProfile);
       setUnsavedCreatedProfiles((previous) => {
         const next = new Set(previous);
         next.delete(selectedProfile);
@@ -596,7 +596,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
         }),
         kind: "success",
       });
-      const updated = await listProfiles(homeOverride);
+      const updated = await listProfiles();
       setProfiles(updated);
       const nextProfile =
         updated.find((p) => p.active)?.name || updated[0]?.name || null;
@@ -899,17 +899,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
       </div>
 
       {/* 错误提示条 */}
-      {error ? (
-        <div
-          role="alert"
-          className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 font-mono text-sm text-destructive"
-        >
-          <div className="flex items-start gap-2">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <div className="whitespace-pre-wrap break-all">{error}</div>
-          </div>
-        </div>
-      ) : null}
+      <ToolErrorBanner message={error} />
 
       {/* 激活成功报告 */}
       {activationReport ? (
@@ -1304,7 +1294,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = ({
                                     </label>
                                     <select
                                       value={
-                                        cellData?.reasoning_effort || "medium"
+                                        cellData?.reasoning_effort || DEFAULT_REASONING_EFFORT
                                       }
                                       onChange={(e) =>
                                         handleUpdateCell(role, tool, {

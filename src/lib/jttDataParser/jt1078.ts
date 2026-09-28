@@ -4,13 +4,8 @@ import type {
   Jt1078Operation,
   ResultNode,
 } from "./types";
-import {
-  bcdTime,
-  buildJt808FrameTree,
-  bytesToHex,
-  hexWord,
-  parseJt808Wire,
-} from "./frame";
+import { buildJt808FrameTree, parseJt808Wire } from "./frame";
+import { bcdTime, bytesToHex, hexByte, hexDword, hexWord, readUint32 } from "./hex";
 import { trimAsciiWhitespace } from "./lexing";
 
 export const JT1078_OPERATIONS: Jt1078Operation[] = [
@@ -124,33 +119,11 @@ export function jt1078BodyNode(
     { label: "逻辑通道号", value: String(body[cursor + 1] ?? 0) },
     { label: "开始时间", value: readTime(body.slice(cursor + 2, cursor + 8)) },
     { label: "结束时间", value: readTime(body.slice(cursor + 8, cursor + 14)) },
-    { label: "报警标志", value: hexWord4(body, cursor + 14) },
+    { label: "报警标志", value: hexDword(readUint32(body, cursor + 14)) },
     { label: "音视频资源类型", value: hexByte(body[cursor + 18] ?? 0) },
     { label: "文件上传任务 ID", value: String(readUint32(body, cursor + 19)) },
   );
   return node;
-}
-
-function hexByte(byte: number): string {
-  return `0x${byte.toString(16).toUpperCase().padStart(2, "0")}`;
-}
-
-function hexWord4(bytes: number[], offset: number): string {
-  const value =
-    ((bytes[offset] ?? 0) << 24) |
-    ((bytes[offset + 1] ?? 0) << 16) |
-    ((bytes[offset + 2] ?? 0) << 8) |
-    (bytes[offset + 3] ?? 0);
-  return `0x${value.toString(16).toUpperCase().padStart(8, "0")}`;
-}
-
-function readUint32(bytes: number[], offset: number): number {
-  return (
-    ((bytes[offset] ?? 0) << 24) |
-    ((bytes[offset + 1] ?? 0) << 16) |
-    ((bytes[offset + 2] ?? 0) << 8) |
-    (bytes[offset + 3] ?? 0)
-  );
 }
 
 export function analyzeJt1078(

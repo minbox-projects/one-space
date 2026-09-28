@@ -7,7 +7,6 @@ import {
   BarChart3,
   BookOpen, 
   Bot,
-  Cloud,
   Code2,
   Terminal, 
   FolderOpen,
@@ -276,14 +275,6 @@ export function Documentation() {
           docId: 'usage',
           anchor: '18-mail',
         },
-        {
-          id: 'cloud-drive',
-          name: t('cloudDrive', 'Cloud Drive'),
-          summary: t('docsCloudDriveSummary', 'Understand the current experimental Aliyun Cloud Drive browser state.'),
-          icon: Cloud,
-          docId: 'usage',
-          anchor: '19-cloud-drive',
-        },
       ],
     },
     {
@@ -316,7 +307,7 @@ export function Documentation() {
         {
           id: 'faq',
           name: t('faq', 'FAQ'),
-          summary: t('docsFaqSummary', 'Troubleshoot common CLI, environment, AI News, Cloud Drive, and macOS issues.'),
+          summary: t('docsFaqSummary', 'Troubleshoot common CLI, environment, AI News, and macOS issues.'),
           icon: HelpCircle,
           docId: 'usage',
           anchor: '24-常见问题',

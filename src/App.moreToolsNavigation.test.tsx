@@ -3,7 +3,25 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import i18n from "@/i18n";
 import { renderWithProviders } from "@/test/mocks/render";
+
+type RegistryToolDescriptor = {
+  id: string;
+  labelKey: string;
+};
+
+type RegistryModule = {
+  getToolboxTool: (id: string) => RegistryToolDescriptor | undefined;
+};
+
+/**
+ * Loaded lazily so this suite still runs while the registry module is absent.
+ */
+async function loadRegistry(): Promise<RegistryModule> {
+  const specifier = ["@/toolbox", "registry"].join("/");
+  return (await import(/* @vite-ignore */ specifier)) as RegistryModule;
+}
 
 vi.mock("@/components/Launcher", () => ({
   Launcher: ({ isVisible }: { isVisible?: boolean }) => (
@@ -298,4 +316,24 @@ describe("App 更多工具详情导航", () => {
     ).toBeInTheDocument();
   });
 
+  it("从注册表派生活动工具的面包屑标题", async () => {
+    const user = userEvent.setup();
+    const registry = await loadRegistry();
+    const descriptor = registry.getToolboxTool("md5-encryption");
+    expect(descriptor).toBeDefined();
+    const expectedTitle = i18n.t(descriptor!.labelKey);
+
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "从启动台打开 MD5" }),
+    );
+    expect(
+      screen.getByRole("navigation", { name: /Breadcrumb|面包屑/ }),
+    ).toHaveTextContent(expectedTitle);
+  });
 });

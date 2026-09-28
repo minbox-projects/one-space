@@ -8,18 +8,6 @@ export type Jt808Mode =
 export type Jt809Version = "2011" | "2019";
 export type Jt809CryptoMode = "unencrypted" | "encrypted";
 
-export type Jt809Uint32ParamError =
-  | "missing"
-  | "signed"
-  | "fractional"
-  | "nonnumeric"
-  | "out-of-range";
-
-export type Jt809ParamError = {
-  field: "M1" | "IA1" | "IC1";
-  kind: Jt809Uint32ParamError;
-};
-
 export type Jt809Uint32Params = { m1: number; ia1: number; ic1: number };
 
 export type Jt1078Operation = "0x9101" | "0x9102" | "0x9205" | "0x9206";

@@ -95,23 +95,16 @@ describe("jttInputHistory", () => {
     ]);
   });
 
-  it("migrates the legacy string list format into records", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-01-04T00:00:00.000Z"));
-    vi.spyOn(crypto, "randomUUID")
-      .mockReturnValueOnce("00000000-0000-4000-8000-000000000009")
-      .mockReturnValueOnce("00000000-0000-4000-8000-00000000000A");
-    localStorage.setItem(`${JTT_INPUT_HISTORY_KEY_PREFIX}jt808`, JSON.stringify(["LEGACY-A", "LEGACY-B"]));
+  it("treats a legacy string-array history as invalid and clears it", () => {
+    localStorage.setItem(
+      `${JTT_INPUT_HISTORY_KEY_PREFIX}jt808`,
+      JSON.stringify(["LEGACY-A", "LEGACY-B"]),
+    );
 
-    expect(loadJttInputHistory("jt808")).toEqual([
-      { id: "00000000-0000-4000-8000-000000000009", text: "LEGACY-A", createdAt: "2026-01-04T00:00:00.000Z" },
-      { id: "00000000-0000-4000-8000-00000000000A", text: "LEGACY-B", createdAt: "2026-01-04T00:00:00.000Z" },
-    ]);
+    expect(loadJttInputHistory("jt808")).toEqual([]);
     expect(
-      JSON.parse(
-        localStorage.getItem(`${JTT_INPUT_HISTORY_KEY_PREFIX}jt808`) ?? "[]",
-      ),
-    ).toHaveLength(2);
+      localStorage.getItem(`${JTT_INPUT_HISTORY_KEY_PREFIX}jt808`),
+    ).toBeNull();
   });
 
   it("recovers from corrupt stored JSON", () => {

@@ -1010,7 +1010,7 @@ fn antigravity_json_merge_across_multiple_session_files() {
 }
 
 #[test]
-fn antigravity_json_handles_model_fallback_from_modelName_and_stale_timestamp() {
+fn antigravity_json_handles_model_fallback_from_model_name_and_stale_timestamp() {
     // Literal fallback chain (no "expired → mtime" rule):
     //   message.timestamp (empty string → None) →
     //   value.lastUpdated (valid JSON number, in-window) →
@@ -3194,8 +3194,6 @@ fn antigravity_json_discover_nested_subdirectory_session_files() {
 /// chain (`json_millis` pattern) before falling back to mtime.
 #[test]
 fn antigravity_transcript_numeric_timestamp_counts_correctly() {
-    use chrono::Duration as ChronoDuration;
-
     let root = make_temp_dir("antigravity-transcript-num-ts");
     let _guard = crate::config::test_home::TestHomeGuard::set(&root);
     sessions_usage_clear_cache();

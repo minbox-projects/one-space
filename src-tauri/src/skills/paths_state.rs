@@ -29,12 +29,6 @@ pub(in crate::skills) fn skills_local_root() -> Result<PathBuf, String> {
     Ok(p)
 }
 
-pub(in crate::skills) fn skills_models_root() -> Result<PathBuf, String> {
-    let p = skills_local_root()?.join("models");
-    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
-    Ok(p)
-}
-
 pub(in crate::skills) fn skills_meta_root() -> Result<PathBuf, String> {
     let p = skills_root()?.join("meta");
     fs::create_dir_all(&p).map_err(|e| e.to_string())?;

@@ -378,28 +378,6 @@ pub(in crate::ai_assistant) fn build_builtin_tools(
             })),
         });
     }
-    if tool_policy.notes_search {
-        tools.push(ToolDefinition {
-            name: "notes_search".to_string(),
-            description: "Search through user's notes. Returns matching note fragments."
-                .to_string(),
-            parameters: Some(json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query to find in notes"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return",
-                        "default": 5
-                    }
-                },
-                "required": ["query"]
-            })),
-        });
-    }
     tools
 }
 
@@ -786,19 +764,6 @@ pub(in crate::ai_assistant) async fn execute_tool_call(
             fs::read_to_string(&file_path)
                 .map(|content| (content, Vec::new()))
                 .map_err(|e| format!("Failed to read file {}: {}", file_path, e))
-        }
-        "notes_search" => {
-            let _query = effective_arguments
-                .get("query")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "notes_search requires 'query' argument".to_string())?;
-            let _limit = effective_arguments
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(5) as usize;
-
-            // TODO: Implement actual notes search after notes module integration
-            Err("Notes search is not yet implemented. Please enable this feature in future updates.".to_string())
         }
         _ => {
             let binding = mcp_binding.ok_or_else(|| format!("Unknown tool: {}", tool_name))?;

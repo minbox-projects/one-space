@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { Check, Copy, Minus, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useToast } from "./ToastProvider";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { getToolboxTool } from "@/toolbox/registry";
+import { invokeToolboxCommand } from "@/toolbox/invoke";
+import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 
 const PASSWORD_HISTORY_KEY = "onespace:random-password-history";
 const MIN_LENGTH = 1;
@@ -39,6 +40,14 @@ function parsePasswordHistory(stored: string) {
     return parsed.slice(0, PASSWORD_HISTORY_LIMIT);
   } catch {
     return null;
+  }
+}
+
+function clearLegacyLocalHistory() {
+  try {
+    localStorage.removeItem(PASSWORD_HISTORY_KEY);
+  } catch {
+    // Legacy storage cleanup is best effort.
   }
 }
 
@@ -85,7 +94,7 @@ function createPassword(length: number, characters: string, requiredGroups: read
 export function RandomPasswordTool() {
   const { t } = useTranslation();
   const { pushToast } = useToast();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("random-password");
+  const { icon: ToolIcon, iconClassName } = getToolboxTool("random-password")!;
   const [length, setLength] = useState("10");
   const [characters, setCharacters] = useState(DEFAULT_CHARACTERS);
   const [groups, setGroups] = useState<SelectedGroups>(DEFAULT_GROUPS);
@@ -98,7 +107,14 @@ export function RandomPasswordTool() {
   const historyQueueRef = useRef<Promise<void>>(Promise.resolve());
   const historyVersionRef = useRef(0);
   const historyLoadDiscardedRef = useRef(false);
-  const legacyHistoryPendingRef = useRef(false);
+  const { copied, copy: copyToClipboard } = useCopyToClipboard({
+    onError: () => {
+      pushToast({
+        title: t("randomPasswordCopyFailed", "Unable to copy password"),
+        kind: "error",
+      });
+    },
+  });
 
   const enqueueHistoryOperation = useCallback((operation: () => Promise<void>) => {
     const pending = historyQueueRef.current.then(operation);
@@ -128,11 +144,9 @@ export function RandomPasswordTool() {
   };
 
   const toggleGroup = (groupId: CharacterGroupId) => {
-    setGroups((currentGroups) => {
-      const nextGroups = { ...currentGroups, [groupId]: !currentGroups[groupId] };
-      setCharacters(rebuildCharacters(nextGroups));
-      return nextGroups;
-    });
+    const nextGroups = { ...groups, [groupId]: !groups[groupId] };
+    setGroups(nextGroups);
+    setCharacters(rebuildCharacters(nextGroups));
     setValidationError("");
   };
 
@@ -150,8 +164,11 @@ export function RandomPasswordTool() {
       try {
         await enqueueHistoryOperation(async () => {
           try {
-            const stored = await invoke<string | null>("get_secret", { key: PASSWORD_HISTORY_KEY });
-            if (stored !== null) {
+            const stored = await invokeToolboxCommand<string | null>("get_secret", {
+              key: PASSWORD_HISTORY_KEY,
+            });
+
+            if (typeof stored === "string") {
               const parsed = parsePasswordHistory(stored);
               if (parsed) {
                 if (!historyLoadDiscardedRef.current) {
@@ -166,7 +183,8 @@ export function RandomPasswordTool() {
               if (historyVersionRef.current !== loadVersion) {
                 return;
               }
-              await invoke("delete_secret", { key: PASSWORD_HISTORY_KEY });
+              await invokeToolboxCommand("delete_secret", { key: PASSWORD_HISTORY_KEY });
+              clearLegacyLocalHistory();
               if (active && historyVersionRef.current === loadVersion) {
                 historyRef.current = [];
                 setHistory([]);
@@ -178,58 +196,8 @@ export function RandomPasswordTool() {
               return;
             }
 
-            const legacyHistory = localStorage.getItem(PASSWORD_HISTORY_KEY);
-            if (legacyHistory === null) {
-              return;
-            }
-
-            const parsed = parsePasswordHistory(legacyHistory);
-            if (!parsed) {
-              if (historyVersionRef.current !== loadVersion) {
-                return;
-              }
-              localStorage.removeItem(PASSWORD_HISTORY_KEY);
-              if (active) {
-                pushToast({
-                  title: t("randomPasswordHistoryInvalid", "Copied password history was invalid and has been cleared."),
-                  kind: "error",
-                });
-              }
-              return;
-            }
-
-            if (historyLoadDiscardedRef.current) {
-              return;
-            }
-            historyRef.current = parsed;
-            legacyHistoryPendingRef.current = true;
-            if (historyVersionRef.current !== loadVersion) {
-              return;
-            }
-
-            try {
-              await invoke("save_secret", {
-                key: PASSWORD_HISTORY_KEY,
-                value: JSON.stringify(parsed),
-              });
-              localStorage.removeItem(PASSWORD_HISTORY_KEY);
-              legacyHistoryPendingRef.current = false;
-              if (active && historyVersionRef.current === loadVersion) {
-                setHistory(parsed);
-                pushToast({
-                  title: t("randomPasswordHistoryMigrated", "Copied password history was moved to secure storage."),
-                  kind: "success",
-                });
-              }
-            } catch {
-              if (active && historyVersionRef.current === loadVersion) {
-                setHistory(parsed);
-                pushToast({
-                  title: t("randomPasswordHistoryMigrationFailed", "Unable to move copied password history to secure storage."),
-                  kind: "error",
-                });
-              }
-            }
+            // A legacy localStorage record is cleared, never migrated to secrets storage.
+            clearLegacyLocalHistory();
           } catch {
             if (active && historyVersionRef.current === loadVersion) {
               pushToast({
@@ -288,15 +256,8 @@ export function RandomPasswordTool() {
   };
 
   const copyPassword = async (password: string) => {
-    try {
-      await navigator.clipboard.writeText(password);
-    } catch {
-      pushToast({
-        title: t("randomPasswordCopyFailed", "Unable to copy password"),
-        kind: "error",
-      });
-      return;
-    }
+    const succeeded = await copyToClipboard(password);
+    if (!succeeded) return;
 
     historyVersionRef.current += 1;
     setCopiedPassword(password);
@@ -306,14 +267,10 @@ export function RandomPasswordTool() {
         PASSWORD_HISTORY_LIMIT,
       );
       try {
-        await invoke("save_secret", {
+        await invokeToolboxCommand("save_secret", {
           key: PASSWORD_HISTORY_KEY,
           value: JSON.stringify(nextHistory),
         });
-        if (legacyHistoryPendingRef.current) {
-          localStorage.removeItem(PASSWORD_HISTORY_KEY);
-          legacyHistoryPendingRef.current = false;
-        }
         historyRef.current = nextHistory;
         setHistory(nextHistory);
         pushToast({
@@ -334,13 +291,8 @@ export function RandomPasswordTool() {
     historyLoadDiscardedRef.current = true;
     void enqueueHistoryOperation(async () => {
       try {
-        await invoke("delete_secret", { key: PASSWORD_HISTORY_KEY });
-        try {
-          localStorage.removeItem(PASSWORD_HISTORY_KEY);
-        } catch {
-          // 受保护存储已清除，旧浏览器存储清理失败不应阻断当前操作。
-        }
-        legacyHistoryPendingRef.current = false;
+        await invokeToolboxCommand("delete_secret", { key: PASSWORD_HISTORY_KEY });
+        clearLegacyLocalHistory();
         historyRef.current = [];
         setHistory([]);
         pushToast({
@@ -515,7 +467,7 @@ export function RandomPasswordTool() {
                 aria-label={t("randomPasswordCopy", "Copy password")}
                 title={t("randomPasswordCopy", "Copy password")}
               >
-                {copiedPassword === password ? <Check className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}
+                {copied && copiedPassword === password ? <Check className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}
               </button>
             </div>
           ))}

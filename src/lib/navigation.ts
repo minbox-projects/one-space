@@ -1,3 +1,5 @@
+import { resolveToolboxNavigationAlias } from "@/toolbox/registry";
+
 export type SmartWorkspaceSection =
   | "conversations"
   | "assistants"
@@ -8,10 +10,6 @@ export type JttParserTab = "jt808" | "jt809" | "jt1078" | "hex";
 
 export type MoreToolsSection =
   | "bookmarks"
-  | "cloud"
-  | "backup"
-  | "notes"
-  | "snippets"
   | "ssh"
   | "ssh-tunnels"
   | "protocol-router"
@@ -37,71 +35,30 @@ const SMART_WORKSPACE_ALIAS_MAP: Record<string, SmartWorkspaceSection> = {
   "ai-model-center": "models",
 };
 
-const MORE_TOOLS_ALIAS_MAP: Record<string, MoreToolsSection> = {
-  bookmarks: "bookmarks",
-  cloud: "cloud",
-  backup: "backup",
-  ssh: "ssh",
-  ["ssh-tunnels"]: "ssh-tunnels",
-  ["protocol-router"]: "protocol-router",
-  ["random-password"]: "random-password",
-  ["json-parser"]: "json-parser",
-  ["md5-encryption"]: "md5-encryption",
-  ["short-link"]: "short-link",
-  ["file-sharing"]: "file-sharing",
-  ["jtt-data-parser"]: "jtt-data-parser",
-  ["ai-workflow-model-switcher"]: "ai-workflow-model-switcher",
-};
-
-const JTT_DATA_PARSER_ALIAS_TABS: Record<string, JttParserTab> = {
-  "808": "jt808",
-  "809": "jt809",
-  "1078": "jt1078",
-  hex: "hex",
-};
-
-export function normalizeLegacyTabTarget(target: string) {
-  if (
-    target === "agents" ||
-    target === "schedules" ||
-    target === "ai-assistant"
-  ) {
-    return "ai-assistants";
-  }
-  return target;
-}
-
 export function resolveNavigationTarget(target: string): ResolvedNavigationTarget {
-  const normalizedTarget = normalizeLegacyTabTarget(target);
-
-  if (normalizedTarget in SMART_WORKSPACE_ALIAS_MAP) {
+  if (target in SMART_WORKSPACE_ALIAS_MAP) {
     return {
       tab: "ai-assistants",
       smartWorkspaceSection:
-        SMART_WORKSPACE_ALIAS_MAP[normalizedTarget as keyof typeof SMART_WORKSPACE_ALIAS_MAP],
+        SMART_WORKSPACE_ALIAS_MAP[target as keyof typeof SMART_WORKSPACE_ALIAS_MAP],
     };
   }
 
-  if (normalizedTarget in JTT_DATA_PARSER_ALIAS_TABS) {
-    return {
-      tab: "more-tools",
-      moreToolsSection: "jtt-data-parser",
-      jttParserTab:
-        JTT_DATA_PARSER_ALIAS_TABS[
-          normalizedTarget as keyof typeof JTT_DATA_PARSER_ALIAS_TABS
-        ],
-    };
+  const toolboxTarget = resolveToolboxNavigationAlias(target);
+  if (toolboxTarget) {
+    if (toolboxTarget.moreToolsSection) {
+      return {
+        tab: "more-tools",
+        moreToolsSection: toolboxTarget.moreToolsSection as MoreToolsSection,
+        ...(toolboxTarget.jttParserTab
+          ? { jttParserTab: toolboxTarget.jttParserTab }
+          : {}),
+      };
+    }
+    return { tab: toolboxTarget.tab };
   }
 
-  if (normalizedTarget in MORE_TOOLS_ALIAS_MAP) {
-    return {
-      tab: "more-tools",
-      moreToolsSection:
-        MORE_TOOLS_ALIAS_MAP[normalizedTarget as keyof typeof MORE_TOOLS_ALIAS_MAP],
-    };
-  }
-
-  return { tab: normalizedTarget };
+  return { tab: target };
 }
 
 export function isSmartWorkspaceTab(tab: string) {
@@ -109,5 +66,6 @@ export function isSmartWorkspaceTab(tab: string) {
 }
 
 export function isMoreToolsTab(tab: string) {
-  return tab === "more-tools" || tab in MORE_TOOLS_ALIAS_MAP;
+  if (tab === "more-tools") return true;
+  return resolveToolboxNavigationAlias(tab)?.tab === "more-tools";
 }

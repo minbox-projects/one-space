@@ -11,6 +11,54 @@ import { findNodeValue } from "./testUtils";
 
 const VALID_PARAMS = { m1: "0", ia1: "0", ic1: "0" };
 
+function readUint32BE(bytes: number[], offset: number): number {
+  return (
+    (((bytes[offset] << 24) |
+      (bytes[offset + 1] << 16) |
+      (bytes[offset + 2] << 8) |
+      bytes[offset + 3]) >>>
+      0)
+  );
+}
+
+function positionBlockBytes(frameHex: string): number[] {
+  const bytes: number[] = [];
+  for (let index = 0; index < frameHex.length; index += 2) {
+    bytes.push(parseInt(frameHex.slice(index, index + 2), 16));
+  }
+  const bodyLength =
+    (((bytes[23] << 24) |
+      (bytes[24] << 16) |
+      (bytes[25] << 8) |
+      bytes[26]) >>>
+      0);
+  const body = bytes.slice(27, 27 + bodyLength);
+  const plateEnd = body.indexOf(0);
+  const locationStart = plateEnd + 2;
+  return body.slice(locationStart, locationStart + 28);
+}
+
+function crc16Ccitt(bytes: number[]): number {
+  let crc = 0xffff;
+  for (const byte of bytes) {
+    crc ^= byte << 8;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
+    }
+  }
+  return crc;
+}
+
+function frameCrc(frameHex: string): number {
+  const bytes: number[] = [];
+  for (let index = 0; index < frameHex.length; index += 2) {
+    bytes.push(parseInt(frameHex.slice(index, index + 2), 16));
+  }
+  const length =
+    (((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0);
+  return crc16Ccitt(bytes.slice(22, 4 + length - 2));
+}
+
 describe("analyzeJt809", () => {
   it("renders a 2019 unencrypted 0x0200 body through the frozen JT808 bridge", () => {
     const record = analyzeJt809(
@@ -19,18 +67,38 @@ describe("analyzeJt809", () => {
       "unencrypted",
       VALID_PARAMS,
     );
+    const position = positionBlockBytes(JT809_2019_UNENCRYPTED_0200);
+    const crc = frameCrc(JT809_2019_UNENCRYPTED_0200);
 
     expect(record.kind).toBe("success");
     expect(findNodeValue(record.tree, "报文类型")).toBe("0x0200");
     expect(findNodeValue(record.tree, "报文长度")).toBe("64");
     expect(findNodeValue(record.tree, "报文序列号")).toBe("4660");
     expect(findNodeValue(record.tree, "加密标识")).toBe("0x00 (不加密)");
-    expect(findNodeValue(record.tree, "校验码")).toBe("0x9A06");
+    expect(findNodeValue(record.tree, "校验码")).toBe(
+      `0x${crc.toString(16).toUpperCase().padStart(4, "0")}`,
+    );
     expect(findNodeValue(record.tree, "车牌号")).toBe("苏A12345");
     expect(findNodeValue(record.tree, "车辆颜色")).toBe("0x01");
-    expect(findNodeValue(record.tree, "经度")).toBe("118798298");
-    expect(findNodeValue(record.tree, "纬度")).toBe("32062838");
+    expect(findNodeValue(record.tree, "纬度")).toBe(String(readUint32BE(position, 8)));
+    expect(findNodeValue(record.tree, "经度")).toBe(String(readUint32BE(position, 12)));
     expect(findNodeValue(record.tree, "时间")).toBe("2026-09-04 14:30:00");
+  });
+
+  it("labels the bridge position block with latitude at byte offset 8 and longitude at byte offset 12", () => {
+    const position = positionBlockBytes(JT809_2019_UNENCRYPTED_0200);
+    const expectedLatitude = readUint32BE(position, 8);
+    const expectedLongitude = readUint32BE(position, 12);
+
+    const record = analyzeJt809(
+      JT809_2019_UNENCRYPTED_0200,
+      "2019",
+      "unencrypted",
+      VALID_PARAMS,
+    );
+
+    expect(findNodeValue(record.tree, "纬度")).toBe(String(expectedLatitude));
+    expect(findNodeValue(record.tree, "经度")).toBe(String(expectedLongitude));
   });
 
   it("marks every 2011 body as unsupported while keeping frame fields", () => {

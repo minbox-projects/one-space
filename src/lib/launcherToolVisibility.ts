@@ -1,49 +1,28 @@
+import { listToolboxTools } from "@/toolbox/registry";
+
 export const LAUNCHER_TOOL_VISIBILITY_KEY = "onespace_launcher_tool_visibility";
 export const LAUNCHER_TOOL_VISIBILITY_UPDATED_EVENT =
   "onespace:launcher-tool-visibility-updated";
 
-export type LauncherToolId =
-  | "bookmarks"
-  | "cloud"
-  | "ssh"
-  | "ssh-tunnels"
-  | "protocol-router"
-  | "random-password"
-  | "json-parser"
-  | "md5Encryption"
-  | "short-link"
-  | "file-sharing"
-  | "jtt-data-parser"
-  | "ai-workflow-model-switcher";
+export type LauncherToolId = string;
 
-export type LauncherToolVisibility = Record<LauncherToolId, boolean>;
+export type LauncherToolVisibility = Record<string, boolean>;
 
-const DEFAULT_VISIBILITY: LauncherToolVisibility = {
-  bookmarks: true,
-  cloud: true,
-  ssh: true,
-  "ssh-tunnels": true,
-  "protocol-router": true,
-  "random-password": true,
-  "json-parser": true,
-  md5Encryption: true,
-  "short-link": true,
-  "file-sharing": true,
-  "jtt-data-parser": true,
-  "ai-workflow-model-switcher": true,
-};
+const DEFAULT_VISIBILITY: LauncherToolVisibility = Object.fromEntries(
+  listToolboxTools("launcher-quick").map((tool) => [tool.id, tool.defaultVisible]),
+);
 
 export function readLauncherToolVisibility(): LauncherToolVisibility {
+  const visibility: LauncherToolVisibility = { ...DEFAULT_VISIBILITY };
   try {
     const raw = localStorage.getItem(LAUNCHER_TOOL_VISIBILITY_KEY);
-    if (!raw) return { ...DEFAULT_VISIBILITY };
+    if (!raw) return visibility;
     const parsed: unknown = JSON.parse(raw);
-    const visibility = { ...DEFAULT_VISIBILITY };
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return visibility;
     }
 
-    for (const toolId of Object.keys(DEFAULT_VISIBILITY) as LauncherToolId[]) {
+    for (const toolId of Object.keys(DEFAULT_VISIBILITY)) {
       const value = (parsed as Record<string, unknown>)[toolId];
       if (typeof value === "boolean") {
         visibility[toolId] = value;
@@ -51,7 +30,7 @@ export function readLauncherToolVisibility(): LauncherToolVisibility {
     }
     return visibility;
   } catch {
-    return { ...DEFAULT_VISIBILITY };
+    return visibility;
   }
 }
 
@@ -76,5 +55,5 @@ export function setLauncherToolVisible(
 
 export function isLauncherToolVisible(toolId: LauncherToolId): boolean {
   const visibility = readLauncherToolVisibility();
-  return visibility[toolId] ?? DEFAULT_VISIBILITY[toolId];
+  return visibility[toolId] ?? DEFAULT_VISIBILITY[toolId] ?? false;
 }

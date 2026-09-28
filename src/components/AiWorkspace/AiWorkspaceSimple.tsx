@@ -156,7 +156,6 @@ function buildAssistantCapabilitySnapshot(
   return {
     web_search: assistant?.tool_policy.web_search ?? false,
     workspace_read: assistant?.tool_policy.workspace_read ?? false,
-    notes_search: assistant?.tool_policy.notes_search ?? false,
     knowledge_base_ids: assistant?.knowledge_base_ids || [],
     mcp_server_ids: assistant?.mcp_server_ids || [],
     memory_enabled: assistant?.memory_enabled ?? false,
@@ -1266,9 +1265,6 @@ export function AiWorkspaceSimple() {
                       mcpServerCards={selectedConversationMcpCards}
                       workspaceReadEnabled={
                         currentCapabilitySnapshot.workspace_read || false
-                      }
-                      notesSearchEnabled={
-                        currentCapabilitySnapshot.notes_search || false
                       }
                       memoryEnabled={
                         currentCapabilitySnapshot.memory_enabled || false

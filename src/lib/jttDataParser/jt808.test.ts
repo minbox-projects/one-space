@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { analyzeJt808, jt808Modes } from "./jt808";
+import { analyzeJt808, buildJt808LocationNodes, jt808Modes } from "./jt808";
 import {
   JT808_BAD_CHECKSUM,
   JT808_BAD_ESCAPE,
@@ -18,14 +18,89 @@ import {
   JT808_MISS_FRAGMENT_1,
   JT808_MISS_FRAGMENT_3,
   JT808_NO_START,
+  JT808_POSITION_0200,
   JT808_POSITION_0704_TWO_FRAMES,
   JT808_TRUNCATED,
 } from "./fixtures";
+import { parseJt808Wire } from "./frame";
 import { findNode, findNodeValue, nodeLabels } from "./testUtils";
+
+function readUint32BE(bytes: number[], offset: number): number {
+  return (
+    (((bytes[offset] << 24) |
+      (bytes[offset + 1] << 16) |
+      (bytes[offset + 2] << 8) |
+      bytes[offset + 3]) >>>
+      0)
+  );
+}
+
+function hexToBytes(hex: string): number[] {
+  const bytes: number[] = [];
+  for (let index = 0; index < hex.length; index += 2) {
+    bytes.push(parseInt(hex.slice(index, index + 2), 16));
+  }
+  return bytes;
+}
+
+function bytesToHex(bytes: number[]): string {
+  return bytes.map((byte) => byte.toString(16).toUpperCase().padStart(2, "0")).join("");
+}
+
+function unescapeJt808(bytes: number[]): number[] {
+  const output: number[] = [];
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] === 0x7d && bytes[index + 1] === 0x01) {
+      output.push(0x7d);
+      index += 1;
+    } else if (bytes[index] === 0x7d && bytes[index + 1] === 0x02) {
+      output.push(0x7e);
+      index += 1;
+    } else {
+      output.push(bytes[index]);
+    }
+  }
+  return output;
+}
+
+function fixtureInner(fixture: string): number[] {
+  const bytes = hexToBytes(fixture);
+  return unescapeJt808(bytes.slice(1, -1));
+}
+
+function fixtureBody(fixture: string): number[] {
+  const inner = fixtureInner(fixture);
+  const bodyLength = ((inner[2] << 8) | inner[3]) & 0x3ff;
+  return inner.slice(12, 12 + bodyLength);
+}
+
+// 0x0801 多媒体上传: 8-byte media header, then the 28-byte position block.
+function fixture0801PositionBlock(fixture: string): number[] {
+  return fixtureBody(fixture).slice(8, 36);
+}
+
+// 0x0801 分包帧: skip the 12-byte frame header and the 4-byte subpackage
+// header before the body, then read the 8-byte media header plus the
+// 28-byte position block.
+function subpackaged0801PositionBlock(fixture: string): number[] {
+  const inner = fixtureInner(fixture);
+  const bodyLength = ((inner[2] << 8) | inner[3]) & 0x3ff;
+  return inner.slice(16, 16 + bodyLength).slice(8, 36);
+}
+
+function fixtureChecksum(fixture: string): number {
+  const inner = fixtureInner(fixture);
+  const bodyLength = ((inner[2] << 8) | inner[3]) & 0x3ff;
+  return inner
+    .slice(0, 12 + bodyLength)
+    .reduce((acc, byte) => acc ^ byte, 0);
+}
 
 describe("analyzeJt808", () => {
   it("parses an escaped 2013 0x0801 frame and decodes the escaped bytes", () => {
     const [record] = analyzeJt808(JT808_F1_2013_0801_ESCAPED, "automatic");
+    const position = fixture0801PositionBlock(JT808_F1_2013_0801_ESCAPED);
+    const checksum = fixtureChecksum(JT808_F1_2013_0801_ESCAPED);
 
     expect(record.kind).toBe("success");
     expect(record.line).toBe(1);
@@ -35,31 +110,37 @@ describe("analyzeJt808", () => {
     expect(findNodeValue(record.tree, "版本")).toBe("2013");
     expect(findNodeValue(record.tree, "终端手机号")).toBe("013123456789");
     expect(findNodeValue(record.tree, "消息流水号")).toBe("1024");
-    expect(findNodeValue(record.tree, "校验和")).toBe("0x76");
+    expect(findNodeValue(record.tree, "校验和")).toBe(
+      `0x${checksum.toString(16).toUpperCase().padStart(2, "0")}`,
+    );
     expect(findNodeValue(record.tree, "多媒体类型")).toBe("0x02 (音频)");
     expect(findNodeValue(record.tree, "多媒体格式编码")).toBe("0x03 (MP3)");
     expect(findNodeValue(record.tree, "多媒体数据 (Hex)")).toBe("01027E7D0304");
-    expect(findNodeValue(record.tree, "经度")).toBe("118798298");
+    expect(findNodeValue(record.tree, "纬度")).toBe(String(readUint32BE(position, 8)));
+    expect(findNodeValue(record.tree, "经度")).toBe(String(readUint32BE(position, 12)));
     expect(findNodeValue(record.tree, "时间")).toBe("2026-09-04 14:30:00");
   });
 
   it("reads the same frame as 2011 in automatic mode when no version marker is present", () => {
     const [record] = analyzeJt808(JT808_F2_2011_0801, "automatic");
+    const f2Body = fixtureBody(JT808_F2_2011_0801);
 
     expect(record.kind).toBe("success");
     expect(findNodeValue(record.tree, "版本")).toBe("2011");
     expect(findNode(record.tree, "位置信息")).toBeUndefined();
     expect(findNodeValue(record.tree, "多媒体数据 (Hex)")).toBe(
-      "00000000000000020714B7DA01E93D76000C002D005A260904143000AABBCCDD",
+      bytesToHex(f2Body.slice(8)),
     );
   });
 
   it("interprets the version-sensitive fixture as 2013 in force-2013 mode", () => {
     const [record] = analyzeJt808(JT808_F2_2011_0801, "force-2013");
+    const position = fixture0801PositionBlock(JT808_F2_2011_0801);
 
     expect(record.kind).toBe("success");
     expect(findNodeValue(record.tree, "版本")).toBe("2013");
-    expect(findNodeValue(record.tree, "经度")).toBe("118798298");
+    expect(findNodeValue(record.tree, "纬度")).toBe(String(readUint32BE(position, 8)));
+    expect(findNodeValue(record.tree, "经度")).toBe(String(readUint32BE(position, 12)));
     expect(findNodeValue(record.tree, "多媒体数据 (Hex)")).toBe("AABBCCDD");
   });
 
@@ -113,6 +194,28 @@ describe("analyzeJt808", () => {
     expect(findNodeValue(records[0].tree, "总包数")).toBe("3");
     expect(findNodeValue(records[0].tree, "多媒体数据 (Hex)")).toBe("01020304");
     expect(findNodeValue(records[1].tree, "分包数据 (Hex)")).toBe("05067E070809");
+  });
+
+  it("merges F3 subpackages with the position block in specification order", () => {
+    const records = analyzeJt808(
+      [JT808_F3_FRAGMENT_1, JT808_F3_FRAGMENT_2, JT808_F3_FRAGMENT_3].join("\n"),
+      "automatic",
+    );
+
+    // 从原始 fixture 十六进制独立取 F3 的位置块:
+    // 纬度在偏移 8, 经度在偏移 12 (AC-013 规格顺序)。
+    const position = subpackaged0801PositionBlock(JT808_F3_FRAGMENT_1);
+    const expectedLatitude = readUint32BE(position, 8);
+    const expectedLongitude = readUint32BE(position, 12);
+
+    expect(expectedLatitude).toBe(32062838);
+    expect(expectedLongitude).toBe(118798298);
+    expect(findNodeValue(records[0].tree, "纬度")).toBe(
+      String(expectedLatitude),
+    );
+    expect(findNodeValue(records[0].tree, "经度")).toBe(
+      String(expectedLongitude),
+    );
   });
 
   it("keeps a duplicate package index from merging", () => {
@@ -189,6 +292,20 @@ describe("analyzeJt808", () => {
     const [record] = analyzeJt808(input, "automatic");
     expect(record.kind).toBe("error");
     expect(record.error).toBe(error);
+  });
+
+  it("labels the 0x0200 position block with latitude at byte offset 8 and longitude at byte offset 12", () => {
+    const parsed = parseJt808Wire(JT808_POSITION_0200);
+    if (!parsed.ok) throw new Error(parsed.error);
+
+    const body = parsed.header.body;
+    const expectedLatitude = readUint32BE(body, 8);
+    const expectedLongitude = readUint32BE(body, 12);
+
+    const nodes = buildJt808LocationNodes(body);
+
+    expect(findNodeValue(nodes, "纬度")).toBe(String(expectedLatitude));
+    expect(findNodeValue(nodes, "经度")).toBe(String(expectedLongitude));
   });
 
   it("exposes only the five public modes and excludes Ruiding and GPS51", () => {

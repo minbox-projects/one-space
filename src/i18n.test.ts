@@ -110,6 +110,51 @@ describe("AI 网关遗留双语文案键移除", () => {
   });
 });
 
+// REQ-005 / AC-012 guard: the cleanup drops this unreferenced SSH tunnel key.
+const REMOVED_SSH_TUNNEL_BILINGUAL_KEYS = [
+  "sshTunnelGroupConnectPartialMessageTitle",
+] as const;
+
+describe("SSH 隧道遗留双语文案键移除", () => {
+  it.each(["en", "zh"] as const)("为 %s 移除未引用的 SSH 隧道双语键", (language) => {
+    const keyPaths = new Set(collectKeyPaths(resourceBundle(language)));
+    for (const key of REMOVED_SSH_TUNNEL_BILINGUAL_KEYS) {
+      expect(
+        keyPaths.has(key),
+        `${language} 中已移除键 ${key} 不应存在`,
+      ).toBe(false);
+    }
+  });
+
+  it("移除后 en 与 zh 的键路径集合仍完全一致", () => {
+    const enPaths = collectKeyPaths(resourceBundle("en"));
+    const zhPaths = collectKeyPaths(resourceBundle("zh"));
+    const enSet = new Set(enPaths);
+    const zhSet = new Set(zhPaths);
+    const onlyEn = enPaths.filter((path) => !zhSet.has(path));
+    const onlyZh = zhPaths.filter((path) => !enSet.has(path));
+    expect({ onlyEn, onlyZh }).toEqual({ onlyEn: [], onlyZh: [] });
+  });
+});
+
+// REQ-009 / AC-016 guard: notes_search is withdrawn, so its bilingual label
+// must not survive in either bundle.
+const REMOVED_NOTES_SEARCH_BILINGUAL_KEYS = [
+  "allowNotesSearchLabel",
+] as const;
+
+describe("notes_search 遗留双语文案键移除", () => {
+  it.each(["en", "zh"] as const)("为 %s 移除未引用的 notes_search 双语键", (language) => {
+    const keyPaths = new Set(collectKeyPaths(resourceBundle(language)));
+    for (const key of REMOVED_NOTES_SEARCH_BILINGUAL_KEYS) {
+      expect(
+        keyPaths.has(key),
+        `${language} 中已移除键 ${key} 不应存在`,
+      ).toBe(false);
+    }
+  });
+});
+
 const PROVIDER_TEMPLATE_KEYS = [
   "aiGatewayProviderTemplates",
   "aiGatewayTemplateModelsCount",

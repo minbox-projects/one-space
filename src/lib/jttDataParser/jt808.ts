@@ -7,11 +7,11 @@ import type { Jt808Version, ParsedJt808Header } from "./frame";
 import type { Jt1078Operation } from "./types";
 import {
   buildJt808FrameTree,
-  bytesToHex,
-  hexWord,
+  parseJt808Position,
   parseJt808Wire,
   splitWireFrameHexes,
 } from "./frame";
+import { bcdTime, bytesToHex, hexByte, hexDword, hexWord, readUint32 } from "./hex";
 import { nonBlankSourceLines } from "./lexing";
 import { jt1078BodyNode } from "./jt1078";
 import { buildJt808AnswerJson, buildJt808PositionJson } from "./jt808Json";
@@ -79,44 +79,17 @@ function groupState(group: PackageGroup): string {
   return complete ? "完整合并" : "缺少分包";
 }
 
-function readUint32(bytes: number[], offset: number): number {
-  return (
-    ((bytes[offset] ?? 0) << 24) |
-    ((bytes[offset + 1] ?? 0) << 16) |
-    ((bytes[offset + 2] ?? 0) << 8) |
-    (bytes[offset + 3] ?? 0)
-  );
-}
-
-function hexByte(byte: number): string {
-  return `0x${byte.toString(16).toUpperCase().padStart(2, "0")}`;
-}
-
-function hexDword(value: number): string {
-  return `0x${value.toString(16).toUpperCase().padStart(8, "0")}`;
-}
-
-function bcdTime(bytes: number[]): string {
-  let digits = "";
-  for (const byte of bytes) {
-    digits += ((byte >> 4) & 0x0f).toString();
-    digits += (byte & 0x0f).toString();
-  }
-  const parts = digits.match(/.{2}/g) ?? [];
-  const [year, month, day, hour, minute, second] = parts;
-  return `20${year}-${month}-${day} ${hour}:${minute}:${second}`;
-}
-
 export function buildJt808LocationNodes(bytes: number[]): ResultNode[] {
+  const position = parseJt808Position(bytes);
   return [
-    { label: "报警标志", value: hexDword(readUint32(bytes, 0)) },
-    { label: "状态", value: hexDword(readUint32(bytes, 4)) },
-    { label: "经度", value: String(readUint32(bytes, 8)) },
-    { label: "纬度", value: String(readUint32(bytes, 12)) },
-    { label: "海拔", value: String(((bytes[16] ?? 0) << 8) | (bytes[17] ?? 0)) },
-    { label: "速度", value: String(((bytes[18] ?? 0) << 8) | (bytes[19] ?? 0)) },
-    { label: "方向", value: String(((bytes[20] ?? 0) << 8) | (bytes[21] ?? 0)) },
-    { label: "时间", value: bcdTime(bytes.slice(22, 28)) },
+    { label: "报警标志", value: hexDword(position.alarm) },
+    { label: "状态", value: hexDword(position.status) },
+    { label: "纬度", value: String(position.latitude) },
+    { label: "经度", value: String(position.longitude) },
+    { label: "海拔", value: String(position.elevation) },
+    { label: "速度", value: String(position.speed) },
+    { label: "方向", value: String(position.direction) },
+    { label: "时间", value: bcdTime(position.time) },
   ];
 }
 

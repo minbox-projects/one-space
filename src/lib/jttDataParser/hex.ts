@@ -7,14 +7,70 @@ import {
 
 export type HexConversionResult = { output?: string; error?: string };
 
-const HEX_DIGIT_PATTERN = /^[0-9A-Fa-f]+$/;
+export const HEX_DIGIT_PATTERN = /^[0-9A-Fa-f]+$/;
 
-function hexToBytes(compact: string): number[] {
+export function hexToBytes(compact: string): number[] {
   const bytes: number[] = [];
   for (let index = 0; index < compact.length; index += 2) {
     bytes.push(parseInt(compact.slice(index, index + 2), 16));
   }
   return bytes;
+}
+
+export function bytesToHex(bytes: number[]): string {
+  return bytes.map((byte) => byte.toString(16).toUpperCase().padStart(2, "0")).join("");
+}
+
+export function hex2(value: number): string {
+  return value.toString(16).toUpperCase().padStart(2, "0");
+}
+
+export function hex4(value: number): string {
+  return value.toString(16).toUpperCase().padStart(4, "0");
+}
+
+export function hexByte(value: number): string {
+  return `0x${hex2(value)}`;
+}
+
+export function hexWord(value: number): string {
+  return `0x${hex4(value)}`;
+}
+
+export function hexDword(value: number): string {
+  return `0x${value.toString(16).toUpperCase().padStart(8, "0")}`;
+}
+
+export function readUint8(bytes: number[], offset: number): number {
+  return bytes[offset] ?? 0;
+}
+
+export function readUint16(bytes: number[], offset: number): number {
+  return ((bytes[offset] ?? 0) << 8) | (bytes[offset + 1] ?? 0);
+}
+
+export function readUint32(bytes: number[], offset: number): number {
+  return (
+    (((bytes[offset] ?? 0) << 24) |
+      ((bytes[offset + 1] ?? 0) << 16) |
+      ((bytes[offset + 2] ?? 0) << 8) |
+      (bytes[offset + 3] ?? 0)) >>>
+    0
+  );
+}
+
+export function bcdDigits(bytes: number[]): string {
+  let digits = "";
+  for (const byte of bytes) {
+    digits += ((byte >> 4) & 0x0f).toString();
+    digits += (byte & 0x0f).toString();
+  }
+  return digits;
+}
+
+export function bcdTime(bytes: number[]): string {
+  const [year, month, day, hour, minute, second] = bcdDigits(bytes).match(/.{2}/g) ?? [];
+  return `20${year}-${month}-${day} ${hour}:${minute}:${second}`;
 }
 
 export type Utf8DecodeResult = { ok: true; text: string } | { ok: false };
@@ -75,7 +131,7 @@ export function hasIsolatedSurrogate(text: string): boolean {
   return false;
 }
 
-export function utf8BytesOf(text: string): number[] {
+function utf8BytesOf(text: string): number[] {
   const bytes: number[] = [];
   for (let index = 0; index < text.length; index += 1) {
     const code = text.codePointAt(index) as number;

@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Star, Plus, Search, Trash2, ExternalLink, FolderOpen, Globe, Edit2, Loader2 } from 'lucide-react';
@@ -8,7 +7,8 @@ import { useConfirmDialog } from './ConfirmDialogProvider';
 import { useToast } from './ToastProvider';
 import { errorToMessage, recordMessage } from '@/lib/messages';
 import { isLikelyLocalPath, openExternalUrl, openLocalPath } from '@/lib/externalActions';
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { getToolboxTool } from "@/toolbox/registry";
+import { invokeToolboxCommand } from "@/toolbox/invoke";
 
 interface Bookmark {
   id: string;
@@ -23,7 +23,7 @@ export function Bookmarks() {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const { pushToast } = useToast();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("bookmarks");
+  const { icon: ToolIcon, iconClassName } = getToolboxTool("bookmarks")!;
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -45,7 +45,7 @@ export function Bookmarks() {
     }
     try {
       setLoading(true);
-      const jsonStr: string = await invoke('read_bookmarks');
+      const jsonStr = await invokeToolboxCommand<string>('read_bookmarks');
       const data = JSON.parse(jsonStr);
       setBookmarks(data.sort((a: Bookmark, b: Bookmark) => b.created_at - a.created_at));
     } catch (err) {
@@ -62,7 +62,7 @@ export function Bookmarks() {
   const saveBookmarksToDisk = async (newBookmarks: Bookmark[]) => {
     if (!isTauri) return;
     try {
-      await invoke('save_bookmarks', { bookmarksJson: JSON.stringify(newBookmarks) });
+      await invokeToolboxCommand('save_bookmarks', { bookmarksJson: JSON.stringify(newBookmarks) });
       setBookmarks(newBookmarks.sort((a, b) => b.created_at - a.created_at));
     } catch (err) {
       console.error("Failed to save bookmarks", err);
