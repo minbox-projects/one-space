@@ -79,9 +79,6 @@ pub(in crate::ai_assistant) fn build_system_prompt(
         if capability.workspace_read {
             capability_lines.push("Workspace reading is enabled for this assistant.".to_string());
         }
-        if capability.notes_search {
-            capability_lines.push("Notes search is enabled for this assistant.".to_string());
-        }
         if !capability.knowledge_base_ids.is_empty() {
             capability_lines.push(format!(
                 "Bound knowledge bases: {}.",

@@ -171,8 +171,6 @@ pub struct AssistantCapabilitySnapshot {
     #[serde(default)]
     pub workspace_read: bool,
     #[serde(default)]
-    pub notes_search: bool,
-    #[serde(default)]
     pub knowledge_base_ids: Vec<String>,
     #[serde(default)]
     pub mcp_server_ids: Vec<String>,
@@ -346,8 +344,6 @@ pub struct AgentToolPolicy {
     pub web_search: bool,
     #[serde(default)]
     pub workspace_read: bool,
-    #[serde(default)]
-    pub notes_search: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -237,7 +237,6 @@ pub(in crate::ai_assistant) fn capability_snapshot_from_agent(
         Some(agent) => AssistantCapabilitySnapshot {
             web_search: web_search_enabled,
             workspace_read: agent.tool_policy.workspace_read,
-            notes_search: agent.tool_policy.notes_search,
             knowledge_base_ids: agent.knowledge_base_ids.clone(),
             mcp_server_ids: agent.mcp_server_ids.clone(),
             memory_enabled: agent.memory_enabled,
