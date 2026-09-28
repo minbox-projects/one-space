@@ -55,7 +55,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "应用外壳、侧边栏/更多工具导航解析、全局 Provider、i18n 与错误边界",
+      "responsibility": "应用外壳、侧边栏/更多工具导航解析（工具别名经工具箱注册表解析，无旧标签归一化）、全局 Provider、i18n 与错误边界",
       "entries": [
         "src/App.tsx"
       ],
@@ -63,7 +63,7 @@
         "src/main.tsx",
         "src/i18n.ts",
         "src/lib/navigation.ts",
-        "src/lib/moreToolPresentation.ts",
+        "src/toolbox/registry.ts",
         "src/components/MoreToolsHub.tsx",
         "src/components/SmartWorkspaceHub.tsx",
         "src/components/MessageCenter.tsx",
@@ -86,12 +86,6 @@
           "name": "resolveNavigationTarget",
           "kind": "function",
           "visibility": "public"
-        },
-        {
-          "file": "src/lib/moreToolPresentation.ts",
-          "name": "getMoreToolPresentation",
-          "kind": "function",
-          "visibility": "public"
         }
       ],
       "depends_on": [],
@@ -100,7 +94,7 @@
         "src/main.tsx",
         "src/i18n.ts",
         "src/lib/navigation.ts",
-        "src/lib/moreToolPresentation.ts",
+        "src/toolbox/registry.ts",
         "src/components/MoreToolsHub.tsx",
         "src/components/SmartWorkspaceHub.tsx",
         "src/components/MessageCenter.tsx",
@@ -119,6 +113,255 @@
       "shared_entry": false
     },
     {
+      "id": "toolbox-plugin-registry",
+      "name": "Toolbox Plugin Registry",
+      "aliases": [
+        "toolbox",
+        "tool-registry",
+        "toolbox-runtime"
+      ],
+      "module_root": "frontend",
+      "owner_role": "frontend",
+      "responsibility": "工具箱唯一注册表与共享运行时：每个工具一个描述符（`ToolboxToolDescriptor`），Hub 网格/详情、Launcher 快速工具与内部目标、导航别名解析、可见性与排序默认值、Notes/Snippets 侧边栏与托盘入口以及 App 活动工具面包屑全部由注册表派生；另提供共享 invoke（`invokeToolboxCommand` / `ToolboxInvokeError` / `isToolboxInvokeAvailable`）、localStorage（`readLocalJson` / `writeLocalJson`）、历史（`createHistoryStore`）、复制反馈（`useCopyToClipboard`，`COPIED_FEEDBACK_RESET_MS = 1600`）、Tauri 事件（`useTauriEvent`）、可见性轮询（`useVisibleInterval`）与 ToolShell、ToolErrorBanner、ToolStatusBadge、ToolEmptyState",
+      "entries": [
+        "src/toolbox/registry.ts"
+      ],
+      "related_files": [
+        "src/toolbox/types.ts",
+        "src/toolbox/plugins/ai-workflow-model-switcher.ts",
+        "src/toolbox/plugins/bookmarks.ts",
+        "src/toolbox/plugins/file-sharing.ts",
+        "src/toolbox/plugins/json-parser.ts",
+        "src/toolbox/plugins/jtt-data-parser.ts",
+        "src/toolbox/plugins/md5-encryption.ts",
+        "src/toolbox/plugins/notes.ts",
+        "src/toolbox/plugins/protocol-router.ts",
+        "src/toolbox/plugins/random-password.ts",
+        "src/toolbox/plugins/short-link.ts",
+        "src/toolbox/plugins/snippets.ts",
+        "src/toolbox/plugins/ssh-servers.ts",
+        "src/toolbox/plugins/ssh-tunnels.ts",
+        "src/toolbox/invoke.ts",
+        "src/toolbox/localStore.ts",
+        "src/toolbox/historyStore.ts",
+        "src/toolbox/useCopyToClipboard.ts",
+        "src/toolbox/useTauriEvent.ts",
+        "src/toolbox/useVisibleInterval.ts",
+        "src/components/toolbox/ToolShell.tsx",
+        "src/components/toolbox/ToolErrorBanner.tsx",
+        "src/components/toolbox/ToolStatusBadge.tsx",
+        "src/components/toolbox/ToolEmptyState.tsx"
+      ],
+      "tests": [
+        "src/toolbox/registry.test.ts",
+        "src/toolbox/invoke.test.ts",
+        "src/toolbox/localStore.test.ts",
+        "src/toolbox/historyStore.test.ts",
+        "src/toolbox/useCopyToClipboard.test.tsx",
+        "src/toolbox/useTauriEvent.test.tsx",
+        "src/toolbox/useVisibleInterval.test.tsx",
+        "src/components/toolbox/ToolShell.test.tsx",
+        "src/components/toolbox/ToolStatusBadge.test.tsx"
+      ],
+      "symbols": [
+        {
+          "file": "src/toolbox/registry.ts",
+          "name": "TOOLBOX_TOOLS",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/registry.ts",
+          "name": "listToolboxTools",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/registry.ts",
+          "name": "getToolboxTool",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/registry.ts",
+          "name": "resolveToolboxNavigationAlias",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/registry.ts",
+          "name": "assertToolboxRegistryIntegrity",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/registry.ts",
+          "name": "resolveToolboxText",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/types.ts",
+          "name": "ToolboxSurface",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/types.ts",
+          "name": "JttParserTabId",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/types.ts",
+          "name": "ToolboxNavAlias",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/types.ts",
+          "name": "ToolboxToolDescriptor",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/types.ts",
+          "name": "ToolboxBilingualText",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/types.ts",
+          "name": "ResolvedToolboxTarget",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/invoke.ts",
+          "name": "invokeToolboxCommand",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/invoke.ts",
+          "name": "ToolboxInvokeError",
+          "kind": "class",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/invoke.ts",
+          "name": "isToolboxInvokeAvailable",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/localStore.ts",
+          "name": "readLocalJson",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/localStore.ts",
+          "name": "writeLocalJson",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/historyStore.ts",
+          "name": "createHistoryStore",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/useCopyToClipboard.ts",
+          "name": "useCopyToClipboard",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/useCopyToClipboard.ts",
+          "name": "COPIED_FEEDBACK_RESET_MS",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/useTauriEvent.ts",
+          "name": "useTauriEvent",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/useVisibleInterval.ts",
+          "name": "useVisibleInterval",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/toolbox/ToolShell.tsx",
+          "name": "ToolShell",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/toolbox/ToolErrorBanner.tsx",
+          "name": "ToolErrorBanner",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/toolbox/ToolStatusBadge.tsx",
+          "name": "ToolStatusBadge",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/toolbox/ToolEmptyState.tsx",
+          "name": "ToolEmptyState",
+          "kind": "function",
+          "visibility": "public"
+        }
+      ],
+      "depends_on": [],
+      "read_scope": [
+        "src/toolbox/registry.ts",
+        "src/toolbox/types.ts",
+        "src/toolbox/plugins/ai-workflow-model-switcher.ts",
+        "src/toolbox/plugins/bookmarks.ts",
+        "src/toolbox/plugins/file-sharing.ts",
+        "src/toolbox/plugins/json-parser.ts",
+        "src/toolbox/plugins/jtt-data-parser.ts",
+        "src/toolbox/plugins/md5-encryption.ts",
+        "src/toolbox/plugins/notes.ts",
+        "src/toolbox/plugins/protocol-router.ts",
+        "src/toolbox/plugins/random-password.ts",
+        "src/toolbox/plugins/short-link.ts",
+        "src/toolbox/plugins/snippets.ts",
+        "src/toolbox/plugins/ssh-servers.ts",
+        "src/toolbox/plugins/ssh-tunnels.ts",
+        "src/toolbox/invoke.ts",
+        "src/toolbox/localStore.ts",
+        "src/toolbox/historyStore.ts",
+        "src/toolbox/useCopyToClipboard.ts",
+        "src/toolbox/useTauriEvent.ts",
+        "src/toolbox/useVisibleInterval.ts",
+        "src/components/toolbox/ToolShell.tsx",
+        "src/components/toolbox/ToolErrorBanner.tsx",
+        "src/components/toolbox/ToolStatusBadge.tsx",
+        "src/components/toolbox/ToolEmptyState.tsx",
+        "src/toolbox/registry.test.ts",
+        "src/toolbox/invoke.test.ts",
+        "src/toolbox/localStore.test.ts",
+        "src/toolbox/historyStore.test.ts",
+        "src/toolbox/useCopyToClipboard.test.tsx",
+        "src/toolbox/useTauriEvent.test.tsx",
+        "src/toolbox/useVisibleInterval.test.tsx",
+        "src/components/toolbox/ToolShell.test.tsx",
+        "src/components/toolbox/ToolStatusBadge.test.tsx"
+      ],
+      "relations": [],
+      "shared_entry": false
+    },
+    {
       "id": "tray-menu",
       "name": "Tray Menu",
       "aliases": [
@@ -127,13 +370,14 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "托盘原生菜单所有权：`buildTrayMenuModel` 结构/标签/启用勾选/快捷键提示（遵循已注册快捷键的语义，`Meta` 不是修饰键，非法或未命名值省略）、`applyTrayMenu` 原生应用（单条目 accelerator 被拒时降级重试），`src/App.tsx` 控制器按窗口可见性、服务状态、`tray-shortcuts-updated`（Settings 保存快捷键后发出）与 i18n 语言变化重建并执行全部动作",
+      "responsibility": "托盘原生菜单所有权：`buildTrayMenuModel` 结构/标签/启用勾选/快捷键提示（遵循已注册快捷键的语义，`Meta` 不是修饰键，非法或未命名值省略）、`applyTrayMenu` 原生应用（单条目 accelerator 被拒时降级重试），Notes / Snippets 条目按工具 id 经工具箱注册表描述符解析标签（缺失时回退 `tray.notes` / `tray.snippets`），`src/App.tsx` 控制器按窗口可见性、服务状态、`tray-shortcuts-updated`（Settings 保存快捷键后发出）与 i18n 语言变化重建并执行全部动作",
       "entries": [
         "src/lib/trayMenu.ts"
       ],
       "related_files": [
         "src/App.tsx",
-        "src/i18n.ts"
+        "src/i18n.ts",
+        "src/toolbox/registry.ts"
       ],
       "tests": [
         "src/App.trayMenu.test.tsx",
@@ -182,6 +426,7 @@
         "src/App.trayMenu.test.tsx",
         "src/App.tsx",
         "src/i18n.ts",
+        "src/toolbox/registry.ts",
         "src/lib/trayMenu.test.ts",
         "src/lib/trayMenu.ts"
       ],
@@ -498,7 +743,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "应用内 AI 对话、助手预设、工具调用展示与 MCP 能力预览",
+      "responsibility": "应用内 AI 对话、助手预设、工具调用展示与 MCP 能力预览；能力徽标/开关与前端类型不再包含 `notes_search`，能力集与后端快照一致",
       "entries": [
         "src/components/AiWorkspace.tsx"
       ],
@@ -710,13 +955,14 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "启动应用 / 脚本 / URL / 文件夹及内部页面跳转，工具排序与可见性",
+      "responsibility": "启动应用 / 脚本 / URL / 文件夹及内部页面跳转；Launcher 快速工具与内部目标由工具箱注册表派生（`listToolboxTools(\"launcher-quick\")` 与别名解析），排序与可见性默认值同样来自注册表；已移除 `ai-flow` 过滤与旧 localStorage 到后端的启动项迁移",
       "entries": [
         "src/components/Launcher.tsx"
       ],
       "related_files": [
         "src/lib/launcherToolOrder.ts",
         "src/lib/launcherToolVisibility.ts",
+        "src/toolbox/registry.ts",
         "src/lib/actionDescriptors/appSystemEvents.ts",
         "src/lib/actionDescriptors/backup.ts",
         "src/lib/actionDescriptors/mcpServers.ts",
@@ -748,6 +994,7 @@
         "src/components/Launcher.tsx",
         "src/lib/launcherToolOrder.ts",
         "src/lib/launcherToolVisibility.ts",
+        "src/toolbox/registry.ts",
         "src/lib/actionDescriptors/appSystemEvents.ts",
         "src/lib/actionDescriptors/backup.ts",
         "src/lib/actionDescriptors/mcpServers.ts",
@@ -1662,35 +1909,6 @@
       "shared_entry": false
     },
     {
-      "id": "cloud-drive",
-      "name": "Cloud Drive (experimental)",
-      "aliases": [
-        "cloud-drive"
-      ],
-      "module_root": "frontend",
-      "owner_role": "frontend",
-      "responsibility": "实验性云盘界面：token 保存、基础浏览与示例文件列表",
-      "entries": [
-        "src/components/CloudDrive.tsx"
-      ],
-      "related_files": [],
-      "tests": [],
-      "symbols": [
-        {
-          "file": "src/components/CloudDrive.tsx",
-          "name": "CloudDrive",
-          "kind": "function",
-          "visibility": "public"
-        }
-      ],
-      "depends_on": [],
-      "read_scope": [
-        "src/components/CloudDrive.tsx"
-      ],
-      "relations": [],
-      "shared_entry": false
-    },
-    {
       "id": "fish-pond",
       "name": "Fish Pond & Games",
       "aliases": [
@@ -2118,6 +2336,7 @@
         "src/components/AiWorkflowModelSwitcher/index.ts"
       ],
       "related_files": [
+        "src/toolbox/plugins/ai-workflow-model-switcher.ts",
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.tsx",
         "src/components/AiWorkflowModelSwitcher/SearchableModelCombobox.tsx",
         "src/lib/aiWorkflowProfiles.ts",
@@ -2159,13 +2378,13 @@
         },
         {
           "file": "src/lib/aiWorkflowProfiles.ts",
-          "name": "saveAndActivateProfile",
+          "name": "activateProfile",
           "kind": "function",
           "visibility": "public"
         },
         {
           "file": "src/lib/aiWorkflowProfiles.ts",
-          "name": "activateProfile",
+          "name": "renameProfile",
           "kind": "function",
           "visibility": "public"
         },
@@ -2185,6 +2404,7 @@
       "depends_on": [],
       "read_scope": [
         "src/components/AiWorkflowModelSwitcher/index.ts",
+        "src/toolbox/plugins/ai-workflow-model-switcher.ts",
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.tsx",
         "src/components/AiWorkflowModelSwitcher/SearchableModelCombobox.tsx",
         "src/lib/aiWorkflowProfiles.ts",
@@ -2203,7 +2423,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "AI Workflow profile 与模型源后端：规范化 profile 矩阵，严格校验并原子保存 YAML；save-only 保存不运行 CLI 或改变 active profile，save-and-activate 在激活失败时回滚原始 YAML",
+      "responsibility": "AI Workflow profile 与模型源后端：规范化 profile 矩阵，严格校验并原子保存 YAML；save-only 保存不运行 CLI 或改变 active profile，激活由独立命令执行且激活失败不丢弃已保存的 profile；原子 save-and-activate 命令及其回滚链已移除",
       "entries": [
         "src-tauri/src/ai_workflow_profiles.rs"
       ],
@@ -3290,7 +3510,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "应用内助手对话、provider 调用、工具执行与定时任务调度",
+      "responsibility": "应用内助手对话、provider 调用、工具执行与定时任务调度；`AgentToolPolicy` 与 `AssistantCapabilitySnapshot` 不再携带 notes_search（策略仅 web_search 与 workspace_read，快照另含知识库、MCP 与记忆字段），模型工具定义、会话提示与默认 agents 同步收紧",
       "entries": [
         "src-tauri/src/ai_assistant.rs"
       ],
