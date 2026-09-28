@@ -24,28 +24,15 @@ import {
 } from "./ProviderTemplateIcon";
 import { formatTimeHms } from "./gatewayShared";
 import {
-  formatGatewayTimestamp,
   isCommandCodeProvider,
   isOpencodeGoProvider,
   isMappingDeprecated,
   providerKeyPool,
-  providerKeyState,
-  PROVIDER_KEY_STATE_TRANSLATION_KEYS,
-  type GatewayProviderKeyState,
   type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
 } from "@/lib/aiGateway";
 
 export type ProviderStatusFilter = "all" | "enabled" | "disabled";
-
-const providerKeyStateClass: Record<GatewayProviderKeyState, string> = {
-  usable:
-    "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-  disabled: "border-border bg-muted text-muted-foreground",
-  quota:
-    "border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-400",
-  auth: "border-rose-500/20 bg-rose-500/10 text-rose-600 dark:text-rose-400",
-};
 
 type UpstreamProviderListProps = {
   providers: GatewayUpstreamProvider[];
@@ -636,7 +623,7 @@ export function UpstreamProviderList({
                     </div>
                   </div>
 
-                  {/* 中间信息：Base URL 与映射数量 */}
+                  {/* 中间信息：Base URL 与映射及密钥数量 */}
                   <div className="mt-2.5 space-y-1">
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                       <Globe className="h-3.5 w-3.5 shrink-0 opacity-70" />
@@ -645,24 +632,24 @@ export function UpstreamProviderList({
                       </span>
                     </div>
 
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 opacity-70" />
-                      <span>
-                        {mappingCount > 0
-                          ? t("aiGatewayMappingCount", {
-                              count: mappingCount,
-                              defaultValue: `${mappingCount} mappings configured`,
-                            })
-                          : t("aiGatewayNoMappingsShort", "No mappings (default routing)")}
-                      </span>
-                    </div>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      <div className="flex items-center gap-1.5">
+                        <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                        <span>
+                          {mappingCount > 0
+                            ? t("aiGatewayMappingCount", {
+                                count: mappingCount,
+                                defaultValue: `${mappingCount} mappings configured`,
+                              })
+                            : t("aiGatewayNoMappingsShort", "No mappings (default routing)")}
+                        </span>
+                      </div>
 
-                    {providerKeys.length > 0 ? (
-                      <div
-                        data-testid={`ai-gateway-provider-keys-${provider.id}`}
-                        className="mt-1.5 space-y-1"
-                      >
-                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      {providerKeys.length > 0 ? (
+                        <div
+                          data-testid={`ai-gateway-provider-keys-${provider.id}`}
+                          className="flex items-center gap-1.5"
+                        >
                           <KeyRound className="h-3.5 w-3.5 shrink-0 opacity-70" />
                           <span>
                             {t("aiGatewayProviderKeysSummary", {
@@ -671,37 +658,8 @@ export function UpstreamProviderList({
                             })}
                           </span>
                         </div>
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          {providerKeys.map((key) => {
-                            const state = providerKeyState(key);
-                            const markedTime = formatGatewayTimestamp(
-                              key.marked_at,
-                            );
-                            return (
-                              <span
-                                key={key.id}
-                                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-4 ${providerKeyStateClass[state]}`}
-                              >
-                                <span className="max-w-[10rem] truncate">
-                                  {key.name}
-                                </span>
-                                <span className="opacity-60">·</span>
-                                <span>
-                                  {t(
-                                    PROVIDER_KEY_STATE_TRANSLATION_KEYS[state],
-                                  )}
-                                </span>
-                                {markedTime ? (
-                                  <span className="font-normal opacity-80">
-                                    {markedTime}
-                                  </span>
-                                ) : null}
-                              </span>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ) : null}
+                      ) : null}
+                    </div>
                   </div>
 
                   {isCommandCodeProvider(provider) ? (

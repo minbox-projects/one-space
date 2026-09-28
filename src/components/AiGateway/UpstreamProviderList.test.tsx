@@ -1145,11 +1145,14 @@ describe("UpstreamProviderList 上游密钥池摘要", () => {
     await i18n.changeLanguage("en");
   });
 
-  it("服务商卡片汇总密钥名称与状态", () => {
+  it("服务商卡片展示密钥数量且与映射数量在同一行展示，不展示具体密钥列表与状态", () => {
     const providers: GatewayUpstreamProvider[] = [
       makeProvider({
         id: "p-keys",
         name: "Keyed Provider",
+        mappings: [
+          { local_model: "gpt-4o", upstream_model: "gpt-4o", enabled: true },
+        ],
         keys: [
           providerKey({ id: "k1", name: "Primary Key", enabled: true }),
           providerKey({
@@ -1175,20 +1178,27 @@ describe("UpstreamProviderList 上游密钥池摘要", () => {
     );
 
     const summary = screen.getByTestId("ai-gateway-provider-keys-p-keys");
-    expect(summary).toHaveTextContent("Primary Key");
-    expect(summary).toHaveTextContent("Quota Key");
-    expect(summary).toHaveTextContent(
-      i18n.t("aiGatewayProviderKeyStateUsable"),
-    );
-    expect(summary).toHaveTextContent(
-      i18n.t("aiGatewayProviderKeyStateQuota"),
-    );
     expect(summary).toHaveTextContent(
       i18n.t("aiGatewayProviderKeysSummary", { count: 2 }),
     );
+    expect(summary).not.toHaveTextContent("Primary Key");
+    expect(summary).not.toHaveTextContent("Quota Key");
+    expect(summary).not.toHaveTextContent(
+      i18n.t("aiGatewayProviderKeyStateUsable"),
+    );
+    expect(summary).not.toHaveTextContent(
+      i18n.t("aiGatewayProviderKeyStateQuota"),
+    );
+
+    const parentRow = summary.parentElement;
+    expect(parentRow).toHaveClass("flex", "flex-wrap", "items-center");
+    expect(parentRow).toHaveTextContent(
+      i18n.t("aiGatewayMappingCount", { count: 1 }),
+    );
+    expect(parentRow).toContainElement(summary);
   });
 
-  it("全部密钥禁用时卡片摘要展示已禁用状态", () => {
+  it("服务商密钥禁用时卡片仍展示密钥数量且不展示具体密钥名称与禁用状态", () => {
     const providers: GatewayUpstreamProvider[] = [
       makeProvider({
         id: "p-off",
@@ -1209,8 +1219,11 @@ describe("UpstreamProviderList 上游密钥池摘要", () => {
     );
 
     const summary = screen.getByTestId("ai-gateway-provider-keys-p-off");
-    expect(summary).toHaveTextContent("Off Key");
     expect(summary).toHaveTextContent(
+      i18n.t("aiGatewayProviderKeysSummary", { count: 1 }),
+    );
+    expect(summary).not.toHaveTextContent("Off Key");
+    expect(summary).not.toHaveTextContent(
       i18n.t("aiGatewayProviderKeyStateDisabled"),
     );
   });
