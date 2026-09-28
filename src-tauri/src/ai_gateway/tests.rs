@@ -29458,6 +29458,7 @@ async fn ac022_streaming_probe_reaches_a_quota_probe_after_the_last_usable_key_i
         key_b["auto_marked"], false,
         "a successful probe must clear the key mark: {key_b}"
     );
+}
 // ---------------------------------------------------------------------------
 // 20260928-ai-gateway-log-provider-grouping-filter Step 1 (RED): provider
 // grouping, the exact provider filter, the provider facet and the grouped-page
