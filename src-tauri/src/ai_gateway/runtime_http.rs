@@ -2,7 +2,8 @@ use super::forwarding::{forward_non_streaming, open_streaming_response};
 use super::selection::{
     candidate_providers, classify_failure_with_message, clear_key_runtime_state,
     clear_mapping_runtime_state, default_retry_delay, find_key_probe_candidate,
-    find_probe_candidate, is_quota_exceeded_message, is_retryable_with_message, mapping_matches_key,
+    find_probe_candidate, is_authentication_error_message, is_quota_exceeded_message,
+    is_retryable_with_message, mapping_matches_key,
     mark_key_failure, quota_mark_expired, rearm_key_probe, rearm_mapping_probe_cooldown,
     register_mapping_failure, register_mapping_success, resolve_model_for_protocol,
     resolve_session_id, retry_header_delay, select_usable_key, session_affinity,
@@ -236,6 +237,11 @@ pub(in crate::ai_gateway) struct ForwardCapture {
     /// The downstream client went away mid-forward, so the request is neither
     /// a success nor an error and its whole log buffer is discarded.
     pub(in crate::ai_gateway) downstream_cancelled: bool,
+    /// The gateway-generated terminal message of an all-unavailable 502 (the
+    /// same text placed in the response's `error.message`), carried to the
+    /// terminal log row when no upstream attempt completed. `None` for every
+    /// path that stores its own per-attempt error text.
+    pub(in crate::ai_gateway) message: Option<String>,
 }
 
 impl ForwardCapture {
@@ -594,6 +600,13 @@ fn failure_reason(status: u16, body_parsed: bool, error_message: Option<&str>) -
     format!("{base} ({msg})")
 }
 
+/// Actionable clause appended to the all-unavailable message when at least one
+/// reported provider has an authentication-failed excluded key. Authentication
+/// marks are manual-only, so the operator must re-enable those keys in the AI
+/// Gateway.
+const AUTHENTICATION_REENABLE_HINT: &str =
+    "re-enable authentication-failed keys manually in the AI Gateway";
+
 fn all_unavailable_message(failures: &[(String, String)]) -> String {
     if failures.is_empty() {
         return "all providers unavailable: every candidate failed".to_string();
@@ -614,7 +627,17 @@ fn all_unavailable_message(failures: &[(String, String)]) -> String {
     } else {
         ""
     };
-    format!("all providers unavailable: {summary}{hint}")
+    // The authentication hint is appended once, only when an authentication
+    // -failed key was actually excluded from a candidate key pool (the summary is
+    // the only failure reason that can carry that phrase).
+    let auth_hint = if failures.iter().any(|(_, r)| {
+        r.starts_with("no usable upstream key (") && r.contains("authentication failed")
+    }) {
+        format!(" ({AUTHENTICATION_REENABLE_HINT})")
+    } else {
+        String::new()
+    };
+    format!("all providers unavailable: {summary}{hint}{auth_hint}")
 }
 
 /// Persist one immediate-disable outcome (401/403) against the latest on-disk
@@ -1111,12 +1134,17 @@ fn clear_ttl_expired_key_runtime_state(
 
 
 
-/// Classify a pre-first-byte HTTP failure as key-scoped: 401/403 mark the key
-/// authentication-failed and a quota-classified 429 marks it quota-exhausted.
-/// Every other status is not key-scoped.
+/// Classify a pre-first-byte HTTP failure as key-scoped: a 401 always marks the
+/// key authentication-failed, a 403 marks it only when its sanitized text names
+/// a credential problem, and a quota-classified 429 marks it quota-exhausted.
+/// Every other status is not key-scoped, so a non-credential 403 falls through
+/// to the mapping-scoped immediate disable.
 fn key_failure_kind(status: u16, error_message: Option<&str>) -> Option<KeyFailureKind> {
     match status {
-        401 | 403 => Some(KeyFailureKind::Authentication),
+        401 => Some(KeyFailureKind::Authentication),
+        403 if is_authentication_error_message(error_message) => {
+            Some(KeyFailureKind::Authentication)
+        }
         429 if is_quota_exceeded_message(error_message) => Some(KeyFailureKind::Quota),
         _ => None,
     }
@@ -1389,6 +1417,53 @@ fn record_provider_failure_if_absent(
     }
 }
 
+/// The actionable reason for a provider that has no usable key, built from its
+/// key pool in the fixed category order authentication failed, quota exhausted,
+/// user disabled and listing only non-zero categories.
+///
+/// A key with `enabled == false` counts as user disabled regardless of any stale
+/// runtime mark; an enabled key counts by its runtime mark. `request_has_enabled_key`
+/// is the request-level fact that at least one candidate provider still has an
+/// enabled key: when the whole request has none, the reason collapses to the
+/// request-wide `no enabled key` wording instead of per-key counts (AC-006).
+/// The summary never includes a key value.
+fn excluded_key_summary(
+    provider: &GatewayUpstreamProvider,
+    request_has_enabled_key: bool,
+) -> String {
+    let mut authentication = 0usize;
+    let mut quota = 0usize;
+    let mut user_disabled = 0usize;
+    for key in &provider.keys {
+        if !key.enabled {
+            user_disabled += 1;
+            continue;
+        }
+        match key.failure_kind {
+            Some(KeyFailureKind::Authentication) => authentication += 1,
+            Some(KeyFailureKind::Quota) => quota += 1,
+            None => {}
+        }
+    }
+    if authentication == 0 && quota == 0 && user_disabled == 0 {
+        return "no usable upstream key (no enabled key)".to_string();
+    }
+    if !request_has_enabled_key {
+        return "no usable upstream key (no enabled key)".to_string();
+    }
+    let mut categories = Vec::new();
+    if authentication > 0 {
+        categories.push(format!("{authentication} authentication failed"));
+    }
+    if quota > 0 {
+        categories.push(format!("{quota} quota exhausted"));
+    }
+    if user_disabled > 0 {
+        categories.push(format!("{user_disabled} user disabled"));
+    }
+    format!("no usable upstream key ({})", categories.join(", "))
+}
+
 /// Try the candidates for a non-streaming request: one immediate fallback-first
 /// pass in order, then bounded retries per provider in earliest-deadline order.
 ///
@@ -1407,6 +1482,12 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
 ) -> HttpResponse {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
+    // Whether any candidate provider still has an enabled key. When none does,
+    // a provider with no usable key reports the request-wide `no enabled key`
+    // reason rather than per-key user-disabled counts (AC-006).
+    let request_has_enabled_key = ordered
+        .iter()
+        .any(|provider| provider.keys.iter().any(|key| key.enabled));
     let mut health = RequestHealth {
         suppress_transport_failures,
         ..Default::default()
@@ -1552,11 +1633,8 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                 });
             }
         } else if selected_none {
-            record_provider_failure_if_absent(
-                &mut failures,
-                &provider.name,
-                "no usable upstream key",
-            );
+            let reason = excluded_key_summary(&provider, request_has_enabled_key);
+            record_provider_failure_if_absent(&mut failures, &provider.name, &reason);
             last_capture = Some(ForwardCapture {
                 provider_id: provider.id.clone(),
                 provider_name: provider.name.clone(),
@@ -1697,11 +1775,8 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                 schedule = true;
             }
         } else if selected_none {
-            record_provider_failure_if_absent(
-                &mut failures,
-                &candidate.provider.name,
-                "no usable upstream key",
-            );
+            let reason = excluded_key_summary(&candidate.provider, request_has_enabled_key);
+            record_provider_failure_if_absent(&mut failures, &candidate.provider.name, &reason);
         }
         if schedule {
             candidate.attempted_keys.clear();
@@ -1842,10 +1917,13 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
     }
 
     health.apply();
-    let mut response = json_response(502, all_unavailable_payload(all_unavailable_message(&failures)));
+    let message = all_unavailable_message(&failures);
+    let mut response = json_response(502, all_unavailable_payload(message.clone()));
     let mut capture = last_capture.unwrap_or_default();
     capture.status = 502;
     capture.all_unavailable = true;
+    // The terminal row records the same diagnostic the caller received.
+    capture.message = Some(message);
     response.capture = Some(capture);
     response
 }
@@ -1892,6 +1970,10 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
 ) -> Result<ForwardCapture, String> {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
+    // Whether any candidate provider still has an enabled key (AC-006).
+    let request_has_enabled_key = ordered
+        .iter()
+        .any(|provider| provider.keys.iter().any(|key| key.enabled));
     let mut health = RequestHealth {
         suppress_transport_failures,
         ..Default::default()
@@ -1942,7 +2024,15 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     &candidate.attempted_keys,
                 ) else {
                     // A provider with no usable key and no eligible probe is never
-                    // contacted; continue the request on the next candidate.
+                    // contacted; name it with its excluded-key summary and
+                    // continue the request on the next candidate.
+                    let reason =
+                        excluded_key_summary(&candidate.provider, request_has_enabled_key);
+                    record_provider_failure_if_absent(
+                        &mut failures,
+                        &candidate.provider.name,
+                        &reason,
+                    );
                     continue;
                 };
                 (candidate, retries.len(), None, selected)
@@ -1957,6 +2047,15 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     key_probe_used,
                     &candidate.attempted_keys,
                 ) else {
+                    // No usable key remains for this retry candidate; name it
+                    // with its excluded-key summary and drop it.
+                    let reason =
+                        excluded_key_summary(&candidate.provider, request_has_enabled_key);
+                    record_provider_failure_if_absent(
+                        &mut failures,
+                        &candidate.provider.name,
+                        &reason,
+                    );
                     continue;
                 };
                 (candidate, index, None, selected)
@@ -2468,7 +2567,8 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     health.apply();
     // Nothing was written downstream yet, so the failure is a plain HTTP 502
     // JSON response rather than an SSE error event over HTTP 200 (REQ-003).
-    let response = json_response(502, all_unavailable_payload(all_unavailable_message(&failures)));
+    let message = all_unavailable_message(&failures);
+    let response = json_response(502, all_unavailable_payload(message.clone()));
     write_response(writer, response).await?;
     // The transport is 502, but the log records the real upstream failure status
     // (0 when no upstream HTTP status was determinable, for example a network
@@ -2476,6 +2576,8 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     capture.status = last_failure_status.unwrap_or(502);
     capture.usage = None;
     capture.all_unavailable = true;
+    // The terminal row records the same diagnostic the caller received.
+    capture.message = Some(message);
     Ok(capture)
 }
 
@@ -2655,7 +2757,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
         // Streaming and non-streaming alike answer HTTP 502 + JSON before any
         // byte is written; the log always records the gateway failure status.
         let status = 502;
-        let response = json_response(502, all_unavailable_payload(message));
+        let response = json_response(502, all_unavailable_payload(message.clone()));
         stream
             .write_all(&http_response_bytes(response))
             .await
@@ -2663,7 +2765,8 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
         // A request that entered the normalized flow but had no serving
         // upstream is a failure (REQ-007/REQ-008), never a silent no-log; it
         // keeps the existing single synthetic terminal row and writes it
-        // through the single-row store call.
+        // through the single-row store call. The row records the same
+        // no-candidate explanation the caller received (REQ-003).
         record_usage_log(
             &config,
             &synthetic_terminal_row(
@@ -2672,6 +2775,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                 UsageResult::Failure,
                 status,
                 started.elapsed().as_millis().max(1) as u64,
+                Some(&message),
                 reasoning_effort,
             ),
         );
@@ -2796,13 +2900,15 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
             if attempts.is_empty() {
                 // No upstream attempt completed, so the request's only row is
                 // the gateway's own terminal row, like a no-candidate request
-                // (REQ-001).
+                // (REQ-001). It records the same all-unavailable diagnostic the
+                // caller received instead of an empty error (REQ-003).
                 let record = synthetic_terminal_row(
                     &config,
                     requested.as_deref().unwrap_or_default(),
                     capture.result(),
                     capture.status,
                     started.elapsed().as_millis().max(1) as u64,
+                    capture.message.as_deref(),
                     reasoning_effort.clone(),
                 );
                 record_usage_log(&config, &record);
@@ -2900,13 +3006,15 @@ fn record_request_usage_logs(
 }
 
 /// The gateway's own terminal row, attributed to no provider: an empty upstream
-/// model, no usage and no error message.
+/// model, no usage, and the gateway-generated diagnostic that accompanied the
+/// 502 response (for example the all-unavailable or no-candidate explanation).
 fn synthetic_terminal_row(
     config: &GatewayConfig,
     local_model: &str,
     result: UsageResult,
     status: u16,
     duration_ms: u64,
+    error_message: Option<&str>,
     reasoning_effort: Option<String>,
 ) -> UsageLogRecord {
     build_usage_log_row(
@@ -2919,7 +3027,7 @@ fn synthetic_terminal_row(
         status,
         None,
         duration_ms,
-        None,
+        error_message.map(str::to_string),
         true,
         reasoning_effort,
     )

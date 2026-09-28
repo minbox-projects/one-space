@@ -699,6 +699,36 @@ pub(in crate::ai_gateway) fn is_quota_exceeded_message(message: Option<&str>) ->
     false
 }
 
+/// Whether an upstream error message explicitly names a credential/authentication
+/// problem, case-insensitively.
+///
+/// Credential signals: `invalid api key`, `api key not valid`, `incorrect api
+/// key`, `invalid key`, `unauthorized`, `unauthenticated`, `authentication`,
+/// `auth failed`, `invalid token`, `token expired`, `invalid credentials` or
+/// `invalid authorization`. Absent or whitespace-only text is never a credential
+/// signal, so an empty 403 body stays a non-credential failure.
+pub(in crate::ai_gateway) fn is_authentication_error_message(message: Option<&str>) -> bool {
+    let Some(message) = message.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let lower = message.to_ascii_lowercase();
+    const SIGNALS: [&str; 12] = [
+        "invalid api key",
+        "api key not valid",
+        "incorrect api key",
+        "invalid key",
+        "unauthorized",
+        "unauthenticated",
+        "authentication",
+        "auth failed",
+        "invalid token",
+        "token expired",
+        "invalid credentials",
+        "invalid authorization",
+    ];
+    SIGNALS.iter().any(|signal| lower.contains(signal))
+}
+
 /// Classify an upstream failure with the sanitized error text available.
 ///
 /// A 429 whose message matches [`is_quota_exceeded_message`] is `Retryable`

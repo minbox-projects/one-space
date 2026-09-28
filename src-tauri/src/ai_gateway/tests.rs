@@ -1539,7 +1539,7 @@ async fn attempt_non_streaming_retries_provider_after_500_then_succeeds() {
     );
 }
 
-async fn assert_truncated_auth_non_streaming(status: u16) {
+async fn assert_truncated_auth_non_streaming(status: u16, key_scoped: bool) {
     let _home = isolated_temp_home(&format!("truncated-auth-non-streaming-{status}"));
     let auth_body = br#"{"error":{"message":"upstream auth failed"}}"#.to_vec();
     let auth_declared = auth_body.len() + 32;
@@ -1626,8 +1626,11 @@ async fn assert_truncated_auth_non_streaming(status: u16) {
     assert_eq!(attempts[1].error_message, None);
     assert!(attempts[1].duration_ms >= 1);
 
-    // REQ-004: a 401/403 is a key-scoped failure. The attempted key is marked
-    // with the auth failure kind while the mapping row stays untouched.
+    // REQ-001/REQ-002/AC-003: a 401 is key-scoped — it marks the attempted key
+    // with the auth failure kind while the mapping row stays untouched. A 403
+    // whose truncated body yields no readable credential text is
+    // non-credential: the key pool stays untouched and only the resolved mapping
+    // row auto-disables with the HTTP 403 reason.
     let persisted = super::storage::read_config().expect("read persisted provider state");
     let auth_provider = persisted
         .providers
@@ -1636,40 +1639,70 @@ async fn assert_truncated_auth_non_streaming(status: u16) {
         .expect("auth provider state");
     let auth_key = on_disk_key_entry("auth", "key-default")
         .expect("the attempted key must stay persisted");
-    assert_eq!(
-        auth_key["auto_marked"], true,
-        "HTTP {status} must mark the attempted key"
-    );
-    assert_eq!(auth_key["failure_kind"], "authentication");
-    assert!(
-        auth_key["reason"]
-            .as_str()
-            .unwrap_or("")
-            .contains(&status.to_string()),
-        "HTTP {status} key mark reason must name the status: {auth_key}"
-    );
-    assert!(
-        !auth_provider.mappings[0].auto_disabled,
-        "HTTP {status} must not auto-disable the mapping row for a key-scoped failure"
-    );
-    assert_eq!(
-        auth_provider.mappings[0].consecutive_failures, 0,
-        "HTTP {status} must not register mapping health"
-    );
-    assert_eq!(auth_provider.mappings[0].last_error_at, None);
+    if key_scoped {
+        assert_eq!(
+            auth_key["auto_marked"], true,
+            "HTTP {status} must mark the attempted key"
+        );
+        assert_eq!(auth_key["failure_kind"], "authentication");
+        assert!(
+            auth_key["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains(&status.to_string()),
+            "HTTP {status} key mark reason must name the status: {auth_key}"
+        );
+        assert!(
+            !auth_provider.mappings[0].auto_disabled,
+            "HTTP {status} must not auto-disable the mapping row for a key-scoped failure"
+        );
+        assert_eq!(
+            auth_provider.mappings[0].consecutive_failures, 0,
+            "HTTP {status} must not register mapping health"
+        );
+        assert_eq!(auth_provider.mappings[0].last_error_at, None);
+    } else {
+        assert_eq!(
+            auth_key["auto_marked"], false,
+            "a non-credential 403 must leave the attempted key unmarked: {auth_key}"
+        );
+        assert_eq!(auth_key["failure_kind"], Value::Null, "{auth_key}");
+        assert!(
+            auth_provider.mappings[0].auto_disabled,
+            "a non-credential 403 must auto-disable the resolved mapping row"
+        );
+        assert!(
+            auth_provider.mappings[0]
+                .disabled_reason
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("HTTP 403"),
+            "the mapping reason must name the HTTP 403: {:?}",
+            auth_provider.mappings[0].disabled_reason
+        );
+        assert_eq!(
+            auth_provider.mappings[0].consecutive_failures, 0,
+            "the immediate-disable settlement must not advance the transient-failure counter"
+        );
+        assert!(
+            auth_provider.mappings[0].last_error_at.is_some(),
+            "the immediate-disable settlement stamps the last error time: {:?}",
+            auth_provider.mappings[0].last_error_at
+        );
+    }
 }
 
 #[tokio::test]
 async fn truncated_auth_401_non_streaming_disables_once_and_falls_back() {
-    assert_truncated_auth_non_streaming(401).await;
+    assert_truncated_auth_non_streaming(401, true).await;
 }
 
 #[tokio::test]
 async fn truncated_auth_403_non_streaming_disables_once_and_falls_back() {
-    assert_truncated_auth_non_streaming(403).await;
+    assert_truncated_auth_non_streaming(403, false).await;
 }
 
-async fn assert_truncated_auth_streaming(status: u16) {
+async fn assert_truncated_auth_streaming(status: u16, key_scoped: bool) {
     let _home = isolated_temp_home(&format!("truncated-auth-streaming-{status}"));
     let auth_body = br#"{"error":{"message":"upstream auth failed"}}"#.to_vec();
     let auth_declared = auth_body.len() + 32;
@@ -1762,8 +1795,11 @@ async fn assert_truncated_auth_streaming(status: u16) {
     assert_eq!(attempts[1].error_message, None);
     assert!(attempts[1].duration_ms >= 1);
 
-    // REQ-004: a 401/403 is a key-scoped failure. The attempted key is marked
-    // with the auth failure kind while the mapping row stays untouched.
+    // REQ-001/REQ-002/AC-003: a 401 is key-scoped — it marks the attempted key
+    // with the auth failure kind while the mapping row stays untouched. A 403
+    // whose truncated body yields no readable credential text is
+    // non-credential: the key pool stays untouched and only the resolved mapping
+    // row auto-disables with the HTTP 403 reason.
     let persisted = super::storage::read_config().expect("read persisted provider state");
     let auth_provider = persisted
         .providers
@@ -1772,37 +1808,67 @@ async fn assert_truncated_auth_streaming(status: u16) {
         .expect("auth provider state");
     let auth_key = on_disk_key_entry("auth", "key-default")
         .expect("the attempted key must stay persisted");
-    assert_eq!(
-        auth_key["auto_marked"], true,
-        "HTTP {status} must mark the attempted key"
-    );
-    assert_eq!(auth_key["failure_kind"], "authentication");
-    assert!(
-        auth_key["reason"]
-            .as_str()
-            .unwrap_or("")
-            .contains(&status.to_string()),
-        "HTTP {status} key mark reason must name the status: {auth_key}"
-    );
-    assert!(
-        !auth_provider.mappings[0].auto_disabled,
-        "HTTP {status} must not auto-disable the mapping row for a key-scoped failure"
-    );
-    assert_eq!(
-        auth_provider.mappings[0].consecutive_failures, 0,
-        "HTTP {status} must not register mapping health"
-    );
-    assert_eq!(auth_provider.mappings[0].last_error_at, None);
+    if key_scoped {
+        assert_eq!(
+            auth_key["auto_marked"], true,
+            "HTTP {status} must mark the attempted key"
+        );
+        assert_eq!(auth_key["failure_kind"], "authentication");
+        assert!(
+            auth_key["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains(&status.to_string()),
+            "HTTP {status} key mark reason must name the status: {auth_key}"
+        );
+        assert!(
+            !auth_provider.mappings[0].auto_disabled,
+            "HTTP {status} must not auto-disable the mapping row for a key-scoped failure"
+        );
+        assert_eq!(
+            auth_provider.mappings[0].consecutive_failures, 0,
+            "HTTP {status} must not register mapping health"
+        );
+        assert_eq!(auth_provider.mappings[0].last_error_at, None);
+    } else {
+        assert_eq!(
+            auth_key["auto_marked"], false,
+            "a non-credential 403 must leave the attempted key unmarked: {auth_key}"
+        );
+        assert_eq!(auth_key["failure_kind"], Value::Null, "{auth_key}");
+        assert!(
+            auth_provider.mappings[0].auto_disabled,
+            "a non-credential 403 must auto-disable the resolved mapping row"
+        );
+        assert!(
+            auth_provider.mappings[0]
+                .disabled_reason
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("HTTP 403"),
+            "the mapping reason must name the HTTP 403: {:?}",
+            auth_provider.mappings[0].disabled_reason
+        );
+        assert_eq!(
+            auth_provider.mappings[0].consecutive_failures, 0,
+            "the immediate-disable settlement must not advance the transient-failure counter"
+        );
+        assert!(
+            auth_provider.mappings[0].last_error_at.is_some(),
+            "the immediate-disable settlement stamps the last error time: {:?}",
+            auth_provider.mappings[0].last_error_at
+        );
+    }
 }
 
 #[tokio::test]
 async fn truncated_auth_401_streaming_disables_once_and_falls_back() {
-    assert_truncated_auth_streaming(401).await;
+    assert_truncated_auth_streaming(401, true).await;
 }
 
 #[tokio::test]
 async fn truncated_auth_403_streaming_disables_once_and_falls_back() {
-    assert_truncated_auth_streaming(403).await;
+    assert_truncated_auth_streaming(403, false).await;
 }
 
 #[tokio::test]
@@ -4944,12 +5010,24 @@ async fn end_to_end_5xx_falls_back_and_tries_first_candidate_once() {
 
 #[tokio::test]
 async fn end_to_end_auth_failures_disable_immediately_and_switch() {
-    // AC-011: 401/403 disable the mapping right away, record the reason, and the
-    // request continues on the next candidate. Row-level settlement.
-    for status in [401u16, 403u16] {
-        let home = isolated_temp_home(&format!("e2e-auth-{status}"));
+    // REQ-001/REQ-002 + AC-001/AC-002/AC-003: a 401 and a credential-text 403
+    // are key-scoped — they mark the attempted key, the request continues on the
+    // next candidate and mapping health stays untouched. A 403 without a
+    // credential signal never marks the key and auto-disables only the resolved
+    // mapping row, still switching to the next candidate.
+    for (name, status, message, key_scoped) in [
+        ("401-empty", 401u16, "denied", true),
+        ("403-credential", 403u16, "invalid api key", true),
+        (
+            "403-non-credential",
+            403u16,
+            "MODEL_NOT_IN_PLAN: GPT-6 Sol available in Pro and above plans or extra on demand usage",
+            false,
+        ),
+    ] {
+        let home = isolated_temp_home(&format!("e2e-auth-{name}"));
         let (auth_url, auth_log) = spawn_mock_upstream(move |_| {
-            MockReply::Json(status, json!({"error": {"message": "denied"}}))
+            MockReply::Json(status, json!({"error": {"message": message}}))
         })
         .await;
         let (ok_url, ok_log) =
@@ -4991,34 +5069,58 @@ async fn end_to_end_auth_failures_disable_immediately_and_switch() {
         assert_eq!(attempts[0].provider_id, "a");
         assert_eq!(attempts[0].status, status);
         assert_eq!(attempts[0].result, UsageResult::Failure);
-        assert_eq!(attempts[0].error_message.as_deref(), Some("denied"));
+        assert_eq!(attempts[0].error_message.as_deref(), Some(message));
         assert_eq!(attempts[1].provider_id, "b");
         assert_eq!(attempts[1].status, 200);
 
-        // REQ-004: the 401/403 marks provider a's attempted key and the request
-        // continues on provider b; provider a's mapping health stays untouched.
         let live = super::storage::read_config().expect("read persisted provider state");
         let a_stored = live.providers.iter().find(|p| p.id == "a").unwrap();
         let a_key = on_disk_key_entry("a", "key-default")
             .expect("provider a's attempted key must stay persisted");
-        assert_eq!(
-            a_key["auto_marked"], true,
-            "status {status} must mark provider a's attempted key"
-        );
-        assert_eq!(a_key["failure_kind"], "authentication");
-        assert!(
-            a_key["reason"]
-                .as_str()
-                .unwrap_or("")
-                .contains(&status.to_string()),
-            "status {status} key mark reason must name the status: {a_key}"
-        );
-        assert!(
-            !a_stored.mappings[0].auto_disabled,
-            "status {status} must not auto-disable the mapping row for a key-scoped failure"
-        );
-        assert_eq!(a_stored.mappings[0].consecutive_failures, 0);
-        assert_eq!(a_stored.mappings[0].last_error_at, None);
+        if key_scoped {
+            // AC-002: the 401/credential 403 marks provider a's attempted key and
+            // the request continues on provider b; mapping health stays untouched.
+            assert_eq!(
+                a_key["auto_marked"], true,
+                "status {status} must mark provider a's attempted key"
+            );
+            assert_eq!(a_key["failure_kind"], "authentication");
+            assert!(
+                a_key["reason"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains(&status.to_string()),
+                "status {status} key mark reason must name the status: {a_key}"
+            );
+            assert!(
+                !a_stored.mappings[0].auto_disabled,
+                "status {status} must not auto-disable the mapping row for a key-scoped failure"
+            );
+            assert_eq!(a_stored.mappings[0].consecutive_failures, 0);
+            assert_eq!(a_stored.mappings[0].last_error_at, None);
+        } else {
+            // AC-001: a non-credential 403 leaves the key pool untouched and
+            // auto-disables only the resolved mapping row with the HTTP 403
+            // reason.
+            assert_eq!(
+                a_key["auto_marked"], false,
+                "a non-credential 403 must leave the attempted key unmarked: {a_key}"
+            );
+            assert_eq!(a_key["failure_kind"], Value::Null, "{a_key}");
+            assert!(
+                a_stored.mappings[0].auto_disabled,
+                "a non-credential 403 must auto-disable the resolved mapping row"
+            );
+            assert!(
+                a_stored.mappings[0]
+                    .disabled_reason
+                    .as_deref()
+                    .unwrap_or("")
+                    .starts_with("HTTP 403"),
+                "the mapping reason must name the HTTP 403: {:?}",
+                a_stored.mappings[0].disabled_reason
+            );
+        }
         let b_stored = live.providers.iter().find(|p| p.id == "b").unwrap();
         assert!(!b_stored.mappings[0].auto_disabled);
         let b_key = on_disk_key_entry("b", "key-default").expect("provider b key must persist");
@@ -9487,12 +9589,13 @@ async fn retry_stream_429_switches_without_counting_provider_health() {
     assert!(!stored.mappings[0].auto_disabled, "429 must not auto-disable the provider");
 }
 
-/// REQ-004: status semantics outrank response shape. HTML authentication
-/// failures disable immediately and then the stream can continue from a later
-/// candidate.
+/// REQ-001/REQ-002: status semantics outrank response shape. An HTML 401 is
+/// key-scoped: it marks the attempted key and the stream continues from a later
+/// candidate with mapping health untouched. An HTML 403 without a credential
+/// signal never marks the key and auto-disables only the resolved mapping row.
 #[tokio::test]
 async fn retry_stream_html_401_and_403_disable_immediately() {
-    for status in [401u16, 403u16] {
+    for (status, key_scoped) in [(401u16, true), (403u16, false)] {
         let _home = isolated_temp_home(&format!("retry-stream-html-auth-{status}"));
         let (auth_url, auth_attempts) = spawn_streaming_sequence_mock(vec![StreamingReply::Status {
             status,
@@ -9528,24 +9631,45 @@ async fn retry_stream_html_401_and_403_disable_immediately() {
         let stored = live.providers.iter().find(|item| item.id == "a").unwrap();
         let auth_key = on_disk_key_entry("a", "key-default")
             .expect("the auth provider's attempted key must persist");
-        assert_eq!(
-            auth_key["auto_marked"], true,
-            "HTML {status} must mark the attempted key"
-        );
-        assert_eq!(auth_key["failure_kind"], "authentication");
-        assert!(
-            auth_key["reason"]
-                .as_str()
-                .unwrap_or("")
-                .contains(&status.to_string()),
-            "HTML {status} key mark reason: {auth_key}"
-        );
-        assert!(
-            !stored.mappings[0].auto_disabled,
-            "HTML {status} must not auto-disable the mapping row for a key-scoped failure"
-        );
-        assert_eq!(stored.mappings[0].consecutive_failures, 0);
-        assert_eq!(stored.mappings[0].last_error_at, None);
+        if key_scoped {
+            assert_eq!(
+                auth_key["auto_marked"], true,
+                "HTML {status} must mark the attempted key"
+            );
+            assert_eq!(auth_key["failure_kind"], "authentication");
+            assert!(
+                auth_key["reason"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains(&status.to_string()),
+                "HTML {status} key mark reason: {auth_key}"
+            );
+            assert!(
+                !stored.mappings[0].auto_disabled,
+                "HTML {status} must not auto-disable the mapping row for a key-scoped failure"
+            );
+            assert_eq!(stored.mappings[0].consecutive_failures, 0);
+            assert_eq!(stored.mappings[0].last_error_at, None);
+        } else {
+            assert_eq!(
+                auth_key["auto_marked"], false,
+                "HTML {status} without a credential signal must leave the key unmarked: {auth_key}"
+            );
+            assert_eq!(auth_key["failure_kind"], Value::Null, "{auth_key}");
+            assert!(
+                stored.mappings[0].auto_disabled,
+                "HTML {status} without a credential signal must auto-disable the mapping row"
+            );
+            assert!(
+                stored.mappings[0]
+                    .disabled_reason
+                    .as_deref()
+                    .unwrap_or("")
+                    .starts_with("HTTP 403"),
+                "the mapping reason must name the HTTP 403: {:?}",
+                stored.mappings[0].disabled_reason
+            );
+        }
     }
 }
 
@@ -11986,9 +12110,17 @@ async fn usage_log_records_failure_when_no_upstream_can_serve() {
     );
     assert_eq!(record.result, UsageResult::Failure);
     assert_eq!(record.status, 502);
-    assert_eq!(
-        record.error_message, None,
-        "a request that reached no upstream records no error message"
+    let no_candidate_message = record
+        .error_message
+        .as_deref()
+        .expect("the no-candidate terminal row must record the explanation");
+    assert!(
+        !no_candidate_message.is_empty(),
+        "the recorded no-candidate explanation must be non-empty"
+    );
+    assert!(
+        no_candidate_message.contains("local-a"),
+        "the recorded no-candidate explanation must name the requested model: {no_candidate_message}"
     );
     assert_eq!(record.provider_id, "", "no provider is attributed");
     assert_eq!(record.provider_name, "");
@@ -12217,9 +12349,17 @@ async fn streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavaila
         failure.terminal,
         "the no-candidate row is the request's terminal row"
     );
-    assert_eq!(
-        failure.error_message, None,
-        "a request that reached no upstream records no error message"
+    let no_candidate_message = failure
+        .error_message
+        .as_deref()
+        .expect("the no-candidate terminal row must record the explanation");
+    assert!(
+        !no_candidate_message.is_empty(),
+        "the recorded no-candidate explanation must be non-empty"
+    );
+    assert!(
+        no_candidate_message.contains("unknown-local"),
+        "the recorded no-candidate explanation must name the requested model: {no_candidate_message}"
     );
     assert_eq!(failure.provider_id, "", "no provider is attributed");
     assert_eq!(failure.total_tokens, 0);
@@ -30473,4 +30613,747 @@ fn ac001_provider_groups_tie_break_by_name_on_equal_newest_timestamp() {
     assert_eq!(groups[0].last_request_at_ms, now - 5_000);
     assert_eq!(groups[1].last_request_at_ms, now - 5_000);
     let _ = fs::remove_dir_all(&dir);
+}
+
+// ===========================================================================
+// Frozen plan 20260928-gateway-key-failure-scope-and-surfacing Step 1.
+//
+// REQ-001/REQ-002/REQ-003 behavior over the relay boundary: a 401 and a
+// credential-text 403 stay key-scoped, a non-credential 403 auto-disables only
+// the resolved mapping row, and an exhausted request records and returns a
+// per-provider key-state diagnostic.
+// ===========================================================================
+
+/// AC-003 helper: one provider with two enabled unmarked keys and an upstream
+/// that always answers `status` with `reply`. A key-scoped classification marks
+/// the attempted key and leaves the mapping row healthy; a mapping-scoped
+/// classification leaves the key unmarked and auto-disables the resolved row
+/// with the HTTP 403 reason.
+async fn assert_401_403_classification(
+    name: &str,
+    status: u16,
+    reply: impl Fn() -> MockReply + Send + Sync + 'static,
+    expect_key_marked: bool,
+) {
+    let _home = isolated_temp_home(&format!("ac003-{name}"));
+    let (upstream_url, _log) = spawn_mock_upstream(move |_| reply()).await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-ac003-a", true),
+                pool_key("key-b", "B", "sk-ac003-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(
+        response.status, 502,
+        "{name} (HTTP {status}): no candidate can serve the request in this fixture"
+    );
+
+    let key = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+    let stored = super::storage::read_config().expect("read persisted state");
+    let provider = stored.providers.iter().find(|p| p.id == "p1").unwrap();
+    if expect_key_marked {
+        assert_eq!(key["auto_marked"], true, "{name}: the key must be marked: {key}");
+        assert_eq!(key["failure_kind"], "authentication", "{name}: {key}");
+        assert!(
+            key["marked_at"].as_u64().is_some(),
+            "{name}: the marking time must be recorded: {key}"
+        );
+        assert!(
+            !key["reason"].as_str().unwrap_or("").is_empty(),
+            "{name}: the sanitized reason must be non-empty: {key}"
+        );
+        assert!(
+            !provider.mappings[0].auto_disabled,
+            "{name}: a key-scoped failure must not auto-disable the mapping row"
+        );
+    } else {
+        assert_eq!(
+            key["auto_marked"], false,
+            "{name}: a non-credential 403 must leave the key unmarked: {key}"
+        );
+        assert_eq!(key["failure_kind"], Value::Null, "{name}: {key}");
+        assert!(
+            provider.mappings[0].auto_disabled,
+            "{name}: the resolved mapping row must auto-disable"
+        );
+        assert!(
+            provider.mappings[0]
+                .disabled_reason
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("HTTP 403"),
+            "{name}: the mapping reason must start with HTTP 403: {:?}",
+            provider.mappings[0].disabled_reason
+        );
+    }
+}
+
+/// AC-003 / REQ-001: the 401 and 403 classification matrix.
+#[tokio::test]
+async fn ac003_401_and_403_classification_matrix() {
+    // 401 with an empty body marks the attempted key.
+    assert_401_403_classification(
+        "401-empty",
+        401,
+        || MockReply::Raw(401, "application/json", Vec::new()),
+        true,
+    )
+    .await;
+
+    // 403 with an empty body, a whitespace-only body, MODEL_NOT_IN_PLAN or a
+    // Cloudflare 1010 body does not mark the key and disables the mapping row.
+    assert_401_403_classification(
+        "403-empty",
+        403,
+        || MockReply::Raw(403, "application/json", Vec::new()),
+        false,
+    )
+    .await;
+    assert_401_403_classification(
+        "403-whitespace",
+        403,
+        || MockReply::Raw(403, "text/plain", b"   \n\t  ".to_vec()),
+        false,
+    )
+    .await;
+    assert_401_403_classification(
+        "403-model-not-in-plan",
+        403,
+        || MockReply::Json(403, json!({"error": {"message": "MODEL_NOT_IN_PLAN"}})),
+        false,
+    )
+    .await;
+    assert_401_403_classification(
+        "403-cloudflare-1010",
+        403,
+        || MockReply::Json(403, json!({"error": {"message": "error code: 1010"}})),
+        false,
+    )
+    .await;
+
+    // 403 credential text still marks the key, matched case-insensitively.
+    assert_401_403_classification(
+        "403-incorrect-api-key",
+        403,
+        || MockReply::Json(403, json!({"error": {"message": "Incorrect API key provided"}})),
+        true,
+    )
+    .await;
+    assert_401_403_classification(
+        "403-upstream-auth-failed",
+        403,
+        || MockReply::Json(403, json!({"error": {"message": "upstream auth failed"}})),
+        true,
+    )
+    .await;
+}
+
+/// AC-001 / REQ-001 / REQ-002: a non-credential 403 leaves both keys untouched,
+/// auto-disables only the resolved mapping row, and the sibling model keeps
+/// being served by the same provider and key.
+#[tokio::test]
+async fn ac001_non_credential_403_leaves_keys_untouched_and_disables_only_the_mapping() {
+    let _home = isolated_temp_home("ac001-non-credential-403");
+    let (upstream_url, log) = spawn_mock_upstream(move |captured| {
+        let requested_upstream = serde_json::from_slice::<Value>(&captured.body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        if requested_upstream == "remote-a" {
+            MockReply::Json(
+                403,
+                json!({"error": {"message": "MODEL_NOT_IN_PLAN: GPT-6 Sol available in Pro and above plans or extra on demand usage"}}),
+            )
+        } else {
+            MockReply::Json(200, json!({"id": "served-by-b"}))
+        }
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-ac001-a", true),
+                pool_key("key-b", "B", "sk-ac001-b", true),
+            ],
+            vec![
+                json_mapping("local-a", "remote-a", None),
+                json_mapping("local-b", "remote-b", None),
+            ],
+        )],
+    ));
+
+    // Request for model A: the non-credential 403 must not touch either key and
+    // must auto-disable only the model A mapping row.
+    let a_body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &a_body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+    assert_ne!(response.status, 200, "the non-credential 403 must not be served as success");
+
+    for key_id in ["key-a", "key-b"] {
+        let key = on_disk_key_entry("p1", key_id).expect("both keys must stay persisted");
+        assert_eq!(
+            key["auto_marked"], false,
+            "key {key_id} must stay unmarked after a non-credential 403: {key}"
+        );
+        assert_eq!(key["failure_kind"], Value::Null, "key {key_id}: {key}");
+    }
+    let stored = super::storage::read_config().expect("read persisted state");
+    let provider = stored.providers.iter().find(|p| p.id == "p1").unwrap();
+    let row_a = provider
+        .mappings
+        .iter()
+        .find(|row| row.local_model == "local-a")
+        .expect("model A row");
+    assert!(row_a.auto_disabled, "the model A row must auto-disable");
+    assert!(
+        row_a
+            .disabled_reason
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("HTTP 403"),
+        "the model A row reason must start with HTTP 403: {:?}",
+        row_a.disabled_reason
+    );
+    let row_b = provider
+        .mappings
+        .iter()
+        .find(|row| row.local_model == "local-b")
+        .expect("model B row");
+    assert!(!row_b.auto_disabled, "the sibling model B row must stay healthy");
+
+    // A following request for model B is served 200 by the same provider/keys.
+    let b_body = serde_json::to_vec(&json!({"model": "local-b"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-b"),
+        "/v1/chat/completions",
+        &b_body,
+        Some("local-b"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+    assert_eq!(response.status, 200, "the sibling model must keep serving");
+    assert!(String::from_utf8_lossy(&response.body).contains("served-by-b"));
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].provider_id, "p1");
+    assert_eq!(attempts[0].status, 200);
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        auth_header_of(captured.last().expect("the sibling request reached upstream")),
+        Some("Bearer sk-ac001-a"),
+        "the sibling request must reuse the same untouched first key: {}",
+        captured_summary(&captured)
+    );
+}
+
+/// AC-002 / REQ-001: a credential-text 403 marks the attempted key and the same
+/// request continues on the next key, leaving the mapping row healthy.
+#[tokio::test]
+async fn ac002_credential_403_marks_the_key_and_rotates_on_the_same_request() {
+    let _home = isolated_temp_home("ac002-credential-403-rotation");
+    let (upstream_url, log) = spawn_mock_upstream(|captured| match auth_header_of(captured) {
+        Some("Bearer sk-ac002-a") => {
+            MockReply::Json(403, json!({"error": {"message": "invalid api key"}}))
+        }
+        Some("Bearer sk-ac002-b") => MockReply::Json(200, json!({"id": "served-by-b"})),
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-ac002-a", true),
+                pool_key("key-b", "B", "sk-ac002-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 200, "the second key must serve the same request");
+    assert!(String::from_utf8_lossy(&response.body).contains("served-by-b"));
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0].status, 403);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        auth_header_of(&captured[0]),
+        Some("Bearer sk-ac002-a"),
+        "the first key must be attempted first"
+    );
+    assert_eq!(
+        auth_header_of(&captured[1]),
+        Some("Bearer sk-ac002-b"),
+        "the same request must continue on the second key: {}",
+        captured_summary(&captured)
+    );
+
+    let key_a = on_disk_key_entry("p1", "key-a").expect("key-a must persist");
+    assert_eq!(
+        key_a["auto_marked"], true,
+        "the credential 403 must mark key-a: {key_a}"
+    );
+    assert_eq!(key_a["failure_kind"], "authentication", "{key_a}");
+    assert!(
+        key_a["marked_at"].as_u64().is_some(),
+        "the marking time must be recorded: {key_a}"
+    );
+    assert!(
+        key_a["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("invalid api key"),
+        "the sanitized reason must carry the credential signal: {key_a}"
+    );
+    assert!(
+        !key_a["reason"].as_str().unwrap_or("").contains("sk-ac002-a"),
+        "the reason must never contain the key value: {key_a}"
+    );
+    let key_b = on_disk_key_entry("p1", "key-b").expect("key-b must persist");
+    assert_eq!(key_b["auto_marked"], false, "the serving key must stay unmarked");
+
+    let stored = super::storage::read_config().expect("read persisted state");
+    let provider = stored.providers.iter().find(|p| p.id == "p1").unwrap();
+    assert!(
+        !provider.mappings[0].auto_disabled,
+        "a key-scoped credential 403 must leave the mapping row healthy"
+    );
+    assert_eq!(provider.mappings[0].consecutive_failures, 0);
+}
+
+/// AC-004 / REQ-003: when every candidate provider's only key is
+/// authentication-failed, the 502 names each provider with its excluded-key
+/// count and the manual re-enable hint, and the terminal log row records the
+/// same diagnostic.
+#[tokio::test]
+async fn ac004_all_keys_marked_502_names_every_provider_and_key_state() {
+    let home = temp_home("ac004-all-marked-diagnostic");
+    super::selection::reset_weighted_scheduler_for_test();
+    let port = free_port().await;
+    let marked_at = super::types_config::now_ts().saturating_sub(10_000);
+    let providers = vec![
+        pool_provider(
+            "p-alpha",
+            "Provider Alpha",
+            "http://127.0.0.1:1",
+            vec![pool_key_marked(
+                "key-alpha",
+                "Alpha",
+                "sk-alpha",
+                true,
+                "authentication",
+                marked_at,
+                "HTTP 401 denied",
+            )],
+            vec![json_mapping("local-model", "remote-model", None)],
+        ),
+        pool_provider(
+            "p-beta",
+            "Provider Beta",
+            "http://127.0.0.1:1",
+            vec![pool_key_marked(
+                "key-beta",
+                "Beta",
+                "sk-beta",
+                true,
+                "authentication",
+                marked_at,
+                "HTTP 401 denied",
+            )],
+            vec![json_mapping("local-model", "remote-model", None)],
+        ),
+        pool_provider(
+            "p-gamma",
+            "Provider Gamma",
+            "http://127.0.0.1:1",
+            vec![pool_key_marked(
+                "key-gamma",
+                "Gamma",
+                "sk-gamma",
+                true,
+                "authentication",
+                marked_at,
+                "HTTP 401 denied",
+            )],
+            vec![json_mapping("local-model", "remote-model", None)],
+        ),
+    ];
+    write_raw_gateway_config(&pool_config(port, providers));
+    super::runtime_http::start_server(None).await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-model"})),
+    )
+    .await;
+    assert_eq!(status, 502, "no usable key must yield 502: {text}");
+    let body = assert_standard_error_envelope(&text);
+    let message = body["error"]["message"].as_str().unwrap_or("");
+    for name in ["Provider Alpha", "Provider Beta", "Provider Gamma"] {
+        assert!(
+            message.contains(name),
+            "the 502 message must name {name}: {message}"
+        );
+    }
+    assert!(
+        message.contains("1 authentication failed"),
+        "the 502 message must count the excluded keys: {message}"
+    );
+    assert!(
+        message.contains("re-enable authentication-failed keys manually in the AI Gateway"),
+        "the 502 message must carry the manual re-enable hint: {message}"
+    );
+
+    let records = wait_for_usage_logs(1).await;
+    let terminal = records
+        .iter()
+        .find(|record| record.terminal)
+        .expect("a terminal usage-log row must exist");
+    assert_eq!(terminal.status, 502);
+    let recorded = terminal
+        .error_message
+        .as_deref()
+        .expect("the terminal row must record the diagnostic");
+    assert!(
+        !recorded.is_empty(),
+        "the terminal row diagnostic must be non-empty"
+    );
+    for name in ["Provider Alpha", "Provider Beta", "Provider Gamma"] {
+        assert!(
+            recorded.contains(name),
+            "the terminal row must name {name}: {recorded}"
+        );
+    }
+    assert!(
+        recorded.contains("1 authentication failed"),
+        "the terminal row must carry the key-state summary: {recorded}"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-005 / REQ-003: a no-candidate 502 keeps the existing explanation for a
+/// non-streaming and a streaming request, and each terminal row records it.
+#[tokio::test]
+async fn ac005_no_candidate_502_records_its_message_for_both_paths() {
+    let home = temp_home("ac005-no-candidate-recorded");
+    super::selection::reset_weighted_scheduler_for_test();
+    let port = free_port().await;
+
+    write_raw_gateway_config(&pool_config(
+        port,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            "http://127.0.0.1:1",
+            vec![pool_key("key-a", "A", "sk-ac005", true)],
+            vec![json_mapping("local-b", "remote-b", None)],
+        )],
+    ));
+    super::runtime_http::start_server(None).await.unwrap();
+
+    for stream in [false, true] {
+        let (status, _content_type, text) = call_gateway(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[("authorization", "Bearer local-key")],
+            Some(json!({"model": "local-a", "stream": stream})),
+        )
+        .await;
+        assert_eq!(
+            status, 502,
+            "no-candidate must answer 502 (stream={stream}): {text}"
+        );
+        let body = assert_standard_error_envelope(&text);
+        assert_eq!(body["error"]["code"], "all_providers_unavailable");
+        let message = body["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            message.contains("local-a"),
+            "the 502 message must name the requested model (stream={stream}): {message}"
+        );
+        assert!(
+            message.contains("no enabled provider can serve"),
+            "the 502 message must keep the no-candidate explanation (stream={stream}): {message}"
+        );
+    }
+
+    let records = wait_for_usage_logs(2).await;
+    let terminals: Vec<&UsageLogRecord> =
+        records.iter().filter(|record| record.terminal).collect();
+    assert_eq!(terminals.len(), 2, "each request has exactly one terminal row");
+    for record in terminals {
+        let message = record
+            .error_message
+            .as_deref()
+            .expect("the no-candidate terminal row must record the explanation");
+        assert!(
+            message.contains("local-a"),
+            "the recorded explanation must name the requested model: {message}"
+        );
+        assert!(
+            message.contains("no enabled provider can serve"),
+            "the recorded explanation must keep the no-candidate message: {message}"
+        );
+    }
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-006 / REQ-003: the mixed-reason per-provider diagnostic follows the fixed
+/// reason order, omits zero-count categories, treats a user-disabled key as user
+/// disabled even with a stale mark, and appends the re-enable hint only when an
+/// authentication-failed key is involved.
+#[tokio::test]
+async fn ac006_mixed_reason_diagnostics_follow_order_and_hint_condition() {
+    // Sub-case 1: two providers with mixed excluded-key reasons. The reason
+    // order is fixed and the hint appears because an authentication-failed key
+    // is involved.
+    {
+        let _home = isolated_temp_home("ac006-mixed-reasons");
+        let now = super::types_config::now_ts();
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![
+                pool_provider(
+                    "p1",
+                    "Provider Alpha",
+                    "http://127.0.0.1:1",
+                    vec![
+                        pool_key_marked(
+                            "key-auth",
+                            "Auth",
+                            "sk-auth",
+                            true,
+                            "authentication",
+                            now.saturating_sub(30),
+                            "HTTP 401 denied",
+                        ),
+                        pool_key_marked(
+                            "key-quota",
+                            "Quota",
+                            "sk-quota",
+                            true,
+                            "quota",
+                            now.saturating_sub(20),
+                            "weekly limit",
+                        ),
+                        // A user-disabled key carrying a stale quota mark must
+                        // count as user disabled, never quota.
+                        pool_key_marked(
+                            "key-off",
+                            "Off",
+                            "sk-off",
+                            false,
+                            "quota",
+                            now.saturating_sub(10),
+                            "weekly limit",
+                        ),
+                    ],
+                    vec![json_mapping("local-model", "remote-model", None)],
+                ),
+                pool_provider(
+                    "p2",
+                    "Provider Beta",
+                    "http://127.0.0.1:1",
+                    vec![pool_key("key-off", "Off", "sk-off-2", false)],
+                    vec![json_mapping("local-model", "remote-model", None)],
+                ),
+            ],
+        ));
+
+        let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+        let mut attempts = Vec::new();
+        let response = super::runtime_http::attempt_non_streaming(
+            &live_candidates("local-model"),
+            "/v1/chat/completions",
+            &body,
+            Some("local-model"),
+            &HashMap::new(),
+            false,
+            None,
+            &mut attempts,
+        )
+        .await;
+        assert_eq!(response.status, 502, "no usable key must yield 502");
+        let message = String::from_utf8_lossy(&response.body).into_owned();
+
+        let alpha_reason = "no usable upstream key (1 authentication failed, 1 quota exhausted, 1 user disabled)";
+        let beta_reason = "no usable upstream key (1 user disabled)";
+        assert!(message.contains(alpha_reason), "missing P1 diagnostic: {message}");
+        assert!(message.contains(beta_reason), "missing P2 diagnostic: {message}");
+        assert!(
+            message.find(alpha_reason).unwrap() < message.find(beta_reason).unwrap(),
+            "P1's diagnostic must precede P2's: {message}"
+        );
+        assert!(
+            message.contains("re-enable authentication-failed keys manually in the AI Gateway"),
+            "the hint must appear when an authentication-failed key is involved: {message}"
+        );
+    }
+
+    // Sub-case 2: only a quota-exhausted key and no authentication-failed key
+    // anywhere must omit the re-enable hint.
+    {
+        let _home = isolated_temp_home("ac006-quota-only-no-hint");
+        let now = super::types_config::now_ts();
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider Alpha",
+                "http://127.0.0.1:1",
+                vec![pool_key_marked(
+                    "key-quota",
+                    "Quota",
+                    "sk-quota",
+                    true,
+                    "quota",
+                    now.saturating_sub(20),
+                    "weekly limit",
+                )],
+                vec![json_mapping("local-model", "remote-model", None)],
+            )],
+        ));
+        let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+        let mut attempts = Vec::new();
+        let response = super::runtime_http::attempt_non_streaming(
+            &live_candidates("local-model"),
+            "/v1/chat/completions",
+            &body,
+            Some("local-model"),
+            &HashMap::new(),
+            false,
+            None,
+            &mut attempts,
+        )
+        .await;
+        assert_eq!(response.status, 502);
+        let message = String::from_utf8_lossy(&response.body).into_owned();
+        assert!(
+            message.contains("no usable upstream key (1 quota exhausted)"),
+            "the quota count must be reported without zero categories: {message}"
+        );
+        assert!(
+            !message.contains("authentication failed"),
+            "no authentication count may be reported: {message}"
+        );
+        assert!(
+            !message.contains("re-enable"),
+            "the hint must be omitted when no authentication-failed key is involved: {message}"
+        );
+    }
+
+    // Sub-case 3: a provider whose enabled pool is empty reports its own reason.
+    {
+        let _home = isolated_temp_home("ac006-no-enabled-key");
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider Alpha",
+                "http://127.0.0.1:1",
+                vec![pool_key("key-off", "Off", "sk-off", false)],
+                vec![json_mapping("local-model", "remote-model", None)],
+            )],
+        ));
+        let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+        let mut attempts = Vec::new();
+        let response = super::runtime_http::attempt_non_streaming(
+            &live_candidates("local-model"),
+            "/v1/chat/completions",
+            &body,
+            Some("local-model"),
+            &HashMap::new(),
+            false,
+            None,
+            &mut attempts,
+        )
+        .await;
+        assert_eq!(response.status, 502);
+        let message = String::from_utf8_lossy(&response.body).into_owned();
+        assert!(
+            message.contains("no usable upstream key (no enabled key)"),
+            "an empty enabled pool must report the no-enabled-key reason: {message}"
+        );
+        assert!(
+            !message.contains("re-enable"),
+            "an all-user-disabled provider must not carry the hint: {message}"
+        );
+    }
 }
