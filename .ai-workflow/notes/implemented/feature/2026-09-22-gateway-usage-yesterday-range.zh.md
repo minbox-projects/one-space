@@ -10,7 +10,7 @@ Status: implemented
 
 ## Decision
 
-两个命令现在改用去除首尾空白后的字符串选择器，而不再是天数：`api_gateway_usage_stats(range: Option<String>)` 与 `api_gateway_request_logs(range: Option<String>, group_by, status, model, page)`。取值范围为 `today`、`yesterday`、`7d`、`15d`、`30d` 与 `all`；`None`、空串与 `all` 表示无界的全部时间，未知取值会返回列出受支持取值集合的可操作错误，绝不回退到全部时间或今日。`yesterday` 是 UTC+8 半开窗口 `[昨天 00:00, 今天 00:00)`，`7d` / `15d` / `30d` 保持原有窗口不变（包含今日在内共 N 个自然日，结束于明日 00:00（UTC+8））。时间分桶粒度由解析后的窗口决定：恰为一个 UTC+8 自然日（`today` 与 `yesterday`）序列化 `granularity = "hour"`，N 个自然日与全部时间序列化 `granularity = "day"`。前端在用量统计与请求日志两个面板之间共享同一份六个条目的范围列表——今日、昨天、近 7 天、近 15 天、近 30 天、全部——默认今日；`UsageRangeKey` 新增 `yesterday`，不再被使用的 `usageRangeToDays` 辅助函数已删除，新的 i18n 键 `apiGatewayRangeYesterday` 为 Yesterday / 昨天，运行时状态卡片的今日统计调用继续发送 `range: "today"`。数据库 schema、持久化与聚合语义均不变；命令名与响应结构保持原样。
+两个命令现在改用去除首尾空白后的字符串选择器，而不再是天数：`api_gateway_usage_stats(range: Option<String>)` 与 `api_gateway_request_logs(range: Option<String>, group_by, status, model, provider, page)`。请求日志命令的可选 `provider` 参数按记录的 `provider_name` 精确匹配，空值与全空白值视为未设置。取值范围为 `today`、`yesterday`、`7d`、`15d`、`30d` 与 `all`；`None`、空串与 `all` 表示无界的全部时间，未知取值会返回列出受支持取值集合的可操作错误，绝不回退到全部时间或今日。`yesterday` 是 UTC+8 半开窗口 `[昨天 00:00, 今天 00:00)`，`7d` / `15d` / `30d` 保持原有窗口不变（包含今日在内共 N 个自然日，结束于明日 00:00（UTC+8））。时间分桶粒度由解析后的窗口决定：恰为一个 UTC+8 自然日（`today` 与 `yesterday`）序列化 `granularity = "hour"`，N 个自然日与全部时间序列化 `granularity = "day"`。前端在用量统计与请求日志两个面板之间共享同一份六个条目的范围列表——今日、昨天、近 7 天、近 15 天、近 30 天、全部——默认今日；`UsageRangeKey` 新增 `yesterday`，不再被使用的 `usageRangeToDays` 辅助函数已删除，新的 i18n 键 `apiGatewayRangeYesterday` 为 Yesterday / 昨天，运行时状态卡片的今日统计调用继续发送 `range: "today"`。数据库 schema、持久化与聚合语义均不变；命令名与响应结构保持原样。
 
 ## Alternatives considered
 
@@ -26,3 +26,4 @@ Status: implemented
 - 数据库 schema、持久化、聚合与金额语义都不变：`api_gateway_usage.db`、保留行为与两个命令的响应结构均未改动，差异只在解析出的窗口与分桶标签。
 - 回滚就是恢复签名与其调用点：旧构建无法读取 `range`，必须同时恢复 `days` 参数与构造数值的调用方；没有任何已存数据需要迁移或重写。
 - Supersession（取代评估）：部分取代。[API Gateway Usage Stats and Request Logs](../architecture/2026-09-17-ai-gateway-usage-logs.md) 曾记录 `days = null` 表示全部时间、`Some(1)` 表示今日；该范围编码表述由本记录取代，其存储、记录、计价与保留决策仍然有效。
+- 部分取代：本记录由 [Gateway Request Logs Group and Filter by Provider Name](../feature/2026-09-28-gateway-log-provider-grouping-filter.md) 保留并交叉链接，后者为上文的请求日志签名加上可选 `provider` 参数——该参数按记录的 `provider_name` 精确匹配，空值与全空白值视为未设置——本文的范围选择器决策仍然有效。

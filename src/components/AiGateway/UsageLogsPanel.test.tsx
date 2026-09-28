@@ -1451,6 +1451,7 @@ describe("UsageLogsPanel", () => {
       }
       const provider: string | null = args?.provider ?? null;
       const groupBy: string | null = args?.groupBy ?? null;
+      const requestPage: number = args?.page ?? 1;
       if (groupBy === "provider") {
         return page({
           group_by: "provider",
@@ -1485,21 +1486,44 @@ describe("UsageLogsPanel", () => {
       }
       if (provider === "Beta") {
         return page({
+          page: requestPage,
           total: 1,
+          total_pages: 2,
           providers: ["Alpha", "Beta"],
           records: [record({ provider_name: "Beta", local_model: "beta-only" })],
         });
       }
       return page({
-        total: 2,
+        page: requestPage,
+        total: 60,
+        total_pages: 2,
         providers: ["Alpha", "Beta"],
-        records: [record({ provider_name: "Alpha", local_model: "alpha-only" })],
+        records: [
+          record({
+            provider_name: "Alpha",
+            local_model: requestPage === 2 ? "alpha-page-two" : "alpha-only",
+          }),
+        ],
       });
     });
 
     renderWithProviders(<UsageLogsPanel />);
     await screen.findByTestId("ai-gateway-logs-ungrouped");
     expect(screen.getByText("alpha-only")).toBeInTheDocument();
+
+    // Page to page 2 first, so every later reset must actually return to page 1.
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "none",
+        status: null,
+        model: null,
+        provider: null,
+        page: 2,
+      }),
+    );
+    expect(await screen.findByText("alpha-page-two")).toBeInTheDocument();
 
     const filterTrigger = screen.getByTestId("ai-gateway-logs-filter-trigger");
     await user.click(filterTrigger);
@@ -1525,7 +1549,8 @@ describe("UsageLogsPanel", () => {
     expect(await screen.findByText("beta-only")).toBeInTheDocument();
     expect(screen.queryByText("alpha-only")).not.toBeInTheDocument();
 
-    // The provider filter survives switching the grouping mode.
+    // The provider filter survives switching the grouping mode, which also
+    // resets paging to the first page.
     const groupTrigger = screen.getByTestId("ai-gateway-logs-group-trigger");
     await user.click(groupTrigger);
     await user.click(screen.getByRole("option", { name: "Provider" }));
@@ -1544,7 +1569,32 @@ describe("UsageLogsPanel", () => {
       within(grouped).getByTestId("ai-gateway-logs-group-row"),
     ).toHaveTextContent("Beta");
 
-    // Clearing resets status, model and provider and returns to page 1.
+    // Return to the ungrouped list so the pager is available, page to page 2
+    // again, then clear: clearing must reset to page 1 and drop every filter.
+    await user.click(groupTrigger);
+    await user.click(screen.getByRole("option", { name: "No grouping" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "none",
+        status: null,
+        model: null,
+        provider: "Beta",
+        page: 1,
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "none",
+        status: null,
+        model: null,
+        provider: "Beta",
+        page: 2,
+      }),
+    );
+
     await user.click(filterTrigger);
     const reopenedPanel = await screen.findByTestId(
       "ai-gateway-logs-filter-panel",
@@ -1552,10 +1602,12 @@ describe("UsageLogsPanel", () => {
     await user.click(
       within(reopenedPanel).getByRole("button", { name: "Clear" }),
     );
+    // The last request must be the cleared one: an identical initial page-1
+    // call exists, so only a last-call assertion proves Clear reset paging.
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+      expect(invokeMock).toHaveBeenLastCalledWith("ai_gateway_request_logs", {
         range: "today",
-        groupBy: "provider",
+        groupBy: "none",
         status: null,
         model: null,
         provider: null,

@@ -27,7 +27,7 @@ Status: implemented
 ## Consequences
 
 - 命令契约以增量方式扩展：可选 `provider` 参数、`"provider"` 分组值、不分组 `providers` 面、模型面尊重服务商筛选、分组响应返回空面。省略 `provider` 并使用既有分组值的调用方观察到不变行为；不改变任何已存行、列、schema 版本或迁移，回滚即还原。
-- 实现：`LogFilter` 新增 `provider`，`bind` 在共享谓词中加入精确的 `provider_name = ?` 子句；`group_logs` 新增服务商分支；`query_logs` 计算 `models` 面时保留服务商筛选、计算 `providers` 面时清除服务商筛选；`ai_gateway_request_logs` 接受并 trim 该参数。前端 `UsageGroupBy` 新增 `"provider"`，`UsageLogsQuery` 新增可选 `provider`，`UsageLogsPage` 新增可选 `providers`，`aiGatewayRequestLogs` 转发该键，`UsageLogsPanel` 新增选项、单选选项片、触发标签与清除/重置行为。
+- 实现：`LogFilter` 新增 `provider`，`bind` 在共享谓词中加入精确的 `provider_name = ?` 子句；`group_logs` 新增服务商分支；`query_logs` 计算 `models` 面时保留服务商筛选、计算 `providers` 面时清除服务商筛选；`ai_gateway_request_logs` 接受该参数，空值与全空白值视为未设置。前端 `UsageGroupBy` 新增 `"provider"`，`UsageLogsQuery` 新增可选 `provider`，`UsageLogsPage` 新增可选 `providers`，`aiGatewayRequestLogs` 转发该键，`UsageLogsPanel` 新增选项、单选选项片、触发标签与清除/重置行为。
 - 同名服务商条目合并为一个分组，改名会拆分历史；这是被记录的语义，由 `MEMORY.md`、`docs/USAGE.md` 与 `ai-gateway` / `ai-gateway-backend` 导航条目记录，`navigation.md` 按权威 JSON 重新生成。
 - 其他都不变：用量统计面板、请求日志记录形状与字段、SQLite schema 与保留、分页、合计、状态与模型筛选本身，以及 `none` / `model` / `day` 分组输出都保持当前语义。
 - Supersession: partial. [API Gateway Usage Stats and Request Logs](../architecture/2026-09-17-ai-gateway-usage-logs.md) 曾把 `group_by` 词表记录为 `"model"` 与 `"day"`、把模型面记录为只尊重已解析范围与状态筛选；这两处表述由本记录取代，而它的 SQLite 存储、按尝试记录、记录时价格冻结、保留与范围选择器决策仍然有效。本记录还为 [API Gateway Usage Queries Replace Day Counts with a Named Range Selector](2026-09-22-gateway-usage-yesterday-range.md) 记录的 `ai_gateway_request_logs` 签名加上可选 `provider` 参数；其范围选择器决策仍然有效。

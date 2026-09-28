@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-09-28-gateway-log-provider-grouping-filter.md
-2026-09-28-gateway-log-provider-grouping-filter.md: 46feea623db02ff8ee99826bfc1a981d2b34031a
-2026-09-28-gateway-log-provider-grouping-filter.zh.md: 9cfb5cafdfbc9c2379d82235adf5f0d78c54f696
+2026-09-28-gateway-log-provider-grouping-filter.md: 0a6d10c4d0e47d5248e9aa0fca3919cabd17979f
+2026-09-28-gateway-log-provider-grouping-filter.zh.md: f88e2bf5922f721885f34a430d79c00c11c7d204

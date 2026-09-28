@@ -29551,6 +29551,24 @@ fn ac001_provider_groups_aggregate_order_and_merge_same_display_name() {
             365,
         )
         .unwrap();
+    // A non-terminal failed attempt must not create or change a provider group.
+    store
+        .append(
+            &sample_attempt_record(
+                now - 500,
+                "local-a",
+                "remote-a",
+                "pg",
+                "Gamma",
+                UsageResult::Failure,
+                false,
+                Some("attempt failed"),
+                Some(0.1),
+                tokens(1, 0, 0, 1),
+            ),
+            365,
+        )
+        .unwrap();
 
     let groups = store
         .group_logs(&TimeRange::default(), &LogFilter::default(), "provider")
@@ -29572,6 +29590,33 @@ fn ac001_provider_groups_aggregate_order_and_merge_same_display_name() {
     assert_eq!(groups[3].request_count, 2, "two provider ids share one name");
     assert_eq!(groups[3].error_count, 0);
     assert_eq!(groups[3].last_request_at_ms, now - 20_000);
+    assert_eq!(groups.len(), 4, "a non-terminal attempt must not add a group");
+    assert!(
+        groups.iter().all(|group| group.group != "Gamma"),
+        "a non-terminal attempt's provider must not appear as a group: {groups:?}"
+    );
+
+    // Both provider ids that share one display name are matched by that exact name.
+    let shared = store
+        .query_logs(
+            &TimeRange::default(),
+            &LogFilter {
+                provider: Some("Shared".to_string()),
+                ..Default::default()
+            },
+            1,
+        )
+        .unwrap();
+    assert_eq!(shared.total, 2, "both shared-name rows are matched");
+    assert_eq!(
+        shared
+            .records
+            .iter()
+            .map(|record| record.timestamp_ms)
+            .collect::<Vec<_>>(),
+        vec![now - 20_000, now - 21_000],
+        "both shared-name rows, newest first"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -29582,7 +29627,7 @@ fn ac002_unsupported_group_by_is_rejected_with_supported_vocabulary() {
     with_temp_home("ac002-provider-grouping-reject", |_home| {
         let result = super::commands::ai_gateway_request_logs(
             None,
-            Some("providerx".to_string()),
+            Some("weekly".to_string()),
             None,
             None,
             None,
@@ -29771,6 +29816,22 @@ fn ac004_provider_filter_edge_values_are_inert_or_empty() {
     assert_eq!(unmatched.total, 0);
     assert!(unmatched.records.is_empty());
     assert_eq!(unmatched.total_pages, 1);
+
+    // A provider selector matching no row also yields zero provider groups.
+    let unmatched_groups = store
+        .group_logs(
+            &TimeRange::default(),
+            &LogFilter {
+                provider: Some("NoSuchProvider".to_string()),
+                ..Default::default()
+            },
+            "provider",
+        )
+        .unwrap();
+    assert!(
+        unmatched_groups.is_empty(),
+        "a provider selector matching no row must yield zero groups: {unmatched_groups:?}"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -30086,4 +30147,86 @@ fn ac008_grouped_responses_keep_empty_facets() {
             );
         }
     });
+}
+
+/// AC-001 boundary / REQ-001: when every in-range terminal row has a blank
+/// provider name, provider grouping returns exactly one blank-named group with
+/// the summed request count and the newest last-request time.
+#[test]
+fn ac001_blank_only_provider_rows_form_one_blank_group() {
+    let (dir, store) = usage_store("usage-provider-blank-only");
+    let now = super::now_millis();
+    for (offset, result) in [
+        (9_000i64, UsageResult::Success),
+        (4_000, UsageResult::Failure),
+        (1_000, UsageResult::Success),
+    ] {
+        store
+            .append(
+                &sample_record(
+                    now - offset,
+                    "local-a",
+                    "remote-a",
+                    "p-none",
+                    "",
+                    result,
+                    Some(0.1),
+                    tokens(1, 0, 0, 1),
+                ),
+                365,
+            )
+            .unwrap();
+    }
+
+    let groups = store
+        .group_logs(&TimeRange::default(), &LogFilter::default(), "provider")
+        .unwrap();
+    assert_eq!(groups.len(), 1, "all blank rows form one group: {groups:?}");
+    assert_eq!(groups[0].group, "");
+    assert_eq!(groups[0].request_count, 3);
+    assert_eq!(groups[0].error_count, 1, "only the failure counts as an error");
+    assert_eq!(groups[0].last_request_at_ms, now - 1_000);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-001 boundary / REQ-001: provider groups whose newest request shares one
+/// timestamp are ordered by name ascending as the tiebreaker.
+#[test]
+fn ac001_provider_groups_tie_break_by_name_on_equal_newest_timestamp() {
+    let (dir, store) = usage_store("usage-provider-tiebreak");
+    let now = super::now_millis();
+    // Beta is recorded first; both groups share the same newest timestamp.
+    for (provider_id, provider_name) in [("pb", "Beta"), ("pa", "Alpha")] {
+        store
+            .append(
+                &sample_record(
+                    now - 5_000,
+                    "local-a",
+                    "remote-a",
+                    provider_id,
+                    provider_name,
+                    UsageResult::Success,
+                    Some(0.1),
+                    tokens(1, 0, 0, 1),
+                ),
+                365,
+            )
+            .unwrap();
+    }
+
+    let groups = store
+        .group_logs(&TimeRange::default(), &LogFilter::default(), "provider")
+        .unwrap();
+    assert_eq!(groups.len(), 2);
+    assert_eq!(
+        groups
+            .iter()
+            .map(|group| group.group.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Alpha", "Beta"],
+        "equal newest timestamps must fall back to name ascending"
+    );
+    assert_eq!(groups[0].last_request_at_ms, now - 5_000);
+    assert_eq!(groups[1].last_request_at_ms, now - 5_000);
+    let _ = fs::remove_dir_all(&dir);
 }
