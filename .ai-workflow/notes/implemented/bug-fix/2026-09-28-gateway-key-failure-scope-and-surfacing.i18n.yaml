@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/bug-fix/2026-09-28-gateway-key-failure-scope-and-surfacing.md
-2026-09-28-gateway-key-failure-scope-and-surfacing.md: 3ede937c3fa7090b6c66c696fe29a7e927f7584b
-2026-09-28-gateway-key-failure-scope-and-surfacing.zh.md: 8ff5d109ac61d3a433ea62cb6ec1203c8a14ec79
+2026-09-28-gateway-key-failure-scope-and-surfacing.md: 4b2caff6d75fae6b172cce7f5baac8de3e742320
+2026-09-28-gateway-key-failure-scope-and-surfacing.zh.md: 6145a2edb0abb43b7c0dc965c5b1481d2861fbb0
