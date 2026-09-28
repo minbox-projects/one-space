@@ -592,6 +592,7 @@ const resources = {
         "Refresh quota for supported providers in the current filter results",
       aiGatewayProvidersRefreshQuotaDisabled:
         "No providers in the current filter results support quota refresh",
+      aiGatewayProvidersLastRefreshed: "Last refreshed: {{time}}",
       aiGatewayNoValue: "not set",
       aiGatewayTerminalSync: "AI terminal integration",
       aiGatewayTerminalSyncDesc:
@@ -4484,6 +4485,7 @@ const resources = {
       aiGatewayProvidersRefreshQuotaAria: "刷新当前筛选结果中支持额度监控的服务商",
       aiGatewayProvidersRefreshQuotaDisabled:
         "当前筛选结果中没有可刷新额度的服务商",
+      aiGatewayProvidersLastRefreshed: "最后刷新：{{time}}",
       aiGatewayNoValue: "未设置",
       aiGatewayTerminalSync: "AI 终端集成",
       aiGatewayTerminalSyncDesc:

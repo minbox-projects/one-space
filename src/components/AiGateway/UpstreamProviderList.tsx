@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
@@ -22,6 +22,7 @@ import {
   ProviderTemplateAvatar,
   resolveEffectiveProviderIcon,
 } from "./ProviderTemplateIcon";
+import { formatTimeHms } from "./gatewayShared";
 import {
   formatGatewayTimestamp,
   isCommandCodeProvider,
@@ -171,6 +172,22 @@ export function UpstreamProviderList({
   }, [filteredProviders]);
 
   const canRefreshQuota = refreshableProviderIds.size > 0;
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<number | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const handleCardRefreshed = useCallback((ts: number) => {
+    setLastRefreshedAt((prev) => (prev ? Math.max(prev, ts) : ts));
+    setIsRefreshing(false);
+  }, []);
+
+  const handleBulkRefresh = useCallback(() => {
+    if (!canRefreshQuota) return;
+    setIsRefreshing(true);
+    setQuotaRefreshToken((v) => v + 1);
+    window.setTimeout(() => {
+      setIsRefreshing(false);
+    }, 1200);
+  }, [canRefreshQuota]);
 
   return (
     <section className="space-y-3.5" data-testid="ai-gateway-providers">
@@ -193,8 +210,37 @@ export function UpstreamProviderList({
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
-          {providers.length > 0 ? (
+        <div className="flex items-center gap-2 shrink-0">
+          {onManageTemplates ? (
+            <button
+              type="button"
+              onClick={onManageTemplates}
+              data-testid="ai-gateway-manage-templates"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/70 bg-background px-3 text-xs font-medium text-foreground shadow-xs transition hover:bg-muted active:bg-muted/80"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-primary" />
+              <span>{t("aiGatewayProviderTemplatesButton", "Provider templates")}</span>
+            </button>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={onAdd}
+            disabled={busy}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {t("aiGatewayAddProvider", "Add provider")}
+          </button>
+        </div>
+      </div>
+
+      {providers.length > 0 ? (
+        <div
+          data-testid="ai-gateway-providers-toolbar"
+          className="flex flex-wrap items-center justify-between gap-2.5 pt-0.5"
+        >
+          <div className="flex flex-wrap items-center gap-2">
             <div
               role="group"
               aria-label={t("aiGatewayFilterAria", "Filter providers by status")}
@@ -272,134 +318,123 @@ export function UpstreamProviderList({
                 </span>
               </button>
             </div>
-          ) : null}
 
-          {allAvailableTags.length > 0 ? (
-            <div className="relative" ref={tagFilterRef}>
-              <button
-                type="button"
-                data-testid="ai-gateway-tag-filter-trigger"
-                aria-expanded={tagFilterOpen}
-                onClick={() => setTagFilterOpen((v) => !v)}
-                className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium shadow-xs transition ${
-                  selectedTags.length > 0
-                    ? "border-primary/50 bg-primary/10 text-primary"
-                    : "border-border/70 bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
-                }`}
-              >
-                <Tag className="h-3.5 w-3.5" />
-                <span>{t("aiGatewayFilterByTags", "Tags")}</span>
-                {selectedTags.length > 0 ? (
-                  <span
-                    data-testid="ai-gateway-tag-filter-badge"
-                    className="rounded-full bg-primary px-1.5 py-0.2 text-[10px] font-semibold text-primary-foreground"
-                  >
-                    {selectedTags.length}
-                  </span>
-                ) : null}
-                <ChevronDown
-                  className={`h-3 w-3 opacity-60 transition-transform ${
-                    tagFilterOpen ? "rotate-180" : ""
+            {allAvailableTags.length > 0 ? (
+              <div className="relative" ref={tagFilterRef}>
+                <button
+                  type="button"
+                  data-testid="ai-gateway-tag-filter-trigger"
+                  aria-expanded={tagFilterOpen}
+                  onClick={() => setTagFilterOpen((v) => !v)}
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium shadow-xs transition ${
+                    selectedTags.length > 0
+                      ? "border-primary/50 bg-primary/10 text-primary"
+                      : "border-border/70 bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
                   }`}
-                />
-              </button>
-
-              {tagFilterOpen && (
-                <div
-                  data-testid="ai-gateway-tag-filter-menu"
-                  className="absolute right-0 z-50 mt-1.5 min-w-[200px] max-w-[280px] rounded-lg border border-border/80 bg-popover p-1.5 shadow-lg backdrop-blur-md animate-in fade-in-50 zoom-in-95"
                 >
-                  <div className="flex items-center justify-between border-b border-border/50 px-2 py-1 pb-1.5 text-xs font-semibold text-foreground">
-                    <span>{t("aiGatewayFilterByTags", "Filter by tags")}</span>
-                    {selectedTags.length > 0 ? (
-                      <button
-                        type="button"
-                        data-testid="ai-gateway-tag-filter-clear"
-                        onClick={clearTagFilter}
-                        className="text-[11px] font-normal text-muted-foreground hover:text-foreground"
-                      >
-                        {t("aiGatewayClearFilter", "Clear")}
-                      </button>
-                    ) : null}
-                  </div>
-                  <div className="max-h-56 overflow-y-auto py-1 space-y-0.5">
-                    {allAvailableTags.map((tag) => {
-                      const isChecked = selectedTags.includes(tag);
-                      const count = tagCounts.get(tag) ?? 0;
-                      return (
-                        <button
-                          key={tag}
-                          type="button"
-                          data-testid={`ai-gateway-tag-option-${tag}`}
-                          onClick={() => toggleTagFilter(tag)}
-                          className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-foreground hover:bg-muted/70 transition-colors"
-                        >
-                          <div className="flex items-center gap-2 truncate">
-                            <div
-                              className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${
-                                isChecked
-                                  ? "border-primary bg-primary text-primary-foreground"
-                                  : "border-muted-foreground/40 bg-background"
-                              }`}
-                            >
-                              {isChecked && <Check className="h-2.5 w-2.5" />}
-                            </div>
-                            <span className="truncate">{tag}</span>
-                          </div>
-                          <span className="ml-2 text-[10px] text-muted-foreground">
-                            {count}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : null}
+                  <Tag className="h-3.5 w-3.5" />
+                  <span>{t("aiGatewayFilterByTags", "Tags")}</span>
+                  {selectedTags.length > 0 ? (
+                    <span
+                      data-testid="ai-gateway-tag-filter-badge"
+                      className="rounded-full bg-primary px-1.5 py-0.2 text-[10px] font-semibold text-primary-foreground"
+                    >
+                      {selectedTags.length}
+                    </span>
+                  ) : null}
+                  <ChevronDown
+                    className={`h-3 w-3 opacity-60 transition-transform ${
+                      tagFilterOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
 
-          {providers.length > 0 ? (
+                {tagFilterOpen && (
+                  <div
+                    data-testid="ai-gateway-tag-filter-menu"
+                    className="absolute left-0 z-50 mt-1.5 min-w-[200px] max-w-[280px] rounded-lg border border-border/80 bg-popover p-1.5 shadow-lg backdrop-blur-md animate-in fade-in-50 zoom-in-95"
+                  >
+                    <div className="flex items-center justify-between border-b border-border/50 px-2 py-1 pb-1.5 text-xs font-semibold text-foreground">
+                      <span>{t("aiGatewayFilterByTags", "Filter by tags")}</span>
+                      {selectedTags.length > 0 ? (
+                        <button
+                          type="button"
+                          data-testid="ai-gateway-tag-filter-clear"
+                          onClick={clearTagFilter}
+                          className="text-[11px] font-normal text-muted-foreground hover:text-foreground"
+                        >
+                          {t("aiGatewayClearFilter", "Clear")}
+                        </button>
+                      ) : null}
+                    </div>
+                    <div className="max-h-56 overflow-y-auto py-1 space-y-0.5">
+                      {allAvailableTags.map((tag) => {
+                        const isChecked = selectedTags.includes(tag);
+                        const count = tagCounts.get(tag) ?? 0;
+                        return (
+                          <button
+                            key={tag}
+                            type="button"
+                            data-testid={`ai-gateway-tag-option-${tag}`}
+                            onClick={() => toggleTagFilter(tag)}
+                            className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-foreground hover:bg-muted/70 transition-colors"
+                          >
+                            <div className="flex items-center gap-2 truncate">
+                              <div
+                                className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${
+                                  isChecked
+                                    ? "border-primary bg-primary text-primary-foreground"
+                                    : "border-muted-foreground/40 bg-background"
+                                }`}
+                              >
+                                {isChecked && <Check className="h-2.5 w-2.5" />}
+                              </div>
+                              <span className="truncate">{tag}</span>
+                            </div>
+                            <span className="ml-2 text-[10px] text-muted-foreground">
+                              {count}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex items-center gap-2.5 text-xs">
+            {lastRefreshedAt ? (
+              <span
+                data-testid="ai-gateway-providers-last-refreshed"
+                className="text-[11px] text-muted-foreground"
+              >
+                {t("aiGatewayProvidersLastRefreshed", "最后刷新：{{time}}", {
+                  time: formatTimeHms(lastRefreshedAt),
+                })}
+              </span>
+            ) : null}
+
             <button
               type="button"
               data-testid="ai-gateway-providers-refresh"
-              disabled={!canRefreshQuota}
+              disabled={!canRefreshQuota || isRefreshing}
               aria-label={t("aiGatewayProvidersRefreshQuotaAria")}
               title={
                 canRefreshQuota
                   ? t("aiGatewayProvidersRefreshQuotaAria")
                   : t("aiGatewayProvidersRefreshQuotaDisabled")
               }
-              onClick={() => setQuotaRefreshToken((v) => v + 1)}
+              onClick={handleBulkRefresh}
               className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/70 bg-background px-3 text-xs font-medium text-foreground shadow-xs transition hover:bg-muted active:bg-muted/80 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <RotateCcw className="h-3.5 w-3.5" />
+              <RotateCcw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
               <span>{t("aiGatewayProvidersRefreshQuota")}</span>
             </button>
-          ) : null}
-
-          {onManageTemplates ? (
-            <button
-              type="button"
-              onClick={onManageTemplates}
-              data-testid="ai-gateway-manage-templates"
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/70 bg-background px-3 text-xs font-medium text-foreground shadow-xs transition hover:bg-muted active:bg-muted/80"
-            >
-              <Sparkles className="h-3.5 w-3.5 text-primary" />
-              <span>{t("aiGatewayProviderTemplatesButton", "Provider templates")}</span>
-            </button>
-          ) : null}
-
-          <button
-            type="button"
-            onClick={onAdd}
-            disabled={busy}
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            {t("aiGatewayAddProvider", "Add provider")}
-          </button>
+          </div>
         </div>
-      </div>
+      ) : null}
 
       {providers.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/50 px-6 py-10 text-center">
@@ -674,12 +709,14 @@ export function UpstreamProviderList({
                       provider={provider}
                       baseNow={baseNow}
                       refreshToken={quotaRefreshToken}
+                      onRefreshed={handleCardRefreshed}
                     />
                   ) : isOpencodeGoProvider(provider) ? (
                     <ProviderGoUsageBlock
                       provider={provider}
                       baseNow={baseNow}
                       refreshToken={quotaRefreshToken}
+                      onRefreshed={handleCardRefreshed}
                     />
                   ) : (
                     <div

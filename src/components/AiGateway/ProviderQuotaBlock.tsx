@@ -14,6 +14,7 @@ type ProviderQuotaBlockProps = {
   provider: GatewayUpstreamProvider;
   baseNow?: number | Date;
   refreshToken?: number;
+  onRefreshed?: (timestamp: number) => void;
 };
 
 type QuotaState =
@@ -101,7 +102,12 @@ function QuotaWindowLine({
   );
 }
 
-export function ProviderQuotaBlock({ provider, baseNow, refreshToken = 0 }: ProviderQuotaBlockProps) {
+export function ProviderQuotaBlock({
+  provider,
+  baseNow,
+  refreshToken = 0,
+  onRefreshed,
+}: ProviderQuotaBlockProps) {
   const { t } = useTranslation();
   const [state, setState] = useState<QuotaState>({ status: "loading" });
   const [refreshNow, setRefreshNow] = useState<number | null>(null);
@@ -115,13 +121,14 @@ export function ProviderQuotaBlock({ provider, baseNow, refreshToken = 0 }: Prov
     try {
       const quota = await aiGatewayProviderQuota(provider.id, forceRefresh);
       setState({ status: "success", quota });
+      onRefreshed?.(Date.now());
     } catch (error) {
       setState({
         status: "error",
         reason: error instanceof Error ? error.message : String(error),
       });
     }
-  }, [provider.id]);
+  }, [provider.id, onRefreshed]);
 
   useEffect(() => {
     void loadQuota();
