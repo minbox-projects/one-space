@@ -182,7 +182,7 @@ describe("UsageLogsPanel", () => {
     const rows = within(table).getAllByTestId("ai-gateway-logs-row");
     expect(rows).toHaveLength(3);
     // UTC+8 display: 2026-09-17T18:00Z is 2026-09-18 02:00.
-    expect(within(rows[0]).getByText("2026-09-17 12:00")).toBeInTheDocument();
+    expect(within(rows[0]).getByText("2026-09-17 12:00:00")).toBeInTheDocument();
     expect(within(rows[0]).getByText("Success")).toBeInTheDocument();
     expect(within(rows[0]).getByTestId("ai-gateway-logs-status-badge")).toHaveClass("bg-emerald-500/10");
     expect(within(rows[0]).getByText("newest")).toBeInTheDocument();
@@ -276,7 +276,7 @@ describe("UsageLogsPanel", () => {
     expect(within(rows[0]).getByText("2026-09-17")).toBeInTheDocument();
     expect(within(rows[0]).getByText("2")).toBeInTheDocument();
     expect(within(rows[0]).getByText("1")).toBeInTheDocument();
-    expect(within(rows[0]).getByText("2026-09-17 13:00")).toBeInTheDocument();
+    expect(within(rows[0]).getByText("2026-09-17 13:00:00")).toBeInTheDocument();
     expect(within(grouped).queryByText("Ungrouped")).not.toBeInTheDocument();
   });
 
