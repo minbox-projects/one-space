@@ -3185,3 +3185,227 @@ describe("AiGateway 上游密钥池 UI 接线", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// AI 网关操作提示：成功/失败标题必须与实际操作相符并带上操作对象，
+// 避免历史上「启停都显示 Saved」「删除不分对象」「失败只有 Action failed」。
+// ---------------------------------------------------------------------------
+
+describe("AiGateway 操作提示与实际操作相符", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    resetMessageMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("启停服务的操作提示区分启动与停止，启动附带本地地址", async () => {
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus({ running: false }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<AiGateway />);
+    const toggleBtn = await screen.findByTestId("ai-gateway-toggle-service");
+    fireEvent.click(toggleBtn);
+
+    expect(
+      await screen.findByText(i18n.t("aiGatewayServiceStarted")),
+    ).toBeInTheDocument();
+    // 启动成功的 toast 描述携带本地地址：此时页面上至少有状态卡与 toast 两处。
+    await waitFor(() =>
+      expect(
+        screen.getAllByText("http://127.0.0.1:17688/v1").length,
+      ).toBeGreaterThanOrEqual(2),
+    );
+
+    fireEvent.click(await screen.findByTestId("ai-gateway-toggle-service"));
+    expect(
+      await screen.findByText(i18n.t("aiGatewayServiceStopped")),
+    ).toBeInTheDocument();
+  });
+
+  it("启停服务失败时标题区分启动与停止", async () => {
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus({ running: false }),
+      targets: [],
+    };
+    mockStore(store);
+    const read = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "ai_gateway_start") throw new Error("port busy");
+      return read(command, args);
+    });
+
+    renderWithProviders(<AiGateway />);
+    fireEvent.click(await screen.findByTestId("ai-gateway-toggle-service"));
+
+    expect(
+      await screen.findByText(i18n.t("aiGatewayServiceStartFailed")),
+    ).toBeInTheDocument();
+    // errorToMessage 透出后端原因：失败描述中包含原始错误文本。
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("port busy"),
+    );
+  });
+
+  it("删除服务商的操作提示带服务商名，不再是笼统的 Deleted", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [
+          makeProvider({
+            id: "p1",
+            name: "DeepSeek Provider",
+            base_url: "https://api.deepseek.com",
+          }),
+        ],
+      }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [openCodeTarget()],
+    };
+    mockStore(store);
+
+    renderWithProviders(<AiGateway />);
+
+    fireEvent.click(
+      await within(
+        await screen.findByTestId("ai-gateway-providers"),
+      ).findByText("DeepSeek Provider"),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: i18n.t("aiGatewayDelete") }),
+    );
+    fireEvent.click(
+      await screen.findByTestId("ai-gateway-delete-provider-confirm"),
+    );
+
+    expect(
+      await screen.findByText(
+        i18n.t("aiGatewayProviderDeleted", { name: "DeepSeek Provider" }),
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("终端同步的操作提示带工具名", async () => {
+    const store: Store = {
+      config: makeConfig({
+        keys: [{ id: "k1", label: "Main", value: "********", enabled: true, created_at: 1 }],
+        default_key_id: "k1",
+      }),
+      status: makeStatus({ key_count: 1, default_key_id: "k1" }),
+      targets: [
+        openCodeTarget({
+          provider_id: "gw-open",
+          synced: true,
+          pending_sync: false,
+          synced_key_id: "k1",
+          synced_at: 1,
+        }),
+      ],
+    };
+    mockStore(store);
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("OpenCode");
+
+    const openRow = within(screen.getByTestId("ai-gateway-target-opencode"));
+    fireEvent.click(openRow.getByRole("button", { name: /sync/i }));
+
+    expect(
+      await screen.findByText(
+        i18n.t("aiGatewaySyncSuccess", { tool: "OpenCode" }),
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("删除本地密钥前弹出二次确认，取消时不调用后端", async () => {
+    const store: Store = {
+      config: makeConfig({
+        keys: [{ id: "k1", label: "Main", value: "********", enabled: true, created_at: 1 }],
+        default_key_id: "k1",
+      }),
+      status: makeStatus({ key_count: 1, default_key_id: "k1" }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<AiGateway />);
+    fireEvent.click(
+      await screen.findByRole("tab", { name: /API Keys|API 密钥/i }),
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Delete key Main" }),
+    );
+
+    // 确认框标题与文案均带密钥名。
+    expect(
+      await screen.findByText(i18n.t("aiGatewayDeleteKeyTitle")),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        i18n.t("aiGatewayDeleteKeyConfirm", { label: "Main" }),
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText(i18n.t("aiGatewayDeleteKeyTitle")),
+      ).not.toBeInTheDocument(),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith("ai_gateway_delete_key", {
+      keyId: "k1",
+    });
+    expect(screen.getByTestId("ai-gateway-key-k1")).toBeInTheDocument();
+  });
+
+  it("在二次确认框中确认后删除本地密钥并提示密钥名", async () => {
+    const store: Store = {
+      config: makeConfig({
+        keys: [{ id: "k1", label: "Main", value: "********", enabled: true, created_at: 1 }],
+        default_key_id: "k1",
+      }),
+      status: makeStatus({ key_count: 1, default_key_id: "k1" }),
+      targets: [],
+    };
+    mockStore(store);
+    const read = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "ai_gateway_delete_key") {
+        store.config = {
+          ...store.config,
+          keys: store.config.keys.filter((key) => key.id !== args?.keyId),
+        };
+        return store.config;
+      }
+      return read(command, args);
+    });
+
+    renderWithProviders(<AiGateway />);
+    fireEvent.click(
+      await screen.findByRole("tab", { name: /API Keys|API 密钥/i }),
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Delete key Main" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Delete" }),
+    );
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_delete_key", {
+        keyId: "k1",
+      }),
+    );
+    expect(
+      await screen.findByText(
+        i18n.t("aiGatewayLocalKeyDeleted", { label: "Main" }),
+      ),
+    ).toBeInTheDocument();
+  });
+});
+

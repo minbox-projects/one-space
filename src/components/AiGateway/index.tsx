@@ -15,6 +15,7 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
+import { useConfirmDialog } from "@/components/ConfirmDialogProvider";
 import { errorToMessage } from "@/lib/messages";
 import {
   AI_GATEWAY_CONFIG_UPDATED_EVENT,
@@ -48,6 +49,7 @@ import {
   aiGatewayUpsertProviderTemplate,
   aiGatewayUsageStats,
   localBaseUrl,
+  providerKeyPool,
   resolveDefaultKeyId,
   type CreateProviderFromTemplateRequest,
   type GatewayConfig,
@@ -111,6 +113,7 @@ function emptyProvider(): GatewayUpstreamProviderWithKeys {
 export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const { pushToast } = useToast();
+  const confirmDialog = useConfirmDialog();
   const ToolIcon = Network;
   const iconClassName = "bg-primary/10 text-primary";
 
@@ -358,15 +361,25 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
     async (
       action: () => Promise<void>,
       successTitle: string,
+      failureTitle: string,
+      successDescription?: string,
     ): Promise<boolean> => {
       setBusy(true);
       try {
         await action();
-        pushToast({ title: successTitle, kind: "success" });
+        pushToast(
+          successDescription
+            ? {
+                title: successTitle,
+                description: successDescription,
+                kind: "success",
+              }
+            : { title: successTitle, kind: "success" },
+        );
         return true;
       } catch (err) {
         pushToast({
-          title: t("aiGatewayActionFailed", "Action failed"),
+          title: failureTitle,
           description: errorToMessage(err),
           kind: "error",
         });
@@ -375,86 +388,192 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         setBusy(false);
       }
     },
-    [pushToast, t],
+    [pushToast],
   );
 
-  const handleToggleService = () =>
-    runAction(async () => {
-      const running = Boolean(status?.running);
-      const nextStatus = running ? await aiGatewayStop() : await aiGatewayStart();
-      setStatus(nextStatus);
-      setConfig(await aiGatewayGetConfig());
-      await emit(AI_GATEWAY_STATUS_UPDATED_EVENT).catch(() => {});
-      void refreshTodayUsage(true);
-    }, t("aiGatewaySaved", "Saved."));
+  // 映射标签：本地与上游相同时只展示一处，否则展示「本地 → 上游」。
+  const formatMappingLabel = (localModel: string, upstreamModel: string) =>
+    localModel && localModel !== upstreamModel
+      ? `${localModel} → ${upstreamModel}`
+      : upstreamModel;
+
+  const findProviderName = (providerId: string) =>
+    config?.providers.find((provider) => provider.id === providerId)?.name ??
+    providerId;
+
+  // 删除/恢复映射时的展示标签：能唯一定位本地名时展示「本地 → 上游」，
+  // 同一上游对应多行时仅展示上游名以免误导。调用时基于删除前配置计算。
+  const findMappingLabel = (providerId: string, upstreamModel: string) => {
+    const provider = config?.providers.find((item) => item.id === providerId);
+    const locals = Array.from(
+      new Set(
+        (provider?.mappings ?? [])
+          .filter((mapping) => mapping.upstream_model === upstreamModel)
+          .map((mapping) => mapping.local_model.trim())
+          .filter(Boolean),
+      ),
+    );
+    if (locals.length === 1) return formatMappingLabel(locals[0], upstreamModel);
+    return upstreamModel;
+  };
+
+  const handleToggleService = () => {
+    const running = Boolean(status?.running);
+    const address = localBaseUrl(
+      config?.port ?? status?.port ?? AI_GATEWAY_DEFAULT_PORT,
+    );
+    return runAction(
+      async () => {
+        const runningNow = Boolean(status?.running);
+        const nextStatus = runningNow
+          ? await aiGatewayStop()
+          : await aiGatewayStart();
+        setStatus(nextStatus);
+        setConfig(await aiGatewayGetConfig());
+        await emit(AI_GATEWAY_STATUS_UPDATED_EVENT).catch(() => {});
+        void refreshTodayUsage(true);
+      },
+      running
+        ? t("aiGatewayServiceStopped", "Gateway service stopped")
+        : t("aiGatewayServiceStarted", "Gateway service started"),
+      running
+        ? t("aiGatewayServiceStopFailed", "Failed to stop gateway service")
+        : t("aiGatewayServiceStartFailed", "Failed to start gateway service"),
+      running ? undefined : address,
+    );
+  };
 
   const handleToggleProviderEnabled = (provider: GatewayUpstreamProvider, enabled: boolean) =>
-    runAction(async () => {
-      await applyConfig(await aiGatewaySetProviderEnabled(provider.id, enabled));
-    }, t("aiGatewaySaved", "Saved."));
+    runAction(
+      async () => {
+        await applyConfig(await aiGatewaySetProviderEnabled(provider.id, enabled));
+      },
+      enabled
+        ? t("aiGatewayProviderEnabled", "Provider enabled: {{name}}", {
+            name: provider.name,
+          })
+        : t("aiGatewayProviderDisabled", "Provider disabled: {{name}}", {
+            name: provider.name,
+          }),
+      t("aiGatewayProviderOperationFailed", "Upstream provider operation failed"),
+    );
 
   const handleReenableProviderModel = (
     providerId: string,
     localModel: string,
     upstreamModel: string,
   ) =>
-    runAction(async () => {
-      const next = await aiGatewayReenableProviderModel(
-        providerId,
-        localModel,
-        upstreamModel,
-      );
-      await applyConfig(next);
-      setEditingProvider(
-        next.providers.find((provider) => provider.id === providerId) ?? null,
-      );
-    }, t("aiGatewaySaved", "Saved."));
+    runAction(
+      async () => {
+        const next = await aiGatewayReenableProviderModel(
+          providerId,
+          localModel,
+          upstreamModel,
+        );
+        await applyConfig(next);
+        setEditingProvider(
+          next.providers.find((provider) => provider.id === providerId) ?? null,
+        );
+      },
+      t("aiGatewayMappingReenabled", "Mapping re-enabled: {{mapping}}", {
+        mapping: formatMappingLabel(localModel, upstreamModel),
+      }),
+      t("aiGatewayMappingOperationFailed", "Model mapping operation failed"),
+      findProviderName(providerId),
+    );
 
-  const handleReenableProviderModels = (providerId: string) =>
-    runAction(async () => {
-      const next = await aiGatewayReenableProviderModels(providerId);
-      await applyConfig(next);
-      setEditingProvider(
-        next.providers.find((provider) => provider.id === providerId) ?? null,
-      );
-    }, t("aiGatewaySaved", "Saved."));
+  const handleReenableProviderModels = (providerId: string) => {
+    const provider =
+      config?.providers.find((item) => item.id === providerId) ?? null;
+    const providerName = provider?.name ?? providerId;
+    const autoDisabledCount =
+      provider?.mappings.filter((mapping) => mapping.auto_disabled).length ?? 0;
+    return runAction(
+      async () => {
+        const next = await aiGatewayReenableProviderModels(providerId);
+        await applyConfig(next);
+        setEditingProvider(
+          next.providers.find((item) => item.id === providerId) ?? null,
+        );
+      },
+      t(
+        "aiGatewayMappingsReenabledAll",
+        "All auto-disabled mappings re-enabled: {{provider}} ({{count}})",
+        { provider: providerName, count: autoDisabledCount },
+      ),
+      t("aiGatewayMappingOperationFailed", "Model mapping operation failed"),
+    );
+  };
 
-  const handleReenableProviderKey = (providerId: string, keyId: string) =>
-    runAction(async () => {
-      const next = await aiGatewayReenableProviderKey(providerId, keyId);
-      await applyConfig(next);
-      setEditingProvider(
-        next.providers.find((provider) => provider.id === providerId) ?? null,
-      );
-    }, t("aiGatewaySaved", "Saved."));
+  const handleReenableProviderKey = (providerId: string, keyId: string) => {
+    const provider =
+      config?.providers.find((item) => item.id === providerId) ?? null;
+    const keyName =
+      providerKeyPool(provider).find((key) => key.id === keyId)?.name ?? keyId;
+    return runAction(
+      async () => {
+        const next = await aiGatewayReenableProviderKey(providerId, keyId);
+        await applyConfig(next);
+        setEditingProvider(
+          next.providers.find((item) => item.id === providerId) ?? null,
+        );
+      },
+      t("aiGatewayProviderKeyReenabled", "Upstream key re-enabled: {{key}}", {
+        key: keyName,
+      }),
+      t("aiGatewayProviderKeyOperationFailed", "Upstream key operation failed"),
+      provider?.name,
+    );
+  };
 
   const handleSaveProvider = (
     draft: GatewayUpstreamProviderWithKeys,
     prices: ModelPrice[],
-  ) =>
-    runAction(async () => {
-      const next = await aiGatewayUpsertProvider(draft, prices);
-      setConfig(next);
-      const saved = draft.id
-        ? next.providers.find((provider) => provider.id === draft.id) ?? null
-        : null;
-      setEditingProvider(saved);
-      setSelectedProviderId(saved?.id ?? null);
-      const [nextStatus, nextTargets] = await Promise.all([
-        aiGatewayStatus(),
-        aiGatewayTerminalTargets(),
-      ]);
-      setStatus(nextStatus);
-      setTargets(nextTargets);
-    }, t("aiGatewayProviderSaved", "Provider saved."));
+  ) => {
+    const isNew = !draft.id;
+    const providerName = draft.name.trim() || draft.id;
+    return runAction(
+      async () => {
+        const next = await aiGatewayUpsertProvider(draft, prices);
+        setConfig(next);
+        const saved = draft.id
+          ? next.providers.find((provider) => provider.id === draft.id) ?? null
+          : null;
+        setEditingProvider(saved);
+        setSelectedProviderId(saved?.id ?? null);
+        const [nextStatus, nextTargets] = await Promise.all([
+          aiGatewayStatus(),
+          aiGatewayTerminalTargets(),
+        ]);
+        setStatus(nextStatus);
+        setTargets(nextTargets);
+      },
+      isNew
+        ? t("aiGatewayProviderCreated", "Provider created: {{name}}", {
+            name: providerName,
+          })
+        : t("aiGatewayProviderSaved", "Provider saved: {{name}}", {
+            name: providerName,
+          }),
+      t("aiGatewayProviderOperationFailed", "Upstream provider operation failed"),
+    );
+  };
 
-  const handleDeleteProvider = (providerId: string) =>
-    runAction(async () => {
-      await applyConfig(await aiGatewayDeleteProvider(providerId));
-      setEditingProvider(null);
-      setSelectedProviderId(null);
-      setIsDialogOpen(false);
-    }, t("aiGatewayDeleted", "Deleted."));
+  const handleDeleteProvider = (providerId: string) => {
+    const providerName = findProviderName(providerId);
+    return runAction(
+      async () => {
+        await applyConfig(await aiGatewayDeleteProvider(providerId));
+        setEditingProvider(null);
+        setSelectedProviderId(null);
+        setIsDialogOpen(false);
+      },
+      t("aiGatewayProviderDeleted", "Provider deleted: {{name}}", {
+        name: providerName,
+      }),
+      t("aiGatewayProviderOperationFailed", "Upstream provider operation failed"),
+    );
+  };
 
   const syncEditingProvider = (
     next: GatewayConfig,
@@ -468,48 +587,107 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   };
 
   const handleDeleteProviderModel = (providerId: string, upstreamModel: string) =>
-    runAction(async () => {
-      const next = await aiGatewayDeleteProviderModel(providerId, upstreamModel);
-      await applyConfig(next);
-      syncEditingProvider(next, providerId);
-    }, t("aiGatewayMappingDeleted", "Model deleted."));
+    runAction(
+      async () => {
+        const next = await aiGatewayDeleteProviderModel(providerId, upstreamModel);
+        await applyConfig(next);
+        syncEditingProvider(next, providerId);
+      },
+      t("aiGatewayMappingDeleted", "Mapping deleted: {{mapping}}", {
+        mapping: findMappingLabel(providerId, upstreamModel),
+      }),
+      t("aiGatewayMappingOperationFailed", "Model mapping operation failed"),
+      findProviderName(providerId),
+    );
 
   const handleRestoreProviderModel = (providerId: string, upstreamModel: string) =>
-    runAction(async () => {
-      const next = await aiGatewayRestoreProviderModel(providerId, upstreamModel);
-      await applyConfig(next);
-      syncEditingProvider(next, providerId);
-    }, t("aiGatewayModelRestored", "Model restored."));
+    runAction(
+      async () => {
+        const next = await aiGatewayRestoreProviderModel(providerId, upstreamModel);
+        await applyConfig(next);
+        syncEditingProvider(next, providerId);
+      },
+      t("aiGatewayModelRestored", "Mapping restored: {{mapping}}", {
+        mapping: findMappingLabel(providerId, upstreamModel),
+      }),
+      t("aiGatewayMappingOperationFailed", "Model mapping operation failed"),
+      findProviderName(providerId),
+    );
 
   const handleSaveKey = (key: GatewayKey): Promise<boolean> =>
-    runAction(async () => {
-      await applyConfig(await aiGatewayUpsertKey(key));
-    }, t("aiGatewayKeySaved", "Key saved."));
+    runAction(
+      async () => {
+        await applyConfig(await aiGatewayUpsertKey(key));
+      },
+      t("aiGatewayLocalKeyCreated", "Local key created: {{label}}", {
+        label: key.label,
+      }),
+      t("aiGatewayLocalKeyOperationFailed", "Local key operation failed"),
+    );
 
-  const handleDeleteKey = (keyId: string) =>
-    runAction(async () => {
-      await applyConfig(await aiGatewayDeleteKey(keyId));
-    }, t("aiGatewayDeleted", "Deleted."));
+  const handleDeleteKey = (keyId: string) => {
+    const label = config?.keys.find((key) => key.id === keyId)?.label ?? keyId;
+    // 本地密钥删除不可撤销：先经全局二次确认框确认，与服务商/模板删除保持一致。
+    void (async () => {
+      const confirmed = await confirmDialog(
+        t(
+          "aiGatewayDeleteKeyConfirm",
+          'Are you sure you want to delete local key "{{label}}"? This action cannot be undone.',
+          { label },
+        ),
+        { title: t("aiGatewayDeleteKeyTitle", "Delete local key") },
+      );
+      if (!confirmed) return;
+      await runAction(
+        async () => {
+          await applyConfig(await aiGatewayDeleteKey(keyId));
+        },
+        t("aiGatewayLocalKeyDeleted", "Local key deleted: {{label}}", { label }),
+        t("aiGatewayLocalKeyOperationFailed", "Local key operation failed"),
+      );
+    })();
+  };
 
   const handleToggleKeyEnabled = (key: GatewayKey, enabled: boolean) =>
-    runAction(async () => {
-      await applyConfig(await aiGatewayUpsertKey({ ...key, enabled }));
-    }, t("aiGatewaySaved", "Saved."));
+    runAction(
+      async () => {
+        await applyConfig(await aiGatewayUpsertKey({ ...key, enabled }));
+      },
+      enabled
+        ? t("aiGatewayLocalKeyEnabled", "Local key enabled: {{label}}", {
+            label: key.label,
+          })
+        : t("aiGatewayLocalKeyDisabled", "Local key disabled: {{label}}", {
+            label: key.label,
+          }),
+      t("aiGatewayLocalKeyOperationFailed", "Local key operation failed"),
+    );
 
-  const handleSetDefaultKey = (keyId: string) =>
-    runAction(async () => {
-      await applyConfig(await aiGatewaySetDefaultKey(keyId));
-    }, t("aiGatewaySaved", "Saved."));
+  const handleSetDefaultKey = (keyId: string) => {
+    const label = config?.keys.find((key) => key.id === keyId)?.label ?? keyId;
+    return runAction(
+      async () => {
+        await applyConfig(await aiGatewaySetDefaultKey(keyId));
+      },
+      t("aiGatewayDefaultKeyUpdated", "Default key set to {{label}}", { label }),
+      t("aiGatewayLocalKeyOperationFailed", "Local key operation failed"),
+    );
+  };
 
   const runTerminalAction = useCallback(
-    async (tool: string, action: () => Promise<void>, successTitle: string) => {
+    async (
+      tool: string,
+      action: () => Promise<void>,
+      successTitle: string,
+      failureTitle: string,
+    ) => {
       setSyncingTools((prev) => ({ ...prev, [tool]: true }));
       try {
         await action();
         pushToast({ title: successTitle, kind: "success" });
       } catch (err) {
         pushToast({
-          title: t("aiGatewayActionFailed", "Action failed"),
+          title: failureTitle,
           description: errorToMessage(err),
           kind: "error",
         });
@@ -521,8 +699,11 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         });
       }
     },
-    [pushToast, t],
+    [pushToast],
   );
+
+  const toolDisplayName = (tool: string) =>
+    targets.find((target) => target.tool === tool)?.name ?? tool;
 
   const handleConfigureTool = (tool: string) =>
     void runTerminalAction(
@@ -531,7 +712,14 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         await aiGatewayConfigureTerminal([tool]);
         await applyConfig(await aiGatewayGetConfig());
       },
-      t("aiGatewayConfigureSuccess", "Terminal targets configured."),
+      t("aiGatewayConfigureSuccess", "Terminal provider added for {{tool}}.", {
+        tool: toolDisplayName(tool),
+      }),
+      t(
+        "aiGatewayTerminalOperationFailed",
+        "Terminal integration operation failed for {{tool}}",
+        { tool: toolDisplayName(tool) },
+      ),
     );
 
   const handleSyncTool = (tool: string) =>
@@ -541,11 +729,21 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         await aiGatewaySyncTerminal([tool]);
         await applyConfig(await aiGatewayGetConfig());
       },
-      t("aiGatewaySyncSuccess", "Terminal targets synced."),
+      t("aiGatewaySyncSuccess", "Terminal provider synced for {{tool}}.", {
+        tool: toolDisplayName(tool),
+      }),
+      t(
+        "aiGatewayTerminalOperationFailed",
+        "Terminal integration operation failed for {{tool}}",
+        { tool: toolDisplayName(tool) },
+      ),
     );
 
   const handleSyncTemplate = useCallback(
     (templateId: string) => {
+      const templateName =
+        templates.find((view) => view.template.id === templateId)?.template.name ??
+        templateId;
       setSyncingTemplates((prev) => ({ ...prev, [templateId]: true }));
       setTemplateSyncInFlight(templateId, true);
       void (async () => {
@@ -560,12 +758,20 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           setTemplateAutoRefreshFailure(templateId, null);
           await applyConfig(await aiGatewayGetConfig());
           pushToast({
-            title: t("aiGatewayTemplateSyncSuccess", "Provider template synced."),
+            title: t(
+              "aiGatewayTemplateSyncSuccess",
+              "Provider template synced: {{name}}.",
+              { name: templateName },
+            ),
             kind: "success",
           });
         } catch (err) {
           pushToast({
-            title: t("aiGatewayActionFailed", "Action failed"),
+            title: t(
+              "aiGatewayTemplateOperationFailed",
+              "Provider template operation failed: {{name}}",
+              { name: templateName },
+            ),
             description: errorToMessage(err),
             kind: "error",
           });
@@ -579,11 +785,14 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         }
       })();
     },
-    [applyConfig, pushToast, t],
+    [applyConfig, pushToast, t, templates],
   );
 
   const handleCreateProviderFromTemplate = useCallback(
     async (request: CreateProviderFromTemplateRequest): Promise<boolean> => {
+      const templateName =
+        templates.find((view) => view.template.id === request.templateId)
+          ?.template.name ?? request.templateId;
       try {
         const created = await aiGatewayCreateProviderFromTemplate(request);
         const existingIds = new Set(
@@ -600,7 +809,11 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         pushToast({
           title: t(
             "aiGatewayTemplateProviderCreated",
-            "Provider created from template.",
+            "Provider {{provider}} created from template {{template}}.",
+            {
+              provider: newProvider?.name ?? request.name,
+              template: templateName,
+            },
           ),
           kind: "success",
         });
@@ -609,7 +822,8 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         pushToast({
           title: t(
             "aiGatewayTemplateCreateFailed",
-            "Failed to create provider from template.",
+            "Failed to create provider from template {{template}}.",
+            { template: templateName },
           ),
           description: errorToMessage(err),
           kind: "error",
@@ -617,7 +831,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         return false;
       }
     },
-    [applyConfig, config, pushToast, t],
+    [applyConfig, config, pushToast, t, templates],
   );
 
   const handleUpsertTemplate = async (
@@ -627,13 +841,19 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       const nextViews = await aiGatewayUpsertProviderTemplate(template);
       setTemplates(nextViews);
       pushToast({
-        title: t("aiGatewayTemplateSaved", "Template saved."),
+        title: t("aiGatewayTemplateSaved", "Template saved: {{name}}.", {
+          name: template.name,
+        }),
         kind: "success",
       });
       return true;
     } catch (err) {
       pushToast({
-        title: t("aiGatewayActionFailed", "Action failed"),
+        title: t(
+          "aiGatewayTemplateOperationFailed",
+          "Provider template operation failed: {{name}}",
+          { name: template.name },
+        ),
         description: errorToMessage(err),
         kind: "error",
       });
@@ -642,17 +862,26 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   };
 
   const handleDeleteTemplate = async (templateId: string): Promise<boolean> => {
+    const templateName =
+      templates.find((view) => view.template.id === templateId)?.template.name ??
+      templateId;
     try {
       const nextViews = await aiGatewayDeleteProviderTemplate(templateId);
       setTemplates(nextViews);
       pushToast({
-        title: t("aiGatewayTemplateDeleted", "Template deleted."),
+        title: t("aiGatewayTemplateDeleted", "Template deleted: {{name}}.", {
+          name: templateName,
+        }),
         kind: "success",
       });
       return true;
     } catch (err) {
       pushToast({
-        title: t("aiGatewayActionFailed", "Action failed"),
+        title: t(
+          "aiGatewayTemplateOperationFailed",
+          "Provider template operation failed: {{name}}",
+          { name: templateName },
+        ),
         description: errorToMessage(err),
         kind: "error",
       });
@@ -674,7 +903,16 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       return true;
     } catch (err) {
       pushToast({
-        title: t("aiGatewayActionFailed", "Action failed"),
+        title: t(
+          "aiGatewayTemplateOperationFailed",
+          "Provider template operation failed: {{name}}",
+          {
+            name: t(
+              "aiGatewayTemplateResetBuiltin",
+              "Restore built-in presets",
+            ),
+          },
+        ),
         description: errorToMessage(err),
         kind: "error",
       });
@@ -684,14 +922,22 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
 
   const handleCopyAddress = async () => {
     if (!config) return;
+    const address = localBaseUrl(config.port);
     try {
-      await navigator.clipboard.writeText(localBaseUrl(config.port));
+      await navigator.clipboard.writeText(address);
       setAddressCopied(true);
       setTimeout(() => setAddressCopied(false), 2000);
-      pushToast({ title: t("aiGatewayCopied", "Copied to clipboard"), kind: "success" });
+      pushToast({
+        title: t("aiGatewayAddressCopied", "Local API address copied"),
+        description: address,
+        kind: "success",
+      });
     } catch (err) {
       pushToast({
-        title: t("aiGatewayCopyFailed", "Copy failed"),
+        title: t(
+          "aiGatewayAddressCopyFailed",
+          "Failed to copy local API address",
+        ),
         description: errorToMessage(err),
         kind: "error",
       });
@@ -707,10 +953,13 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       await navigator.clipboard.writeText(key.value);
       setDefaultKeyCopied(true);
       setTimeout(() => setDefaultKeyCopied(false), 2000);
-      pushToast({ title: t("aiGatewayCopied", "Copied to clipboard"), kind: "success" });
+      pushToast({
+        title: t("aiGatewayDefaultKeyCopied", "Default API key copied"),
+        kind: "success",
+      });
     } catch (err) {
       pushToast({
-        title: t("aiGatewayCopyFailed", "Copy failed"),
+        title: t("aiGatewayKeyCopyFailed", "Failed to copy API key"),
         description: errorToMessage(err),
         kind: "error",
       });
@@ -721,10 +970,15 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
     try {
       await navigator.clipboard.writeText(key.value);
       setCopiedKeyId(key.id);
-      pushToast({ title: t("aiGatewayCopied", "Copied to clipboard"), kind: "success" });
+      pushToast({
+        title: t("aiGatewayKeyCopied", "API key copied: {{label}}", {
+          label: key.label,
+        }),
+        kind: "success",
+      });
     } catch (err) {
       pushToast({
-        title: t("aiGatewayCopyFailed", "Copy failed"),
+        title: t("aiGatewayKeyCopyFailed", "Failed to copy API key"),
         description: errorToMessage(err),
         kind: "error",
       });
