@@ -3208,6 +3208,250 @@ fn build_gateway_provider_opencode_keeps_first_duplicate_and_falls_back_names() 
     );
 }
 
+/// A local model whose only enabled, servable row targets the Responses endpoint
+/// must be exposed to opencode with the `@ai-sdk/openai` provider npm so the tool
+/// calls `/responses`; a chat-servable sibling model keeps today's shape with no
+/// `provider` key. Existing `name`/`reasoning`/`variants` fields stay intact.
+#[test]
+fn build_gateway_provider_opencode_marks_responses_only_models_with_responses_npm() {
+    let mut responses = upstream_provider(
+        "g-resp",
+        "Responses Gateway",
+        "https://responses.example/v1",
+        "sk",
+        None,
+    );
+    responses.protocol = UpstreamProtocol::Responses;
+    let mut responses_row = mapping("resp-only", "remote-resp", Some("Resp Only"));
+    responses_row.reasoning_efforts = vec!["low".to_string(), "high".to_string()];
+    responses.mappings = vec![responses_row];
+
+    let mut chat = upstream_provider(
+        "g-chat",
+        "Chat Gateway",
+        "https://chat.example/v1",
+        "sk",
+        None,
+    );
+    chat.mappings = vec![mapping("chat-model", "remote-chat", Some("Chat Model"))];
+
+    let value = build_gateway_provider(
+        "fus-oc",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[responses, chat],
+    )
+    .expect("opencode provider must build");
+
+    assert_eq!(
+        value["tool_config"]["models"],
+        json!({
+            "resp-only": {
+                "name": "Resp Only",
+                "reasoning": true,
+                "variants": {
+                    "low": { "reasoningEffort": "low" },
+                    "high": { "reasoningEffort": "high" },
+                },
+                "provider": { "npm": "@ai-sdk/openai" },
+            },
+            "chat-model": { "name": "Chat Model" },
+        }),
+        "responses-only models must carry the @ai-sdk/openai npm and chat-servable models must not: {value}"
+    );
+}
+
+/// A row that pins `protocol = responses` under an otherwise chat provider is
+/// still responses-only and must carry the override; a plain row on the same
+/// provider stays exactly as before.
+#[test]
+fn build_gateway_provider_opencode_row_level_responses_override_marks_responses_npm() {
+    let mut gateway = upstream_provider("g1", "Gateway", "https://api.example/v1", "sk", None);
+    let mut responses_row = mapping("resp-row", "remote-resp", Some("Resp Row"));
+    responses_row.protocol = Some(UpstreamProtocol::Responses);
+    gateway.mappings = vec![
+        responses_row,
+        mapping("chat-row", "remote-chat", Some("Chat Row")),
+    ];
+
+    let value = build_gateway_provider(
+        "fus-oc",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[gateway],
+    )
+    .expect("opencode provider must build");
+
+    assert_eq!(
+        value["tool_config"]["models"],
+        json!({
+            "resp-row": { "name": "Resp Row", "provider": { "npm": "@ai-sdk/openai" } },
+            "chat-row": { "name": "Chat Row" },
+        }),
+        "a row-level responses protocol must trigger the override: {value}"
+    );
+}
+
+/// The same local model served via chat completions on one enabled gateway and
+/// via responses on another is chat-servable, so opencode keeps today's shape with
+/// no `provider` key (chat wins).
+#[test]
+fn build_gateway_provider_opencode_chat_service_on_any_gateway_keeps_no_provider_npm() {
+    let mut chat = upstream_provider("g-chat", "Chat", "https://chat.example/v1", "sk", None);
+    chat.mappings = vec![mapping("shared", "remote-chat", Some("Shared Chat"))];
+    let mut responses = upstream_provider("g-resp", "Resp", "https://resp.example/v1", "sk", None);
+    responses.protocol = UpstreamProtocol::Responses;
+    responses.mappings = vec![mapping("shared", "remote-resp", Some("Shared Resp"))];
+
+    let value = build_gateway_provider(
+        "fus-oc",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[chat, responses],
+    )
+    .expect("opencode provider must build");
+
+    assert_eq!(
+        value["tool_config"]["models"],
+        json!({ "shared": { "name": "Shared Chat" } }),
+        "chat service on any enabled gateway suppresses the responses override: {value}"
+    );
+    assert!(
+        value["tool_config"]["models"]["shared"]
+            .get("provider")
+            .is_none(),
+        "a chat-servable model must not carry the responses provider npm: {value}"
+    );
+}
+
+/// A switched-off row can never serve: an enabled responses row still marks the
+/// model even when a sibling chat row for the same local model was auto-disabled.
+#[test]
+fn build_gateway_provider_opencode_auto_disabled_rows_do_not_suppress_responses_npm() {
+    let mut gateway = upstream_provider("g1", "Gateway", "https://api.example/v1", "sk", None);
+    let mut responses_row = mapping("mixed", "remote-resp", Some("Mixed"));
+    responses_row.protocol = Some(UpstreamProtocol::Responses);
+    let mut auto_disabled_chat = mapping("mixed", "remote-chat", Some("Mixed Chat"));
+    auto_disabled_chat.auto_disabled = true;
+    gateway.mappings = vec![responses_row, auto_disabled_chat];
+
+    let value = build_gateway_provider(
+        "fus-oc",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[gateway],
+    )
+    .expect("opencode provider must build");
+
+    assert_eq!(
+        value["tool_config"]["models"]["mixed"],
+        json!({ "name": "Mixed", "provider": { "npm": "@ai-sdk/openai" } }),
+        "an auto-disabled chat row must not suppress the responses override: {value}"
+    );
+}
+
+/// A disabled responses row never serves and must not add the override to an
+/// otherwise chat-servable model.
+#[test]
+fn build_gateway_provider_opencode_disabled_rows_do_not_trigger_responses_npm() {
+    let mut gateway = upstream_provider("g1", "Gateway", "https://api.example/v1", "sk", None);
+    let mut disabled_responses = mapping("chat-only", "remote-resp", Some("Chat Only Resp"));
+    disabled_responses.protocol = Some(UpstreamProtocol::Responses);
+    disabled_responses.enabled = false;
+    gateway.mappings = vec![
+        mapping("chat-only", "remote-chat", Some("Chat Only")),
+        disabled_responses,
+    ];
+
+    let value = build_gateway_provider(
+        "fus-oc",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[gateway],
+    )
+    .expect("opencode provider must build");
+
+    assert_eq!(
+        value["tool_config"]["models"],
+        json!({ "chat-only": { "name": "Chat Only" } }),
+        "a disabled responses row must not trigger the override: {value}"
+    );
+}
+
+/// `default_model` serves an unmapped model under its own protocol: a model mapped
+/// responses-only on one gateway but served by a chat gateway's default model is
+/// chat-servable, so opencode keeps no `provider` key.
+#[test]
+fn build_gateway_provider_opencode_default_model_chat_service_suppresses_responses_npm() {
+    let mut responses = upstream_provider("g-resp", "Resp", "https://resp.example/v1", "sk", None);
+    responses.protocol = UpstreamProtocol::Responses;
+    responses.mappings = vec![mapping("only-here", "remote-resp", Some("Only Here"))];
+
+    let chat_default = upstream_provider(
+        "g-chat-default",
+        "Chat Default",
+        "https://chat.example/v1",
+        "sk",
+        Some("default-chat-model"),
+    );
+
+    let value = build_gateway_provider(
+        "fus-oc",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[responses, chat_default],
+    )
+    .expect("opencode provider must build");
+
+    assert_eq!(
+        value["tool_config"]["models"],
+        json!({ "only-here": { "name": "Only Here" } }),
+        "a chat default_model serving the local model must suppress the override: {value}"
+    );
+}
+
+/// A matching disabled row blocks that gateway's `default_model` fallback, so a
+/// responses-only model stays responses-only even when another gateway's chat
+/// default model could otherwise serve it.
+#[test]
+fn build_gateway_provider_opencode_disabled_row_blocks_default_model_chat_service() {
+    let mut responses = upstream_provider("g-resp", "Resp", "https://resp.example/v1", "sk", None);
+    responses.protocol = UpstreamProtocol::Responses;
+    responses.mappings = vec![mapping("blocked", "remote-resp", Some("Blocked"))];
+
+    let mut chat_default = upstream_provider(
+        "g-chat-default",
+        "Chat Default",
+        "https://chat.example/v1",
+        "sk",
+        Some("default-chat-model"),
+    );
+    let mut disabled_chat_row = mapping("blocked", "remote-chat", None);
+    disabled_chat_row.enabled = false;
+    chat_default.mappings = vec![disabled_chat_row];
+
+    let value = build_gateway_provider(
+        "fus-oc",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key-123",
+        &[responses, chat_default],
+    )
+    .expect("opencode provider must build");
+
+    assert_eq!(
+        value["tool_config"]["models"]["blocked"],
+        json!({ "name": "Blocked", "provider": { "npm": "@ai-sdk/openai" } }),
+        "a disabled matching row must block the chat default-model fallback: {value}"
+    );
+}
+
 #[test]
 fn build_gateway_provider_codex_shape_is_wire_api_chat_without_options() {
     let mut gateway = upstream_provider(

@@ -2,7 +2,7 @@ use super::migration::migrate_legacy_files;
 use super::runtime_http::{autostart, server_status, start_server, stop_server};
 use super::selection::{
     clear_key_runtime_state, clear_mapping_runtime_state, manual_reenable, mapping_matches_key,
-    set_user_enabled,
+    resolve_model_for_protocol, set_user_enabled, ModelResolution,
 };
 use super::storage::{
     find_provider_mut, local_base_url, modify_config, new_key_id, new_key_value, new_provider_id,
@@ -37,6 +37,10 @@ const GATEWAY_PROVIDER_NAME: &str = "AI Gateway";
 const GATEWAY_PROVIDER_KEY: &str = "gateway";
 /// Stable marker identifying a provider record written by AI Gateway.
 const GATEWAY_MARKER_KEY: &str = "ai_gateway_gateway";
+/// npm override for an opencode model the gateway can serve only through the
+/// Responses protocol: `@ai-sdk/openai` POSTs `/responses` instead of the
+/// `/chat/completions` used by `@ai-sdk/openai-compatible`.
+const OPENCODE_RESPONSES_NPM: &str = "@ai-sdk/openai";
 
 /// A terminal service provider record that AI Gateway can configure or sync.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +92,22 @@ fn non_empty(value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+/// Whether any enabled gateway can serve `local_model` under `protocol`,
+/// resolved through the same authoritative model resolution the request path
+/// uses. Disabled gateways never count.
+fn gateway_protocol_servable(
+    gateways: &[GatewayUpstreamProvider],
+    local_model: &str,
+    protocol: UpstreamProtocol,
+) -> bool {
+    gateways.iter().filter(|gateway| gateway.enabled).any(|gateway| {
+        matches!(
+            resolve_model_for_protocol(gateway, Some(local_model), protocol),
+            ModelResolution::Serve(_)
+        )
+    })
 }
 
 /// Build the terminal provider record written by AI Gateway for one tool.
@@ -155,6 +175,17 @@ pub(in crate::ai_gateway) fn build_gateway_provider(
                 if models.contains_key(&local_model) {
                     continue;
                 }
+                // Per-local-model servability across every enabled gateway: a
+                // model the gateway can only serve over Responses gets the
+                // `@ai-sdk/openai` npm override so opencode calls `/responses`.
+                // Chat service anywhere wins and preserves today's shape.
+                let chat_servable = gateway_protocol_servable(
+                    gateways,
+                    &local_model,
+                    UpstreamProtocol::ChatCompletions,
+                );
+                let responses_servable =
+                    gateway_protocol_servable(gateways, &local_model, UpstreamProtocol::Responses);
                 let name = non_empty(mapping.display_name.as_deref())
                     .or_else(|| non_empty(Some(mapping.upstream_model.as_str())))
                     .unwrap_or_default();
@@ -180,6 +211,15 @@ pub(in crate::ai_gateway) fn build_gateway_provider(
                 if !variants.is_empty() {
                     model.insert("reasoning".to_string(), Value::Bool(true));
                     model.insert("variants".to_string(), Value::Object(variants));
+                }
+
+                if !chat_servable && responses_servable {
+                    let mut provider = Map::new();
+                    provider.insert(
+                        "npm".to_string(),
+                        Value::String(OPENCODE_RESPONSES_NPM.to_string()),
+                    );
+                    model.insert("provider".to_string(), Value::Object(provider));
                 }
 
                 models.insert(local_model, Value::Object(model));
