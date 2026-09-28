@@ -468,15 +468,57 @@ pub(in crate::ai_gateway) fn read_config() -> Result<GatewayConfig, String> {
     Ok(GatewayConfig::default())
 }
 
+/// Provider ids present in `config`.
+fn provider_ids(config: &GatewayConfig) -> HashSet<String> {
+    config
+        .providers
+        .iter()
+        .map(|provider| provider.id.clone())
+        .collect()
+}
+
+/// Prune scheduler entries for provider ids that existed before a publication
+/// and are absent from the published configuration.
+///
+/// Only a genuine deletion triggers pruning: an id absent from `published` but
+/// never present in `before_ids` belongs to another configuration sharing the
+/// process-global scheduler and must be left alone.
+fn prune_removed_providers(before_ids: &HashSet<String>, published: &GatewayConfig) {
+    let after_ids = provider_ids(published);
+    let removed: HashSet<String> = before_ids
+        .iter()
+        .filter(|id| !after_ids.contains(*id))
+        .cloned()
+        .collect();
+    super::selection::prune_weighted_scheduler(&removed);
+}
+
+/// Provider ids of the configuration currently persisted at `path`, read
+/// without taking the write lock and without publishing anything. A missing or
+/// unreadable file yields an empty set, in which case nothing is pruned.
+fn persisted_provider_ids(path: &Path) -> HashSet<String> {
+    if let Some(config) = cached_config(path) {
+        return provider_ids(&config);
+    }
+    match read_config_locked(path) {
+        Ok(Some((config, _))) => provider_ids(&config),
+        _ => HashSet::new(),
+    }
+}
+
 /// Encrypt the entire configuration and write it atomically through a unique
 /// temp file plus rename so a partial write can never corrupt the on-disk
 /// state. Every write stamps the current schema version so an older file can
 /// never be re-written without it, and the published normalized value becomes
-/// the new read-cache entry.
+/// the new read-cache entry. After a successful publication, scheduler entries
+/// of provider ids removed by this write are pruned; a failed write prunes
+/// nothing.
 pub(in crate::ai_gateway) fn write_config(config: &GatewayConfig) -> Result<(), String> {
     let path = config_path()?;
+    let before_ids = persisted_provider_ids(&path);
     let tmp = unique_config_temp_path(&path);
     let published = write_config_through_temp(config, &path, &tmp)?;
+    prune_removed_providers(&before_ids, &published);
     store_cached_config(&path, &published);
     Ok(())
 }
@@ -525,6 +567,9 @@ fn write_config_through_temp(
     fs::write(tmp, encrypted).map_err(|e| e.to_string())?;
     fs::rename(tmp, path).map_err(|e| e.to_string())?;
     migrate_legacy_files();
+    // Scheduler pruning is the caller's responsibility once this publication
+    // succeeds, so it can diff the previously persisted provider ids against
+    // the published ones instead of pruning ids absent from this writer.
     Ok(next)
 }
 
@@ -556,10 +601,12 @@ pub(in crate::ai_gateway) fn modify_config<T>(
         Some(config) => (config, false),
         None => read_config_locked(&path)?.unwrap_or((GatewayConfig::default(), false)),
     };
+    let before_ids = provider_ids(&config);
     let (changed, value) = mutate(&mut config)?;
     if changed || needs_migration {
         let tmp = unique_config_temp_path(&path);
         let published = write_config_through_temp(&config, &path, &tmp)?;
+        prune_removed_providers(&before_ids, &published);
         store_cached_config(&path, &published);
     } else {
         // Warm the cache with the fresh parse so a no-op settlement still

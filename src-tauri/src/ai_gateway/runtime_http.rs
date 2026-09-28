@@ -2690,7 +2690,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .resolve_order(session_id.as_deref(), requested.as_deref(), || {
-                weighted_candidates(&candidates)
+                weighted_candidates(&candidates, requested.as_deref(), protocol)
             });
         // The reorder is a no-op when the bound provider is not one of this
         // request's eligible candidates, which forces the binding to be replaced.

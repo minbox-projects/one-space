@@ -20755,7 +20755,7 @@ fn swrr_distribution_ratio() {
 
     let mut first_picks = Vec::new();
     for _ in 0..4 {
-        let selected = super::selection::weighted_candidates(&candidates);
+        let selected = super::selection::weighted_candidates(&candidates, Some("gpt-4o"), UpstreamProtocol::ChatCompletions);
         assert_eq!(selected.len(), 2, "must return all candidates");
         first_picks.push(selected[0].id.clone());
     }
@@ -20789,7 +20789,7 @@ fn swrr_fallback_order() {
     p_b.weight = 1;
     let candidates = vec![p_a, p_b];
 
-    let ordered = super::selection::weighted_candidates(&candidates);
+    let ordered = super::selection::weighted_candidates(&candidates, Some("gpt-4o"), UpstreamProtocol::ChatCompletions);
     assert_eq!(ordered.len(), 2);
     assert_eq!(ordered[0].id, "p_a", "AC-004: higher weight candidate A must be primary");
     assert_eq!(ordered[1].id, "p_b", "AC-004: candidate B must be next in sequence as fallback");
@@ -20814,7 +20814,7 @@ fn swrr_equal_weights() {
 
     let mut first_picks = Vec::new();
     for _ in 0..4 {
-        let selected = super::selection::weighted_candidates(&candidates);
+        let selected = super::selection::weighted_candidates(&candidates, Some("gpt-4o"), UpstreamProtocol::ChatCompletions);
         first_picks.push(selected[0].id.clone());
     }
 
@@ -20837,24 +20837,24 @@ fn swrr_single_candidate() {
     p_a.weight = 5;
 
     // Single candidate with weight 5
-    let selected = super::selection::weighted_candidates(&[p_a.clone()]);
+    let selected = super::selection::weighted_candidates(&[p_a.clone()], Some("gpt-4o"), UpstreamProtocol::ChatCompletions);
     assert_eq!(selected.len(), 1, "AC-006: single candidate must return list with length 1");
     assert_eq!(selected[0].id, "p_a");
 
     // Single candidate with weight 1
     p_a.weight = 1;
-    let selected_min = super::selection::weighted_candidates(&[p_a.clone()]);
+    let selected_min = super::selection::weighted_candidates(&[p_a.clone()], Some("gpt-4o"), UpstreamProtocol::ChatCompletions);
     assert_eq!(selected_min.len(), 1);
     assert_eq!(selected_min[0].id, "p_a");
 
     // Single candidate with max weight 100
     p_a.weight = 100;
-    let selected_max = super::selection::weighted_candidates(&[p_a]);
+    let selected_max = super::selection::weighted_candidates(&[p_a], Some("gpt-4o"), UpstreamProtocol::ChatCompletions);
     assert_eq!(selected_max.len(), 1);
 
     // Empty candidates list pass-through
     let empty: Vec<GatewayUpstreamProvider> = Vec::new();
-    let selected_empty = super::selection::weighted_candidates(&empty);
+    let selected_empty = super::selection::weighted_candidates(&empty, Some("gpt-4o"), UpstreamProtocol::ChatCompletions);
     assert!(selected_empty.is_empty(), "empty candidate list must return empty vector");
 }
 
@@ -20899,7 +20899,7 @@ fn swrr_excludes_disabled_provider() {
     // 3 requests with weights B:1, C:2 -> sequence [C, B, C]
     let mut first_picks = Vec::new();
     for _ in 0..3 {
-        let res = super::selection::weighted_candidates(&candidates);
+        let res = super::selection::weighted_candidates(&candidates, Some("gpt-4o"), UpstreamProtocol::ChatCompletions);
         first_picks.push(res[0].id.clone());
     }
 
@@ -20934,7 +20934,7 @@ fn swrr_concurrent_safety() {
         let candidates_clone = Arc::clone(&candidates);
         handles.push(std::thread::spawn(move || {
             for _ in 0..20 {
-                let res = super::selection::weighted_candidates(&candidates_clone);
+                let res = super::selection::weighted_candidates(&candidates_clone, Some("gpt-4o"), UpstreamProtocol::ChatCompletions);
                 assert_eq!(res.len(), 3, "must always return all 3 candidates");
                 assert!(
                     res[0].id == "p_a" || res[0].id == "p_b" || res[0].id == "p_c",
@@ -20968,7 +20968,7 @@ fn swrr_session_affinity_initial_binding_ratio() {
         let order = store.resolve_order(
             Some(&session_id),
             Some("gpt-4o"),
-            || super::selection::weighted_candidates(&candidates),
+            || super::selection::weighted_candidates(&candidates, Some("gpt-4o"), UpstreamProtocol::ChatCompletions),
         );
         let bound = order
             .bound_provider_id
@@ -21023,7 +21023,7 @@ fn swrr_session_affinity_preserves_bound_with_weighted_fallback() {
     let subsequent = store.resolve_order(
         Some("session-pinned"),
         Some("gpt-4o"),
-        || super::selection::weighted_candidates(&candidates),
+        || super::selection::weighted_candidates(&candidates, Some("gpt-4o"), UpstreamProtocol::ChatCompletions),
     );
 
     assert_eq!(
