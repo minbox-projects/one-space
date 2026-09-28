@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -52,14 +53,17 @@ const QUOTA_I18N_KEYS = [
   "aiGatewayQuotaExceeded",
 ] as const;
 
+type RawProviderKey = Record<string, unknown>;
+
 function makeProvider(
-  overrides: Partial<GatewayUpstreamProvider> = {},
+  overrides: Partial<GatewayUpstreamProvider> & { keys?: RawProviderKey[] } = {},
 ): GatewayUpstreamProvider {
+  const { keys, ...rest } = overrides;
   return {
     id: "quota-provider",
     name: "CommandCode",
     base_url: "https://api.commandcode.ai/provider/v1",
-    keys: [
+    keys: keys ?? [
       {
         id: "k1",
         name: "Default",
@@ -75,7 +79,7 @@ function makeProvider(
     protocol: "chat_completions",
     mappings: [],
     enabled: true,
-    ...overrides,
+    ...rest,
   } as unknown as GatewayUpstreamProvider;
 }
 
@@ -92,6 +96,38 @@ function mockQuotaResult(result: ProviderQuota | Error = FIXTURE) {
 function renderQuotaBlock(quotaProvider = makeProvider(), baseNow?: number | Date) {
   return renderWithProviders(
     <ProviderQuotaBlock provider={quotaProvider} baseNow={baseNow} />,
+  );
+}
+
+function QuotaTokenHarness({ provider }: { provider: GatewayUpstreamProvider }) {
+  const [refreshToken, setRefreshToken] = useState(0);
+  const [, setNoop] = useState(0);
+  return (
+    <>
+      <button
+        type="button"
+        data-testid="quota-token-bump"
+        onClick={() => setRefreshToken((token) => token + 1)}
+      >
+        bump
+      </button>
+      <button
+        type="button"
+        data-testid="quota-token-noop"
+        onClick={() => setNoop((value) => value + 1)}
+      >
+        noop
+      </button>
+      <ProviderQuotaBlock provider={provider} refreshToken={refreshToken} />
+    </>
+  );
+}
+
+function forcedQuotaCalls() {
+  return invokeMock.mock.calls.filter(
+    ([command, args]) =>
+      command === "ai_gateway_provider_quota" &&
+      (args as { forceRefresh?: boolean } | undefined)?.forceRefresh === true,
   );
 }
 
@@ -445,5 +481,42 @@ describe("ProviderQuotaBlock", () => {
         expect((translation as string).trim(), `${language}:${key}`).not.toBe("");
       }
     }
+  });
+
+  it("refreshToken 递增时强制刷新一次，未变化时不重复刷新", async () => {
+    const user = userEvent.setup();
+    const provider = makeProvider();
+    renderWithProviders(<QuotaTokenHarness provider={provider} />);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_provider_quota", {
+        providerId: "quota-provider",
+        forceRefresh: false,
+      }),
+    );
+    expect(forcedQuotaCalls()).toHaveLength(0);
+
+    await user.click(screen.getByTestId("quota-token-bump"));
+
+    await waitFor(() => expect(forcedQuotaCalls()).toHaveLength(1));
+    expect(forcedQuotaCalls()[0]?.[1]).toMatchObject({
+      providerId: "quota-provider",
+      forceRefresh: true,
+    });
+
+    // 同一 token 下的无关 re-render 不得追加强制刷新。
+    await user.click(screen.getByTestId("quota-token-noop"));
+    expect(forcedQuotaCalls()).toHaveLength(1);
+  });
+
+  it("key 池为空时 refreshToken 递增不发起强制刷新", async () => {
+    const user = userEvent.setup();
+    const provider = makeProvider({ keys: [] });
+    renderWithProviders(<QuotaTokenHarness provider={provider} />);
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
+
+    await user.click(screen.getByTestId("quota-token-bump"));
+    expect(forcedQuotaCalls()).toHaveLength(0);
   });
 });

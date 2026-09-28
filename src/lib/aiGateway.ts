@@ -832,13 +832,13 @@ function pad2(value: number): string {
   return String(value).padStart(2, "0");
 }
 
-/** Format a millisecond timestamp as `YYYY-MM-DD HH:mm` in UTC+8. */
+/** Format a millisecond timestamp as `YYYY-MM-DD HH:mm:ss` in UTC+8. */
 export function formatUtc8DateTime(ms: number | null | undefined): string | null {
   if (ms === null || ms === undefined) return null;
   const date = new Date(ms + UTC8_OFFSET_MS);
   return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(
     date.getUTCDate(),
-  )} ${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}`;
+  )} ${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}:${pad2(date.getUTCSeconds())}`;
 }
 
 /** Format a millisecond timestamp as `YYYY-MM-DD` in UTC+8. */

@@ -26,3 +26,4 @@ src-tauri/examples/
 /.worktrees/
 .ai-workflow/plans/
 MEMORY.md
+.worktrees/

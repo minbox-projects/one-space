@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
@@ -6,6 +6,7 @@ import { UpstreamProviderList } from "./UpstreamProviderList";
 import {
   type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
+  type ProviderGoUsage,
   type ProviderQuota,
 } from "@/lib/aiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
@@ -32,6 +33,18 @@ const COMMANDCODE_QUOTA_FIXTURE: ProviderQuota = {
       exceeded: false,
       resetAt: 1758600000000,
     },
+  },
+};
+
+const GO_USAGE_FIXTURE: ProviderGoUsage = {
+  usage: {
+    rolling: { status: "ok", percent: 25, resetsAt: "2026-09-24T12:00:00Z" },
+    weekly: {
+      status: "rate-limited",
+      percent: 65,
+      resetsAt: "2026-09-25T12:00:00Z",
+    },
+    monthly: { status: "ok", percent: 120, resetsAt: "2026-10-01T12:00:00Z" },
   },
 };
 
@@ -1202,3 +1215,294 @@ describe("UpstreamProviderList 上游密钥池摘要", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// 批量刷新当前筛选结果的额度区块。
+// RED assertions: Step 4 must add the toolbar button and the refreshToken prop.
+// ---------------------------------------------------------------------------
+
+describe("UpstreamProviderList 批量刷新当前筛选结果额度", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "ai_gateway_provider_quota") {
+        return COMMANDCODE_QUOTA_FIXTURE;
+      }
+      if (command === "ai_gateway_provider_go_usage") {
+        return GO_USAGE_FIXTURE;
+      }
+      return undefined;
+    });
+    await i18n.changeLanguage("en");
+  });
+
+  function forcedInvocations(command: string, providerId: string) {
+    return invokeMock.mock.calls.filter(
+      ([cmd, args]) =>
+        cmd === command &&
+        (args as { providerId?: string; forceRefresh?: boolean } | undefined)
+          ?.providerId === providerId &&
+        (args as { forceRefresh?: boolean } | undefined)?.forceRefresh === true,
+    );
+  }
+
+  function allForcedInvocations() {
+    return invokeMock.mock.calls.filter(
+      ([cmd, args]) =>
+        (cmd === "ai_gateway_provider_quota" ||
+          cmd === "ai_gateway_provider_go_usage") &&
+        (args as { forceRefresh?: boolean } | undefined)?.forceRefresh === true,
+    );
+  }
+
+  function renderList(providers: GatewayUpstreamProvider[]) {
+    return renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+  }
+
+  async function applyTagFilter(
+    user: ReturnType<typeof userEvent.setup>,
+    tag: string,
+  ) {
+    await user.click(screen.getByTestId("ai-gateway-tag-filter-trigger"));
+    await user.click(screen.getByTestId(`ai-gateway-tag-option-${tag}`));
+  }
+
+  it("点击刷新只强制刷新当前过滤结果中支持额度监控且有 key 的服务商", async () => {
+    const user = userEvent.setup();
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({
+        id: "cc-visible",
+        name: "CC Visible",
+        base_url: "https://api.commandcode.ai/provider/v1",
+        tags: ["prod"],
+      }),
+      makeProvider({
+        id: "go-visible",
+        name: "Go Visible",
+        base_url: "https://opencode.ai/zen/go",
+        tags: ["prod"],
+      }),
+      makeProvider({
+        id: "plain-visible",
+        name: "Plain Visible",
+        base_url: "https://api.openai.com/v1",
+        tags: ["prod"],
+      }),
+      makeProvider({
+        id: "cc-nokey",
+        name: "CC No Key",
+        base_url: "https://api.commandcode.ai/provider/v1",
+        keys: [],
+        tags: ["prod"],
+      }),
+      makeProvider({
+        id: "go-nokey",
+        name: "Go No Key",
+        base_url: "https://opencode.ai/zen/go",
+        keys: [],
+        tags: ["prod"],
+      }),
+      makeProvider({
+        id: "cc-hidden",
+        name: "CC Hidden",
+        base_url: "https://api.commandcode.ai/provider/v1",
+        tags: ["dev"],
+      }),
+    ];
+
+    renderList(providers);
+    await applyTagFilter(user, "prod");
+
+    const refreshButton = screen.getByTestId("ai-gateway-providers-refresh");
+    expect(refreshButton).toHaveAttribute("type", "button");
+    expect(refreshButton).toBeEnabled();
+    expect(
+      screen.getByRole("button", {
+        name: "Refresh quota for supported providers in the current filter results",
+      }),
+    ).toBe(refreshButton);
+
+    await user.click(refreshButton);
+
+    await waitFor(() =>
+      expect(
+        forcedInvocations("ai_gateway_provider_quota", "cc-visible"),
+      ).toHaveLength(1),
+    );
+    await waitFor(() =>
+      expect(
+        forcedInvocations("ai_gateway_provider_go_usage", "go-visible"),
+      ).toHaveLength(1),
+    );
+
+    expect(
+      forcedInvocations("ai_gateway_provider_quota", "cc-visible")[0][1],
+    ).toMatchObject({ providerId: "cc-visible", forceRefresh: true });
+    expect(
+      forcedInvocations("ai_gateway_provider_go_usage", "go-visible")[0][1],
+    ).toMatchObject({ providerId: "go-visible", forceRefresh: true });
+
+    for (const id of [
+      "cc-nokey",
+      "go-nokey",
+      "plain-visible",
+      "cc-hidden",
+    ]) {
+      expect(
+        allForcedInvocations().filter(
+          ([, args]) => (args as { providerId?: string }).providerId === id,
+        ),
+        `unexpected forced refresh for ${id}`,
+      ).toHaveLength(0);
+    }
+  });
+
+  it("过滤结果中没有可刷新额度的服务商时刷新按钮禁用", async () => {
+    const user = userEvent.setup();
+    renderList([
+      makeProvider({
+        id: "plain-visible",
+        name: "Plain Visible",
+        base_url: "https://api.openai.com/v1",
+        tags: ["prod"],
+      }),
+    ]);
+
+    const refreshButton = screen.getByTestId("ai-gateway-providers-refresh");
+    expect(refreshButton).toBeDisabled();
+    expect(refreshButton).toHaveAttribute(
+      "title",
+      "No providers in the current filter results support quota refresh",
+    );
+
+    await user.click(refreshButton);
+    expect(allForcedInvocations()).toHaveLength(0);
+  });
+
+  it("过滤结果中仅有空 key 池的 CommandCode 服务商时刷新按钮禁用", () => {
+    renderList([
+      makeProvider({
+        id: "cc-nokey-only",
+        name: "CC No Key Only",
+        base_url: "https://api.commandcode.ai/provider/v1",
+        keys: [],
+      }),
+    ]);
+
+    expect(screen.getByTestId("ai-gateway-providers-refresh")).toBeDisabled();
+  });
+
+  it("点击刷新时被过滤掉的服务商重新出现后不会被补发强制刷新", async () => {
+    const user = userEvent.setup();
+    renderList([
+      makeProvider({
+        id: "cc-visible",
+        name: "CC Visible",
+        base_url: "https://api.commandcode.ai/provider/v1",
+        tags: ["prod"],
+      }),
+      makeProvider({
+        id: "cc-hidden",
+        name: "CC Hidden",
+        base_url: "https://api.commandcode.ai/provider/v1",
+        tags: ["dev"],
+      }),
+    ]);
+
+    await applyTagFilter(user, "prod");
+    await user.click(screen.getByTestId("ai-gateway-providers-refresh"));
+    await waitFor(() =>
+      expect(
+        forcedInvocations("ai_gateway_provider_quota", "cc-visible"),
+      ).toHaveLength(1),
+    );
+
+    // 清除标签筛选：cc-hidden 卡片挂载并执行普通挂载拉取（forceRefresh: false）。
+    await user.click(screen.getByTestId("ai-gateway-tag-filter-trigger"));
+    await user.click(screen.getByTestId("ai-gateway-tag-filter-clear"));
+
+    expect(
+      await screen.findByTestId("ai-gateway-provider-cc-hidden"),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_provider_quota", {
+        providerId: "cc-hidden",
+        forceRefresh: false,
+      }),
+    );
+
+    expect(
+      forcedInvocations("ai_gateway_provider_quota", "cc-hidden"),
+    ).toHaveLength(0);
+  });
+
+  it("自动刷新成功后展示最后刷新时间，手动刷新后时间戳更新", async () => {
+    const user = userEvent.setup();
+    renderList([
+      makeProvider({
+        id: "cc-auto",
+        name: "CC Auto",
+        base_url: "https://api.commandcode.ai/provider/v1",
+      }),
+    ]);
+
+    // 1. 自动挂载拉取成功后，Toolbar 右侧展示最后刷新时间
+    const lastRefreshedEl = await screen.findByTestId(
+      "ai-gateway-providers-last-refreshed",
+    );
+    expect(lastRefreshedEl).toBeInTheDocument();
+    // 英文环境下包含 "Last refreshed:"
+    expect(lastRefreshedEl.textContent).toMatch(/Last refreshed:\s*\d{2}:\d{2}:\d{2}/i);
+
+    // 2. 点击手动刷新
+    const refreshBtn = screen.getByTestId("ai-gateway-providers-refresh");
+    await user.click(refreshBtn);
+
+    await waitFor(() =>
+      expect(
+        forcedInvocations("ai_gateway_provider_quota", "cc-auto"),
+      ).toHaveLength(1),
+    );
+
+    // 手动刷新后时间元素依然存在并展示有效时间
+    expect(screen.getByTestId("ai-gateway-providers-last-refreshed").textContent).toMatch(
+      /Last refreshed:\s*\d{2}:\d{2}:\d{2}/i,
+    );
+  });
+
+  it("服务商列表布局解耦：Header 放置新建与模板，Toolbar 放置筛选与刷新运维", () => {
+    renderList([
+      makeProvider({
+        id: "cc-layout",
+        name: "CC Layout",
+        base_url: "https://api.commandcode.ai/provider/v1",
+      }),
+    ]);
+
+    const toolbar = screen.getByTestId("ai-gateway-providers-toolbar");
+    expect(toolbar).toBeInTheDocument();
+
+    // 工具栏内应包含状态筛选与刷新额度按钮
+    expect(
+      within(toolbar).getByTestId("ai-gateway-provider-status-filter"),
+    ).toBeInTheDocument();
+    expect(
+      within(toolbar).getByTestId("ai-gateway-providers-refresh"),
+    ).toBeInTheDocument();
+
+    // 新增服务商按钮与模板管理按钮不在工具栏内部，而在头部主操作区
+    expect(
+      within(toolbar).queryByRole("button", { name: /Add provider/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+

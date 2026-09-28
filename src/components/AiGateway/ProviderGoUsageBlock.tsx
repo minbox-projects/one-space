@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RotateCcw } from "lucide-react";
 import {
   aiGatewayProviderGoUsage,
+  providerKeyPool,
   type GatewayUpstreamProvider,
   type GoUsageWindow,
   type ProviderGoUsage,
@@ -18,6 +19,8 @@ const GO_USAGE_I18N_KEYS = {
 type ProviderGoUsageBlockProps = {
   provider: GatewayUpstreamProvider;
   baseNow?: number | Date;
+  refreshToken?: number;
+  onRefreshed?: (timestamp: number) => void;
 };
 
 type UsageState =
@@ -94,10 +97,16 @@ function UsageWindowLine({
   );
 }
 
-export function ProviderGoUsageBlock({ provider, baseNow }: ProviderGoUsageBlockProps) {
+export function ProviderGoUsageBlock({
+  provider,
+  baseNow,
+  refreshToken = 0,
+  onRefreshed,
+}: ProviderGoUsageBlockProps) {
   const { t } = useTranslation();
   const [state, setState] = useState<UsageState>({ status: "loading" });
   const [refreshNow, setRefreshNow] = useState<number | null>(null);
+  const refreshTokenRef = useRef(refreshToken);
 
   const loadUsage = useCallback(async (forceRefresh = false) => {
     setState({ status: "loading" });
@@ -108,17 +117,26 @@ export function ProviderGoUsageBlock({ provider, baseNow }: ProviderGoUsageBlock
         throw new Error("invalid or missing usage response");
       }
       setState({ status: "success", data });
+      onRefreshed?.(Date.now());
     } catch (error) {
       setState({
         status: "error",
         reason: error instanceof Error ? error.message : String(error),
       });
     }
-  }, [provider.id]);
+  }, [provider.id, onRefreshed]);
 
   useEffect(() => {
     void loadUsage();
   }, [loadUsage]);
+
+  useEffect(() => {
+    if (refreshTokenRef.current === refreshToken) return;
+    refreshTokenRef.current = refreshToken;
+    if (providerKeyPool(provider).length > 0) {
+      void loadUsage(true);
+    }
+  }, [refreshToken, provider, loadUsage]);
 
   const id = provider.id;
   const usage = state.status === "success" ? state.data.usage : null;

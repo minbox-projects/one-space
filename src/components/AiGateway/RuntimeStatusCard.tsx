@@ -134,7 +134,7 @@ export function RuntimeStatusCard({
                   aria-label={t("aiGatewayCopyAddress", "Copy local API address")}
                   title={
                     addressCopied
-                      ? t("aiGatewayCopied", "Copied")
+                      ? t("aiGatewayAddressCopied", "Local API address copied")
                       : t("aiGatewayCopyAddress", "Copy local API address")
                   }
                   className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
@@ -176,7 +176,7 @@ export function RuntimeStatusCard({
                   aria-label={t("aiGatewayCopyDefaultKey", "Copy default API key")}
                   title={
                     defaultKeyCopied
-                      ? t("aiGatewayCopied", "Copied")
+                      ? t("aiGatewayDefaultKeyCopied", "Default API key copied")
                       : t("aiGatewayCopyDefaultKey", "Copy default API key")
                   }
                   data-testid="ai-gateway-copy-default-key"

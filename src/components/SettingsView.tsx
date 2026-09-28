@@ -1869,12 +1869,17 @@ export function SettingsView({
         try {
           savedMinutes = await aiGatewayTemplateAutoRefreshSave(parsedMinutes);
         } catch {
+          // 保留天数此时已经落盘：必须明确告知用户部分保存，
+          // 否则纯失败提示会掩盖已生效的保留天数修改。
           setMessage({
             type: "error",
-            text: t(
+            text: `${t(
+              "aiGatewaySettingsPartialSaved",
+              "Log retention saved, but template auto-refresh was not updated.",
+            )} ${t(
               "aiGatewayTemplateAutoRefreshInvalid",
               "Template auto refresh minutes must be 0 (disabled) or between 10 and 1440",
-            ),
+            )}`,
           });
           return;
         }
@@ -1897,7 +1902,7 @@ export function SettingsView({
         notifyTemplateAutoRefreshIntervalChanged();
         setMessage({
           type: "success",
-          text: t("currentSectionSavedSuccess", "Current section saved."),
+          text: t("aiGatewaySettingsSaved", "AI Gateway settings saved."),
         });
         setTimeout(() => {
           setMessage({ type: "", text: "" });

@@ -528,7 +528,7 @@ describe("SettingsView", () => {
     );
 
     expect(
-      await screen.findByText(/Current section saved\.|当前菜单已保存。/),
+      await screen.findByText(/AI Gateway settings saved\.|AI 网关设置已保存。/),
     ).toBeInTheDocument();
     expect(input).toHaveValue(60);
     expect(

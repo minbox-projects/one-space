@@ -1,6 +1,6 @@
 # Agent Notes
 
-Agent Notes are the project's proposal and decision records. This README is the single source of their format and governance. MEMORY describes current standards (how); notes explain why. Both must remain consistent in the same change. Notes and the project contract are local artifacts ignored with `.ai-workflow/`.
+Agent Notes are the project's proposal and decision records. This README is the single source of their format and governance. MEMORY describes current standards (how); notes explain why. Both must remain consistent in the same change. Notes and the project contract travel with Git; only `.ai-workflow/plans/` is ignored.
 
 ## Structure and format
 

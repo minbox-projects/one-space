@@ -11,6 +11,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
+import { errorToMessage } from "@/lib/messages";
 import { SelectDropdown } from "./SelectDropdown";
 import {
   aggregateModels,
@@ -174,8 +175,13 @@ export function ModelListPanel({
       setTimeout(() => {
         setCopiedTarget((prev) => (prev === targetKey ? null : prev));
       }, 1500);
-    } catch {
-      // 剪贴板异常优雅降级
+    } catch (err) {
+      // 剪贴板写入失败时给出明确的失败提示，与网关其他复制入口一致。
+      pushToast({
+        title: t("aiGatewayCopyFailed", "Copy failed"),
+        description: errorToMessage(err),
+        kind: "error",
+      });
     }
   };
 
