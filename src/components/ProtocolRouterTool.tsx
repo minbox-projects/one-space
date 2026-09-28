@@ -13,8 +13,14 @@ import {
   Route as RouteIcon,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
+import { ToolEmptyState } from "@/components/toolbox/ToolEmptyState";
+import {
+  ToolStatusBadge,
+  type ToolStatusTone,
+} from "@/components/toolbox/ToolStatusBadge";
 import { errorToMessage } from "@/lib/messages";
 import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 import {
   protocolRouterGetConfig,
   protocolRouterSaveConfig,
@@ -27,14 +33,6 @@ import {
   type ProtocolRouterStatsSummary,
   type ProtocolRouterStatus,
 } from "@/lib/protocolRouter";
-
-const DEFAULT_CONFIG: ProtocolRouterConfig = {
-  enabled: false,
-  port: 17687,
-  token: "",
-  retention_days: 30,
-  routes: [],
-};
 
 const RECENT_REQUESTS_PAGE_SIZE = 20;
 
@@ -57,16 +55,6 @@ interface TrendBucket {
   label: string;
   calls: number;
   tokens: number;
-}
-
-function normalizeConfig(config?: ProtocolRouterConfig): ProtocolRouterConfig {
-  const merged = { ...DEFAULT_CONFIG, ...(config || {}) };
-  return {
-    ...merged,
-    port: Number(merged.port) || DEFAULT_CONFIG.port,
-    retention_days: Math.min(365, Math.max(1, Number(merged.retention_days) || 30)),
-    routes: merged.routes || [],
-  };
 }
 
 function routeUrl(port: number, route: ProtocolRoute) {
@@ -242,38 +230,34 @@ function TrendChart({
   );
 }
 
-function routeStatusPresentation(t: (key: string, fallback: string) => string, status: RouteConnectionStatus) {
+function routeStatusLabel(
+  t: (key: string, fallback: string) => string,
+  status: RouteConnectionStatus,
+): string {
   switch (status) {
     case "connected":
-      return {
-        label: t("protocolRouterRouteStatusConnected", "Connected"),
-        dotClass: "bg-emerald-500",
-        textClass: "text-emerald-700",
-      };
+      return t("protocolRouterRouteStatusConnected", "Connected");
     case "flaky":
-      return {
-        label: t("protocolRouterRouteStatusFlaky", "Flaky"),
-        dotClass: "bg-amber-500",
-        textClass: "text-amber-700",
-      };
+      return t("protocolRouterRouteStatusFlaky", "Flaky");
     case "failed":
-      return {
-        label: t("protocolRouterRouteStatusFailed", "Failed"),
-        dotClass: "bg-rose-500",
-        textClass: "text-rose-700",
-      };
+      return t("protocolRouterRouteStatusFailed", "Failed");
     case "disabled":
-      return {
-        label: t("protocolRouterRouteStatusDisabled", "Disabled"),
-        dotClass: "bg-zinc-400",
-        textClass: "text-muted-foreground",
-      };
+      return t("protocolRouterRouteStatusDisabled", "Disabled");
     default:
-      return {
-        label: t("protocolRouterRouteStatusInactive", "Inactive"),
-        dotClass: "bg-zinc-300",
-        textClass: "text-muted-foreground",
-      };
+      return t("protocolRouterRouteStatusInactive", "Inactive");
+  }
+}
+
+function routeStatusTone(status: RouteConnectionStatus): ToolStatusTone {
+  switch (status) {
+    case "connected":
+      return "success";
+    case "flaky":
+      return "warning";
+    case "failed":
+      return "error";
+    default:
+      return "neutral";
   }
 }
 
@@ -362,7 +346,7 @@ async function safelyUnlisten(unlisten: () => void | Promise<void>) {
 export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("protocol-router");
-  const [config, setConfig] = useState<ProtocolRouterConfig>(DEFAULT_CONFIG);
+  const [config, setConfig] = useState<ProtocolRouterConfig | null>(null);
   const [status, setStatus] = useState<ProtocolRouterStatus | null>(null);
   const [stats, setStats] = useState<ProtocolRouterStatsSummary | null>(null);
   const [statsDays, setStatsDays] = useState(7);
@@ -374,9 +358,22 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
   const [togglingRouteId, setTogglingRouteId] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [message, setMessage] = useState<MessageState>({ type: "", text: "" });
-  const copiedTimerRef = useRef<number | null>(null);
+  const pendingCopyKeyRef = useRef<string | null>(null);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
+
+  const clipboard = useCopyToClipboard({
+    onSuccess: () => {
+      setCopiedKey(pendingCopyKeyRef.current);
+      setMessage({
+        type: "success",
+        text: t("copiedToClipboard", "Copied to clipboard"),
+      });
+    },
+    onError: (error) => {
+      setMessage({ type: "error", text: errorToMessage(error) });
+    },
+  });
 
   const load = useCallback(async () => {
     if (!isTauri) return;
@@ -387,7 +384,7 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
         protocolRouterStatus(),
         protocolRouterStats(statsDays),
       ]);
-      setConfig(normalizeConfig(nextConfig));
+      setConfig(nextConfig);
       setStatus(nextStatus);
       setStats(nextStats);
     } catch (err) {
@@ -403,19 +400,11 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
   }, [isVisible, load]);
 
   useEffect(() => {
-    return () => {
-      if (copiedTimerRef.current !== null) {
-        window.clearTimeout(copiedTimerRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!selectedRouteId) return;
+    if (!config || !selectedRouteId) return;
     if (!config.routes.some((route) => route.id === selectedRouteId)) {
       setSelectedRouteId(null);
     }
-  }, [config.routes, selectedRouteId]);
+  }, [config, selectedRouteId]);
 
   const handleRouterRefresh = useEffectEvent(() => {
     if (!isVisible) return;
@@ -473,7 +462,8 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
 
   const routeViewModels = useMemo<ProtocolRouterRouteViewModel[]>(() => {
     const calls = stats?.calls || [];
-    return config.routes.map((route) => ({
+    const routes = config?.routes ?? [];
+    return routes.map((route) => ({
       route,
       ...(() => {
         const summary = summarizeRouteCalls(calls.filter((call) => call.route_id === route.id));
@@ -483,7 +473,7 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
         };
       })(),
     }));
-  }, [config.routes, stats?.calls]);
+  }, [config?.routes, stats?.calls]);
 
   const totalErrors = useMemo(
     () => (stats?.calls || []).filter(isFailedCall).length,
@@ -533,8 +523,8 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
     setBusy(true);
     setMessage({ type: "", text: "" });
     try {
-      const latest = normalizeConfig(await protocolRouterGetConfig());
-      const saved = normalizeConfig(await protocolRouterSaveConfig({ ...latest, enabled }));
+      const latest = await protocolRouterGetConfig();
+      const saved = await protocolRouterSaveConfig({ ...latest, enabled });
       const [nextStatus, nextStats] = await Promise.all([
         protocolRouterStatus(),
         protocolRouterStats(statsDays),
@@ -585,6 +575,7 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
   };
 
   const testRoute = async (route: ProtocolRoute) => {
+    if (!isTauri) return;
     setTestingRouteId(route.id);
     setMessage({ type: "", text: "" });
     try {
@@ -607,21 +598,9 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
     }
   };
 
-  const copyText = async (key: string, text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedKey(key);
-      if (copiedTimerRef.current !== null) {
-        window.clearTimeout(copiedTimerRef.current);
-      }
-      copiedTimerRef.current = window.setTimeout(() => {
-        setCopiedKey(null);
-        copiedTimerRef.current = null;
-      }, 1600);
-      setMessage({ type: "success", text: t("copiedToClipboard", "Copied to clipboard") });
-    } catch (err) {
-      setMessage({ type: "error", text: errorToMessage(err) });
-    }
+  const copyText = (key: string, text: string) => {
+    pendingCopyKeyRef.current = key;
+    void clipboard.copy(text);
   };
 
   const activeRoutes = routeViewModels.filter((item) => item.callCount > 0).length;
@@ -658,7 +637,7 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
                   : t("protocolRouterRuntimeStoppedHint", "Persisted runtime switch also controls auto-start.")}
               </div>
             </div>
-            <Switch checked={!!config.enabled} onCheckedChange={(checked) => void toggleRunning(checked)} disabled={busy} />
+            <Switch checked={!!config?.enabled} onCheckedChange={(checked) => void toggleRunning(checked)} disabled={busy} />
           </div>
         </div>
 
@@ -678,15 +657,15 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
           <div className="rounded-[24px] border bg-card p-5">
             <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("status", "Status")}</div>
             <div className="mt-3 text-xl font-semibold">{status?.running ? t("running", "Running") : t("stopped", "Stopped")}</div>
-            <div className="mt-1 text-sm text-muted-foreground">{t("protocolRouterPortValue", { port: config.port, defaultValue: `Port ${config.port}` })}</div>
+            <div className="mt-1 text-sm text-muted-foreground">{t("protocolRouterPortValue", { port: config?.port ?? 0, defaultValue: `Port ${config?.port ?? 0}` })}</div>
           </div>
           <div className="rounded-[24px] border bg-card p-5">
             <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("protocolRouterActiveRoutes", "Active Routes")}</div>
             <div className="mt-3 text-xl font-semibold">{activeRoutes}</div>
             <div className="mt-1 text-sm text-muted-foreground">
               {t("protocolRouterConfiguredRoutes", {
-                count: config.routes.length,
-                defaultValue: `${config.routes.length} configured`,
+                count: config?.routes.length ?? 0,
+                defaultValue: `${config?.routes.length ?? 0} configured`,
               })}
             </div>
           </div>
@@ -738,9 +717,9 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
 
           <div className="grid gap-4 lg:grid-cols-2">
             {routeViewModels.map((item) => {
-              const presentation = routeStatusPresentation((key, fallback) => t(key, fallback), item.status);
+              const statusLabel = routeStatusLabel((key, fallback) => t(key, fallback), item.status);
               const selected = selectedRouteId === item.route.id;
-              const endpoint = routeUrl(config.port, item.route);
+              const endpoint = routeUrl(config?.port ?? 0, item.route);
               const upstreamBaseUrl = item.route.base_url || "--";
               return (
                 <div
@@ -767,10 +746,10 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
-                      <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs ${presentation.textClass}`}>
-                        <span className={`h-2 w-2 rounded-full ${presentation.dotClass}`} />
-                        {presentation.label}
-                      </div>
+                      <ToolStatusBadge
+                        tone={routeStatusTone(item.status)}
+                        label={statusLabel}
+                      />
                       <div className="flex items-center gap-2 rounded-full border bg-muted/20 px-2.5 py-1">
                         <span className="text-xs text-muted-foreground">
                           {item.route.enabled ? t("enabled", "Enabled") : t("disabled", "Disabled")}
@@ -804,7 +783,7 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
                         {endpoint}
                       </div>
                       <CopyIconButton
-                        copied={copiedKey === copyKey("endpoint", item.route.id)}
+                        copied={clipboard.copied && copiedKey === copyKey("endpoint", item.route.id)}
                         label={t("copyEndpoint", "Copy endpoint")}
                         onCopy={() => void copyText(copyKey("endpoint", item.route.id), endpoint)}
                       />
@@ -816,7 +795,7 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
                       </div>
                       {item.route.base_url ? (
                         <CopyIconButton
-                          copied={copiedKey === copyKey("upstream", item.route.id)}
+                          copied={clipboard.copied && copiedKey === copyKey("upstream", item.route.id)}
                           label={t("protocolRouterCopyUpstreamApiBaseUrl", "Copy upstream API base URL")}
                           onCopy={() => void copyText(copyKey("upstream", item.route.id), item.route.base_url)}
                         />
@@ -937,13 +916,6 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
               <div className="rounded-full border bg-muted/40 px-3 py-1 text-xs text-muted-foreground">
                 {selectedViewLabel}
               </div>
-              <StatsWindowControls
-                statsDays={statsDays}
-                refreshing={refreshing}
-                t={(key, fallback) => t(key, fallback)}
-                onRefresh={() => void load()}
-                onChangeDays={setStatsDays}
-              />
             </div>
           </div>
 
@@ -977,9 +949,14 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
           </div>
 
           {filteredCalls.length === 0 ? (
-            <div className="mt-4 rounded-2xl border border-dashed px-4 py-6 text-sm text-muted-foreground">
-              {t("protocolRouterNoRequestsForView", "No requests in the selected view yet.")}
-            </div>
+            <ToolEmptyState
+              title={t(
+                "protocolRouterNoRequestsForView",
+                "No requests in the selected view yet.",
+              )}
+              testId="protocol-router-empty-requests"
+              className="mt-4"
+            />
           ) : (
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4 text-sm text-muted-foreground">
               <div>

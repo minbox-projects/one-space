@@ -237,8 +237,6 @@ const resources = {
         "SSH tunnel auto-reconnect failed",
       sshTunnelHealthCheckFailedMessageTitle:
         "SSH tunnel health check failed",
-      sshTunnelGroupConnectPartialMessageTitle:
-        "SSH tunnel group connect partially failed",
       sshTunnelGroupDisconnectPartialMessageTitle:
         "SSH tunnel group disconnect partially failed",
       sshTunnelStatusIndicatorTitle: "SSH Tunnels",
@@ -1521,6 +1519,41 @@ const resources = {
       sshTunnelConnectFailed: "Failed to connect tunnel.",
       sshTunnelDisconnectSuccess: "Tunnel disconnected successfully.",
       sshTunnelDisconnectFailed: "Failed to disconnect tunnel.",
+      sshTunnelGroupCreated: "Group created",
+      sshTunnelGroupCreatedSummary: "Tunnel group created successfully.",
+      sshTunnelGroupCreateFailed: "Failed to create tunnel group",
+      sshTunnelGroupRenamed: "Group updated",
+      sshTunnelGroupRenamedSummary: "Tunnel group updated successfully.",
+      sshTunnelGroupRenameFailed: "Failed to update tunnel group",
+      sshTunnelGroupDeleted: "Group deleted",
+      sshTunnelGroupDeletedSummary: "Tunnel group deleted successfully.",
+      sshTunnelGroupDeleteFailed: "Failed to delete tunnel group",
+      sshTunnelGroupActions: "Group actions",
+      sshTunnelGroupConnectAll: "Connect all",
+      sshTunnelGroupDisconnectAll: "Disconnect all",
+      sshTunnelGroupConnecting: "Connecting group...",
+      sshTunnelGroupDisconnecting: "Disconnecting group...",
+      sshTunnelGroupNoConnectable: "No connectable tunnels",
+      sshTunnelGroupConnectInfo:
+        "All tunnels are already connected or connecting.",
+      sshTunnelGroupNoDisconnectable: "No disconnectable tunnels",
+      sshTunnelGroupDisconnectInfo: "All tunnels are already disconnected.",
+      sshTunnelGroupConnectSuccessTitle: "Group connected",
+      sshTunnelGroupConnectSuccessDesc:
+        'Connected {{count}} tunnel(s) in "{{group}}"{{skipped}}.',
+      sshTunnelGroupSkippedConnected: " ({{count}} already connected)",
+      sshTunnelGroupConnectPartialTitle: "Connection partially failed",
+      sshTunnelGroupConnectPartialDesc:
+        "Connected {{success}}, failed {{failed}}. Failed tunnels: {{names}}",
+      sshTunnelGroupConnectFailed: "Group connect failed",
+      sshTunnelGroupDisconnectSuccessTitle: "Group disconnected",
+      sshTunnelGroupDisconnectSuccessDesc:
+        'Disconnected {{count}} tunnel(s) in "{{group}}"{{skipped}}.',
+      sshTunnelGroupSkippedDisconnected: " ({{count}} already disconnected)",
+      sshTunnelGroupDisconnectPartialTitle: "Disconnection partially failed",
+      sshTunnelGroupDisconnectPartialDesc:
+        "Disconnected {{success}}, failed {{failed}}. Failed tunnels: {{names}}",
+      sshTunnelGroupDisconnectFailed: "Group disconnect failed",
       launcherSshTunnelConnecting: "Connecting...",
       launcherSshTunnelConnectedAria:
         "{{count}} SSH tunnels connected",
@@ -1689,6 +1722,8 @@ const resources = {
         "No SSH tunnels in this environment group yet.",
       sshServersWindowsHint:
         "SSH Servers currently launches native terminal SSH sessions only on macOS. On Windows, please use SSH Tunnels instead.",
+      sshServersKeyFileError:
+        "Could not open the selected key file. Please choose another file.",
       emailSendFailed: "Failed to send email: ",
       emailSentSuccess: "Email sent successfully!",
       syncHint: "Data is auto-synced on save. Use this to force pull/push.",
@@ -3957,8 +3992,6 @@ const resources = {
       sshTunnelAutoConnectFailedMessageTitle: "SSH 隧道自动连接失败",
       sshTunnelAutoReconnectFailedMessageTitle: "SSH 隧道自动重连失败",
       sshTunnelHealthCheckFailedMessageTitle: "SSH 隧道健康检查失败",
-      sshTunnelGroupConnectPartialMessageTitle:
-        "SSH 隧道分组连接部分失败",
       sshTunnelGroupDisconnectPartialMessageTitle:
         "SSH 隧道分组断开部分失败",
       sshTunnelStatusIndicatorTitle: "SSH 隧道",
@@ -5447,6 +5480,40 @@ const resources = {
       sshTunnelConnectFailed: "隧道连接失败。",
       sshTunnelDisconnectSuccess: "隧道已断开。",
       sshTunnelDisconnectFailed: "隧道断开失败。",
+      sshTunnelGroupCreated: "分组已创建",
+      sshTunnelGroupCreatedSummary: "环境分组创建成功。",
+      sshTunnelGroupCreateFailed: "创建环境分组失败",
+      sshTunnelGroupRenamed: "分组已更新",
+      sshTunnelGroupRenamedSummary: "环境分组更新成功。",
+      sshTunnelGroupRenameFailed: "更新环境分组失败",
+      sshTunnelGroupDeleted: "分组已删除",
+      sshTunnelGroupDeletedSummary: "环境分组删除成功。",
+      sshTunnelGroupDeleteFailed: "删除环境分组失败",
+      sshTunnelGroupActions: "操作",
+      sshTunnelGroupConnectAll: "全部连接",
+      sshTunnelGroupDisconnectAll: "全部断开",
+      sshTunnelGroupConnecting: "正在批量连接...",
+      sshTunnelGroupDisconnecting: "正在批量断开...",
+      sshTunnelGroupNoConnectable: "无可连接的隧道",
+      sshTunnelGroupConnectInfo: "所有隧道均已连接或正在连接中",
+      sshTunnelGroupNoDisconnectable: "无可断开的隧道",
+      sshTunnelGroupDisconnectInfo: "所有隧道均已断开",
+      sshTunnelGroupConnectSuccessTitle: "分组连接成功",
+      sshTunnelGroupConnectSuccessDesc:
+        "已成功连接“{{group}}”分组下的 {{count}} 个隧道{{skipped}}。",
+      sshTunnelGroupSkippedConnected: "（{{count}} 个已处于连接状态）",
+      sshTunnelGroupConnectPartialTitle: "部分连接成功",
+      sshTunnelGroupConnectPartialDesc:
+        "成功连接 {{success}} 个，失败 {{failed}} 个。失败隧道：{{names}}",
+      sshTunnelGroupConnectFailed: "分组连接失败",
+      sshTunnelGroupDisconnectSuccessTitle: "分组断开成功",
+      sshTunnelGroupDisconnectSuccessDesc:
+        "已成功断开“{{group}}”分组下的 {{count}} 个隧道{{skipped}}。",
+      sshTunnelGroupSkippedDisconnected: "（{{count}} 个已处于断开状态）",
+      sshTunnelGroupDisconnectPartialTitle: "部分断开成功",
+      sshTunnelGroupDisconnectPartialDesc:
+        "成功断开 {{success}} 个，失败 {{failed}} 个。失败隧道：{{names}}",
+      sshTunnelGroupDisconnectFailed: "分组断开失败",
       launcherSshTunnelConnecting: "正在连接...",
       launcherSshTunnelConnectedAria: "已连接 {{count}} 条 SSH 隧道",
       launcherSshTunnelConnectingAria: "SSH 隧道正在自动连接中。",
@@ -5588,6 +5655,7 @@ const resources = {
       sshTunnelEmptyForGroup: "当前环境分组下还没有 SSH 隧道。",
       sshServersWindowsHint:
         "SSH 服务器页当前仅支持在 macOS 中拉起原生终端 SSH 连接。在 Windows 上请改用 SSH 隧道。",
+      sshServersKeyFileError: "无法读取所选的密钥文件，请重新选择。",
       saveToken: "保存并连接",
       disconnect: "断开连接",
       files: "文件",

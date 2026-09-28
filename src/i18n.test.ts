@@ -110,6 +110,33 @@ describe("AI 网关遗留双语文案键移除", () => {
   });
 });
 
+// REQ-005 / AC-012 guard: the cleanup drops this unreferenced SSH tunnel key.
+const REMOVED_SSH_TUNNEL_BILINGUAL_KEYS = [
+  "sshTunnelGroupConnectPartialMessageTitle",
+] as const;
+
+describe("SSH 隧道遗留双语文案键移除", () => {
+  it.each(["en", "zh"] as const)("为 %s 移除未引用的 SSH 隧道双语键", (language) => {
+    const keyPaths = new Set(collectKeyPaths(resourceBundle(language)));
+    for (const key of REMOVED_SSH_TUNNEL_BILINGUAL_KEYS) {
+      expect(
+        keyPaths.has(key),
+        `${language} 中已移除键 ${key} 不应存在`,
+      ).toBe(false);
+    }
+  });
+
+  it("移除后 en 与 zh 的键路径集合仍完全一致", () => {
+    const enPaths = collectKeyPaths(resourceBundle("en"));
+    const zhPaths = collectKeyPaths(resourceBundle("zh"));
+    const enSet = new Set(enPaths);
+    const zhSet = new Set(zhPaths);
+    const onlyEn = enPaths.filter((path) => !zhSet.has(path));
+    const onlyZh = zhPaths.filter((path) => !enSet.has(path));
+    expect({ onlyEn, onlyZh }).toEqual({ onlyEn: [], onlyZh: [] });
+  });
+});
+
 const PROVIDER_TEMPLATE_KEYS = [
   "aiGatewayProviderTemplates",
   "aiGatewayTemplateModelsCount",

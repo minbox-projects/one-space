@@ -28,7 +28,6 @@ import {
   Download,
   ShieldAlert,
   Workflow,
-  Loader2,
   GripVertical,
   type LucideIcon,
 } from "lucide-react";
@@ -48,6 +47,7 @@ import {
   writeSavedOrder,
 } from "@/lib/launcherToolOrder";
 import { useCardDragReorder } from "@/lib/useCardDragReorder";
+import { ToolStatusBadge } from "@/components/toolbox/ToolStatusBadge";
 import { listToolboxTools, resolveToolboxText } from "@/toolbox/registry";
 
 interface LauncherItem {
@@ -505,13 +505,11 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         defaultValue: `${summary.autoConnectFailedCount} auto-connect SSH tunnels failed`,
       });
       return (
-        <span
-          className="inline-flex items-center gap-1.5 rounded-full border border-destructive/20 bg-destructive/10 px-2.5 py-1 text-[11px] font-medium text-destructive"
-          aria-label={label}
-          title={label}
-        >
-          <span className="h-2 w-2 rounded-full bg-destructive" />
-          {summary.autoConnectFailedCount}
+        <span aria-label={label} title={label}>
+          <ToolStatusBadge
+            tone="error"
+            label={String(summary.autoConnectFailedCount)}
+          />
         </span>
       );
     }
@@ -522,13 +520,11 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         "SSH tunnels are connecting automatically.",
       );
       return (
-        <span
-          className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-600"
-          aria-label={label}
-          title={label}
-        >
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          {t("launcherSshTunnelConnecting", "Connecting...")}
+        <span aria-label={label} title={label}>
+          <ToolStatusBadge
+            tone="warning"
+            label={t("launcherSshTunnelConnecting", "Connecting...")}
+          />
         </span>
       );
     }
@@ -538,13 +534,11 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       defaultValue: `${summary.connectedCount} SSH tunnels connected`,
     });
     return (
-      <span
-        className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-600"
-        aria-label={label}
-        title={label}
-      >
-        <span className="h-2 w-2 rounded-full bg-emerald-500" />
-        {summary.connectedCount}
+      <span aria-label={label} title={label}>
+        <ToolStatusBadge
+          tone="success"
+          label={String(summary.connectedCount)}
+        />
       </span>
     );
   };
@@ -559,13 +553,11 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         defaultValue: `Protocol router running on port ${status.port} with ${status.route_count} route(s)`,
       });
       return (
-        <span
-          className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-600"
-          aria-label={label}
-          title={label}
-        >
-          <span className="h-2 w-2 rounded-full bg-emerald-500" />
-          {t("launcherProtocolRouterRunning", "Running")}
+        <span aria-label={label} title={label}>
+          <ToolStatusBadge
+            tone="success"
+            label={t("launcherProtocolRouterRunning", "Running")}
+          />
         </span>
       );
     }
@@ -577,15 +569,15 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         })
       : t("launcherProtocolRouterDisabledAria", "Protocol router is disabled");
     return (
-      <span
-        className="inline-flex items-center gap-1.5 rounded-full border border-muted-foreground/20 bg-muted px-2.5 py-1 text-[11px] font-medium text-muted-foreground"
-        aria-label={label}
-        title={label}
-      >
-        <span className="h-2 w-2 rounded-full bg-muted-foreground" />
-        {status.enabled
-          ? t("launcherProtocolRouterStopped", "Stopped")
-          : t("launcherProtocolRouterDisabled", "Disabled")}
+      <span aria-label={label} title={label}>
+        <ToolStatusBadge
+          tone="neutral"
+          label={
+            status.enabled
+              ? t("launcherProtocolRouterStopped", "Stopped")
+              : t("launcherProtocolRouterDisabled", "Disabled")
+          }
+        />
       </span>
     );
   };

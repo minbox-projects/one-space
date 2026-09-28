@@ -58,6 +58,7 @@ import { AboutModal } from "./components/AboutModal";
 import { QuickAiSessionBar } from "./components/QuickAiSessionBar";
 import { QuickAssistantWindow } from "./components/QuickAssistantWindow";
 import { SmartWorkspaceHub } from "./components/SmartWorkspaceHub";
+import { ToolStatusBadge } from "./components/toolbox/ToolStatusBadge";
 import { Documentation } from "./components/Documentation";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { FishPond } from "./components/FishPond";
@@ -2350,14 +2351,15 @@ function App() {
                   }
                 >
                   <Route className="w-5 h-5" />
-                  <span
-                    className={`absolute -right-0.5 -top-0.5 min-w-5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold text-white ${
-                      protocolRouterHeaderStatus.running ? "bg-emerald-500" : "bg-amber-500"
-                    }`}
-                  >
-                    {protocolRouterHeaderStatus.route_count > 99
-                      ? "99+"
-                      : protocolRouterHeaderStatus.route_count}
+                  <span className="absolute -right-0.5 -top-0.5">
+                    <ToolStatusBadge
+                      tone={protocolRouterHeaderStatus.running ? "success" : "warning"}
+                      label={
+                        protocolRouterHeaderStatus.route_count > 99
+                          ? "99+"
+                          : String(protocolRouterHeaderStatus.route_count)
+                      }
+                    />
                   </span>
                 </button>
               )}
@@ -2379,24 +2381,39 @@ function App() {
                 >
                   <Waypoints className="w-5 h-5" />
                   {sshTunnelSummary.hasErrors && (
-                    <span className="absolute -right-0.5 -top-0.5 min-w-5 rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold text-destructive-foreground animate-pulse">
-                      {sshTunnelSummary.connectedCount > 99
-                        ? "99+"
-                        : sshTunnelSummary.connectedCount}
+                    <span className="absolute -right-0.5 -top-0.5 animate-pulse">
+                      <ToolStatusBadge
+                        tone="error"
+                        label={
+                          sshTunnelSummary.connectedCount > 99
+                            ? "99+"
+                            : String(sshTunnelSummary.connectedCount)
+                        }
+                      />
                     </span>
                   )}
                   {sshTunnelSummary.hasConnecting && !sshTunnelSummary.hasErrors && (
-                    <span className="absolute -right-0.5 -top-0.5 min-w-5 rounded-full bg-blue-500 px-1.5 py-0.5 text-[10px] font-semibold text-white animate-pulse">
-                      {sshTunnelSummary.connectedCount > 99
-                        ? "99+"
-                        : sshTunnelSummary.connectedCount}
+                    <span className="absolute -right-0.5 -top-0.5 animate-pulse">
+                      <ToolStatusBadge
+                        tone="warning"
+                        label={
+                          sshTunnelSummary.connectedCount > 99
+                            ? "99+"
+                            : String(sshTunnelSummary.connectedCount)
+                        }
+                      />
                     </span>
                   )}
                   {!sshTunnelSummary.hasErrors && !sshTunnelSummary.hasConnecting && (
-                    <span className="absolute -right-0.5 -top-0.5 min-w-5 rounded-full bg-emerald-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                      {sshTunnelSummary.connectedCount > 99
-                        ? "99+"
-                        : sshTunnelSummary.connectedCount}
+                    <span className="absolute -right-0.5 -top-0.5">
+                      <ToolStatusBadge
+                        tone="success"
+                        label={
+                          sshTunnelSummary.connectedCount > 99
+                            ? "99+"
+                            : String(sshTunnelSummary.connectedCount)
+                        }
+                      />
                     </span>
                   )}
                 </button>
