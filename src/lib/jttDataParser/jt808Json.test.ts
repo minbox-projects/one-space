@@ -32,6 +32,14 @@ function readUint32BE(bytes: number[], offset: number): number {
   );
 }
 
+function hexToBytes(hex: string): number[] {
+  const bytes: number[] = [];
+  for (let index = 0; index < hex.length; index += 2) {
+    bytes.push(parseInt(hex.slice(index, index + 2), 16));
+  }
+  return bytes;
+}
+
 const REFERENCE_JSON = `{
   "[7E]开始": 126,
   "[0200]消息Id": 512,
@@ -262,6 +270,7 @@ describe("buildJt808PositionJson", () => {
 
   it("renders 0x0704 batch position upload items with a BCD date-time", () => {
     const [record] = analyzeJt808(JT808_POSITION_0704, "automatic");
+    const item1 = hexToBytes(POSITION_0704_ITEM_1_HEX);
 
     expect(record.kind).toBe("success");
     const json = record.json as Record<string, unknown>;
@@ -303,8 +312,8 @@ describe("buildJt808PositionJson", () => {
     );
     expect(item["[00000000000000000000000000000000]报警标志"]).toBe(0);
     expect(item["[00000000000011000000000000000011]状态位标志"]).toBe(786435);
-    expect(item["[0232BD3E]纬度"]).toBe(36879678);
-    expect(item["[070B523B]经度"]).toBe(118182459);
+    expect(item["[0232BD3E]纬度"]).toBe(readUint32BE(item1, 8));
+    expect(item["[070B523B]经度"]).toBe(readUint32BE(item1, 12));
     expect(item["[0024]高程"]).toBe(36);
     expect(item["[0000]速度"]).toBe(0);
     expect(item["[00B3]方向"]).toBe(179);
@@ -324,6 +333,8 @@ describe("buildJt808PositionJson", () => {
 
   it("renders every item of a single 0x0704 frame in order", () => {
     const [record] = analyzeJt808(JT808_POSITION_0704_TWO_ITEMS, "automatic");
+    const item1 = hexToBytes(POSITION_0704_ITEM_1_HEX);
+    const item2 = hexToBytes(POSITION_0704_ITEM_2_HEX);
 
     expect(record.kind).toBe("success");
     const json = record.json as Record<string, unknown>;
@@ -335,11 +346,11 @@ describe("buildJt808PositionJson", () => {
     expect(items).toHaveLength(2);
 
     const [first, second] = items;
-    expect(first["[0232BD3E]纬度"]).toBe(36879678);
+    expect(first["[0232BD3E]纬度"]).toBe(readUint32BE(item1, 8));
     expect(first["[260627133837]定位时间"]).toBe("2026-06-27 13:38:37");
     expect(first["位置信息汇报"]).toBe(POSITION_0704_ITEM_1_HEX);
 
-    expect(second["[01020304]纬度"]).toBe(16909060);
+    expect(second["[01020304]纬度"]).toBe(readUint32BE(item2, 8));
     expect(second["[260916093000]定位时间"]).toBe("2026-09-16 09:30:00");
     expect(second["[260916093000]定位时间"]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
     expect(second["位置信息汇报"]).toBe(POSITION_0704_ITEM_2_HEX);

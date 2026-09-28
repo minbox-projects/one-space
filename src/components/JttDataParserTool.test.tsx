@@ -14,10 +14,107 @@ import {
   JT809_2019_UNENCRYPTED_0200,
 } from "@/lib/jttDataParser/fixtures";
 
-const F1_SERIALIZED =
-  "帧结构:\n  起始标志: 0x7E\n  消息 ID: 0x0801\n  消息体属性:\n    消息体长度: 42\n    加密方式: 无\n    分包: 否\n    版本: 2013\n  终端手机号: 013123456789\n  消息流水号: 1024\n  校验和: 0x76\n  结束标志: 0x7E\n协议体 (0x0801 多媒体上传):\n  多媒体 ID: 1\n  多媒体类型: 0x02 (音频)\n  多媒体格式编码: 0x03 (MP3)\n  事件项编码: 0x04\n  通道 ID: 1\n  位置信息:\n    报警标志: 0x00000000\n    状态: 0x00000002\n    经度: 118798298\n    纬度: 32062838\n    海拔: 12\n    速度: 45\n    方向: 90\n    时间: 2026-09-04 14:30:00\n  多媒体数据 (Hex): 01027E7D0304";
+const F1_SERIALIZED = buildF1Serialized();
 
 const BATCH_SERIALIZED = F1_SERIALIZED;
+
+function hexToBytes(hex: string): number[] {
+  const bytes: number[] = [];
+  for (let index = 0; index < hex.length; index += 2) {
+    bytes.push(parseInt(hex.slice(index, index + 2), 16));
+  }
+  return bytes;
+}
+
+function unescapeJt808(bytes: number[]): number[] {
+  const output: number[] = [];
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] === 0x7d && bytes[index + 1] === 0x01) {
+      output.push(0x7d);
+      index += 1;
+    } else if (bytes[index] === 0x7d && bytes[index + 1] === 0x02) {
+      output.push(0x7e);
+      index += 1;
+    } else {
+      output.push(bytes[index]);
+    }
+  }
+  return output;
+}
+
+function bytesToHex(bytes: number[]): string {
+  return bytes.map((byte) => byte.toString(16).toUpperCase().padStart(2, "0")).join("");
+}
+
+function readUint32BE(bytes: number[], offset: number): number {
+  return (
+    (((bytes[offset] << 24) |
+      (bytes[offset + 1] << 16) |
+      (bytes[offset + 2] << 8) |
+      bytes[offset + 3]) >>>
+      0)
+  );
+}
+
+function readUint16BE(bytes: number[], offset: number): number {
+  return ((bytes[offset] << 8) | bytes[offset + 1]) & 0xffff;
+}
+
+function hexDword(value: number): string {
+  return `0x${value.toString(16).toUpperCase().padStart(8, "0")}`;
+}
+
+function bcdDateTime(bytes: number[]): string {
+  let digits = "";
+  for (const byte of bytes) {
+    digits += ((byte >> 4) & 0x0f).toString();
+    digits += (byte & 0x0f).toString();
+  }
+  const [year, month, day, hour, minute, second] = digits.match(/.{2}/g) ?? [];
+  return `20${year}-${month}-${day} ${hour}:${minute}:${second}`;
+}
+
+// The 0x0801 serialized tree is derived from the fixture bytes so it tracks the
+// specification-ordered position block and its recomputed frame checksum.
+function buildF1Serialized(): string {
+  const bytes = hexToBytes(JT808_F1_2013_0801_ESCAPED);
+  const inner = unescapeJt808(bytes.slice(1, -1));
+  const bodyLength = ((inner[2] << 8) | inner[3]) & 0x3ff;
+  const frameEnd = 12 + bodyLength;
+  const checksum = inner.slice(0, frameEnd).reduce((acc, byte) => acc ^ byte, 0);
+  const body = inner.slice(12, frameEnd);
+  const position = body.slice(8, 36);
+  return [
+    "帧结构:",
+    "  起始标志: 0x7E",
+    "  消息 ID: 0x0801",
+    "  消息体属性:",
+    `    消息体长度: ${bodyLength}`,
+    "    加密方式: 无",
+    "    分包: 否",
+    "    版本: 2013",
+    "  终端手机号: 013123456789",
+    "  消息流水号: 1024",
+    `  校验和: 0x${checksum.toString(16).toUpperCase().padStart(2, "0")}`,
+    "  结束标志: 0x7E",
+    "协议体 (0x0801 多媒体上传):",
+    `  多媒体 ID: ${readUint32BE(body, 0)}`,
+    "  多媒体类型: 0x02 (音频)",
+    "  多媒体格式编码: 0x03 (MP3)",
+    "  事件项编码: 0x04",
+    `  通道 ID: ${body[7]}`,
+    "  位置信息:",
+    `    报警标志: ${hexDword(readUint32BE(position, 0))}`,
+    `    状态: ${hexDword(readUint32BE(position, 4))}`,
+    `    纬度: ${readUint32BE(position, 8)}`,
+    `    经度: ${readUint32BE(position, 12)}`,
+    `    海拔: ${readUint16BE(position, 16)}`,
+    `    速度: ${readUint16BE(position, 18)}`,
+    `    方向: ${readUint16BE(position, 20)}`,
+    `    时间: ${bcdDateTime(position.slice(22, 28))}`,
+    `  多媒体数据 (Hex): ${bytesToHex(body.slice(36))}`,
+  ].join("\n");
+}
 
 const JT808_INPUT = /JT808 packet input|JT808 报文输入/;
 const JT809_INPUT = /JT809 packet input|JT809 报文输入/;
@@ -57,7 +154,7 @@ describe("JttDataParserTool", () => {
 
     await user.click(screen.getByRole("tab", { name: /JT809/ }));
     fireEvent.change(screen.getByLabelText(JT809_INPUT), {
-      target: { value: "000000401234020000000001000000022609041430000000000027E88B8F413132333435000100000000000000020714B7DA01E93D76000C002D005A2609041430009A067B7E" },
+      target: { value: JT809_2019_UNENCRYPTED_0200 },
     });
     await user.selectOptions(screen.getByLabelText(/Version|版本/), "2019");
     await user.click(screen.getByRole("button", { name: ANALYZE }));
@@ -68,9 +165,7 @@ describe("JttDataParserTool", () => {
     expect(screen.getByText("消息 ID: 0x0801")).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: /JT809/ }));
-    expect(screen.getByLabelText(JT809_INPUT)).toHaveValue(
-      "000000401234020000000001000000022609041430000000000027E88B8F413132333435000100000000000000020714B7DA01E93D76000C002D005A2609041430009A067B7E",
-    );
+    expect(screen.getByLabelText(JT809_INPUT)).toHaveValue(JT809_2019_UNENCRYPTED_0200);
     expect(screen.getByLabelText(/Version|版本/)).toHaveValue("2019");
     expect(screen.getByText("车牌号: 苏A12345")).toBeInTheDocument();
   });

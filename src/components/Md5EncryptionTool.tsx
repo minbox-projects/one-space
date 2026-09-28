@@ -3,7 +3,7 @@ import { AlertTriangle, Copy, Hash, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ToolShell } from "@/components/toolbox/ToolShell";
 import { useToast } from "./ToastProvider";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { getToolboxTool } from "@/toolbox/registry";
 import { md5Hex } from "@/lib/md5";
 import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 
@@ -151,7 +151,7 @@ function applyTextareaEdit(
 export function Md5EncryptionTool() {
   const { t } = useTranslation();
   const { pushToast } = useToast();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("md5-encryption");
+  const { icon: ToolIcon, iconClassName } = getToolboxTool("md5-encryption")!;
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const rawInputRef = useRef("");
   const pendingEditRef = useRef<PendingTextareaEdit | null>(null);

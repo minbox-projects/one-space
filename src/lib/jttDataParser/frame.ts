@@ -1,9 +1,16 @@
 import type { ResultNode } from "./types";
 import { stripInlineAsciiWhitespace } from "./lexing";
+import {
+  HEX_DIGIT_PATTERN,
+  bcdDigits,
+  bytesToHex,
+  hexToBytes,
+  hexWord,
+  readUint16,
+  readUint32,
+} from "./hex";
 
-const HEX_DIGIT_PATTERN = /^[0-9A-Fa-f]+$/;
-
-export type Jt808ParseError = { ok: false; error: string };
+type Jt808ParseError = { ok: false; error: string };
 
 export type Jt808Version = "2011" | "2013" | "2019";
 
@@ -22,15 +29,7 @@ export type ParsedJt808Header = {
   checksum: number;
 };
 
-export type ParsedJt808Wire = { ok: true; header: ParsedJt808Header };
-
-function hexToBytes(compact: string): number[] {
-  const bytes: number[] = [];
-  for (let index = 0; index < compact.length; index += 2) {
-    bytes.push(parseInt(compact.slice(index, index + 2), 16));
-  }
-  return bytes;
-}
+type ParsedJt808Wire = { ok: true; header: ParsedJt808Header };
 
 function unescapeWire(bytes: number[]): number[] | null {
   const output: number[] = [];
@@ -52,15 +51,6 @@ function unescapeWire(bytes: number[]): number[] | null {
     }
   }
   return output;
-}
-
-function bcdDigits(bytes: number[]): string {
-  let digits = "";
-  for (const byte of bytes) {
-    digits += ((byte >> 4) & 0x0f).toString();
-    digits += (byte & 0x0f).toString();
-  }
-  return digits;
 }
 
 function xorChecksum(bytes: number[]): number {
@@ -140,10 +130,6 @@ export function parseJt808Wire(hexText: string): ParsedJt808Wire | Jt808ParseErr
   };
 }
 
-export function bytesToHex(bytes: number[]): string {
-  return bytes.map((byte) => byte.toString(16).toUpperCase().padStart(2, "0")).join("");
-}
-
 export function splitWireFrameHexes(hexText: string): string[] {
   const compact = stripInlineAsciiWhitespace(hexText);
   if (!HEX_DIGIT_PATTERN.test(compact)) {
@@ -164,13 +150,33 @@ export function splitWireFrameHexes(hexText: string): string[] {
   return frames;
 }
 
-export function hexWord(value: number): string {
-  return `0x${value.toString(16).toUpperCase().padStart(4, "0")}`;
-}
+/**
+ * Specification-ordered JT/T 808 0x0200 position body: alarm and status
+ * dwords, latitude at byte offset 8, longitude at byte offset 12, then
+ * elevation, speed, direction and the six BCD time bytes.
+ */
+export type Jt808PositionFields = {
+  alarm: number;
+  status: number;
+  latitude: number;
+  longitude: number;
+  elevation: number;
+  speed: number;
+  direction: number;
+  time: number[];
+};
 
-export function bcdTime(bytes: number[]): string {
-  const [year, month, day, hour, minute, second] = bcdDigits(bytes).match(/.{2}/g) ?? [];
-  return `20${year}-${month}-${day} ${hour}:${minute}:${second}`;
+export function parseJt808Position(bytes: number[]): Jt808PositionFields {
+  return {
+    alarm: readUint32(bytes, 0),
+    status: readUint32(bytes, 4),
+    latitude: readUint32(bytes, 8),
+    longitude: readUint32(bytes, 12),
+    elevation: readUint16(bytes, 16),
+    speed: readUint16(bytes, 18),
+    direction: readUint16(bytes, 20),
+    time: bytes.slice(22, 28),
+  };
 }
 
 const ENCRYPTION_LABELS: Record<number, string> = {

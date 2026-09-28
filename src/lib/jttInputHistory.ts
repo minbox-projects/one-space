@@ -27,10 +27,6 @@ function isHistoryRecord(value: unknown): value is JttInputHistoryRecord {
   );
 }
 
-function isLegacyEntry(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
 function newestFirst(records: JttInputHistoryRecord[]): JttInputHistoryRecord[] {
   const seen = new Set<string>();
   const unique: JttInputHistoryRecord[] = [];
@@ -82,18 +78,6 @@ export function loadJttInputHistory(tab: JttInputHistoryTab): JttInputHistoryRec
 
   if (parsed.every(isHistoryRecord)) {
     return newestFirst(parsed);
-  }
-
-  if (parsed.every(isLegacyEntry)) {
-    const migrated = newestFirst(
-      parsed.map((text) => ({
-        id: crypto.randomUUID(),
-        text,
-        createdAt: new Date().toISOString(),
-      })),
-    );
-    persistHistory(tab, migrated);
-    return migrated;
   }
 
   return recoverInvalidHistory(tab);

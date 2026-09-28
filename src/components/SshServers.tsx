@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { Server, AlertCircle, Loader2, ArrowRight, Plus, History, Key, Lock, FolderOpen, Terminal, Star, EyeOff, Eye } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { formatDistanceToNow } from 'date-fns';
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { getToolboxTool } from "@/toolbox/registry";
 import { sshHostsList } from "@/lib/sshTunnels";
 import type { SshHost } from "./sshTunnels/types";
 
@@ -25,7 +25,7 @@ interface SshHistoryEntry {
 
 export function SshServers() {
   const { t } = useTranslation();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("ssh");
+  const { icon: ToolIcon, iconClassName } = getToolboxTool("ssh")!;
   const isWindows =
     typeof navigator !== 'undefined' &&
     navigator.userAgent.toLowerCase().includes('windows');

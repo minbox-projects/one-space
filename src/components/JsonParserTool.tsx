@@ -3,13 +3,13 @@ import { Check, Copy, WandSparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ToolShell } from "@/components/toolbox/ToolShell";
 import { useToast } from "./ToastProvider";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { getToolboxTool } from "@/toolbox/registry";
 import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 
 export function JsonParserTool() {
   const { t } = useTranslation();
   const { pushToast } = useToast();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("json-parser");
+  const { icon: ToolIcon, iconClassName } = getToolboxTool("json-parser")!;
   const [content, setContent] = useState("");
   const [indent, setIndent] = useState(2);
   const [error, setError] = useState("");

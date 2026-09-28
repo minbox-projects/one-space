@@ -13,7 +13,7 @@ import {
   type FileSharingNetwork,
   type FileSharingSnapshot,
 } from "@/lib/fileSharing";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { getToolboxTool } from "@/toolbox/registry";
 import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 import { useTauriEvent } from "@/toolbox/useTauriEvent";
 
@@ -40,7 +40,7 @@ function messageFor(error: unknown) {
 export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const { pushToast } = useToast();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("file-sharing");
+  const { icon: ToolIcon, iconClassName } = getToolboxTool("file-sharing")!;
   const { copied, copy: copyToClipboard } = useCopyToClipboard({
     onError: () =>
       pushToast({

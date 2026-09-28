@@ -3,9 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FileSharingTool } from "@/components/FileSharingTool";
 import type { FileSharingSnapshot } from "@/lib/fileSharing";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
+import { getToolboxTool } from "@/toolbox/registry";
 
 const { pushToastMock } = vi.hoisted(() => ({ pushToastMock: vi.fn() }));
 
@@ -42,7 +42,7 @@ describe("FileSharingTool", () => {
 
     const title = screen.getByRole("heading", { level: 2, name: /File Sharing|文件共享/ });
     const iconContainer = title.parentElement?.previousElementSibling;
-    const { iconClassName } = getMoreToolPresentation("file-sharing");
+    const { iconClassName } = getToolboxTool("file-sharing")!;
 
     expect(iconContainer).toHaveClass(...iconClassName.split(" "));
     expect(iconContainer?.querySelector("svg")).toHaveClass("lucide-share-2");

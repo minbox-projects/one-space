@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy, Minus, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useToast } from "./ToastProvider";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { getToolboxTool } from "@/toolbox/registry";
 import { invokeToolboxCommand } from "@/toolbox/invoke";
 import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 
@@ -94,7 +94,7 @@ function createPassword(length: number, characters: string, requiredGroups: read
 export function RandomPasswordTool() {
   const { t } = useTranslation();
   const { pushToast } = useToast();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("random-password");
+  const { icon: ToolIcon, iconClassName } = getToolboxTool("random-password")!;
   const [length, setLength] = useState("10");
   const [characters, setCharacters] = useState(DEFAULT_CHARACTERS);
   const [groups, setGroups] = useState<SelectedGroups>(DEFAULT_GROUPS);

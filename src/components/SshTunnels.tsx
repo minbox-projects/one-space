@@ -58,7 +58,7 @@ import {
   type SshTunnelBatchOperationResult,
 } from "./sshTunnels/types";
 import { localizeSshTunnelError } from "../lib/sshTunnelI18n";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { getToolboxTool } from "@/toolbox/registry";
 import { useTauriEvent } from "@/toolbox/useTauriEvent";
 import { useVisibleInterval } from "@/toolbox/useVisibleInterval";
 import { ToolStatusBadge, type ToolStatusTone } from "./toolbox/ToolStatusBadge";
@@ -192,7 +192,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const { pushToast } = useToast();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("ssh-tunnels");
+  const { icon: ToolIcon, iconClassName } = getToolboxTool("ssh-tunnels")!;
   const actionContext = useMemo(
     () => ({
       t,

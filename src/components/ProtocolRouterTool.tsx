@@ -19,7 +19,7 @@ import {
   type ToolStatusTone,
 } from "@/components/toolbox/ToolStatusBadge";
 import { errorToMessage } from "@/lib/messages";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { getToolboxTool } from "@/toolbox/registry";
 import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 import {
   protocolRouterGetConfig,
@@ -345,7 +345,7 @@ async function safelyUnlisten(unlisten: () => void | Promise<void>) {
 
 export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("protocol-router");
+  const { icon: ToolIcon, iconClassName } = getToolboxTool("protocol-router")!;
   const [config, setConfig] = useState<ProtocolRouterConfig | null>(null);
   const [status, setStatus] = useState<ProtocolRouterStatus | null>(null);
   const [stats, setStats] = useState<ProtocolRouterStatsSummary | null>(null);

@@ -7,7 +7,7 @@ import { useConfirmDialog } from './ConfirmDialogProvider';
 import { useToast } from './ToastProvider';
 import { errorToMessage, recordMessage } from '@/lib/messages';
 import { isLikelyLocalPath, openExternalUrl, openLocalPath } from '@/lib/externalActions';
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { getToolboxTool } from "@/toolbox/registry";
 import { invokeToolboxCommand } from "@/toolbox/invoke";
 
 interface Bookmark {
@@ -23,7 +23,7 @@ export function Bookmarks() {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const { pushToast } = useToast();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("bookmarks");
+  const { icon: ToolIcon, iconClassName } = getToolboxTool("bookmarks")!;
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');

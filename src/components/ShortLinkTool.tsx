@@ -12,7 +12,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { useToast } from "./ToastProvider";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { getToolboxTool } from "@/toolbox/registry";
 import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 import {
   ShortLinkError,
@@ -57,7 +57,7 @@ export function ShortLinkTool() {
   const { t } = useTranslation();
   const { pushToast } = useToast();
   const confirm = useConfirmDialog();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("short-link");
+  const { icon: ToolIcon, iconClassName } = getToolboxTool("short-link")!;
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
   const [configLoading, setConfigLoading] = useState(true);

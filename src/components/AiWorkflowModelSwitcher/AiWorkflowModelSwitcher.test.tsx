@@ -192,7 +192,6 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       await waitFor(() => {
         expect(invokeMock).toHaveBeenCalledWith("ai_workflow_get_profile_matrix", {
           name: "baibai-40",
-          homeOverride: undefined,
         });
       });
 
@@ -421,7 +420,6 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       await waitFor(() => {
         expect(invokeMock).toHaveBeenCalledWith("ai_workflow_activate_profile", {
           name: "baibai-40",
-          homeOverride: undefined,
         });
       });
       expect(invokeMock).not.toHaveBeenCalledWith(
@@ -715,7 +713,6 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       );
       expect(invokeMock).toHaveBeenCalledWith("ai_workflow_activate_profile", {
         name: "custom-plan-yes",
-        homeOverride: undefined,
       });
       expect(await screen.findByTestId("activation-report")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /custom-plan-yes/ })).toHaveAttribute(
@@ -854,7 +851,6 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       );
       expect(invokeMock).toHaveBeenCalledWith("ai_workflow_activate_profile", {
         name: "custom-plan-activation-fails",
-        homeOverride: undefined,
       });
       expect(screen.getByRole("button", { name: /onespace-ai-gateway/ })).toHaveAttribute(
         "data-active",
