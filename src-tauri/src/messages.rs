@@ -227,7 +227,7 @@ fn unread_count(messages: &[MessageRecord]) -> usize {
         .count()
 }
 
-fn emit_messages_updated(app: &tauri::AppHandle, messages: &[MessageRecord]) {
+fn emit_messages_updated<R: tauri::Runtime>(app: &tauri::AppHandle<R>, messages: &[MessageRecord]) {
     let _ = app.emit(
         MESSAGES_UPDATED_EVENT,
         MessagesUpdatedPayload {
@@ -486,8 +486,39 @@ fn cleanup_current_path() -> Result<(Vec<MessageRecord>, bool), String> {
     list_messages_at_path(&path, current_retention_days(), now)
 }
 
+/// Persist one message through any Tauri runtime and emit `messages-updated`
+/// for that handle. This holds the store lock, resolves the isolated messages
+/// path and delegates the write to [`create_message_at_path`], so the
+/// `messages_create` command, [`record_message_silent`] and runtime-generic
+/// callers (such as the gateway notification seam) share one write contract.
+pub fn create_message_with_app<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    input: MessageCreateInput,
+) -> Result<MessageRecord, String> {
+    let _guard = store_lock().lock().map_err(|e| e.to_string())?;
+    let path = messages_path()?;
+    let record = create_message_at_path(&path, current_retention_days(), input, now_ts())?;
+    let store = read_store(&path)?;
+    emit_messages_updated(app, &store.messages);
+    Ok(record)
+}
+
+/// List messages through any Tauri runtime, running the retention cleanup and
+/// emitting `messages-updated` only when the cleanup changed the store. Same
+/// lock/path/cleanup contract as the `messages_list` command.
+pub fn list_messages_with_app<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Vec<MessageRecord>, String> {
+    let _guard = store_lock().lock().map_err(|e| e.to_string())?;
+    let (messages, changed) = cleanup_current_path()?;
+    if changed {
+        emit_messages_updated(app, &messages);
+    }
+    Ok(messages)
+}
+
 pub fn record_message_silent(app: &tauri::AppHandle, input: MessageCreateInput) {
-    if let Err(err) = messages_create(app.clone(), input) {
+    if let Err(err) = create_message_with_app(app, input) {
         eprintln!("messages_create failed: {}", err);
     }
 }
@@ -503,12 +534,7 @@ pub fn cleanup_for_current_retention(app: tauri::AppHandle) -> Result<(), String
 
 #[tauri::command]
 pub fn messages_list(app: tauri::AppHandle) -> Result<Vec<MessageRecord>, String> {
-    let _guard = store_lock().lock().map_err(|e| e.to_string())?;
-    let (messages, changed) = cleanup_current_path()?;
-    if changed {
-        emit_messages_updated(&app, &messages);
-    }
-    Ok(messages)
+    list_messages_with_app(&app)
 }
 
 #[tauri::command]
@@ -526,12 +552,7 @@ pub fn messages_create(
     app: tauri::AppHandle,
     input: MessageCreateInput,
 ) -> Result<MessageRecord, String> {
-    let _guard = store_lock().lock().map_err(|e| e.to_string())?;
-    let path = messages_path()?;
-    let record = create_message_at_path(&path, current_retention_days(), input, now_ts())?;
-    let store = read_store(&path)?;
-    emit_messages_updated(&app, &store.messages);
-    Ok(record)
+    create_message_with_app(&app, input)
 }
 
 #[tauri::command]

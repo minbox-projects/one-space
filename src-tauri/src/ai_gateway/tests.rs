@@ -25097,9 +25097,23 @@ fn config_update_event_name_is_the_cross_stack_literal() {
     );
 }
 
+/// The one cross-stack authentication-notification event name. Pinning the
+/// literal here is the backend half of the REQ-005 contract.
+#[test]
+fn key_auth_failed_event_name_is_the_cross_stack_literal() {
+    assert_eq!(
+        super::AI_GATEWAY_KEY_AUTH_FAILED_EVENT,
+        "ai-gateway-key-auth-failed"
+    );
+}
+
 /// The event name recorded by the same-thread emission recorder, mirrored from
 /// the production constant so an event-name drift is a compile error.
 const CONFIG_UPDATE_EVENT_NAME: &str = super::AI_GATEWAY_CONFIG_UPDATED_EVENT;
+
+/// The authentication-notification event name, mirrored from the production
+/// constant so an event-name drift is a compile error.
+const AUTH_FAILED_EVENT_NAME: &str = super::AI_GATEWAY_KEY_AUTH_FAILED_EVENT;
 
 /// Snapshot the same-thread emission recorder (a test-only `thread_local`).
 fn recorded_config_update_events() -> Vec<String> {
@@ -25111,6 +25125,54 @@ fn recorded_config_update_events() -> Vec<String> {
 fn clear_config_update_events() {
     super::runtime_http::CONFIG_UPDATE_EVENTS
         .with(|events: &std::cell::RefCell<Vec<String>>| events.borrow_mut().clear());
+}
+
+/// Snapshot the same-thread authentication-notification event recorder.
+fn recorded_key_auth_failed_events() -> Vec<String> {
+    super::runtime_http::KEY_AUTH_FAILED_EVENTS
+        .with(|events: &std::cell::RefCell<Vec<String>>| events.borrow().clone())
+}
+
+/// Snapshot the same-thread authentication notification payload recorder.
+fn recorded_key_auth_failed_payloads() -> Vec<super::GatewayKeyAuthFailedPayload> {
+    super::runtime_http::KEY_AUTH_FAILED_PAYLOADS.with(
+        |payloads: &std::cell::RefCell<Vec<super::GatewayKeyAuthFailedPayload>>| {
+            payloads.borrow().clone()
+        },
+    )
+}
+
+/// Snapshot the same-thread transition-built message-input recorder.
+fn recorded_key_auth_failed_message_inputs() -> Vec<crate::messages::MessageCreateInput> {
+    super::runtime_http::KEY_AUTH_FAILED_MESSAGE_INPUTS.with(
+        |inputs: &std::cell::RefCell<Vec<crate::messages::MessageCreateInput>>| {
+            inputs.borrow().clone()
+        },
+    )
+}
+
+/// Reset the three authentication-notification recorders.
+fn clear_key_auth_failed_seams() {
+    super::runtime_http::KEY_AUTH_FAILED_EVENTS
+        .with(|events: &std::cell::RefCell<Vec<String>>| events.borrow_mut().clear());
+    super::runtime_http::KEY_AUTH_FAILED_PAYLOADS.with(
+        |payloads: &std::cell::RefCell<Vec<super::GatewayKeyAuthFailedPayload>>| {
+            payloads.borrow_mut().clear()
+        },
+    );
+    super::runtime_http::KEY_AUTH_FAILED_MESSAGE_INPUTS.with(
+        |inputs: &std::cell::RefCell<Vec<crate::messages::MessageCreateInput>>| {
+            inputs.borrow_mut().clear()
+        },
+    );
+}
+
+/// Reset the config-update recorder plus all three authentication recorders.
+/// The four `thread_local`s persist across tests on the same thread, so every
+/// transition test clears them before its request and before any second phase.
+fn clear_runtime_transition_seams() {
+    clear_config_update_events();
+    clear_key_auth_failed_seams();
 }
 
 /// One enabled provider with a single user-enabled mapping row at the given
@@ -25350,11 +25412,13 @@ async fn probe_rearm_emits_no_config_update_event() {
     clear_config_update_events();
 }
 
-/// AC-008 / REQ-005 / REQ-008 (key-pool contract): a fresh 401 marks the
-/// attempted upstream key instead of touching mapping health, so the request
-/// ends through the standard 502 path and no `ai-gateway-config-update` event is
-/// recorded; a later request over the same persisted snapshot skips the provider
-/// because its only key is auth-marked and auth-marked keys are never probed.
+/// AC-007 / REQ-004 / REQ-005 / REQ-008 (key-pool contract): a fresh 401 marks
+/// the attempted upstream key instead of touching mapping health, so the request
+/// ends through the standard 502 path and emits exactly one
+/// `ai-gateway-config-update` event for that persisted mark; a later request
+/// over the same persisted snapshot skips the provider because its only key is
+/// auth-marked and auth-marked keys are never probed, so no further event is
+/// recorded.
 #[tokio::test]
 async fn fresh_auth_marking_leaves_mapping_health_and_events_untouched() {
     let _home = isolated_temp_home("config-update-immediate-auth");
@@ -25373,7 +25437,7 @@ async fn fresh_auth_marking_leaves_mapping_health_and_events_untouched() {
         )],
     ));
 
-    clear_config_update_events();
+    clear_runtime_transition_seams();
 
     // First request over the seeded provider snapshot: the single enabled key is
     // usable, so the auth path runs. The 401 is key-scoped: it marks the key
@@ -25413,11 +25477,17 @@ async fn fresh_auth_marking_leaves_mapping_health_and_events_untouched() {
     );
     assert_eq!(row.last_error_at, None);
     assert_eq!(row.disabled_at, None);
-    assert!(
-        recorded_config_update_events().is_empty(),
-        "key marking must not emit a config-update event: {:?}",
+    assert_eq!(
+        recorded_config_update_events(),
+        vec![CONFIG_UPDATE_EVENT_NAME.to_string()],
+        "the persisted auth mark must emit exactly one config-update event: {:?}",
         recorded_config_update_events()
     );
+
+    // Reset the transition seams so the second phase asserts that skipping the
+    // auth-marked provider records no *further* config-update event, matching the
+    // ac007 two-phase pattern.
+    clear_runtime_transition_seams();
 
     // Second request: candidates are re-resolved from the same persisted
     // snapshot, which now carries the auth mark. Because the only key is
@@ -25438,7 +25508,528 @@ async fn fresh_auth_marking_leaves_mapping_health_and_events_untouched() {
         "skipping the provider must not emit a config-update event"
     );
 
-    clear_config_update_events();
+    clear_runtime_transition_seams();
+}
+
+/// AC-007 / REQ-004 / REQ-005: one request in which both enabled keys of a
+/// provider fail authentication emits one config-update event per changed mark,
+/// one authentication notification event and payload per transition, and the
+/// captured message inputs aggregate into exactly one message-center entry with
+/// occurrence count 2. A later request that finds the auth-marked provider
+/// excluded produces no additional event, notification or entry. No payload,
+/// event or message record may contain a key value.
+#[tokio::test]
+async fn ac007_auth_marking_emits_refresh_event_and_one_aggregated_message() {
+    let _home = isolated_temp_home("ac007-auth-mark-notify");
+    let (upstream_url, upstream_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(401, json!({"error": {"message": "unauthorized"}}))
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-ac007-a", true),
+                pool_key("key-b", "B", "sk-ac007-b", true),
+            ],
+            vec![json_mapping("local-model", "remote-model", None)],
+        )],
+    ));
+
+    clear_runtime_transition_seams();
+
+    let first = attempt_without_probe(&live_candidates("local-model"), "local-model").await;
+    assert_eq!(first.status, 502, "the auth marks leave no usable candidate");
+    let first_text = String::from_utf8_lossy(&first.body);
+    let first_body = assert_standard_error_envelope(&first_text);
+    assert_eq!(first_body["error"]["code"], "all_providers_unavailable");
+    assert_eq!(
+        upstream_log.lock().unwrap().len(),
+        2,
+        "each enabled key must be contacted exactly once"
+    );
+
+    let key_a = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+    assert_eq!(key_a["auto_marked"], true, "a 401 must mark key-a");
+    assert_eq!(key_a["failure_kind"], "authentication");
+    assert!(
+        key_a["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("unauthorized"),
+        "the persisted reason must carry the sanitized upstream text: {key_a}"
+    );
+    assert!(key_a["marked_at"].as_u64().is_some_and(|at| at > 0));
+    let key_b = on_disk_key_entry("p1", "key-b").expect("key-b must stay persisted");
+    assert_eq!(key_b["auto_marked"], true, "a 401 must mark key-b");
+    assert_eq!(key_b["failure_kind"], "authentication");
+
+    assert_eq!(
+        recorded_config_update_events(),
+        vec![
+            CONFIG_UPDATE_EVENT_NAME.to_string(),
+            CONFIG_UPDATE_EVENT_NAME.to_string()
+        ],
+        "each changed key mark must emit exactly one config-update event"
+    );
+
+    let events = recorded_key_auth_failed_events();
+    assert_eq!(
+        events,
+        vec![AUTH_FAILED_EVENT_NAME.to_string(); 2],
+        "one authentication event per transition"
+    );
+
+    let payloads = recorded_key_auth_failed_payloads();
+    assert_eq!(payloads.len(), 2, "one payload per transition");
+    for (index, (key_id, key_name, key_value)) in [
+        ("key-a", "A", "sk-ac007-a"),
+        ("key-b", "B", "sk-ac007-b"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let payload = &payloads[index];
+        assert_eq!(payload.provider_id, "p1");
+        assert_eq!(payload.provider_name, "Provider One");
+        assert_eq!(payload.key_id, key_id);
+        assert_eq!(payload.key_name, key_name);
+        assert!(
+            payload.reason.contains("unauthorized"),
+            "the payload reason must name the upstream text: {}",
+            payload.reason
+        );
+        assert!(payload.marked_at > 0, "marked_at must be a real timestamp");
+        let json = serde_json::to_value(payload).expect("payload must serialize");
+        for field in [
+            "provider_id",
+            "provider_name",
+            "key_id",
+            "key_name",
+            "reason",
+            "marked_at",
+        ] {
+            assert!(
+                json.get(field).is_some(),
+                "the payload JSON must keep the snake_case key {field}: {json}"
+            );
+        }
+        assert!(
+            json.get("providerId").is_none(),
+            "the payload JSON must not switch to camelCase: {json}"
+        );
+        let text = serde_json::to_string(payload).expect("payload JSON");
+        assert!(
+            !text.contains(key_value),
+            "the payload must never contain a key value: {text}"
+        );
+    }
+
+    let inputs = recorded_key_auth_failed_message_inputs();
+    assert_eq!(inputs.len(), 2, "one built message input per transition");
+    let expected_title = crate::messages::localized(
+        "AI 网关密钥鉴权失败",
+        "AI Gateway key authentication failed",
+    );
+    for (index, key_value) in ["sk-ac007-a", "sk-ac007-b"].into_iter().enumerate() {
+        let input = &inputs[index];
+        let payload = &payloads[index];
+        assert_eq!(input.source, "ai_gateway");
+        assert_eq!(input.category, "key_auth_failed");
+        assert_eq!(input.severity, "warning");
+        assert_eq!(
+            input.dedupe_key.as_deref(),
+            Some("ai_gateway_key_auth_failed:p1")
+        );
+        let target = input.target.as_ref().expect("the input must target a tab");
+        assert_eq!(target.tab, "ai-gateway");
+        assert_eq!(target.section, None);
+        assert_eq!(target.entity_id.as_deref(), Some("p1"));
+        assert_eq!(input.title, expected_title);
+        let expected_summary = crate::messages::localized(
+            &format!(
+                "服务商 {} 的密钥 {} 鉴权失败：{}",
+                payload.provider_name, payload.key_name, payload.reason
+            ),
+            &format!(
+                "Provider {} key {} failed authentication: {}",
+                payload.provider_name, payload.key_name, payload.reason
+            ),
+        );
+        assert_eq!(input.summary.as_deref(), Some(expected_summary.as_str()));
+        let text = serde_json::to_string(input).expect("input JSON");
+        assert!(
+            !text.contains("sk-ac007-a") && !text.contains("sk-ac007-b"),
+            "the built input must never contain a key value: {text}"
+        );
+        assert!(!text.contains(key_value));
+    }
+
+    let app = tauri::test::mock_app();
+    let handle = app.handle();
+    for input in &inputs {
+        crate::messages::create_message_with_app(handle, input.clone())
+            .expect("the captured message input must persist");
+    }
+    let messages = crate::messages::list_messages_with_app(handle).expect("list messages");
+    assert_eq!(
+        messages.len(),
+        1,
+        "both transitions must aggregate into one entry: {messages:?}"
+    );
+    let record = &messages[0];
+    assert_eq!(record.source, "ai_gateway");
+    assert_eq!(record.category, "key_auth_failed");
+    assert_eq!(record.severity, "warning");
+    assert_eq!(
+        record.dedupe_key.as_deref(),
+        Some("ai_gateway_key_auth_failed:p1")
+    );
+    assert_eq!(
+        record.occurrences, 2,
+        "the dedupe window must merge both transitions"
+    );
+    let record_target = record.target.as_ref().expect("the entry must target a tab");
+    assert_eq!(record_target.tab, "ai-gateway");
+    let summary = record.summary.as_deref().unwrap_or("");
+    assert!(
+        summary.contains("Provider One"),
+        "the summary must name the provider: {summary}"
+    );
+    assert!(
+        summary.contains('B'),
+        "the summary must name the last key: {summary}"
+    );
+    assert!(
+        summary.contains("unauthorized"),
+        "the summary must name the sanitized reason: {summary}"
+    );
+    let serialized = serde_json::to_string(record).expect("record JSON");
+    assert!(
+        !serialized.contains("sk-ac007-a") && !serialized.contains("sk-ac007-b"),
+        "the message record must never contain a key value: {serialized}"
+    );
+
+    // Second request: the provider is re-resolved from the persisted snapshot and
+    // skipped because both keys are auth-marked (auth marks are never probed).
+    clear_runtime_transition_seams();
+    let second = attempt_without_probe(&live_candidates("local-model"), "local-model").await;
+    assert_eq!(second.status, 502);
+    assert_eq!(
+        upstream_log.lock().unwrap().len(),
+        2,
+        "an auth-marked key must never be probed"
+    );
+    assert!(
+        recorded_config_update_events().is_empty(),
+        "skipping the provider must not emit a config-update event"
+    );
+    assert!(recorded_key_auth_failed_events().is_empty());
+    assert!(recorded_key_auth_failed_payloads().is_empty());
+    assert!(recorded_key_auth_failed_message_inputs().is_empty());
+    let messages_after =
+        crate::messages::list_messages_with_app(handle).expect("list messages");
+    assert_eq!(
+        messages_after.len(),
+        1,
+        "the skipped provider must not add an entry"
+    );
+}
+
+/// AC-008 / REQ-004: selecting a quota-marked key whose TTL has elapsed clears
+/// its runtime state and emits exactly one config-update event, and the clear is
+/// silent on the authentication-notification channels. A second request over the
+/// now-clean key changes nothing, so it emits no further event. The below-
+/// threshold counter-only mapping no-op stays covered by
+/// `counter_only_settlement_emits_no_config_update_event`.
+#[tokio::test]
+async fn ac008_runtime_clears_emit_the_refresh_event_and_noops_stay_silent() {
+    let _home = isolated_temp_home("ac008-ttl-clear-event");
+    let (upstream_url, upstream_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(200, json!({"id": "ac008-served", "choices": []}))
+    })
+    .await;
+
+    let now = super::types_config::now_ts();
+    let stale = now.saturating_sub(super::types_config::KEY_QUOTA_MARK_TTL_SECS + 120);
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![pool_key_marked(
+                "key-ttl",
+                "Ttl",
+                "sk-ac008-ttl",
+                true,
+                "quota",
+                stale,
+                "weekly limit",
+            )],
+            vec![json_mapping("local-model", "remote-model", None)],
+        )],
+    ));
+
+    clear_runtime_transition_seams();
+
+    let first = attempt_without_probe(&live_candidates("local-model"), "local-model").await;
+    assert_eq!(first.status, 200, "the TTL-cleared key must serve the request");
+    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+
+    let key = on_disk_key_entry("p1", "key-ttl").expect("key-ttl must stay persisted");
+    assert_eq!(key["auto_marked"], false, "the TTL clear must unmark the key");
+    assert_eq!(key["failure_kind"], Value::Null);
+    assert_eq!(key["marked_at"], Value::Null);
+
+    assert_eq!(
+        recorded_config_update_events(),
+        vec![CONFIG_UPDATE_EVENT_NAME.to_string()],
+        "the persisted TTL clear must emit exactly one config-update event"
+    );
+    assert!(
+        recorded_key_auth_failed_events().is_empty(),
+        "a quota TTL clear must not notify"
+    );
+    assert!(recorded_key_auth_failed_payloads().is_empty());
+    assert!(recorded_key_auth_failed_message_inputs().is_empty());
+
+    clear_runtime_transition_seams();
+    let second = attempt_without_probe(&live_candidates("local-model"), "local-model").await;
+    assert_eq!(second.status, 200);
+    assert!(
+        recorded_config_update_events().is_empty(),
+        "an already-clean key must emit no additional config-update event"
+    );
+    assert!(recorded_key_auth_failed_events().is_empty());
+    assert!(recorded_key_auth_failed_payloads().is_empty());
+    assert!(recorded_key_auth_failed_message_inputs().is_empty());
+}
+
+/// AC-009 / REQ-004 / REQ-005: a quota-classified 429 marks the key
+/// quota-exhausted, emits exactly one config-update event for that mark, and
+/// stays completely silent on the authentication-notification channels and in
+/// the message center.
+#[tokio::test]
+async fn ac009_quota_marks_refresh_silently() {
+    let _home = isolated_temp_home("ac009-quota-silent");
+    let (upstream_url, upstream_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(429, json!({"error": {"message": "quota exceeded"}}))
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![pool_key("key-q", "Q", "sk-ac009-q", true)],
+            vec![json_mapping("local-model", "remote-model", None)],
+        )],
+    ));
+
+    clear_runtime_transition_seams();
+
+    let response = attempt_without_probe(&live_candidates("local-model"), "local-model").await;
+    assert_eq!(response.status, 502, "the only key is marked quota-exhausted");
+    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+
+    let key = on_disk_key_entry("p1", "key-q").expect("key-q must stay persisted");
+    assert_eq!(key["auto_marked"], true);
+    assert_eq!(key["failure_kind"], "quota");
+
+    assert_eq!(
+        recorded_config_update_events(),
+        vec![CONFIG_UPDATE_EVENT_NAME.to_string()],
+        "the quota mark must emit exactly one config-update event"
+    );
+    assert!(
+        recorded_key_auth_failed_events().is_empty(),
+        "a quota mark must not emit an authentication notification event"
+    );
+    assert!(recorded_key_auth_failed_payloads().is_empty());
+    assert!(recorded_key_auth_failed_message_inputs().is_empty());
+
+    let app = tauri::test::mock_app();
+    let messages =
+        crate::messages::list_messages_with_app(app.handle()).expect("list messages");
+    assert!(
+        messages.is_empty(),
+        "a quota mark must create no message-center entry: {messages:?}"
+    );
+}
+
+/// AC-010 / REQ-005: a failed quota probe answered with HTTP 401 switches the
+/// key's persisted mark to authentication and emits exactly one config-update
+/// event, one authentication notification event and payload, and one built
+/// message input that replays into a `key_auth_failed` entry. Covered for the
+/// non-streaming probe and the streaming probe path.
+#[tokio::test]
+async fn ac010_quota_probe_rearmed_as_authentication_notifies() {
+    let _home = isolated_temp_home("ac010-probe-rearm-auth");
+    let (upstream_url, _upstream_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(401, json!({"error": {"message": "unauthorized"}}))
+    })
+    .await;
+
+    let now = probe_now();
+    let app = tauri::test::mock_app();
+    let handle = app.handle();
+
+    // --- Non-streaming probe -------------------------------------------------
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p-ns",
+            "Provider Ns",
+            &upstream_url,
+            vec![pool_key_marked(
+                "key-ns",
+                "Ns",
+                "sk-ac010-ns",
+                true,
+                "quota",
+                now.saturating_sub(120),
+                "weekly limit",
+            )],
+            vec![json_mapping("local-ns", "remote-ns", None)],
+        )],
+    ));
+    let ordered = live_candidates("local-ns");
+    assert!(
+        super::selection::find_key_probe_candidate(&ordered[0], now).is_some(),
+        "the seeded key must be probe-eligible"
+    );
+
+    clear_runtime_transition_seams();
+    let response = attempt_without_probe(&ordered, "local-ns").await;
+    assert_eq!(response.status, 502, "the 401 probe answers the standard 502");
+
+    let key = on_disk_key_entry("p-ns", "key-ns").expect("key-ns must stay persisted");
+    assert_eq!(key["auto_marked"], true);
+    assert_eq!(
+        key["failure_kind"], "authentication",
+        "the re-armed mark must switch to authentication: {key}"
+    );
+    assert_eq!(
+        recorded_config_update_events(),
+        vec![CONFIG_UPDATE_EVENT_NAME.to_string()],
+        "the probe re-arm must emit exactly one config-update event"
+    );
+    assert_eq!(
+        recorded_key_auth_failed_events(),
+        vec![AUTH_FAILED_EVENT_NAME.to_string()]
+    );
+    let payloads = recorded_key_auth_failed_payloads();
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0].provider_id, "p-ns");
+    assert_eq!(payloads[0].key_id, "key-ns");
+    assert!(payloads[0].reason.contains("unauthorized"));
+    let inputs = recorded_key_auth_failed_message_inputs();
+    assert_eq!(inputs.len(), 1);
+
+    crate::messages::create_message_with_app(handle, inputs[0].clone())
+        .expect("the captured probe input must persist");
+    let messages = crate::messages::list_messages_with_app(handle).expect("list messages");
+    let ns_entry = messages
+        .iter()
+        .find(|message| message.dedupe_key.as_deref() == Some("ai_gateway_key_auth_failed:p-ns"))
+        .expect("the non-streaming transition must persist one entry for p-ns");
+    assert_eq!(ns_entry.category, "key_auth_failed");
+    assert_eq!(ns_entry.occurrences, 1);
+
+    // --- Streaming probe -----------------------------------------------------
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p-stream",
+            "Provider Stream",
+            &upstream_url,
+            vec![pool_key_marked(
+                "key-stream",
+                "Stream",
+                "sk-ac010-stream",
+                true,
+                "quota",
+                now.saturating_sub(120),
+                "weekly limit",
+            )],
+            vec![json_mapping("local-stream", "remote-stream", None)],
+        )],
+    ));
+    let ordered = live_candidates("local-stream");
+    assert!(
+        super::selection::find_key_probe_candidate(&ordered[0], now).is_some(),
+        "the streaming fixture key must be probe-eligible"
+    );
+
+    clear_runtime_transition_seams();
+    let body = serde_json::to_vec(&json!({"model": "local-stream", "stream": true})).unwrap();
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
+    let _capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        &ordered,
+        "/v1/chat/completions",
+        &body,
+        Some("local-stream"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await
+    .expect("streaming attempt");
+    drop(server);
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    let text = String::from_utf8_lossy(&out);
+    let (status_line, response_body) = raw_http_status_and_body(&text);
+    assert!(
+        status_line.starts_with("HTTP/1.1 502"),
+        "a failed streaming key probe must write the pre-stream 502: {text}"
+    );
+    let envelope = assert_standard_error_envelope(&response_body);
+    assert_eq!(envelope["error"]["code"], "all_providers_unavailable");
+
+    let key = on_disk_key_entry("p-stream", "key-stream").expect("key-stream must stay persisted");
+    assert_eq!(
+        key["failure_kind"], "authentication",
+        "the streaming re-arm must switch to authentication: {key}"
+    );
+    assert_eq!(
+        recorded_config_update_events(),
+        vec![CONFIG_UPDATE_EVENT_NAME.to_string()],
+        "the streaming probe re-arm must emit exactly one config-update event"
+    );
+    assert_eq!(
+        recorded_key_auth_failed_events(),
+        vec![AUTH_FAILED_EVENT_NAME.to_string()]
+    );
+    let payloads = recorded_key_auth_failed_payloads();
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0].provider_id, "p-stream");
+    assert_eq!(payloads[0].key_id, "key-stream");
+    assert!(payloads[0].reason.contains("unauthorized"));
+    let inputs = recorded_key_auth_failed_message_inputs();
+    assert_eq!(inputs.len(), 1);
+
+    crate::messages::create_message_with_app(handle, inputs[0].clone())
+        .expect("the captured streaming probe input must persist");
+    let messages = crate::messages::list_messages_with_app(handle).expect("list messages");
+    let stream_entry = messages
+        .iter()
+        .find(|message| {
+            message.dedupe_key.as_deref() == Some("ai_gateway_key_auth_failed:p-stream")
+        })
+        .expect("the streaming transition must persist one entry for p-stream");
+    assert_eq!(stream_entry.category, "key_auth_failed");
+    assert_eq!(stream_entry.occurrences, 1);
 }
 
 /// REQ-005: with no captured application handle the relay settlement still

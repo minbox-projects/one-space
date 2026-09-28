@@ -74,6 +74,14 @@ fn captured_app_handle() -> Option<tauri::AppHandle> {
 thread_local! {
     pub(in crate::ai_gateway) static CONFIG_UPDATE_EVENTS: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    pub(in crate::ai_gateway) static KEY_AUTH_FAILED_EVENTS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    pub(in crate::ai_gateway) static KEY_AUTH_FAILED_PAYLOADS:
+        std::cell::RefCell<Vec<super::GatewayKeyAuthFailedPayload>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    pub(in crate::ai_gateway) static KEY_AUTH_FAILED_MESSAGE_INPUTS:
+        std::cell::RefCell<Vec<crate::messages::MessageCreateInput>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Emit one `ai-gateway-config-update` event when a handle was captured; a
@@ -87,6 +95,75 @@ fn emit_config_updated() {
     });
     if let Some(handle) = captured_app_handle() {
         let _ = handle.emit(super::AI_GATEWAY_CONFIG_UPDATED_EVENT, ());
+    }
+}
+
+/// Build the message-center input for one authentication-failed transition. The
+/// provider-scoped `dedupe_key` makes repeated transitions inside the store's
+/// dedupe window merge into one entry with an incremented occurrence count, and
+/// the targeted AI Gateway tab carries the provider as its entity id. Neither
+/// the title, summary, dedupe key, target nor metadata ever carries a key value
+/// (REQ-005).
+fn key_auth_failed_message_input(
+    payload: &super::GatewayKeyAuthFailedPayload,
+) -> crate::messages::MessageCreateInput {
+    crate::messages::MessageCreateInput {
+        source: "ai_gateway".to_string(),
+        category: "key_auth_failed".to_string(),
+        severity: "warning".to_string(),
+        title: crate::messages::localized(
+            "AI 网关密钥鉴权失败",
+            "AI Gateway key authentication failed",
+        ),
+        summary: Some(crate::messages::localized(
+            &format!(
+                "服务商 {} 的密钥 {} 鉴权失败：{}",
+                payload.provider_name, payload.key_name, payload.reason
+            ),
+            &format!(
+                "Provider {} key {} failed authentication: {}",
+                payload.provider_name, payload.key_name, payload.reason
+            ),
+        )),
+        detail: None,
+        dedupe_key: Some(format!("ai_gateway_key_auth_failed:{}", payload.provider_id)),
+        target: Some(crate::messages::MessageTarget {
+            tab: "ai-gateway".to_string(),
+            section: None,
+            entity_id: Some(payload.provider_id.clone()),
+        }),
+        metadata: None,
+    }
+}
+
+/// Broadcast one authentication-failed transition: record the literal and
+/// payload on the test seams, emit the notification event and persist exactly
+/// one message input through the captured handle. A missing handle skips both
+/// production emissions but still records the seam values so the transition is
+/// observable in tests (REQ-005/AC-007, AC-010).
+fn emit_key_auth_failed(transition: &KeyAuthFailedTransition) {
+    let payload = super::GatewayKeyAuthFailedPayload {
+        provider_id: transition.provider_id.clone(),
+        provider_name: transition.provider_name.clone(),
+        key_id: transition.key_id.clone(),
+        key_name: transition.key_name.clone(),
+        reason: transition.reason.clone(),
+        marked_at: transition.marked_at,
+    };
+    #[cfg(test)]
+    KEY_AUTH_FAILED_EVENTS.with(|events| {
+        events
+            .borrow_mut()
+            .push(super::AI_GATEWAY_KEY_AUTH_FAILED_EVENT.to_string())
+    });
+    #[cfg(test)]
+    KEY_AUTH_FAILED_PAYLOADS.with(|payloads| payloads.borrow_mut().push(payload.clone()));
+    let input = key_auth_failed_message_input(&payload);
+    #[cfg(test)]
+    KEY_AUTH_FAILED_MESSAGE_INPUTS.with(|inputs| inputs.borrow_mut().push(input.clone()));
+    if let Some(handle) = captured_app_handle() {
+        let _ = handle.emit(super::AI_GATEWAY_KEY_AUTH_FAILED_EVENT, &payload);
+        crate::messages::record_message_silent(&handle, input);
     }
 }
 
@@ -1186,11 +1263,36 @@ fn sync_key_runtime_marks(provider: &mut GatewayUpstreamProvider) {
     }
 }
 
+/// A key that just transitioned from a non-authentication mark (or no mark)
+/// into `Some(KeyFailureKind::Authentication)`, carrying everything the
+/// notification needs. The key value is deliberately absent (REQ-005).
+struct KeyAuthFailedTransition {
+    provider_id: String,
+    provider_name: String,
+    key_id: String,
+    key_name: String,
+    reason: String,
+    marked_at: u64,
+}
+
+/// Outcome of one persisted key runtime-state mutation, returned through
+/// [`modify_config`] so the emissions happen after the write lock is released.
+#[derive(Default)]
+struct PersistedKeyOutcome {
+    /// Whether the mutation actually changed the persisted key record.
+    changed: bool,
+    /// The authentication transition the mutation produced, if any.
+    transition: Option<KeyAuthFailedTransition>,
+}
+
 /// Apply `mutate` to one provider's key in the latest persisted configuration
 /// and write it back through the serialized primitive, preserving concurrent
 /// edits to every other field. A mutation that leaves the key unchanged does
-/// not rewrite the file, and a key mark never emits the config-update event,
-/// which stays scoped to mapping auto-disable flips.
+/// not rewrite the file and emits nothing; a changed mutation emits the
+/// config-update event once, and a transition into the authentication mark
+/// additionally emits the authentication notification and message input. Both
+/// emissions happen after [`modify_config`] returns, so the config write lock is
+/// never held while emitting (REQ-004/REQ-005).
 fn persist_key_runtime_state<F>(provider_id: &str, key_id: &str, mutate: F)
 where
     F: FnOnce(&mut super::UpstreamKey),
@@ -1198,21 +1300,50 @@ where
     if key_id.is_empty() {
         return;
     }
-    let _ = modify_config(|latest| {
+    let outcome = modify_config(|latest| {
         let Some(provider) = latest
             .providers
             .iter_mut()
             .find(|provider| provider.id == provider_id)
         else {
-            return Ok((false, ()));
+            return Ok((false, PersistedKeyOutcome::default()));
         };
+        let stored_provider_id = provider.id.clone();
+        let provider_name = provider.name.clone();
         let Some(key) = provider.keys.iter_mut().find(|key| key.id == key_id) else {
-            return Ok((false, ()));
+            return Ok((false, PersistedKeyOutcome::default()));
         };
         let before = key.clone();
+        let was_authentication = key.failure_kind == Some(KeyFailureKind::Authentication);
         mutate(key);
-        Ok((*key != before, ()))
+        let changed = *key != before;
+        let transition = if !was_authentication
+            && key.failure_kind == Some(KeyFailureKind::Authentication)
+        {
+            Some(KeyAuthFailedTransition {
+                provider_id: stored_provider_id,
+                provider_name,
+                key_id: key.id.clone(),
+                key_name: key.name.clone(),
+                reason: key.reason.clone().unwrap_or_default(),
+                marked_at: key.marked_at.unwrap_or_else(now_ts),
+            })
+        } else {
+            None
+        };
+        let outcome = PersistedKeyOutcome { changed, transition };
+        Ok((changed, outcome))
     });
+
+    let Ok(outcome) = outcome else {
+        return;
+    };
+    if outcome.changed {
+        emit_config_updated();
+    }
+    if let Some(transition) = outcome.transition {
+        emit_key_auth_failed(&transition);
+    }
 }
 
 /// Mark a non-probe key after a key-scoped failure and persist it.
