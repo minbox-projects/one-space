@@ -15,9 +15,6 @@ import { renderWithProviders } from "@/test/mocks/render";
 vi.mock("./Bookmarks", () => ({
   Bookmarks: () => <div>Bookmarks detail</div>,
 }));
-vi.mock("./CloudDrive", () => ({
-  CloudDrive: () => <div>Cloud Drive detail</div>,
-}));
 vi.mock("./SshServers", () => ({
   SshServers: () => <div>SSH Servers detail</div>,
 }));
@@ -82,6 +79,12 @@ async function loadRegistry(): Promise<RegistryModule> {
   return (await import(/* @vite-ignore */ specifier)) as RegistryModule;
 }
 
+/** Hub ids straight from the registry so no parallel hand-maintained list exists. */
+async function registryHubIds(): Promise<string[]> {
+  const registry = await loadRegistry();
+  return registry.listToolboxTools("hub").map((tool) => tool.id);
+}
+
 describe("MoreToolsHub", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -111,7 +114,6 @@ describe("MoreToolsHub", () => {
     );
 
     expect(screen.getByText("Bookmarks detail")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Cloud Drive|云盘/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Back to tools|返回工具列表/ }));
     expect(onBack).toHaveBeenCalledOnce();
@@ -288,7 +290,6 @@ describe("MoreToolsHub", () => {
 
   it.each([
     "bookmarks",
-    "cloud",
     "ssh",
     "ssh-tunnels",
     "protocol-router",
@@ -354,7 +355,6 @@ describe("MoreToolsHub", () => {
 
   it.each([
     "bookmarks",
-    "cloud",
     "ssh",
     "ssh-tunnels",
     "protocol-router",
@@ -546,7 +546,14 @@ describe("MoreToolsHub", () => {
       vi.useRealTimers();
     });
 
-    it("长按拖拽把手拖拽卡片实时移动位置并持久化，且不显示提示框或完成按钮", () => {
+    it("长按拖拽把手拖拽卡片实时移动位置并持久化，且不显示提示框或完成按钮", async () => {
+      const hubIds = await registryHubIds();
+      const fromIndex = hubIds.indexOf("bookmarks");
+      const toIndex = hubIds.indexOf("ssh");
+      const expectedOrder = [...hubIds];
+      const [moved] = expectedOrder.splice(fromIndex, 1);
+      expectedOrder.splice(toIndex, 0, moved);
+
       vi.useFakeTimers();
       renderWithProviders(
         <MoreToolsHub
@@ -570,30 +577,20 @@ describe("MoreToolsHub", () => {
         pointerId: 1,
       });
 
-      expect(cardOrder().slice(0, 3)).toEqual(["cloud", "ssh", "bookmarks"]);
+      expect(cardOrder()).toEqual(expectedOrder);
       expect(
         JSON.parse(localStorage.getItem(MORE_TOOLS_ORDER_KEY) || "[]"),
-      ).toEqual([
-        "cloud",
-        "ssh",
-        "bookmarks",
-        "ssh-tunnels",
-        "protocol-router",
-        "random-password",
-        "json-parser",
-        "md5-encryption",
-        "short-link",
-        "file-sharing",
-        "jtt-data-parser",
-        "ai-workflow-model-switcher",
-      ]);
+      ).toEqual(expectedOrder);
 
       fireEvent.pointerUp(window, { pointerId: 1 });
       vi.useRealTimers();
     });
 
-    it("渲染时应用已保存的卡片顺序", () => {
-      writeSavedOrder(MORE_TOOLS_ORDER_KEY, ["ssh", "bookmarks", "cloud"]);
+    it("渲染时应用已保存的卡片顺序", async () => {
+      const hubIds = await registryHubIds();
+      const third = hubIds.find((id) => id !== "ssh" && id !== "bookmarks");
+      expect(third).toBeDefined();
+      writeSavedOrder(MORE_TOOLS_ORDER_KEY, ["ssh", "bookmarks", third!]);
       renderWithProviders(
         <MoreToolsHub
           activeTool={null}
@@ -602,7 +599,7 @@ describe("MoreToolsHub", () => {
         />,
       );
 
-      expect(cardOrder().slice(0, 3)).toEqual(["ssh", "bookmarks", "cloud"]);
+      expect(cardOrder().slice(0, 3)).toEqual(["ssh", "bookmarks", third]);
     });
 
     it("短按拖拽把手不触发拖拽，点击卡片直接打开工具", () => {

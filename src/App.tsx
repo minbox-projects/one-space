@@ -109,7 +109,6 @@ import {
 import {
   isMoreToolsTab,
   isSmartWorkspaceTab,
-  normalizeLegacyTabTarget,
   resolveNavigationTarget,
   type JttParserTab,
   type MoreToolsSection,
@@ -2682,7 +2681,7 @@ function App() {
         open={omniOpen}
         setOpen={setOmniOpen}
         onNavigate={(tab) => {
-          navigateToTab(normalizeLegacyTabTarget(tab));
+          navigateToTab(tab);
         }}
       />
       <MessageCenter

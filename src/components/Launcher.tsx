@@ -80,16 +80,7 @@ interface LauncherItemInput {
   trusted?: boolean;
 }
 
-interface LegacyLauncherItem {
-  id?: string;
-  name: string;
-  command: string;
-  type: "app" | "script" | "url" | "folder";
-}
-
-const MIGRATION_MARKER = "onespace_launcher_migrated_v1";
 const SEEDED_MARKER = "onespace_launcher_seeded_v1";
-const LEGACY_STORAGE_KEY = "onespace_launcher_items";
 
 const DEFAULT_LAUNCHER_ITEMS: LauncherItemInput[] = [
   { name: "VS Code", type: "app", target: 'open -a "Visual Studio Code"' },
@@ -698,9 +689,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
 
   const listLauncherItems = async (): Promise<LauncherItem[]> => {
     const resp = await invoke<ApiResp<LauncherItem[]>>("launcher_list");
-    return (resp.data || []).filter(
-      (item) => item.type !== "internal" || item.target !== "ai-flow",
-    );
+    return resp.data || [];
   };
 
   const refreshLauncherItems = async () => {
@@ -711,41 +700,6 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
 
   const upsertLauncherItem = async (item: LauncherItemInput) => {
     await invoke("launcher_upsert", { item });
-  };
-
-  const migrateLegacyLauncherIfNeeded = async () => {
-    if (localStorage.getItem(MIGRATION_MARKER) === "1") return false;
-    const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (!raw) {
-      localStorage.setItem(MIGRATION_MARKER, "1");
-      return false;
-    }
-
-    let parsed: LegacyLauncherItem[] = [];
-    try {
-      parsed = JSON.parse(raw) as LegacyLauncherItem[];
-    } catch (_err) {
-      localStorage.setItem(MIGRATION_MARKER, "1");
-      return false;
-    }
-
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      localStorage.setItem(MIGRATION_MARKER, "1");
-      return false;
-    }
-
-    for (const item of parsed) {
-      await upsertLauncherItem({
-        id: item.id,
-        name: item.name,
-        type: item.type,
-        target: item.command,
-      });
-    }
-
-    localStorage.setItem(MIGRATION_MARKER, "1");
-    localStorage.removeItem(LEGACY_STORAGE_KEY);
-    return true;
   };
 
   const seedDefaultLauncherIfNeeded = async () => {
@@ -766,14 +720,9 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     try {
       let loaded = await listLauncherItems();
       if (loaded.length === 0) {
-        const migrated = await migrateLegacyLauncherIfNeeded();
-        if (migrated) {
+        const seeded = await seedDefaultLauncherIfNeeded();
+        if (seeded) {
           loaded = await listLauncherItems();
-        } else {
-          const seeded = await seedDefaultLauncherIfNeeded();
-          if (seeded) {
-            loaded = await listLauncherItems();
-          }
         }
       }
       setItems(sortLauncherItems(loaded));

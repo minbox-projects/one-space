@@ -19,7 +19,6 @@ import type {
  */
 const CANONICAL_HUB_IDS = [
   "bookmarks",
-  "cloud",
   "ssh",
   "ssh-tunnels",
   "protocol-router",
@@ -161,6 +160,17 @@ describe("canonical MD5 id", () => {
     for (const id of CANONICAL_HUB_IDS) {
       expect(id).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
     }
+  });
+});
+
+describe("removed cloud tool", () => {
+  it("keeps no cloud descriptor, alias or hub id after removal", () => {
+    expect(TOOLBOX_TOOLS.some((tool) => tool.id === "cloud")).toBe(false);
+    expect(getToolboxTool("cloud")).toBeUndefined();
+    expect(resolveToolboxNavigationAlias("cloud")).toBeUndefined();
+    expect([...listToolboxTools("hub").map((tool) => tool.id)].sort()).toEqual(
+      [...CANONICAL_HUB_IDS].sort(),
+    );
   });
 });
 

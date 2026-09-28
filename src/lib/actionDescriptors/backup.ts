@@ -9,7 +9,7 @@ export function buildCreateBackupActionDescriptor(
     source: "backup",
     category: "backup",
     action: "create-backup",
-    target: { tab: "more-tools", section: "backup", entity_id: activeTool },
+    target: { tab: "mcp-servers", entity_id: activeTool },
     dedupeKey: `backup:create:${activeTool}`,
     metadata: { active_tool: activeTool },
     confirm: {
@@ -40,7 +40,7 @@ export function buildRestoreBackupActionDescriptor(
     source: "backup",
     category: "restore",
     action: "restore-backup",
-    target: { tab: "more-tools", section: "backup", entity_id: entryId },
+    target: { tab: "mcp-servers", entity_id: entryId },
     dedupeKey: `backup:restore:${entryId}`,
     metadata: { entry_id: entryId },
     confirm: {
@@ -72,7 +72,7 @@ export function buildDeleteBackupActionDescriptor(
     source: "backup",
     category: "delete",
     action: "delete-backup",
-    target: { tab: "more-tools", section: "backup", entity_id: entryId },
+    target: { tab: "mcp-servers", entity_id: entryId },
     dedupeKey: `backup:delete:${entryId}`,
     metadata: { entry_id: entryId },
     confirm: {
@@ -100,7 +100,7 @@ export function buildCleanupBackupsActionDescriptor(
     source: "backup",
     category: "cleanup",
     action: "cleanup-backups",
-    target: { tab: "more-tools", section: "backup" },
+    target: { tab: "mcp-servers" },
     dedupeKey: `backup:cleanup:${retentionDays}`,
     metadata: { retention_days: retentionDays },
     confirm: {

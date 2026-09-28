@@ -83,7 +83,6 @@ const resources = {
       snippets: "Snippets",
       bookmarks: "Bookmarks",
       notes: "Notes",
-      cloudDrive: "Cloud Drive",
       mail: "Mail",
       fishPond: "Fish Pond",
       fishPondDesc: "Take a break and relax here",
@@ -1341,14 +1340,12 @@ const resources = {
         "Fetch AI news from configured RSS sources with local keyword filtering.",
       docsMailSummary:
         "Connect Gmail with OAuth to read, reply, and download attachments.",
-      docsCloudDriveSummary:
-        "Understand the current experimental Aliyun Cloud Drive browser state.",
       docsSettingsSummary:
         "Configure storage, news, proxy, shortcuts, terminal commands, appearance, and security.",
       docsFishPondSummary:
         "Find the built-in CyberMuyu, Snake, Tetris, Sudoku, Minesweeper, and Wordle games.",
       docsFaqSummary:
-        "Troubleshoot common CLI, environment, AI News, Cloud Drive, and macOS issues.",
+        "Troubleshoot common CLI, environment, AI News, and macOS issues.",
       cliNotInstalled: "OneSpace CLI is not installed.",
       cliNotInstalledDesc:
         "OneSpace CLI allows you to start AI terminal sessions directly from your favorite terminal.",
@@ -1987,20 +1984,12 @@ const resources = {
       openLocal: "Open Local",
       failedToSave: "Failed to save. Check console.",
       failedToOpen: "Failed to open. Is it a valid URL or path?",
-      manageCloudDrive: "Manage your Aliyun Cloud Drive files",
-      connectCloudDrive: "Connect Aliyun Drive",
-      refreshToken: "Refresh Token",
-      refreshTokenPlaceholder: "Enter your Aliyun Drive refresh token",
-      howToGetToken: "How to get my Refresh Token?",
       saveToken: "Save & Connect",
       disconnect: "Disconnect",
       files: "Files",
-      upload: "Upload",
       download: "Download",
       name: "Name",
       size: "Size",
-      updatedAt: "Updated At",
-      emptyFolder: "This folder is empty.",
       loading: "Loading...",
       checkingConnection: "Checking connection...",
       loadMore: "Load More",
@@ -3826,7 +3815,6 @@ const resources = {
       snippets: "代码片段",
       bookmarks: "收藏夹",
       notes: "备忘录",
-      cloudDrive: "云盘",
       mail: "邮件",
       fishPond: "鱼塘",
       fishPondDesc: "忙里偷闲，在这里放松一下吧",
@@ -5274,7 +5262,6 @@ const resources = {
       themeDesc: "选择您喜欢的视觉主题。",
       languageDesc: "选择界面语言。",
       notSet: "未设置",
-      manageCloudDrive: "管理你的阿里云盘文件",
       usageDocs: "使用文档",
       docsMenuDesc: "此页内容直接渲染自 docs 目录下的 Markdown 文档。",
       docsUsageGuide: "使用手册",
@@ -5310,14 +5297,12 @@ const resources = {
       docsAiNewsSummary:
         "从已配置 RSS 源抓取 AI 新闻，并按本地关键词过滤。",
       docsMailSummary: "通过 OAuth 连接 Gmail，阅读、回复并下载附件。",
-      docsCloudDriveSummary:
-        "了解当前实验性的阿里云盘文件浏览器状态。",
       docsSettingsSummary:
         "配置存储、资讯、代理、快捷键、终端命令、外观和安全。",
       docsFishPondSummary:
         "找到内置的 CyberMuyu、Snake、Tetris、Sudoku、Minesweeper 和 Wordle 游戏。",
       docsFaqSummary:
-        "排查 CLI、环境、AI News、Cloud Drive 和 macOS 常见问题。",
+        "排查 CLI、环境、AI News 和 macOS 常见问题。",
       philosophy: "OneSpace 设计理念",
       philosophyDesc:
         "OneSpace 是您高精度数字工作流的统一门户。它架起了本地环境、远程服务器和高级 AI 模型之间的桥梁。",
@@ -5608,19 +5593,12 @@ const resources = {
       sshTunnelEmptyForGroup: "当前环境分组下还没有 SSH 隧道。",
       sshServersWindowsHint:
         "SSH 服务器页当前仅支持在 macOS 中拉起原生终端 SSH 连接。在 Windows 上请改用 SSH 隧道。",
-      connectCloudDrive: "连接阿里云盘",
-      refreshToken: "Refresh Token",
-      refreshTokenPlaceholder: "请输入你的阿里云盘 Refresh Token",
-      howToGetToken: "如何获取 Refresh Token？",
       saveToken: "保存并连接",
       disconnect: "断开连接",
       files: "文件",
-      upload: "上传",
       download: "下载",
       name: "名称",
       size: "大小",
-      updatedAt: "修改时间",
-      emptyFolder: "此文件夹为空。",
       loading: "加载中...",
       checkingConnection: "正在检查连接...",
       loadMore: "加载更多",

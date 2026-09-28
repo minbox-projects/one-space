@@ -154,5 +154,15 @@ describe("removed more-tools ghost targets", () => {
     const navigationModule = navigation as unknown as Record<string, unknown>;
     expect("normalizeLegacyTabTarget" in navigationModule).toBe(false);
   });
+
+  it("passes the removed cloud target through as a standalone tab", () => {
+    expect(resolveNavigationTarget("cloud")).toEqual({ tab: "cloud" });
+    expect(isMoreToolsTab("cloud")).toBe(false);
+  });
+
+  it("passes the removed backup target through without a more-tools section", () => {
+    expect(resolveNavigationTarget("backup")).toEqual({ tab: "backup" });
+    expect(isMoreToolsTab("backup")).toBe(false);
+  });
 });
 

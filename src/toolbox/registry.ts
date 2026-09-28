@@ -2,7 +2,6 @@ import i18n from "@/i18n";
 
 import { aiWorkflowModelSwitcherTool } from "./plugins/ai-workflow-model-switcher";
 import { bookmarksTool } from "./plugins/bookmarks";
-import { cloudTool } from "./plugins/cloud";
 import { fileSharingTool } from "./plugins/file-sharing";
 import { jsonParserTool } from "./plugins/json-parser";
 import { jttDataParserTool } from "./plugins/jtt-data-parser";
@@ -23,7 +22,6 @@ import type {
 
 export const TOOLBOX_TOOLS: readonly ToolboxToolDescriptor[] = [
   bookmarksTool,
-  cloudTool,
   sshServersTool,
   sshTunnelsTool,
   protocolRouterTool,

@@ -40,11 +40,26 @@ describe("launcherToolVisibility", () => {
     const registry = await loadRegistry();
     const md5Tool = registry.getToolboxTool("md5-encryption");
     expect(md5Tool).toBeDefined();
+    const explicitQuickId = registry
+      .listToolboxTools("launcher-quick")
+      .map((tool) => tool.id)
+      .find(
+        (id) =>
+          ![
+            "bookmarks",
+            "protocol-router",
+            "json-parser",
+            "short-link",
+            md5Tool!.id,
+          ].includes(id),
+      );
+    expect(explicitQuickId).toBeDefined();
+
     localStorage.setItem(
       LAUNCHER_TOOL_VISIBILITY_KEY,
       JSON.stringify({
         bookmarks: false,
-        cloud: true,
+        [explicitQuickId!]: true,
         "protocol-router": false,
         "json-parser": "false",
       }),
@@ -52,7 +67,7 @@ describe("launcherToolVisibility", () => {
 
     expect(readLauncherToolVisibility()).toMatchObject({
       bookmarks: false,
-      cloud: true,
+      [explicitQuickId!]: true,
       "protocol-router": false,
       "json-parser": true,
       [md5Tool!.id]: true,
