@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RotateCcw } from "lucide-react";
 import {
   aiGatewayProviderGoUsage,
+  providerKeyPool,
   type GatewayUpstreamProvider,
   type GoUsageWindow,
   type ProviderGoUsage,
@@ -18,6 +19,7 @@ const GO_USAGE_I18N_KEYS = {
 type ProviderGoUsageBlockProps = {
   provider: GatewayUpstreamProvider;
   baseNow?: number | Date;
+  refreshToken?: number;
 };
 
 type UsageState =
@@ -94,10 +96,11 @@ function UsageWindowLine({
   );
 }
 
-export function ProviderGoUsageBlock({ provider, baseNow }: ProviderGoUsageBlockProps) {
+export function ProviderGoUsageBlock({ provider, baseNow, refreshToken = 0 }: ProviderGoUsageBlockProps) {
   const { t } = useTranslation();
   const [state, setState] = useState<UsageState>({ status: "loading" });
   const [refreshNow, setRefreshNow] = useState<number | null>(null);
+  const refreshTokenRef = useRef(refreshToken);
 
   const loadUsage = useCallback(async (forceRefresh = false) => {
     setState({ status: "loading" });
@@ -119,6 +122,14 @@ export function ProviderGoUsageBlock({ provider, baseNow }: ProviderGoUsageBlock
   useEffect(() => {
     void loadUsage();
   }, [loadUsage]);
+
+  useEffect(() => {
+    if (refreshTokenRef.current === refreshToken) return;
+    refreshTokenRef.current = refreshToken;
+    if (providerKeyPool(provider).length > 0) {
+      void loadUsage(true);
+    }
+  }, [refreshToken, provider, loadUsage]);
 
   const id = provider.id;
   const usage = state.status === "success" ? state.data.usage : null;

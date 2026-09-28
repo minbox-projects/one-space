@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RotateCcw } from "lucide-react";
 import {
   aiGatewayProviderQuota,
+  providerKeyPool,
   type GatewayUpstreamProvider,
   type ProviderQuota,
   type QuotaWindow,
@@ -12,6 +13,7 @@ import { formatResetTime } from "./gatewayShared";
 type ProviderQuotaBlockProps = {
   provider: GatewayUpstreamProvider;
   baseNow?: number | Date;
+  refreshToken?: number;
 };
 
 type QuotaState =
@@ -99,10 +101,11 @@ function QuotaWindowLine({
   );
 }
 
-export function ProviderQuotaBlock({ provider, baseNow }: ProviderQuotaBlockProps) {
+export function ProviderQuotaBlock({ provider, baseNow, refreshToken = 0 }: ProviderQuotaBlockProps) {
   const { t } = useTranslation();
   const [state, setState] = useState<QuotaState>({ status: "loading" });
   const [refreshNow, setRefreshNow] = useState<number | null>(null);
+  const refreshTokenRef = useRef(refreshToken);
 
   const loadQuota = useCallback(async (forceRefresh = false) => {
     setState({ status: "loading" });
@@ -123,6 +126,14 @@ export function ProviderQuotaBlock({ provider, baseNow }: ProviderQuotaBlockProp
   useEffect(() => {
     void loadQuota();
   }, [loadQuota]);
+
+  useEffect(() => {
+    if (refreshTokenRef.current === refreshToken) return;
+    refreshTokenRef.current = refreshToken;
+    if (providerKeyPool(provider).length > 0) {
+      void loadQuota(true);
+    }
+  }, [refreshToken, provider, loadQuota]);
 
   const id = provider.id;
   const quota = state.status === "success" ? state.quota : null;

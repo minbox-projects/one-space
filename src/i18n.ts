@@ -587,6 +587,11 @@ const resources = {
       aiGatewayProviderKeyStateAuth: "Authentication failed",
       aiGatewayProviderKeyMarkedAt: "Marked at {{time}}",
       aiGatewayProviderKeysSummary: "{{count}} key(s)",
+      aiGatewayProvidersRefreshQuota: "Refresh quota",
+      aiGatewayProvidersRefreshQuotaAria:
+        "Refresh quota for supported providers in the current filter results",
+      aiGatewayProvidersRefreshQuotaDisabled:
+        "No providers in the current filter results support quota refresh",
       aiGatewayNoValue: "not set",
       aiGatewayTerminalSync: "AI terminal integration",
       aiGatewayTerminalSyncDesc:
@@ -4475,6 +4480,10 @@ const resources = {
       aiGatewayProviderKeyStateAuth: "鉴权失败",
       aiGatewayProviderKeyMarkedAt: "标记于 {{time}}",
       aiGatewayProviderKeysSummary: "{{count}} 个密钥",
+      aiGatewayProvidersRefreshQuota: "刷新额度",
+      aiGatewayProvidersRefreshQuotaAria: "刷新当前筛选结果中支持额度监控的服务商",
+      aiGatewayProvidersRefreshQuotaDisabled:
+        "当前筛选结果中没有可刷新额度的服务商",
       aiGatewayNoValue: "未设置",
       aiGatewayTerminalSync: "AI 终端集成",
       aiGatewayTerminalSyncDesc:
