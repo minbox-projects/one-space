@@ -577,3 +577,49 @@ describe("AI 网关上游密钥池国际化键", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// 批量刷新当前筛选结果额度：新增按钮文案。
+// RED assertions: Step 4 must add these exact keys to both dictionaries.
+// ---------------------------------------------------------------------------
+
+const PROVIDER_QUOTA_REFRESH_I18N_KEYS = [
+  "aiGatewayProvidersRefreshQuota",
+  "aiGatewayProvidersRefreshQuotaAria",
+  "aiGatewayProvidersRefreshQuotaDisabled",
+] as const;
+
+const PROVIDER_QUOTA_REFRESH_COPY: Record<
+  (typeof PROVIDER_QUOTA_REFRESH_I18N_KEYS)[number],
+  Record<"en" | "zh", string>
+> = {
+  aiGatewayProvidersRefreshQuota: {
+    en: "Refresh quota",
+    zh: "刷新额度",
+  },
+  aiGatewayProvidersRefreshQuotaAria: {
+    en: "Refresh quota for supported providers in the current filter results",
+    zh: "刷新当前筛选结果中支持额度监控的服务商",
+  },
+  aiGatewayProvidersRefreshQuotaDisabled: {
+    en: "No providers in the current filter results support quota refresh",
+    zh: "当前筛选结果中没有可刷新额度的服务商",
+  },
+};
+
+describe("AI 网关服务商批量刷新额度国际化键", () => {
+  it.each(["en", "zh"] as const)(
+    "为 %s 提供批量刷新额度的精确文案",
+    (language) => {
+      for (const key of PROVIDER_QUOTA_REFRESH_I18N_KEYS) {
+        const translation = i18n.getResource(language, "translation", key);
+        expect(typeof translation, `${language}:${key} 应为字符串`).toBe(
+          "string",
+        );
+        expect(translation, `${language}:${key} 文案不匹配`).toBe(
+          PROVIDER_QUOTA_REFRESH_COPY[key][language],
+        );
+      }
+    },
+  );
+});
+

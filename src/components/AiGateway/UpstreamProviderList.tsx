@@ -75,6 +75,7 @@ export function UpstreamProviderList({
   const [statusFilter, setStatusFilter] = useState<ProviderStatusFilter>("all");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [tagFilterOpen, setTagFilterOpen] = useState(false);
+  const [quotaRefreshToken, setQuotaRefreshToken] = useState(0);
   const tagFilterRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -155,6 +156,21 @@ export function UpstreamProviderList({
       return true;
     });
   }, [providers, statusFilter, selectedTags]);
+
+  const refreshableProviderIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const p of filteredProviders) {
+      if (
+        (isCommandCodeProvider(p) || isOpencodeGoProvider(p)) &&
+        providerKeyPool(p).length > 0
+      ) {
+        ids.add(p.id);
+      }
+    }
+    return ids;
+  }, [filteredProviders]);
+
+  const canRefreshQuota = refreshableProviderIds.size > 0;
 
   return (
     <section className="space-y-3.5" data-testid="ai-gateway-providers">
@@ -340,6 +356,25 @@ export function UpstreamProviderList({
                 </div>
               )}
             </div>
+          ) : null}
+
+          {providers.length > 0 ? (
+            <button
+              type="button"
+              data-testid="ai-gateway-providers-refresh"
+              disabled={!canRefreshQuota}
+              aria-label={t("aiGatewayProvidersRefreshQuotaAria")}
+              title={
+                canRefreshQuota
+                  ? t("aiGatewayProvidersRefreshQuotaAria")
+                  : t("aiGatewayProvidersRefreshQuotaDisabled")
+              }
+              onClick={() => setQuotaRefreshToken((v) => v + 1)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/70 bg-background px-3 text-xs font-medium text-foreground shadow-xs transition hover:bg-muted active:bg-muted/80 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              <span>{t("aiGatewayProvidersRefreshQuota")}</span>
+            </button>
           ) : null}
 
           {onManageTemplates ? (
@@ -635,9 +670,17 @@ export function UpstreamProviderList({
                   </div>
 
                   {isCommandCodeProvider(provider) ? (
-                    <ProviderQuotaBlock provider={provider} baseNow={baseNow} />
+                    <ProviderQuotaBlock
+                      provider={provider}
+                      baseNow={baseNow}
+                      refreshToken={quotaRefreshToken}
+                    />
                   ) : isOpencodeGoProvider(provider) ? (
-                    <ProviderGoUsageBlock provider={provider} baseNow={baseNow} />
+                    <ProviderGoUsageBlock
+                      provider={provider}
+                      baseNow={baseNow}
+                      refreshToken={quotaRefreshToken}
+                    />
                   ) : (
                     <div
                       data-testid={`ai-gateway-provider-placeholder-${provider.id}`}

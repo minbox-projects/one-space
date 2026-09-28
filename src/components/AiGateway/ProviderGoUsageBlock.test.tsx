@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -70,6 +71,38 @@ function mockUsageResult(result: ProviderGoUsage | Error = FIXTURE) {
 
 function renderUsageBlock(provider = makeProvider()) {
   return renderWithProviders(<ProviderGoUsageBlock provider={provider} />);
+}
+
+function GoUsageTokenHarness({ provider }: { provider: GatewayUpstreamProvider }) {
+  const [refreshToken, setRefreshToken] = useState(0);
+  const [, setNoop] = useState(0);
+  return (
+    <>
+      <button
+        type="button"
+        data-testid="go-usage-token-bump"
+        onClick={() => setRefreshToken((token) => token + 1)}
+      >
+        bump
+      </button>
+      <button
+        type="button"
+        data-testid="go-usage-token-noop"
+        onClick={() => setNoop((value) => value + 1)}
+      >
+        noop
+      </button>
+      <ProviderGoUsageBlock provider={provider} refreshToken={refreshToken} />
+    </>
+  );
+}
+
+function forcedGoUsageCalls() {
+  return invokeMock.mock.calls.filter(
+    ([command, args]) =>
+      command === "ai_gateway_provider_go_usage" &&
+      (args as { forceRefresh?: boolean } | undefined)?.forceRefresh === true,
+  );
 }
 
 describe("ProviderGoUsageBlock", () => {
@@ -155,5 +188,31 @@ describe("ProviderGoUsageBlock", () => {
         expect((translation as string).trim(), `${language}:${key}`).not.toBe("");
       }
     }
+  });
+
+  it("refreshToken 递增时强制刷新一次", async () => {
+    const user = userEvent.setup();
+    const provider = makeProvider();
+    renderWithProviders(<GoUsageTokenHarness provider={provider} />);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_provider_go_usage", {
+        providerId: "go-provider",
+        forceRefresh: false,
+      }),
+    );
+    expect(forcedGoUsageCalls()).toHaveLength(0);
+
+    await user.click(screen.getByTestId("go-usage-token-bump"));
+
+    await waitFor(() => expect(forcedGoUsageCalls()).toHaveLength(1));
+    expect(forcedGoUsageCalls()[0]?.[1]).toMatchObject({
+      providerId: "go-provider",
+      forceRefresh: true,
+    });
+
+    // 同一 token 下的无关 re-render 不得追加强制刷新。
+    await user.click(screen.getByTestId("go-usage-token-noop"));
+    expect(forcedGoUsageCalls()).toHaveLength(1);
   });
 });
