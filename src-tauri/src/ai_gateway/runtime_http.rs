@@ -2408,9 +2408,18 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             }
             candidate.provider = next_provider;
             candidate.attempted_keys.insert(selected.id.clone());
-            // Continue the same pass on the provider's next usable key; when no
-            // unattempted usable key remains the pass simply ends.
-            if select_usable_key(&candidate.provider, now_ts(), &candidate.attempted_keys).is_some()
+            // Continue the same pass on the provider's next selectable key — an
+            // unattempted usable key or, only when none remains and no probe has
+            // run yet, an eligible 60-second quota probe. When neither exists the
+            // pass simply ends. (The bare-rotation branch below stays
+            // usable-key-only so probes remain last-resort.)
+            if select_attempt_key(
+                &candidate.provider,
+                now_ts(),
+                key_probe_used,
+                &candidate.attempted_keys,
+            )
+            .is_some()
             {
                 ordered_queue.push_front(candidate);
             }

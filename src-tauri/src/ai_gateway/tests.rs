@@ -734,6 +734,78 @@ fn poisoned_config_write_lock_is_recovered_and_later_writes_persist() {
     drop(home);
 }
 
+/// F3 / AC-006: after a writer panics inside the serialized primitive (poisoning
+/// the lock), a real relay request must still succeed, a later mutation must
+/// persist, and the configuration must stay readable.
+#[tokio::test]
+async fn relay_after_a_poisoned_config_write_lock_succeeds_and_writes_persist() {
+    let home = temp_home("poison-recovery-relay");
+    let (upstream_url, _log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
+
+    let mut seed = GatewayConfig::default();
+    seed.keys.push(key_named("k-before", "value-before"));
+    let mut provider =
+        upstream_provider("p1", "Provider One", &upstream_url, "sk", Some("remote-model"));
+    provider.mappings = vec![mapping("local-model", "remote-model", None)];
+    seed.providers.push(provider.clone());
+    super::storage::write_config(&seed).expect("seed config");
+
+    let panicked = std::thread::spawn(|| {
+        let _ = super::storage::modify_config::<()>(|_config| {
+            panic!("intentional configuration writer panic")
+        });
+    })
+    .join();
+    assert!(
+        panicked.is_err(),
+        "the mutation panic must unwind through the primitive"
+    );
+
+    // A real relay request must still settle through the recovered lock.
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        std::slice::from_ref(&provider),
+        "/v1/chat/completions",
+        &body,
+        Some("local-model"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+    assert_eq!(
+        response.status, 200,
+        "a relay request after a poisoned lock must succeed: {}",
+        String::from_utf8_lossy(&response.body)
+    );
+
+    // ...and a later mutation must persist over the readable configuration.
+    super::storage::modify_config::<()>(|config| {
+        config.keys.push(key_named("k-after", "value-after"));
+        Ok((true, ()))
+    })
+    .expect("a later write must recover from the poisoned lock");
+
+    let loaded = super::storage::read_config().expect("configuration must stay readable");
+    assert!(
+        loaded.keys.iter().any(|item| item.id == "k-before"),
+        "the seeded key must survive the poison and relay"
+    );
+    assert!(
+        loaded.keys.iter().any(|item| item.id == "k-after"),
+        "the later write through the primitive must persist"
+    );
+    assert!(
+        loaded.providers.iter().any(|item| item.id == "p1"),
+        "the relay's provider must stay persisted"
+    );
+
+    drop(home);
+}
+
 /// AC-007 seam: the serialized configuration write must not be blocked by an
 /// in-flight relay request waiting on a withholding upstream. The write
 /// completes while the upstream response is still withheld, and the relay then
@@ -29257,5 +29329,115 @@ async fn ac036_zero_or_single_candidate_bypasses_scheduler_state() {
     assert_eq!(
         entries_b, 0,
         "AC-036: a single-candidate selection must not create scheduler state"
+    );
+}
+
+// ===========================================================================
+// Review-repair behavior tests for the frozen plan
+// 20260925-gateway-routing-and-config-hardening.
+//
+// F1 (expected RED on current code): in the streaming path, when the last
+// usable key is marked key-scoped and the only remaining candidate is an
+// eligible 60-second quota probe, the provider must still reach that probe.
+// ===========================================================================
+
+/// F1 / REQ-004 / AC-022: a streaming request whose first usable key fails
+/// key-scoped before the first byte must continue on an eligible 60-second
+/// quota probe key, exactly as the non-streaming path does, and serve its SSE
+/// stream to the client.
+#[tokio::test]
+async fn ac022_streaming_probe_reaches_a_quota_probe_after_the_last_usable_key_is_marked() {
+    let _home = isolated_temp_home("f1-streaming-probe-after-key-mark");
+    let sse = "data: {\"id\":\"served-by-probe\"}\n\ndata: [DONE]\n\n".to_string();
+    let (upstream_url, log) = spawn_mock_upstream(move |captured| match auth_header_of(captured) {
+        Some("Bearer sk-f1-a") => {
+            MockReply::Json(401, json!({"error": {"message": "invalid api key"}}))
+        }
+        Some("Bearer sk-f1-b") => MockReply::Stream(sse.clone()),
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+
+    let now = super::types_config::now_ts();
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-f1-a", true),
+                pool_key_marked(
+                    "key-b",
+                    "B",
+                    "sk-f1-b",
+                    true,
+                    "quota",
+                    now.saturating_sub(120),
+                    "weekly limit",
+                ),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let ordered = live_candidates("local-a");
+    let body = serde_json::to_vec(&json!({"model": "local-a", "stream": true})).unwrap();
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
+    let capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        &ordered,
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await
+    .expect("streaming attempt");
+    drop(server);
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    let text = String::from_utf8_lossy(&out).into_owned();
+
+    assert_eq!(
+        capture.status, 200,
+        "the eligible 60-second quota probe must serve the stream: {text}"
+    );
+    assert!(
+        text.contains("served-by-probe"),
+        "the probe's SSE stream must reach the client: {text}"
+    );
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        2,
+        "the marked key is attempted, then the eligible probe key: {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(auth_header_of(&captured[0]), Some("Bearer sk-f1-a"));
+    assert_eq!(auth_header_of(&captured[1]), Some("Bearer sk-f1-b"));
+    assert_eq!(
+        attempts.len(),
+        2,
+        "one key-scoped failure plus the served probe continuation"
+    );
+    assert_eq!(attempts[0].status, 401);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
+
+    // A successful probe clears the probed key's runtime mark.
+    let key_b = on_disk_key_entry("p1", "key-b").expect("key-b must stay persisted");
+    assert_eq!(
+        key_b["auto_marked"], false,
+        "a successful probe must clear the key mark: {key_b}"
     );
 }

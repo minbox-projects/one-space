@@ -756,3 +756,134 @@ async fn ac009_noop_success_settlement_does_not_rewrite_the_file() {
     assert_eq!(row.consecutive_failures, 0);
     assert_eq!(row.last_error_at, None);
 }
+
+/// F2 / REQ-001 / REQ-002 / AC-008: a reader that parses the pre-write bytes
+/// while a writer publishes new bytes must not pin the stale configuration
+/// under the new file identity. The next read must observe the published
+/// content and a later serialized mutation must persist on top of it.
+#[test]
+fn read_while_a_publish_races_never_pins_a_stale_configuration() {
+    let _home = temp_home("f2-read-write-cache-pinning");
+    let path = config_path().expect("config path");
+
+    let rounds = 150usize;
+    // Encrypt the pre-write and published configurations once: the writer's
+    // atomic publish is then far faster than the reader's decrypt + parse of the
+    // large fixture, so the publish reliably lands inside the reader's parse
+    // window and a stale pin becomes overwhelmingly likely on the defect.
+    let put = |include_victim: bool| -> String {
+        let password = crate::crypto::get_or_init_master_password().expect("master password");
+        let json = serde_json::to_string(&f2_large_config(include_victim)).expect("serialize config");
+        crate::crypto::encrypt(&json, &password).expect("encrypt config")
+    };
+    let old_bytes = put(true);
+    let new_bytes = Arc::new(put(false));
+    let tmp = path.with_file_name("ai_gateway.f2.tmp");
+
+    for round in 0..rounds {
+        fs::write(&path, &old_bytes).expect("seed pre-write bytes");
+        set_file_mtime(&path, 1_900_000_000 + round as u64);
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let reader_barrier = barrier.clone();
+        let reader = std::thread::spawn(move || {
+            reader_barrier.wait();
+            let _ = read_config();
+        });
+        let writer_barrier = barrier.clone();
+        let writer_path = path.clone();
+        let writer_tmp = tmp.clone();
+        let writer_bytes = new_bytes.clone();
+        let writer = std::thread::spawn(move || {
+            writer_barrier.wait();
+            // A short delay lets the reader read the pre-write bytes and start
+            // its (large) decrypt + parse before the atomic rename lands.
+            std::thread::sleep(Duration::from_millis(1));
+            fs::write(&writer_tmp, writer_bytes.as_bytes()).expect("write published bytes");
+            fs::rename(&writer_tmp, &writer_path).expect("publish atomically");
+        });
+        reader.join().expect("reader thread must not panic");
+        writer.join().expect("writer thread must not panic");
+
+        let observed = read_config()
+            .unwrap_or_else(|error| panic!("round {round}: config must stay readable: {error}"));
+        let victim_present = observed.providers.iter().any(|provider| provider.id == "victim");
+        let marker_present = observed
+            .providers
+            .iter()
+            .any(|provider| provider.id == "published-marker");
+        assert!(
+            !victim_present && marker_present,
+            "round {round}: a reader racing a publish must not pin the pre-write configuration \
+             under the post-write identity (victim={victim_present}, marker={marker_present})"
+        );
+
+        // A later serialized mutation must persist on the published state.
+        crate::ai_gateway::storage::modify_config::<()>(|config| {
+            config
+                .keys
+                .push(key_named(&format!("f2-probe-{round}"), "probe"));
+            Ok((true, ()))
+        })
+        .unwrap_or_else(|error| panic!("round {round}: later write must persist: {error}"));
+        let after = read_config().expect("config must stay readable after the later write");
+        assert!(
+            !after.providers.iter().any(|provider| provider.id == "victim"),
+            "round {round}: a stale pre-write configuration must not resurface after a later write"
+        );
+        assert!(
+            after
+                .keys
+                .iter()
+                .any(|item| item.id == format!("f2-probe-{round}")),
+            "round {round}: the later write must persist"
+        );
+    }
+}
+
+/// A large raw configuration `Value`: always the filler providers, and the
+/// `victim` + `published-marker` provider chosen by `include_victim`.
+fn f2_large_config(include_victim: bool) -> Value {
+    let mut providers = Vec::new();
+    if include_victim {
+        providers.push(json!({
+            "id": "victim",
+            "name": "V".repeat(8_000),
+            "base_url": "https://victim.example.invalid/v1",
+            "protocol": "chat_completions",
+            "keys": [pool_key("key-default", "Default", "sk-victim", true)],
+            "mappings": [],
+        }));
+    } else {
+        providers.push(json!({
+            "id": "published-marker",
+            "name": "P".repeat(8_000),
+            "base_url": "https://published.example.invalid/v1",
+            "protocol": "chat_completions",
+            "keys": [pool_key("key-default", "Default", "sk-published", true)],
+            "mappings": [],
+        }));
+    }
+    for index in 0..48 {
+        providers.push(json!({
+            "id": format!("filler-{index}"),
+            "name": format!("{}{index}", "F".repeat(8_000)),
+            "base_url": format!("https://filler-{index}.example.invalid/v1"),
+            "protocol": "chat_completions",
+            "keys": [pool_key("key-default", "Default", "sk-filler", true)],
+            "mappings": [],
+        }));
+    }
+    json!({
+        "schema_version": GATEWAY_CONFIG_SCHEMA_VERSION,
+        "enabled": true,
+        "providers": providers,
+        "keys": [{
+            "id": "k1",
+            "label": "k1",
+            "value": "local-key",
+            "enabled": true,
+            "created_at": 1,
+        }],
+    })
+}

@@ -89,11 +89,31 @@ fn cached_config(path: &Path) -> Option<GatewayConfig> {
 }
 
 /// Publish `config` into the read cache under the file's current identity.
+///
+/// Writers that just published (`write_config`, `modify_config`, the migration
+/// branch under the write lock) call this so the cache is keyed by the identity
+/// of the bytes they wrote.
 fn store_cached_config(path: &Path, config: &GatewayConfig) {
-    let Some((len, modified)) = file_identity(path) else {
+    let Some(identity) = file_identity(path) else {
         invalidate_cached_config(path);
         return;
     };
+    store_cached_config_at(path, identity, config);
+}
+
+/// Publish `config` into the read cache under a caller-supplied identity.
+///
+/// A reader that parsed the file without the write lock passes the identity it
+/// captured *before* reading, so when a concurrent publication changes the file
+/// between the read and this store the entry is keyed by the stale identity: the
+/// next read sees the identity mismatch and re-reads the fresh bytes instead of
+/// pinning the pre-write configuration under the newer identity.
+fn store_cached_config_at(
+    path: &Path,
+    identity: (u64, Option<std::time::SystemTime>),
+    config: &GatewayConfig,
+) {
+    let (len, modified) = identity;
     let mut cache = CONFIG_READ_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -122,6 +142,11 @@ fn read_config_file(path: &PathBuf) -> Result<Option<GatewayConfig>, String> {
     if let Some(config) = cached_config(path) {
         return Ok(Some(config));
     }
+    // Capture the identity of the bytes this read is about to parse, before
+    // reading them. A concurrent publication may replace the file between the
+    // read and the cache store; keying the parsed bytes by this pre-read
+    // identity keeps a stale entry from being pinned under the new identity.
+    let identity = file_identity(path);
     let Some((config, needs_migration)) = read_config_locked(path)? else {
         invalidate_cached_config(path);
         return Ok(None);
@@ -147,7 +172,10 @@ fn read_config_file(path: &PathBuf) -> Result<Option<GatewayConfig>, String> {
         }
         return Ok(Some(latest));
     }
-    store_cached_config(path, &config);
+    match identity {
+        Some(identity) => store_cached_config_at(path, identity, &config),
+        None => invalidate_cached_config(path),
+    }
     Ok(Some(config))
 }
 
