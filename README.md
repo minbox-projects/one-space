@@ -69,12 +69,6 @@ OneSpace 是一个面向开发者的 macOS 桌面工作台，用来把 AI CLI、
 - `Fish Pond` 内置 `CyberMuyu`、`Snake`、`Tetris`、`Sudoku`、`Minesweeper`、`Wordle`
 - 入口位于主界面底部鱼形图标，不是独立侧边栏页面
 
-### Experimental Areas
-
-- `Cloud Drive` 当前仍是实验性/模拟状态
-- 目前主要完成了 token 保存、基础浏览器界面和示例文件列表流程
-- 不应把它视为完整可用的阿里云盘客户端
-
 ## 当前实现特点
 
 - macOS-first：会话、SSH、应用启动依赖原生终端和 `open`/AppleScript 工作流

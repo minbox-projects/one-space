@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeToolboxCommand } from "@/toolbox/invoke";
 
 export const SUPPORTED_ROLES = [
   "backend",
@@ -81,100 +81,61 @@ export interface ProfileActivationReport {
   message?: string;
 }
 
-export async function listProfiles(
-  homeOverride?: string,
-): Promise<ProfileSummary[]> {
-  return invoke<ProfileSummary[]>("ai_workflow_list_profiles", {
-    homeOverride,
-  });
+export async function listProfiles(): Promise<ProfileSummary[]> {
+  return invokeToolboxCommand<ProfileSummary[]>("ai_workflow_list_profiles");
 }
 
-export async function getProfileMatrix(
-  name: string,
-  homeOverride?: string,
-): Promise<ProfileMatrix> {
-  return invoke<ProfileMatrix>("ai_workflow_get_profile_matrix", {
+export async function getProfileMatrix(name: string): Promise<ProfileMatrix> {
+  return invokeToolboxCommand<ProfileMatrix>("ai_workflow_get_profile_matrix", {
     name,
-    homeOverride,
   });
 }
 
-export async function getModelSources(
-  homeOverride?: string,
-): Promise<ModelSourcesResult> {
-  return invoke<ModelSourcesResult>("ai_workflow_get_model_sources", {
-    homeOverride,
-  });
-}
-
-export async function saveAndActivateProfile(
-  name: string,
-  matrix: AgentMatrixRow[],
-  homeOverride?: string,
-): Promise<ProfileActivationReport> {
-  return invoke<ProfileActivationReport>(
-    "ai_workflow_save_and_activate_profile",
-    {
-      name,
-      matrix,
-      homeOverride,
-    },
-  );
+export async function getModelSources(): Promise<ModelSourcesResult> {
+  return invokeToolboxCommand<ModelSourcesResult>("ai_workflow_get_model_sources");
 }
 
 export async function saveProfile(
   name: string,
   matrix: AgentMatrixRow[],
-  homeOverride?: string,
 ): Promise<void> {
-  return invoke<void>("ai_workflow_save_profile", {
+  return invokeToolboxCommand<void>("ai_workflow_save_profile", {
     name,
     matrix,
-    homeOverride,
   });
 }
 
 export async function activateProfile(
   name: string,
-  homeOverride?: string,
 ): Promise<ProfileActivationReport> {
-  return invoke<ProfileActivationReport>("ai_workflow_activate_profile", {
+  return invokeToolboxCommand<ProfileActivationReport>("ai_workflow_activate_profile", {
     name,
-    homeOverride,
   });
 }
 
 export async function createProfile(
   name: string,
   copyFrom?: string,
-  homeOverride?: string,
 ): Promise<void> {
-  return invoke<void>("ai_workflow_create_profile", {
+  return invokeToolboxCommand<void>("ai_workflow_create_profile", {
     name,
     copyFrom,
-    homeOverride,
   });
 }
 
-export async function deleteProfile(
-  name: string,
-  homeOverride?: string,
-): Promise<void> {
-  return invoke<void>("ai_workflow_delete_profile", {
+export async function deleteProfile(name: string): Promise<void> {
+  return invokeToolboxCommand<void>("ai_workflow_delete_profile", {
     name,
-    homeOverride,
   });
 }
 
 export async function renameProfile(
   oldName: string,
   newName: string,
-  homeOverride?: string,
 ): Promise<void> {
-  return invoke<void>("ai_workflow_rename_profile", {
+  return invokeToolboxCommand<void>("ai_workflow_rename_profile", {
     oldName,
     newName,
-    homeOverride,
   });
 }
 

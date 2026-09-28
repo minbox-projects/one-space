@@ -83,7 +83,7 @@ export function SshTunnelGroupManagerDialog({
       {open ? (
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{t("sshTunnelManageGroups", "管理分组")}</DialogTitle>
+            <DialogTitle>{t("sshTunnelManageGroups")}</DialogTitle>
             <DialogDescription>
               {t(
                 "sshTunnelManageGroupsDesc",
@@ -95,17 +95,14 @@ export function SshTunnelGroupManagerDialog({
           <div className="space-y-4">
             <div className="rounded-xl border bg-muted/20 p-4">
               <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                {t("sshTunnelCreateGroup", "新建分组")}
+                {t("sshTunnelCreateGroup")}
               </div>
               <div className="mt-3 flex gap-2">
                 <input
                   type="text"
                   value={newName}
                   onChange={(event) => setNewName(event.target.value)}
-                  placeholder={t(
-                    "sshTunnelGroupNamePlaceholder",
-                    "例如：开发环境",
-                  )}
+                  placeholder={t("sshTunnelGroupNamePlaceholder")}
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 />
                 <button
@@ -136,7 +133,7 @@ export function SshTunnelGroupManagerDialog({
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="text-sm font-semibold">
                           {group.is_default
-                            ? t("sshTunnelDefaultGroup", "默认分组")
+                            ? t("sshTunnelDefaultGroup")
                             : group.name}
                         </span>
                         {group.is_default ? (

@@ -1,31 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Copy, FilePlus2, RefreshCw, ShieldAlert, Square, Trash2 } from "lucide-react";
+import { Check, Copy, FilePlus2, RefreshCw, ShieldAlert, Square, Trash2 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { useTranslation } from "react-i18next";
+import { ToolErrorBanner } from "@/components/toolbox/ToolErrorBanner";
+import { useToast } from "./ToastProvider";
 import {
   fileSharingNetworks,
   fileSharingStart,
   fileSharingStatus,
   fileSharingStop,
-  subscribeFileSharingUpdates,
   type FileSharingNetwork,
   type FileSharingSnapshot,
 } from "@/lib/fileSharing";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { getToolboxTool } from "@/toolbox/registry";
+import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
+import { useTauriEvent } from "@/toolbox/useTauriEvent";
 
 const EMPTY_SNAPSHOT: FileSharingSnapshot = {
   running: false,
   sessionId: null,
-  address: null,
-  port: null,
   shareUrl: null,
   startedAt: null,
-  stoppedAt: null,
   files: [],
   transfers: [],
   summary: { activeTransfers: 0, completedTransfers: 0, failedTransfers: 0, cancelledTransfers: 0, bytesSent: 0, droppedTransferRecords: 0 },
-  lastError: null,
 };
 
 function formatBytes(value: number) {
@@ -40,7 +39,15 @@ function messageFor(error: unknown) {
 
 export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
-  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("file-sharing");
+  const { pushToast } = useToast();
+  const { icon: ToolIcon, iconClassName } = getToolboxTool("file-sharing")!;
+  const { copied, copy: copyToClipboard } = useCopyToClipboard({
+    onError: () =>
+      pushToast({
+        title: t("fileSharingCopyFailed", "Could not copy the sharing link."),
+        kind: "error",
+      }),
+  });
   const isTauri = "__TAURI_INTERNALS__" in window;
   const [paths, setPaths] = useState<string[]>([]);
   const [networks, setNetworks] = useState<FileSharingNetwork[]>([]);
@@ -76,15 +83,15 @@ export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
     if (!isTauri) return;
     void refreshNetworks();
     if (isVisible) void refreshStatus();
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void subscribeFileSharingUpdates(() => {
-      if (!disposed) void refreshStatus();
-    }).then((fn) => {
-      if (disposed) fn(); else unlisten = fn;
-    }).catch(() => {});
-    return () => { disposed = true; unlisten?.(); };
   }, [isTauri, isVisible, refreshNetworks, refreshStatus]);
+
+  useTauriEvent(
+    "file-sharing-updated",
+    () => {
+      void refreshStatus();
+    },
+    isVisible,
+  );
 
   const chooseFiles = async () => {
     if (!isTauri) return;
@@ -109,7 +116,6 @@ export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
   };
 
   const stop = async () => {
-    if (snapshot.summary.activeTransfers > 0 && !window.confirm(t("fileSharingStopActiveConfirm", "Stopping now will interrupt active downloads. Continue?"))) return;
     requestVersion.current += 1;
     setLoading(true);
     try {
@@ -123,7 +129,7 @@ export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
 
   const copyLink = async () => {
     if (!snapshot.shareUrl) return;
-    try { await navigator.clipboard.writeText(snapshot.shareUrl); } catch { setError(t("fileSharingCopyFailed", "Could not copy the sharing link.")); }
+    await copyToClipboard(snapshot.shareUrl);
   };
 
   if (!isTauri) {
@@ -141,13 +147,13 @@ export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
           <p className="text-sm text-muted-foreground">{t("fileSharingDesc", "Share selected files over a trusted local network.")}</p>
         </div>
       </div>
-      {error ? <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive break-words">{error}</div> : null}
+      <ToolErrorBanner message={error} />
       {snapshot.running ? (
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
           <div className="flex items-start gap-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200"><ShieldAlert className="mt-0.5 h-5 w-5 shrink-0" />{t("fileSharingWarning", "Use this HTTP link only on a trusted local network. Anyone with the link can download these files while sharing is active.")}</div>
           <div className="grid gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
             {snapshot.shareUrl ? <div className="flex justify-center rounded-md border bg-white p-4"><QRCodeSVG value={snapshot.shareUrl} size={180} /></div> : null}
-            <div className="min-w-0 space-y-3"><div className="rounded-md border p-3 font-mono text-sm break-all">{snapshot.shareUrl}</div><button type="button" onClick={copyLink} className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm hover:bg-muted"><Copy className="h-4 w-4" />{t("fileSharingCopyLink", "Copy link")}</button><p className="text-sm text-muted-foreground">{t("fileSharingStarted", "Started")}: {snapshot.startedAt ? new Date(snapshot.startedAt).toLocaleString() : "-"}</p></div>
+            <div className="min-w-0 space-y-3"><div className="rounded-md border p-3 font-mono text-sm break-all">{snapshot.shareUrl}</div><button type="button" onClick={copyLink} className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm hover:bg-muted">{copied ? <Check className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}{t("fileSharingCopyLink", "Copy link")}</button><p className="text-sm text-muted-foreground">{t("fileSharingStarted", "Started")}: {snapshot.startedAt ? new Date(snapshot.startedAt).toLocaleString() : "-"}</p></div>
           </div>
           <section><h3 className="mb-2 text-sm font-semibold">{t("fileSharingFiles", "Shared files")} ({snapshot.files.length})</h3><div className="max-h-48 overflow-y-auto rounded-md border">{snapshot.files.map((file) => <div key={file.id} className="flex items-center justify-between gap-4 border-b p-3 text-sm last:border-0"><span className="min-w-0 truncate" title={file.name}>{file.name}</span><span className="shrink-0 text-muted-foreground">{formatBytes(file.size)}</span></div>)}</div></section>
           <section><h3 className="mb-2 text-sm font-semibold">{t("fileSharingTransfers", "Transfers")}</h3><div className="max-h-48 overflow-y-auto rounded-md border">{snapshot.transfers.length ? snapshot.transfers.map((transfer) => <div key={transfer.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b p-3 text-sm last:border-0"><span className="truncate">{transfer.fileName} · {transfer.clientAddress}</span><span>{t(`fileSharingState_${transfer.state}`, transfer.state)} · {formatBytes(transfer.bytesSent)}</span></div>) : <p className="p-3 text-sm text-muted-foreground">{t("fileSharingNoTransfers", "No transfers yet.")}</p>}</div></section>

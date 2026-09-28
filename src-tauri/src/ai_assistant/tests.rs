@@ -35,7 +35,7 @@ fn test_agent() -> AgentDefinition {
         tool_policy: AgentToolPolicy {
             web_search: true,
             workspace_read: true,
-            notes_search: false,
+            ..Default::default()
         },
         knowledge_base_ids: vec!["kb-product".to_string()],
         mcp_server_ids: vec!["mcp-exa".to_string(), "mcp-context7".to_string()],
@@ -160,13 +160,69 @@ fn builtin_tools_do_not_include_legacy_web_search_tool() {
     let tools = build_builtin_tools(&AgentToolPolicy {
         web_search: true,
         workspace_read: true,
-        notes_search: true,
+        ..Default::default()
     });
     let names = tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
 
     assert!(names.contains(&"workspace_read".to_string()));
-    assert!(names.contains(&"notes_search".to_string()));
     assert!(!names.contains(&"web_search".to_string()));
+}
+
+#[test]
+fn builtin_tools_match_the_withdrawn_capability_contract() {
+    const EXPECTED_BUILTIN_TOOL_NAMES: [&str; 1] = ["workspace_read"];
+
+    let names = default_agents()
+        .into_iter()
+        .flat_map(|agent| build_builtin_tools(&agent.tool_policy))
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+
+    let expected = EXPECTED_BUILTIN_TOOL_NAMES
+        .iter()
+        .map(|name| name.to_string())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        names, expected,
+        "built-in tools must match the post-withdrawal contract exactly: {names:?}"
+    );
+}
+
+#[test]
+fn default_agent_capability_snapshot_matches_the_withdrawn_contract() {
+    const EXPECTED_CAPABILITY_KEYS: [&str; 5] = [
+        "knowledge_base_ids",
+        "mcp_server_ids",
+        "memory_enabled",
+        "web_search",
+        "workspace_read",
+    ];
+
+    let agent = default_agents()
+        .into_iter()
+        .next()
+        .expect("a default agent is always seeded");
+    let capability = capability_snapshot_from_agent(Some(&agent), false);
+    let serialized = serde_json::to_value(&capability).expect("serialize capability snapshot");
+
+    let mut keys = serialized
+        .as_object()
+        .expect("capability snapshot serializes to a JSON object")
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    keys.sort();
+
+    let expected = EXPECTED_CAPABILITY_KEYS
+        .iter()
+        .map(|key| key.to_string())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        keys, expected,
+        "capability snapshot must advertise exactly the post-withdrawal keys: {serialized}"
+    );
 }
 
 #[test]

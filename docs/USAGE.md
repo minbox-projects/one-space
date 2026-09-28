@@ -648,7 +648,6 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 - `Protocol Router`
 - `File Sharing`
 - `Bookmarks`
-- `Cloud Drive`
 - `Documentation`
 
 这些入口也会参与 Launcher 的内部跳转能力。
@@ -672,7 +671,7 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 - 接收方只能下载，不能上传、浏览目录、打包 ZIP、在线预览或修改发送方文件
 - 同一链接在共享停止前可以被多个设备重复使用；取得完整链接的任何人都能下载本次共享的全部文件
 - HTTP 不提供传输加密，不能防止同一网络中的被动监听；不要在不可信网络中分享敏感文件
-- 共享状态、令牌、文件列表和传输记录只保存在当前 OneSpace 进程内，不写入 Cloud Drive、同步、备份、数据库或配置持久化
+- 共享状态、令牌、文件列表和传输记录只保存在当前 OneSpace 进程内，不写入同步、备份、数据库或配置持久化
 
 停止行为：
 
@@ -878,29 +877,7 @@ Cmd/Ctrl + K
 - 发信 / 快速回复
 - 侧边栏未读数刷新
 
-## 20. Cloud Drive
-
-这一块请务必按当前实现理解。
-
-### 20.1 当前已经完成的部分
-
-- 保存阿里云盘 Refresh Token
-- 连接态切换
-- 文件浏览器界面
-- 面包屑导航
-- 示例目录/文件列表
-
-### 20.2 当前还不应视为正式完工的部分
-
-- 实际云端 API 集成仍是模拟流程
-- 上传/下载按钮目前不应视为完整可用
-- 文档、图片等真实预览能力尚未完成
-
-换句话说：
-
-- 它目前更像实验性占位模块，而不是生产可用的云盘客户端
-
-## 21. Fish Pond
+## 20. Fish Pond
 
 `Fish Pond` 是放松模块，入口在主界面底部鱼形图标。
 
@@ -913,7 +890,7 @@ Cmd/Ctrl + K
 - `Minesweeper`
 - `Wordle`
 
-## 22. Settings
+## 21. Settings
 
 设置页是按标签分区保存的，当前标签包括：
 
@@ -930,7 +907,7 @@ Cmd/Ctrl + K
 - `Appearance`
 - `Security`
 
-### 22.1 Data Storage
+### 21.1 Data Storage
 
 这里可以配置：
 
@@ -952,7 +929,7 @@ Cmd/Ctrl + K
 - `subagents_repository`
 - `ai_news`
 
-### 22.2 News
+### 21.2 News
 
 可配置：
 
@@ -963,20 +940,20 @@ Cmd/Ctrl + K
 - RSS 源列表，可配置多个源并支持编辑、删除、启用和禁用
 - 内置推荐列表，可将 `36Kr`、`开源中国` 加入当前设置草稿
 
-### 22.3 General
+### 21.3 General
 
 目前主要是：
 
 - `Launch at Login`
 
-### 22.4 Updates
+### 21.4 Updates
 
 可配置：
 
 - 自动更新开关
 - 检查更新间隔
 
-### 22.5 Skills 源 / Subagents 源
+### 21.5 Skills 源 / Subagents 源
 
 可配置：
 
@@ -987,7 +964,7 @@ Cmd/Ctrl + K
 - 导入 / 导出 JSON
 - 手动 `Sync Now`
 
-### 22.6 Network Proxy
+### 21.6 Network Proxy
 
 支持：
 
@@ -998,7 +975,7 @@ Cmd/Ctrl + K
 - 连通性测试
 - 周期性可用性检查
 
-### 22.7 Shortcuts
+### 21.7 Shortcuts
 
 当前可录制和保存两个全局快捷键：
 
@@ -1010,7 +987,7 @@ Cmd/Ctrl + K
 - 主窗口：`Alt+Space`
 - Quick AI：`Alt+Shift+A`
 
-### 22.8 AI Terminal
+### 21.8 AI Terminal
 
 这是非常重要的一页，用来控制会话创建体验。
 
@@ -1028,14 +1005,14 @@ Cmd/Ctrl + K
 - Codex：`codex`
 - OpenCode：`opencode`
 
-### 22.9 Appearance
+### 21.9 Appearance
 
 支持：
 
 - 语言切换
 - 主题切换
 
-### 22.10 Security
+### 21.10 Security
 
 支持：
 
@@ -1043,7 +1020,7 @@ Cmd/Ctrl + K
 - 修改主密码
 - 自动生成随机密码
 
-### 22.11 AI Gateway
+### 21.11 AI Gateway
 
 `AI Gateway`（AI 网关）分区只配置请求日志的保留天数：
 
@@ -1051,7 +1028,7 @@ Cmd/Ctrl + K
 - 该分区按分区独立保存与重置，保存与重置只作用于保留天数，不改写其他设置分区的草稿，也不改写网关的服务商、本地 Key 或终端同步配置
 - 每次写入新日志时会永久删除超过保留天数的记录，删除不可恢复；缩短保留天数只影响之后的清理，不追溯修改已记录的历史金额
 
-## 23. 托盘与窗口行为
+## 22. 托盘与窗口行为
 
 OneSpace 默认是“更接近常驻工具”的窗口行为：
 
@@ -1068,7 +1045,7 @@ OneSpace 默认是“更接近常驻工具”的窗口行为：
   - Settings
   - Sync Now
 
-## 24. CLI
+## 23. CLI
 
 命令行说明见：[`docs/CLI.md`](./CLI.md)
 
@@ -1078,7 +1055,7 @@ OneSpace 默认是“更接近常驻工具”的窗口行为：
 - `onespace resume ...` 用于从任意终端统一恢复已保存会话
 - `onespace env ...` 用于查看或切换 OneSpace 记录的活动环境绑定
 
-## 25. 常见问题
+## 24. 常见问题
 
 ### Q1：终端提示找不到 `onespace`
 
@@ -1131,14 +1108,7 @@ export PATH="$HOME/.local/bin:$PATH"
 3. 关键词是否过窄，导致 RSS 条目被本地过滤
 4. RSS 源是否临时不可用或返回错误状态
 
-### Q7：Cloud Drive 为什么看起来像“半成品”
-
-因为当前实现确实仍是实验性/模拟阶段：
-
-- UI 已经搭好
-- 真实云盘能力还没全部接入
-
-### Q8：macOS 提示 “OneSpace 已损坏”
+### Q7：macOS 提示 “OneSpace 已损坏”
 
 执行：
 

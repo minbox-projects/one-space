@@ -6,14 +6,14 @@ import {
   MORE_TOOLS_ORDER_KEY,
   writeSavedOrder,
 } from "@/lib/launcherToolOrder";
-import { LAUNCHER_TOOL_VISIBILITY_KEY } from "@/lib/launcherToolVisibility";
+import {
+  LAUNCHER_TOOL_VISIBILITY_KEY,
+  LAUNCHER_TOOL_VISIBILITY_UPDATED_EVENT,
+} from "@/lib/launcherToolVisibility";
 import { renderWithProviders } from "@/test/mocks/render";
 
 vi.mock("./Bookmarks", () => ({
   Bookmarks: () => <div>Bookmarks detail</div>,
-}));
-vi.mock("./CloudDrive", () => ({
-  CloudDrive: () => <div>Cloud Drive detail</div>,
 }));
 vi.mock("./SshServers", () => ({
   SshServers: () => <div>SSH Servers detail</div>,
@@ -40,7 +40,12 @@ vi.mock("./ShortLinkTool", () => ({
   ShortLinkTool: () => <div>Short Link detail</div>,
 }));
 vi.mock("./FileSharingTool", () => ({
-  FileSharingTool: () => <div>File Sharing detail</div>,
+  FileSharingTool: ({ isVisible }: { isVisible?: boolean }) => (
+    <div>
+      File Sharing detail
+      <span data-testid="file-sharing-is-visible">{String(isVisible)}</span>
+    </div>
+  ),
 }));
 vi.mock("./JttDataParserTool", () => ({
   JttDataParserTool: ({ initialTab }: { initialTab?: string }) => (
@@ -53,6 +58,32 @@ vi.mock("./AiWorkflowModelSwitcher", () => ({
   AiWorkflowModelSwitcher: () => <div>AI Workflow Model Switcher detail</div>,
 }));
 
+
+type RegistryToolDescriptor = {
+  id: string;
+  surfaces: readonly string[];
+};
+
+type RegistryModule = {
+  TOOLBOX_TOOLS: readonly RegistryToolDescriptor[];
+  listToolboxTools: (surface: string) => RegistryToolDescriptor[];
+  getToolboxTool: (id: string) => RegistryToolDescriptor | undefined;
+};
+
+/**
+ * Loaded lazily so the task-001 guards in this suite still run while the
+ * registry module is unavailable.
+ */
+async function loadRegistry(): Promise<RegistryModule> {
+  const specifier = ["@/toolbox", "registry"].join("/");
+  return (await import(/* @vite-ignore */ specifier)) as RegistryModule;
+}
+
+/** Hub ids straight from the registry so no parallel hand-maintained list exists. */
+async function registryHubIds(): Promise<string[]> {
+  const registry = await loadRegistry();
+  return registry.listToolboxTools("hub").map((tool) => tool.id);
+}
 
 describe("MoreToolsHub", () => {
   beforeEach(() => {
@@ -83,7 +114,6 @@ describe("MoreToolsHub", () => {
     );
 
     expect(screen.getByText("Bookmarks detail")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Cloud Drive|云盘/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Back to tools|返回工具列表/ }));
     expect(onBack).toHaveBeenCalledOnce();
@@ -194,7 +224,7 @@ describe("MoreToolsHub", () => {
   });
 
 
-  it("按 md5Encryption 可见性隐藏 MD5 卡片但保留直接详情入口", () => {
+  it("忽略遗留 md5Encryption 记录并在网格中保留 MD5 卡片", () => {
     localStorage.setItem(
       LAUNCHER_TOOL_VISIBILITY_KEY,
       JSON.stringify({ md5Encryption: false }),
@@ -204,8 +234,8 @@ describe("MoreToolsHub", () => {
     );
 
     expect(
-      screen.queryByRole("button", { name: /MD5 Encryption|MD5 加密/ }),
-    ).not.toBeInTheDocument();
+      screen.getByTestId("more-tool-card-md5-encryption"),
+    ).toBeInTheDocument();
 
     rerender(
       <MoreToolsHub
@@ -219,12 +249,61 @@ describe("MoreToolsHub", () => {
       screen.getByRole("switch", {
         name: /Show in Launcher|在启动台展示/,
       }),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("MD5 网格卡片不随启动台可见性隐藏且详情开关随事件刷新", () => {
+    const onSelectTool = vi.fn();
+    const { rerender } = renderWithProviders(
+      <MoreToolsHub activeTool={null} onSelectTool={onSelectTool} onBack={vi.fn()} />,
+    );
+    expect(
+      screen.getByTestId("more-tool-card-md5-encryption"),
+    ).toBeInTheDocument();
+
+    localStorage.setItem(
+      LAUNCHER_TOOL_VISIBILITY_KEY,
+      JSON.stringify({ "md5-encryption": false }),
+    );
+    act(() => {
+      window.dispatchEvent(new Event(LAUNCHER_TOOL_VISIBILITY_UPDATED_EVENT));
+    });
+
+    // 网格面: Hub 卡片来自注册表 hub surface, 启动台可见性不得隐藏它。
+    expect(
+      screen.getByTestId("more-tool-card-md5-encryption"),
+    ).toBeInTheDocument();
+
+    // 详情面: 同一份可见性状态驱动“在启动台展示”开关, 无需重挂载。
+    rerender(
+      <MoreToolsHub
+        activeTool="md5-encryption"
+        onSelectTool={onSelectTool}
+        onBack={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("switch", { name: /Show in Launcher|在启动台展示/ }),
     ).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("Hub 隐藏时将 isVisible=false 传给当前活动工具", () => {
+    renderWithProviders(
+      <MoreToolsHub
+        activeTool="file-sharing"
+        onSelectTool={vi.fn()}
+        onBack={vi.fn()}
+        {...({ isVisible: false } as Record<string, unknown>)}
+      />,
+    );
+
+    expect(screen.getByTestId("file-sharing-is-visible")).toHaveTextContent(
+      "false",
+    );
   });
 
   it.each([
     "bookmarks",
-    "cloud",
     "ssh",
     "ssh-tunnels",
     "protocol-router",
@@ -256,6 +335,9 @@ describe("MoreToolsHub", () => {
 
   it("在 MD5 详情中持久化唯一可见性字段", async () => {
     const user = userEvent.setup();
+    const registry = await loadRegistry();
+    const md5Tool = registry.getToolboxTool("md5-encryption");
+    expect(md5Tool).toBeDefined();
     renderWithProviders(
       <MoreToolsHub
         activeTool="md5-encryption"
@@ -269,7 +351,7 @@ describe("MoreToolsHub", () => {
     );
     expect(
       JSON.parse(localStorage.getItem(LAUNCHER_TOOL_VISIBILITY_KEY) || "{}"),
-    ).toMatchObject({ md5Encryption: false });
+    ).toMatchObject({ [md5Tool!.id]: false });
   });
 
   it("目录卡片不再渲染辅助工具或启动台标签", () => {
@@ -287,7 +369,6 @@ describe("MoreToolsHub", () => {
 
   it.each([
     "bookmarks",
-    "cloud",
     "ssh",
     "ssh-tunnels",
     "protocol-router",
@@ -479,7 +560,14 @@ describe("MoreToolsHub", () => {
       vi.useRealTimers();
     });
 
-    it("长按拖拽把手拖拽卡片实时移动位置并持久化，且不显示提示框或完成按钮", () => {
+    it("长按拖拽把手拖拽卡片实时移动位置并持久化，且不显示提示框或完成按钮", async () => {
+      const hubIds = await registryHubIds();
+      const fromIndex = hubIds.indexOf("bookmarks");
+      const toIndex = hubIds.indexOf("ssh");
+      const expectedOrder = [...hubIds];
+      const [moved] = expectedOrder.splice(fromIndex, 1);
+      expectedOrder.splice(toIndex, 0, moved);
+
       vi.useFakeTimers();
       renderWithProviders(
         <MoreToolsHub
@@ -503,30 +591,20 @@ describe("MoreToolsHub", () => {
         pointerId: 1,
       });
 
-      expect(cardOrder().slice(0, 3)).toEqual(["cloud", "ssh", "bookmarks"]);
+      expect(cardOrder()).toEqual(expectedOrder);
       expect(
         JSON.parse(localStorage.getItem(MORE_TOOLS_ORDER_KEY) || "[]"),
-      ).toEqual([
-        "cloud",
-        "ssh",
-        "bookmarks",
-        "ssh-tunnels",
-        "protocol-router",
-        "random-password",
-        "json-parser",
-        "md5-encryption",
-        "short-link",
-        "file-sharing",
-        "jtt-data-parser",
-        "ai-workflow-model-switcher",
-      ]);
+      ).toEqual(expectedOrder);
 
       fireEvent.pointerUp(window, { pointerId: 1 });
       vi.useRealTimers();
     });
 
-    it("渲染时应用已保存的卡片顺序", () => {
-      writeSavedOrder(MORE_TOOLS_ORDER_KEY, ["ssh", "bookmarks", "cloud"]);
+    it("渲染时应用已保存的卡片顺序", async () => {
+      const hubIds = await registryHubIds();
+      const third = hubIds.find((id) => id !== "ssh" && id !== "bookmarks");
+      expect(third).toBeDefined();
+      writeSavedOrder(MORE_TOOLS_ORDER_KEY, ["ssh", "bookmarks", third!]);
       renderWithProviders(
         <MoreToolsHub
           activeTool={null}
@@ -535,7 +613,7 @@ describe("MoreToolsHub", () => {
         />,
       );
 
-      expect(cardOrder().slice(0, 3)).toEqual(["ssh", "bookmarks", "cloud"]);
+      expect(cardOrder().slice(0, 3)).toEqual(["ssh", "bookmarks", third]);
     });
 
     it("短按拖拽把手不触发拖拽，点击卡片直接打开工具", () => {
@@ -582,6 +660,70 @@ describe("MoreToolsHub", () => {
       fireEvent.click(screen.getByTestId("more-tool-card-ssh"));
       expect(onSelectTool).toHaveBeenCalledWith("ssh");
       vi.useRealTimers();
+    });
+  });
+
+  describe("注册表驱动的 hub 面板", () => {
+    it("为注册表 hub 面板的每个工具渲染卡片", async () => {
+      const registry = await loadRegistry();
+      const hubTools = registry.listToolboxTools("hub");
+      expect(hubTools.length).toBeGreaterThan(0);
+
+      renderWithProviders(
+        <MoreToolsHub
+          activeTool={null}
+          onSelectTool={vi.fn()}
+          onBack={vi.fn()}
+        />,
+      );
+
+      for (const tool of hubTools) {
+        expect(
+          screen.getByTestId(`more-tool-card-${tool.id}`),
+        ).toBeInTheDocument();
+      }
+    });
+
+    it("不把非 hub 面板的注册表工具渲染为卡片", async () => {
+      const registry = await loadRegistry();
+      const nonHubTools = registry.TOOLBOX_TOOLS.filter(
+        (tool) => !tool.surfaces.includes("hub"),
+      );
+      expect(nonHubTools.length).toBeGreaterThan(0);
+
+      renderWithProviders(
+        <MoreToolsHub
+          activeTool={null}
+          onSelectTool={vi.fn()}
+          onBack={vi.fn()}
+        />,
+      );
+
+      for (const tool of nonHubTools) {
+        expect(
+          screen.queryByTestId(`more-tool-card-${tool.id}`),
+        ).not.toBeInTheDocument();
+      }
+    });
+
+    it("选择任一 hub 卡片时通知其注册表稳定 id", async () => {
+      const user = userEvent.setup();
+      const registry = await loadRegistry();
+      const onSelectTool = vi.fn();
+
+      renderWithProviders(
+        <MoreToolsHub
+          activeTool={null}
+          onSelectTool={onSelectTool}
+          onBack={vi.fn()}
+        />,
+      );
+
+      for (const tool of registry.listToolboxTools("hub")) {
+        onSelectTool.mockClear();
+        await user.click(screen.getByTestId(`more-tool-card-${tool.id}`));
+        expect(onSelectTool).toHaveBeenCalledWith(tool.id);
+      }
     });
   });
 });

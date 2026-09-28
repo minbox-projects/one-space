@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type Event } from "@tauri-apps/api/event";
 
 export type FileSharingTransferState =
   | "in_progress"
@@ -29,25 +28,17 @@ export type FileSharingFile = {
 
 export type FileSharingTransfer = {
   id: string;
-  fileId: string;
   fileName: string;
   clientAddress: string;
   state: FileSharingTransferState;
-  startedAt: number;
-  finishedAt: number | null;
   bytesSent: number;
-  responseBytes: number;
-  error: string | null;
 };
 
 export type FileSharingSnapshot = {
   running: boolean;
   sessionId: string | null;
-  address: string | null;
-  port: number | null;
   shareUrl: string | null;
   startedAt: number | null;
-  stoppedAt: number | null;
   files: FileSharingFile[];
   transfers: FileSharingTransfer[];
   summary: {
@@ -58,7 +49,6 @@ export type FileSharingSnapshot = {
     bytesSent: number;
     droppedTransferRecords: number;
   };
-  lastError: string | null;
 };
 
 export type FileSharingUpdate = { kind: "session" | "transfer" };
@@ -103,12 +93,4 @@ export function fileSharingStatus() {
 
 export function fileSharingStop() {
   return fileSharingInvoke<FileSharingSnapshot>("file_sharing_stop");
-}
-
-export function subscribeFileSharingUpdates(
-  handler: (payload: FileSharingUpdate) => void,
-) {
-  return listen<FileSharingUpdate>("file-sharing-updated", (event: Event<FileSharingUpdate>) => {
-    handler(event.payload);
-  });
 }

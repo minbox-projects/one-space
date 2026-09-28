@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-09-23-ai-workflow-profile-save-activation.md
-2026-09-23-ai-workflow-profile-save-activation.md: 92160d82377d163f5429ad1529d8954f9b50edbc
-2026-09-23-ai-workflow-profile-save-activation.zh.md: 816ef727c40361b2c5c3d6570663381423b74404
+2026-09-23-ai-workflow-profile-save-activation.md: fae3d856498195131d3e93c58bfa4a255a654ad7
+2026-09-23-ai-workflow-profile-save-activation.zh.md: bfa37a03e89940a080b48999978b326700168d7c

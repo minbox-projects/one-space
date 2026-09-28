@@ -68,7 +68,6 @@ export type SshTunnelRuntimeView = {
 
 export type SshTunnelProbeResult = {
   ok: boolean;
-  mode: SshTunnelForwardMode;
   summary: string;
   message: string;
   last_error?: string | null;

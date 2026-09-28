@@ -12,6 +12,23 @@ import {
 } from "@/test/mocks/tauri";
 import type { TrayMenuNode } from "@/lib/trayMenu";
 
+type RegistryToolDescriptor = {
+  id: string;
+  surfaces: readonly string[];
+};
+
+type RegistryModule = {
+  listToolboxTools: (surface: string) => RegistryToolDescriptor[];
+};
+
+/**
+ * Loaded lazily so this suite still runs while the registry module is absent.
+ */
+async function loadRegistry(): Promise<RegistryModule> {
+  const specifier = ["@/toolbox", "registry"].join("/");
+  return (await import(/* @vite-ignore */ specifier)) as RegistryModule;
+}
+
 type ItemNode = Extract<TrayMenuNode, { kind: "item" }>;
 
 const trayHarness = vi.hoisted(() => ({
@@ -413,6 +430,20 @@ describe("App tray menu integration", () => {
     const model = latestModel();
     expect(findModelItem(model, "toggle-window")).toBeDefined();
     expect(findModelItem(model, "services")).toBeDefined();
+  });
+
+  it("includes every registry tray tool in the applied model", async () => {
+    const registry = await loadRegistry();
+    const trayTools = registry.listToolboxTools("tray");
+    expect(trayTools.length).toBeGreaterThan(0);
+
+    renderApp();
+    await waitForAppliedMenu();
+
+    const model = latestModel();
+    for (const tool of trayTools) {
+      expect(findModelItem(model, tool.id)).toBeDefined();
+    }
   });
 
   it("hides the window from the tray while it is visible", async () => {

@@ -20,6 +20,23 @@ const applyTrayMenu = (
   trayMenuModule as unknown as { applyTrayMenu: ApplyTrayMenu }
 ).applyTrayMenu;
 
+type RegistryToolDescriptor = {
+  id: string;
+  surfaces: readonly string[];
+};
+
+type RegistryModule = {
+  listToolboxTools: (surface: string) => RegistryToolDescriptor[];
+};
+
+/**
+ * Loaded lazily so this suite still runs while the registry module is absent.
+ */
+async function loadRegistry(): Promise<RegistryModule> {
+  const specifier = ["@/toolbox", "registry"].join("/");
+  return (await import(/* @vite-ignore */ specifier)) as RegistryModule;
+}
+
 const nativeMenuMocks = vi.hoisted(() => {
   const menuNew = vi.fn();
   const menuItemNew = vi.fn();
@@ -53,7 +70,6 @@ vi.mock("@tauri-apps/api/tray", () => ({
 
 /** Wording-independent translator: every label is just its key. */
 const KEY_TRANSLATOR = (key: string) => key;
-
 /** Stub that surfaces interpolation options so port/count assertions stay wording-free. */
 const OPTIONS_TRANSLATOR = (
   key: string,
@@ -574,3 +590,28 @@ describe("applyTrayMenu native menu", () => {
     expect(nativeMenuMocks.traySetMenu).toHaveBeenCalled();
   });
 });
+
+describe("registry-derived tray entries", () => {
+  it("keeps every registry tray tool in the More Pages submenu", async () => {
+    const registry = await loadRegistry();
+    const trayTools = registry.listToolboxTools("tray");
+    expect(trayTools.length).toBeGreaterThan(0);
+
+    const morePages = submenuOf(build(), "more-pages");
+    for (const tool of trayTools) {
+      expect(itemById(morePages, tool.id)).toBeDefined();
+    }
+  });
+
+  it("keeps the Notes and Snippets entries present and enabled", async () => {
+    const registry = await loadRegistry();
+    const trayIds = registry.listToolboxTools("tray").map((tool) => tool.id);
+    expect(trayIds).toEqual(expect.arrayContaining(["notes", "snippets"]));
+
+    const morePages = submenuOf(build(), "more-pages");
+    for (const id of ["notes", "snippets"]) {
+      expect(itemById(morePages, id).enabled).toBe(true);
+    }
+  });
+});
+

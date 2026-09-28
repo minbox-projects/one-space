@@ -28,8 +28,8 @@ import {
   Download,
   ShieldAlert,
   Workflow,
-  Loader2,
   GripVertical,
+  type LucideIcon,
 } from "lucide-react";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { useToast } from "./ToastProvider";
@@ -47,7 +47,8 @@ import {
   writeSavedOrder,
 } from "@/lib/launcherToolOrder";
 import { useCardDragReorder } from "@/lib/useCardDragReorder";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
+import { ToolStatusBadge } from "@/components/toolbox/ToolStatusBadge";
+import { listToolboxTools, resolveToolboxText } from "@/toolbox/registry";
 
 interface LauncherItem {
   id: string;
@@ -79,16 +80,7 @@ interface LauncherItemInput {
   trusted?: boolean;
 }
 
-interface LegacyLauncherItem {
-  id?: string;
-  name: string;
-  command: string;
-  type: "app" | "script" | "url" | "folder";
-}
-
-const MIGRATION_MARKER = "onespace_launcher_migrated_v1";
 const SEEDED_MARKER = "onespace_launcher_seeded_v1";
-const LEGACY_STORAGE_KEY = "onespace_launcher_items";
 
 const DEFAULT_LAUNCHER_ITEMS: LauncherItemInput[] = [
   { name: "VS Code", type: "app", target: 'open -a "Visual Studio Code"' },
@@ -96,11 +88,33 @@ const DEFAULT_LAUNCHER_ITEMS: LauncherItemInput[] = [
   { name: "System Settings", type: "app", target: 'open -a "System Settings"' },
 ];
 
-const INTERNAL_TARGETS: Array<{
+type InternalTarget = {
   id: string;
   labelKey: string;
   fallback: string;
-}> = [
+};
+
+/** Launcher-internal toolbox entries are owned by the registry descriptors. */
+const INTERNAL_TOOLBOX_TARGETS = new Map<string, InternalTarget>(
+  listToolboxTools("launcher-internal").map(
+    (tool): [string, InternalTarget] => [
+      tool.id,
+      { id: tool.id, labelKey: tool.labelKey, fallback: tool.id },
+    ],
+  ),
+);
+
+function toolboxInternalTarget(id: string): InternalTarget {
+  const target = INTERNAL_TOOLBOX_TARGETS.get(id);
+  if (!target) {
+    throw new Error(
+      `launcher-internal toolbox target is not registered: ${id}`,
+    );
+  }
+  return target;
+}
+
+const INTERNAL_TARGETS: InternalTarget[] = [
   { id: "launcher", labelKey: "launcher", fallback: "Launcher" },
   {
     id: "ai-sessions",
@@ -124,9 +138,9 @@ const INTERNAL_TARGETS: Array<{
   { id: "protocol-router", labelKey: "protocolRouter", fallback: "Protocol Router" },
   { id: "ai-gateway", labelKey: "aiGateway", fallback: "AI Gateway" },
   { id: "file-sharing", labelKey: "fileSharing", fallback: "File Sharing" },
-  { id: "snippets", labelKey: "snippets", fallback: "Snippets" },
+  toolboxInternalTarget("snippets"),
   { id: "bookmarks", labelKey: "bookmarks", fallback: "Bookmarks" },
-  { id: "notes", labelKey: "notes", fallback: "Notes" },
+  toolboxInternalTarget("notes"),
   { id: "mail", labelKey: "mail", fallback: "Mail" },
   { id: "settings", labelKey: "settings", fallback: "Settings" },
   { id: "documentation", labelKey: "usageDocs", fallback: "Documentation" },
@@ -513,13 +527,11 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         defaultValue: `${summary.autoConnectFailedCount} auto-connect SSH tunnels failed`,
       });
       return (
-        <span
-          className="inline-flex items-center gap-1.5 rounded-full border border-destructive/20 bg-destructive/10 px-2.5 py-1 text-[11px] font-medium text-destructive"
-          aria-label={label}
-          title={label}
-        >
-          <span className="h-2 w-2 rounded-full bg-destructive" />
-          {summary.autoConnectFailedCount}
+        <span aria-label={label} title={label}>
+          <ToolStatusBadge
+            tone="error"
+            label={String(summary.autoConnectFailedCount)}
+          />
         </span>
       );
     }
@@ -530,13 +542,11 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         "SSH tunnels are connecting automatically.",
       );
       return (
-        <span
-          className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-600"
-          aria-label={label}
-          title={label}
-        >
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          {t("launcherSshTunnelConnecting", "Connecting...")}
+        <span aria-label={label} title={label}>
+          <ToolStatusBadge
+            tone="warning"
+            label={t("launcherSshTunnelConnecting", "Connecting...")}
+          />
         </span>
       );
     }
@@ -546,13 +556,11 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       defaultValue: `${summary.connectedCount} SSH tunnels connected`,
     });
     return (
-      <span
-        className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-600"
-        aria-label={label}
-        title={label}
-      >
-        <span className="h-2 w-2 rounded-full bg-emerald-500" />
-        {summary.connectedCount}
+      <span aria-label={label} title={label}>
+        <ToolStatusBadge
+          tone="success"
+          label={String(summary.connectedCount)}
+        />
       </span>
     );
   };
@@ -567,13 +575,11 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         defaultValue: `Protocol router running on port ${status.port} with ${status.route_count} route(s)`,
       });
       return (
-        <span
-          className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-600"
-          aria-label={label}
-          title={label}
-        >
-          <span className="h-2 w-2 rounded-full bg-emerald-500" />
-          {t("launcherProtocolRouterRunning", "Running")}
+        <span aria-label={label} title={label}>
+          <ToolStatusBadge
+            tone="success"
+            label={t("launcherProtocolRouterRunning", "Running")}
+          />
         </span>
       );
     }
@@ -585,241 +591,102 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         })
       : t("launcherProtocolRouterDisabledAria", "Protocol router is disabled");
     return (
-      <span
-        className="inline-flex items-center gap-1.5 rounded-full border border-muted-foreground/20 bg-muted px-2.5 py-1 text-[11px] font-medium text-muted-foreground"
-        aria-label={label}
-        title={label}
-      >
-        <span className="h-2 w-2 rounded-full bg-muted-foreground" />
-        {status.enabled
-          ? t("launcherProtocolRouterStopped", "Stopped")
-          : t("launcherProtocolRouterDisabled", "Disabled")}
+      <span aria-label={label} title={label}>
+        <ToolStatusBadge
+          tone="neutral"
+          label={
+            status.enabled
+              ? t("launcherProtocolRouterStopped", "Stopped")
+              : t("launcherProtocolRouterDisabled", "Disabled")
+          }
+        />
       </span>
     );
   };
 
   const quickInternalTools = useMemo(() => {
-    const shortLinkSearchText = ["en", "zh"]
-      .flatMap((language) => {
-        const translate = i18n.getFixedT(language);
-        return [
-          translate("shortLink", "Short Link"),
-          translate(
-            "shortLinkLauncherDesc",
-            "Create a TinyURL short link.",
-          ),
-        ];
-      })
-      .join(" ");
-    const allTools = [
-      {
-        id: "quick-bookmarks",
-        name: t("bookmarks", "Bookmarks"),
-        description: t(
-          "launcherBookmarksDesc",
-          "Save the links and resources you revisit often.",
+    type QuickToolEntry = {
+      id: string;
+      name: string;
+      description: string;
+      target: string;
+      icon: LucideIcon;
+      iconClassName: string;
+      statusBadge: React.ReactNode;
+      visible: boolean;
+      aliasOnly?: boolean;
+      searchText?: string;
+    };
+
+    const entries: QuickToolEntry[] = [];
+
+    for (const tool of listToolboxTools("launcher-quick")) {
+      const bilingualSearchText = ["en", "zh"]
+        .flatMap((language) => {
+          const translate = i18n.getFixedT(language);
+          return [
+            resolveToolboxText(
+              tool.labelText,
+              tool.labelKey,
+              translate,
+              language,
+            ),
+            resolveToolboxText(
+              tool.descriptionText,
+              tool.descriptionKey,
+              translate,
+              language,
+            ),
+          ];
+        })
+        .join(" ");
+
+      entries.push({
+        id: `quick-${tool.id}`,
+        name: resolveToolboxText(tool.labelText, tool.labelKey, t),
+        description: resolveToolboxText(
+          tool.descriptionText,
+          tool.descriptionKey,
+          t,
         ),
-        target: "bookmarks",
-        ...getMoreToolPresentation("bookmarks"),
-        statusBadge: null,
-        visible: toolVisibility.bookmarks,
-      },
-      {
-        id: "quick-cloud",
-        name: t("cloud", "Cloud Drive"),
-        description: t(
-          "launcherCloudDriveDesc",
-          "Browse and organize synced cloud files.",
-        ),
-        target: "cloud",
-        ...getMoreToolPresentation("cloud"),
-        statusBadge: null,
-        visible: toolVisibility.cloud,
-      },
-      {
-        id: "quick-ssh",
-        name: t("sshServers", "SSH Servers"),
-        description:
-          t(
-            "launcherSshServersDesc",
-            "Open saved SSH hosts, history, and custom connections quickly.",
-          ),
-        target: "ssh",
-        ...getMoreToolPresentation("ssh"),
-        statusBadge: null,
-        visible: toolVisibility.ssh,
-      },
-      {
-        id: "quick-ssh-tunnels",
-        name: t("sshTunnels", "SSH Tunnels"),
-        description:
-          t(
-            "launcherSshTunnelsDesc",
-            "Manage local, remote, and dynamic SOCKS5 SSH tunnels with built-in connectivity checks.",
-          ),
-        target: "ssh-tunnels",
-        ...getMoreToolPresentation("ssh-tunnels"),
-        statusBadge: renderSshTunnelStatus(sshTunnelSummary),
-        visible: toolVisibility["ssh-tunnels"],
-      },
-      {
-        id: "quick-protocol-router",
-        name: t("protocolRouter", "Protocol Router"),
-        description: t(
-          "launcherProtocolRouterDesc",
-          "Expose local Anthropic-compatible routes for Claude profiles and OpenAI-compatible providers.",
-        ),
-        target: "protocol-router",
-        ...getMoreToolPresentation("protocol-router"),
-        statusBadge: renderProtocolRouterStatus(protocolRouterStatusState),
-        visible: toolVisibility["protocol-router"],
-      },
-      {
-        id: "quick-random-password",
-        name: t("randomPassword", "Random Password"),
-        description: t(
-          "randomPasswordToolDesc",
-          "Generate passwords locally with the character groups you need.",
-        ),
-        target: "random-password",
-        ...getMoreToolPresentation("random-password"),
-        statusBadge: null,
-        visible: toolVisibility["random-password"],
-      },
-      {
-        id: "quick-json-parser",
-        name: t("jsonParser", "JSON Parser"),
-        description: t(
-          "jsonParserToolDesc",
-          "Validate and format JSON locally in one editable workspace.",
-        ),
-        target: "json-parser",
-        ...getMoreToolPresentation("json-parser"),
-        statusBadge: null,
-        visible: toolVisibility["json-parser"],
-      },
-      {
-        id: "quick-md5-encryption",
-        name: t("md5Encryption.title", "MD5 Encryption"),
-        description: t(
-          "md5Encryption.description",
-          "Calculate common MD5 hash formats locally from text.",
-        ),
-        target: "md5-encryption",
-        ...getMoreToolPresentation("md5-encryption"),
-        statusBadge: null,
-        visible: toolVisibility.md5Encryption,
-      },
-      {
-        id: "quick-short-link",
-        name: t("shortLink", "Short Link"),
-        description: t(
-          "shortLinkLauncherDesc",
-          "Create a TinyURL short link.",
-        ),
-        target: "short-link",
-        searchText: shortLinkSearchText,
-        ...getMoreToolPresentation("short-link"),
-        statusBadge: null,
-        visible: toolVisibility["short-link"],
-      },
-      {
-        id: "quick-file-sharing",
-        name: t("fileSharing", "File Sharing"),
-        description: t("fileSharingLauncherDesc", "Share selected files on a trusted local network."),
-        target: "file-sharing",
-        ...getMoreToolPresentation("file-sharing"),
-        statusBadge: null,
-        visible: toolVisibility["file-sharing"],
-      },
-      {
-        id: "quick-jtt-data-parser",
-        name: i18n.language === "zh" ? "JT/T 数据解析" : "JT/T Data Parser",
-        description:
-          i18n.language === "zh"
-            ? "本地解析 JT/T 808、809、1078 报文并转换十六进制。"
-            : "Parse JT/T 808, 809, 1078 packets and convert hex locally.",
-        target: "jtt-data-parser",
-        ...getMoreToolPresentation("jtt-data-parser"),
-        statusBadge: null,
-        visible: toolVisibility["jtt-data-parser"],
-      },
-      {
-        id: "quick-jtt-808",
-        name: "JT/T 808",
-        description:
-          i18n.language === "zh"
-            ? "打开 JT808 解析标签页。"
-            : "Open the JT808 parser tab.",
-        target: "808",
-        ...getMoreToolPresentation("jtt-data-parser"),
-        statusBadge: null,
-        visible: toolVisibility["jtt-data-parser"],
-        aliasOnly: true,
-      },
-      {
-        id: "quick-jtt-809",
-        name: "JT/T 809",
-        description:
-          i18n.language === "zh"
-            ? "打开 JT809 解析标签页。"
-            : "Open the JT809 parser tab.",
-        target: "809",
-        ...getMoreToolPresentation("jtt-data-parser"),
-        statusBadge: null,
-        visible: toolVisibility["jtt-data-parser"],
-        aliasOnly: true,
-      },
-      {
-        id: "quick-jtt-1078",
-        name: "JT/T 1078",
-        description:
-          i18n.language === "zh"
-            ? "打开 JT1078 解析标签页。"
-            : "Open the JT1078 parser tab.",
-        target: "1078",
-        ...getMoreToolPresentation("jtt-data-parser"),
-        statusBadge: null,
-        visible: toolVisibility["jtt-data-parser"],
-        aliasOnly: true,
-      },
-      {
-        id: "quick-jtt-hex",
-        name: "JT/T Hex",
-        description:
-          i18n.language === "zh"
-            ? "打开 Hex 转换标签页。"
-            : "Open the Hex conversion tab.",
-        target: "hex",
-        ...getMoreToolPresentation("jtt-data-parser"),
-        statusBadge: null,
-        visible: toolVisibility["jtt-data-parser"],
-        aliasOnly: true,
-      },
-      {
-        id: "quick-ai-workflow-model-switcher",
-        name: t("aiWorkflowModelSwitcher", "AI Workflow Model Switcher"),
-        description: t(
-          "aiWorkflowModelSwitcherDesc",
-          "Manage and switch AI agent models and reasoning effort across tools.",
-        ),
-        target: "ai-workflow-model-switcher",
-        ...getMoreToolPresentation("ai-workflow-model-switcher"),
-        statusBadge: null,
-        visible: toolVisibility["ai-workflow-model-switcher"],
-      },
-    ];
+        target: tool.id,
+        icon: tool.icon,
+        iconClassName: tool.iconClassName,
+        statusBadge:
+          tool.id === "ssh-tunnels"
+            ? renderSshTunnelStatus(sshTunnelSummary)
+            : tool.id === "protocol-router"
+              ? renderProtocolRouterStatus(protocolRouterStatusState)
+              : null,
+        visible: toolVisibility[tool.id],
+        searchText: bilingualSearchText,
+      });
+
+      for (const alias of tool.aliases) {
+        if (alias.target === tool.id) continue;
+        entries.push({
+          id: `quick-${tool.id}-${alias.target}`,
+          name: `JT/T ${alias.target}`,
+          description: `Open the ${alias.target} parser tab.`,
+          target: alias.target,
+          icon: tool.icon,
+          iconClassName: tool.iconClassName,
+          statusBadge: null,
+          visible: toolVisibility[tool.id],
+          aliasOnly: true,
+        });
+      }
+    }
 
     const term = searchTerm.trim().toLowerCase();
-    const visibleItems = allTools.filter(
-      (item) =>
-        item.visible && (term !== "" || !(item as { aliasOnly?: boolean }).aliasOnly),
+    const visibleItems = entries.filter(
+      (item) => item.visible && (term !== "" || !item.aliasOnly),
     );
     const orderedItems = applySavedOrder(visibleItems, internalToolsOrder);
 
     if (!term) return orderedItems;
     return orderedItems.filter((item) => {
-      const searchText = "searchText" in item ? item.searchText : "";
+      const searchText = item.searchText ?? "";
       return `${item.name} ${item.description} ${item.target} ${searchText}`
         .toLowerCase()
         .includes(term);
@@ -836,9 +703,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
 
   const listLauncherItems = async (): Promise<LauncherItem[]> => {
     const resp = await invoke<ApiResp<LauncherItem[]>>("launcher_list");
-    return (resp.data || []).filter(
-      (item) => item.type !== "internal" || item.target !== "ai-flow",
-    );
+    return resp.data || [];
   };
 
   const refreshLauncherItems = async () => {
@@ -849,41 +714,6 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
 
   const upsertLauncherItem = async (item: LauncherItemInput) => {
     await invoke("launcher_upsert", { item });
-  };
-
-  const migrateLegacyLauncherIfNeeded = async () => {
-    if (localStorage.getItem(MIGRATION_MARKER) === "1") return false;
-    const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (!raw) {
-      localStorage.setItem(MIGRATION_MARKER, "1");
-      return false;
-    }
-
-    let parsed: LegacyLauncherItem[] = [];
-    try {
-      parsed = JSON.parse(raw) as LegacyLauncherItem[];
-    } catch (_err) {
-      localStorage.setItem(MIGRATION_MARKER, "1");
-      return false;
-    }
-
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      localStorage.setItem(MIGRATION_MARKER, "1");
-      return false;
-    }
-
-    for (const item of parsed) {
-      await upsertLauncherItem({
-        id: item.id,
-        name: item.name,
-        type: item.type,
-        target: item.command,
-      });
-    }
-
-    localStorage.setItem(MIGRATION_MARKER, "1");
-    localStorage.removeItem(LEGACY_STORAGE_KEY);
-    return true;
   };
 
   const seedDefaultLauncherIfNeeded = async () => {
@@ -904,14 +734,9 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     try {
       let loaded = await listLauncherItems();
       if (loaded.length === 0) {
-        const migrated = await migrateLegacyLauncherIfNeeded();
-        if (migrated) {
+        const seeded = await seedDefaultLauncherIfNeeded();
+        if (seeded) {
           loaded = await listLauncherItems();
-        } else {
-          const seeded = await seedDefaultLauncherIfNeeded();
-          if (seeded) {
-            loaded = await listLauncherItems();
-          }
         }
       }
       setItems(sortLauncherItems(loaded));

@@ -1,3 +1,6 @@
+import { createHistoryStore } from "@/toolbox/historyStore";
+import { writeLocalJson } from "@/toolbox/localStore";
+
 export const SHORT_LINK_HISTORY_KEY = "onespace:short-link-history";
 export const SHORT_LINK_HISTORY_LIMIT = 50;
 
@@ -64,6 +67,15 @@ function isHistoryRecord(value: unknown): value is ShortLinkHistoryRecord {
   );
 }
 
+const historyStore = createHistoryStore<ShortLinkHistoryRecord>({
+  storageKey: SHORT_LINK_HISTORY_KEY,
+  // The store normalizes and de-duplicates; the load-time sort and the 50-entry
+  // cap are applied by `newestFirst` so out-of-order records are ordered before
+  // truncation. No limit here so the full valid set reaches that sort.
+  limit: Number.MAX_SAFE_INTEGER,
+  isValidEntry: isHistoryRecord,
+});
+
 function newestFirst(records: ShortLinkHistoryRecord[]): ShortLinkHistoryRecord[] {
   return [...records]
     .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
@@ -77,12 +89,25 @@ function failure(
   return { status: "failure", records, error: { code } };
 }
 
-function recoverInvalidHistory(): ShortLinkHistoryResult {
+function removeStoredHistory(): boolean {
   try {
     localStorage.removeItem(SHORT_LINK_HISTORY_KEY);
-    return { status: "recovered", records: [] };
+    return true;
   } catch {
-    return failure("cleanup_failed");
+    return false;
+  }
+}
+
+function recoverInvalidHistory(): ShortLinkHistoryResult {
+  if (!removeStoredHistory()) return failure("cleanup_failed");
+  return { status: "recovered", records: [] };
+}
+
+function readStoredRaw(): { ok: true; raw: string | null } | { ok: false } {
+  try {
+    return { ok: true, raw: localStorage.getItem(SHORT_LINK_HISTORY_KEY) };
+  } catch {
+    return { ok: false };
   }
 }
 
@@ -91,28 +116,21 @@ function persistHistory(
   previousRecords: ShortLinkHistoryRecord[],
   recovered: boolean,
 ): ShortLinkHistoryResult {
-  try {
-    localStorage.setItem(SHORT_LINK_HISTORY_KEY, JSON.stringify(records));
-    return { status: recovered ? "recovered" : "success", records };
-  } catch {
+  const normalized = newestFirst(records);
+  if (!writeLocalJson(SHORT_LINK_HISTORY_KEY, normalized)) {
     return failure("write_failed", previousRecords);
   }
+  return { status: recovered ? "recovered" : "success", records: normalized };
 }
 
 export function loadShortLinkHistory(): ShortLinkHistoryResult {
-  let stored: string | null;
-
-  try {
-    stored = localStorage.getItem(SHORT_LINK_HISTORY_KEY);
-  } catch {
-    return failure("read_failed");
-  }
-
-  if (stored === null) return { status: "success", records: [] };
+  const stored = readStoredRaw();
+  if (!stored.ok) return failure("read_failed");
+  if (stored.raw === null) return { status: "success", records: [] };
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stored);
+    parsed = JSON.parse(stored.raw);
   } catch {
     return recoverInvalidHistory();
   }
@@ -121,7 +139,9 @@ export function loadShortLinkHistory(): ShortLinkHistoryResult {
     return recoverInvalidHistory();
   }
 
-  return { status: "success", records: newestFirst(parsed) };
+  // The shared store performs the safe read and entry normalization; the
+  // history contract additionally guarantees newest-first order and the cap.
+  return { status: "success", records: newestFirst(historyStore.read()) };
 }
 
 export function addShortLinkHistory(longUrl: string, shortUrl: string): ShortLinkHistoryResult {
@@ -149,10 +169,6 @@ export function deleteShortLinkHistory(id: string): ShortLinkHistoryResult {
 }
 
 export function clearShortLinkHistory(): ShortLinkHistoryResult {
-  try {
-    localStorage.removeItem(SHORT_LINK_HISTORY_KEY);
-    return { status: "success", records: [] };
-  } catch {
-    return failure("write_failed");
-  }
+  if (!removeStoredHistory()) return failure("write_failed");
+  return { status: "success", records: [] };
 }

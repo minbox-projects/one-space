@@ -22,6 +22,24 @@ function batchItems(json: Record<string, unknown>): Array<Record<string, unknown
   return dataBody["数据项列表"] as Array<Record<string, unknown>>;
 }
 
+function readUint32BE(bytes: number[], offset: number): number {
+  return (
+    (((bytes[offset] << 24) |
+      (bytes[offset + 1] << 16) |
+      (bytes[offset + 2] << 8) |
+      bytes[offset + 3]) >>>
+      0)
+  );
+}
+
+function hexToBytes(hex: string): number[] {
+  const bytes: number[] = [];
+  for (let index = 0; index < hex.length; index += 2) {
+    bytes.push(parseInt(hex.slice(index, index + 2), 16));
+  }
+  return bytes;
+}
+
 const REFERENCE_JSON = `{
   "[7E]开始": 126,
   "[0200]消息Id": 512,
@@ -212,6 +230,29 @@ describe("buildJt808PositionJson", () => {
     expect(JSON.stringify(buildJt808PositionJson(parsed.header), null, 2)).toBe(REFERENCE_JSON);
   });
 
+  it("keeps latitude at byte offset 8 and longitude at byte offset 12 in the JSON path", () => {
+    const parsed = parseJt808Wire(JT808_POSITION_0200);
+    if (!parsed.ok) throw new Error(parsed.error);
+
+    const body = parsed.header.body;
+    const expectedLatitude = readUint32BE(body, 8);
+    const expectedLongitude = readUint32BE(body, 12);
+
+    const json = buildJt808PositionJson(parsed.header) as Record<string, unknown>;
+    const dataBody = json["数据体对象"] as Record<string, unknown>;
+    const latitudeKey = Object.keys(dataBody).find((key) =>
+      key.endsWith("]纬度"),
+    );
+    const longitudeKey = Object.keys(dataBody).find((key) =>
+      key.endsWith("]经度"),
+    );
+
+    expect(latitudeKey).toBeDefined();
+    expect(longitudeKey).toBeDefined();
+    expect(dataBody[latitudeKey as string]).toBe(expectedLatitude);
+    expect(dataBody[longitudeKey as string]).toBe(expectedLongitude);
+  });
+
   it("reports the 0x0200 frame as a success record carrying the JSON in automatic mode", () => {
     const [record] = analyzeJt808(JT808_POSITION_0200, "automatic");
 
@@ -229,6 +270,7 @@ describe("buildJt808PositionJson", () => {
 
   it("renders 0x0704 batch position upload items with a BCD date-time", () => {
     const [record] = analyzeJt808(JT808_POSITION_0704, "automatic");
+    const item1 = hexToBytes(POSITION_0704_ITEM_1_HEX);
 
     expect(record.kind).toBe("success");
     const json = record.json as Record<string, unknown>;
@@ -270,8 +312,8 @@ describe("buildJt808PositionJson", () => {
     );
     expect(item["[00000000000000000000000000000000]报警标志"]).toBe(0);
     expect(item["[00000000000011000000000000000011]状态位标志"]).toBe(786435);
-    expect(item["[0232BD3E]纬度"]).toBe(36879678);
-    expect(item["[070B523B]经度"]).toBe(118182459);
+    expect(item["[0232BD3E]纬度"]).toBe(readUint32BE(item1, 8));
+    expect(item["[070B523B]经度"]).toBe(readUint32BE(item1, 12));
     expect(item["[0024]高程"]).toBe(36);
     expect(item["[0000]速度"]).toBe(0);
     expect(item["[00B3]方向"]).toBe(179);
@@ -291,6 +333,8 @@ describe("buildJt808PositionJson", () => {
 
   it("renders every item of a single 0x0704 frame in order", () => {
     const [record] = analyzeJt808(JT808_POSITION_0704_TWO_ITEMS, "automatic");
+    const item1 = hexToBytes(POSITION_0704_ITEM_1_HEX);
+    const item2 = hexToBytes(POSITION_0704_ITEM_2_HEX);
 
     expect(record.kind).toBe("success");
     const json = record.json as Record<string, unknown>;
@@ -302,11 +346,11 @@ describe("buildJt808PositionJson", () => {
     expect(items).toHaveLength(2);
 
     const [first, second] = items;
-    expect(first["[0232BD3E]纬度"]).toBe(36879678);
+    expect(first["[0232BD3E]纬度"]).toBe(readUint32BE(item1, 8));
     expect(first["[260627133837]定位时间"]).toBe("2026-06-27 13:38:37");
     expect(first["位置信息汇报"]).toBe(POSITION_0704_ITEM_1_HEX);
 
-    expect(second["[01020304]纬度"]).toBe(16909060);
+    expect(second["[01020304]纬度"]).toBe(readUint32BE(item2, 8));
     expect(second["[260916093000]定位时间"]).toBe("2026-09-16 09:30:00");
     expect(second["[260916093000]定位时间"]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
     expect(second["位置信息汇报"]).toBe(POSITION_0704_ITEM_2_HEX);

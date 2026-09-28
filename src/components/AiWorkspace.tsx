@@ -138,7 +138,6 @@ function createAssistantDraft(
     tool_policy: {
       web_search: true,
       workspace_read: false,
-      notes_search: false,
     },
     knowledge_base_ids: [],
     mcp_server_ids: [...defaultMcpServerIds],
@@ -1771,27 +1770,6 @@ export function AiWorkspace({
                         </label>
                         <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
                           <div>
-                            <div className="text-sm font-medium">Notes Search</div>
-                            <div className="text-xs text-muted-foreground">允许笔记检索能力</div>
-                          </div>
-                          <input
-                            type="checkbox"
-                            checked={assistantDraft.tool_policy.notes_search}
-                            onChange={(event) =>
-                              setAssistantDraft((current) =>
-                                current
-                                  ? {
-                                      ...current,
-                                      tool_policy: { ...current.tool_policy, notes_search: event.target.checked },
-                                    }
-                                  : current,
-                              )
-                            }
-                            className="h-4 w-4"
-                          />
-                        </label>
-                        <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
-                          <div>
                             <div className="text-sm font-medium">Memory</div>
                             <div className="text-xs text-muted-foreground">启用长期记忆</div>
                           </div>
@@ -2433,9 +2411,6 @@ export function AiWorkspace({
                             selectedConversation?.capability_snapshot?.workspace_read ? 'workspace-read' : 'no-workspace',
                           )}
                           {capabilityBadge(
-                            selectedConversation?.capability_snapshot?.notes_search ? 'notes-search' : 'no-notes',
-                          )}
-                          {capabilityBadge(
                             selectedConversation?.capability_snapshot?.memory_enabled ? 'memory' : 'no-memory',
                           )}
                         </div>
@@ -2679,27 +2654,6 @@ export function AiWorkspace({
                                 ? {
                                     ...current,
                                     tool_policy: { ...current.tool_policy, workspace_read: event.target.checked },
-                                  }
-                                : current,
-                            )
-                          }
-                          className="h-4 w-4"
-                        />
-                      </label>
-                      <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
-                        <div>
-                          <div className="text-sm font-medium">Notes Search</div>
-                          <div className="text-xs text-muted-foreground">允许笔记检索</div>
-                        </div>
-                        <input
-                          type="checkbox"
-                          checked={assistantDraft.tool_policy.notes_search}
-                          onChange={(event) =>
-                            setAssistantDraft((current) =>
-                              current
-                                ? {
-                                    ...current,
-                                    tool_policy: { ...current.tool_policy, notes_search: event.target.checked },
                                   }
                                 : current,
                             )

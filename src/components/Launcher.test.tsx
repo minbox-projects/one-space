@@ -14,6 +14,32 @@ import {
   safeRecordMessageMock,
 } from "@/test/mocks/messages";
 
+type RegistryToolDescriptor = {
+  id: string;
+  surfaces: readonly string[];
+};
+
+type RegistryModule = {
+  TOOLBOX_TOOLS: readonly RegistryToolDescriptor[];
+  listToolboxTools: (surface: string) => RegistryToolDescriptor[];
+  getToolboxTool: (id: string) => RegistryToolDescriptor | undefined;
+};
+
+/**
+ * Loaded lazily so the task-001 guards in this suite still run while the
+ * registry module is unavailable.
+ */
+async function loadRegistry(): Promise<RegistryModule> {
+  const specifier = ["@/toolbox", "registry"].join("/");
+  return (await import(/* @vite-ignore */ specifier)) as RegistryModule;
+}
+
+/** Launcher-quick ids straight from the registry; never a parallel hand list. */
+async function registryLauncherQuickIds(): Promise<string[]> {
+  const registry = await loadRegistry();
+  return registry.listToolboxTools("launcher-quick").map((tool) => tool.id);
+}
+
 const launcherItems = [
   {
     id: "script-1",
@@ -154,7 +180,6 @@ describe("Launcher", () => {
 
     const tools = [
       [/Bookmarks|书签|收藏夹/, "bookmarks"],
-      [/Cloud Drive|云盘/, "cloud"],
       [/SSH Servers|SSH 服务器/, "ssh"],
       [/SSH Tunnels|SSH 隧道/, "ssh-tunnels"],
       [/Protocol Router|协议路由/, "protocol-router"],
@@ -174,7 +199,6 @@ describe("Launcher", () => {
 
   it.each([
     ["bookmarks", "lucide-star", "bg-amber-500/10 text-amber-600"],
-    ["cloud", "lucide-cloud", "bg-sky-500/10 text-sky-600"],
     ["ssh", "lucide-server", "bg-blue-500/10 text-blue-600"],
     ["ssh-tunnels", "lucide-waypoints", "bg-cyan-500/10 text-cyan-600"],
     ["protocol-router", "lucide-route", "bg-orange-500/10 text-orange-600"],
@@ -249,28 +273,33 @@ describe("Launcher", () => {
   });
 
   it("根据持久化可见性过滤更多工具", async () => {
+    const registry = await loadRegistry();
+    const md5Tool = registry.getToolboxTool("md5-encryption");
+    expect(md5Tool).toBeDefined();
     renderWithProviders(<Launcher />);
 
     act(() => {
-      for (const tool of [
+      const toolsToHide: Array<Parameters<typeof setLauncherToolVisible>[0] | string> = [
         "bookmarks",
-        "cloud",
         "ssh",
         "ssh-tunnels",
         "protocol-router",
         "random-password",
         "json-parser",
-        "md5Encryption",
+        md5Tool!.id,
         "short-link",
         "file-sharing",
-      ] as const) {
-        setLauncherToolVisible(tool, false);
+      ];
+      for (const tool of toolsToHide) {
+        setLauncherToolVisible(
+          tool as Parameters<typeof setLauncherToolVisible>[0],
+          false,
+        );
       }
     });
 
     await waitFor(() => {
       expect(screen.queryByText("收藏夹")).not.toBeInTheDocument();
-      expect(screen.queryByText("Cloud Drive")).not.toBeInTheDocument();
       expect(screen.queryByText("SSH Servers")).not.toBeInTheDocument();
       expect(screen.queryByText("SSH Tunnels")).not.toBeInTheDocument();
       expect(screen.queryByText("Protocol Router")).not.toBeInTheDocument();
@@ -358,7 +387,7 @@ describe("Launcher", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("不展示已移除的内部启动项", async () => {
+  it("渲染不再过滤的遗留 ai-flow 内部启动项且不影响当前项", async () => {
     invokeMock.mockImplementation(async (command: string, args?: unknown) => {
       if (command === "launcher_list") {
         return {
@@ -402,10 +431,7 @@ describe("Launcher", () => {
 
     renderWithProviders(<Launcher />);
 
-    await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("launcher_list");
-    });
-    expect(screen.queryByText("Legacy AI Flow")).not.toBeInTheDocument();
+    expect(await screen.findByText("Legacy AI Flow")).toBeInTheDocument();
     expect(screen.getByText("Current Launcher")).toBeInTheDocument();
   });
 
@@ -419,6 +445,56 @@ describe("Launcher", () => {
     expect(
       within(card).getByText(/AI Workflow 模型切换|AI Workflow Model Switcher/),
     ).toBeInTheDocument();
+  });
+
+  it("不再运行遗留 localStorage 到后端的启动台迁移", async () => {
+    const legacyKey = "onespace_launcher_items";
+    const markerKey = "onespace_launcher_migrated_v1";
+    const legacyRecord = [
+      {
+        id: "legacy-1",
+        name: "Legacy App",
+        command: "open -a Legacy",
+        type: "app",
+      },
+    ];
+
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    localStorage.setItem(legacyKey, JSON.stringify(legacyRecord));
+    setItemSpy.mockClear();
+
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "launcher_list") return { data: [] };
+      if (command === "launcher_upsert") return null;
+      if (command === "ssh_tunnels_snapshot")
+        return { groups: [], tunnels: [], runtime: [] };
+      if (command === "protocol_router_status")
+        return { running: false, enabled: false, port: 0, route_count: 0 };
+      if (command === "get_storage_config") return {};
+      if (command === "dashboard_counts") return { data: {} };
+      return null;
+    });
+
+    try {
+      renderWithProviders(<Launcher />);
+
+      await waitFor(() => {
+        const listCalls = invokeMock.mock.calls.filter(
+          ([command]) => command === "launcher_list",
+        );
+        expect(listCalls.length).toBeGreaterThanOrEqual(2);
+      });
+
+      const markerWrites = setItemSpy.mock.calls.filter(
+        ([key]) => key === markerKey,
+      );
+      expect(markerWrites).toEqual([]);
+      expect(localStorage.getItem(legacyKey)).toBe(
+        JSON.stringify(legacyRecord),
+      );
+    } finally {
+      setItemSpy.mockRestore();
+    }
   });
 
   describe("内部工具卡片拖拽整理", () => {
@@ -473,6 +549,15 @@ describe("Launcher", () => {
     });
 
     it("长按拖拽把手拖拽内部工具卡片实时移动位置并持久化，且不显示提示框或完成按钮", async () => {
+      const quickIds = (await registryLauncherQuickIds()).map(
+        (id) => `quick-${id}`,
+      );
+      const fromIndex = quickIds.indexOf("quick-bookmarks");
+      const toIndex = quickIds.indexOf("quick-ssh");
+      const expectedOrder = [...quickIds];
+      const [moved] = expectedOrder.splice(fromIndex, 1);
+      expectedOrder.splice(toIndex, 0, moved);
+
       renderWithProviders(<Launcher />);
       const handle = await screen.findByTestId(
         "launcher-tool-drag-handle-quick-bookmarks",
@@ -494,39 +579,29 @@ describe("Launcher", () => {
         { pointerId: 1 },
       );
 
-      expect(internalCardOrder().slice(0, 3)).toEqual([
-        "quick-cloud",
-        "quick-ssh",
-        "quick-bookmarks",
-      ]);
+      expect(internalCardOrder()).toEqual(expectedOrder);
       expect(
         JSON.parse(
           localStorage.getItem(LAUNCHER_INTERNAL_TOOLS_ORDER_KEY) || "[]",
         ),
-      ).toEqual([
-        "quick-cloud",
-        "quick-ssh",
-        "quick-bookmarks",
-        "quick-ssh-tunnels",
-        "quick-protocol-router",
-        "quick-random-password",
-        "quick-json-parser",
-        "quick-md5-encryption",
-        "quick-short-link",
-        "quick-file-sharing",
-        "quick-jtt-data-parser",
-        "quick-ai-workflow-model-switcher",
-      ]);
+      ).toEqual(expectedOrder);
 
       fireEvent.pointerUp(window, { pointerId: 1 });
       vi.useRealTimers();
     });
 
     it("渲染时应用已保存的内部工具顺序", async () => {
+      const quickIds = (await registryLauncherQuickIds()).map(
+        (id) => `quick-${id}`,
+      );
+      const third = quickIds.find(
+        (id) => id !== "quick-ssh" && id !== "quick-bookmarks",
+      );
+      expect(third).toBeDefined();
       writeSavedOrder(LAUNCHER_INTERNAL_TOOLS_ORDER_KEY, [
         "quick-ssh",
         "quick-bookmarks",
-        "quick-cloud",
+        third!,
       ]);
       renderWithProviders(<Launcher />);
 
@@ -534,7 +609,7 @@ describe("Launcher", () => {
       expect(internalCardOrder().slice(0, 3)).toEqual([
         "quick-ssh",
         "quick-bookmarks",
-        "quick-cloud",
+        third,
       ]);
     });
 
@@ -587,6 +662,40 @@ describe("Launcher", () => {
       );
       expect(setActiveTab).toHaveBeenCalledWith("ssh");
       vi.useRealTimers();
+    });
+  });
+
+  describe("注册表驱动的启动台面板", () => {
+    it("为注册表 launcher-quick 面板的每个工具渲染快捷入口", async () => {
+      const registry = await loadRegistry();
+      const quickTools = registry.listToolboxTools("launcher-quick");
+      expect(quickTools.length).toBeGreaterThan(0);
+
+      renderWithProviders(<Launcher />);
+      await screen.findByText("Danger Script");
+
+      for (const tool of quickTools) {
+        expect(
+          screen.getByTestId(`launcher-tool-icon-${tool.id}`),
+        ).toBeInTheDocument();
+      }
+    });
+
+    it("不把非 launcher-quick 面板的注册表工具渲染为快捷入口", async () => {
+      const registry = await loadRegistry();
+      const nonQuickTools = registry.TOOLBOX_TOOLS.filter(
+        (tool) => !tool.surfaces.includes("launcher-quick"),
+      );
+      expect(nonQuickTools.length).toBeGreaterThan(0);
+
+      renderWithProviders(<Launcher />);
+      await screen.findByText("Danger Script");
+
+      for (const tool of nonQuickTools) {
+        expect(
+          screen.queryByTestId(`launcher-tool-icon-${tool.id}`),
+        ).not.toBeInTheDocument();
+      }
     });
   });
 });

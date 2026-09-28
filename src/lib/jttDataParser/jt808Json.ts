@@ -1,33 +1,6 @@
 import type { ParsedJt808Header } from "./frame";
-
-function readUint32(bytes: number[], offset: number): number {
-  return (
-    ((bytes[offset] ?? 0) << 24) |
-    ((bytes[offset + 1] ?? 0) << 16) |
-    ((bytes[offset + 2] ?? 0) << 8) |
-    (bytes[offset + 3] ?? 0)
-  );
-}
-
-function readUint16(bytes: number[], offset: number): number {
-  return ((bytes[offset] ?? 0) << 8) | (bytes[offset + 1] ?? 0);
-}
-
-function readUint8(bytes: number[], offset: number): number {
-  return bytes[offset] ?? 0;
-}
-
-function hex2(value: number): string {
-  return value.toString(16).toUpperCase().padStart(2, "0");
-}
-
-function hex4(value: number): string {
-  return value.toString(16).toUpperCase().padStart(4, "0");
-}
-
-function bytesToHex(bytes: number[]): string {
-  return bytes.map((byte) => byte.toString(16).toUpperCase().padStart(2, "0")).join("");
-}
+import { parseJt808Position } from "./frame";
+import { bcdTime, bytesToHex, hex2, hex4, readUint8, readUint16, readUint32 } from "./hex";
 
 function binary16(value: number): string {
   return value.toString(2).padStart(16, "0");
@@ -324,17 +297,6 @@ function additionalInfoObject(id: number, length: number, data: number[]): Recor
   }
 }
 
-function bcdTimeString(bytes: number[]): string {
-  let digits = "";
-  for (const byte of bytes) {
-    digits += ((byte >> 4) & 0x0f).toString();
-    digits += (byte & 0x0f).toString();
-  }
-  const parts = digits.match(/.{2}/g) ?? [];
-  const [year, month, day, hour, minute, second] = parts;
-  return `20${year}-${month}-${day} ${hour}:${minute}:${second}`;
-}
-
 function formatPositionTime(bytes: number[]): string {
   if (bytes.length !== 6) {
     return bytesToHex(bytes);
@@ -344,7 +306,7 @@ function formatPositionTime(bytes: number[]): string {
       return bytesToHex(bytes);
     }
   }
-  return bcdTimeString(bytes);
+  return bcdTime(bytes);
 }
 
 function buildFrameJson(
@@ -364,21 +326,19 @@ function buildFrameJson(
 }
 
 function positionDataObject(body: number[]): Record<string, unknown> {
-  const alarm = readUint32(body, 0);
-  const status = readUint32(body, 4);
-  const timeBytes = body.slice(22, 28);
+  const position = parseJt808Position(body);
   return {
     位置信息汇报: bytesToHex(body),
-    [`[${binary32(alarm)}]报警标志`]: alarm,
-    报警标志对象: alarmObject(alarm),
-    [`[${binary32(status)}]状态位标志`]: status,
-    状态标志对象: statusObject(status),
-    [`[${bytesToHex(body.slice(8, 12))}]纬度`]: readUint32(body, 8),
-    [`[${bytesToHex(body.slice(12, 16))}]经度`]: readUint32(body, 12),
-    [`[${bytesToHex(body.slice(16, 18))}]高程`]: readUint16(body, 16),
-    [`[${bytesToHex(body.slice(18, 20))}]速度`]: readUint16(body, 18),
-    [`[${bytesToHex(body.slice(20, 22))}]方向`]: readUint16(body, 20),
-    [`[${bytesToHex(timeBytes)}]定位时间`]: formatPositionTime(timeBytes),
+    [`[${binary32(position.alarm)}]报警标志`]: position.alarm,
+    报警标志对象: alarmObject(position.alarm),
+    [`[${binary32(position.status)}]状态位标志`]: position.status,
+    状态标志对象: statusObject(position.status),
+    [`[${bytesToHex(body.slice(8, 12))}]纬度`]: position.latitude,
+    [`[${bytesToHex(body.slice(12, 16))}]经度`]: position.longitude,
+    [`[${bytesToHex(body.slice(16, 18))}]高程`]: position.elevation,
+    [`[${bytesToHex(body.slice(18, 20))}]速度`]: position.speed,
+    [`[${bytesToHex(body.slice(20, 22))}]方向`]: position.direction,
+    [`[${bytesToHex(position.time)}]定位时间`]: formatPositionTime(position.time),
     附加信息列表: parseAdditionalInfos(body, 28).map((entry) =>
       additionalInfoObject(entry.id, entry.length, entry.data),
     ),

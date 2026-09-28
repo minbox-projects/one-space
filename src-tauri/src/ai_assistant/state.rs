@@ -293,7 +293,6 @@ pub(in crate::ai_assistant) fn default_agents() -> Vec<AgentDefinition> {
             tool_policy: AgentToolPolicy {
                 web_search: true,
                 workspace_read: true,
-                notes_search: true,
             },
             knowledge_base_ids: Vec::new(),
             mcp_server_ids: Vec::new(),
@@ -315,7 +314,6 @@ pub(in crate::ai_assistant) fn default_agents() -> Vec<AgentDefinition> {
             tool_policy: AgentToolPolicy {
                 web_search: true,
                 workspace_read: false,
-                notes_search: true,
             },
             knowledge_base_ids: Vec::new(),
             mcp_server_ids: Vec::new(),
