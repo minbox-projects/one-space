@@ -720,7 +720,7 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 
 - 同步不会改写你已有的 `opencode` / `codex` 服务商记录，而是为每个工具创建或更新一条名为 `AI Gateway` 的独立网关服务商记录
 - 该记录不会自动启用；需要使用时到 `AI Environments` 中手动启用，不需要时可直接禁用或删除
-- 写入的模型清单只取当前已启用且未被自动禁用的上游服务商：`opencode` 按每条映射的本地模型名列出模型，并在该映射配置了推理档位时把档位写成模型条目的 `reasoning: true` 与 `variants`（每个档位形如 `{"reasoningEffort": "<档位>"}`），未配置档位的模型只写名称；`codex` 使用第一条映射的本地模型名作为模型，没有可用映射时才回退该服务商的默认模型
+- 写入的模型清单只取当前已启用且未被自动禁用的上游服务商：`opencode` 按每条映射的本地模型名列出模型，并在该映射配置了推理档位时把档位写成模型条目的 `reasoning: true` 与 `variants`（每个档位形如 `{"reasoningEffort": "<档位>"}`），未配置档位的模型只写名称；当某个本地模型在所有已启用上游中都只能经 Responses (`/responses`) 服务、没有任何一个能经 Chat Completions (`/chat/completions`) 服务时，该模型条目会额外写入 `provider.npm = "@ai-sdk/openai"`，让 opencode 对这个模型调用 `/responses`（只覆盖该模型条目，服务商条目本身仍使用 `@ai-sdk/openai-compatible`）；只要任一已启用上游能经 Chat Completions 服务该模型，就保持默认条目、按 chat 调用，因此同一本地模型同时存在两种协议的服务方时以 chat 为准；判断按每个本地模型跨全部已启用上游进行，禁用的上游、禁用或自动禁用的映射行都不参与；`codex` 使用第一条映射的本地模型名作为模型，没有可用映射时才回退该服务商的默认模型
 - 同步按本地同步台账的 provider id 更新同一条记录，不会每次新建；仅当该记录仍是该工具名下带网关标记的网关服务商时才复用，若台账指向的是你的普通服务商记录，则视为过期记录并新建独立的网关服务商，绝不会改写它；在 `AI Environments` 中删除网关记录后，再点该行的 `同步` 会自动新建一条全新的 `AI Gateway` 记录
 - 不读写 `claude`、`antigravity` 记录，也不改写 `Protocol Router` 的 route 数据
 - 没有启用本地 Key 时，配置与同步会被拒绝并提示先新增并启用一个本地 Key
