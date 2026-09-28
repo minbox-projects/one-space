@@ -79,6 +79,15 @@ function fixture0801PositionBlock(fixture: string): number[] {
   return fixtureBody(fixture).slice(8, 36);
 }
 
+// 0x0801 分包帧: skip the 12-byte frame header and the 4-byte subpackage
+// header before the body, then read the 8-byte media header plus the
+// 28-byte position block.
+function subpackaged0801PositionBlock(fixture: string): number[] {
+  const inner = fixtureInner(fixture);
+  const bodyLength = ((inner[2] << 8) | inner[3]) & 0x3ff;
+  return inner.slice(16, 16 + bodyLength).slice(8, 36);
+}
+
 function fixtureChecksum(fixture: string): number {
   const inner = fixtureInner(fixture);
   const bodyLength = ((inner[2] << 8) | inner[3]) & 0x3ff;
@@ -185,6 +194,28 @@ describe("analyzeJt808", () => {
     expect(findNodeValue(records[0].tree, "总包数")).toBe("3");
     expect(findNodeValue(records[0].tree, "多媒体数据 (Hex)")).toBe("01020304");
     expect(findNodeValue(records[1].tree, "分包数据 (Hex)")).toBe("05067E070809");
+  });
+
+  it("merges F3 subpackages with the position block in specification order", () => {
+    const records = analyzeJt808(
+      [JT808_F3_FRAGMENT_1, JT808_F3_FRAGMENT_2, JT808_F3_FRAGMENT_3].join("\n"),
+      "automatic",
+    );
+
+    // 从原始 fixture 十六进制独立取 F3 的位置块:
+    // 纬度在偏移 8, 经度在偏移 12 (AC-013 规格顺序)。
+    const position = subpackaged0801PositionBlock(JT808_F3_FRAGMENT_1);
+    const expectedLatitude = readUint32BE(position, 8);
+    const expectedLongitude = readUint32BE(position, 12);
+
+    expect(expectedLatitude).toBe(32062838);
+    expect(expectedLongitude).toBe(118798298);
+    expect(findNodeValue(records[0].tree, "纬度")).toBe(
+      String(expectedLatitude),
+    );
+    expect(findNodeValue(records[0].tree, "经度")).toBe(
+      String(expectedLongitude),
+    );
   });
 
   it("keeps a duplicate package index from merging", () => {

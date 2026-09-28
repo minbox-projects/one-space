@@ -101,4 +101,75 @@ describe("SshServers", () => {
     expect(errorNode).not.toBeNull();
     expect(errorNode?.textContent?.trim().length ?? 0).toBeGreaterThan(0);
   });
+
+  it("Tauri 运行时缺失时自定义历史连接不调用后端也不崩溃", async () => {
+    resetTauriMocks();
+    const customHistory = [
+      {
+        id: "h-custom",
+        type: "custom",
+        name: "custom-entry",
+        host_name: "custom.example",
+        user: "root",
+        port: 22,
+        last_connected: 0,
+      },
+    ];
+    invokeMock.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === "get_ssh_hosts") return hosts;
+        if (command === "get_secret") {
+          if (args?.key === "onespace_ssh_history") {
+            return JSON.stringify(customHistory);
+          }
+          if (args?.key === "onespace_ssh_ignored") {
+            return JSON.stringify([]);
+          }
+          if (args?.key === "onespace_ssh_favorites") {
+            return JSON.stringify([]);
+          }
+        }
+        return null;
+      },
+    );
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (event: PromiseRejectionEvent) => {
+      unhandled.push(event.reason);
+      event.preventDefault();
+    };
+    window.addEventListener("unhandledrejection", onUnhandled);
+
+    try {
+      renderWithProviders(<SshServers />);
+      await settle();
+
+      // 应用已加载历史后失去 Tauri 运行时: 连接动作必须在调用点重新守卫,
+      // 而不是依赖渲染时捕获的 isTauri。
+      delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+
+      fireEvent.click(screen.getByRole("button", { name: /历史|History/ }));
+      await settle();
+      const row = await screen.findByText("custom-entry");
+      const invokesBeforeConnect = invokeMock.mock.calls.length;
+
+      // 历史行的整张卡片就是连接控件。
+      fireEvent.click(row);
+      await settle();
+
+      expect(
+        invokeMock.mock.calls
+          .slice(invokesBeforeConnect)
+          .map(([command]) => command),
+      ).toEqual([]);
+      expect(unhandled).toEqual([]);
+      expect(screen.getByText("custom-entry")).toBeInTheDocument();
+    } finally {
+      window.removeEventListener("unhandledrejection", onUnhandled);
+      Object.defineProperty(window, "__TAURI_INTERNALS__", {
+        value: {},
+        configurable: true,
+      });
+    }
+  });
 });

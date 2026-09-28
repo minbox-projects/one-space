@@ -137,6 +137,24 @@ describe("SSH 隧道遗留双语文案键移除", () => {
   });
 });
 
+// REQ-009 / AC-016 guard: notes_search is withdrawn, so its bilingual label
+// must not survive in either bundle.
+const REMOVED_NOTES_SEARCH_BILINGUAL_KEYS = [
+  "allowNotesSearchLabel",
+] as const;
+
+describe("notes_search 遗留双语文案键移除", () => {
+  it.each(["en", "zh"] as const)("为 %s 移除未引用的 notes_search 双语键", (language) => {
+    const keyPaths = new Set(collectKeyPaths(resourceBundle(language)));
+    for (const key of REMOVED_NOTES_SEARCH_BILINGUAL_KEYS) {
+      expect(
+        keyPaths.has(key),
+        `${language} 中已移除键 ${key} 不应存在`,
+      ).toBe(false);
+    }
+  });
+});
+
 const PROVIDER_TEMPLATE_KEYS = [
   "aiGatewayProviderTemplates",
   "aiGatewayTemplateModelsCount",

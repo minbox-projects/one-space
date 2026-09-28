@@ -7,6 +7,7 @@ import { Server, AlertCircle, Loader2, ArrowRight, Plus, History, Key, Lock, Fol
 import { v4 as uuidv4 } from 'uuid';
 import { formatDistanceToNow } from 'date-fns';
 import { getToolboxTool } from "@/toolbox/registry";
+import { isToolboxInvokeAvailable } from "@/toolbox/invoke";
 import { sshHostsList } from "@/lib/sshTunnels";
 import type { SshHost } from "./sshTunnels/types";
 
@@ -49,14 +50,13 @@ export function SshServers() {
   const [customAuthType, setCustomAuthType] = useState<'password' | 'key'>('password');
   const [customAuthVal, setCustomAuthVal] = useState('');
 
-  const isTauri = '__TAURI_INTERNALS__' in window;
   const windowsHint = t(
     'sshServersWindowsHint',
     'SSH Servers launches native terminal SSH sessions only on macOS. On Windows, please use SSH Tunnels instead.',
   );
 
   const loadData = async () => {
-    if (!isTauri) {
+    if (!isToolboxInvokeAvailable()) {
       setLoading(false);
       setError(t('notInTauri'));
       return;
@@ -133,7 +133,9 @@ export function SshServers() {
     }
 
     setHistory(newHistory);
-    await invoke('save_secret', { key: 'onespace_ssh_history', value: JSON.stringify(newHistory) });
+    if (isToolboxInvokeAvailable()) {
+      await invoke('save_secret', { key: 'onespace_ssh_history', value: JSON.stringify(newHistory) });
+    }
   };
 
   const toggleFavorite = async (e: React.MouseEvent, name: string) => {
@@ -142,7 +144,9 @@ export function SshServers() {
       ? favorites.filter(f => f !== name)
       : [...favorites, name];
     setFavorites(newFavs);
-    await invoke('save_secret', { key: 'onespace_ssh_favorites', value: JSON.stringify(newFavs) });
+    if (isToolboxInvokeAvailable()) {
+      await invoke('save_secret', { key: 'onespace_ssh_favorites', value: JSON.stringify(newFavs) });
+    }
   };
 
   const toggleIgnore = async (e: React.MouseEvent, name: string) => {
@@ -151,11 +155,13 @@ export function SshServers() {
       ? ignored.filter(i => i !== name)
       : [...ignored, name];
     setIgnored(newIgnored);
-    await invoke('save_secret', { key: 'onespace_ssh_ignored', value: JSON.stringify(newIgnored) });
+    if (isToolboxInvokeAvailable()) {
+      await invoke('save_secret', { key: 'onespace_ssh_ignored', value: JSON.stringify(newIgnored) });
+    }
   };
 
   const handleConnectConfig = async (host: SshHost) => {
-    if (!isTauri) return;
+    if (!isToolboxInvokeAvailable()) return;
     if (isWindows) {
       setError(windowsHint);
       return;
@@ -177,7 +183,7 @@ export function SshServers() {
   };
 
   const handleConnectCustom = async () => {
-    if (!isTauri || !customHost || !customUser || !customPort) return;
+    if (!isToolboxInvokeAvailable() || !customHost || !customUser || !customPort) return;
     if (isWindows) {
       setError(windowsHint);
       return;
@@ -217,6 +223,7 @@ export function SshServers() {
     if (entry.type === 'config') {
       handleConnectConfig(entry);
     } else {
+      if (!isToolboxInvokeAvailable()) return;
       try {
         await invoke('connect_ssh_custom', { 
           user: entry.user,

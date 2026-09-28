@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-09-22-ai-workflow-model-switcher.md
-2026-09-22-ai-workflow-model-switcher.md: bc130242f6650b84214747ef06eaec80696f0f87
-2026-09-22-ai-workflow-model-switcher.zh.md: 47e93936d27b44611bfafa190c6949236ff7ccf5
+2026-09-22-ai-workflow-model-switcher.md: dc229cf5140f95acb986c86f28fb959bfc1ab9d7
+2026-09-22-ai-workflow-model-switcher.zh.md: af45d6f87684495415800788eded2de26dc0dbd8

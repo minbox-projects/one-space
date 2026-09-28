@@ -1,12 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   fileSharingNetworks,
   fileSharingStart,
   fileSharingStatus,
   fileSharingStop,
-  subscribeFileSharingUpdates,
 } from "@/lib/fileSharing";
-import { invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
+import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
 describe("file sharing IPC", () => {
   it("uses the Rust command names and camelCase input", async () => {
@@ -24,13 +23,9 @@ describe("file sharing IPC", () => {
     ]);
   });
 
-  it("normalizes errors and tears down event listeners", async () => {
+  it("normalizes errors", async () => {
     resetTauriMocks();
     invokeMock.mockRejectedValue("runtime unavailable");
     await expect(fileSharingStatus()).rejects.toMatchObject({ name: "FileSharingError", message: "runtime unavailable" });
-    const unlisten = vi.fn();
-    listenMock.mockResolvedValue(unlisten);
-    await expect(subscribeFileSharingUpdates(vi.fn())).resolves.toBe(unlisten);
-    expect(listenMock).toHaveBeenCalledWith("file-sharing-updated", expect.any(Function));
   });
 });

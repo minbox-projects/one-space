@@ -88,11 +88,33 @@ const DEFAULT_LAUNCHER_ITEMS: LauncherItemInput[] = [
   { name: "System Settings", type: "app", target: 'open -a "System Settings"' },
 ];
 
-const INTERNAL_TARGETS: Array<{
+type InternalTarget = {
   id: string;
   labelKey: string;
   fallback: string;
-}> = [
+};
+
+/** Launcher-internal toolbox entries are owned by the registry descriptors. */
+const INTERNAL_TOOLBOX_TARGETS = new Map<string, InternalTarget>(
+  listToolboxTools("launcher-internal").map(
+    (tool): [string, InternalTarget] => [
+      tool.id,
+      { id: tool.id, labelKey: tool.labelKey, fallback: tool.id },
+    ],
+  ),
+);
+
+function toolboxInternalTarget(id: string): InternalTarget {
+  const target = INTERNAL_TOOLBOX_TARGETS.get(id);
+  if (!target) {
+    throw new Error(
+      `launcher-internal toolbox target is not registered: ${id}`,
+    );
+  }
+  return target;
+}
+
+const INTERNAL_TARGETS: InternalTarget[] = [
   { id: "launcher", labelKey: "launcher", fallback: "Launcher" },
   {
     id: "ai-sessions",
@@ -116,9 +138,9 @@ const INTERNAL_TARGETS: Array<{
   { id: "protocol-router", labelKey: "protocolRouter", fallback: "Protocol Router" },
   { id: "ai-gateway", labelKey: "aiGateway", fallback: "AI Gateway" },
   { id: "file-sharing", labelKey: "fileSharing", fallback: "File Sharing" },
-  { id: "snippets", labelKey: "snippets", fallback: "Snippets" },
+  toolboxInternalTarget("snippets"),
   { id: "bookmarks", labelKey: "bookmarks", fallback: "Bookmarks" },
-  { id: "notes", labelKey: "notes", fallback: "Notes" },
+  toolboxInternalTarget("notes"),
   { id: "mail", labelKey: "mail", fallback: "Mail" },
   { id: "settings", labelKey: "settings", fallback: "Settings" },
   { id: "documentation", labelKey: "usageDocs", fallback: "Documentation" },

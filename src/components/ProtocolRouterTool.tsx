@@ -19,6 +19,7 @@ import {
   type ToolStatusTone,
 } from "@/components/toolbox/ToolStatusBadge";
 import { errorToMessage } from "@/lib/messages";
+import { isToolboxInvokeAvailable } from "@/toolbox/invoke";
 import { getToolboxTool } from "@/toolbox/registry";
 import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 import {
@@ -542,7 +543,7 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
   };
 
   const toggleRouteEnabled = async (route: ProtocolRoute, enabled: boolean) => {
-    if (!isTauri) return;
+    if (!isToolboxInvokeAvailable()) return;
     setTogglingRouteId(route.id);
     setMessage({ type: "", text: "" });
     try {

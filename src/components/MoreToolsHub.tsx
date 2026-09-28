@@ -162,10 +162,6 @@ export function MoreToolsHub({
     );
   }
 
-  const visibleGridTools = orderedTools.filter(
-    (tool) => tool.id !== "md5-encryption" || visibility["md5-encryption"],
-  );
-
   return (
     <div className="flex h-full flex-col gap-5">
       <div>
@@ -178,7 +174,7 @@ export function MoreToolsHub({
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {visibleGridTools.map((tool) => {
+        {orderedTools.map((tool) => {
           const Icon = tool.icon;
           const isDragging = drag.draggingId === tool.id;
 

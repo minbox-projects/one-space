@@ -252,9 +252,10 @@ describe("MoreToolsHub", () => {
     ).toHaveAttribute("aria-checked", "true");
   });
 
-  it("在可见性更新事件后无需重挂载即刷新 MD5 卡片", () => {
-    renderWithProviders(
-      <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
+  it("MD5 网格卡片不随启动台可见性隐藏且详情开关随事件刷新", () => {
+    const onSelectTool = vi.fn();
+    const { rerender } = renderWithProviders(
+      <MoreToolsHub activeTool={null} onSelectTool={onSelectTool} onBack={vi.fn()} />,
     );
     expect(
       screen.getByTestId("more-tool-card-md5-encryption"),
@@ -268,9 +269,22 @@ describe("MoreToolsHub", () => {
       window.dispatchEvent(new Event(LAUNCHER_TOOL_VISIBILITY_UPDATED_EVENT));
     });
 
+    // 网格面: Hub 卡片来自注册表 hub surface, 启动台可见性不得隐藏它。
     expect(
-      screen.queryByTestId("more-tool-card-md5-encryption"),
-    ).not.toBeInTheDocument();
+      screen.getByTestId("more-tool-card-md5-encryption"),
+    ).toBeInTheDocument();
+
+    // 详情面: 同一份可见性状态驱动“在启动台展示”开关, 无需重挂载。
+    rerender(
+      <MoreToolsHub
+        activeTool="md5-encryption"
+        onSelectTool={onSelectTool}
+        onBack={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("switch", { name: /Show in Launcher|在启动台展示/ }),
+    ).toHaveAttribute("aria-checked", "false");
   });
 
   it("Hub 隐藏时将 isVisible=false 传给当前活动工具", () => {

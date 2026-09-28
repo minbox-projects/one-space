@@ -37,7 +37,9 @@ export const TOOLBOX_TOOLS: readonly ToolboxToolDescriptor[] = [
 ];
 
 export function listToolboxTools(surface: ToolboxSurface): ToolboxToolDescriptor[] {
-  return TOOLBOX_TOOLS.filter((tool) => tool.surfaces.includes(surface));
+  return TOOLBOX_TOOLS.filter((tool) => tool.surfaces.includes(surface)).sort(
+    (a, b) => a.defaultOrder - b.defaultOrder,
+  );
 }
 
 export function getToolboxTool(id: string): ToolboxToolDescriptor | undefined {

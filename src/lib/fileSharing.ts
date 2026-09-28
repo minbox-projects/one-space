@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type Event } from "@tauri-apps/api/event";
 
 export type FileSharingTransferState =
   | "in_progress"
@@ -94,12 +93,4 @@ export function fileSharingStatus() {
 
 export function fileSharingStop() {
   return fileSharingInvoke<FileSharingSnapshot>("file_sharing_stop");
-}
-
-export function subscribeFileSharingUpdates(
-  handler: (payload: FileSharingUpdate) => void,
-) {
-  return listen<FileSharingUpdate>("file-sharing-updated", (event: Event<FileSharingUpdate>) => {
-    handler(event.payload);
-  });
 }

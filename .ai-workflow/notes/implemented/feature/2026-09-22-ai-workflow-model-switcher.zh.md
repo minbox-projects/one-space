@@ -14,13 +14,13 @@ OneSpace 交付独立的工具箱工具 `ai-workflow-model-switcher`，由专用
 
 该实现分为前端工具箱矩阵界面与安全后端运行时两部分：
 
-1. 前端工具箱矩阵界面：构建于 `src/components/AiWorkflowModelSwitcher/`，并通过工具箱注册表描述符 `src/toolbox/plugins/ai-workflow-model-switcher.ts` 注册，其图标与配色、标题与描述、别名、默认可见性、排序与 surface 均由该描述符派生，驱动 Hub 卡片、Launcher 快速工具与内部目标、导航别名解析与 App 路由。提供带有活跃标记的 profile 选择器、映射 9 个规范 subagent 角色（`backend`、`documentation-maintainer`、`file-explorer`、`frontend`、`git-operator`、`researcher`、`spec-review`、`standards-review`、`test`）与 3 个宿主（`codex`、`claude`、`opencode`）的 9×3 网格、带手动输入降级的模型源下拉框、推理强度选择器（限制为六个枚举值 `low`、`medium`、`high`、`xhigh`、`max`、`ultra`）、按列/按行/全矩阵批量应用、未保存脏状态跟踪、使用 `ai_workflow_save_profile` 且不激活既有 profile 的 Save 操作，以及针对已保存 YAML 调用 `activateProfile` 的独立 Activate 操作。通过此界面新建的 profile 在首次成功 Save 后仅显示一次 Yes/No 确认：No 保持 profile 已保存但不激活；Yes 单独激活已持久化的 profile。Save 失败时不提示，激活失败不丢弃已保存矩阵，保存成功会更新 dirty baseline。
+1. 前端工具箱矩阵界面：构建于 `src/components/AiWorkflowModelSwitcher/`，并通过工具箱注册表描述符 `src/toolbox/plugins/ai-workflow-model-switcher.ts` 注册，其图标与配色、标题与描述、别名、默认可见性、排序与 surface 均由该描述符派生，驱动 Hub 卡片、Launcher 快速工具、导航别名解析与 App 路由。提供带有活跃标记的 profile 选择器、映射 9 个规范 subagent 角色（`backend`、`documentation-maintainer`、`file-explorer`、`frontend`、`git-operator`、`researcher`、`spec-review`、`standards-review`、`test`）与 3 个宿主（`codex`、`claude`、`opencode`）的 9×3 网格、带手动输入降级的模型源下拉框、推理强度选择器（限制为六个枚举值 `low`、`medium`、`high`、`xhigh`、`max`、`ultra`）、按列/按行/全矩阵批量应用、未保存脏状态跟踪、使用 `ai_workflow_save_profile` 且不激活既有 profile 的 Save 操作，以及针对已保存 YAML 调用 `activateProfile` 的独立 Activate 操作。通过此界面新建的 profile 在首次成功 Save 后仅显示一次 Yes/No 确认：No 保持 profile 已保存但不激活；Yes 单独激活已持久化的 profile。Save 失败时不提示，激活失败不丢弃已保存矩阵，保存成功会更新 dirty baseline。
 2. 后端 Profile 运行时：在 `src-tauri/src/ai_workflow_profiles.rs` 与 `src-tauri/src/ai_workflow_profiles/` 中实现，注册八个 Tauri 命令（`ai_workflow_list_profiles`、`ai_workflow_get_profile_matrix`、`ai_workflow_get_model_sources`、`ai_workflow_activate_profile`、`ai_workflow_save_profile`、`ai_workflow_create_profile`、`ai_workflow_delete_profile`、`ai_workflow_rename_profile`）。后端从本地配置文件（`opencode.json` 服务商模型、`config.toml` 顶层及 profile 模型、`settings.json` env 键）聚合宿主候选模型，隔离单源故障以保证其他列正常可用，执行严格 schema 校验（`version: 1.0.0`、成对 model 与 effort 取值、安全 profile 名称），并原子保存 YAML。save-only 命令 `ai_workflow_save_profile` 不调用 CLI，也不修改 active profile。激活是针对已保存 YAML 的独立操作，因此激活失败不会丢弃已保存的矩阵；原子 `ai_workflow_save_and_activate_profile` 命令、其快照回滚与以该语义为主题的测试在不再有生产调用方后移除，见 [Toolbox Plugin Registry Replaces Hand-Maintained Tool Lists](../architecture/2026-09-25-toolbox-plugin-registry.md)。
 
 ## Alternatives considered
 
 - 纯 CLI 备选方案（在 `ai-workflow` CLI 中直接增加交互式 `profile edit` 或矩阵配置引导）：未采纳，因为 OneSpace 是开发者统一管理 AI 环境、网关和终端会话的桌面工作台；在终端中通过多轮交互编辑跨越 27 个单元格并支持多种批量操作体验受限，而在桌面工具箱中提供图形化矩阵能直观对比跨宿主配置。
-- 前端直接读写 `~/.config/ai-workflow/profiles/` 下的 YAML 文件：未采纳，因为 OneSpace 保持前端展示与文件系统修改的严格边界；由 Tauri 后端统一负责 YAML 校验、原子写入、CLI 执行与快照回滚，能够保证安全性并防止产生不一致的脏文件。
+- 前端直接读写 `~/.config/ai-workflow/profiles/` 下的 YAML 文件：未采纳，因为 OneSpace 保持前端展示与文件系统修改的严格边界；由 Tauri 后端统一负责后端侧校验与原子写入，能够保证安全性并防止产生不一致的脏文件。
 - 联网实时通过 `/v1/models` 接口抓取远端模型列表：未采纳，因为切换器基于各本地工具配置（`opencode.json`、`config.toml`、`settings.json`）中已配置且受支持的模型运作；依赖网络接口会引入网络延迟、请求失败以及密钥暴露风险，而读取本地配置保证了离线可用性。
 
 ## Consequences
