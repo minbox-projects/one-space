@@ -130,7 +130,6 @@ export interface AssistantConversationListItem {
 export interface AgentToolPolicy {
   web_search: boolean;
   workspace_read: boolean;
-  notes_search: boolean;
 }
 
 export interface AgentDefinition {
