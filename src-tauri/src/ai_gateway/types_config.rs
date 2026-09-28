@@ -202,6 +202,12 @@ pub const AUTO_DISABLE_PROBE_COOLDOWN_SECS: u64 = 60;
 /// seconds; eligibility is evaluated against an explicit `now`.
 pub const KEY_PROBE_COOLDOWN_SECS: u64 = 60;
 
+/// Time-to-live after which a quota-marked upstream key becomes usable again
+/// through normal list-order selection. Eligibility is inclusive at exactly
+/// this many seconds and exclusive below it. Auth marks and quota marks without
+/// a marking time never expire through this TTL.
+pub(in crate::ai_gateway) const KEY_QUOTA_MARK_TTL_SECS: u64 = 1800;
+
 /// Why an upstream key was auto-marked and taken out of the usable pool.
 ///
 /// `Authentication` (401/403) is manual-only: it is never auto-probed and

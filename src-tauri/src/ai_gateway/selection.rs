@@ -1,6 +1,7 @@
 use super::{
     GatewayUpstreamProvider, KeyFailureKind, ModelMapping, UpstreamKey, UpstreamProtocol,
     AUTO_DISABLE_PROBE_COOLDOWN_SECS, FAILURE_THRESHOLD, KEY_PROBE_COOLDOWN_SECS,
+    KEY_QUOTA_MARK_TTL_SECS,
 };
 #[cfg(test)]
 use rand::seq::SliceRandom;
@@ -126,9 +127,24 @@ pub(in crate::ai_gateway) fn shuffled_candidates(
     ordered
 }
 
-static WEIGHTED_SCHEDULER: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
+/// Composite accounting key of the weighted scheduler.
+///
+/// One entry exists per provider id plus trimmed requested local model plus
+/// inbound protocol, so a candidate set that mixes models or protocols can
+/// never consume another scope's current-weight. The protocol component is the
+/// canonical endpoint suffix returned by [`UpstreamProtocol::endpoint_path`] —
+/// a stable `&'static str` — because `UpstreamProtocol` is a small `Copy` enum
+/// without a `Hash` implementation and lives outside this module.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct WeightedSchedulerKey {
+    provider_id: String,
+    local_model: String,
+    protocol: &'static str,
+}
 
-fn weighted_scheduler() -> &'static Mutex<HashMap<String, i64>> {
+static WEIGHTED_SCHEDULER: OnceLock<Mutex<HashMap<WeightedSchedulerKey, i64>>> = OnceLock::new();
+
+fn weighted_scheduler() -> &'static Mutex<HashMap<WeightedSchedulerKey, i64>> {
     WEIGHTED_SCHEDULER.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -139,13 +155,51 @@ pub(in crate::ai_gateway) fn reset_weighted_scheduler_for_test() {
     map.clear();
 }
 
+/// Test-only observation seam (AC-035): the number of weighted-scheduler
+/// entries currently tracked for `provider_id` across every model and protocol
+/// scope.
+#[cfg(test)]
+#[allow(dead_code)]
+pub(in crate::ai_gateway) fn weighted_scheduler_entry_count(provider_id: &str) -> usize {
+    weighted_scheduler()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .keys()
+        .filter(|key| key.provider_id == provider_id)
+        .count()
+}
+
+/// Drop every weighted-scheduler entry whose provider id is in `provider_ids`.
+///
+/// Callers pass exactly the ids a successful configuration publication removed
+/// (`before - after`), never the ids that merely happen to be absent from the
+/// writer's configuration. That keeps entries belonging to other
+/// configurations sharing the process-global scheduler — for example another
+/// test home — untouched. A failed write never reaches this call.
+pub(in crate::ai_gateway) fn prune_weighted_scheduler(provider_ids: &HashSet<String>) {
+    if provider_ids.is_empty() {
+        return;
+    }
+    let mut map = weighted_scheduler()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    map.retain(|key, _| !provider_ids.contains(&key.provider_id));
+}
+
 /// Smooth Weighted Round-Robin (SWRR) candidate scheduling.
 ///
 /// Returns all candidates ordered with the SWRR primary candidate at index 0,
 /// followed by remaining candidates sorted descending by updated current_weight
 /// (with provider ID ascending as tie-breaker).
+///
+/// Accounting state is keyed per provider id, trimmed requested local model and
+/// inbound `protocol`, so mixed candidate sets across models or protocols do not
+/// skew each model's distribution. `local_model` is normalized exactly as model
+/// resolution does: trimmed, with a blank or missing value treated as absent.
 pub(in crate::ai_gateway) fn weighted_candidates(
     candidates: &[GatewayUpstreamProvider],
+    local_model: Option<&str>,
+    protocol: UpstreamProtocol,
 ) -> Vec<GatewayUpstreamProvider> {
     if candidates.is_empty() {
         return Vec::new();
@@ -153,24 +207,38 @@ pub(in crate::ai_gateway) fn weighted_candidates(
     if candidates.len() == 1 {
         return candidates.to_vec();
     }
+    let local_model = local_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("")
+        .to_string();
+    let protocol = protocol.endpoint_path();
+    let keys: Vec<WeightedSchedulerKey> = candidates
+        .iter()
+        .map(|c| WeightedSchedulerKey {
+            provider_id: c.id.clone(),
+            local_model: local_model.clone(),
+            protocol,
+        })
+        .collect();
     let mut map = weighted_scheduler().lock().unwrap_or_else(|e| e.into_inner());
     let total_weight: i64 = candidates.iter().map(|c| c.weight.max(1) as i64).sum();
 
     // 1. current_weight += effective_weight
-    for c in candidates {
-        let cw = map.entry(c.id.clone()).or_insert(0);
+    for (c, key) in candidates.iter().zip(keys.iter()) {
+        let cw = map.entry(key.clone()).or_insert(0);
         *cw += c.weight.max(1) as i64;
     }
 
     // 2. 选择 current_weight 最大的候选，平手按 provider.id 升序决胜
     let mut best_idx = 0;
     let mut best_val = (
-        map.get(&candidates[0].id).copied().unwrap_or(0),
+        map.get(&keys[0]).copied().unwrap_or(0),
         Reverse(&candidates[0].id),
     );
     for (idx, c) in candidates.iter().enumerate().skip(1) {
         let val = (
-            map.get(&c.id).copied().unwrap_or(0),
+            map.get(&keys[idx]).copied().unwrap_or(0),
             Reverse(&c.id),
         );
         if val > best_val {
@@ -180,7 +248,7 @@ pub(in crate::ai_gateway) fn weighted_candidates(
     }
 
     // 3. 扣减选中者的 total_weight
-    if let Some(cw) = map.get_mut(&candidates[best_idx].id) {
+    if let Some(cw) = map.get_mut(&keys[best_idx]) {
         *cw -= total_weight;
     }
 
@@ -191,9 +259,9 @@ pub(in crate::ai_gateway) fn weighted_candidates(
         .filter(|(idx, _)| *idx != best_idx)
         .collect();
 
-    remaining.sort_by(|(_, a), (_, b)| {
-        let wa = map.get(&a.id).copied().unwrap_or(0);
-        let wb = map.get(&b.id).copied().unwrap_or(0);
+    remaining.sort_by(|(a_idx, a), (b_idx, b)| {
+        let wa = map.get(&keys[*a_idx]).copied().unwrap_or(0);
+        let wb = map.get(&keys[*b_idx]).copied().unwrap_or(0);
         wb.cmp(&wa).then_with(|| a.id.cmp(&b.id))
     });
 
@@ -991,16 +1059,33 @@ pub(in crate::ai_gateway) fn set_user_enabled(
     provider.enabled = enabled;
 }
 
-/// First key usable for a normal upstream attempt: enabled and not
-/// runtime-marked, in list order. A user-disabled or runtime-marked key never
-/// participates in selection.
-pub(in crate::ai_gateway) fn select_usable_key(
-    provider: &GatewayUpstreamProvider,
-) -> Option<&UpstreamKey> {
-    provider
-        .keys
-        .iter()
-        .find(|key| key.enabled && !key.auto_marked)
+/// Whether a quota mark is old enough to make the key usable again through
+/// normal list-order selection. Eligibility is inclusive at exactly
+/// [`KEY_QUOTA_MARK_TTL_SECS`] seconds and exclusive below it. Auth marks and
+/// quota marks without a marking time never expire this way.
+pub(in crate::ai_gateway) fn quota_mark_expired(key: &UpstreamKey, now: u64) -> bool {
+    key.auto_marked
+        && key.failure_kind == Some(KeyFailureKind::Quota)
+        && key.marked_at.is_some_and(|marked_at| {
+            now.saturating_sub(marked_at) >= KEY_QUOTA_MARK_TTL_SECS
+        })
+}
+
+/// First key usable for a normal upstream attempt: enabled, not already
+/// attempted in the current pass, and either unmarked or carrying a
+/// TTL-expired quota mark, in list order. A user-disabled or runtime-marked
+/// key never participates in selection; `attempted` lets one request pass try
+/// each usable key at most once under in-request bare-429 rotation.
+pub(in crate::ai_gateway) fn select_usable_key<'a>(
+    provider: &'a GatewayUpstreamProvider,
+    now: u64,
+    attempted: &HashSet<String>,
+) -> Option<&'a UpstreamKey> {
+    provider.keys.iter().find(|key| {
+        key.enabled
+            && !attempted.contains(&key.id)
+            && (!key.auto_marked || quota_mark_expired(key, now))
+    })
 }
 
 /// The single quota-marked key eligible for one half-open probe.
@@ -1061,16 +1146,18 @@ pub(in crate::ai_gateway) fn rearm_key_probe(
     key.reason = Some(reason.to_string());
 }
 
-/// The key a read-only quota/usage query is pinned to: the first enabled key in
-/// list order, or the first key when every key is disabled. An empty pool has no
-/// pinned key. This source never follows the serving key.
+/// The key a read-only quota/usage query is pinned to: the first enabled
+/// unmarked key in list order, then the first enabled key when every enabled key
+/// is marked, then the first stored key when no key is enabled. An empty pool
+/// has no pinned key. This source never follows the serving key.
 pub(in crate::ai_gateway) fn pinned_key_value(
     provider: &GatewayUpstreamProvider,
 ) -> Option<&str> {
     provider
         .keys
         .iter()
-        .find(|key| key.enabled)
+        .find(|key| key.enabled && !key.auto_marked)
+        .or_else(|| provider.keys.iter().find(|key| key.enabled))
         .or_else(|| provider.keys.first())
         .map(|key| key.value.as_str())
 }

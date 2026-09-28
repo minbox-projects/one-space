@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-24-gateway-key-pool-rotation.md
-2026-09-24-gateway-key-pool-rotation.md: d88d45f0d0c6607b957734c04ab5f7bfe7b346b8
-2026-09-24-gateway-key-pool-rotation.zh.md: 980312fe723a3d30a1ca4340b545b4ecb785e4a3
+2026-09-24-gateway-key-pool-rotation.md: e49834721a73d2edf0eafdb8086a5643ab3450a5
+2026-09-24-gateway-key-pool-rotation.zh.md: 82939a5cc22d494d8a5b011353b3634f7b1277f7

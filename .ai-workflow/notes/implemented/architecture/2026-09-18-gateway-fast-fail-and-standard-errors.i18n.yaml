@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-18-gateway-fast-fail-and-standard-errors.md
-2026-09-18-gateway-fast-fail-and-standard-errors.md: 8cde9781c3abde49f4247628648f343eec1e9cd1
-2026-09-18-gateway-fast-fail-and-standard-errors.zh.md: 25ae6ba9e0cb05a9f0a5098e6d05d41a253fbec1
+2026-09-18-gateway-fast-fail-and-standard-errors.md: e3b3eb54f22c213cbf1badc4be7355fe2e408ebe
+2026-09-18-gateway-fast-fail-and-standard-errors.zh.md: 65bc56f6050eb232d6582fafe7da93c3e60c3450
