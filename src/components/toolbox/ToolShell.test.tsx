@@ -30,6 +30,19 @@ describe("ToolShell", () => {
     expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
   });
 
+  it("renders the icon slot when provided", () => {
+    render(
+      <ToolShell
+        title="Demo Tool"
+        icon={<div data-testid="tool-icon">icon-content</div>}
+      >
+        <p>tool body</p>
+      </ToolShell>,
+    );
+
+    expect(screen.getByTestId("tool-icon")).toHaveTextContent("icon-content");
+  });
+
   it("renders children content", () => {
     render(
       <ToolShell title="Demo Tool">

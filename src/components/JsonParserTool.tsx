@@ -28,17 +28,17 @@ export function JsonParserTool() {
   };
 
   return (
-    <div className="flex items-start gap-3">
-      <div className={`rounded-lg p-2 ${iconClassName}`}>
-        <ToolIcon className="h-5 w-5" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <ToolShell
-          titleId="json-parser-title"
-          title={t("jsonParser", "JSON Parser")}
-          description={t("jsonParserToolDesc", "Validate and format JSON locally in one editable workspace.")}
-          error={error ? `${t("jsonParserError", "JSON parse error")}: ${error}` : null}
-        >
+    <ToolShell
+      titleId="json-parser-title"
+      title={t("jsonParser", "JSON Parser")}
+      description={t("jsonParserToolDesc", "Validate and format JSON locally in one editable workspace.")}
+      error={error ? `${t("jsonParserError", "JSON parse error")}: ${error}` : null}
+      icon={
+        <div className={`rounded-lg p-2 ${iconClassName}`}>
+          <ToolIcon className="h-5 w-5" />
+        </div>
+      }
+    >
           <div className="space-y-4 rounded-lg border bg-card p-4">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <label className="grid gap-1.5 text-sm font-medium" htmlFor="json-parser-indent">
@@ -92,7 +92,5 @@ export function JsonParserTool() {
             />
           </div>
         </ToolShell>
-      </div>
-    </div>
   );
 }

@@ -325,16 +325,16 @@ export function Md5EncryptionTool() {
   };
 
   return (
-    <div className="flex items-start gap-3">
-      <div className={`rounded-lg p-2 ${iconClassName}`}>
-        <ToolIcon className="h-5 w-5" aria-hidden="true" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <ToolShell
-          titleId="md5-encryption-title"
-          title={t("md5Encryption.title")}
-          description={t("md5Encryption.description")}
-        >
+    <ToolShell
+      titleId="md5-encryption-title"
+      title={t("md5Encryption.title")}
+      description={t("md5Encryption.description")}
+      icon={
+        <div className={`rounded-lg p-2 ${iconClassName}`}>
+          <ToolIcon className="h-5 w-5" aria-hidden="true" />
+        </div>
+      }
+    >
           <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
         <p>{t("md5Encryption.securityNotice")}</p>
@@ -417,8 +417,6 @@ export function Md5EncryptionTool() {
           </p>
         )}
       </section>
-        </ToolShell>
-      </div>
-    </div>
+    </ToolShell>
   );
 }

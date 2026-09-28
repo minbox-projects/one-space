@@ -489,20 +489,20 @@ export function JttDataParserTool({
     "min-h-48 w-full resize rounded-md border bg-background p-3 font-mono text-sm leading-6 outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring";
 
   return (
-    <div className="flex items-start gap-3">
-      <div className="rounded-lg bg-emerald-500/10 p-2 text-emerald-600">
-        <Binary className="h-5 w-5" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <ToolShell
-          titleId="jtt-parser-title"
-          title={label("JT/T 数据解析", "JT/T Data Parser")}
-          description={label(
-            "本地解析 JT/T 808、809、1078 报文并转换十六进制。",
-            "Parse JT/T 808, 809, 1078 packets and convert hex locally.",
-          )}
-        >
-          <div className="space-y-5">
+    <ToolShell
+      titleId="jtt-parser-title"
+      title={label("JT/T 数据解析", "JT/T Data Parser")}
+      description={label(
+        "本地解析 JT/T 808、809、1078 报文并转换十六进制。",
+        "Parse JT/T 808, 809, 1078 packets and convert hex locally.",
+      )}
+      icon={
+        <div className="rounded-lg bg-emerald-500/10 p-2 text-emerald-600">
+          <Binary className="h-5 w-5" />
+        </div>
+      }
+    >
+      <div className="space-y-5">
             <div role="tablist" aria-label={label("解析工具标签页", "Parser tabs")} className="flex flex-wrap gap-1 rounded-lg border bg-muted/40 p-1">
         {tabs.map((tab) => (
           <button
@@ -982,7 +982,5 @@ export function JttDataParserTool({
       />
           </div>
         </ToolShell>
-      </div>
-    </div>
   );
 }
