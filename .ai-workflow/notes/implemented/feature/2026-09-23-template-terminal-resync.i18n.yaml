@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-09-23-template-terminal-resync.md
-2026-09-23-template-terminal-resync.md: a1c8d4a8620b851416c0e0e0df69e1bce972ce20
-2026-09-23-template-terminal-resync.zh.md: bcbe5f578e81f253b839ea66be21a9d94e8d00d0
+2026-09-23-template-terminal-resync.md: 91edc03bcfb271bbf5ff99d2054c33b0ff9d94ca
+2026-09-23-template-terminal-resync.zh.md: 5f3af4945b44d84e84185d78dfa8fc460ffe3834

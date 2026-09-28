@@ -14,7 +14,7 @@ Status: implemented
 
 现在每个生产变更都经该原语执行：映射健康结算（`RequestHealth::apply` 与 `apply_failure`）、key 标记与清除写入（`persist_key_runtime_state`，含 TTL 选中清除）、服务商新增/删除/启用/重新启用命令、本地 Key 新增、删除、默认与变更命令、网关启用标志、用量保留、模板自动刷新、模板同步、派生服务商创建与删除，以及终端同步台账写入。`ai_gateway_sync_provider_template` 在锁外拉取模板模型清单并读取服务商载荷，在锁内对最新配置应用 `apply_template_sync_from_body`，随后在该变更之后执行 best-effort 终端刷新；刷新经自己的串行变更持久化台账，因此任何上游网络等待都绝不处于锁内。
 
-当变更不产生实际状态差异时，写入被抑制。`RequestHealth::apply` 与 `apply_failure` 在结算前后比较受影响行的 `MappingRuntimeState` 快照，`persist_key_runtime_state` 把变更后的 key 与其克隆比较，`persist_enabled` 在标志已经一致时报告无变化；无操作变更仍用新解析结果预热读取缓存，但保持加密文件字节完全不变。
+仅当变更自身前后比较并报告无变化时写入才被抑制：映射健康结算（`RequestHealth::apply` 与 `apply_failure`，比较受影响行的 `MappingRuntimeState` 快照）、运行时 key 状态（`persist_key_runtime_state`，把变更后的 key 与其克隆比较）与网关启用标志（`persist_enabled`，在标志已经一致时报告无变化）。其余命令保存无条件报告 `changed = true`，因此对服务商及其映射集或 key 的幂等重复保存、删除不存在的 id、或重新选择当前默认 key 仍可能重写加密文件；计划只要求对结算与运行时 key/映射状态写入做抑制。被抑制的变更仍用新解析结果预热读取缓存，但保持加密文件字节完全不变。
 
 发布是原子且无碰撞的。`write_config_through_temp` 归一化、加密并把载荷写入调用方持有的临时文件，再将其 rename 覆盖配置路径；`modify_config` 与 `write_config` 经 `unique_config_temp_path` 派生该路径，在文件名后追加进程 id 与进程单调计数器（`CONFIG_TEMP_COUNTER`），因此任何两次写入都不可能选中同一个临时文件。`write_config_through_temp` 返回真正落盘的归一化值，调用方存入读取缓存的是该值——而不是归一化前的输入。成功发布后，写入前存在且不在已发布配置中的服务商 id，其调度器条目由 [API Gateway Scheduler Accounts per Provider, Local Model and Protocol and Prunes Deleted Providers](2026-09-25-gateway-scheduler-accounting-scope.md) 清理；写入失败不清理任何条目。
 
@@ -36,7 +36,7 @@ Status: implemented
 ## Consequences
 
 - 并发配置写入者不再互相丢失变更：并发 key 标记、key 标记与映射健康结算竞争、重复写入者以及用户编辑与结算竞争，最终都留下完整、可读的配置。
-- 不产生任何变化的结算保持加密文件字节完全不变，无操作变更也仍以预热的缓存让下一次读取无需解密；锁中毒被恢复，网关继续服务。
+- 不产生任何变化的结算或运行时 key 状态写入保持加密文件字节完全不变，而幂等的命令重复保存仍可能重写该文件；被抑制的变更仍以预热的缓存让下一次读取无需解密；锁中毒被恢复，网关继续服务。
 - 写锁绝不会在上游网络等待期间被持有：模板拉取发生在变更之前、终端刷新发生在变更之后，且在中继请求等待缓慢上游时并发变更仍能完成。
 - 热读取绝不解密，任何文件身份变化都让下一次读取观察到新内容，包括不调用任何失效辅助函数的直接磁盘重写；文件缺失或为空使条目失效。
 - 每次写入都使用唯一临时文件与原子 rename，因此部分写入绝不可能发布，写入失败保留此前的完整字节；版本门控懒迁移保持原子且一次性，其版本在锁内重新确认。
