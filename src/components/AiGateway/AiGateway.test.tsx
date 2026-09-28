@@ -1,12 +1,15 @@
 import { act, fireEvent, renderHook, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { AiGateway } from "@/components/AiGateway";
 import {
   AI_GATEWAY_CONFIG_UPDATED_EVENT,
+  AI_GATEWAY_KEY_AUTH_FAILED_EVENT,
+  AI_GATEWAY_KEY_AUTH_TOAST_WINDOW_MS,
   formatGatewayTimestamp,
   maskSecret,
   type GatewayConfig,
+  type GatewayKeyAuthFailedEvent,
   type GatewayProviderTemplate,
   type GatewayProviderTemplateModel,
   type GatewayProviderTemplateView,
@@ -3407,6 +3410,141 @@ describe("AiGateway 操作提示与实际操作相符", () => {
         i18n.t("aiGatewayLocalKeyDeleted", { label: "Main" }),
       ),
     ).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 3: per-provider authentication-failed toast aggregation (AC-013).
+// RED tests for the frozen interface contract. Only this test file is touched.
+// ---------------------------------------------------------------------------
+
+describe("AiGateway 鉴权失败 toast 按服务商聚合 (AC-013)", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function authFailedEvent(
+    overrides: Partial<GatewayKeyAuthFailedEvent> = {},
+  ): GatewayKeyAuthFailedEvent {
+    return {
+      provider_id: "p-alpha",
+      provider_name: "Provider Alpha",
+      key_id: "k-alpha-1",
+      key_name: "sk-alpha-secret-one",
+      reason: "invalid api key",
+      marked_at: 1_700_000_000,
+      ...overrides,
+    };
+  }
+
+  function deliver(
+    handler: (event: { payload: GatewayKeyAuthFailedEvent }) => void,
+    payload: GatewayKeyAuthFailedEvent,
+  ) {
+    act(() => {
+      handler({ payload });
+    });
+  }
+
+  it("同一服务商窗口内聚合为一条 toast，过期后再推送，不同服务商各自成条且不含密钥值", async () => {
+    const title = i18n.t("aiGatewayKeyAuthFailedToastTitle");
+    const alphaCount2 = i18n.t("aiGatewayKeyAuthFailedToastDescription", {
+      provider: "Provider Alpha",
+      count: 2,
+    });
+    const alphaCount1 = i18n.t("aiGatewayKeyAuthFailedToastDescription", {
+      provider: "Provider Alpha",
+      count: 1,
+    });
+    const betaCount1 = i18n.t("aiGatewayKeyAuthFailedToastDescription", {
+      provider: "Provider Beta",
+      count: 1,
+    });
+
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus({ running: false }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByTestId("ai-gateway-providers");
+
+    const authCall = listenMock.mock.calls.find(
+      ([eventName]) => eventName === AI_GATEWAY_KEY_AUTH_FAILED_EVENT,
+    );
+    expect(
+      authCall,
+      "AiGateway 必须订阅 ai-gateway-key-auth-failed 事件",
+    ).toBeDefined();
+    const handler = authCall![1] as (event: {
+      payload: GatewayKeyAuthFailedEvent;
+    }) => void;
+
+    vi.useFakeTimers();
+
+    // 同一服务商的两把密钥在窗口内到达：窗口未到期前不推送 toast。
+    deliver(
+      handler,
+      authFailedEvent({ key_id: "k-a1", key_name: "sk-alpha-secret-one" }),
+    );
+    deliver(
+      handler,
+      authFailedEvent({ key_id: "k-a2", key_name: "sk-alpha-secret-two" }),
+    );
+    expect(screen.queryAllByText(title)).toHaveLength(0);
+
+    act(() => {
+      vi.advanceTimersByTime(AI_GATEWAY_KEY_AUTH_TOAST_WINDOW_MS);
+    });
+
+    // 窗口到期后恰好一条 toast，命名服务商并携带计数 2。
+    expect(screen.getAllByText(title)).toHaveLength(1);
+    expect(screen.getByText(alphaCount2)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("sk-alpha-secret-one");
+    expect(document.body.textContent).not.toContain("sk-alpha-secret-two");
+
+    // 另一服务商在自己的窗口内到达：未到期前不追加，到期后追加该服务商一条。
+    deliver(
+      handler,
+      authFailedEvent({
+        provider_id: "p-beta",
+        provider_name: "Provider Beta",
+        key_id: "k-b1",
+        key_name: "sk-beta-secret",
+      }),
+    );
+    expect(screen.getAllByText(title)).toHaveLength(1);
+
+    act(() => {
+      vi.advanceTimersByTime(AI_GATEWAY_KEY_AUTH_TOAST_WINDOW_MS);
+    });
+    expect(screen.getAllByText(title)).toHaveLength(2);
+    expect(screen.getByText(betaCount1)).toBeInTheDocument();
+
+    // 第一个服务商的窗口已过期：再次到达开新窗口并推送新 toast。
+    deliver(
+      handler,
+      authFailedEvent({ key_id: "k-a3", key_name: "sk-alpha-secret-three" }),
+    );
+    expect(screen.getAllByText(title)).toHaveLength(2);
+
+    act(() => {
+      vi.advanceTimersByTime(AI_GATEWAY_KEY_AUTH_TOAST_WINDOW_MS);
+    });
+    expect(screen.getAllByText(title)).toHaveLength(3);
+    expect(screen.getByText(alphaCount1)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("sk-alpha-secret-three");
+
+    // 先推送的两条 toast 仍在（默认展示 5 秒，尚未到期）。
+    expect(screen.getByText(alphaCount2)).toBeInTheDocument();
+    expect(screen.getByText(betaCount1)).toBeInTheDocument();
   });
 });
 

@@ -8,6 +8,10 @@ export const AI_GATEWAY_DEFAULT_PORT = import.meta.env.DEV
   : AI_GATEWAY_RELEASE_PORT;
 export const AI_GATEWAY_STATUS_UPDATED_EVENT = "ai-gateway-status-update";
 export const AI_GATEWAY_CONFIG_UPDATED_EVENT = "ai-gateway-config-update";
+/** Runtime broadcast emitted when a key transitions into the authentication-failed mark. */
+export const AI_GATEWAY_KEY_AUTH_FAILED_EVENT = "ai-gateway-key-auth-failed";
+/** Per-provider aggregation window for authentication-failed toasts. */
+export const AI_GATEWAY_KEY_AUTH_TOAST_WINDOW_MS = 1500;
 
 /** Terminal tools AI Gateway is allowed to configure; claude/antigravity are excluded. */
 export const AI_GATEWAY_SUPPORTED_TERMINAL_TOOLS = ["opencode", "codex"] as const;
@@ -127,6 +131,27 @@ export function providerKeyPool(
   return (
     (provider as GatewayUpstreamProviderWithKeys | null | undefined)?.keys ?? []
   );
+}
+
+/** The runtime-marked keys of a provider, preserving the pool order. */
+export function providerMarkedKeys(
+  provider: GatewayUpstreamProvider | null | undefined,
+): GatewayProviderKey[] {
+  return providerKeyPool(provider).filter((key) => key.auto_marked);
+}
+
+/**
+ * Payload of the authentication-failed runtime event.
+ *
+ * It never carries a key value; `key_name` is the operator-visible label.
+ */
+export interface GatewayKeyAuthFailedEvent {
+  provider_id: string;
+  provider_name: string;
+  key_id: string;
+  key_name: string;
+  reason: string;
+  marked_at: number;
 }
 
 export interface QuotaCredits {

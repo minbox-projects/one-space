@@ -2595,6 +2595,38 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
     expect(onReenableKey).toHaveBeenCalledWith("p1", "k1");
   });
 
+  it("AC-012 鉴权标记密钥在状态徽章与标记时间旁展示脱敏原因，重新启用按钮仍回调", async () => {
+    const user = userEvent.setup();
+    const markedAt = 1_700_000_000;
+    const { onReenableKey } = renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({
+            id: "k-auth",
+            name: "Auth Key",
+            auto_marked: true,
+            failure_kind: "authentication",
+            marked_at: markedAt,
+            reason: "invalid api key",
+          }),
+        ],
+      }),
+    });
+
+    const stateBadge = screen.getByTestId("ai-gateway-key-state-0");
+    expect(stateBadge).toHaveTextContent(
+      i18n.t("aiGatewayProviderKeyStateAuth"),
+    );
+    expect(stateBadge).toHaveTextContent(formatGatewayTimestamp(markedAt)!);
+
+    const reason = screen.getByTestId("ai-gateway-key-reason-0");
+    expect(reason).toHaveTextContent(i18n.t("aiGatewayProviderKeyReasonLabel"));
+    expect(reason).toHaveTextContent("invalid api key");
+
+    await user.click(screen.getByTestId("ai-gateway-reenable-key-0"));
+    expect(onReenableKey).toHaveBeenCalledWith("p1", "k-auth");
+  });
+
   it("删除其中一个密钥后保存，提交载荷省略该密钥并保留另一个", async () => {
     const user = userEvent.setup();
     const { onSave } = renderKeyDialog({

@@ -623,3 +623,80 @@ describe("AI 网关服务商批量刷新额度国际化键", () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// Step 3: marked-key block heading, reason label and authentication toast copy.
+// RED assertions: implementer must add these exact keys to both dictionaries.
+// ---------------------------------------------------------------------------
+
+const MARKED_KEY_SURFACING_COPY: Record<
+  | "aiGatewayProviderMarkedKeys"
+  | "aiGatewayProviderKeyReasonLabel"
+  | "aiGatewayKeyAuthFailedToastTitle"
+  | "aiGatewayKeyAuthFailedToastDescription",
+  Record<"en" | "zh", string>
+> = {
+  aiGatewayProviderMarkedKeys: {
+    en: "Marked keys",
+    zh: "已标记密钥",
+  },
+  aiGatewayProviderKeyReasonLabel: {
+    en: "Reason",
+    zh: "原因",
+  },
+  aiGatewayKeyAuthFailedToastTitle: {
+    en: "Key authentication failed",
+    zh: "密钥鉴权失败",
+  },
+  aiGatewayKeyAuthFailedToastDescription: {
+    en: "{{provider}} has {{count}} key(s) failing authentication; re-enable them in the AI Gateway.",
+    zh: "{{provider}} 有 {{count}} 个密钥鉴权失败，请在 AI Gateway 中手动重新启用。",
+  },
+};
+
+describe("AI 网关已标记密钥与鉴权失败通知国际化键", () => {
+  it.each(["en", "zh"] as const)("为 %s 提供精确文案", (language) => {
+    for (const [key, copy] of Object.entries(MARKED_KEY_SURFACING_COPY)) {
+      const translation = i18n.getResource(language, "translation", key);
+      expect(typeof translation, `${language}:${key} 应为字符串`).toBe(
+        "string",
+      );
+      expect(translation, `${language}:${key} 文案不匹配`).toBe(
+        copy[language],
+      );
+    }
+  });
+
+  it.each(["en", "zh"] as const)(
+    "为 %s 的通知描述保留 provider 与 count 占位符并正常插值",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      const raw = i18n.getResource(
+        language,
+        "translation",
+        "aiGatewayKeyAuthFailedToastDescription",
+      ) as string;
+      expect(raw).toContain("{{provider}}");
+      expect(raw).toContain("{{count}}");
+
+      const rendered = i18n.t("aiGatewayKeyAuthFailedToastDescription", {
+        provider: "Provider Alpha",
+        count: 2,
+      });
+      expect(rendered).toContain("Provider Alpha");
+      expect(rendered).toContain("2");
+      expect(rendered).not.toContain("{{");
+    },
+  );
+
+  it("新增鉴权失败相关键后 en 与 zh 的键路径集合仍完全一致", () => {
+    const enPaths = collectKeyPaths(resourceBundle("en"));
+    const zhPaths = collectKeyPaths(resourceBundle("zh"));
+    const enSet = new Set(enPaths);
+    const zhSet = new Set(zhPaths);
+    expect({
+      onlyEn: enPaths.filter((path) => !zhSet.has(path)),
+      onlyZh: zhPaths.filter((path) => !enSet.has(path)),
+    }).toEqual({ onlyEn: [], onlyZh: [] });
+  });
+});
+

@@ -587,6 +587,11 @@ const resources = {
       aiGatewayProviderKeyStateAuth: "Authentication failed",
       aiGatewayProviderKeyMarkedAt: "Marked at {{time}}",
       aiGatewayProviderKeysSummary: "{{count}} key(s)",
+      aiGatewayProviderMarkedKeys: "Marked keys",
+      aiGatewayProviderKeyReasonLabel: "Reason",
+      aiGatewayKeyAuthFailedToastTitle: "Key authentication failed",
+      aiGatewayKeyAuthFailedToastDescription:
+        "{{provider}} has {{count}} key(s) failing authentication; re-enable them in the AI Gateway.",
       aiGatewayProvidersRefreshQuota: "Refresh quota",
       aiGatewayProvidersRefreshQuotaAria:
         "Refresh quota for supported providers in the current filter results",
@@ -4484,6 +4489,11 @@ const resources = {
       aiGatewayProviderKeyStateAuth: "鉴权失败",
       aiGatewayProviderKeyMarkedAt: "标记于 {{time}}",
       aiGatewayProviderKeysSummary: "{{count}} 个密钥",
+      aiGatewayProviderMarkedKeys: "已标记密钥",
+      aiGatewayProviderKeyReasonLabel: "原因",
+      aiGatewayKeyAuthFailedToastTitle: "密钥鉴权失败",
+      aiGatewayKeyAuthFailedToastDescription:
+        "{{provider}} 有 {{count}} 个密钥鉴权失败，请在 AI Gateway 中手动重新启用。",
       aiGatewayProvidersRefreshQuota: "刷新额度",
       aiGatewayProvidersRefreshQuotaAria: "刷新当前筛选结果中支持额度监控的服务商",
       aiGatewayProvidersRefreshQuotaDisabled:

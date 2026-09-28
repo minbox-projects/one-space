@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { UpstreamProviderList } from "./UpstreamProviderList";
 import {
+  formatGatewayTimestamp,
   type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
   type ProviderGoUsage,
@@ -1515,6 +1516,109 @@ describe("UpstreamProviderList 批量刷新当前筛选结果额度", () => {
     // 新增服务商按钮与模板管理按钮不在工具栏内部，而在头部主操作区
     expect(
       within(toolbar).queryByRole("button", { name: /Add provider/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 3: provider-card marked-key block with a re-enable action (AC-011).
+// RED tests for the frozen interface contract. Only this test file is touched.
+// ---------------------------------------------------------------------------
+
+describe("UpstreamProviderList 已标记密钥区块 (AC-011)", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("鉴权标记的密钥展示名称、状态、标记时间、脱敏原因与重新启用按钮，未标记密钥不入区块", async () => {
+    const user = userEvent.setup();
+    const onReenableKey = vi.fn();
+    const markedAt = 1_700_000_000;
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({
+        id: "p-auth",
+        name: "Auth Provider",
+        keys: [
+          providerKey({ id: "k-ok", name: "Healthy Key" }),
+          providerKey({
+            id: "k-auth",
+            name: "Broken Key",
+            auto_marked: true,
+            failure_kind: "authentication",
+            marked_at: markedAt,
+            reason: "invalid api key",
+          }),
+        ],
+      }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+        onReenableKey={onReenableKey}
+      />,
+    );
+
+    const block = screen.getByTestId("ai-gateway-provider-marked-keys-p-auth");
+    expect(block).toHaveTextContent(i18n.t("aiGatewayProviderMarkedKeys"));
+
+    const row = screen.getByTestId("ai-gateway-marked-key-k-auth");
+    expect(within(block).getByTestId("ai-gateway-marked-key-k-auth")).toBe(row);
+    expect(row).toHaveTextContent("Broken Key");
+    expect(row).toHaveTextContent(i18n.t("aiGatewayProviderKeyStateAuth"));
+    expect(row).toHaveTextContent(
+      i18n.t("aiGatewayProviderKeyMarkedAt", {
+        time: formatGatewayTimestamp(markedAt)!,
+      }),
+    );
+
+    const reason = screen.getByTestId("ai-gateway-marked-key-reason-k-auth");
+    expect(reason).toHaveTextContent(i18n.t("aiGatewayProviderKeyReasonLabel"));
+    expect(reason).toHaveTextContent("invalid api key");
+
+    // 未标记的密钥不进入标记密钥区块。
+    expect(
+      screen.queryByTestId("ai-gateway-marked-key-k-ok"),
+    ).not.toBeInTheDocument();
+
+    // 既有密钥数量摘要保持不变。
+    expect(
+      screen.getByTestId("ai-gateway-provider-keys-p-auth"),
+    ).toHaveTextContent(i18n.t("aiGatewayProviderKeysSummary", { count: 2 }));
+
+    const reenable = screen.getByTestId("ai-gateway-marked-key-reenable-k-auth");
+    expect(reenable).toHaveTextContent(i18n.t("aiGatewayProviderKeyReenable"));
+    await user.click(reenable);
+    expect(onReenableKey).toHaveBeenCalledTimes(1);
+    expect(onReenableKey).toHaveBeenCalledWith("p-auth", "k-auth");
+  });
+
+  it("没有已标记密钥的服务商不渲染标记密钥区块", () => {
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={[
+          makeProvider({
+            id: "p-clean",
+            name: "Clean Provider",
+            keys: [providerKey({ id: "k1", name: "Primary" })],
+          }),
+        ]}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+        onReenableKey={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByTestId("ai-gateway-provider-marked-keys-p-clean"),
     ).not.toBeInTheDocument();
   });
 });

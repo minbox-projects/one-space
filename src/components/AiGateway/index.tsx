@@ -20,6 +20,8 @@ import { errorToMessage } from "@/lib/messages";
 import {
   AI_GATEWAY_CONFIG_UPDATED_EVENT,
   AI_GATEWAY_DEFAULT_PORT,
+  AI_GATEWAY_KEY_AUTH_FAILED_EVENT,
+  AI_GATEWAY_KEY_AUTH_TOAST_WINDOW_MS,
   AI_GATEWAY_STATUS_UPDATED_EVENT,
   aggregateModels,
   aiGatewayConfigureTerminal,
@@ -54,6 +56,7 @@ import {
   type CreateProviderFromTemplateRequest,
   type GatewayConfig,
   type GatewayKey,
+  type GatewayKeyAuthFailedEvent,
   type GatewayProviderTemplate,
   type GatewayProviderTemplateView,
   type GatewayStatus,
@@ -289,6 +292,70 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       unlisten?.();
     };
   }, [isTauri, load]);
+
+  // 订阅密钥鉴权失败广播：同一服务商在聚合窗口内到达多次只推送一条带计数的
+  // warning toast，窗口过期后再次到达则开新窗口并推送新 toast；事件不含密钥值。
+  useEffect(() => {
+    if (!isTauri) return;
+    const pending = new Map<
+      string,
+      { providerName: string; count: number; timer: number }
+    >();
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+
+    const flush = (providerId: string) => {
+      const entry = pending.get(providerId);
+      if (!entry) return;
+      pending.delete(providerId);
+      pushToast({
+        kind: "warning",
+        title: t("aiGatewayKeyAuthFailedToastTitle", "Key authentication failed"),
+        description: t("aiGatewayKeyAuthFailedToastDescription", {
+          provider: entry.providerName,
+          count: entry.count,
+        }),
+      });
+    };
+
+    void listen<GatewayKeyAuthFailedEvent>(
+      AI_GATEWAY_KEY_AUTH_FAILED_EVENT,
+      (event) => {
+        const { provider_id, provider_name } = event.payload;
+        const existing = pending.get(provider_id);
+        if (existing) {
+          existing.count += 1;
+          return;
+        }
+        const entry = {
+          providerName: provider_name,
+          count: 1,
+          timer: window.setTimeout(
+            () => flush(provider_id),
+            AI_GATEWAY_KEY_AUTH_TOAST_WINDOW_MS,
+          ),
+        };
+        pending.set(provider_id, entry);
+      },
+    )
+      .then((release) => {
+        if (disposed) {
+          release();
+        } else {
+          unlisten = release;
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+      for (const entry of pending.values()) {
+        window.clearTimeout(entry.timer);
+      }
+      pending.clear();
+    };
+  }, [isTauri, pushToast, t]);
 
   const refreshTodayUsage = useCallback(
     async (silent = true) => {
@@ -1208,6 +1275,9 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
             }
             onAdd={() => setIsTemplatePickerOpen(true)}
             onManageTemplates={() => setIsTemplateManageOpen(true)}
+            onReenableKey={(providerId, keyId) =>
+              void handleReenableProviderKey(providerId, keyId)
+            }
           />
         </div>
 

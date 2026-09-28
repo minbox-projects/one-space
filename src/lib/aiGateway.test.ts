@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AI_GATEWAY_DEFAULT_PORT,
+  AI_GATEWAY_KEY_AUTH_FAILED_EVENT,
+  AI_GATEWAY_KEY_AUTH_TOAST_WINDOW_MS,
   aggregateModels,
   aiGatewayConfigureTerminal,
   aiGatewayDeleteKey,
@@ -43,6 +45,7 @@ import {
   localBaseUrl,
   maskSecret,
   notifyTemplateAutoRefreshIntervalChanged,
+  providerMarkedKeys,
   resolveAggregatedModelName,
   resolveAggregatedReasoningEfforts,
   resolveDefaultKeyId,
@@ -51,6 +54,7 @@ import {
   usageStatusTranslationKey,
   type GatewayConfig,
   type GatewayKey,
+  type GatewayProviderKey,
   type GatewayUpstreamProvider,
   type ModelPrice,
   type UsageMetrics,
@@ -1978,5 +1982,65 @@ describe("AI Gateway 上游密钥池契约", () => {
       expect(Object.keys(payload)).not.toContain("keyId");
       expect(Object.keys(payload)).not.toContain("key_id");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 3: authentication-notification event literal, aggregation window and
+// marked-key selector. RED tests for the frozen interface contract.
+// ---------------------------------------------------------------------------
+
+describe("providerMarkedKeys 已标记密钥筛选", () => {
+  it("冻结鉴权失败事件字面量与 1500ms 聚合窗口", () => {
+    expect(AI_GATEWAY_KEY_AUTH_FAILED_EVENT).toBe(
+      "ai-gateway-key-auth-failed",
+    );
+    expect(AI_GATEWAY_KEY_AUTH_TOAST_WINDOW_MS).toBe(1500);
+  });
+
+  it("缺少密钥池或服务商为空时返回空数组", () => {
+    expect(providerMarkedKeys(null)).toEqual([]);
+    expect(providerMarkedKeys(undefined)).toEqual([]);
+
+    const withoutPool = provider();
+    delete (withoutPool as { keys?: unknown }).keys;
+    expect(providerMarkedKeys(withoutPool)).toEqual([]);
+  });
+
+  it("仅保留 auto_marked 的密钥并保持密钥池顺序，鉴权与额度标记都被选中", () => {
+    const p = provider({
+      keys: [
+        providerKey({ id: "k-unmarked", name: "Unmarked" }),
+        providerKey({
+          id: "k-quota",
+          name: "Quota Key",
+          auto_marked: true,
+          failure_kind: "quota",
+          marked_at: 1_700_000_000,
+        }),
+        providerKey({
+          id: "k-disabled",
+          name: "Disabled Unmarked",
+          enabled: false,
+        }),
+        providerKey({
+          id: "k-auth",
+          name: "Auth Key",
+          auto_marked: true,
+          failure_kind: "authentication",
+          marked_at: 1_700_000_100,
+          reason: "invalid api key",
+        }),
+      ],
+    });
+
+    const marked = providerMarkedKeys(p);
+    expect(marked.map((entry: GatewayProviderKey) => entry.id)).toEqual([
+      "k-quota",
+      "k-auth",
+    ]);
+    expect(
+      marked.map((entry: GatewayProviderKey) => entry.failure_kind),
+    ).toEqual(["quota", "authentication"]);
   });
 });

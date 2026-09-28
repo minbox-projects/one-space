@@ -1023,6 +1023,16 @@ export function ProviderDetailDialog({
                             </span>
                           ) : null}
                         </span>
+                        {key.auto_marked && key.reason && key.reason.trim() ? (
+                          <span
+                            data-testid={`ai-gateway-key-reason-${index}`}
+                            className="max-w-[180px] truncate text-[11px] text-muted-foreground"
+                            title={key.reason.trim()}
+                          >
+                            {t("aiGatewayProviderKeyReasonLabel", "Reason")}:{" "}
+                            {key.reason.trim()}
+                          </span>
+                        ) : null}
                         <Switch
                           data-testid={`ai-gateway-key-toggle-${index}`}
                           aria-label={t("aiGatewayProviderKeyToggleAria", {

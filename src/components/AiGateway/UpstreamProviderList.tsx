@@ -24,10 +24,14 @@ import {
 } from "./ProviderTemplateIcon";
 import { formatTimeHms } from "./gatewayShared";
 import {
+  formatGatewayTimestamp,
   isCommandCodeProvider,
   isOpencodeGoProvider,
   isMappingDeprecated,
   providerKeyPool,
+  providerKeyState,
+  providerMarkedKeys,
+  PROVIDER_KEY_STATE_TRANSLATION_KEYS,
   type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
 } from "@/lib/aiGateway";
@@ -44,6 +48,8 @@ type UpstreamProviderListProps = {
   onToggleEnabled: (provider: GatewayUpstreamProvider, enabled: boolean) => void;
   onAdd: () => void;
   onManageTemplates?: () => void;
+  /** Re-enable one runtime-marked key of a provider. */
+  onReenableKey?: (providerId: string, keyId: string) => void;
 };
 
 export function UpstreamProviderList({
@@ -55,6 +61,7 @@ export function UpstreamProviderList({
   onToggleEnabled,
   onAdd,
   onManageTemplates,
+  onReenableKey,
 }: UpstreamProviderListProps) {
   const { t } = useTranslation();
   // 计算所有服务商之前仅获取一次当前时间（有意读取时钟，providers 变化时重拍）
@@ -496,6 +503,7 @@ export function UpstreamProviderList({
             const isEnabled = provider.enabled;
             const mappingCount = provider.mappings?.length ?? 0;
             const providerKeys = providerKeyPool(provider);
+            const markedKeys = providerMarkedKeys(provider);
             const autoDisabledMappings = (provider.mappings ?? []).filter(
               (mapping) => mapping.auto_disabled === true,
             );
@@ -723,6 +731,69 @@ export function UpstreamProviderList({
                           defaultValue: `${autoDisabledMappings.length} mapping(s) auto-disabled`,
                         })}
                       </span>
+                    </div>
+                  ) : null}
+
+                  {/* 已标记密钥区块：展示运行时标记的每把密钥并可单独重新启用 */}
+                  {markedKeys.length > 0 ? (
+                    <div
+                      data-testid={`ai-gateway-provider-marked-keys-${provider.id}`}
+                      className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-2"
+                    >
+                      <div className="text-[11px] font-semibold text-amber-700 dark:text-amber-400">
+                        {t("aiGatewayProviderMarkedKeys", "Marked keys")}
+                      </div>
+                      <div className="mt-1.5 space-y-1.5">
+                        {markedKeys.map((key) => {
+                          const markedTime = formatGatewayTimestamp(key.marked_at);
+                          const reason = key.reason?.trim() ?? "";
+                          return (
+                            <div
+                              key={key.id}
+                              data-testid={`ai-gateway-marked-key-${key.id}`}
+                              className="flex flex-col gap-1 rounded-md border border-border/60 bg-background/60 p-1.5 text-[11px] text-muted-foreground"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span
+                                  className="min-w-0 flex-1 truncate font-medium text-foreground"
+                                  title={key.name}
+                                >
+                                  {key.name}
+                                </span>
+                                <span className="inline-flex shrink-0 items-center rounded-md border border-border/70 bg-background px-1.5 py-0.5 text-[10px] font-medium leading-4 text-muted-foreground">
+                                  {t(PROVIDER_KEY_STATE_TRANSLATION_KEYS[providerKeyState(key)])}
+                                </span>
+                              </div>
+                              {markedTime ? (
+                                <span className="opacity-80">
+                                  {t("aiGatewayProviderKeyMarkedAt", {
+                                    time: markedTime,
+                                    defaultValue: `Marked at ${markedTime}`,
+                                  })}
+                                </span>
+                              ) : null}
+                              {reason ? (
+                                <span
+                                  data-testid={`ai-gateway-marked-key-reason-${key.id}`}
+                                  className="break-words"
+                                >
+                                  {t("aiGatewayProviderKeyReasonLabel", "Reason")}: {reason}
+                                </span>
+                              ) : null}
+                              <button
+                                type="button"
+                                data-testid={`ai-gateway-marked-key-reenable-${key.id}`}
+                                onClick={() => onReenableKey?.(provider.id, key.id)}
+                                disabled={busy}
+                                className="inline-flex h-6 w-fit items-center gap-1 rounded-md border border-border bg-background px-2 text-[11px] font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
+                              >
+                                <RotateCcw className="h-3 w-3" />
+                                {t("aiGatewayProviderKeyReenable", "Re-enable")}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   ) : null}
                 </div>
