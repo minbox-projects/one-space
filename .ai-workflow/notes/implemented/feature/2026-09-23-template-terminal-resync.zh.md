@@ -10,9 +10,9 @@ Status: implemented
 
 ## Decision
 
-`api_gateway_sync_provider_template` 现在接收注入的 `app: tauri::AppHandle`（由 Tauri 提供；前端可见的参数字形仍只有 `templateId`），并委托给 `src-tauri/src/api_gateway/commands.rs` 中的 `apply_template_sync_with_terminal_refresh`。该包装先执行 `apply_template_sync_with` 并在失败时提前返回，因此模板同步未成功时绝不启动任何终端工作。只有在模板同步落盘之后，它才检查是否存在至少一个携带该 `template_id` 的上游服务商、收集 `previously_synced_terminal_tools`，并在列表非空时为这些工具恰好 await 一次注入的终端同步调用，且吞掉其结果。
+`api_gateway_sync_provider_template` 现在接收注入的 `app: tauri::AppHandle`（由 Tauri 提供；前端可见的参数字形仍只有 `templateId`）。该命令在配置写锁之外解析模板并拉取模型清单，随后在串行配置变更（`storage::modify_config`）内经 `templates::apply_template_sync_from_body` 应用同步，并在失败时提前返回，因此模板同步未成功时绝不启动任何终端工作。只有在模板同步落盘之后，它才检查是否存在至少一个携带该 `template_id` 的上游服务商、收集 `previously_synced_terminal_tools`，并在列表非空时于变更之外为这些工具恰好 await 一次终端同步调用，且吞掉其结果。原包装 `apply_template_sync_with_terminal_refresh` 作为 `#[cfg(test)]` 测试接缝保留，供模板/终端重同步测试使用；网络调用为何移出锁外由 [Gateway Configuration Writes Serialize on One Lock and Reads Cache by File Identity](../architecture/2026-09-25-gateway-config-write-serialization-and-read-cache.md) 记载。
 
-`previously_synced_terminal_tools` 复用 `terminal_targets_from`，因此刷新套用与终端目标列表相同的「已同步」谓词：受支持工具（`opencode`、`codex`，按 `SUPPORTED_TERMINAL_TOOLS` 顺序）仅在仍持有带标记的受管网关记录时才算数，单凭台账绝不认领未标记的用户服务商。命令把注入的闭包接到既有 `apply_terminal_sync`，因此刷新就是携带完整当前映射集合的普通终端同步：同样的标记与台账规则、默认 Key 解析、`local_base_url`、opencode 激活与 `opencode.json` 投影、codex 手动激活，以及绝不改写用户记录、Key 与价格行的保证。从未同步过的工具与没有绑定服务商的模板不触发任何终端写入。
+`previously_synced_terminal_tools` 复用 `terminal_targets_from`，因此刷新套用与终端目标列表相同的「已同步」谓词：受支持工具（`opencode`、`codex`，按 `SUPPORTED_TERMINAL_TOOLS` 顺序）仅在仍持有带标记的受管网关记录时才算数，单凭台账绝不认领未标记的用户服务商。刷新复用既有 `apply_terminal_sync`，因此它就是携带完整当前映射集合的普通终端同步：同样的标记与台账规则、默认 Key 解析、`local_base_url`、opencode 激活与 `opencode.json` 投影、codex 手动激活，以及绝不改写用户记录、Key 与价格行的保证。从未同步过的工具与没有绑定服务商的模板不触发任何终端写入。
 
 决定哪些工具已同步的服务商载荷读取位于 best-effort 区域之内：读取失败退化为空载荷，因此刷新被跳过而不是让命令失败。每个终端刷新错误——无启用本地 Key、工具服务商 upsert 失败、opencode 激活或投影失败——都被吞掉，因此模板视图与其 `synced_at` 更新始终成立，次级步骤绝不对外暴露错误。
 

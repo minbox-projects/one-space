@@ -5,15 +5,17 @@ use super::selection::{
     set_user_enabled,
 };
 use super::storage::{
-    find_provider_mut, local_base_url, new_key_id, new_key_value, new_provider_id, read_config,
-    resolve_default_key_id, touch_key_created_at, write_config,
+    find_provider_mut, local_base_url, modify_config, new_key_id, new_key_value, new_provider_id,
+    read_config, resolve_default_key_id, touch_key_created_at,
 };
 use super::templates::{
     apply_create_provider_from_template, apply_delete_provider_model,
     apply_delete_provider_template, apply_reset_provider_templates, apply_restore_provider_model,
-    apply_template_sync_with, apply_upsert_provider_template, effective_template,
+    apply_template_sync_from_body, apply_upsert_provider_template, effective_template,
     fetch_template_models, provider_template_views, ProviderTemplateView,
 };
+#[cfg(test)]
+use super::templates::apply_template_sync_with;
 use super::usage_log::{
     normalize_retention_days, now_millis, resolve_range_selector, validate_retention_days,
     LogFilter, UsageLogStore, UsageLogsPage, UsageStats, USAGE_LOG_PAGE_SIZE,
@@ -323,88 +325,90 @@ pub fn ai_gateway_upsert_provider(
     mut provider: GatewayUpstreamProvider,
     prices: Option<Vec<ModelPrice>>,
 ) -> Result<GatewayConfig, String> {
-    if provider.weight < MIN_PROVIDER_WEIGHT || provider.weight > MAX_PROVIDER_WEIGHT {
-        return Err(format!(
-            "provider weight must be between {MIN_PROVIDER_WEIGHT} and {MAX_PROVIDER_WEIGHT}"
-        ));
-    }
-    // A key name is required and may repeat; reject before anything is staged.
-    for key in &provider.keys {
-        if key.name.trim().is_empty() {
-            return Err("an upstream key requires a non-blank name".to_string());
+    modify_config(|config| {
+        if provider.weight < MIN_PROVIDER_WEIGHT || provider.weight > MAX_PROVIDER_WEIGHT {
+            return Err(format!(
+                "provider weight must be between {MIN_PROVIDER_WEIGHT} and {MAX_PROVIDER_WEIGHT}"
+            ));
         }
-    }
-    let mut config = read_config()?;
-    if provider.id.trim().is_empty() {
-        provider.id = new_provider_id();
-    }
-    let provider_id = provider.id.clone();
-    if let Some(existing) = find_provider_mut(&mut config, &provider_id) {
-        merge_provider_keys(existing, &mut provider)?;
-        // Runtime health belongs to a trimmed `(local_model, upstream_model)`
-        // key: an unchanged key keeps the stored state, a new or changed key
-        // starts healthy, and a deleted row drops its state with the replacement.
-        for mapping in &mut provider.mappings {
-            match existing.mappings.iter().find(|stored| {
-                mapping_matches_key(stored, &mapping.local_model, &mapping.upstream_model)
-            }) {
-                Some(stored) => {
-                    mapping.auto_disabled = stored.auto_disabled;
-                    mapping.disabled_reason = stored.disabled_reason.clone();
-                    mapping.disabled_at = stored.disabled_at;
-                    mapping.consecutive_failures = stored.consecutive_failures;
-                    mapping.last_error_at = stored.last_error_at;
+        // A key name is required and may repeat; reject before anything is staged.
+        for key in &provider.keys {
+            if key.name.trim().is_empty() {
+                return Err("an upstream key requires a non-blank name".to_string());
+            }
+        }
+        if provider.id.trim().is_empty() {
+            provider.id = new_provider_id();
+        }
+        let provider_id = provider.id.clone();
+        if let Some(existing) = find_provider_mut(config, &provider_id) {
+            merge_provider_keys(existing, &mut provider)?;
+            // Runtime health belongs to a trimmed `(local_model, upstream_model)`
+            // key: an unchanged key keeps the stored state, a new or changed key
+            // starts healthy, and a deleted row drops its state with the replacement.
+            for mapping in &mut provider.mappings {
+                match existing.mappings.iter().find(|stored| {
+                    mapping_matches_key(stored, &mapping.local_model, &mapping.upstream_model)
+                }) {
+                    Some(stored) => {
+                        mapping.auto_disabled = stored.auto_disabled;
+                        mapping.disabled_reason = stored.disabled_reason.clone();
+                        mapping.disabled_at = stored.disabled_at;
+                        mapping.consecutive_failures = stored.consecutive_failures;
+                        mapping.last_error_at = stored.last_error_at;
+                    }
+                    None => clear_mapping_runtime_state(mapping),
                 }
-                None => clear_mapping_runtime_state(mapping),
             }
-        }
-        *existing = provider;
-    } else {
-        // A brand-new provider has no stored keys or rows, so every key and row
-        // starts healthy; a new key still needs a value.
-        prepare_new_provider_keys(&mut provider)?;
-        for mapping in &mut provider.mappings {
-            clear_mapping_runtime_state(mapping);
-        }
-        config.providers.push(provider);
-    }
-    if let Some(prices) = prices {
-        let mut normalized: Vec<ModelPrice> = Vec::with_capacity(prices.len());
-        for mut row in prices {
-            let upstream_model = row.upstream_model.trim().to_string();
-            if upstream_model.is_empty() {
-                continue;
+            *existing = provider;
+        } else {
+            // A brand-new provider has no stored keys or rows, so every key and row
+            // starts healthy; a new key still needs a value.
+            prepare_new_provider_keys(&mut provider)?;
+            for mapping in &mut provider.mappings {
+                clear_mapping_runtime_state(mapping);
             }
-            if normalized
-                .iter()
-                .any(|existing| existing.upstream_model == upstream_model)
-            {
-                continue;
-            }
-            row.upstream_model = upstream_model;
-            row.provider_id = Some(provider_id.clone());
-            normalized.push(row);
+            config.providers.push(provider);
         }
-        config
-            .model_prices
-            .retain(|row| row.provider_id.as_deref() != Some(provider_id.as_str()));
-        config.model_prices.extend(normalized);
-    }
-    write_config(&config)?;
+        if let Some(prices) = prices {
+            let mut normalized: Vec<ModelPrice> = Vec::with_capacity(prices.len());
+            for mut row in prices {
+                let upstream_model = row.upstream_model.trim().to_string();
+                if upstream_model.is_empty() {
+                    continue;
+                }
+                if normalized
+                    .iter()
+                    .any(|existing| existing.upstream_model == upstream_model)
+                {
+                    continue;
+                }
+                row.upstream_model = upstream_model;
+                row.provider_id = Some(provider_id.clone());
+                normalized.push(row);
+            }
+            config
+                .model_prices
+                .retain(|row| row.provider_id.as_deref() != Some(provider_id.as_str()));
+            config.model_prices.extend(normalized);
+        }
+        Ok((true, ()))
+    })?;
     read_config()
 }
 
 #[tauri::command]
 pub fn ai_gateway_delete_provider(provider_id: String) -> Result<GatewayConfig, String> {
-    let mut config = read_config()?;
-    config.providers.retain(|provider| provider.id != provider_id);
-    config
-        .model_prices
-        .retain(|row| row.provider_id.as_deref() != Some(provider_id.as_str()));
-    config
-        .terminal_syncs
-        .retain(|record| record.provider_id != provider_id);
-    write_config(&config)?;
+    modify_config(|config| {
+        config.providers.retain(|provider| provider.id != provider_id);
+        config
+            .model_prices
+            .retain(|row| row.provider_id.as_deref() != Some(provider_id.as_str()));
+        config
+            .terminal_syncs
+            .retain(|record| record.provider_id != provider_id);
+        Ok((true, ()))
+    })?;
     read_config()
 }
 
@@ -413,11 +417,12 @@ pub fn ai_gateway_set_provider_enabled(
     provider_id: String,
     enabled: bool,
 ) -> Result<GatewayConfig, String> {
-    let mut config = read_config()?;
-    let provider = find_provider_mut(&mut config, &provider_id)
-        .ok_or_else(|| format!("provider not found: {provider_id}"))?;
-    set_user_enabled(provider, enabled);
-    write_config(&config)?;
+    modify_config(|config| {
+        let provider = find_provider_mut(config, &provider_id)
+            .ok_or_else(|| format!("provider not found: {provider_id}"))?;
+        set_user_enabled(provider, enabled);
+        Ok((true, ()))
+    })?;
     read_config()
 }
 
@@ -432,22 +437,23 @@ pub fn ai_gateway_reenable_provider_model(
     local_model: String,
     upstream_model: String,
 ) -> Result<GatewayConfig, String> {
-    let mut config = read_config()?;
-    let provider = find_provider_mut(&mut config, &provider_id)
-        .ok_or_else(|| format!("provider not found: {provider_id}"))?;
-    let mut matched = false;
-    for mapping in provider.mappings.iter_mut().filter(|mapping| {
-        mapping_matches_key(mapping, &local_model, &upstream_model)
-    }) {
-        clear_mapping_runtime_state(mapping);
-        matched = true;
-    }
-    if !matched {
-        return Err(format!(
-            "no mapping row matches '{local_model}' -> '{upstream_model}' for provider '{provider_id}'"
-        ));
-    }
-    write_config(&config)?;
+    modify_config(|config| {
+        let provider = find_provider_mut(config, &provider_id)
+            .ok_or_else(|| format!("provider not found: {provider_id}"))?;
+        let mut matched = false;
+        for mapping in provider.mappings.iter_mut().filter(|mapping| {
+            mapping_matches_key(mapping, &local_model, &upstream_model)
+        }) {
+            clear_mapping_runtime_state(mapping);
+            matched = true;
+        }
+        if !matched {
+            return Err(format!(
+                "no mapping row matches '{local_model}' -> '{upstream_model}' for provider '{provider_id}'"
+            ));
+        }
+        Ok((true, ()))
+    })?;
     read_config()
 }
 
@@ -458,11 +464,12 @@ pub fn ai_gateway_reenable_provider_model(
 /// writes nothing.
 #[tauri::command]
 pub fn ai_gateway_reenable_provider_models(provider_id: String) -> Result<GatewayConfig, String> {
-    let mut config = read_config()?;
-    let provider = find_provider_mut(&mut config, &provider_id)
-        .ok_or_else(|| format!("provider not found: {provider_id}"))?;
-    manual_reenable(provider);
-    write_config(&config)?;
+    modify_config(|config| {
+        let provider = find_provider_mut(config, &provider_id)
+            .ok_or_else(|| format!("provider not found: {provider_id}"))?;
+        manual_reenable(provider);
+        Ok((true, ()))
+    })?;
     read_config()
 }
 
@@ -474,63 +481,69 @@ pub fn ai_gateway_reenable_provider_key(
     provider_id: String,
     key_id: String,
 ) -> Result<GatewayConfig, String> {
-    let mut config = read_config()?;
-    let provider = find_provider_mut(&mut config, &provider_id)
-        .ok_or_else(|| format!("provider not found: {provider_id}"))?;
-    let key = provider
-        .keys
-        .iter_mut()
-        .find(|key| key.id == key_id)
-        .ok_or_else(|| format!("no upstream key matches '{key_id}' for provider '{provider_id}'"))?;
-    clear_key_runtime_state(key);
-    write_config(&config)?;
+    modify_config(|config| {
+        let provider = find_provider_mut(config, &provider_id)
+            .ok_or_else(|| format!("provider not found: {provider_id}"))?;
+        let key = provider
+            .keys
+            .iter_mut()
+            .find(|key| key.id == key_id)
+            .ok_or_else(|| {
+                format!("no upstream key matches '{key_id}' for provider '{provider_id}'")
+            })?;
+        clear_key_runtime_state(key);
+        Ok((true, ()))
+    })?;
     read_config()
 }
 
 #[tauri::command]
 pub fn ai_gateway_upsert_key(mut key: GatewayKey) -> Result<GatewayConfig, String> {
-    let mut config = read_config()?;
-    touch_key_created_at(&mut key);
-    if key.id.trim().is_empty() {
-        key.id = new_key_id();
-    }
-    if let Some(existing) = config.keys.iter_mut().find(|candidate| candidate.id == key.id) {
-        if key.value.trim().is_empty() {
-            key.value = existing.value.clone();
+    modify_config(|config| {
+        touch_key_created_at(&mut key);
+        if key.id.trim().is_empty() {
+            key.id = new_key_id();
         }
-        *existing = key;
-    } else {
-        if key.value.trim().is_empty() {
-            key.value = new_key_value();
+        if let Some(existing) = config.keys.iter_mut().find(|candidate| candidate.id == key.id) {
+            if key.value.trim().is_empty() {
+                key.value = existing.value.clone();
+            }
+            *existing = key;
+        } else {
+            if key.value.trim().is_empty() {
+                key.value = new_key_value();
+            }
+            config.keys.push(key);
         }
-        config.keys.push(key);
-    }
-    write_config(&config)?;
+        Ok((true, ()))
+    })?;
     read_config()
 }
 
 #[tauri::command]
 pub fn ai_gateway_delete_key(key_id: String) -> Result<GatewayConfig, String> {
-    let mut config = read_config()?;
-    config.keys.retain(|key| key.id != key_id);
-    write_config(&config)?;
+    modify_config(|config| {
+        config.keys.retain(|key| key.id != key_id);
+        Ok((true, ()))
+    })?;
     read_config()
 }
 
 #[tauri::command]
 pub fn ai_gateway_set_default_key(key_id: String) -> Result<GatewayConfig, String> {
-    let mut config = read_config()?;
-    let enabled = config
-        .keys
-        .iter()
-        .any(|key| key.id == key_id && key.enabled);
-    if !enabled {
-        return Err(format!(
-            "cannot switch default key: '{key_id}' is not an enabled local key"
-        ));
-    }
-    config.default_key_id = Some(key_id);
-    write_config(&config)?;
+    modify_config(|config| {
+        let enabled = config
+            .keys
+            .iter()
+            .any(|key| key.id == key_id && key.enabled);
+        if !enabled {
+            return Err(format!(
+                "cannot switch default key: '{key_id}' is not an enabled local key"
+            ));
+        }
+        config.default_key_id = Some(key_id);
+        Ok((true, ()))
+    })?;
     read_config()
 }
 
@@ -539,12 +552,14 @@ pub fn ai_gateway_set_default_key(key_id: String) -> Result<GatewayConfig, Strin
 /// concurrent edits) are preserved; the flag is only written once the listener
 /// transition succeeded.
 fn persist_enabled(enabled: bool) -> Result<(), String> {
-    let mut config = read_config()?;
-    if config.enabled != enabled {
-        config.enabled = enabled;
-        write_config(&config)?;
-    }
-    Ok(())
+    modify_config(|config| {
+        if config.enabled != enabled {
+            config.enabled = enabled;
+            Ok((true, ()))
+        } else {
+            Ok((false, ()))
+        }
+    })
 }
 
 #[tauri::command]
@@ -734,7 +749,7 @@ pub(in crate::ai_gateway) async fn apply_terminal_sync_with<F>(
 where
     F: FnMut(serde_json::Value) -> UpsertFuture,
 {
-    let mut config = read_config()?;
+    let config = read_config()?;
     let (key_id, key_value) = default_key_for_sync(&config)?;
     if target_tools.is_empty() {
         return Err("no terminal targets selected".to_string());
@@ -784,13 +799,20 @@ where
             synced_base_url: base_url.clone(),
             synced_at: now_ts(),
         };
-        config
-            .terminal_syncs
-            .retain(|existing| !existing.tool.eq_ignore_ascii_case(&record.tool));
-        config.terminal_syncs.push(record.clone());
         synced.push(record);
     }
-    write_config(&config)?;
+    // The upserts above are external network waits, so the ledger is persisted
+    // afterwards as one serialized read-modify-write: the lock is never held
+    // across an upsert, and a concurrent configuration write cannot be lost.
+    modify_config(|latest| {
+        for record in &synced {
+            latest
+                .terminal_syncs
+                .retain(|existing| !existing.tool.eq_ignore_ascii_case(&record.tool));
+            latest.terminal_syncs.push(record.clone());
+        }
+        Ok((true, ()))
+    })?;
     Ok(synced)
 }
 
@@ -849,6 +871,12 @@ async fn apply_terminal_sync(
 /// least one supported tool already holds a managed gateway record. It is
 /// awaited at most once and its error is swallowed, so the template sync result
 /// (and its `synced_at` update) always stands.
+///
+/// This is the injectable composition seam the template/terminal resync tests
+/// drive; the production `ai_gateway_sync_provider_template` command splits the
+/// same steps around the serialized configuration mutation so the write lock is
+/// never held across an upstream wait.
+#[cfg(test)]
 pub(in crate::ai_gateway) async fn apply_template_sync_with_terminal_refresh<F, Fut>(
     config: &mut GatewayConfig,
     template_id: &str,
@@ -966,9 +994,10 @@ pub fn ai_gateway_usage_retention_get() -> Result<u32, String> {
 #[tauri::command]
 pub fn ai_gateway_usage_retention_save(days: i64) -> Result<u32, String> {
     let validated = validate_retention_days(days)?;
-    let mut config = read_config()?;
-    config.usage_retention_days = validated;
-    write_config(&config)?;
+    modify_config(|config| {
+        config.usage_retention_days = validated;
+        Ok((true, ()))
+    })?;
     Ok(read_config()?.usage_retention_days)
 }
 
@@ -985,9 +1014,10 @@ pub fn ai_gateway_template_auto_refresh_get() -> Result<u32, String> {
 #[tauri::command]
 pub fn ai_gateway_template_auto_refresh_save(minutes: i64) -> Result<u32, String> {
     let validated = validate_template_auto_refresh_minutes(minutes)?;
-    let mut config = read_config()?;
-    config.template_auto_refresh_minutes = validated;
-    write_config(&config)?;
+    modify_config(|config| {
+        config.template_auto_refresh_minutes = validated;
+        Ok((true, ()))
+    })?;
     Ok(read_config()?.template_auto_refresh_minutes)
 }
 
@@ -1013,8 +1043,10 @@ pub async fn ai_gateway_sync_provider_template(
     app: tauri::AppHandle,
     template_id: String,
 ) -> Result<ProviderTemplateView, String> {
-    let mut config = read_config()?;
-    let template = effective_template(&config, &template_id)?;
+    // Resolve the template and fetch its model list outside the configuration
+    // write lock: the lock is never held across an upstream network wait.
+    let initial = read_config()?;
+    let template = effective_template(&initial, &template_id)?;
     let raw = fetch_template_models(&template).await?;
     // The service-provider payload only decides which tools were previously
     // synced: a read failure degrades to an empty payload (refresh skipped)
@@ -1022,18 +1054,27 @@ pub async fn ai_gateway_sync_provider_template(
     let providers_data = crate::app_store::service_providers_list()
         .map(|payload| payload.data)
         .unwrap_or(Value::Null);
-    apply_template_sync_with_terminal_refresh(
-        &mut config,
-        &template_id,
-        move |_| Ok(raw),
-        write_config,
-        &providers_data,
-        move |tools| {
-            let app = app.clone();
-            async move { apply_terminal_sync(app, tools).await }
-        },
-    )
-    .await
+    // The read, staging and persistence all happen inside the serialized
+    // mutation, so a concurrent configuration write cannot be lost.
+    let (view, tools) = modify_config(|config| {
+        let view = apply_template_sync_from_body(config, &template_id, &raw)?;
+        let bound = config
+            .providers
+            .iter()
+            .any(|provider| provider.template_id.as_deref() == Some(template_id.as_str()));
+        let tools = if bound {
+            previously_synced_terminal_tools(config, &providers_data)
+        } else {
+            Vec::new()
+        };
+        Ok((true, (view, tools)))
+    })?;
+    // The terminal refresh performs its own network upserts and serialized
+    // ledger write after the template sync stands, so a failure is swallowed.
+    if !tools.is_empty() {
+        let _ = apply_terminal_sync(app, tools).await;
+    }
+    Ok(view)
 }
 
 /// Create an upstream provider from a template, carrying one enabled mapping per
@@ -1047,16 +1088,18 @@ pub fn ai_gateway_create_provider_from_template(
     protocol: UpstreamProtocol,
     api_key: String,
 ) -> Result<GatewayConfig, String> {
-    let mut config = read_config()?;
-    apply_create_provider_from_template(
-        &mut config,
-        &template_id,
-        &name,
-        &base_url,
-        protocol,
-        &api_key,
-        write_config,
-    )?;
+    modify_config(|config| {
+        apply_create_provider_from_template(
+            config,
+            &template_id,
+            &name,
+            &base_url,
+            protocol,
+            &api_key,
+            |_| Ok(()),
+        )?;
+        Ok((true, ()))
+    })?;
     read_config()
 }
 
@@ -1068,8 +1111,10 @@ pub fn ai_gateway_delete_provider_model(
     provider_id: String,
     upstream_model: String,
 ) -> Result<GatewayConfig, String> {
-    let mut config = read_config()?;
-    apply_delete_provider_model(&mut config, &provider_id, &upstream_model, write_config)?;
+    modify_config(|config| {
+        apply_delete_provider_model(config, &provider_id, &upstream_model, |_| Ok(()))?;
+        Ok((true, ()))
+    })?;
     read_config()
 }
 
@@ -1080,8 +1125,10 @@ pub fn ai_gateway_restore_provider_model(
     provider_id: String,
     upstream_model: String,
 ) -> Result<GatewayConfig, String> {
-    let mut config = read_config()?;
-    apply_restore_provider_model(&mut config, &provider_id, &upstream_model, write_config)?;
+    modify_config(|config| {
+        apply_restore_provider_model(config, &provider_id, &upstream_model, |_| Ok(()))?;
+        Ok((true, ()))
+    })?;
     read_config()
 }
 
@@ -1090,8 +1137,10 @@ pub fn ai_gateway_restore_provider_model(
 pub fn ai_gateway_upsert_provider_template(
     template: ProviderTemplate,
 ) -> Result<Vec<ProviderTemplateView>, String> {
-    let mut config = read_config()?;
-    apply_upsert_provider_template(&mut config, template, write_config)
+    modify_config(|config| {
+        let views = apply_upsert_provider_template(config, template, |_| Ok(()))?;
+        Ok((true, views))
+    })
 }
 
 /// Delete a provider template. Fails if the template is currently in use by any upstream provider.
@@ -1099,15 +1148,19 @@ pub fn ai_gateway_upsert_provider_template(
 pub fn ai_gateway_delete_provider_template(
     template_id: String,
 ) -> Result<Vec<ProviderTemplateView>, String> {
-    let mut config = read_config()?;
-    apply_delete_provider_template(&mut config, &template_id, write_config)
+    modify_config(|config| {
+        let views = apply_delete_provider_template(config, &template_id, |_| Ok(()))?;
+        Ok((true, views))
+    })
 }
 
 /// Reset built-in provider templates back to snapshot defaults.
 #[tauri::command]
 pub fn ai_gateway_reset_provider_templates() -> Result<Vec<ProviderTemplateView>, String> {
-    let mut config = read_config()?;
-    apply_reset_provider_templates(&mut config, write_config)
+    modify_config(|config| {
+        let views = apply_reset_provider_templates(config, |_| Ok(()))?;
+        Ok((true, views))
+    })
 }
 
 #[cfg(test)]

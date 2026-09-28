@@ -848,3 +848,159 @@ async fn quota_source_empty_pool_keeps_the_no_key_error() {
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+
+// ---------------------------------------------------------------------------
+// REQ-006 (20260925-gateway-routing-and-config-hardening): the quota source key
+// prefers the first enabled *unmarked* key, then the first enabled key, then the
+// first stored key.
+// ---------------------------------------------------------------------------
+
+/// A runtime-marked key pool entry for the quota fixtures.
+fn quota_pool_key_marked(
+    id: &str,
+    value: &str,
+    enabled: bool,
+    failure_kind: &str,
+    marked_at: u64,
+) -> serde_json::Value {
+    json!({
+        "id": id,
+        "name": id,
+        "value": value,
+        "enabled": enabled,
+        "auto_marked": true,
+        "failure_kind": failure_kind,
+        "marked_at": marked_at,
+        "reason": "weekly usage limit",
+    })
+}
+
+/// AC-028 / REQ-006: a marked earlier enabled key defers to the first enabled
+/// unmarked key.
+#[tokio::test]
+async fn ac028_quota_source_prefers_the_first_enabled_unmarked_key() {
+    let _home = TempHome::new();
+    write_quota_pool(vec![
+        quota_pool_key_marked("key-marked", "sk-marked", true, "quota", 1_700_000_000),
+        pool_key_value("key-unmarked", "sk-unmarked", true),
+    ]);
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetch_calls = Arc::clone(&calls);
+    let result = ai_gateway_provider_quota_with(
+        "quota-pool".to_string(),
+        None,
+        1_000,
+        &Mutex::new(QuotaCache::new()),
+        move |url, api_key| {
+            fetch_calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                assert_eq!(url, COMMANDCODE_QUOTA_URL);
+                assert_eq!(
+                    api_key, "sk-unmarked",
+                    "the first enabled unmarked key must be the source"
+                );
+                Ok(FIXTURE.to_string())
+            }
+        },
+    )
+    .await
+    .expect("a marked first key must defer to the unmarked key");
+    assert_eq!(result, expected_fixture());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+/// AC-029 / REQ-006: when every enabled key is runtime-marked, the first enabled
+/// key's value is used.
+#[tokio::test]
+async fn ac029_quota_source_falls_back_to_the_first_enabled_key_when_all_are_marked() {
+    let _home = TempHome::new();
+    write_quota_pool(vec![
+        quota_pool_key_marked("key-a", "sk-first", true, "quota", 1_700_000_000),
+        quota_pool_key_marked("key-b", "sk-second", true, "authentication", 1_700_000_100),
+    ]);
+
+    let calls = AtomicUsize::new(0);
+    ai_gateway_provider_quota_with(
+        "quota-pool".to_string(),
+        None,
+        1_000,
+        &Mutex::new(QuotaCache::new()),
+        |_, api_key| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                assert_eq!(
+                    api_key, "sk-first",
+                    "when every enabled key is marked the first enabled key stays the source"
+                );
+                Ok(FIXTURE.to_string())
+            }
+        },
+    )
+    .await
+    .expect("an all-marked pool still resolves the first enabled key");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+/// AC-028 / AC-031 / REQ-006: the quota resolver follows the ladder and its
+/// cache still invalidates when a mark change makes a different source key the
+/// first enabled unmarked one.
+#[tokio::test]
+async fn ac031_quota_source_cache_invalidates_on_a_mark_driven_source_change() {
+    let _home = TempHome::new();
+    write_quota_pool(vec![
+        pool_key_value("key-a", "sk-first", true),
+        pool_key_value("key-b", "sk-second", true),
+    ]);
+
+    let cache = Mutex::new(QuotaCache::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let first_calls = Arc::clone(&calls);
+    ai_gateway_provider_quota_with(
+        "quota-pool".to_string(),
+        None,
+        1_000,
+        &cache,
+        move |_, api_key| {
+            first_calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                assert_eq!(api_key, "sk-first");
+                Ok(FIXTURE.to_string())
+            }
+        },
+    )
+    .await
+    .expect("the first enabled unmarked key resolves the source");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // Marking the cached source pushes the resolver to the second enabled key;
+    // the cache entry must not be reused because its source value changed.
+    write_quota_pool(vec![
+        quota_pool_key_marked("key-a", "sk-first", true, "quota", 1_700_000_000),
+        pool_key_value("key-b", "sk-second", true),
+    ]);
+    let second_calls = Arc::clone(&calls);
+    ai_gateway_provider_quota_with(
+        "quota-pool".to_string(),
+        None,
+        1_001,
+        &cache,
+        move |_, api_key| {
+            second_calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                assert_eq!(
+                    api_key, "sk-second",
+                    "the newly unmarked enabled key must be queried"
+                );
+                Ok(FIXTURE.to_string())
+            }
+        },
+    )
+    .await
+    .expect("a mark-driven source change must invalidate the cache");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "a changed source key must force a fresh fetch"
+    );
+}
