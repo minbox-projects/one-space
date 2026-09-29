@@ -3649,7 +3649,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "Tauri 应用启动、CLI 入口、运行时服务（含进程级系统恢复信号：`SYSTEM_RESUME_GRACE_SECS = 60` 的 `mark_system_resume` / `system_resume_grace_active(now)`，仅进程内存，供 AI 网关在恢复后的宽限窗口内抑制网络类传输失败计数）、托盘（Rust 侧创建、左键切换主窗口、右键原生菜单、双语启动兜底菜单、`main-window-visibility-changed` 事件与 `toggle_quick_ai_window` 命令）、全局快捷键、OAuth 打开与统一退出清理；`run()` 在 CLI 处理前先调用 `config::seed_dev_gateway_files_on_start()`，debug 构建据此按条件播种 dev 网关文件",
+      "responsibility": "Tauri 应用启动、CLI 入口、运行时服务（含进程级系统恢复信号：`SYSTEM_RESUME_GRACE_SECS = 60` 的 `mark_system_resume` / `system_resume_grace_active(now)`，仅进程内存，供 AI 网关在恢复后的宽限窗口内抑制网络类传输失败计数）、托盘（Rust 侧创建、左键切换主窗口、右键原生菜单、双语启动兜底菜单、`main-window-visibility-changed` 事件与 `toggle_quick_ai_window` 命令）、全局快捷键、OAuth 打开与统一退出清理；`run()` 在 CLI 处理前先调用 `config::seed_dev_gateway_files_on_start()`，debug 构建据此按条件播种 dev 网关文件；同样在 CLI 处理前执行 `cleanup_removed_ai_workspace_files()`：经当前 profile 本地数据目录 best-effort 清理被删 AI 工作台的两个功能自有文件、幂等、失败记录并在下次启动重试、不阻塞启动、不触碰共享 MCP 列表",
       "entries": [
         "src-tauri/src/lib.rs"
       ],

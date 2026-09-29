@@ -31,4 +31,4 @@ OneSpace 在原生终端 AI Sessions 之外还带有一个应用内 AI 对话工
 - 清理幂等且有界：恰好删除当前 profile 本地数据目录下的两个固定文件，无关的 `data/mcp` 文件保留（由新的 Rust 测试断言），共享 MCP 列表与消息中心不受影响。
 - 助手桥接删除后，`mcp_runtime` 与 `mcp_templates::find_mcp_template_for_server` 在代码树中不再有生产调用方；两者均原样保留，且 `mcp_templates` 仍通过其 `list_mcp_templates` 与 `get_mcp_template` 命令服务 MCP Servers 页面。调度器曾是 `chrono-tz` 依赖的唯一依赖方，该依赖因此从 `Cargo.toml`/`Cargo.lock` 移除。
 - 助手能力契约不再存在：`AgentToolPolicy`、能力快照、模型工具定义、默认 agents、会话提示、分派器与全部助手 i18n 键都已删除，而 `quick_ai_shortcut` 与 subagents 使用的 Bot 图标保留。
-- 部分取代：[Toolbox Plugin Registry Replaces Hand-Maintained Tool Lists](../architecture/2026-09-25-toolbox-plugin-registry.md) 仍是注册表决策及其其余移除项的权威记录；本记录只取代其中关于仍然存在的助手能力面（能力徽标与开关）的表述。两条记录均保留并互相交叉链接。
+- 部分取代：[Toolbox Plugin Registry Replaces Hand-Maintained Tool Lists](../architecture/2026-09-25-toolbox-plugin-registry.md) 仍是注册表决策及其其余移除项的权威记录；本记录只取代其中关于仍然存在的助手能力面与 smart-workspace 导航别名的表述（能力徽标与开关，以及 smart-workspace 别名解析）。两条记录均保留并互相交叉链接。
