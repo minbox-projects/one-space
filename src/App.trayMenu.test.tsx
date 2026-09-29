@@ -78,7 +78,6 @@ const writeTextMock = vi.fn(async () => undefined);
 const TOP_LEVEL_DESTINATIONS = [
   "launcher",
   "ai-sessions",
-  "ai-assistants",
   "ai-environments",
   "ai-gateway",
   "ai-usage",
@@ -691,24 +690,6 @@ describe("App tray menu integration", () => {
         autoCheckOnOpen: false,
       });
     });
-  });
-
-  it("opens the quick assistant window from the tray", async () => {
-    renderApp();
-
-    await fireActionAndExpectCommand(
-      "quick-assistant",
-      "show_quick_assistant_window",
-    );
-  });
-
-  it("opens the selection assistant window from the tray", async () => {
-    renderApp();
-
-    await fireActionAndExpectCommand(
-      "selection-assistant",
-      "show_selection_assistant_window",
-    );
   });
 
   it("starts the stopped router from the tray and re-queries status", async () => {

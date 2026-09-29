@@ -1377,8 +1377,6 @@ const resources = {
         "Bundle directories, tools, environments, MCP, Skills, and prompts.",
       docsAiEnvironmentsSummary:
         "Manage Claude, Codex, Antigravity, and OpenCode providers and active CLI config.",
-      docsAiWorkspaceSummary:
-        "Use in-app AI conversations, assistant presets, and Quick Assistant.",
       docsAiUsageSummary:
         "Review token usage derived from local CLI session history.",
       docsSshSummary:
@@ -3072,32 +3070,13 @@ const resources = {
       workflowStatusSuccess: "success",
       workflowStatusFailed: "failed",
       workflowStatusInterrupted: "interrupted",
-      aiAssistant: "AI Workspace",
-      aiAssistants: "AI Workspace",
-      aiAssistantsLibrary: "AI Assistants Library",
-      aiAssistantsDesc:
-        "Manage assistant conversations, reusable presets, and Quick Assistant preferences in AI Workspace.",
-      aiAutomations: "AI Automations",
-      aiAutomationsDesc:
-        "Manage background jobs, triggers, recent runs, and assistant bindings.",
-      aiModelCenter: "AI Model Center",
-      aiModelCenterDesc:
-        "Manage provider connections, search sources, model catalogs, and role bindings in one place.",
       cliEnvironments: "AI Terminal Environments",
-      aiConnectionCenter: "AI Model Center",
-      aiConnectionCenterDesc:
-        "AI Model Center is now the only main editing entry for provider connections, search sources, model catalogs, and role bindings.",
-      assistantLabel: "Assistant",
       providerLabel: "Provider",
       youLabel: "You",
       chatLabel: "Chat",
       summaryLabel: "Summary",
       translateLabel: "Translate",
       topicNamingLabel: "Conversation Naming",
-      automationLabel: "Automation",
-      quickAssistant: "Quick Assistant",
-      selectionAssistant: "Selection Assistant",
-      assistantMode: "Assistant Mode",
       modelMode: "Model Mode",
       nameLabel: "Name",
       descriptionLabel: "Description",
@@ -3168,10 +3147,6 @@ const resources = {
       modelLabel: "Model",
       modelRoleLabel: "Model Role",
       selectModel: "Select model",
-      selectAssistantLabel: "Select assistant",
-      assistantPresetLabel: "Assistant Preset",
-      assistantPresetsLabel: "Assistant Presets",
-      preferredAssistantLabel: "Preferred Assistant",
       preferredRoleLabel: "Preferred Role",
       primaryModelLabel: "Primary Model",
       lightModelLabel: "Light Model",
@@ -3183,7 +3158,6 @@ const resources = {
       modelOverrideLabel: "Model Override",
       followPresetOrRole: "Follow preset / role",
       followRoleBindingLabel: "Follow role binding",
-      followAutomationRoleLabel: "Follow automation role",
       topicControlsLabel: "Conversation Controls",
       topicStatsLabel: "Conversation Stats",
       capabilitySnapshotLabel: "Capability Snapshot",
@@ -3211,106 +3185,7 @@ const resources = {
       detectConnection: "Detect Connection",
       fetchModelCatalog: "Fetch Model Catalog",
       loadingWithTitle: "Loading {{title}}...",
-      quickAssistantNoAssistantSelected: "No assistant selected",
-      quickAssistantNoAssistantDescription:
-        "This assistant does not have a description yet.",
-      quickAssistantRoleBindHint: "Not set. Bind it in AI Model Center.",
-      quickAssistantCurrentRoleModel: "Current role-bound model",
-      quickAssistantInternetHint:
-        "Internet access follows the assistant policy or the model role binding.",
-      quickAssistantAssistantModeDesc:
-        "Inherit the assistant preset prompt, capabilities, and default model.",
-      quickAssistantModelModeDesc:
-        "Use the role-bound model directly without inheriting assistant capabilities.",
-      quickAssistantModeHint:
-        "Best for quick Q&A, rewriting, translation, or summarization.",
-      selectionAssistantModeHint:
-        "Process the current selected text and automatically fall back to clipboard mode when the system does not support direct selection capture.",
-      quickAssistantComposerPlaceholder:
-        "Type one sentence to quickly generate a reply, rewrite, translate, or summarize...",
-      selectionAssistantComposerPlaceholder:
-        "Type or paste the selected text to quickly rewrite, translate, summarize, or explain it...",
-      quickAssistantEmptyTitle: "Quickly process a question",
-      selectionAssistantEmptyTitle: "Quickly process a piece of text",
-      quickAssistantEmptyDesc:
-        "A real conversation will be created here and the message stream will be preserved, so you can continue later in AI Workspace.",
       loadingPageWithName: "Loading {{name}}...",
-      aiModelCenterRedirectDesc:
-        "To avoid maintaining two editing surfaces, model-related settings have moved to the AI Model Center page in the main navigation.",
-      openAiModelCenter: "Open AI Model Center",
-      selectionAssistantClipboardFallbackError:
-        "Selection Assistant cannot read the system selection directly right now and has fallen back to a normal floating window.",
-      openQuickAssistant: "Open Quick Assistant",
-      openSelectionAssistant: "Open Selection Assistant",
-      aiConnectionPanelProviders: "Provider Connections",
-      aiConnectionPanelProvidersHint:
-        "Provider vendors, keys, and capability switches",
-      aiConnectionPanelSearch: "Search Connections",
-      aiConnectionPanelSearchHint: "Web search providers and default bindings",
-      aiConnectionPanelCatalog: "Model Catalog",
-      aiConnectionPanelCatalogHint:
-        "Automatically discover models, tags, and capabilities",
-      aiConnectionPanelRoles: "Role Bindings",
-      aiConnectionPanelRolesHint: "Map roles to models and runtime parameters",
-      aiConnectionPanelRuntime: "Runtime Presets",
-      aiConnectionPanelRuntimeHint:
-        "Reusable runtime templates for role bindings",
-      aiConnectionProviderCenterTitle: "Provider Connection Center",
-      aiConnectionProviderCenterDesc:
-        "Manage provider vendors, keys, networking, and catalog fetching here without carrying the old profile form.",
-      aiConnectionSearchCenterTitle: "Search Provider Center",
-      aiConnectionSearchCenterDesc:
-        "Search providers are maintained separately, and role bindings decide which capabilities use web search by default.",
-      aiConnectionCatalogCenterTitle: "Model Catalog",
-      aiConnectionCatalogCenterDesc:
-        "The model catalog is fetched automatically from providers, with support for tags, capabilities, and enablement status.",
-      aiConnectionRoleBindingMatrixTitle: "Role Binding Matrix",
-      aiConnectionRoleBindingMatrixDesc:
-        "Each role can bind a default model together with temperature, max tokens, reasoning, and search policies.",
-      aiConnectionRuntimeCenterDesc:
-        "Runtime presets centralize temperature, max tokens, and reasoning switches so role bindings only need to reference or override them.",
-      aiConnectionProvidersSummary: "{{count}} active providers connected",
-      aiConnectionDefaultSearchSource: "Default source",
-      aiConnectionCatalogSummary: "{{count}} models enabled for role bindings",
-      aiConnectionRolesSummary:
-        "Covers default roles for chat, assistants, automation, translation, and more.",
-      aiConnectionRuntimeSummary:
-        "Reusable runtime templates for role bindings",
-      aiConnectionRoleChatDesc: "Default model for regular conversation.",
-      aiConnectionRoleAssistantDesc:
-        "Primary model for assistant conversations and test runs.",
-      aiConnectionRoleSummaryDesc:
-        "Lightweight model for summaries and second-pass processing.",
-      aiConnectionRoleAutomationDesc:
-        "Default model for background automation jobs.",
-      aiConnectionRoleQuickAssistantDesc:
-        "Default model for the Quick Assistant floating window.",
-      aiConnectionRoleSelectionAssistantDesc:
-        "Reserved binding for the Selection Assistant.",
-      aiConnectionRoleTranslateDesc: "Default model for translation tasks.",
-      aiConnectionRoleTopicNamingDesc:
-        "Model for conversation naming and summary titles.",
-      aiConnectionPresetBalanced: "Balanced",
-      aiConnectionPresetBalancedDesc:
-        "General-purpose preset for chat, quick assistant, and routine work.",
-      aiConnectionPresetDeepReasoning: "Deep Reasoning",
-      aiConnectionPresetDeepReasoningDesc:
-        "Longer answers and stronger reasoning for assistants and automations.",
-      aiConnectionPresetLightweight: "Lightweight",
-      aiConnectionPresetLightweightDesc:
-        "Fast preset for summaries, translation, and conversation naming.",
-      aiConnectionNewProvider: "New Provider",
-      aiConnectionNewSearchProvider: "New Search Provider",
-      aiConnectionCustomPreset: "Custom Preset",
-      aiConnectionCustomPresetDesc:
-        "Reusable runtime profile for a specific assistant workflow.",
-      aiConnectionCatalogRefreshSuccess:
-        "{{name}} refreshed {{count}} catalog items.",
-      aiConnectionProviderStatusDesc:
-        "Connectivity, authentication, capability flags, and catalog fetching.",
-      aiConnectionEnableProvider: "Enable Provider",
-      aiConnectionEnableProviderDesc:
-        "Disabled providers will not participate in catalog fetching or runtime usage.",
       supportsWebSearchLabel: "Supports Web Search",
       supportsWebSearchDesc:
         "Mark this if the model supports native web search.",
@@ -3319,133 +3194,10 @@ const resources = {
       supportsReasoningLabel: "Supports Reasoning",
       supportsReasoningDesc:
         "Allow reasoning mode to be enabled at the role level.",
-      aiConnectionNoProvidersYet:
-        "Add a provider connection first so the workspace can fetch the model catalog and establish role bindings.",
-      aiConnectionSearchProviders: "Search Providers",
-      aiConnectionSearchStatusDesc:
-        "Search diagnostics, default source binding, and rate settings.",
-      aiConnectionSetDefaultSearchSource:
-        "Set this search connection as the default web search source",
-      aiConnectionEnableSearchProvider: "Enable Search Connection",
-      aiConnectionEnableSearchProviderDesc:
-        "Disabled search connections cannot be used by role bindings.",
-      aiConnectionNoSearchProvidersYet:
-        "Add a search provider first so chat, automations, and Quick Assistant can share web access consistently.",
-      aiConnectionCatalogNotice:
-        "The model catalog is fetched automatically from providers. If a role does not have a bound model, it falls back to the first enabled catalog item.",
-      aiConnectionNoCatalogYet:
-        "No model catalog is available yet. Go to Provider Connections to detect a connection and fetch the catalog.",
-      aiConnectionNoDefaultSearchProvider: "No default web search",
-      aiConnectionRoleEnableReasoningDesc:
-        "Reasoning is enabled by default for this role.",
-      aiConnectionRuntimePresetNotice:
-        "Runtime presets are the base templates for role runtime parameters. Role bindings can reuse a preset or override it with more detailed settings.",
-      aiConnectionPresetEnableReasoningDesc:
-        "Acts as the default reasoning switch for roles referencing this preset.",
-      aiWorkspaceTitle: "AI Workspace",
-      aiWorkspaceDesc:
-        "The unified AI workspace in OneSpace, connecting the model center, assistants, conversations, automations, and quick entries.",
-      aiWorkspaceSectionConversations: "AI Chat",
-      aiWorkspaceSectionConversationsDesc:
-        "Assistant-led conversations, message streams, and a capability side panel.",
-      aiWorkspaceSectionAssistants: "Assistant Library",
-      aiWorkspaceSectionAssistantsDesc:
-        "Manage prompts, models, MCP, knowledge bases, and memory strategies in one place.",
-      aiWorkspaceSectionAutomations: "Automations",
-      aiWorkspaceSectionAutomationsDesc:
-        "Bind assistant presets to background jobs and triggers.",
-      aiWorkspaceSectionModels: "Model Center",
-      aiWorkspaceSectionModelsDesc:
-        "Provider connections, model catalog, and the role binding matrix.",
-      aiWorkspaceSectionQuickDesc:
-        "Floating assistants, quick modes, and the reserved selection assistant entry.",
-      aiWorkspaceConversationStarterHint:
-        "Choose an assistant first, then create a conversation.",
-      aiWorkspaceSearchTopics: "Search conversations...",
-      aiWorkspaceSearchAssistants: "Search assistants...",
-      aiWorkspaceSearchAutomations: "Search automations...",
-      aiWorkspaceNoMessagesYet: "No messages yet",
-      aiWorkspaceMessageCount: "{{count}} msgs",
-      aiWorkspaceNewAssistant: "New Assistant",
-      aiWorkspaceNewAssistantName: "New Assistant",
-      aiWorkspaceNewAutomation: "New Automation",
-      aiWorkspaceNewAutomationName: "New Automation",
-      aiWorkspaceNoPromptYet: "No prompt yet",
-      aiWorkspaceModelCenterHint:
-        "Provider connections, the model catalog, and role bindings will expand into the full editor on the right.",
-      aiWorkspaceQuickSummary: "Quick Assistant Summary",
-      aiWorkspaceCurrentMode: "Current mode",
-      aiWorkspaceCurrentAssistant: "Current assistant",
-      aiWorkspaceCurrentRoleModel: "Current role model",
-      aiWorkspaceCurrentModel: "Current model",
-      aiWorkspaceLoading: "Loading AI Workspace...",
-      aiWorkspaceSelectOrCreateTopic: "Select or create a conversation",
-      aiWorkspaceConversationDesc:
-        "Assistant conversations inherit the assistant preset model and capability strategy by default, while still allowing temporary overrides inside the conversation.",
-      aiWorkspaceLoadingTopic: "Loading conversation...",
-      aiWorkspaceEmptyTopicHint:
-        "Start with a clear question, or adjust the assistant, model, and conversation actions in the composer toolbar first.",
-      aiWorkspaceStartFromPreset: "Start from an assistant preset",
-      aiWorkspaceStartFromPresetDesc:
-        "Pick an assistant on the left, then create a conversation to bring the prompt, model, and tool strategy into the conversation together.",
-      aiWorkspaceNewTopic: "New Conversation",
-      aiWorkspaceComposerPlaceholder:
-        "Ask the assistant to plan, summarize, search, translate, or orchestrate tools...",
-      aiWorkspaceCapabilityPanel: "Capability Panel",
-      aiWorkspaceCapabilityPanelDesc:
-        "Review the current conversation capability snapshot, knowledge bases, and MCP context here.",
-      aiWorkspaceAssistantSaved: "Assistant saved.",
-      aiWorkspaceDeleteAssistant: "Delete Assistant",
-      aiWorkspaceDeleteAssistantConfirm:
-        "Delete this assistant preset? Existing conversations and automations will lose the assistant binding.",
-      aiWorkspaceAssistantTestRunFallback: "Run a quick capability check.",
-      aiWorkspaceAutomationSaved: "Automation saved.",
-      aiWorkspaceDeleteAutomation: "Delete Automation",
-      aiWorkspaceDeleteAutomationConfirm:
-        "Delete this automation and its recent run history?",
-      aiWorkspaceAutomationQueued: "Automation run queued.",
-      aiWorkspaceModelCenterSaved: "Model center saved.",
-      aiWorkspaceSelectAssistant: "Select an assistant",
-      aiWorkspaceAssistantEditorDesc:
-        "Assistant presets carry the name, description, prompt, primary model, light model, tool policy, and capability bindings together.",
-      aiWorkspaceDefaultTestPrompt:
-        "Summarize the current release risks and next actions.",
-      aiWorkspaceSelectAssistantPresetOrCreate:
-        "Select an assistant preset from the left, or create a new assistant preset.",
-      aiWorkspaceSelectAutomation: "Select an automation",
-      aiWorkspaceAutomationEditorDesc:
-        "Automations inherit the default capabilities from an assistant preset, while the job can override prompt, web access, and runtime model.",
-      aiWorkspaceSelectAutomationOrCreate:
-        "Select an automation from the left, or create a new background job.",
-      aiWorkspaceTriggerDaily: "Daily {{time}}",
-      aiWorkspaceTriggerWeekly: "Weekly {{days}} {{time}}",
-      aiWorkspaceTriggerInterval: "Every {{count}} min",
-      aiWorkspaceUntitledAssistant: "Untitled Assistant",
-      aiWorkspaceQuickSectionDesc:
-        "In addition to the terminal Quick AI experience, this adds separate Quick Assistant and Selection Assistant entries for quick questions and selected-text handling.",
-      aiWorkspaceQuickAssistantCardDesc:
-        "Best for direct questions, rewriting, translation, and quick summaries.",
-      aiWorkspaceQuickAssistantModeDesc:
-        "Follow the assistant preset prompt, primary model, web access switch, knowledge bases, MCP, and memory.",
-      aiWorkspaceQuickModelModeDesc:
-        "Use the role-bound model directly, best for lightweight rewriting, translation, summaries, and quick Q&A.",
-      aiWorkspaceSelectionAssistantCardDesc:
-        "A floating assistant for quickly handling selected text or clipboard content.",
-      aiWorkspaceSelectionAssistantModeDesc:
-        "Use an assistant preset to process selected text with richer context.",
-      aiWorkspaceSelectionModelModeDesc:
-        "Use the `selection_assistant` role binding directly to process clipboard text.",
-      aiWorkspaceSelectionClipboardDesc:
-        "Automatically fall back to reading the clipboard when system-level selection injection is unavailable.",
-      aiWorkspaceSelectionSystemHint:
-        "This version does not yet hook into system-level global selection capture, so it currently works through a dedicated floating window plus clipboard fallback and tells the user which mode is active.",
-      // AiWorkspace Simple
       historyLabel: "History",
       pinnedLabel: "Pinned",
       recentLabel: "Recent",
       archivedLabel: "Archived",
-      aiWorkspaceNoConversations: "No conversations yet",
-      aiWorkspaceNoSearchResults: "No results found",
       selectOrCreateTopic: "Select or create a conversation",
       startConversation: "Start a Conversation",
       startConversationDesc: "Select a conversation from the left or create a new conversation.",
@@ -3453,20 +3205,11 @@ const resources = {
       composerPlaceholder: "Type a message...",
       generatingLabel: "Generating...",
       createTopic: "Create Conversation",
-      assistantLibrary: "Assistant Library",
-      automations: "Automations",
-      goToAutomations: "Go to Automations",
-      goToModelCenter: "Go to Model Center",
       archive: "Archive",
       resetContext: "Reset Context",
       reasoningLabel: "Reasoning",
       thinkingStatusLabel: "Thinking...",
-      searchAssistants: "Search assistants...",
-      noAssistantSelected: "No assistant selected",
       toolPolicyLabel: "Tool Policy",
-      useThisAssistant: "Use",
-      deleteAssistantTitle: "Delete Assistant",
-      deleteAssistantMessage: "Are you sure you want to delete this assistant? This action cannot be undone.",
       deleteConversation: "Delete Conversation",
       deleteConversationMessage: "Are you sure you want to delete this conversation?",
       mcpConfig: "MCP Config",
@@ -3479,22 +3222,6 @@ const resources = {
       networkRetrievalToggle: "Toggle network retrieval",
       networkRetrievalMcpDesc:
         "Controls whether search-class MCP tools are exposed to the model. Docs-class MCP tools stay available.",
-      networkRetrievalAutomationDesc:
-        "Controls whether automation runs can use search-class MCP tools. Docs-class MCP tools stay available.",
-      mcpCategorySearch: "Search",
-      mcpCategoryDocs: "Docs",
-      mcpCategoryWorkspace: "Workspace",
-      mcpCategoryAutomation: "Automation",
-      mcpCategoryIntegration: "Integration",
-      mcpImpactNetwork: "Network",
-      mcpImpactRemoteApi: "Remote API",
-      mcpImpactCredentials: "Credentials",
-      mcpImpactWorkspaceRead: "Workspace Read",
-      mcpImpactWorkspaceWrite: "Workspace Write",
-      mcpImpactDataAccess: "Data Access",
-      mcpImpactLocalState: "Local State",
-      mcpImpactBrowser: "Browser",
-      mcpImpactTrusted: "Trusted",
       mcpPreviewReady: "{{count}} tools cached",
       mcpPreviewFailed: "Preview failed",
       mcpPreviewUnchecked: "Preview not fetched yet",
@@ -3515,21 +3242,8 @@ const resources = {
       selectModelLabel: "Select a Model",
       modelIdLabel: "Model ID",
       boundStatusLabel: "Bound",
-      modelCenterRoleChatDesc: "Default model for regular conversation",
-      modelCenterRoleAssistantDesc: "Primary model for assistant conversations",
-      modelCenterRoleSummaryDesc: "Lightweight model for summaries",
-      modelCenterRoleAutomationDesc: "Default model for automation jobs",
-      modelCenterRoleQuickAssistantDesc: "Default model for Quick Assistant",
-      modelCenterRoleSelectionAssistantDesc: "Reserved for Selection Assistant",
-      modelCenterRoleTranslateDesc: "Default model for translation tasks",
-      modelCenterRoleTopicNamingDesc: "Model for conversation naming",
-      modelCenterGroupedByProvider: "Browse all models grouped by provider.",
-      modelCenterSearchModels: "Search models...",
-      modelCenterSelectModelDesc:
-        "Select a model from the left to inspect details, role bindings, and runtime parameters.",
       bind: "Bind",
       unbind: "Unbind",
-      backToAssistant: "Back to AI Workspace",
       enableWebSearch: "Enable Web Search",
       enableWebSearchDesc: "Allow this model to use web search capability",
       // Claude Profiles
@@ -3795,11 +3509,8 @@ const resources = {
       "tray.toggle.show": "Show OneSpace",
       "tray.toggle.hide": "Hide OneSpace",
       "tray.quickAi": "Quick AI Session",
-      "tray.quickAssistant": "Quick Assistant",
-      "tray.selectionAssistant": "Selection Assistant",
       "tray.launcher": "Launcher",
       "tray.aiSessions": "AI Sessions",
-      "tray.aiAssistants": "AI Assistant",
       "tray.aiEnvironments": "AI Environments",
       "tray.aiGateway": "AI Gateway",
       "tray.aiUsage": "AI Usage",
@@ -5441,8 +5152,6 @@ const resources = {
         "打包目录、工具、环境、MCP、Skills 和启动提示词。",
       docsAiEnvironmentsSummary:
         "管理 Claude、Codex、Antigravity、OpenCode 服务商与当前 CLI 配置。",
-      docsAiWorkspaceSummary:
-        "使用应用内 AI 对话、助手预设和 Quick Assistant。",
       docsAiUsageSummary: "查看从本地 CLI 会话历史统计出的 token 用量。",
       docsSshSummary:
         "打开 SSH 服务器，并管理 local、remote、dynamic SSH 隧道。",
@@ -6715,30 +6424,13 @@ const resources = {
       workflowStatusSuccess: "成功",
       workflowStatusFailed: "失败",
       workflowStatusInterrupted: "已中断",
-      aiAssistant: "AI 工作台",
-      aiAssistants: "AI 工作台",
-      aiAssistantsLibrary: "AI 助手库",
-      aiAssistantsDesc:
-        "在 AI 工作台中统一管理助手会话、助手预设与 Quick Assistant 配置。",
-      aiAutomations: "AI 自动化",
-      aiAutomationsDesc: "集中管理后台任务、触发器、运行记录与助手绑定。",
-      aiModelCenter: "AI 模型中心",
-      aiModelCenterDesc: "统一管理 Provider 连接、搜索源、模型目录与角色绑定。",
       cliEnvironments: "AI 终端服务商",
-      aiConnectionCenter: "AI 模型中心",
-      aiConnectionCenterDesc:
-        "AI 模型中心现在是 Provider 连接、搜索源、模型目录和角色绑定的唯一主编辑入口。",
-      assistantLabel: "助手",
       providerLabel: "供应商",
       youLabel: "你",
       chatLabel: "对话",
       summaryLabel: "总结",
       translateLabel: "翻译",
       topicNamingLabel: "会话命名",
-      automationLabel: "自动化",
-      quickAssistant: "Quick Assistant",
-      selectionAssistant: "Selection Assistant",
-      assistantMode: "助手模式",
       modelMode: "模型模式",
       nameLabel: "名称",
       descriptionLabel: "描述",
@@ -6808,10 +6500,6 @@ const resources = {
       modelLabel: "模型",
       modelRoleLabel: "模型角色",
       selectModel: "选择模型",
-      selectAssistantLabel: "选择助手",
-      assistantPresetLabel: "助手预设",
-      assistantPresetsLabel: "助手预设",
-      preferredAssistantLabel: "首选助手",
       preferredRoleLabel: "首选角色",
       primaryModelLabel: "主模型",
       lightModelLabel: "轻模型",
@@ -6823,7 +6511,6 @@ const resources = {
       modelOverrideLabel: "模型覆盖",
       followPresetOrRole: "跟随预设 / 角色",
       followRoleBindingLabel: "跟随角色绑定",
-      followAutomationRoleLabel: "跟随自动化角色",
       topicControlsLabel: "会话控制",
       topicStatsLabel: "会话统计",
       capabilitySnapshotLabel: "能力快照",
@@ -6851,209 +6538,17 @@ const resources = {
       detectConnection: "检测连接",
       fetchModelCatalog: "拉取模型目录",
       loadingWithTitle: "正在加载 {{title}}...",
-      quickAssistantNoAssistantSelected: "未选择助手",
-      quickAssistantNoAssistantDescription: "当前助手还没有描述。",
-      quickAssistantRoleBindHint: "未设置，请到 AI 模型中心绑定。",
-      quickAssistantCurrentRoleModel: "当前角色绑定模型",
-      quickAssistantInternetHint: "联网能力跟随助手策略或模型角色绑定。",
-      quickAssistantAssistantModeDesc: "继承助手预设的提示词、能力和默认模型。",
-      quickAssistantModelModeDesc: "直接使用角色绑定模型，不继承助手能力。",
-      quickAssistantModeHint: "适合快速问答、改写、翻译或总结。",
-      selectionAssistantModeHint:
-        "处理当前选中文本，系统不支持时自动降级为剪贴板模式。",
-      quickAssistantComposerPlaceholder:
-        "输入一句话，快速生成答复、改写、翻译或总结...",
-      selectionAssistantComposerPlaceholder:
-        "输入或粘贴选中的文本，快速改写、翻译、总结或解释...",
-      quickAssistantEmptyTitle: "快速处理一个问题",
-      selectionAssistantEmptyTitle: "快速处理一段文本",
-      quickAssistantEmptyDesc:
-        "这里会直接创建真实会话并保留消息流，你可以稍后回到 AI 工作台继续。",
       loadingPageWithName: "正在加载 {{name}}...",
-      aiModelCenterRedirectDesc:
-        "为了避免维护两套入口，模型相关配置已经迁移到左侧主导航的 AI 模型中心页面。",
-      openAiModelCenter: "打开 AI 模型中心",
-      selectionAssistantClipboardFallbackError:
-        "Selection Assistant 当前无法直接读取系统选区，已降级为普通浮窗。",
-      openQuickAssistant: "打开 Quick Assistant",
-      openSelectionAssistant: "打开 Selection Assistant",
-      aiConnectionPanelProviders: "Provider Connections",
-      aiConnectionPanelProvidersHint: "模型供应商、密钥与能力开关",
-      aiConnectionPanelSearch: "Search Connections",
-      aiConnectionPanelSearchHint: "联网搜索提供商与默认绑定",
-      aiConnectionPanelCatalog: "Model Catalog",
-      aiConnectionPanelCatalogHint: "自动发现模型、标签和能力信息",
-      aiConnectionPanelRoles: "Role Bindings",
-      aiConnectionPanelRolesHint: "把角色映射到模型和运行参数",
-      aiConnectionPanelRuntime: "Runtime Presets",
-      aiConnectionPanelRuntimeHint: "为角色绑定可复用的运行参数模板",
-      aiConnectionProviderCenterTitle: "Provider 连接中心",
-      aiConnectionProviderCenterDesc:
-        "这里只处理模型供应商连接、密钥、网络与模型目录拉取，不再承载旧式 profile 配置。",
-      aiConnectionSearchCenterTitle: "搜索连接中心",
-      aiConnectionSearchCenterDesc:
-        "搜索提供商单独维护，角色绑定再决定哪些能力默认使用联网搜索。",
-      aiConnectionCatalogCenterTitle: "模型目录",
-      aiConnectionCatalogCenterDesc:
-        "模型目录从 Provider 自动拉取，支持标签、能力和启用状态管理。",
-      aiConnectionRoleBindingMatrixTitle: "角色绑定矩阵",
-      aiConnectionRoleBindingMatrixDesc:
-        "每个角色都能绑定一个默认模型，并携带温度、最大 token、推理与搜索策略。",
-      aiConnectionRuntimeCenterDesc:
-        "Runtime Preset 负责统一温度、max tokens 和推理开关，角色绑定只需要引用或覆盖。",
-      aiConnectionProvidersSummary: "已连接 {{count}} 个可用 Provider",
-      aiConnectionDefaultSearchSource: "默认搜索源",
-      aiConnectionCatalogSummary: "{{count}} 个模型已启用，可用于角色绑定",
-      aiConnectionRolesSummary: "覆盖聊天、助手、自动化、翻译等默认角色",
-      aiConnectionRuntimeSummary: "角色可复用的运行参数模板",
-      aiConnectionRoleChatDesc: "普通对话的默认模型",
-      aiConnectionRoleAssistantDesc: "助手会话和测试运行的主模型",
-      aiConnectionRoleSummaryDesc: "轻量总结与二段处理模型",
-      aiConnectionRoleAutomationDesc: "后台自动化任务默认模型",
-      aiConnectionRoleQuickAssistantDesc: "浮窗助手默认模型",
-      aiConnectionRoleSelectionAssistantDesc: "划词助手预留绑定",
-      aiConnectionRoleTranslateDesc: "翻译用途默认模型",
-      aiConnectionRoleTopicNamingDesc: "会话命名与摘要标题模型",
-      aiConnectionPresetBalanced: "Balanced",
-      aiConnectionPresetBalancedDesc:
-        "适合聊天、Quick Assistant 和日常工作的通用模板。",
-      aiConnectionPresetDeepReasoning: "Deep Reasoning",
-      aiConnectionPresetDeepReasoningDesc:
-        "适合助手和自动化的更长回答与更强推理模板。",
-      aiConnectionPresetLightweight: "Lightweight",
-      aiConnectionPresetLightweightDesc: "适合总结、翻译和会话命名的轻量模板。",
-      aiConnectionNewProvider: "新建 Provider",
-      aiConnectionNewSearchProvider: "新建搜索连接",
-      aiConnectionCustomPreset: "自定义模板",
-      aiConnectionCustomPresetDesc: "适用于特定助手流程的可复用运行参数模板。",
-      aiConnectionCatalogRefreshSuccess:
-        "{{name}} 已刷新 {{count}} 个模型目录项。",
-      aiConnectionProviderStatusDesc: "连接、鉴权、能力标记与目录拉取",
-      aiConnectionEnableProvider: "启用 Provider",
-      aiConnectionEnableProviderDesc: "关闭后不会参与目录拉取与运行。",
       supportsWebSearchLabel: "支持 Web Search",
       supportsWebSearchDesc: "如果模型支持原生联网，可在此打标。",
       supportsStreamingLabel: "支持 Streaming",
       supportsStreamingDesc: "消息流式输出与增量更新。",
       supportsReasoningLabel: "支持 Reasoning",
       supportsReasoningDesc: "允许在角色层启用推理模式。",
-      aiConnectionNoProvidersYet:
-        "先添加一个 Provider 连接，工作台才能拉取模型目录并建立角色绑定。",
-      aiConnectionSearchProviders: "搜索连接",
-      aiConnectionSearchStatusDesc: "联网搜索诊断、默认源绑定与速率配置",
-      aiConnectionSetDefaultSearchSource: "把当前搜索连接设为默认联网搜索源",
-      aiConnectionEnableSearchProvider: "启用搜索连接",
-      aiConnectionEnableSearchProviderDesc: "关闭后角色绑定无法使用该搜索源。",
-      aiConnectionNoSearchProvidersYet:
-        "先添加一个搜索提供商，这样聊天、自动化和 Quick Assistant 才能统一使用联网能力。",
-      aiConnectionCatalogNotice:
-        "模型目录由 Provider 自动拉取；如果某个角色没有绑定模型，会优先落回到第一个已启用模型目录项。",
-      aiConnectionNoCatalogYet:
-        "当前还没有模型目录。先去 Provider Connections 中检测连接并拉取模型目录。",
-      aiConnectionNoDefaultSearchProvider: "不默认联网",
-      aiConnectionRoleEnableReasoningDesc: "角色默认开启推理能力。",
-      aiConnectionRuntimePresetNotice:
-        "Runtime Preset 是角色运行参数的基础模板。角色绑定可以复用 preset，也可以继续在角色层做细粒度覆盖。",
-      aiConnectionPresetEnableReasoningDesc:
-        "作为引用该 preset 的默认推理开关。",
-      aiWorkspaceTitle: "AI 工作台",
-      aiWorkspaceDesc:
-        "OneSpace 的统一 AI 工作台，连接模型中心、助手、会话、自动化和快捷入口。",
-      aiWorkspaceSectionConversations: "AI 对话",
-      aiWorkspaceSectionConversationsDesc:
-        "助手导向的会话、消息流和能力侧栏。",
-      aiWorkspaceSectionAssistants: "助手库",
-      aiWorkspaceSectionAssistantsDesc:
-        "统一管理提示词、模型、MCP、知识库与记忆策略。",
-      aiWorkspaceSectionAutomations: "自动化",
-      aiWorkspaceSectionAutomationsDesc: "把助手预设绑定到后台任务和触发器。",
-      aiWorkspaceSectionModels: "模型中心",
-      aiWorkspaceSectionModelsDesc: "Provider 连接、模型目录与角色绑定矩阵。",
-      aiWorkspaceSectionQuickDesc: "浮窗助手、快捷模式与划词助手预留位。",
-      aiWorkspaceConversationStarterHint: "先选助手，再创建会话。",
-      aiWorkspaceSearchTopics: "搜索会话...",
-      aiWorkspaceSearchAssistants: "搜索助手...",
-      aiWorkspaceSearchAutomations: "搜索自动化...",
-      aiWorkspaceNoMessagesYet: "暂无消息",
-      aiWorkspaceMessageCount: "{{count}} 条消息",
-      aiWorkspaceNewAssistant: "新建助手",
-      aiWorkspaceNewAssistantName: "新建助手",
-      aiWorkspaceNewAutomation: "新建自动化",
-      aiWorkspaceNewAutomationName: "新建自动化",
-      aiWorkspaceNoPromptYet: "暂无提示词",
-      aiWorkspaceModelCenterHint:
-        "Provider 连接、模型目录与角色绑定会在右侧展开完整编辑面板。",
-      aiWorkspaceQuickSummary: "Quick Assistant 摘要",
-      aiWorkspaceCurrentMode: "当前模式",
-      aiWorkspaceCurrentAssistant: "当前助手",
-      aiWorkspaceCurrentRoleModel: "当前角色模型",
-      aiWorkspaceCurrentModel: "当前模型",
-      aiWorkspaceLoading: "正在加载 AI 工作台...",
-      aiWorkspaceSelectOrCreateTopic: "选择或创建一个会话",
-      aiWorkspaceConversationDesc:
-        "助手会话会默认继承 Assistant Preset 的模型与能力策略，也支持在会话内临时覆盖。",
-      aiWorkspaceLoadingTopic: "正在加载会话...",
-      aiWorkspaceEmptyTopicHint:
-        "从一个清晰问题开始，或者先在输入框工具栏里调整助手、模型和会话操作。",
-      aiWorkspaceStartFromPreset: "从一个助手预设开始",
-      aiWorkspaceStartFromPresetDesc:
-        "左侧先选一个助手，再创建会话，就能把提示词、模型和工具策略一起带入会话。",
-      aiWorkspaceNewTopic: "新建会话",
-      aiWorkspaceComposerPlaceholder:
-        "让助手帮你规划、总结、搜索、翻译，或串联工具能力...",
-      aiWorkspaceCapabilityPanel: "能力面板",
-      aiWorkspaceCapabilityPanelDesc:
-        "在这里查看当前会话的能力快照、知识库与 MCP 上下文。",
-      aiWorkspaceAssistantSaved: "助手已保存。",
-      aiWorkspaceDeleteAssistant: "删除助手",
-      aiWorkspaceDeleteAssistantConfirm:
-        "确定删除这个助手预设吗？已有会话和自动化会失去助手绑定。",
-      aiWorkspaceAssistantTestRunFallback: "执行一次快速能力检查。",
-      aiWorkspaceAutomationSaved: "自动化已保存。",
-      aiWorkspaceDeleteAutomation: "删除自动化",
-      aiWorkspaceDeleteAutomationConfirm:
-        "确定删除这个自动化以及最近运行记录吗？",
-      aiWorkspaceAutomationQueued: "自动化已加入运行队列。",
-      aiWorkspaceModelCenterSaved: "模型中心已保存。",
-      aiWorkspaceSelectAssistant: "选择一个助手",
-      aiWorkspaceAssistantEditorDesc:
-        "助手预设统一承载名称、描述、提示词、主模型、轻模型、工具策略和能力绑定。",
-      aiWorkspaceDefaultTestPrompt: "总结当前发布风险和下一步动作。",
-      aiWorkspaceSelectAssistantPresetOrCreate:
-        "从左侧选择一个 Assistant Preset，或者创建一个新的助手预设。",
-      aiWorkspaceSelectAutomation: "选择一个自动化",
-      aiWorkspaceAutomationEditorDesc:
-        "自动化继承 Assistant Preset 的默认能力，可在任务层覆盖 Prompt、联网开关和运行模型。",
-      aiWorkspaceSelectAutomationOrCreate:
-        "从左侧选择一个 Automation，或者创建一个新的后台任务。",
-      aiWorkspaceTriggerDaily: "每天 {{time}}",
-      aiWorkspaceTriggerWeekly: "每周 {{days}} {{time}}",
-      aiWorkspaceTriggerInterval: "每 {{count}} 分钟",
-      aiWorkspaceUntitledAssistant: "未命名助手",
-      aiWorkspaceQuickSectionDesc:
-        "保留终端 quick-ai 的同时，新增独立的 Quick Assistant 和 Selection Assistant，分别覆盖快速问答与选中文本处理。",
-      aiWorkspaceQuickAssistantCardDesc: "适合直接提问、改写、翻译和快速总结。",
-      aiWorkspaceQuickAssistantModeDesc:
-        "跟随助手预设的提示词、主模型、联网开关、知识库、MCP 和记忆。",
-      aiWorkspaceQuickModelModeDesc:
-        "直接使用角色绑定模型，适合轻量改写、翻译、摘要和快速问答。",
-      aiWorkspaceSelectionAssistantCardDesc:
-        "针对选中文本或剪贴板内容的快速处理浮窗。",
-      aiWorkspaceSelectionAssistantModeDesc:
-        "用助手预设处理高上下文的选中文本。",
-      aiWorkspaceSelectionModelModeDesc:
-        "直接使用 `selection_assistant` 角色绑定处理剪贴板文本。",
-      aiWorkspaceSelectionClipboardDesc:
-        "在不支持系统级划词注入时，自动降级为读取剪贴板。",
-      aiWorkspaceSelectionSystemHint:
-        "当前版本尚未接入操作系统级的全局选区捕获，因此默认通过独立浮窗 + 剪贴板降级工作，并明确告知用户当前模式。",
-      // AiWorkspace Simple
       historyLabel: "历史",
       pinnedLabel: "置顶",
       recentLabel: "最近",
       archivedLabel: "归档",
-      aiWorkspaceNoConversations: "暂无会话",
-      aiWorkspaceNoSearchResults: "未找到结果",
       selectOrCreateTopic: "选择或创建一个会话",
       startConversation: "开始对话",
       startConversationDesc: "从左侧选择一个会话或创建新会话。",
@@ -7061,20 +6556,11 @@ const resources = {
       composerPlaceholder: "输入消息...",
       generatingLabel: "生成中...",
       createTopic: "创建会话",
-      assistantLibrary: "助手库",
-      automations: "自动化",
-      goToAutomations: "前往自动化",
-      goToModelCenter: "前往模型中心",
       archive: "归档",
       resetContext: "重置上下文",
       reasoningLabel: "推理",
       thinkingStatusLabel: "思考中...",
-      searchAssistants: "搜索助手...",
-      noAssistantSelected: "未选择助手",
       toolPolicyLabel: "工具策略",
-      useThisAssistant: "使用",
-      deleteAssistantTitle: "删除助手",
-      deleteAssistantMessage: "确定要删除此助手吗？此操作无法撤销。",
       deleteConversation: "删除会话",
       deleteConversationMessage: "确定要删除此会话吗？",
       mcpConfig: "MCP 配置",
@@ -7087,22 +6573,6 @@ const resources = {
       networkRetrievalToggle: "切换联网检索",
       networkRetrievalMcpDesc:
         "控制是否向模型暴露搜索类 MCP 工具，文档类 MCP 工具仍然可用。",
-      networkRetrievalAutomationDesc:
-        "控制自动化运行是否可使用搜索类 MCP 工具，文档类 MCP 工具仍然可用。",
-      mcpCategorySearch: "搜索",
-      mcpCategoryDocs: "文档",
-      mcpCategoryWorkspace: "工作区",
-      mcpCategoryAutomation: "自动化",
-      mcpCategoryIntegration: "集成",
-      mcpImpactNetwork: "网络",
-      mcpImpactRemoteApi: "远程 API",
-      mcpImpactCredentials: "凭据",
-      mcpImpactWorkspaceRead: "工作区读取",
-      mcpImpactWorkspaceWrite: "工作区写入",
-      mcpImpactDataAccess: "数据访问",
-      mcpImpactLocalState: "本地状态",
-      mcpImpactBrowser: "浏览器",
-      mcpImpactTrusted: "受信任",
       mcpPreviewReady: "已缓存 {{count}} 个工具",
       mcpPreviewFailed: "工具预览获取失败",
       mcpPreviewUnchecked: "尚未获取工具预览",
@@ -7122,21 +6592,8 @@ const resources = {
       selectModelLabel: "选择模型",
       modelIdLabel: "模型 ID",
       boundStatusLabel: "已绑定",
-      modelCenterRoleChatDesc: "常规对话默认使用的模型",
-      modelCenterRoleAssistantDesc: "助手会话默认使用的主模型",
-      modelCenterRoleSummaryDesc: "用于总结任务的轻量模型",
-      modelCenterRoleAutomationDesc: "自动化任务默认使用的模型",
-      modelCenterRoleQuickAssistantDesc: "Quick Assistant 默认使用的模型",
-      modelCenterRoleSelectionAssistantDesc: "为 Selection Assistant 预留的模型",
-      modelCenterRoleTranslateDesc: "翻译任务默认使用的模型",
-      modelCenterRoleTopicNamingDesc: "用于会话命名的模型",
-      modelCenterGroupedByProvider: "按 Provider 分组浏览全部模型。",
-      modelCenterSearchModels: "搜索模型...",
-      modelCenterSelectModelDesc:
-        "从左侧选择一个模型，查看详情、角色绑定和运行时参数。",
       bind: "绑定",
       unbind: "解绑",
-      backToAssistant: "返回 AI 工作台",
       enableWebSearch: "启用联网搜索",
       enableWebSearchDesc: "允许该模型使用联网搜索能力",
       // Claude Profiles
@@ -7392,11 +6849,8 @@ const resources = {
       "tray.toggle.show": "显示 OneSpace",
       "tray.toggle.hide": "隐藏 OneSpace",
       "tray.quickAi": "快速 AI 会话",
-      "tray.quickAssistant": "快速助手",
-      "tray.selectionAssistant": "划词助手",
       "tray.launcher": "启动器",
       "tray.aiSessions": "AI 会话",
-      "tray.aiAssistants": "AI 助手",
       "tray.aiEnvironments": "AI 环境",
       "tray.aiGateway": "AI 网关",
       "tray.aiUsage": "AI 用量",

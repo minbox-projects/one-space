@@ -57,8 +57,6 @@ import { SettingsView } from "./components/SettingsView";
 import { Snippets } from "./components/Snippets";
 import { AboutModal } from "./components/AboutModal";
 import { QuickAiSessionBar } from "./components/QuickAiSessionBar";
-import { QuickAssistantWindow } from "./components/QuickAssistantWindow";
-import { SmartWorkspaceHub } from "./components/SmartWorkspaceHub";
 import { ToolStatusDot } from "./components/toolbox/ToolStatusDot";
 import { Documentation } from "./components/Documentation";
 import { OnboardingWizard } from "./components/OnboardingWizard";
@@ -88,10 +86,6 @@ import {
   type TrayMenuState,
   type TrayTranslate,
 } from "./lib/trayMenu";
-import {
-  showQuickAssistantWindow,
-  showSelectionAssistantWindow,
-} from "./lib/aiWorkspace";
 import type {
   SshTunnelBatchOperationResult,
   SshTunnelsSnapshot,
@@ -110,11 +104,9 @@ import {
 } from "./lib/networkCircuitBreaker";
 import {
   isMoreToolsTab,
-  isSmartWorkspaceTab,
   resolveNavigationTarget,
   type JttParserTab,
   type MoreToolsSection,
-  type SmartWorkspaceSection,
 } from "./lib/navigation";
 import {
   getToolboxTool,
@@ -207,7 +199,6 @@ const TRAY_NAVIGATION_IDS = new Set([
   "launcher",
   "workspaces",
   "ai-sessions",
-  "ai-assistants",
   "ai-environments",
   "ai-usage",
   "ai-gateway",
@@ -274,8 +265,6 @@ function App() {
   const queryParams = new URLSearchParams(window.location.search);
   const view = queryParams.get("view");
   const isQuickAiView = view === "quick-ai";
-  const isQuickAssistantView = view === "quick-assistant";
-  const isSelectionAssistantView = view === "selection-assistant";
 
   const [activeTab, setActiveTab] = useState("launcher");
   const [previousTab, setPreviousTab] = useState("launcher");
@@ -287,8 +276,6 @@ function App() {
   const [messageCenterOpen, setMessageCenterOpen] = useState(false);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [messageUnreadCount, setMessageUnreadCount] = useState(0);
-  const [smartWorkspaceSection, setSmartWorkspaceSection] =
-    useState<SmartWorkspaceSection>("conversations");
   const [moreToolsSection, setMoreToolsSection] =
     useState<MoreToolsSection | null>(null);
   const [jttParserTab, setJttParserTab] = useState<JttParserTab | null>(null);
@@ -393,8 +380,6 @@ function App() {
   const countsRefreshTimerRef = useRef<number | null>(null);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
-  const smartWorkspaceLabel =
-    i18n.language === "zh" ? "AI 工作台" : "AI Workspace";
   const moreToolsLabel =
     i18n.language === "zh" ? "更多工具" : "More Tools";
   const moreToolsSectionTitle = useMemo(() => {
@@ -409,9 +394,6 @@ function App() {
     setMobileNavigationOpen(false);
     const resolved = resolveNavigationTarget(target);
 
-    if (resolved.smartWorkspaceSection) {
-      setSmartWorkspaceSection(resolved.smartWorkspaceSection);
-    }
     if (resolved.moreToolsSection) {
       setMoreToolsSection(resolved.moreToolsSection);
       setMoreToolsReturnTab(
@@ -573,14 +555,6 @@ function App() {
       }
       if (id === "quick-ai") {
         await invoke("toggle_quick_ai_window");
-        return;
-      }
-      if (id === "quick-assistant") {
-        await showQuickAssistantWindow();
-        return;
-      }
-      if (id === "selection-assistant") {
-        await showSelectionAssistantWindow();
         return;
       }
       if (id === "check-for-updates") {
@@ -1578,11 +1552,6 @@ function App() {
             count: counts.workspaces,
           },
           {
-            id: "ai-assistants",
-            name: smartWorkspaceLabel,
-            icon: Bot,
-          },
-          {
             id: "ai-sessions",
             name: t("aiSessions"),
             icon: Terminal,
@@ -1653,13 +1622,10 @@ function App() {
         ],
       },
     ],
-    [counts, i18n.language, moreToolsLabel, smartWorkspaceLabel, t],
+    [counts, i18n.language, moreToolsLabel, t],
   );
 
   const isNavigationItemActive = (itemId: string) => {
-    if (itemId === "ai-assistants") {
-      return isSmartWorkspaceTab(activeTab);
-    }
     if (itemId === "more-tools") {
       return isMoreToolsTab(activeTab);
     }
@@ -1871,14 +1837,6 @@ function App() {
     return <QuickAiSessionBar />;
   }
 
-  if (isQuickAssistantView) {
-    return <QuickAssistantWindow />;
-  }
-
-  if (isSelectionAssistantView) {
-    return <QuickAssistantWindow variant="selection" />;
-  }
-
   if (onboardingStatus === "checking") {
     return (
       <div className="h-screen w-screen bg-background text-foreground flex items-center justify-center">
@@ -1928,13 +1886,6 @@ function App() {
                 navigateToTab(tab);
                 if (hash) window.location.hash = hash;
               }}
-            />
-          </div>
-        )}
-        {shouldRenderTab("ai-assistants") && (
-          <div className={activeTab === "ai-assistants" ? "h-full" : "hidden"}>
-            <SmartWorkspaceHub
-              initialSection={smartWorkspaceSection}
             />
           </div>
         )}
@@ -2116,11 +2067,6 @@ function App() {
                         className={`w-4 h-4 ${selected ? "animate-pulse" : ""}`}
                       />
                       <span>{item.name}</span>
-                      {item.id === "ai-assistants" && (
-                        <span className="text-[9px] px-1 py-0.5 rounded bg-orange-500/10 text-orange-600 dark:text-orange-400 font-medium uppercase tracking-wide">
-                          beta
-                        </span>
-                      )}
                     </div>
                     {item.count !== undefined && (
                       <span

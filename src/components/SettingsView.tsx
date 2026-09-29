@@ -326,7 +326,6 @@ type SettingsTab =
   | "ai-gateway"
   | "shortcuts"
   | "ai"
-  | "assistant-models"
   | "appearance"
   | "security";
 
@@ -342,7 +341,6 @@ const SETTINGS_TABS: SettingsTab[] = [
   "ai-gateway",
   "shortcuts",
   "ai",
-  "assistant-models",
   "appearance",
   "security",
 ];
@@ -1706,10 +1704,6 @@ export function SettingsView({
         next[tab] = false;
         return;
       }
-      if (tab === "assistant-models") {
-        next[tab] = false;
-        return;
-      }
       if (tab === "protocol-router") {
         next[tab] =
           JSON.stringify(normalizeProtocolRouterForCompare(protocolRouterConfig)) !==
@@ -1779,9 +1773,6 @@ export function SettingsView({
     setLoading(true);
     setMessage({ type: "", text: "" });
     try {
-      if (activeTab === "assistant-models") {
-        return;
-      }
       if (activeTab === "protocol-router") {
         const saved = await runUserAction(
           actionContext,
@@ -2062,9 +2053,6 @@ export function SettingsView({
     setLoading(true);
     setMessage({ type: "", text: "" });
     try {
-      if (activeTab === "assistant-models") {
-        return;
-      }
       if (activeTab === "protocol-router") {
         const confirmed = await confirmDialog(
           t(
@@ -2372,13 +2360,6 @@ export function SettingsView({
     if (theme === "system") setTheme("dark");
     else if (theme === "dark") setTheme("light");
     else setTheme("system");
-  };
-
-  const openAiModelCenter = () => {
-    const appWindow = window as Window & {
-      setActiveTab?: (tab: string) => void;
-    };
-    appWindow.setActiveTab?.("ai-model-center");
   };
 
   const updateSyncPolicy = (key: keyof SyncPolicy, checked: boolean) => {
@@ -5321,43 +5302,6 @@ export function SettingsView({
                             "Sessions older than this will be hidden from the list",
                           )}
                         </p>
-                      </div>
-                    </div>
-                  </section>
-                </div>
-              )}
-
-              {activeTab === "assistant-models" && (
-                <div className="space-y-6">
-                  <section className="space-y-4">
-                    <div className="flex flex-col gap-1">
-                      <h2 className="text-lg font-semibold">
-                        {t("aiModelCenter", "AI 模型中心")}
-                      </h2>
-                      <p className="text-sm text-muted-foreground">
-                        {t(
-                          "aiConnectionCenterDesc",
-                          "AI 模型中心现在是 Provider 连接、搜索源、模型目录和角色绑定的唯一主编辑入口。",
-                        )}
-                      </p>
-                    </div>
-
-                    <div className="rounded-2xl border bg-card p-6 shadow-sm">
-                      <div className="space-y-4">
-                        <div className="rounded-2xl border bg-muted/10 p-4 text-sm text-muted-foreground">
-                          {t(
-                            "aiModelCenterRedirectDesc",
-                            "为了避免维护两套入口，模型相关配置已经迁移到左侧主导航的 AI 模型中心页面。",
-                          )}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={openAiModelCenter}
-                          className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-                        >
-                          <Bot className="h-4 w-4" />
-                          {t("openAiModelCenter", "打开 AI 模型中心")}
-                        </button>
                       </div>
                     </div>
                   </section>

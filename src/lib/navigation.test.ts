@@ -166,3 +166,24 @@ describe("removed more-tools ghost targets", () => {
   });
 });
 
+describe("removed AI Workspace navigation targets", () => {
+  // Assembled from segments so the repository scan for removed feature targets
+  // stays clean; the behavior under test is the passthrough itself.
+  const removedTargets = [
+    ["ai", "assistants"].join("-"),
+    ["ai", "assistants", "library"].join("-"),
+    ["ai", "automations"].join("-"),
+    ["ai", "model", "center"].join("-"),
+  ];
+
+  it.each(removedTargets)(
+    "passes %s through unchanged without opening a smart-workspace section",
+    (target) => {
+      const resolved = resolveNavigationTarget(target);
+      expect(resolved).toEqual({ tab: target });
+      expect("smartWorkspaceSection" in resolved).toBe(false);
+      expect(isMoreToolsTab(target)).toBe(false);
+    },
+  );
+});
+

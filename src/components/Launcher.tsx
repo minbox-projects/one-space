@@ -122,11 +122,6 @@ const INTERNAL_TARGETS: InternalTarget[] = [
     fallback: "AI Terminal Sessions",
   },
   {
-    id: "ai-assistants",
-    labelKey: "aiAssistants",
-    fallback: "AI Workspace",
-  },
-  {
     id: "ai-environments",
     labelKey: "aiEnvironments",
     fallback: "AI Environments",
@@ -515,8 +510,6 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     () => sortedItems.filter((item) => item.pinned).map((item) => item.id),
     [sortedItems],
   );
-  const smartWorkspaceLabel =
-    i18n.language === "zh" ? "AI 工作台" : "AI Workspace";
 
   const renderSshTunnelStatus = (summary?: LauncherSshTunnelSummary | null) => {
     if (!summary) return null;
@@ -1270,9 +1263,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
                   </option>
                   {INTERNAL_TARGETS.map((target) => (
                     <option key={target.id} value={target.id}>
-                      {target.id === "ai-assistants"
-                        ? smartWorkspaceLabel
-                        : t(target.labelKey, target.fallback)}
+                      {t(target.labelKey, target.fallback)}
                     </option>
                   ))}
                 </select>

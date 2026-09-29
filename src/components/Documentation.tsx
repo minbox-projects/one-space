@@ -6,7 +6,6 @@ import remarkGfm from 'remark-gfm';
 import { 
   BarChart3,
   BookOpen, 
-  Bot,
   Code2,
   Terminal, 
   FolderOpen,
@@ -190,14 +189,6 @@ export function Documentation() {
           icon: Sparkles,
           docId: 'usage',
           anchor: '4-ai-environments',
-        },
-        {
-          id: 'ai-workspace',
-          name: t('aiWorkspaceTitle', 'AI Workspace'),
-          summary: t('docsAiWorkspaceSummary', 'Use in-app AI conversations, assistant presets, and Quick Assistant.'),
-          icon: Bot,
-          docId: 'usage',
-          anchor: '8-ai-workspace',
         },
         {
           id: 'ai-usage',

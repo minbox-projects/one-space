@@ -67,9 +67,6 @@ type ApiResp<T> = {
 type OmniSearchNavigateTab =
   | "launcher"
   | "ai-sessions"
-  | "ai-assistants"
-  | "ai-automations"
-  | "ai-model-center"
   | "ai-environments"
   | "skills"
   | "mcp-servers"
@@ -93,9 +90,6 @@ interface LauncherItem {
 const NAV_TARGETS = new Set<OmniSearchNavigateTab>([
   "launcher",
   "ai-sessions",
-  "ai-assistants",
-  "ai-automations",
-  "ai-model-center",
   "ai-environments",
   "skills",
   "mcp-servers",

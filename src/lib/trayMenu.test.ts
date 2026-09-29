@@ -129,12 +129,9 @@ describe("tray menu structure", () => {
     expect(nodeKeys(build())).toEqual([
       "toggle-window",
       "quick-ai",
-      "quick-assistant",
-      "selection-assistant",
       "separator",
       "launcher",
       "ai-sessions",
-      "ai-assistants",
       "ai-environments",
       "ai-gateway",
       "ai-usage",
