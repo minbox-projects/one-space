@@ -4,6 +4,7 @@ use crate::{
     mcp_servers, mcp_templates, messages, protocol_router, proxy, secrets, short_link, skills,
     ssh_tunnels, storage, subagents, version_detect, workflows, workspaces,
 };
+use std::path::Path;
 use std::str::FromStr;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -19,6 +20,7 @@ use super::{
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     config::seed_dev_gateway_files_on_start();
+    cleanup_removed_ai_workspace_files();
     if handle_internal_cli_command() {
         return;
     }
@@ -469,8 +471,44 @@ pub fn run() {
         });
 }
 
+/// Best-effort removal of the deleted AI Workspace's feature-owned data files.
+///
+/// Removes exactly `ai_workspace_state.json` and
+/// `data/mcp/assistant_mcp_tool_previews.json` below `base`. Missing files are
+/// ignored and any other failure only logs so startup continues and the next
+/// start retries; it never touches any other path.
+fn cleanup_removed_ai_workspace_files_in(base: &Path) {
+    let paths = [
+        base.join("ai_workspace_state.json"),
+        base.join("data")
+            .join("mcp")
+            .join("assistant_mcp_tool_previews.json"),
+    ];
+    for path in paths {
+        if let Err(err) = std::fs::remove_file(&path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "removed ai workspace cleanup failed to delete {}: {}",
+                    path.display(),
+                    err
+                );
+            }
+        }
+    }
+}
+
+/// Best-effort startup cleanup of the deleted AI Workspace's local data files.
+fn cleanup_removed_ai_workspace_files() {
+    match crate::get_data_dir() {
+        Ok(dir) => cleanup_removed_ai_workspace_files_in(&dir),
+        Err(err) => eprintln!("removed ai workspace cleanup skipped: {}", err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::cleanup_removed_ai_workspace_files_in;
+
     const RUN_APP_SOURCE: &str = include_str!("run_app.rs");
     const SHORTCUTS_TRAY_SOURCE: &str = include_str!("shortcuts_tray.rs");
     const WINDOWS_DATA_SOURCE: &str = include_str!("windows_data.rs");
@@ -726,6 +764,111 @@ mod tests {
             "the dev seed must run before CLI handling ({} < {})",
             seed_index,
             cli_index
+        );
+    }
+
+    /// Unique temporary directory under the OS temp dir, tagged with the process
+    /// id and a monotonic suffix so parallel tests never collide.
+    fn unique_cleanup_temp_dir(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!(
+            "onespace-cleanup-{}-{}-{}-{}",
+            tag,
+            std::process::id(),
+            nanos,
+            unique
+        ))
+    }
+
+    #[test]
+    fn cleanup_removed_ai_workspace_files_removes_only_its_own_files() {
+        let base = unique_cleanup_temp_dir("feature-files");
+        let mcp_dir = base.join("data").join("mcp");
+        std::fs::create_dir_all(&mcp_dir).expect("create data/mcp");
+        let state = base.join("ai_workspace_state.json");
+        let preview = mcp_dir.join("assistant_mcp_tool_previews.json");
+        let other_in_mcp = mcp_dir.join("other.json");
+        let unrelated = base.join("unrelated.txt");
+        std::fs::write(&state, b"{}").expect("write ai_workspace_state.json");
+        std::fs::write(&preview, b"{}").expect("write assistant_mcp_tool_previews.json");
+        std::fs::write(&other_in_mcp, b"{}").expect("write data/mcp/other.json");
+        std::fs::write(&unrelated, b"keep").expect("write unrelated file");
+
+        cleanup_removed_ai_workspace_files_in(&base);
+
+        assert!(!state.exists(), "ai_workspace_state.json must be removed");
+        assert!(
+            !preview.exists(),
+            "data/mcp/assistant_mcp_tool_previews.json must be removed"
+        );
+        assert!(
+            other_in_mcp.exists(),
+            "unrelated data/mcp/other.json must be preserved"
+        );
+        assert!(unrelated.exists(), "unrelated file must be preserved");
+        assert!(
+            mcp_dir.is_dir(),
+            "the data/mcp directory itself must be preserved"
+        );
+
+        // Idempotent: a second run must not error or panic.
+        cleanup_removed_ai_workspace_files_in(&base);
+        assert!(!state.exists(), "second run must keep it removed");
+        assert!(!preview.exists(), "second run must keep it removed");
+        assert!(other_in_mcp.exists(), "second run must keep unrelated file");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn cleanup_removed_ai_workspace_files_is_a_noop_for_an_empty_directory() {
+        let base = unique_cleanup_temp_dir("empty-dir");
+        std::fs::create_dir_all(&base).expect("create empty dir");
+        let before: Vec<_> = std::fs::read_dir(&base)
+            .expect("read empty dir")
+            .map(|entry| entry.expect("dir entry").file_name())
+            .collect();
+
+        cleanup_removed_ai_workspace_files_in(&base);
+
+        let after: Vec<_> = std::fs::read_dir(&base)
+            .expect("read empty dir")
+            .map(|entry| entry.expect("dir entry").file_name())
+            .collect();
+        assert_eq!(
+            before, after,
+            "a directory without the feature files must stay untouched"
+        );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn startup_cleanup_runs_once_after_the_dev_seed_in_run() {
+        let run_app = production_source(RUN_APP_SOURCE);
+        let body = extract_function_body(run_app, "pub fn run()");
+        assert_eq!(
+            body.matches("cleanup_removed_ai_workspace_files()").count(),
+            1,
+            "run() must call cleanup_removed_ai_workspace_files() exactly once"
+        );
+        let seed_index = body
+            .find("config::seed_dev_gateway_files_on_start()")
+            .expect("run() must call config::seed_dev_gateway_files_on_start()");
+        let cleanup_index = body
+            .find("cleanup_removed_ai_workspace_files()")
+            .expect("run() must call cleanup_removed_ai_workspace_files()");
+        assert!(
+            seed_index < cleanup_index,
+            "the startup cleanup must run after the dev seed ({} < {})",
+            seed_index,
+            cleanup_index
         );
     }
 }
