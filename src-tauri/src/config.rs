@@ -612,6 +612,77 @@ pub fn get_app_dir() -> Result<PathBuf, String> {
     Ok(app_dir)
 }
 
+/// Copy the release profile's master password and encrypted AI gateway config
+/// into the dev profile over explicit directories.
+///
+/// Step A seeds `.local_key` first so Step B can compare both profiles' master
+/// passwords. The gateway is copied only when its release source exists, the
+/// dev destination is absent, and both `.local_key` files read as equal bytes;
+/// a missing or unreadable key, or a password mismatch, skips the copy without
+/// error. Missing release sources are a no-op and existing destination files are
+/// never overwritten, so a later start only restores files the user deleted. No
+/// other file (notably no usage database) is read or written.
+pub(crate) fn seed_gateway_files(release_dir: &Path, dev_dir: &Path) -> Result<(), String> {
+    let release_key = release_dir.join(".local_key");
+    let dev_key = dev_dir.join(".local_key");
+    let release_gateway = release_dir.join("ai_gateway.json");
+    let dev_gateway = dev_dir.join("ai_gateway.json");
+
+    if release_key.is_file() && !dev_key.exists() {
+        fs::create_dir_all(dev_dir).map_err(|e| e.to_string())?;
+        fs::copy(&release_key, &dev_key).map_err(|e| e.to_string())?;
+    }
+
+    if release_gateway.is_file() && !dev_gateway.exists() {
+        let release_key_bytes = fs::read(&release_key);
+        let dev_key_bytes = fs::read(&dev_key);
+        if let (Ok(release_key_bytes), Ok(dev_key_bytes)) = (release_key_bytes, dev_key_bytes) {
+            if release_key_bytes == dev_key_bytes {
+                fs::copy(&release_gateway, &dev_gateway).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Seed the dev profile's gateway files from the release profile on startup.
+///
+/// Release builds return immediately. Failures only log so startup continues
+/// and the next start retries.
+pub(crate) fn seed_dev_gateway_files_on_start() {
+    if !is_dev_build() {
+        return;
+    }
+
+    #[cfg(test)]
+    let home_dir = test_home::test_home_override().or_else(dirs::home_dir);
+    #[cfg(not(test))]
+    let home_dir = dirs::home_dir();
+    let Some(home_dir) = home_dir else {
+        eprintln!("dev gateway seed skipped: could not find home directory");
+        return;
+    };
+
+    let release_dir = app_dir_for(&home_dir, false);
+    let dev_dir = match get_app_dir() {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("dev gateway seed skipped: {}", err);
+            return;
+        }
+    };
+
+    if let Err(err) = seed_gateway_files(&release_dir, &dev_dir) {
+        eprintln!(
+            "dev gateway seed failed ({} -> {}): {}",
+            release_dir.display(),
+            dev_dir.display(),
+            err
+        );
+    }
+}
+
 fn copy_tree_if_missing(src: &Path, dst: &Path) -> Result<(), String> {
     if !src.exists() || !src.is_dir() {
         return Ok(());
@@ -1124,6 +1195,7 @@ mod tests {
         app_dir_for, default_storage_type_for, ensure_local_data_mirror_initialized_at, is_dev_build,
         resolve_selected_storage_root_at, resolve_shared_storage_root_at, DeviceConfig,
     };
+    use super::{seed_dev_gateway_files_on_start, seed_gateway_files};
     use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
@@ -1590,6 +1662,328 @@ mod tests {
             fs::read(release_local.join("notes.json")).expect("copied notes"),
             fs::read(release_legacy.join("notes.json")).expect("legacy notes"),
             "the release copy behavior must copy the legacy file byte for byte"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Dev/release environment isolation (REQ-002 / AC-004..AC-008)
+    //
+    // Observable boundary: `seed_gateway_files` over explicit release/dev
+    // directories (copy rules, byte equality, retry and no-overwrite), and the
+    // on-start entry `seed_dev_gateway_files_on_start` plus `run()`'s call
+    // order. These tests are written before the implementation exists; they are
+    // the RED evidence for Step 2.
+    // -----------------------------------------------------------------------
+
+    fn seed_temp_root(label: &str) -> (PathBuf, TempTestHome) {
+        let root = std::env::temp_dir().join(format!(
+            "onespace-seed-{}-{}-{}",
+            label,
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = TempTestHome(root.clone());
+        fs::create_dir_all(&root).expect("create temp root");
+        (root, cleanup)
+    }
+
+    #[test]
+    fn debug_start_seeds_both_gateway_files_with_intact_content() {
+        let (root, _cleanup) = seed_temp_root("seed-both");
+        let release = root.join("release");
+        let dev = root.join("dev");
+        fs::create_dir_all(&release).expect("create release dir");
+
+        let password = "correct horse battery staple";
+        let expected_json = r#"{"schema_version":2,"providers":[]}"#;
+        fs::write(release.join(".local_key"), password).expect("write release local key");
+        let encrypted =
+            crate::crypto::encrypt(expected_json, password).expect("encrypt release gateway");
+        fs::write(release.join("ai_gateway.json"), &encrypted).expect("write release gateway");
+
+        seed_gateway_files(&release, &dev).expect("seed gateway files");
+
+        assert!(dev.join(".local_key").is_file(), "the dev key must be seeded");
+        assert!(
+            dev.join("ai_gateway.json").is_file(),
+            "the dev gateway must be seeded"
+        );
+        assert_eq!(
+            fs::read(dev.join(".local_key")).expect("read dev key"),
+            fs::read(release.join(".local_key")).expect("read release key"),
+            "the copied master password must be byte-identical"
+        );
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read dev gateway"),
+            fs::read(release.join("ai_gateway.json")).expect("read release gateway"),
+            "the copied gateway config must be byte-identical"
+        );
+
+        let decrypted = crate::crypto::decrypt(
+            &fs::read_to_string(dev.join("ai_gateway.json")).expect("read dev gateway as string"),
+            password,
+        )
+        .expect("decrypt copied gateway");
+        assert_eq!(
+            decrypted, expected_json,
+            "the copied ciphertext must decrypt to the exact source JSON"
+        );
+    }
+
+    #[test]
+    fn seeding_never_overwrites_existing_dev_files() {
+        let (root, _cleanup) = seed_temp_root("seed-no-overwrite");
+        let release = root.join("release");
+        let dev = root.join("dev");
+        fs::create_dir_all(&release).expect("create release dir");
+        fs::create_dir_all(&dev).expect("create dev dir");
+
+        fs::write(release.join(".local_key"), "release-key").expect("write release key");
+        fs::write(
+            release.join("ai_gateway.json"),
+            crate::crypto::encrypt("release-gateway", "release-key")
+                .expect("encrypt release gateway"),
+        )
+        .expect("write release gateway");
+
+        fs::write(dev.join(".local_key"), "dev-key").expect("write dev key");
+        fs::write(dev.join("ai_gateway.json"), b"dev-gateway-bytes").expect("write dev gateway");
+        let dev_key_before = fs::read(dev.join(".local_key")).expect("read dev key");
+        let dev_gateway_before = fs::read(dev.join("ai_gateway.json")).expect("read dev gateway");
+
+        seed_gateway_files(&release, &dev).expect("seed gateway files");
+
+        assert_eq!(
+            fs::read(dev.join(".local_key")).expect("read dev key after"),
+            dev_key_before,
+            "an existing dev master password must never be overwritten"
+        );
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read dev gateway after"),
+            dev_gateway_before,
+            "an existing dev gateway config must never be overwritten"
+        );
+        assert_eq!(
+            fs::read_to_string(dev.join(".local_key")).expect("read dev key string"),
+            "dev-key"
+        );
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read dev gateway bytes"),
+            b"dev-gateway-bytes"
+        );
+    }
+
+    #[test]
+    fn seeding_restores_deleted_dev_files_and_directory() {
+        let (root, _cleanup) = seed_temp_root("seed-restore");
+        let release = root.join("release");
+        let dev = root.join("dev");
+        fs::create_dir_all(&release).expect("create release dir");
+
+        let password = "restore-key";
+        fs::write(release.join(".local_key"), password).expect("write release key");
+
+        seed_gateway_files(&release, &dev).expect("seed key only");
+        assert!(
+            dev.join(".local_key").is_file(),
+            "the missing dev master password must be seeded"
+        );
+        assert!(
+            !dev.join("ai_gateway.json").exists(),
+            "no gateway source must mean no gateway copy"
+        );
+
+        let encrypted = crate::crypto::encrypt(r#"{"providers":[{"id":"p"}]}"#, password)
+            .expect("encrypt release gateway");
+        fs::write(release.join("ai_gateway.json"), &encrypted).expect("write release gateway");
+
+        seed_gateway_files(&release, &dev).expect("seed gateway later");
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read dev gateway"),
+            fs::read(release.join("ai_gateway.json")).expect("read release gateway"),
+            "a gateway added to the release dir must be picked up on the next start"
+        );
+
+        fs::remove_file(dev.join("ai_gateway.json")).expect("delete dev gateway");
+        seed_gateway_files(&release, &dev).expect("restore gateway");
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read restored gateway"),
+            fs::read(release.join("ai_gateway.json")).expect("read release gateway again"),
+            "a deleted dev gateway file must be restored byte-identically"
+        );
+
+        fs::remove_dir_all(&dev).expect("delete whole dev dir");
+        seed_gateway_files(&release, &dev).expect("restore dev dir");
+        assert!(dev.join(".local_key").is_file(), "the key must be restored");
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read gateway after dir restore"),
+            fs::read(release.join("ai_gateway.json")).expect("read release gateway after dir restore"),
+            "both files must be restored after the whole dev directory is deleted"
+        );
+    }
+
+    #[test]
+    fn missing_release_source_is_a_noop_and_retried_later() {
+        let (root, _cleanup) = seed_temp_root("seed-missing-source");
+        let release = root.join("release");
+        let dev = root.join("dev");
+
+        seed_gateway_files(&release, &dev).expect("a missing release source must be a no-op");
+        assert!(
+            !dev.exists(),
+            "a missing release source must not create the dev directory"
+        );
+        assert!(!release.exists(), "the source directory must not be created");
+
+        fs::create_dir_all(&release).expect("create release dir later");
+        let password = "late-key";
+        fs::write(release.join(".local_key"), password).expect("write release key");
+        fs::write(
+            release.join("ai_gateway.json"),
+            crate::crypto::encrypt(r#"{"schema_version":2,"providers":[]}"#, password)
+                .expect("encrypt release gateway"),
+        )
+        .expect("write release gateway");
+
+        seed_gateway_files(&release, &dev).expect("a later start must seed the late source");
+        assert!(dev.join(".local_key").is_file(), "the late key must be seeded");
+        assert!(
+            dev.join("ai_gateway.json").is_file(),
+            "the late gateway must be seeded"
+        );
+    }
+
+    #[test]
+    fn seed_copy_failure_is_returned_without_partial_overwrite() {
+        let (root, _cleanup) = seed_temp_root("seed-failure");
+        let release = root.join("release");
+        let dev = root.join("dev");
+        fs::create_dir_all(&release).expect("create release dir");
+
+        let password = "failure-key";
+        fs::write(release.join(".local_key"), password).expect("write release key");
+        fs::write(
+            release.join("ai_gateway.json"),
+            crate::crypto::encrypt(r#"{"schema_version":2,"providers":[]}"#, password)
+                .expect("encrypt release gateway"),
+        )
+        .expect("write release gateway");
+
+        fs::write(&dev, b"not-a-directory").expect("write blocker file");
+
+        let result = seed_gateway_files(&release, &dev);
+        assert!(result.is_err(), "a failed copy must be reported as Err");
+        assert_eq!(
+            fs::read(&dev).expect("read blocker file"),
+            b"not-a-directory",
+            "the file blocking the copy must be unchanged"
+        );
+
+        fs::remove_file(&dev).expect("remove blocker file");
+        seed_gateway_files(&release, &dev).expect("the next start must retry successfully");
+        assert_eq!(
+            fs::read(dev.join(".local_key")).expect("read dev key"),
+            fs::read(release.join(".local_key")).expect("read release key")
+        );
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read dev gateway"),
+            fs::read(release.join("ai_gateway.json")).expect("read release gateway")
+        );
+    }
+
+    #[test]
+    fn missing_release_master_password_prevents_gateway_copy() {
+        let (root, _cleanup) = seed_temp_root("seed-missing-password");
+        let release = root.join("release");
+        let dev = root.join("dev");
+        fs::create_dir_all(&release).expect("create release dir");
+
+        fs::write(
+            release.join("ai_gateway.json"),
+            crate::crypto::encrypt(r#"{"schema_version":2,"providers":[]}"#, "orphan-key")
+                .expect("encrypt orphan gateway"),
+        )
+        .expect("write release gateway");
+
+        seed_gateway_files(&release, &dev).expect("a missing master password is not fatal");
+
+        assert!(
+            !dev.join(".local_key").exists(),
+            "no source master password must mean no dev master password"
+        );
+        assert!(
+            !dev.join("ai_gateway.json").exists(),
+            "a gateway config must never be copied without a matching master password"
+        );
+        assert!(
+            !dev.exists(),
+            "no dev directory may be created without a source master password"
+        );
+    }
+
+    #[test]
+    fn differing_dev_master_password_prevents_gateway_copy() {
+        let (root, _cleanup) = seed_temp_root("seed-differing-password");
+        let release = root.join("release");
+        let dev = root.join("dev");
+        fs::create_dir_all(&release).expect("create release dir");
+        fs::create_dir_all(&dev).expect("create dev dir");
+
+        fs::write(release.join(".local_key"), "release-key-a").expect("write release key");
+        fs::write(
+            release.join("ai_gateway.json"),
+            crate::crypto::encrypt(r#"{"schema_version":2,"providers":[]}"#, "release-key-a")
+                .expect("encrypt release gateway"),
+        )
+        .expect("write release gateway");
+        fs::write(dev.join(".local_key"), "dev-key-b").expect("write dev key");
+
+        seed_gateway_files(&release, &dev).expect("a differing master password is not fatal");
+
+        assert_eq!(
+            fs::read_to_string(dev.join(".local_key")).expect("read dev key"),
+            "dev-key-b",
+            "the dev master password must be preserved"
+        );
+        assert!(
+            !dev.join("ai_gateway.json").exists(),
+            "the gateway config must not be copied under a different master password"
+        );
+    }
+
+    #[test]
+    fn unit_test_compilation_never_creates_dev_directory_or_copies() {
+        let (root, _cleanup) = seed_temp_root("seed-test-profile");
+        let _guard = crate::config::test_home::TestHomeGuard::set(&root);
+
+        let release_dir = root.join(".config").join("onespace");
+        fs::create_dir_all(&release_dir).expect("create release dir");
+        let key_bytes = b"test-compilation-key";
+        let gateway_bytes = b"test-compilation-gateway";
+        fs::write(release_dir.join(".local_key"), key_bytes).expect("write release key");
+        fs::write(release_dir.join("ai_gateway.json"), gateway_bytes)
+            .expect("write release gateway");
+
+        assert!(
+            !crate::config::is_dev_build(),
+            "the unit-test compilation must not be treated as a dev build"
+        );
+
+        seed_dev_gateway_files_on_start();
+
+        assert!(
+            !root.join(".config").join("onespace-dev").exists(),
+            "a unit-test compilation must never create the dev directory"
+        );
+        assert_eq!(
+            fs::read(release_dir.join(".local_key")).expect("read release key"),
+            key_bytes,
+            "the release master password must be unchanged"
+        );
+        assert_eq!(
+            fs::read(release_dir.join("ai_gateway.json")).expect("read release gateway"),
+            gateway_bytes,
+            "the release gateway config must be unchanged"
         );
     }
 }

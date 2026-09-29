@@ -18,6 +18,7 @@ use super::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    config::seed_dev_gateway_files_on_start();
     if handle_internal_cli_command() {
         return;
     }
@@ -742,6 +743,24 @@ mod tests {
         assert!(
             close_block.contains("emit_main_window_visibility"),
             "the main-window close-request handler must call emit_main_window_visibility"
+        );
+    }
+
+    #[test]
+    fn dev_seed_runs_before_cli_handling_in_run() {
+        let run_app = production_source(RUN_APP_SOURCE);
+        let body = extract_function_body(run_app, "pub fn run()");
+        let seed_index = body
+            .find("config::seed_dev_gateway_files_on_start()")
+            .expect("run() must call config::seed_dev_gateway_files_on_start() at the top");
+        let cli_index = body
+            .find("handle_internal_cli_command()")
+            .expect("run() must call handle_internal_cli_command()");
+        assert!(
+            seed_index < cli_index,
+            "the dev seed must run before CLI handling ({} < {})",
+            seed_index,
+            cli_index
         );
     }
 }
