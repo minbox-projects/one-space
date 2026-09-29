@@ -7227,8 +7227,18 @@ fn terminal_targets_from_marks_synced_when_marker_and_ledger_match() {
         synced_base_url: "http://127.0.0.1:17688/v1".to_string(),
         synced_at: 10,
     });
-    let providers_data =
-        json!({ "providers": [managed_gateway_provider("managed-oc", "opencode")] });
+    // A genuinely in-sync record: the stored provider is exactly what a fresh
+    // sync would build for this config, so only the ledger key/base url decide
+    // `pending_sync`.
+    let stored = build_gateway_provider(
+        "managed-oc",
+        "opencode",
+        "http://127.0.0.1:17688/v1",
+        "previous-local-key",
+        &config.providers,
+    )
+    .expect("managed gateway provider must build");
+    let providers_data = json!({ "providers": [stored] });
 
     let targets = super::commands::terminal_targets_from(&config, &providers_data);
     let opencode = target_for(&targets, "opencode");
@@ -7303,6 +7313,157 @@ fn terminal_targets_from_marks_pending_when_ledger_key_or_base_url_drifted() {
     assert!(
         opencode.pending_sync,
         "a drifted base url must require a re-sync: {opencode:?}"
+    );
+}
+
+/// New behavior: even when the ledger key id and base url match, the target is
+/// pending when the model selection a fresh sync would write no longer matches
+/// the stored provider record. Here the user switches the `gpt-4o` mapping to
+/// Responses, so a fresh opencode sync would stamp that model with the
+/// `@ai-sdk/openai` provider override while the stored record still has none.
+#[test]
+fn terminal_targets_from_marks_pending_when_opencode_models_drifted() {
+    let mut config = gateway_config(17688);
+    config.default_key_id = Some("k1".to_string());
+
+    // The record as written by the last sync, before the user changed the config.
+    let stored = build_gateway_provider(
+        "managed-oc",
+        "opencode",
+        "http://127.0.0.1:17688/v1",
+        "previous-local-key",
+        &config.providers,
+    )
+    .expect("stored gateway provider must build");
+
+    config.providers[0].mappings[0].protocol = Some(UpstreamProtocol::Responses);
+
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "managed-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:17688/v1".to_string(),
+        synced_at: 10,
+    });
+
+    let providers_data = json!({ "providers": [stored] });
+    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let opencode = target_for(&targets, "opencode");
+    assert!(
+        opencode.synced,
+        "the marked record is still the synced provider: {opencode:?}"
+    );
+    assert!(
+        opencode.pending_sync,
+        "a changed opencode model selection must require a re-sync: {opencode:?}"
+    );
+}
+
+/// A synced opencode record whose stored model selection is exactly what a fresh
+/// sync would build is not pending, even though the stored api key differs from
+/// the current default key value: key material is never part of the comparison.
+#[test]
+fn terminal_targets_from_keeps_synced_opencode_record_when_models_match() {
+    let mut config = gateway_config(17688);
+    config.default_key_id = Some("k1".to_string());
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "managed-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:17688/v1".to_string(),
+        synced_at: 10,
+    });
+
+    let stored = build_gateway_provider(
+        "managed-oc",
+        "opencode",
+        "http://127.0.0.1:17688/v1",
+        "previous-local-key",
+        &config.providers,
+    )
+    .expect("stored gateway provider must build");
+    let providers_data = json!({ "providers": [stored] });
+
+    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let opencode = target_for(&targets, "opencode");
+    assert!(
+        opencode.synced,
+        "the marked record is still the synced provider: {opencode:?}"
+    );
+    assert!(
+        !opencode.pending_sync,
+        "a matching opencode model selection must not require a re-sync: {opencode:?}"
+    );
+}
+
+/// New behavior: a synced codex record is pending when the model a fresh sync
+/// would write differs from the stored model, and not pending when it matches.
+/// The ledger key id and base url stay in sync throughout.
+#[test]
+fn terminal_targets_from_marks_pending_when_codex_model_drifted() {
+    let mut config = gateway_config(17688);
+    config.default_key_id = Some("k1".to_string());
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "managed-cx".to_string(),
+        tool: "codex".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:17688/v1".to_string(),
+        synced_at: 10,
+    });
+
+    // The fresh config maps `gpt-4o`, so that is the model a fresh codex sync
+    // would write. Real codex records carry the model both at the top level and
+    // (as the comparison key under test) under `tool_config`.
+    let drifted = json!({
+        "providers": [{
+            "id": "managed-cx",
+            "tool": "codex",
+            "name": "AI Gateway",
+            "base_url": "http://127.0.0.1:17688/v1",
+            "api_key": "previous-local-key",
+            "model": "old-model",
+            "tool_config": {
+                "ai_gateway_gateway": true,
+                "wire_api": "chat",
+                "model": "old-model",
+            }
+        }]
+    });
+    let targets = super::commands::terminal_targets_from(&config, &drifted);
+    let codex = target_for(&targets, "codex");
+    assert!(
+        codex.synced,
+        "the marked record is still the synced provider: {codex:?}"
+    );
+    assert!(
+        codex.pending_sync,
+        "a changed codex model must require a re-sync: {codex:?}"
+    );
+
+    let in_sync = json!({
+        "providers": [{
+            "id": "managed-cx",
+            "tool": "codex",
+            "name": "AI Gateway",
+            "base_url": "http://127.0.0.1:17688/v1",
+            "api_key": "previous-local-key",
+            "model": "gpt-4o",
+            "tool_config": {
+                "ai_gateway_gateway": true,
+                "wire_api": "chat",
+                "model": "gpt-4o",
+            }
+        }]
+    });
+    let targets = super::commands::terminal_targets_from(&config, &in_sync);
+    let codex = target_for(&targets, "codex");
+    assert!(
+        codex.synced,
+        "the marked record is still the synced provider: {codex:?}"
+    );
+    assert!(
+        !codex.pending_sync,
+        "the current codex model must not require a re-sync: {codex:?}"
     );
 }
 
