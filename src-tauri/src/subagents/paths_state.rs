@@ -48,13 +48,12 @@ pub(in crate::subagents) fn subagents_meta_root() -> Result<PathBuf, String> {
     Ok(p)
 }
 
+pub(in crate::subagents) fn subagents_local_cache_base_root_at(app_dir: &Path) -> PathBuf {
+    app_dir.join("subagents")
+}
+
 pub(in crate::subagents) fn subagents_local_cache_base_root() -> Result<PathBuf, String> {
-    let p = if let Some(home) = dirs::home_dir() {
-        home.join(".config").join("onespace").join("subagents")
-    } else {
-        // Fallback to app-local config directory if home is unavailable.
-        config::get_app_dir()?.join("subagents")
-    };
+    let p = subagents_local_cache_base_root_at(&config::get_app_dir()?);
     fs::create_dir_all(&p).map_err(|e| e.to_string())?;
     Ok(p)
 }

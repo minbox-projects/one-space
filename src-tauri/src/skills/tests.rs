@@ -4,6 +4,7 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Retains the global `HOME` lock on purpose: the skills code resolves tool
@@ -1820,4 +1821,63 @@ fn directory_hash_ignores_internal_artifacts() {
             "internal artifacts must not affect the directory hash"
         );
     });
+}
+
+// ---------------------------------------------------------------------------
+// Dev/release environment isolation (REQ-001 / AC-001)
+//
+// Observable boundary: the Skills local cache base root must be derived from the
+// profile app directory so a dev build never shares caches with the release
+// profile.
+//
+// The delivered contract routes `skills_local_cache_base_root_at` through an
+// explicit app dir (`<app_dir>/skills`), and `skills_local_cache_base_root()` is
+// bound to `config::get_app_dir()`, so the local cache follows the profile.
+// ---------------------------------------------------------------------------
+
+/// Removes a temporary profile home on drop so a failing assertion cannot leak it.
+struct SkillsProfileTempHome(PathBuf);
+
+impl Drop for SkillsProfileTempHome {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn skills_local_cache_base_root_follows_profile_app_dir() {
+    let home = PathBuf::from("/tmp/onespace-skills-profile-home");
+    assert_eq!(
+        skills_local_cache_base_root_at(&crate::config::app_dir_for(&home, false)),
+        home.join(".config").join("onespace").join("skills")
+    );
+    assert_eq!(
+        skills_local_cache_base_root_at(&crate::config::app_dir_for(&home, true)),
+        home.join(".config").join("onespace-dev").join("skills")
+    );
+
+    let temp_home = std::env::temp_dir().join(format!(
+        "onespace-skills-profile-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let _cleanup = SkillsProfileTempHome(temp_home.clone());
+    fs::create_dir_all(&temp_home).expect("create temp home");
+    let _guard = crate::config::test_home::TestHomeGuard::set(&temp_home);
+
+    let base = skills_local_cache_base_root().expect("resolve skills local cache base");
+    assert_eq!(
+        base,
+        temp_home.join(".config").join("onespace").join("skills"),
+        "the skills local cache must resolve under the release profile app dir in tests"
+    );
+    let app_dir = crate::config::get_app_dir().expect("resolve profile app dir");
+    assert!(
+        base.starts_with(&app_dir),
+        "skills local cache base {} must live under the profile app dir {}",
+        base.display(),
+        app_dir.display()
+    );
+
+    drop(_guard);
 }

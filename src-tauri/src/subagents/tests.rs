@@ -2,6 +2,7 @@ use super::*;
 use crate::config::{StorageConfig, SubagentSourceConfig};
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Retains the global `HOME` lock on purpose: the subagent source scan resolves
@@ -627,4 +628,63 @@ Review helper.
             content
         );
     });
+}
+
+// ---------------------------------------------------------------------------
+// Dev/release environment isolation (REQ-001 / AC-001)
+//
+// Observable boundary: the Subagents local cache base root must be derived from
+// the profile app directory so a dev build never shares caches with the release
+// profile.
+//
+// The delivered contract routes `subagents_local_cache_base_root_at` through an
+// explicit app dir (`<app_dir>/subagents`), and `subagents_local_cache_base_root()`
+// is bound to `config::get_app_dir()`, so the local cache follows the profile.
+// ---------------------------------------------------------------------------
+
+/// Removes a temporary profile home on drop so a failing assertion cannot leak it.
+struct SubagentsProfileTempHome(PathBuf);
+
+impl Drop for SubagentsProfileTempHome {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn subagents_local_cache_base_root_follows_profile_app_dir() {
+    let home = PathBuf::from("/tmp/onespace-subagents-profile-home");
+    assert_eq!(
+        subagents_local_cache_base_root_at(&crate::config::app_dir_for(&home, false)),
+        home.join(".config").join("onespace").join("subagents")
+    );
+    assert_eq!(
+        subagents_local_cache_base_root_at(&crate::config::app_dir_for(&home, true)),
+        home.join(".config").join("onespace-dev").join("subagents")
+    );
+
+    let temp_home = std::env::temp_dir().join(format!(
+        "onespace-subagents-profile-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let _cleanup = SubagentsProfileTempHome(temp_home.clone());
+    fs::create_dir_all(&temp_home).expect("create temp home");
+    let _guard = crate::config::test_home::TestHomeGuard::set(&temp_home);
+
+    let base = subagents_local_cache_base_root().expect("resolve subagents local cache base");
+    assert_eq!(
+        base,
+        temp_home.join(".config").join("onespace").join("subagents"),
+        "the subagents local cache must resolve under the release profile app dir in tests"
+    );
+    let app_dir = crate::config::get_app_dir().expect("resolve profile app dir");
+    assert!(
+        base.starts_with(&app_dir),
+        "subagents local cache base {} must live under the profile app dir {}",
+        base.display(),
+        app_dir.display()
+    );
+
+    drop(_guard);
 }

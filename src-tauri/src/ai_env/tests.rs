@@ -257,3 +257,78 @@ fn remove_opencode_requires_provider_key_and_removes_by_provider_key() {
         assert!(settings["provider"]["other_provider"].is_object());
     });
 }
+
+// ---------------------------------------------------------------------------
+// Dev/release environment isolation (REQ-001 / AC-001)
+//
+// Observable boundary: the AI Providers legacy fallback path must be derived
+// from the profile app directory, and `get_ai_providers()` must read the
+// profile's `ai_providers.json` when the local mirror has no providers file.
+//
+// The delivered contract exposes `legacy_providers_path_at(app_dir)` as the
+// explicit-root seam, and `get_ai_providers()` resolves its legacy fallback
+// through the profile app dir instead of the ambient home.
+// ---------------------------------------------------------------------------
+
+/// Removes a temporary profile home on drop so a failing assertion cannot leak it.
+struct AiEnvProfileTempHome(PathBuf);
+
+impl Drop for AiEnvProfileTempHome {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn legacy_providers_path_follows_profile_app_dir() {
+    let home = PathBuf::from("/tmp/onespace-ai-env-profile-home");
+    assert_eq!(
+        legacy_providers_path_at(&crate::config::app_dir_for(&home, true)),
+        home.join(".config").join("onespace-dev").join("ai_providers.json")
+    );
+    assert_eq!(
+        legacy_providers_path_at(&crate::config::app_dir_for(&home, false)),
+        home.join(".config").join("onespace").join("ai_providers.json")
+    );
+}
+
+#[test]
+fn legacy_providers_fallback_reads_from_profile_app_dir() {
+    let temp_home = make_temp_dir("legacy-providers-profile");
+    fs::create_dir_all(&temp_home).expect("create temp home");
+    let _cleanup = AiEnvProfileTempHome(temp_home.clone());
+    let _guard = crate::config::test_home::TestHomeGuard::set(&temp_home);
+
+    let app_dir = temp_home.join(".config").join("onespace");
+    write_test_file(
+        &app_dir.join("config.json"),
+        &format!(
+            r#"{{"storage_type":"local","local_storage_path":{}}}"#,
+            serde_json::to_string(&temp_home.join("data")).expect("encode temp data path")
+        ),
+    );
+    write_test_file(
+        &app_dir.join("ai_providers.json"),
+        r#"{"providers":[{"id":"legacy-provider","name":"Legacy Import","tool":"claude","api_key":""}]}"#,
+    );
+
+    let state = get_ai_providers().expect("load providers from the profile app dir");
+    assert!(
+        state
+            .providers
+            .iter()
+            .any(|provider| provider.name == "Legacy Import"),
+        "the profile legacy providers file must be read, got {:?}",
+        state
+            .providers
+            .iter()
+            .map(|provider| provider.name.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !app_dir.join("local_data").join("ai_providers.json").exists(),
+        "the local_data providers file must not be created by this test"
+    );
+
+    drop(_guard);
+}
