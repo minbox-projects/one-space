@@ -267,6 +267,19 @@ pub(in crate::ai_gateway) fn terminal_sync_pending(
     }
 }
 
+/// Whether a fresh terminal sync would write a different model selection than
+/// the stored gateway record. Key material is never part of the comparison, so
+/// callers may build the fresh payload with a placeholder key.
+fn terminal_model_selection_drifted(tool: &str, stored: &Value, generated: &Value) -> bool {
+    match tool {
+        "opencode" => {
+            stored.pointer("/tool_config/models") != generated.pointer("/tool_config/models")
+        }
+        "codex" => stored.get("model") != generated.get("model"),
+        _ => true,
+    }
+}
+
 pub(in crate::ai_gateway) fn default_key_for_sync(
     config: &GatewayConfig,
 ) -> Result<(String, String), String> {
@@ -725,7 +738,21 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
         let synced = provider_id.is_some();
         let pending_sync = match (synced, ledger) {
             (true, Some(record)) => {
-                terminal_sync_pending(record, config.default_key_id.as_deref(), &base_url)
+                let ledger_pending =
+                    terminal_sync_pending(record, config.default_key_id.as_deref(), &base_url);
+                let model_drifted = match (provider_id.as_deref(), managed) {
+                    (Some(id), Some(stored)) => build_gateway_provider(
+                        id,
+                        tool,
+                        &base_url,
+                        "",
+                        &config.providers,
+                    )
+                    .map(|generated| terminal_model_selection_drifted(tool, stored, &generated))
+                    .unwrap_or(true),
+                    _ => true,
+                };
+                ledger_pending || model_drifted
             }
             _ => true,
         };
