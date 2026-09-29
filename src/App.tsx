@@ -181,6 +181,22 @@ type RepoAutoUpdateResult = {
   applied_at: number;
 };
 const SKILLS_AUTO_UPDATED_EVENT = "onespace:skills-auto-updated";
+const USAGE_TODAY_TOKENS_REFRESH_MS = 5 * 60 * 1000;
+
+type UsageDayTokens = {
+  total_tokens?: number;
+};
+
+function localDateString(date = new Date()): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function formatCompactCount(value: number): string {
+  return new Intl.NumberFormat(undefined, {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
 
 type DashboardCounts = {
   launcher: number;
@@ -413,6 +429,7 @@ function App() {
     subagents: 0,
     mcpServers: 0,
   });
+  const [usageTodayTokens, setUsageTodayTokens] = useState(0);
   const loadCountsInFlightRef = useRef<Promise<void> | null>(null);
   const countsRefreshTimerRef = useRef<number | null>(null);
 
@@ -1012,6 +1029,18 @@ function App() {
     }
   };
 
+  const loadUsageTodayTokens = async () => {
+    if (!isTauri) return;
+    try {
+      const stats = await invoke<UsageDayTokens>("sessions_usage_day_stats", {
+        date: localDateString(),
+      });
+      setUsageTodayTokens(stats?.total_tokens ?? 0);
+    } catch (e) {
+      console.error("Failed to load today's AI usage tokens", e);
+    }
+  };
+
   useEffect(() => {
     setMountedTabs((prev) => {
       if (prev.has(activeTab)) return prev;
@@ -1275,8 +1304,17 @@ function App() {
     };
     pollCounts();
 
+    let usageRefreshId: ReturnType<typeof setInterval> | null = null;
+    if (isTauri) {
+      void loadUsageTodayTokens();
+      usageRefreshId = setInterval(() => {
+        void loadUsageTodayTokens();
+      }, USAGE_TODAY_TOKENS_REFRESH_MS);
+    }
+
     return () => {
       if (timeoutId) clearTimeout(timeoutId);
+      if (usageRefreshId) clearInterval(usageRefreshId);
       if (countsRefreshTimerRef.current !== null) {
         window.clearTimeout(countsRefreshTimerRef.current);
         countsRefreshTimerRef.current = null;
@@ -1610,11 +1648,14 @@ function App() {
             id: "ai-gateway",
             name: t("aiGateway", "AI Gateway"),
             icon: Network,
+            count: aiGatewayHeaderStatus?.provider_count ?? 0,
           },
           {
             id: "ai-usage",
             name: t("aiUsageStatsMenu", "AI Usage Stats"),
             icon: BarChart3,
+            count: usageTodayTokens,
+            countText: formatCompactCount(usageTodayTokens),
           },
         ],
       },
@@ -1665,7 +1706,7 @@ function App() {
         ],
       },
     ],
-    [counts, i18n.language, moreToolsLabel, t],
+    [counts, i18n.language, moreToolsLabel, t, aiGatewayHeaderStatus, usageTodayTokens],
   );
 
   const isNavigationItemActive = (itemId: string) => {
@@ -2178,7 +2219,7 @@ function App() {
                             : "bg-muted-foreground/10 text-muted-foreground"
                         }`}
                       >
-                        {item.count}
+                        {item.countText ?? item.count}
                       </span>
                     )}
                   </button>
