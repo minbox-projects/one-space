@@ -706,15 +706,31 @@ pub async fn service_providers_delete(
     validate_provider_uuid_param(&provider_id).map_err(|e| api_error("invalid_payload", e))?;
     let _operation = lock_service_provider_operation().map_err(|e| api_error("io_error", e))?;
     let original = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    if !original.providers.iter().any(|p| p.id == provider_id) {
-        return Err(api_error("not_found", "service provider not found"));
-    }
+    let deleted = original
+        .providers
+        .iter()
+        .find(|p| p.id == provider_id)
+        .cloned()
+        .ok_or_else(|| api_error("not_found", "service provider not found"))?;
     let mut next = original;
     next.providers.retain(|provider| provider.id != provider_id);
     next.active.retain(|_, active_id| *active_id != provider_id);
     next.active_opencode
         .retain(|active_id| *active_id != provider_id);
     let schema = save_service_providers_internal(&next).map_err(|e| api_error("io_error", e))?;
+    // opencode 工具删除服务商时同步删除 opencode.json 中的对应 provider 配置。
+    if deleted.tool == "opencode" {
+        let has_provider_key = deleted
+            .provider_key
+            .as_deref()
+            .map(str::trim)
+            .map(|value| !value.is_empty())
+            .unwrap_or(false);
+        if has_provider_key {
+            apply_opencode_remove_projection(&deleted)
+                .map_err(|e| api_error("projection_failed", e))?;
+        }
+    }
     enqueue_sync_event("service_providers", "service_providers_delete")
         .map_err(|e| api_error("sync_error", e))?;
     tauri::async_runtime::spawn(async move {
@@ -1348,6 +1364,118 @@ mod opencode_config_read_tests {
         assert_eq!(value["options"]["apiKey"], "********");
         assert_eq!(value["history"][0]["snapshot"]["api_key"], "********");
         assert!(!serde_json::to_string(&value).unwrap().contains(plaintext));
+    }
+
+    fn opencode_record_with_key(provider_key: &str) -> ServiceProviderRecord {
+        ServiceProviderRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "OpenCode Test".to_string(),
+            tool: "opencode".to_string(),
+            provider_key: Some(provider_key.to_string()),
+            ..ServiceProviderRecord::default()
+        }
+    }
+
+    #[test]
+    fn delete_opencode_provider_removes_only_its_opencode_json_entry() {
+        let _guard = crate::lock_test_home_env();
+        let home = std::env::temp_dir().join(format!(
+            "onespace-opencode-delete-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&home).expect("create temp home");
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &home);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let path = home
+                .join(".config")
+                .join("opencode")
+                .join("opencode.json");
+            fs::create_dir_all(path.parent().expect("config parent"))
+                .expect("create config dir");
+            fs::write(
+                &path,
+                r#"{
+                    "$schema": "https://opencode.ai/config.json",
+                    "model": "keep-me",
+                    "provider": {
+                        "target": { "name": "Target" },
+                        "other": { "name": "Other" }
+                    }
+                }"#,
+            )
+            .expect("write OpenCode config");
+
+            apply_opencode_remove_projection(&opencode_record_with_key("target"))
+                .expect("remove target provider");
+
+            let content = fs::read_to_string(&path).expect("read OpenCode config");
+            let root: Value = serde_json::from_str(&content).expect("parse OpenCode config");
+            assert!(
+                root["provider"]["target"].is_null(),
+                "deleted provider must be gone: {root:?}"
+            );
+            assert!(
+                root["provider"]["other"].is_object(),
+                "other providers must be preserved: {root:?}"
+            );
+            assert_eq!(root["model"], "keep-me");
+
+            // 未命中的 provider_key 不应改写文件，避免删除产生无意义写入。
+            let before = fs::read_to_string(&path).expect("read before no-op");
+            let renders =
+                crate::app_store::render_opencode_remove(&opencode_record_with_key("missing"))
+                    .expect("missing key renders");
+            assert!(
+                renders.is_empty(),
+                "missing key must be a no-op without file write"
+            );
+            let after = fs::read_to_string(&path).expect("read after no-op");
+            assert_eq!(before, after);
+        }));
+        if let Some(home_value) = original_home {
+            std::env::set_var("HOME", home_value);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        let _ = fs::remove_dir_all(&home);
+        if let Err(payload) = outcome {
+            std::panic::resume_unwind(payload);
+        }
+    }
+
+    #[test]
+    fn remove_opencode_render_is_noop_when_config_file_missing() {
+        let _guard = crate::lock_test_home_env();
+        let home = std::env::temp_dir().join(format!(
+            "onespace-opencode-delete-missing-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&home).expect("create temp home");
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &home);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let renders =
+                crate::app_store::render_opencode_remove(&opencode_record_with_key("target"))
+                    .expect("missing file renders");
+            assert!(
+                renders.is_empty(),
+                "missing opencode.json must be a no-op"
+            );
+            assert!(
+                !home.join(".config").join("opencode").join("opencode.json").exists(),
+                "delete must not create opencode.json when it did not exist"
+            );
+        }));
+        if let Some(home_value) = original_home {
+            std::env::set_var("HOME", home_value);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        let _ = fs::remove_dir_all(&home);
+        if let Err(payload) = outcome {
+            std::panic::resume_unwind(payload);
+        }
     }
 }
 

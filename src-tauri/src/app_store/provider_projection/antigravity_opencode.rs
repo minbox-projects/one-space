@@ -269,14 +269,17 @@ pub(in crate::app_store) fn render_opencode_remove(
         .join("opencode")
         .join("opencode.json");
 
-    let mut settings = Map::new();
-    if path.exists() {
-        if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&content) {
-                settings = map;
-            }
-        }
+    // 删除时不创建文件：文件不存在即无事可做，避免删除操作凭空生成空配置。
+    if !path.exists() {
+        return Ok(vec![]);
     }
+
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let Value::Object(mut settings) =
+        serde_json::from_str::<Value>(&content).map_err(|e| e.to_string())?
+    else {
+        return Err("OpenCode config root must be an object".to_string());
+    };
 
     let provider_key = provider
         .provider_key
@@ -285,10 +288,13 @@ pub(in crate::app_store) fn render_opencode_remove(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "OpenCode provider_key is required".to_string())?;
 
-    let mut providers = settings
-        .remove("provider")
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default();
+    let Some(Value::Object(mut providers)) = settings.remove("provider") else {
+        // 没有 provider 段即无事可做，避免写入空 provider 对象造成无意义改动。
+        return Ok(vec![]);
+    };
+    if !providers.contains_key(&provider_key) {
+        return Ok(vec![]);
+    }
     providers.remove(&provider_key);
     settings.insert("provider".to_string(), Value::Object(providers));
 
