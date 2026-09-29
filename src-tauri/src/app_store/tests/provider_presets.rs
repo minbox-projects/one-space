@@ -292,12 +292,12 @@ fn provider_sync_exports_provider_presets_when_enabled() {
             providers: true,
             mcp: false,
             content: false,
-            workflow_presets: false,
             skills_sources: false,
             skills_repository: false,
             subagents_sources: false,
             subagents_repository: false,
             ai_news: false,
+            ..config::SyncPolicy::default()
         };
 
         let mut state = ServiceProviderPresetsState::default();

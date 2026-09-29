@@ -1167,21 +1167,21 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         <div className="flex items-center gap-2">
           <button
             onClick={handleImport}
-            className="bg-secondary text-secondary-foreground hover:bg-secondary/90 px-3 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
+            className="border border-border/80 bg-background hover:bg-muted text-foreground px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-all shadow-subtle hover-lift"
           >
             <Upload className="w-4 h-4" />
             {t("import", "Import")}
           </button>
           <button
             onClick={handleExport}
-            className="bg-secondary text-secondary-foreground hover:bg-secondary/90 px-3 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
+            className="border border-border/80 bg-background hover:bg-muted text-foreground px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-all shadow-subtle hover-lift"
           >
             <Download className="w-4 h-4" />
             {t("export", "Export")}
           </button>
           <button
             onClick={startCreate}
-            className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors shadow-sm"
+            className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-all shadow-sm hover-lift active:scale-[0.98]"
           >
             <Plus className="w-4 h-4" />
             {t("addShortcut", "Add Shortcut")}
@@ -1190,13 +1190,13 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       </div>
 
       <div className="relative">
-        <Search className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
+        <Search className="w-4 h-4 absolute left-3 top-3 text-muted-foreground/70" />
         <input
           type="text"
           placeholder={t("searchLauncher", "Search launcher items...")}
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full flex h-10 rounded-md border border-input bg-background pl-9 pr-3 py-2 text-sm"
+          className="w-full flex h-10 rounded-lg border border-hairline bg-muted/20 pl-9 pr-3 py-2 text-sm transition-all focus:bg-background focus:border-foreground/30 focus:outline-none focus:ring-1 focus:ring-foreground/20 shadow-subtle"
         />
       </div>
 
@@ -1398,7 +1398,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
                         onClick={() => openInternalTarget(item.target)}
                         onPointerOver={() => drag.handleCardPointerOver(item.id)}
                         data-testid={`launcher-internal-tool-card-${item.id}`}
-                        className={`group flex min-h-36 w-full flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md ${
+                        className={`group flex min-h-36 w-full flex-col justify-between rounded-xl border border-hairline bg-card p-4 text-left shadow-subtle transition-all hover-lift hover:border-foreground/30 hover:shadow-md ${
                           isDragging ? "ring-2 ring-primary" : ""
                         }`}
                       >
@@ -1476,7 +1476,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
                     <div
                       key={item.id}
                       onClick={() => handleLaunch(item)}
-                      className="group flex flex-col justify-between p-4 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md transition-all hover:border-primary/50 cursor-pointer min-h-40"
+                      className="group flex flex-col justify-between p-4 rounded-xl border border-hairline bg-card text-card-foreground shadow-subtle hover-lift hover:shadow-md transition-all hover:border-foreground/30 cursor-pointer min-h-40"
                     >
                       <div className="flex justify-between items-start gap-2">
                         <div

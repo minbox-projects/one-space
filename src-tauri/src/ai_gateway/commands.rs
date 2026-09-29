@@ -49,7 +49,11 @@ pub(in crate::ai_gateway) struct TerminalSyncProfile {
 }
 
 impl TerminalSyncProfile {
+    // Test-only fixtures for the release/dev identity pair; production code
+    // obtains its identity through `current()`.
+    #[allow(dead_code)]
     pub(in crate::ai_gateway) const RELEASE: Self = Self { is_dev: false };
+    #[allow(dead_code)]
     pub(in crate::ai_gateway) const DEV: Self = Self { is_dev: true };
 
     /// The profile of the running build: dev only for a debug build outside the

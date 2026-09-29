@@ -37,7 +37,10 @@ import {
   BarChart3,
   Network,
   Share2,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
+import { Tooltip } from "./components/ui/tooltip";
 import { AiSessions } from "./components/AiSessions";
 import { Workspaces } from "./components/Workspaces";
 import { AiEnvironments } from "./components/AiEnvironments";
@@ -275,6 +278,40 @@ function App() {
   const [aboutAutoCheck, setAboutAutoCheck] = useState(false);
   const [messageCenterOpen, setMessageCenterOpen] = useState(false);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("onespace:sidebar-collapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("onespace:sidebar-collapsed", String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "b" || e.key === "B")) {
+        // Don't trigger if user is typing in an input or textarea
+        const target = e.target as HTMLElement | null;
+        if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+          return;
+        }
+        e.preventDefault();
+        toggleSidebar();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [toggleSidebar]);
+
   const [messageUnreadCount, setMessageUnreadCount] = useState(0);
   const [moreToolsSection, setMoreToolsSection] =
     useState<MoreToolsSection | null>(null);
@@ -2008,50 +2045,109 @@ function App() {
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden select-none">
       <div
-        className={`${mobileNavigationOpen ? "flex" : "hidden"} fixed inset-y-0 left-0 z-50 w-64 shrink-0 border-r bg-muted/20 flex-col md:static md:z-auto md:flex`}
+        className={`${mobileNavigationOpen ? "flex" : "hidden"} fixed inset-y-0 left-0 z-50 ${
+          sidebarCollapsed ? "w-16" : "w-64"
+        } shrink-0 border-r bg-muted/20 flex-col md:static md:z-auto md:flex transition-all duration-200 ease-in-out`}
       >
         <div
-          className="h-16 flex items-end pl-5 pr-4 pb-1.5 border-b font-semibold tracking-tight cursor-default select-none relative"
+          className={`h-16 flex items-end ${
+            sidebarCollapsed ? "justify-center px-2" : "justify-between pl-5 pr-3"
+          } pb-2 border-b font-semibold tracking-tight cursor-default select-none relative`}
           data-tauri-drag-region
           onMouseDown={handleDragMouseDown}
         >
-          <div className="flex items-center gap-2 pointer-events-none">
-            <img
-              src={resolvedTheme === "dark" ? logoWhite : logoBlack}
-              alt="OneSpace"
-              className="w-5 h-5"
-            />
-            <span className="text-lg">OneSpace</span>
-            {import.meta.env.DEV ? (
-              <span
-                data-testid="app-dev-badge"
-                title="Development build"
-                aria-label="Development build"
-                className="rounded-md border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold tracking-widest text-amber-600 dark:text-amber-400"
+          {!sidebarCollapsed ? (
+            <>
+              <div className="flex items-center gap-2 pointer-events-none">
+                <img
+                  src={resolvedTheme === "dark" ? logoWhite : logoBlack}
+                  alt="OneSpace"
+                  className="w-5 h-5"
+                />
+                <span className="text-lg">OneSpace</span>
+                {import.meta.env.DEV ? (
+                  <span
+                    data-testid="app-dev-badge"
+                    title="Development build"
+                    aria-label="Development build"
+                    className="rounded-md border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold tracking-widest text-amber-600 dark:text-amber-400"
+                  >
+                    DEV
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={toggleSidebar}
+                  className="hidden md:flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                  aria-label="Collapse sidebar (⌘B)"
+                  title="Collapse sidebar (⌘B)"
+                >
+                  <PanelLeftClose className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileNavigationOpen(false)}
+                  className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted md:hidden"
+                  aria-label={t("close", "Close")}
+                  title={t("close", "Close")}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </>
+          ) : (
+            <Tooltip content="Expand sidebar (⌘B)" side="right">
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Expand sidebar (⌘B)"
+                title="Expand sidebar (⌘B)"
               >
-                DEV
-              </span>
-            ) : null}
-          </div>
-          <button
-            type="button"
-            onClick={() => setMobileNavigationOpen(false)}
-            className="absolute right-3 top-5 flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted md:hidden"
-            aria-label={t("close", "Close")}
-            title={t("close", "Close")}
-          >
-            <X className="h-4 w-4" />
-          </button>
+                <PanelLeftOpen className="h-4 w-4" />
+              </button>
+            </Tooltip>
+          )}
         </div>
 
-        <div className="flex-1 overflow-y-auto py-4 px-3 space-y-5">
-          {navigationGroups.map((group) => (
+        <div
+          className={`flex-1 overflow-y-auto py-4 ${
+            sidebarCollapsed ? "px-2 space-y-4" : "px-3 space-y-5"
+          }`}
+        >
+          {navigationGroups.map((group, groupIdx) => (
             <div key={group.id} className="space-y-1.5">
-              <div className="px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                {group.label}
-              </div>
+              {!sidebarCollapsed ? (
+                <div className="px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  {group.label}
+                </div>
+              ) : (
+                groupIdx > 0 && <div className="my-2 border-t border-border/40 mx-1" />
+              )}
               {group.items.map((item: any) => {
                 const selected = isNavigationItemActive(item.id);
+                if (sidebarCollapsed) {
+                  return (
+                    <Tooltip key={item.id} content={item.name} side="right">
+                      <button
+                        onClick={() => navigateToTab(item.id)}
+                        aria-label={item.name}
+                        className={`w-10 h-10 mx-auto flex items-center justify-center rounded-md text-sm transition-colors relative ${
+                          selected
+                            ? "bg-primary text-primary-foreground font-medium shadow-sm"
+                            : "hover:bg-muted text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        <item.icon className="w-4 h-4" />
+                        {item.count !== undefined && item.count > 0 && (
+                          <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary ring-2 ring-background" />
+                        )}
+                      </button>
+                    </Tooltip>
+                  );
+                }
                 return (
                   <button
                     key={item.id}
@@ -2086,47 +2182,102 @@ function App() {
           ))}
         </div>
 
-        <div className="p-3 border-t space-y-1">
-          <button
-            onClick={() => {
-              setMobileNavigationOpen(false);
-              setPreviousTab(activeTab);
-              setActiveTab("settings");
-            }}
-            className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
-              activeTab === "settings"
-                ? "bg-primary/10 text-primary font-medium"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground"
-            }`}
-          >
-            <Settings
-              className={`w-4 h-4 ${activeTab === "settings" ? "animate-pulse" : ""}`}
-            />
-            {t("settings")}
-          </button>
-          <button
-            onClick={() => navigateToTab("documentation")}
-            className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
-              activeTab === "documentation"
-                ? "bg-primary/10 text-primary font-medium"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground"
-            }`}
-          >
-            <BookOpen
-              className={`w-4 h-4 ${activeTab === "documentation" ? "animate-pulse" : ""}`}
-            />
-            {t("usageDocs")}
-          </button>
-          <button
-            onClick={() => {
-              setMobileNavigationOpen(false);
-              setAboutOpen(true);
-            }}
-            className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-          >
-            <Info className="w-4 h-4" />
-            {t("about")}
-          </button>
+        <div
+          className={`border-t ${
+            sidebarCollapsed
+              ? "p-2 space-y-2 flex flex-col items-center"
+              : "p-3 space-y-1"
+          }`}
+        >
+          {!sidebarCollapsed ? (
+            <>
+              <button
+                onClick={() => {
+                  setMobileNavigationOpen(false);
+                  setPreviousTab(activeTab);
+                  setActiveTab("settings");
+                }}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
+                  activeTab === "settings"
+                    ? "bg-primary/10 text-primary font-medium"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
+              >
+                <Settings
+                  className={`w-4 h-4 ${activeTab === "settings" ? "animate-pulse" : ""}`}
+                />
+                {t("settings")}
+              </button>
+              <button
+                onClick={() => navigateToTab("documentation")}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
+                  activeTab === "documentation"
+                    ? "bg-primary/10 text-primary font-medium"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
+              >
+                <BookOpen
+                  className={`w-4 h-4 ${activeTab === "documentation" ? "animate-pulse" : ""}`}
+                />
+                {t("usageDocs")}
+              </button>
+              <button
+                onClick={() => {
+                  setMobileNavigationOpen(false);
+                  setAboutOpen(true);
+                }}
+                className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              >
+                <Info className="w-4 h-4" />
+                {t("about")}
+              </button>
+            </>
+          ) : (
+            <>
+              <Tooltip content={t("settings")} side="right">
+                <button
+                  onClick={() => {
+                    setMobileNavigationOpen(false);
+                    setPreviousTab(activeTab);
+                    setActiveTab("settings");
+                  }}
+                  aria-label={t("settings")}
+                  className={`w-10 h-10 flex items-center justify-center rounded-md text-sm transition-colors ${
+                    activeTab === "settings"
+                      ? "bg-primary/10 text-primary font-medium"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  }`}
+                >
+                  <Settings className="w-4 h-4" />
+                </button>
+              </Tooltip>
+              <Tooltip content={t("usageDocs")} side="right">
+                <button
+                  onClick={() => navigateToTab("documentation")}
+                  aria-label={t("usageDocs")}
+                  className={`w-10 h-10 flex items-center justify-center rounded-md text-sm transition-colors ${
+                    activeTab === "documentation"
+                      ? "bg-primary/10 text-primary font-medium"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  }`}
+                >
+                  <BookOpen className="w-4 h-4" />
+                </button>
+              </Tooltip>
+              <Tooltip content={t("about")} side="right">
+                <button
+                  onClick={() => {
+                    setMobileNavigationOpen(false);
+                    setAboutOpen(true);
+                  }}
+                  aria-label={t("about")}
+                  className="w-10 h-10 flex items-center justify-center rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                >
+                  <Info className="w-4 h-4" />
+                </button>
+              </Tooltip>
+            </>
+          )}
         </div>
       </div>
 
@@ -2249,6 +2400,7 @@ function App() {
             </div>
 
             <div className="hidden items-center gap-1 sm:flex">
+              {/* 核心后台状态平铺 */}
               {aiGatewayHeaderStatus?.running && (
                 <button
                   onClick={() => navigateToTab("ai-gateway")}
@@ -2373,6 +2525,11 @@ function App() {
                   <ToolStatusDot tone="success" />
                 </button>
               )}
+
+              {/* 细微发丝分割线 */}
+              <div className="h-4 w-[1px] bg-border/60 mx-1" />
+
+              {/* 工作通知与消息 */}
               <button
                 onClick={() => setMessageCenterOpen(true)}
                 className={`relative p-2.5 rounded-md transition-colors ${
@@ -2458,6 +2615,10 @@ function App() {
                 </span>
               </button>
 
+              {/* 细微发丝分割线 */}
+              <div className="h-4 w-[1px] bg-border/60 mx-1" />
+
+              {/* 全局控制 */}
               <button
                 onClick={toggleLanguage}
                 className="p-2.5 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"

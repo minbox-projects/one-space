@@ -600,50 +600,6 @@
       "shared_entry": false
     },
     {
-      "id": "workflows",
-      "name": "Workflow Presets",
-      "aliases": [
-        "workflow-presets",
-        "workflow-runs"
-      ],
-      "module_root": "frontend",
-      "owner_role": "frontend",
-      "responsibility": "工作流预设编辑、依赖检查、运行记录与重放",
-      "entries": [
-        "src/components/WorkflowPresetsPanel.tsx"
-      ],
-      "related_files": [
-        "src/components/RecentWorkflowRuns.tsx",
-        "src/lib/workflows.ts"
-      ],
-      "tests": [],
-      "symbols": [
-        {
-          "file": "src/components/WorkflowPresetsPanel.tsx",
-          "name": "WorkflowPresetsPanel",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/RecentWorkflowRuns.tsx",
-          "name": "RecentWorkflowRuns",
-          "kind": "function",
-          "visibility": "public"
-        }
-      ],
-      "depends_on": [
-        "ai-sessions",
-        "ai-environments"
-      ],
-      "read_scope": [
-        "src/components/WorkflowPresetsPanel.tsx",
-        "src/components/RecentWorkflowRuns.tsx",
-        "src/lib/workflows.ts"
-      ],
-      "relations": [],
-      "shared_entry": false
-    },
-    {
       "id": "workspaces",
       "name": "Workspaces",
       "aliases": [
@@ -968,7 +924,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "统一搜索会话、启动项、SSH、代码片段、书签、笔记、Skills 与工作流",
+      "responsibility": "统一搜索会话、启动项、SSH、代码片段、书签、笔记、Skills",
       "entries": [
         "src/components/OmniSearch.tsx"
       ],
@@ -2870,49 +2826,6 @@
       "shared_entry": false
     },
     {
-      "id": "workflows-backend",
-      "name": "Workflows Backend",
-      "aliases": [
-        "workflows-rust",
-        "workflow-runs-rust"
-      ],
-      "module_root": "tauri-backend",
-      "owner_role": "backend",
-      "responsibility": "工作流预设、依赖应用、运行记录与启动命令",
-      "entries": [
-        "src-tauri/src/workflows.rs"
-      ],
-      "related_files": [
-        "src-tauri/src/workflows/apply_dependencies.rs",
-        "src-tauri/src/workflows/dependencies_runs.rs",
-        "src-tauri/src/workflows/launch_commands.rs",
-        "src-tauri/src/workflows/preset_commands.rs",
-        "src-tauri/src/workflows/run_commands.rs",
-        "src-tauri/src/workflows/skill_resolution.rs",
-        "src-tauri/src/workflows/storage_providers.rs",
-        "src-tauri/src/workflows/types.rs"
-      ],
-      "tests": [],
-      "symbols": [],
-      "depends_on": [
-        "ai-env-backend",
-        "skills-backend"
-      ],
-      "read_scope": [
-        "src-tauri/src/workflows.rs",
-        "src-tauri/src/workflows/apply_dependencies.rs",
-        "src-tauri/src/workflows/dependencies_runs.rs",
-        "src-tauri/src/workflows/launch_commands.rs",
-        "src-tauri/src/workflows/preset_commands.rs",
-        "src-tauri/src/workflows/run_commands.rs",
-        "src-tauri/src/workflows/skill_resolution.rs",
-        "src-tauri/src/workflows/storage_providers.rs",
-        "src-tauri/src/workflows/types.rs"
-      ],
-      "relations": [],
-      "shared_entry": false
-    },
-    {
       "id": "workspaces-backend",
       "name": "Workspaces Backend",
       "aliases": [
@@ -3649,7 +3562,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "Tauri 应用启动、CLI 入口、运行时服务（含进程级系统恢复信号：`SYSTEM_RESUME_GRACE_SECS = 60` 的 `mark_system_resume` / `system_resume_grace_active(now)`，仅进程内存，供 AI 网关在恢复后的宽限窗口内抑制网络类传输失败计数）、托盘（Rust 侧创建、左键切换主窗口、右键原生菜单、双语启动兜底菜单、`main-window-visibility-changed` 事件与 `toggle_quick_ai_window` 命令）、全局快捷键、OAuth 打开与统一退出清理；`run()` 在 CLI 处理前先调用 `config::seed_dev_gateway_files_on_start()`，debug 构建据此按条件播种 dev 网关文件；同样在 CLI 处理前执行 `cleanup_removed_ai_workspace_files()`：经当前 profile 本地数据目录 best-effort 清理被删 AI 工作台的两个功能自有文件、幂等、失败记录并在下次启动重试、不阻塞启动、不触碰共享 MCP 列表",
+      "responsibility": "Tauri 应用启动、CLI 入口、运行时服务（含进程级系统恢复信号：`SYSTEM_RESUME_GRACE_SECS = 60` 的 `mark_system_resume` / `system_resume_grace_active(now)`，仅进程内存，供 AI 网关在恢复后的宽限窗口内抑制网络类传输失败计数）、托盘（Rust 侧创建、左键切换主窗口、右键原生菜单、双语启动兜底菜单、`main-window-visibility-changed` 事件与 `toggle_quick_ai_window` 命令）、全局快捷键、OAuth 打开与统一退出清理；`run()` 在 CLI 处理前先调用 `config::seed_dev_gateway_files_on_start()`，debug 构建据此按条件播种 dev 网关文件；同样在 CLI 处理前执行 `cleanup_removed_ai_workspace_files()`：经当前 profile 本地数据目录 best-effort 清理被删应用内助手的两个功能自有文件、幂等、失败记录并在下次启动重试、不阻塞启动、不触碰共享 MCP 列表",
       "entries": [
         "src-tauri/src/lib.rs"
       ],

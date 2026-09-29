@@ -1,13 +1,12 @@
 # OneSpace
 
-OneSpace 是一个面向开发者的 macOS 桌面工作台，用来把 AI CLI、环境配置、MCP、Skills/Subagents、工作流和常用生产力工具收拢到一个窗口里。
+OneSpace 是一个面向开发者的 macOS 桌面工作台，用来把 AI CLI、环境配置、MCP、Skills/Subagents 和常用生产力工具收拢到一个窗口里。
 
 当前实现重点是：
 
 - 统一管理 `Claude`、`Codex`、`Antigravity`、`OpenCode` 的环境预设与 CLI 配置
 - 在原生终端中创建和恢复 AI 会话，并把会话记录同步回应用
 - 以模型维度管理 `Skills`、`Subagents` 和 `MCP Servers`
-- 通过工作流预设把目录、环境、MCP、Skills 一次性组合起来启动
 - 提供 `Workspaces`、`AI Usage Stats`、`AI Flow`、`Launcher`、`SSH Tunnels`、`Protocol Router`、`Snippets`、`Bookmarks`、`Notes`、`AI News`、`Gmail` 等配套工具
 
 ## 功能概览
@@ -21,14 +20,11 @@ OneSpace 是一个面向开发者的 macOS 桌面工作台，用来把 AI CLI、
 - 支持 `Env Managed` 开关，决定是否由 OneSpace 持续接管 CLI 配置文件
 - 支持从其它已同步设备导入并激活环境
 
-### AI Sessions And Workflows
+### AI Sessions
 
 - 从工作目录直接创建原生终端会话
 - 会话可恢复、重命名、删除、复制 ID
 - 会话名称和模型信息会持续从各 CLI 历史记录回填
-- 支持 `Workflow Presets`
-- 工作流可绑定工具、目录、环境、MCP、Skills、启动提示词和 `Shared/Strict` 作用域
-- 提供依赖检查、一键补依赖、最近运行记录、重放与失败恢复
 
 ### Workspaces
 
@@ -54,7 +50,7 @@ OneSpace 是一个面向开发者的 macOS 桌面工作台，用来把 AI CLI、
 ### Developer Utilities
 
 - `Launcher`：启动应用、脚本、URL、文件夹，或跳转应用内部页面
-- `OmniSearch`：统一搜索会话、启动项、SSH、代码片段、书签、笔记、Skills、工作流
+- `OmniSearch`：统一搜索会话、启动项、SSH、代码片段、书签、笔记、Skills
 - `SSH`：读取 `~/.ssh/config`，维护历史、收藏、忽略列表和自定义连接
 - `SSH Tunnels`：维护 local / remote / dynamic SSH 转发配置，支持测试、连接和自动重连
 - `Protocol Router`：管理本地协议路由、route endpoint、连接测试和近期请求用量
@@ -88,9 +84,8 @@ OneSpace 是一个面向开发者的 macOS 桌面工作台，用来把 AI CLI、
 1. 完成初始化向导，选择 `Local / iCloud / Git`，设置主密码。
 2. 进入 `AI Environments`，确认 CLI 安装状态并导入或创建环境。
 3. 在 `Settings -> AI Terminal` 配置默认目录、默认模型和各工具启动命令。
-4. 在 `AI Sessions` 里先手动创建一个会话，再试一次 `Workflow Preset`。
-5. 根据需要补充 `Skills`、`Subagents` 和 `MCP Servers`。
-6. 安装 `onespace` CLI，开始在终端里创建会话。
+4. 根据需要补充 `Skills`、`Subagents` 和 `MCP Servers`。
+5. 安装 `onespace` CLI，开始在终端里创建会话。
 
 ## 开发
 

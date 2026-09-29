@@ -1,3 +1,9 @@
+// The strict-profile materialization and cleanup surface is intentionally
+// retained without callers until workflow presets return; session launch still
+// uses runtime_env_for_profile for existing profiles. See the decision record
+// .ai-workflow/notes/implemented/simplification/2026-09-29-ai-session-workflow-presets-removal.md
+#![allow(dead_code)]
+
 use crate::get_data_dir;
 use crate::mcp_servers::{MCPServer, MCPServerTransport};
 use serde_json::{Map, Value};

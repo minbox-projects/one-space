@@ -1,6 +1,5 @@
 use super::{
-    load_service_providers_state, load_sessions_state, local_workflow_presets_path,
-    local_workflow_runs_path, normalize_service_provider_record,
+    load_service_providers_state, load_sessions_state, normalize_service_provider_record,
     restore_missing_service_provider_api_keys_from_legacy, save_sessions_state,
     shared_profile_path, CryptoService, EncryptedBlob, ServiceProvidersState, StorageEngine,
 };
@@ -357,16 +356,11 @@ pub(in crate::app_store) fn apply_provider_id_map_to_dependent_state(
     }
 
     let _ = apply_provider_id_map_to_sessions(id_map)?;
-    let _ = apply_provider_id_map_to_plain_json_file(&local_workflow_presets_path()?, id_map)?;
-    let _ = apply_provider_id_map_to_plain_json_file(&local_workflow_runs_path()?, id_map)?;
     let _ = apply_provider_id_map_to_encrypted_json_file(&StorageEngine::mcp_path()?, id_map)?;
     let _ = crate::protocol_router::remap_service_provider_route_stats(id_map)?;
     let _ = migrate_claude_profile_dirs_for_provider_id_map(id_map)?;
 
     if let Ok(cfg) = config::get_storage_config() {
-        if let Ok(path) = shared_profile_path(&cfg, "workflow_presets.json") {
-            let _ = apply_provider_id_map_to_plain_json_file(&path, id_map);
-        }
         if let Ok(path) = shared_profile_path(&cfg, "mcp.json") {
             let _ = apply_provider_id_map_to_plain_json_file(&path, id_map);
         }

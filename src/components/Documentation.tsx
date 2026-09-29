@@ -19,7 +19,6 @@ import {
   Server, 
   Share2,
   Sparkles,
-  Waypoints,
   Download, 
   Info,
   ArrowLeft
@@ -150,7 +149,7 @@ export function Documentation() {
           summary: t('docsLauncherSummary', 'Launch apps, scripts, URLs, folders, and internal OneSpace pages.'),
           icon: Rocket,
           docId: 'usage',
-          anchor: '14-launcher-与-more-tools',
+          anchor: '13-launcher-与-more-tools',
         },
         {
           id: 'workspaces',
@@ -158,7 +157,7 @@ export function Documentation() {
           summary: t('docsWorkspacesSummary', 'Organize project sessions, MCP, Skills, and Subagents around a workspace.'),
           icon: FolderOpen,
           docId: 'usage',
-          anchor: '7-workspaces',
+          anchor: '6-workspaces',
         },
         {
           id: 'ai-sessions',
@@ -167,14 +166,6 @@ export function Documentation() {
           icon: Terminal,
           docId: 'usage',
           anchor: '5-ai-sessions',
-        },
-        {
-          id: 'workflows',
-          name: t('workflowPresets', 'Workflow Presets'),
-          summary: t('docsWorkflowsSummary', 'Bundle directories, tools, environments, MCP, Skills, and prompts.'),
-          icon: Waypoints,
-          docId: 'usage',
-          anchor: '6-workflow-presets',
         },
       ],
     },
@@ -196,7 +187,7 @@ export function Documentation() {
           summary: t('docsAiUsageSummary', 'Review token usage derived from local CLI session history.'),
           icon: BarChart3,
           docId: 'usage',
-          anchor: '9-ai-usage-stats',
+          anchor: '7-ai-usage-stats',
         },
         {
           id: 'skills',
@@ -224,7 +215,7 @@ export function Documentation() {
           summary: t('docsSshSummary', 'Open SSH servers and manage local, remote, or dynamic SSH tunnels.'),
           icon: Server,
           docId: 'usage',
-          anchor: '12-ssh-servers-与-ssh-tunnels',
+          anchor: '11-ssh-servers-与-ssh-tunnels',
         },
         {
           id: 'protocol-router',
@@ -232,7 +223,7 @@ export function Documentation() {
           summary: t('docsProtocolRouterSummary', 'Expose and inspect local protocol routes for AI providers.'),
           icon: Route,
           docId: 'usage',
-          anchor: '13-protocol-router',
+          anchor: '12-protocol-router',
         },
         {
           id: 'file-sharing',
@@ -240,7 +231,7 @@ export function Documentation() {
           summary: t('docsFileSharingSummary', 'Temporarily share selected files on a trusted local network.'),
           icon: Share2,
           docId: 'usage',
-          anchor: '15-file-sharing',
+          anchor: '132-file-sharing',
         },
         {
           id: 'snippets-bookmarks-notes',
@@ -248,7 +239,7 @@ export function Documentation() {
           summary: t('docsContentToolsSummary', 'Keep local snippets, saved links, project paths, and Markdown notes searchable.'),
           icon: NotebookPen,
           docId: 'usage',
-          anchor: '16-snippetsbookmarksnotes',
+          anchor: '15-snippetsbookmarksnotes',
         },
         {
           id: 'ai-news',
@@ -256,7 +247,7 @@ export function Documentation() {
           summary: t('docsAiNewsSummary', 'Fetch AI news from configured RSS sources with local keyword filtering.'),
           icon: Newspaper,
           docId: 'usage',
-          anchor: '17-ai-news',
+          anchor: '16-ai-news',
         },
         {
           id: 'mail',
@@ -264,7 +255,7 @@ export function Documentation() {
           summary: t('docsMailSummary', 'Connect Gmail with OAuth to read, reply, and download attachments.'),
           icon: Mail,
           docId: 'usage',
-          anchor: '18-mail',
+          anchor: '17-mail',
         },
       ],
     },
@@ -285,7 +276,7 @@ export function Documentation() {
           summary: t('docsSettingsSummary', 'Configure storage, news, proxy, shortcuts, terminal commands, appearance, and security.'),
           icon: Code2,
           docId: 'usage',
-          anchor: '21-settings',
+          anchor: '19-settings',
         },
         {
           id: 'fish-pond',
@@ -293,7 +284,7 @@ export function Documentation() {
           summary: t('docsFishPondSummary', 'Find the built-in CyberMuyu, Snake, Tetris, Sudoku, Minesweeper, and Wordle games.'),
           icon: Gamepad2,
           docId: 'usage',
-          anchor: '20-fish-pond',
+          anchor: '18-fish-pond',
         },
         {
           id: 'faq',
@@ -301,7 +292,7 @@ export function Documentation() {
           summary: t('docsFaqSummary', 'Troubleshoot common CLI, environment, AI News, and macOS issues.'),
           icon: HelpCircle,
           docId: 'usage',
-          anchor: '24-常见问题',
+          anchor: '22-常见问题',
         },
       ],
     },

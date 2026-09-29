@@ -1,5 +1,5 @@
 use super::{
-    api_key_has_value, apply_provider_id_map_to_plain_json_file, generate_provider_uuid,
+    api_key_has_value, generate_provider_uuid,
     is_uuid_v4, load_outbox_state, load_service_providers_state, now_ts,
     provider_import_id_map_to_plain_id_map, provider_import_key, remap_provider_id,
     save_outbox_state, save_service_providers_internal, service_provider_records_match,
@@ -278,14 +278,6 @@ pub(in crate::app_store) fn shared_news_path(
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     Ok(p)
-}
-
-pub(in crate::app_store) fn local_workflow_presets_path() -> Result<PathBuf, String> {
-    Ok(crate::get_data_dir()?.join("workflow_presets.json"))
-}
-
-pub(in crate::app_store) fn local_workflow_runs_path() -> Result<PathBuf, String> {
-    Ok(crate::get_data_dir()?.join("workflow_runs.json"))
 }
 
 pub(in crate::app_store) fn local_skills_repository_root() -> Result<PathBuf, String> {
@@ -737,18 +729,6 @@ pub(in crate::app_store) fn sync_mcp_profile(
     Ok(())
 }
 
-pub(in crate::app_store) fn sync_workflow_presets_profile(
-    cfg: &config::StorageConfig,
-    warnings: &mut Vec<String>,
-    imported_provider_id_map: &HashMap<String, String>,
-) -> Result<(), String> {
-    let local = local_workflow_presets_path()?;
-    let shared = shared_profile_path(cfg, "workflow_presets.json")?;
-    sync_file_bidirectional(&local, &shared, warnings, "workflow_presets")?;
-    let _ = apply_provider_id_map_to_plain_json_file(&local, imported_provider_id_map)?;
-    Ok(())
-}
-
 pub(in crate::app_store) fn run_local_shared_sync(
     cfg: &config::StorageConfig,
 ) -> Result<Vec<String>, String> {
@@ -764,10 +744,6 @@ pub(in crate::app_store) fn run_local_shared_sync(
 
     if policy.mcp {
         sync_mcp_profile(cfg, &mut warnings, &imported_provider_id_map)?;
-    }
-
-    if policy.workflow_presets {
-        sync_workflow_presets_profile(cfg, &mut warnings, &imported_provider_id_map)?;
     }
 
     if policy.skills_sources || policy.subagents_sources {
