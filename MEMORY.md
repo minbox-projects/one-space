@@ -1,6 +1,6 @@
 # Project memory
 
-OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + TypeScript），把 AI CLI 环境、原生终端会话、MCP、Skills/Subagents、工作流与常用生产力工具收拢到一个窗口。本文件是原生 agent 共享的架构与约定基线；`.ai-workflow/index/navigation.json` 是权威导航索引，`navigation.md` 由其生成。
+OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + TypeScript），把 AI CLI 环境、原生终端会话、MCP、Skills/Subagents、常用生产力工具收拢到一个窗口。本文件是原生 agent 共享的架构与约定基线；`.ai-workflow/index/navigation.json` 是权威导航索引，`navigation.md` 由其生成。
 
 ## 技术栈与构建
 
@@ -32,7 +32,7 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 - 工具箱清理与助手能力收紧（行为中性）：移除 CloudDrive 组件/插件/别名/密钥、`backup` 幽灵 Hub 路由（备份操作描述符改指 `mcp-servers` 页签）、`normalizeLegacyTabTarget` 旧标签归一化、Launcher `ai-flow` 过滤与旧 localStorage 到后端的启动项迁移以及 `moreToolPresentation.ts`；RandomPassword 与 `jttInputHistory` 的遗留历史不再迁移（无效记录读出为空并被现有恢复逻辑清除）；`notes_search` 已从助手工具策略、能力快照、默认 agents、模型工具定义、会话提示、分派器以及 AI Workspace 徽标/开关、前端类型与双语标签中端到端移除（`AgentToolPolicy` 仅 `web_search` 与 `workspace_read`，快照另含知识库、MCP 与记忆字段）。原因与逐项行为中性论证见 [Toolbox Plugin Registry](.ai-workflow/notes/implemented/architecture/2026-09-25-toolbox-plugin-registry.md)。
 - 托盘菜单为前端所有权：`src/lib/trayMenu.ts` 提供纯模型 `buildTrayMenuModel`（结构、启用/勾选、快捷键提示遵循已注册快捷键的语义：仅单一有效键如 `F5`、`Space`、`A`、`1`，或已知键名的修饰键组合；`Meta` 不是修饰键；无法解析或键名未知的值省略）与原生应用 `applyTrayMenu`（经 `@tauri-apps/api/menu` 与 `TrayIcon.setMenu`，API 不可用时软失败；原生条目创建被拒时去掉该条目 accelerator 重试，单个坏快捷键不会丢掉整个菜单），菜单文案统一来自 `src/i18n.ts`（Notes / Snippets 条目按工具 id 经工具箱注册表描述符解析，缺失时回退 `tray.notes` / `tray.snippets`）；`src/App.tsx` 控制器按窗口可见性、网关/路由状态、`ssh-tunnels-updated`、`file-sharing-updated`、`tray-shortcuts-updated`（Settings 保存快捷键后发出，提示无需重启即刷新）与 i18n `languageChanged` 重建菜单并执行全部动作，服务状态动作（网关/路由、SSH 批量、停止共享、同步）失败经 toast 通道上报，网关/路由/隧道/共享动作随后重新查询状态，SSH 批量部分失败的提示与操作方向无关；Services 子菜单展示网关/路由勾选项与端口、隧道 connected/total 计数与 Connect All/Disconnect All、共享状态与 Stop Sharing、Sync Now 及 Copy API Address（仅网关运行时可用）。原因与取舍见 [Tray menu ownership and contract](.ai-workflow/notes/implemented/architecture/2026-09-22-tray-menu-ownership-and-contract.md)。
 - 每个业务域是一个 `src/components/<Domain>/` 目录或同名组件；每个组件目录通常包含 `index.tsx`、子组件、`*.test.tsx`，复杂域再拆分 `components/`、`hooks/`、`helpers/`、`types.ts`（参见 `Workspaces/`）。
-- 命令封装与领域类型放在 `src/lib/`，按域一文件（如 `workflows.ts`、`skills.ts`、`subagents.ts`、`sshTunnels.ts`、`fileSharing.ts`、`shortLink.ts`、`aiAssistant.ts`、`aiGateway.ts`、`aiWorkflowProfiles.ts`）。
+- 命令封装与领域类型放在 `src/lib/`，按域一文件（如 `skills.ts`、`subagents.ts`、`sshTunnels.ts`、`fileSharing.ts`、`shortLink.ts`、`aiAssistant.ts`、`aiGateway.ts`、`aiWorkflowProfiles.ts`）。
 - 文案统一走 `src/i18n.ts`，新增界面文本必须同时提供中英文；`en_keys.txt` / `zh_keys.txt` 为键清单。
 - 共享基础组件在 `src/components/ui/`，Provider（主题、Toast、确认框、错误边界）在 `src/components/` 顶层。
 
