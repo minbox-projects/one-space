@@ -32,11 +32,88 @@ use serde_json::{Map, Value};
 /// Terminal tools that AI Gateway is allowed to write to.
 pub(in crate::ai_gateway) const SUPPORTED_TERMINAL_TOOLS: [&str; 2] = ["opencode", "codex"];
 
-/// Display name and provider key of the managed AI Gateway gateway record.
-const GATEWAY_PROVIDER_NAME: &str = "AI Gateway";
-const GATEWAY_PROVIDER_KEY: &str = "gateway";
-/// Stable marker identifying a provider record written by AI Gateway.
+/// Stable marker key identifying a provider record written by AI Gateway. The
+/// accepted marker value is owned by the [`TerminalSyncProfile`].
 const GATEWAY_MARKER_KEY: &str = "ai_gateway_gateway";
+
+/// Identity profile of the AI Gateway terminal-sync records.
+///
+/// The release profile owns the `gateway` provider key, the `AI Gateway` name
+/// and the boolean `true` marker. The dev profile (a debug build outside the
+/// test harness) owns the distinct `gateway-dev` key, the `AI Gateway (Dev)`
+/// name and the `"dev"` string marker, so a development build never claims,
+/// reuses or overwrites the release records and vice versa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::ai_gateway) struct TerminalSyncProfile {
+    is_dev: bool,
+}
+
+impl TerminalSyncProfile {
+    pub(in crate::ai_gateway) const RELEASE: Self = Self { is_dev: false };
+    pub(in crate::ai_gateway) const DEV: Self = Self { is_dev: true };
+
+    /// The profile of the running build: dev only for a debug build outside the
+    /// test harness, release everywhere else.
+    pub(in crate::ai_gateway) const fn current() -> Self {
+        Self {
+            is_dev: cfg!(all(debug_assertions, not(test))),
+        }
+    }
+
+    pub(in crate::ai_gateway) const fn is_dev(self) -> bool {
+        self.is_dev
+    }
+
+    /// Opencode provider key owned by this profile.
+    pub(in crate::ai_gateway) const fn provider_key(self) -> &'static str {
+        if self.is_dev() {
+            "gateway-dev"
+        } else {
+            "gateway"
+        }
+    }
+
+    /// Display name owned by this profile.
+    pub(in crate::ai_gateway) const fn provider_name(self) -> &'static str {
+        if self.is_dev() {
+            "AI Gateway (Dev)"
+        } else {
+            "AI Gateway"
+        }
+    }
+
+    /// The marker value this profile writes under `tool_config`.
+    fn marker(self) -> Value {
+        if self.is_dev() {
+            Value::String("dev".to_string())
+        } else {
+            Value::Bool(true)
+        }
+    }
+
+    /// Whether `provider` claims this profile's marker, at the top level or
+    /// under `tool_config`. Release additionally accepts the legacy rename
+    /// marker; dev claims nothing else.
+    fn claims_marker(self, provider: &Value) -> bool {
+        if self.is_dev() {
+            marker_is(provider, |value| value.as_str() == Some("dev"))
+        } else {
+            marker_is(provider, |value| value.as_bool() == Some(true))
+                || super::migration::has_legacy_gateway_marker(provider)
+        }
+    }
+}
+
+/// Whether `provider` carries a marker value accepted by `matches`, either at
+/// the top level or under `tool_config`.
+fn marker_is(provider: &Value, matches: fn(&Value) -> bool) -> bool {
+    provider.get(GATEWAY_MARKER_KEY).map(matches).unwrap_or(false)
+        || provider
+            .get("tool_config")
+            .and_then(|tool_config| tool_config.get(GATEWAY_MARKER_KEY))
+            .map(matches)
+            .unwrap_or(false)
+}
 /// npm override for an opencode model the gateway can serve only through the
 /// Responses protocol: `@ai-sdk/openai` POSTs `/responses` instead of the
 /// `/chat/completions` used by `@ai-sdk/openai-compatible`.
@@ -72,19 +149,14 @@ fn provider_tool(provider: &Value) -> &str {
         .unwrap_or("")
 }
 
-/// A provider carries the gateway marker either at the top level or under
-/// `tool_config`; both shapes are recognized. Records written before the
-/// ai_gateway rename still carry the legacy marker and stay recognized through
-/// [`super::migration::has_legacy_gateway_marker`], so the next sync upgrades
-/// them in place.
-fn provider_has_gateway_marker(provider: &Value) -> bool {
-    provider.get(GATEWAY_MARKER_KEY).and_then(Value::as_bool) == Some(true)
-        || provider
-            .get("tool_config")
-            .and_then(|tool_config| tool_config.get(GATEWAY_MARKER_KEY))
-            .and_then(Value::as_bool)
-            == Some(true)
-        || super::migration::has_legacy_gateway_marker(provider)
+/// Whether `provider` carries the marker claimed by `profile`, either at the
+/// top level or under `tool_config`; both shapes are recognized. Release records
+/// written before the ai_gateway rename still carry the legacy marker and stay
+/// recognized through [`super::migration::has_legacy_gateway_marker`], so the
+/// next sync upgrades them in place. Dev claims only its own `"dev"` string
+/// marker and never the release (or legacy) marker.
+fn provider_has_gateway_marker(provider: &Value, profile: TerminalSyncProfile) -> bool {
+    profile.claims_marker(provider)
 }
 
 fn non_empty(value: Option<&str>) -> Option<String> {
@@ -112,18 +184,21 @@ fn gateway_protocol_servable(
 
 /// Build the terminal provider record written by AI Gateway for one tool.
 ///
-/// The record is always marked as an AI Gateway gateway, carries the resolved
-/// default local key value as its `api_key` (top-level and, for opencode,
-/// `tool_config.options.apiKey`), and never carries an `active`/`is_active`
-/// flag. Opencode activation plus projection to opencode.json are applied
-/// separately via the service-provider active list and projection after the
-/// upsert succeeds.
+/// The record is always marked with `profile.marker()` under `tool_config`,
+/// carries the resolved default local key value as its `api_key` (top-level and,
+/// for opencode, `tool_config.options.apiKey`), and never carries an
+/// `active`/`is_active` flag. The `provider_key` and display name come from
+/// `profile`, so the release and dev profiles register distinct records.
+/// Opencode activation plus projection to opencode.json are applied separately
+/// via the service-provider active list and projection after the upsert
+/// succeeds.
 pub(in crate::ai_gateway) fn build_gateway_provider(
     provider_id: &str,
     tool: &str,
     base_url: &str,
     api_key: &str,
     gateways: &[GatewayUpstreamProvider],
+    profile: TerminalSyncProfile,
 ) -> Result<serde_json::Value, String> {
     let tool = tool.trim().to_ascii_lowercase();
     if !is_supported_terminal_tool(&tool) {
@@ -133,13 +208,13 @@ pub(in crate::ai_gateway) fn build_gateway_provider(
     }
 
     let mut tool_config = Map::new();
-    tool_config.insert(GATEWAY_MARKER_KEY.to_string(), Value::Bool(true));
+    tool_config.insert(GATEWAY_MARKER_KEY.to_string(), profile.marker());
 
     let mut object = Map::new();
     object.insert("id".to_string(), Value::String(provider_id.to_string()));
     object.insert(
         "name".to_string(),
-        Value::String(GATEWAY_PROVIDER_NAME.to_string()),
+        Value::String(profile.provider_name().to_string()),
     );
     object.insert("tool".to_string(), Value::String(tool.clone()));
     object.insert("base_url".to_string(), Value::String(base_url.to_string()));
@@ -148,7 +223,7 @@ pub(in crate::ai_gateway) fn build_gateway_provider(
     if tool == "opencode" {
         object.insert(
             "provider_key".to_string(),
-            Value::String(GATEWAY_PROVIDER_KEY.to_string()),
+            Value::String(profile.provider_key().to_string()),
         );
         tool_config.insert(
             "npm".to_string(),
@@ -648,39 +723,44 @@ pub async fn ai_gateway_autostart(app: tauri::AppHandle) -> Result<GatewayStatus
 }
 
 /// Find the managed gateway provider for a tool: the ledger record's provider id
-/// when it still exists for the same tool AND still carries the gateway marker,
-/// else the marked provider for the tool. A ledger id that now points at an
-/// unmarked user provider is stale and must never be claimed.
+/// when it still exists for the same tool AND still carries the profile's
+/// gateway marker, else the profile-marked provider for the tool. A ledger id
+/// that now points at a provider without the profile marker (a user provider or
+/// the other profile's record) is stale and must never be claimed.
 fn find_managed_gateway_provider<'a>(
     tool: &str,
     providers: &'a [Value],
     ledger: Option<&TerminalSyncRecord>,
+    profile: TerminalSyncProfile,
 ) -> Option<&'a Value> {
     if let Some(record) = ledger {
         if record.tool.eq_ignore_ascii_case(tool) {
             let found = providers.iter().find(|provider| {
                 provider.get("id").and_then(Value::as_str) == Some(record.provider_id.as_str())
                     && provider_tool(provider).eq_ignore_ascii_case(tool)
-                    && provider_has_gateway_marker(provider)
+                    && provider_has_gateway_marker(provider, profile)
             });
             if found.is_some() {
                 return found;
             }
         }
     }
-    providers
-        .iter()
-        .find(|provider| provider_tool(provider).eq_ignore_ascii_case(tool) && provider_has_gateway_marker(provider))
+    providers.iter().find(|provider| {
+        provider_tool(provider).eq_ignore_ascii_case(tool)
+            && provider_has_gateway_marker(provider, profile)
+    })
 }
 
 /// Resolve the provider id a sync should write to for one tool: first the ledger
-/// record that still matches a marked same-tool provider, then a marked gateway
-/// provider, then a freshly generated id. A ledger id pointing at an unmarked
-/// user provider is stale and is skipped.
+/// record that still matches a profile-marked same-tool provider, then a
+/// profile-marked gateway provider, then a freshly generated id. A ledger id
+/// pointing at a provider without the profile marker is stale and is skipped, so
+/// a foreign-marked record (including the other profile's) is treated as absent.
 fn resolve_gateway_provider_id(
     tool: &str,
     providers: &[Value],
     config: &GatewayConfig,
+    profile: TerminalSyncProfile,
 ) -> String {
     for record in &config.terminal_syncs {
         if !record.tool.eq_ignore_ascii_case(tool) {
@@ -689,7 +769,7 @@ fn resolve_gateway_provider_id(
         let existing = providers.iter().find(|provider| {
             provider.get("id").and_then(Value::as_str) == Some(record.provider_id.as_str())
                 && provider_tool(provider).eq_ignore_ascii_case(tool)
-                && provider_has_gateway_marker(provider)
+                && provider_has_gateway_marker(provider, profile)
         });
         if let Some(id) = existing.and_then(|provider| provider.get("id").and_then(Value::as_str)) {
             return id.to_string();
@@ -699,7 +779,7 @@ fn resolve_gateway_provider_id(
         .iter()
         .find(|provider| {
             provider_tool(provider).eq_ignore_ascii_case(tool)
-                && provider_has_gateway_marker(provider)
+                && provider_has_gateway_marker(provider, profile)
         })
         .and_then(|provider| provider.get("id").and_then(Value::as_str))
     {
@@ -710,11 +790,13 @@ fn resolve_gateway_provider_id(
 
 /// Build the per-tool terminal target projection from the persisted config and
 /// the current terminal service provider list. Managed gateways are recognized
-/// through the gateway marker only; a stale ledger id that points at an unmarked
-/// user provider is never claimed.
+/// through the profile's gateway marker only; a stale ledger id that points at a
+/// provider without that marker (a user provider or the other profile's record)
+/// is never claimed.
 pub(in crate::ai_gateway) fn terminal_targets_from(
     config: &GatewayConfig,
     providers_data: &serde_json::Value,
+    profile: TerminalSyncProfile,
 ) -> Vec<TerminalTarget> {
     let providers = providers_data
         .get("providers")
@@ -728,7 +810,7 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
             .terminal_syncs
             .iter()
             .find(|record| record.tool.eq_ignore_ascii_case(tool));
-        let managed = find_managed_gateway_provider(tool, providers, ledger);
+        let managed = find_managed_gateway_provider(tool, providers, ledger, profile);
         let provider_id = managed
             .and_then(|provider| provider.get("id").and_then(Value::as_str))
             .map(str::to_string);
@@ -747,6 +829,7 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
                         &base_url,
                         "",
                         &config.providers,
+                        profile,
                     )
                     .map(|generated| terminal_model_selection_drifted(tool, stored, &generated))
                     .unwrap_or(true),
@@ -773,15 +856,16 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
     targets
 }
 
-/// The supported terminal tools whose managed AI Gateway provider record
-/// already exists, in `SUPPORTED_TERMINAL_TOOLS` order. Reuses the same
+/// The supported terminal tools whose managed AI Gateway provider record for
+/// `profile` already exists, in `SUPPORTED_TERMINAL_TOOLS` order. Reuses the same
 /// `synced` predicate the terminal target list exposes, so a null or unreadable
-/// payload yields no tools.
+/// payload yields no tools and the other profile's records are ignored.
 pub(in crate::ai_gateway) fn previously_synced_terminal_tools(
     config: &GatewayConfig,
     providers_data: &serde_json::Value,
+    profile: TerminalSyncProfile,
 ) -> Vec<String> {
-    terminal_targets_from(config, providers_data)
+    terminal_targets_from(config, providers_data, profile)
         .into_iter()
         .filter(|target| target.synced)
         .map(|target| target.tool)
@@ -792,7 +876,11 @@ pub(in crate::ai_gateway) fn previously_synced_terminal_tools(
 pub fn ai_gateway_terminal_targets() -> Result<Vec<TerminalTarget>, String> {
     let config = read_config()?;
     let payload = crate::app_store::service_providers_list().map_err(api_err_to_string)?;
-    Ok(terminal_targets_from(&config, &payload.data))
+    Ok(terminal_targets_from(
+        &config,
+        &payload.data,
+        TerminalSyncProfile::current(),
+    ))
 }
 
 /// Boxed future returned by an injected terminal upsert, kept `Send` so the
@@ -801,10 +889,10 @@ pub(in crate::ai_gateway) type UpsertFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
 /// Terminal sync pipeline with an injectable upsert seam: build one gateway
-/// provider per requested tool, upsert each one (carrying the resolved default
-/// local key value as its `api_key`), then refresh the ledger. Any
-/// upsert error aborts before the ledger is written, so the ledger never claims
-/// a sync that did not happen. The payload itself never carries an
+/// provider per requested tool for `profile`, upsert each one (carrying the
+/// resolved default local key value as its `api_key`), then refresh the ledger.
+/// Any upsert error aborts before the ledger is written, so the ledger never
+/// claims a sync that did not happen. The payload itself never carries an
 /// `active`/`is_active` flag; opencode activation plus projection to
 /// opencode.json are applied separately in `apply_terminal_sync` after the
 /// ledger is persisted.
@@ -812,6 +900,7 @@ pub(in crate::ai_gateway) async fn apply_terminal_sync_with<F>(
     providers_data: &serde_json::Value,
     mut upsert: F,
     target_tools: Vec<String>,
+    profile: TerminalSyncProfile,
 ) -> Result<Vec<TerminalSyncRecord>, String>
 where
     F: FnMut(serde_json::Value) -> UpsertFuture,
@@ -850,13 +939,14 @@ where
 
     let mut synced = Vec::new();
     for tool in &tools {
-        let provider_id = resolve_gateway_provider_id(tool, providers, &config);
+        let provider_id = resolve_gateway_provider_id(tool, providers, &config, profile);
         let payload = build_gateway_provider(
             &provider_id,
             tool,
             &base_url,
             &key_value,
             &config.providers,
+            profile,
         )?;
         upsert(payload).await?;
         let record = TerminalSyncRecord {
@@ -901,6 +991,7 @@ async fn apply_terminal_sync(
             })
         },
         target_tools,
+        TerminalSyncProfile::current(),
     )
     .await?;
     // Auto-activate the gateway provider under opencode so the synced endpoint
@@ -962,7 +1053,7 @@ where
         .iter()
         .any(|provider| provider.template_id.as_deref() == Some(template_id));
     if bound {
-        let tools = previously_synced_terminal_tools(config, providers_data);
+        let tools = previously_synced_terminal_tools(config, providers_data, TerminalSyncProfile::current());
         if !tools.is_empty() {
             let _ = terminal_sync(tools).await;
         }
@@ -1130,7 +1221,7 @@ pub async fn ai_gateway_sync_provider_template(
             .iter()
             .any(|provider| provider.template_id.as_deref() == Some(template_id.as_str()));
         let tools = if bound {
-            previously_synced_terminal_tools(config, &providers_data)
+            previously_synced_terminal_tools(config, &providers_data, TerminalSyncProfile::current())
         } else {
             Vec::new()
         };
@@ -1241,33 +1332,97 @@ mod tests {
         Value::Object(map)
     }
 
+    fn string_field(key: &str, value: &str) -> Value {
+        let mut map = Map::new();
+        map.insert(key.to_string(), Value::String(value.to_string()));
+        Value::Object(map)
+    }
+
     fn with_tool_config(inner: Value) -> Value {
         let mut map = Map::new();
         map.insert("tool_config".to_string(), inner);
         Value::Object(map)
     }
 
-    /// The combined marker check accepts the current marker and the legacy one
-    /// (top level or under `tool_config`) while rejecting unrelated records.
+    /// Each profile claims only its own marker: release claims the boolean
+    /// `true` (top level or under `tool_config`) plus both legacy rename shapes;
+    /// dev claims only the string `"dev"` (top level or under `tool_config`).
+    /// Neither profile claims the other's marker, a `false` value, unrelated
+    /// keys or `Null`.
     #[test]
-    fn provider_marker_recognizes_current_and_legacy_but_not_unrelated() {
-        assert!(provider_has_gateway_marker(&bool_field(GATEWAY_MARKER_KEY, true)));
-        assert!(provider_has_gateway_marker(&with_tool_config(bool_field(
-            GATEWAY_MARKER_KEY,
-            true
-        ))));
-
+    fn provider_marker_claims_only_the_current_profile() {
+        let release = TerminalSyncProfile::RELEASE;
+        let dev = TerminalSyncProfile::DEV;
         let legacy = super::super::migration::LEGACY_GATEWAY_MARKER_KEY;
-        assert!(provider_has_gateway_marker(&bool_field(legacy, true)));
-        assert!(provider_has_gateway_marker(&with_tool_config(bool_field(
-            legacy, true
-        ))));
 
-        assert!(!provider_has_gateway_marker(&bool_field(GATEWAY_MARKER_KEY, false)));
-        assert!(!provider_has_gateway_marker(&with_tool_config(bool_field(
-            "npm", true
-        ))));
-        assert!(!provider_has_gateway_marker(&Value::Null));
+        // Release claims the boolean marker at the top level and under tool_config.
+        assert!(provider_has_gateway_marker(
+            &bool_field(GATEWAY_MARKER_KEY, true),
+            release
+        ));
+        assert!(provider_has_gateway_marker(
+            &with_tool_config(bool_field(GATEWAY_MARKER_KEY, true)),
+            release
+        ));
+
+        // Release also claims both legacy rename shapes.
+        assert!(provider_has_gateway_marker(&bool_field(legacy, true), release));
+        assert!(provider_has_gateway_marker(
+            &with_tool_config(bool_field(legacy, true)),
+            release
+        ));
+
+        // Release never claims the dev string marker.
+        assert!(!provider_has_gateway_marker(
+            &string_field(GATEWAY_MARKER_KEY, "dev"),
+            release
+        ));
+        assert!(!provider_has_gateway_marker(
+            &with_tool_config(string_field(GATEWAY_MARKER_KEY, "dev")),
+            release
+        ));
+
+        // Dev claims only the string "dev", at the top level and under tool_config.
+        assert!(provider_has_gateway_marker(
+            &string_field(GATEWAY_MARKER_KEY, "dev"),
+            dev
+        ));
+        assert!(provider_has_gateway_marker(
+            &with_tool_config(string_field(GATEWAY_MARKER_KEY, "dev")),
+            dev
+        ));
+
+        // Dev rejects the release boolean and both legacy shapes.
+        assert!(!provider_has_gateway_marker(
+            &bool_field(GATEWAY_MARKER_KEY, true),
+            dev
+        ));
+        assert!(!provider_has_gateway_marker(
+            &with_tool_config(bool_field(GATEWAY_MARKER_KEY, true)),
+            dev
+        ));
+        assert!(!provider_has_gateway_marker(&bool_field(legacy, true), dev));
+        assert!(!provider_has_gateway_marker(
+            &with_tool_config(bool_field(legacy, true)),
+            dev
+        ));
+
+        // Each profile rejects `false`, unrelated keys and `Null`.
+        for profile in [release, dev] {
+            assert!(!provider_has_gateway_marker(
+                &bool_field(GATEWAY_MARKER_KEY, false),
+                profile
+            ));
+            assert!(!provider_has_gateway_marker(
+                &with_tool_config(bool_field("npm", true)),
+                profile
+            ));
+            assert!(!provider_has_gateway_marker(
+                &string_field("npm", "dev"),
+                profile
+            ));
+            assert!(!provider_has_gateway_marker(&Value::Null, profile));
+        }
     }
 }
 

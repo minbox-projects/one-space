@@ -43,13 +43,15 @@ pub(in crate::ai_gateway) fn default_port() -> u16 {
 
 /// Resolve the effective listening port for the current build profile.
 ///
-/// `ai_gateway.json` is shared by `tauri dev` (debug) and the installed
-/// release build, and the stored port is not user editable. The two canonical
-/// defaults are translated per profile so `tauri dev` listens on
-/// `DEV_DEFAULT_PORT` while release keeps `DEFAULT_PORT`, even after the other
-/// profile wrote its own default into the shared file. A stored value that is
-/// neither canonical default is a real custom port and is preserved; `0` falls
-/// back to the profile default.
+/// `ai_gateway.json` is per build profile: the release build stores it under
+/// `~/.config/onespace` and the debug (`tauri dev`) build under
+/// `~/.config/onespace-dev`, and the stored port is not user editable. The
+/// stored value may still originate from the other profile - a first-run seed
+/// copy or legacy shared history - so the two canonical defaults are
+/// translated per profile: `tauri dev` listens on `DEV_DEFAULT_PORT` while
+/// release keeps `DEFAULT_PORT`, even when the other profile wrote its own
+/// default into the file. A stored value that is neither canonical default is
+/// a real custom port and is preserved; `0` falls back to the profile default.
 pub(in crate::ai_gateway) fn resolve_port(stored: u16, is_dev: bool) -> u16 {
     match (stored, is_dev) {
         (0, true) | (DEFAULT_PORT, true) => DEV_DEFAULT_PORT,

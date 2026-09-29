@@ -1,7 +1,7 @@
 use super::{AiProvider, AiProvidersState};
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub(in crate::ai_env) fn process_providers_sensitive_data(
@@ -54,6 +54,11 @@ pub(in crate::ai_env) fn get_providers_path() -> Result<PathBuf, String> {
     Ok(data_dir.join("ai_providers.json"))
 }
 
+/// Legacy (pre-mirror) providers file inside an explicit profile app directory.
+pub(in crate::ai_env) fn legacy_providers_path_at(app_dir: &Path) -> PathBuf {
+    app_dir.join("ai_providers.json")
+}
+
 pub fn get_ai_providers() -> Result<AiProvidersState, String> {
     let path = get_providers_path()?;
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
@@ -81,9 +86,9 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
             return Err("Failed to read ai_providers.json".to_string());
         }
     } else {
-        // Fallback for transition: check old path
-        let old_config_dir = home_dir.join(".config").join("onespace");
-        let old_path = old_config_dir.join("ai_providers.json");
+        // Fallback for transition: check the legacy path inside the profile
+        // app dir so a dev build never reads the release profile's file.
+        let old_path = legacy_providers_path_at(&crate::config::get_app_dir()?);
         if old_path.exists() {
             if let Ok(content) = fs::read_to_string(&old_path) {
                 serde_json::from_str(&content).unwrap_or_default()

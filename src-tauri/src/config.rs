@@ -364,13 +364,8 @@ pub struct DeviceConfig {
 
 impl Default for DeviceConfig {
     fn default() -> Self {
-        #[cfg(target_os = "macos")]
-        let storage_type = "icloud".to_string();
-        #[cfg(not(target_os = "macos"))]
-        let storage_type = "local".to_string();
-
         Self {
-            storage_type,
+            storage_type: default_storage_type_for(is_dev_build()).to_string(),
             git_url: None,
             auth_method: Some("http".to_string()),
             http_username: None,
@@ -575,17 +570,141 @@ fn config_path() -> Result<PathBuf, String> {
     Ok(get_app_dir()?.join("config.json"))
 }
 
+/// True for a debug build outside `cfg(test)`. Test compilation must resolve
+/// the release profile so the existing test fixtures keep their paths.
+pub(crate) fn is_dev_build() -> bool {
+    cfg!(all(debug_assertions, not(test)))
+}
+
+/// Resolve the profile app directory for `home`: `~/.config/onespace-dev` for a
+/// dev build and `~/.config/onespace` for a release build.
+pub(crate) fn app_dir_for(home: &Path, is_dev: bool) -> PathBuf {
+    if is_dev {
+        home.join(".config").join("onespace-dev")
+    } else {
+        home.join(".config").join("onespace")
+    }
+}
+
+/// Default storage backend for a build profile: a dev build always uses the
+/// local root so it never touches the release profile's iCloud storage, while a
+/// release build keeps the platform default (iCloud on macOS, local elsewhere).
+pub(crate) fn default_storage_type_for(is_dev: bool) -> &'static str {
+    if is_dev {
+        "local"
+    } else if cfg!(target_os = "macos") {
+        "icloud"
+    } else {
+        "local"
+    }
+}
+
 pub fn get_app_dir() -> Result<PathBuf, String> {
     #[cfg(test)]
     let home_dir = test_home::test_home_override().or_else(dirs::home_dir);
     #[cfg(not(test))]
     let home_dir = dirs::home_dir();
     let home_dir = home_dir.ok_or("Could not find home directory")?;
-    let app_dir = home_dir.join(".config").join("onespace");
+    let app_dir = app_dir_for(&home_dir, is_dev_build());
     if !app_dir.exists() {
         fs::create_dir_all(&app_dir).map_err(|e| e.to_string())?;
     }
     Ok(app_dir)
+}
+
+/// Copy the release profile's master password and encrypted AI gateway config
+/// into the dev profile over explicit directories.
+///
+/// Step A seeds `.local_key` first so Step B can compare both profiles' master
+/// passwords. The gateway is copied only when its release source exists, the
+/// dev destination is absent, and both `.local_key` files read as equal bytes;
+/// a missing or unreadable key, or a password mismatch, skips the copy without
+/// error. Missing release sources are a no-op and existing destination files are
+/// never overwritten, so a later start only restores files the user deleted. A
+/// failed copy removes its partial destination (best-effort) before returning
+/// the error, so a later start retries from a clean state. No other file
+/// (notably no usage database) is read or written.
+///
+/// Every file copy goes through the injectable `copy` seam so tests can simulate
+/// a mid-copy failure; `seed_gateway_files` delegates with [`fs::copy`].
+fn seed_gateway_files_with<F>(release_dir: &Path, dev_dir: &Path, copy: F) -> Result<(), String>
+where
+    F: FnMut(&Path, &Path) -> Result<(), String>,
+{
+    let release_key = release_dir.join(".local_key");
+    let dev_key = dev_dir.join(".local_key");
+    let release_gateway = release_dir.join("ai_gateway.json");
+    let dev_gateway = dev_dir.join("ai_gateway.json");
+
+    let mut copy = copy;
+
+    if release_key.is_file() && !dev_key.exists() {
+        fs::create_dir_all(dev_dir).map_err(|e| e.to_string())?;
+        if let Err(err) = copy(&release_key, &dev_key) {
+            let _ = fs::remove_file(&dev_key);
+            return Err(err);
+        }
+    }
+
+    if release_gateway.is_file() && !dev_gateway.exists() {
+        let release_key_bytes = fs::read(&release_key);
+        let dev_key_bytes = fs::read(&dev_key);
+        if let (Ok(release_key_bytes), Ok(dev_key_bytes)) = (release_key_bytes, dev_key_bytes) {
+            if release_key_bytes == dev_key_bytes {
+                if let Err(err) = copy(&release_gateway, &dev_gateway) {
+                    let _ = fs::remove_file(&dev_gateway);
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Thin production wrapper over [`seed_gateway_files_with`] that performs the
+/// actual filesystem copy.
+pub(crate) fn seed_gateway_files(release_dir: &Path, dev_dir: &Path) -> Result<(), String> {
+    seed_gateway_files_with(release_dir, dev_dir, |src, dst| {
+        fs::copy(src, dst).map(|_| ()).map_err(|e| e.to_string())
+    })
+}
+
+/// Seed the dev profile's gateway files from the release profile on startup.
+///
+/// Release builds return immediately. Failures only log so startup continues
+/// and the next start retries.
+pub(crate) fn seed_dev_gateway_files_on_start() {
+    if !is_dev_build() {
+        return;
+    }
+
+    #[cfg(test)]
+    let home_dir = test_home::test_home_override().or_else(dirs::home_dir);
+    #[cfg(not(test))]
+    let home_dir = dirs::home_dir();
+    let Some(home_dir) = home_dir else {
+        eprintln!("dev gateway seed skipped: could not find home directory");
+        return;
+    };
+
+    let release_dir = app_dir_for(&home_dir, false);
+    let dev_dir = match get_app_dir() {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("dev gateway seed skipped: {}", err);
+            return;
+        }
+    };
+
+    if let Err(err) = seed_gateway_files(&release_dir, &dev_dir) {
+        eprintln!(
+            "dev gateway seed failed ({} -> {}): {}",
+            release_dir.display(),
+            dev_dir.display(),
+            err
+        );
+    }
 }
 
 fn copy_tree_if_missing(src: &Path, dst: &Path) -> Result<(), String> {
@@ -622,8 +741,14 @@ fn copy_entry_if_missing(src_root: &Path, dst_root: &Path, rel: &str) -> Result<
     Ok(())
 }
 
-fn resolve_selected_storage_root_from_device(cfg: &DeviceConfig) -> Result<PathBuf, String> {
-    let app_dir = get_app_dir()?;
+/// Resolve the device-selected storage root against an explicit profile app
+/// directory. The local default and the non-macOS iCloud fallback live under
+/// `app_dir/data`; `git` lives under `app_dir/git_data`. A custom local/iCloud
+/// path and the macOS iCloud default are absolute user/home paths as before.
+pub(crate) fn resolve_selected_storage_root_at(
+    cfg: &DeviceConfig,
+    app_dir: &Path,
+) -> Result<PathBuf, String> {
     let root = match cfg.storage_type.as_str() {
         "git" => app_dir.join("git_data"),
         "icloud" => {
@@ -639,22 +764,14 @@ fn resolve_selected_storage_root_from_device(cfg: &DeviceConfig) -> Result<PathB
             }
             #[cfg(not(target_os = "macos"))]
             {
-                dirs::home_dir()
-                    .ok_or("Home dir not found")?
-                    .join(".config")
-                    .join("onespace")
-                    .join("data")
+                app_dir.join("data")
             }
         }
         _ => {
             if let Some(ref custom_path) = cfg.local_storage_path {
                 PathBuf::from(custom_path)
             } else {
-                dirs::home_dir()
-                    .ok_or("Home dir not found")?
-                    .join(".config")
-                    .join("onespace")
-                    .join("data")
+                app_dir.join("data")
             }
         }
     };
@@ -662,11 +779,19 @@ fn resolve_selected_storage_root_from_device(cfg: &DeviceConfig) -> Result<PathB
     Ok(root)
 }
 
+fn resolve_selected_storage_root_from_device(cfg: &DeviceConfig) -> Result<PathBuf, String> {
+    let app_dir = get_app_dir()?;
+    resolve_selected_storage_root_at(cfg, &app_dir)
+}
+
 fn local_data_init_marker(local_root: &Path) -> PathBuf {
     local_root.join(".local_mirror_initialized_v1")
 }
 
-fn ensure_local_data_mirror_initialized(local_root: &Path) -> Result<(), String> {
+fn ensure_local_data_mirror_initialized_at(
+    local_root: &Path,
+    legacy_root: &Path,
+) -> Result<(), String> {
     let marker = local_data_init_marker(local_root);
     if marker.exists() {
         return Ok(());
@@ -674,8 +799,6 @@ fn ensure_local_data_mirror_initialized(local_root: &Path) -> Result<(), String>
 
     fs::create_dir_all(local_root).map_err(|e| e.to_string())?;
 
-    let device_cfg = get_device_config()?;
-    let legacy_root = resolve_selected_storage_root_from_device(&device_cfg)?;
     if legacy_root.exists() && legacy_root != local_root {
         // Copy only known OneSpace data domains to avoid pulling huge storage trees
         // (e.g. git metadata or unrelated folders) into local mirror on first run.
@@ -692,7 +815,7 @@ fn ensure_local_data_mirror_initialized(local_root: &Path) -> Result<(), String>
             "mcp_servers.json",
             "backups",
         ] {
-            if let Err(err) = copy_entry_if_missing(&legacy_root, local_root, rel) {
+            if let Err(err) = copy_entry_if_missing(legacy_root, local_root, rel) {
                 eprintln!(
                     "local_data_mirror_init: failed to copy {} from {} -> {}: {}",
                     rel,
@@ -706,6 +829,12 @@ fn ensure_local_data_mirror_initialized(local_root: &Path) -> Result<(), String>
 
     fs::write(&marker, now_marker_value()).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn ensure_local_data_mirror_initialized(local_root: &Path) -> Result<(), String> {
+    let device_cfg = get_device_config()?;
+    let legacy_root = resolve_selected_storage_root_from_device(&device_cfg)?;
+    ensure_local_data_mirror_initialized_at(local_root, &legacy_root)
 }
 
 fn now_marker_value() -> String {
@@ -750,8 +879,12 @@ pub fn save_shared_profile_local(profile: &SharedProfile) -> Result<(), String> 
     crate::atomic_write_string(&path, &content)
 }
 
-pub fn resolve_shared_storage_root(config: &StorageConfig) -> Result<PathBuf, String> {
-    let app_dir = get_app_dir()?;
+/// Shared-storage counterpart of [`resolve_selected_storage_root_at`]: the same
+/// type mapping resolved against an explicit profile app directory.
+pub(crate) fn resolve_shared_storage_root_at(
+    config: &StorageConfig,
+    app_dir: &Path,
+) -> Result<PathBuf, String> {
     let root = match config.storage_type.as_str() {
         "git" => app_dir.join("git_data"),
         "icloud" => {
@@ -767,26 +900,23 @@ pub fn resolve_shared_storage_root(config: &StorageConfig) -> Result<PathBuf, St
             }
             #[cfg(not(target_os = "macos"))]
             {
-                dirs::home_dir()
-                    .ok_or("Home dir not found")?
-                    .join(".config")
-                    .join("onespace")
-                    .join("data")
+                app_dir.join("data")
             }
         }
         _ => {
             if let Some(ref custom_path) = config.local_storage_path {
                 PathBuf::from(custom_path)
             } else {
-                dirs::home_dir()
-                    .ok_or("Home dir not found")?
-                    .join(".config")
-                    .join("onespace")
-                    .join("data")
+                app_dir.join("data")
             }
         }
     };
     Ok(root)
+}
+
+pub fn resolve_shared_storage_root(config: &StorageConfig) -> Result<PathBuf, String> {
+    let app_dir = get_app_dir()?;
+    resolve_shared_storage_root_at(config, &app_dir)
 }
 
 pub fn get_shared_data_dir_for(config: &StorageConfig) -> Result<PathBuf, String> {
@@ -1085,6 +1215,13 @@ mod tests {
         apply_shared_profile, get_app_dir, get_local_data_dir, normalize_ai_model_launch_commands,
         normalize_ai_news_keywords, AiNewsRssSource, SharedProfile, StorageConfig, SyncPolicy,
     };
+    use super::{
+        app_dir_for, default_storage_type_for, ensure_local_data_mirror_initialized_at, is_dev_build,
+        resolve_selected_storage_root_at, resolve_shared_storage_root_at, DeviceConfig,
+    };
+    use super::{
+        seed_dev_gateway_files_on_start, seed_gateway_files, seed_gateway_files_with,
+    };
     use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
@@ -1342,5 +1479,588 @@ mod tests {
         for handle in handles {
             handle.join().expect("test home thread must not panic");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Dev/release environment isolation (REQ-001 / AC-001)
+    //
+    // Observable boundary: the profile app directory, the profile-bound storage
+    // roots and the local-data mirror must all be driven by an explicit profile
+    // flag / explicit roots instead of the ambient process environment, so a
+    // dev build never reads or writes the release profile's data.
+    //
+    // These tests pin the delivered isolation contract: `app_dir_for` selects the
+    // profile app directory from an explicit home plus `is_dev` flag,
+    // `is_dev_build` / `default_storage_type_for` expose the build profile, and
+    // the storage-root and local-data-mirror seams take explicit app dirs or
+    // roots so they never fall back to ambient process state.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn app_dir_for_returns_dev_directory_for_dev_profile() {
+        let home = PathBuf::from("/tmp/onespace-profile-home");
+        assert_eq!(
+            app_dir_for(&home, true),
+            home.join(".config").join("onespace-dev")
+        );
+    }
+
+    #[test]
+    fn app_dir_for_returns_release_directory_for_release_profile() {
+        let home = PathBuf::from("/tmp/onespace-profile-home");
+        assert_eq!(
+            app_dir_for(&home, false),
+            home.join(".config").join("onespace")
+        );
+    }
+
+    #[test]
+    fn is_dev_build_is_false_in_test_compilation() {
+        let temp_home = std::env::temp_dir().join(format!(
+            "onespace-dev-build-profile-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _cleanup = TempTestHome(temp_home.clone());
+        fs::create_dir_all(&temp_home).expect("create temp home");
+        let _guard = TestHomeGuard::set(&temp_home);
+
+        assert!(
+            !is_dev_build(),
+            "test compilation must not be treated as a dev build"
+        );
+        let app_dir = get_app_dir().expect("resolve app dir under test home");
+        assert_eq!(app_dir, temp_home.join(".config").join("onespace"));
+        assert!(
+            !app_dir.ends_with("onespace-dev"),
+            "get_app_dir under test must never resolve the dev directory"
+        );
+    }
+
+    #[test]
+    fn get_app_dir_resolves_release_profile_under_test_home_override() {
+        let temp_home = std::env::temp_dir().join(format!(
+            "onespace-release-profile-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _cleanup = TempTestHome(temp_home.clone());
+        fs::create_dir_all(&temp_home).expect("create temp home");
+        let _guard = TestHomeGuard::set(&temp_home);
+
+        let app_dir = get_app_dir().expect("resolve app dir under test home");
+        assert_eq!(app_dir, temp_home.join(".config").join("onespace"));
+        assert!(
+            !temp_home.join(".config").join("onespace-dev").exists(),
+            "the dev profile directory must not exist for the release profile"
+        );
+    }
+
+    #[test]
+    fn default_storage_type_is_local_for_dev_profile() {
+        assert_eq!(default_storage_type_for(true), "local");
+    }
+
+    #[test]
+    fn default_storage_type_keeps_release_default_for_test_compilation() {
+        let expected = if cfg!(target_os = "macos") {
+            "icloud"
+        } else {
+            "local"
+        };
+        assert_eq!(default_storage_type_for(false), expected);
+        assert_eq!(
+            DeviceConfig::default().storage_type,
+            default_storage_type_for(false)
+        );
+        #[cfg(target_os = "macos")]
+        assert_ne!(
+            DeviceConfig::default().storage_type,
+            "local",
+            "the macOS release default must stay iCloud"
+        );
+    }
+
+    #[test]
+    fn selected_local_storage_root_resolves_under_profile_app_dir() {
+        let home = PathBuf::from("/tmp/onespace-selected-profile");
+        let cfg = DeviceConfig {
+            storage_type: "local".to_string(),
+            local_storage_path: None,
+            ..DeviceConfig::default()
+        };
+        let release_app_dir = app_dir_for(&home, false);
+        let dev_app_dir = app_dir_for(&home, true);
+
+        assert_eq!(
+            resolve_selected_storage_root_at(&cfg, &release_app_dir).expect("release root"),
+            release_app_dir.join("data")
+        );
+        assert_eq!(
+            resolve_selected_storage_root_at(&cfg, &dev_app_dir).expect("dev root"),
+            dev_app_dir.join("data")
+        );
+        assert_eq!(
+            dev_app_dir,
+            home.join(".config").join("onespace-dev"),
+            "the dev storage root must resolve under the dev profile directory"
+        );
+    }
+
+    #[test]
+    fn shared_local_storage_root_resolves_under_profile_app_dir() {
+        let home = PathBuf::from("/tmp/onespace-shared-profile");
+        let cfg = StorageConfig {
+            storage_type: "local".to_string(),
+            local_storage_path: None,
+            ..StorageConfig::default()
+        };
+        let release_app_dir = app_dir_for(&home, false);
+        let dev_app_dir = app_dir_for(&home, true);
+
+        assert_eq!(
+            resolve_shared_storage_root_at(&cfg, &release_app_dir).expect("release root"),
+            release_app_dir.join("data")
+        );
+        assert_eq!(
+            resolve_shared_storage_root_at(&cfg, &dev_app_dir).expect("dev root"),
+            dev_app_dir.join("data")
+        );
+        assert_eq!(dev_app_dir, home.join(".config").join("onespace-dev"));
+    }
+
+    #[test]
+    fn local_data_mirror_initialization_stays_inside_profile() {
+        let temp_home = std::env::temp_dir().join(format!(
+            "onespace-mirror-isolation-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _cleanup = TempTestHome(temp_home.clone());
+        fs::create_dir_all(&temp_home).expect("create temp home");
+
+        let dev_local = temp_home
+            .join(".config")
+            .join("onespace-dev")
+            .join("local_data");
+        let dev_legacy = temp_home.join(".config").join("onespace-dev").join("data");
+        let release_legacy = temp_home.join(".config").join("onespace").join("data");
+        fs::create_dir_all(&release_legacy).expect("create release legacy tree");
+        let release_notes = release_legacy.join("notes.json");
+        fs::write(&release_notes, "release-only-content").expect("write release notes");
+
+        ensure_local_data_mirror_initialized_at(&dev_local, &dev_legacy)
+            .expect("initialize dev local mirror");
+
+        assert!(
+            !dev_local.join("notes.json").exists(),
+            "the dev mirror must not import the release profile tree"
+        );
+        assert_eq!(
+            fs::read_to_string(&release_notes).expect("release notes remain"),
+            "release-only-content",
+            "the release profile file must be untouched"
+        );
+    }
+
+    #[test]
+    fn local_data_mirror_initialization_keeps_release_copy_behavior() {
+        let temp_home = std::env::temp_dir().join(format!(
+            "onespace-mirror-release-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _cleanup = TempTestHome(temp_home.clone());
+        fs::create_dir_all(&temp_home).expect("create temp home");
+
+        let release_local = temp_home
+            .join(".config")
+            .join("onespace")
+            .join("local_data");
+        let release_legacy = temp_home.join(".config").join("onespace").join("data");
+        fs::create_dir_all(&release_legacy).expect("create release legacy tree");
+        fs::write(release_legacy.join("notes.json"), b"mirror-me").expect("write legacy notes");
+
+        ensure_local_data_mirror_initialized_at(&release_local, &release_legacy)
+            .expect("initialize release local mirror");
+
+        assert_eq!(
+            fs::read(release_local.join("notes.json")).expect("copied notes"),
+            fs::read(release_legacy.join("notes.json")).expect("legacy notes"),
+            "the release copy behavior must copy the legacy file byte for byte"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Dev/release environment isolation (REQ-002 / AC-004..AC-008)
+    //
+    // Observable boundary: `seed_gateway_files` over explicit release/dev
+    // directories (copy rules, byte equality, retry and no-overwrite), and the
+    // on-start entry `seed_dev_gateway_files_on_start` plus `run()`'s call
+    // order. These tests are written before the implementation exists; they are
+    // the RED evidence for Step 2.
+    // -----------------------------------------------------------------------
+
+    fn seed_temp_root(label: &str) -> (PathBuf, TempTestHome) {
+        let root = std::env::temp_dir().join(format!(
+            "onespace-seed-{}-{}-{}",
+            label,
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = TempTestHome(root.clone());
+        fs::create_dir_all(&root).expect("create temp root");
+        (root, cleanup)
+    }
+
+    #[test]
+    fn debug_start_seeds_both_gateway_files_with_intact_content() {
+        let (root, _cleanup) = seed_temp_root("seed-both");
+        let release = root.join("release");
+        let dev = root.join("dev");
+        fs::create_dir_all(&release).expect("create release dir");
+
+        let password = "correct horse battery staple";
+        let expected_json = r#"{"schema_version":2,"providers":[]}"#;
+        fs::write(release.join(".local_key"), password).expect("write release local key");
+        let encrypted =
+            crate::crypto::encrypt(expected_json, password).expect("encrypt release gateway");
+        fs::write(release.join("ai_gateway.json"), &encrypted).expect("write release gateway");
+
+        seed_gateway_files(&release, &dev).expect("seed gateway files");
+
+        assert!(dev.join(".local_key").is_file(), "the dev key must be seeded");
+        assert!(
+            dev.join("ai_gateway.json").is_file(),
+            "the dev gateway must be seeded"
+        );
+        assert_eq!(
+            fs::read(dev.join(".local_key")).expect("read dev key"),
+            fs::read(release.join(".local_key")).expect("read release key"),
+            "the copied master password must be byte-identical"
+        );
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read dev gateway"),
+            fs::read(release.join("ai_gateway.json")).expect("read release gateway"),
+            "the copied gateway config must be byte-identical"
+        );
+
+        let decrypted = crate::crypto::decrypt(
+            &fs::read_to_string(dev.join("ai_gateway.json")).expect("read dev gateway as string"),
+            password,
+        )
+        .expect("decrypt copied gateway");
+        assert_eq!(
+            decrypted, expected_json,
+            "the copied ciphertext must decrypt to the exact source JSON"
+        );
+    }
+
+    #[test]
+    fn seeding_never_overwrites_existing_dev_files() {
+        let (root, _cleanup) = seed_temp_root("seed-no-overwrite");
+        let release = root.join("release");
+        let dev = root.join("dev");
+        fs::create_dir_all(&release).expect("create release dir");
+        fs::create_dir_all(&dev).expect("create dev dir");
+
+        fs::write(release.join(".local_key"), "release-key").expect("write release key");
+        fs::write(
+            release.join("ai_gateway.json"),
+            crate::crypto::encrypt("release-gateway", "release-key")
+                .expect("encrypt release gateway"),
+        )
+        .expect("write release gateway");
+
+        fs::write(dev.join(".local_key"), "dev-key").expect("write dev key");
+        fs::write(dev.join("ai_gateway.json"), b"dev-gateway-bytes").expect("write dev gateway");
+        let dev_key_before = fs::read(dev.join(".local_key")).expect("read dev key");
+        let dev_gateway_before = fs::read(dev.join("ai_gateway.json")).expect("read dev gateway");
+
+        seed_gateway_files(&release, &dev).expect("seed gateway files");
+
+        assert_eq!(
+            fs::read(dev.join(".local_key")).expect("read dev key after"),
+            dev_key_before,
+            "an existing dev master password must never be overwritten"
+        );
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read dev gateway after"),
+            dev_gateway_before,
+            "an existing dev gateway config must never be overwritten"
+        );
+        assert_eq!(
+            fs::read_to_string(dev.join(".local_key")).expect("read dev key string"),
+            "dev-key"
+        );
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read dev gateway bytes"),
+            b"dev-gateway-bytes"
+        );
+    }
+
+    #[test]
+    fn seeding_restores_deleted_dev_files_and_directory() {
+        let (root, _cleanup) = seed_temp_root("seed-restore");
+        let release = root.join("release");
+        let dev = root.join("dev");
+        fs::create_dir_all(&release).expect("create release dir");
+
+        let password = "restore-key";
+        fs::write(release.join(".local_key"), password).expect("write release key");
+
+        seed_gateway_files(&release, &dev).expect("seed key only");
+        assert!(
+            dev.join(".local_key").is_file(),
+            "the missing dev master password must be seeded"
+        );
+        assert!(
+            !dev.join("ai_gateway.json").exists(),
+            "no gateway source must mean no gateway copy"
+        );
+
+        let encrypted = crate::crypto::encrypt(r#"{"providers":[{"id":"p"}]}"#, password)
+            .expect("encrypt release gateway");
+        fs::write(release.join("ai_gateway.json"), &encrypted).expect("write release gateway");
+
+        seed_gateway_files(&release, &dev).expect("seed gateway later");
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read dev gateway"),
+            fs::read(release.join("ai_gateway.json")).expect("read release gateway"),
+            "a gateway added to the release dir must be picked up on the next start"
+        );
+
+        fs::remove_file(dev.join("ai_gateway.json")).expect("delete dev gateway");
+        seed_gateway_files(&release, &dev).expect("restore gateway");
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read restored gateway"),
+            fs::read(release.join("ai_gateway.json")).expect("read release gateway again"),
+            "a deleted dev gateway file must be restored byte-identically"
+        );
+
+        fs::remove_dir_all(&dev).expect("delete whole dev dir");
+        seed_gateway_files(&release, &dev).expect("restore dev dir");
+        assert!(dev.join(".local_key").is_file(), "the key must be restored");
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read gateway after dir restore"),
+            fs::read(release.join("ai_gateway.json")).expect("read release gateway after dir restore"),
+            "both files must be restored after the whole dev directory is deleted"
+        );
+    }
+
+    #[test]
+    fn missing_release_source_is_a_noop_and_retried_later() {
+        let (root, _cleanup) = seed_temp_root("seed-missing-source");
+        let release = root.join("release");
+        let dev = root.join("dev");
+
+        seed_gateway_files(&release, &dev).expect("a missing release source must be a no-op");
+        assert!(
+            !dev.exists(),
+            "a missing release source must not create the dev directory"
+        );
+        assert!(!release.exists(), "the source directory must not be created");
+
+        fs::create_dir_all(&release).expect("create release dir later");
+        let password = "late-key";
+        fs::write(release.join(".local_key"), password).expect("write release key");
+        fs::write(
+            release.join("ai_gateway.json"),
+            crate::crypto::encrypt(r#"{"schema_version":2,"providers":[]}"#, password)
+                .expect("encrypt release gateway"),
+        )
+        .expect("write release gateway");
+
+        seed_gateway_files(&release, &dev).expect("a later start must seed the late source");
+        assert!(dev.join(".local_key").is_file(), "the late key must be seeded");
+        assert!(
+            dev.join("ai_gateway.json").is_file(),
+            "the late gateway must be seeded"
+        );
+    }
+
+    #[test]
+    fn seed_copy_failure_is_returned_without_partial_overwrite() {
+        let (root, _cleanup) = seed_temp_root("seed-failure");
+        let release = root.join("release");
+        let dev = root.join("dev");
+        fs::create_dir_all(&release).expect("create release dir");
+
+        let password = "failure-key";
+        fs::write(release.join(".local_key"), password).expect("write release key");
+        fs::write(
+            release.join("ai_gateway.json"),
+            crate::crypto::encrypt(r#"{"schema_version":2,"providers":[]}"#, password)
+                .expect("encrypt release gateway"),
+        )
+        .expect("write release gateway");
+
+        fs::write(&dev, b"not-a-directory").expect("write blocker file");
+
+        let result = seed_gateway_files(&release, &dev);
+        assert!(result.is_err(), "a failed copy must be reported as Err");
+        assert_eq!(
+            fs::read(&dev).expect("read blocker file"),
+            b"not-a-directory",
+            "the file blocking the copy must be unchanged"
+        );
+
+        fs::remove_file(&dev).expect("remove blocker file");
+        seed_gateway_files(&release, &dev).expect("the next start must retry successfully");
+        assert_eq!(
+            fs::read(dev.join(".local_key")).expect("read dev key"),
+            fs::read(release.join(".local_key")).expect("read release key")
+        );
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read dev gateway"),
+            fs::read(release.join("ai_gateway.json")).expect("read release gateway")
+        );
+    }
+
+    #[test]
+    fn failed_seed_copy_leaves_no_partial_file_and_next_start_retries() {
+        let (root, _cleanup) = seed_temp_root("seed-partial-failure");
+        let release = root.join("release");
+        let dev = root.join("dev");
+        fs::create_dir_all(&release).expect("create release dir");
+        fs::create_dir_all(&dev).expect("create dev dir");
+
+        let password = "partial-failure-key";
+        fs::write(release.join(".local_key"), password).expect("write release key");
+        fs::write(release.join("ai_gateway.json"), b"partial-failure-gateway-bytes")
+            .expect("write release gateway");
+
+        let result = seed_gateway_files_with(&release, &dev, |_src, dst| {
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent).expect("create destination parent");
+            }
+            fs::write(dst, b"partial-bytes").expect("write partial destination");
+            Err("simulated mid-copy failure".to_string())
+        });
+
+        assert!(
+            result.is_err(),
+            "a failed copy seam must report the seeding error"
+        );
+        assert!(
+            !dev.join(".local_key").exists(),
+            "a failed copy must not leave a partial destination that blocks the retry"
+        );
+
+        seed_gateway_files(&release, &dev).expect("the next start must complete the retry");
+        assert!(
+            dev.join(".local_key").is_file(),
+            "the retried start must seed the dev master password"
+        );
+        assert!(
+            dev.join("ai_gateway.json").is_file(),
+            "the retried start must seed the dev gateway config"
+        );
+        assert_eq!(
+            fs::read(dev.join(".local_key")).expect("read dev key"),
+            fs::read(release.join(".local_key")).expect("read release key"),
+            "the retried dev master password must be byte-identical to the release copy"
+        );
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read dev gateway"),
+            fs::read(release.join("ai_gateway.json")).expect("read release gateway"),
+            "the retried dev gateway config must be byte-identical to the release copy"
+        );
+    }
+
+    #[test]
+    fn missing_release_master_password_prevents_gateway_copy() {
+        let (root, _cleanup) = seed_temp_root("seed-missing-password");
+        let release = root.join("release");
+        let dev = root.join("dev");
+        fs::create_dir_all(&release).expect("create release dir");
+
+        fs::write(
+            release.join("ai_gateway.json"),
+            crate::crypto::encrypt(r#"{"schema_version":2,"providers":[]}"#, "orphan-key")
+                .expect("encrypt orphan gateway"),
+        )
+        .expect("write release gateway");
+
+        seed_gateway_files(&release, &dev).expect("a missing master password is not fatal");
+
+        assert!(
+            !dev.join(".local_key").exists(),
+            "no source master password must mean no dev master password"
+        );
+        assert!(
+            !dev.join("ai_gateway.json").exists(),
+            "a gateway config must never be copied without a matching master password"
+        );
+        assert!(
+            !dev.exists(),
+            "no dev directory may be created without a source master password"
+        );
+    }
+
+    #[test]
+    fn differing_dev_master_password_prevents_gateway_copy() {
+        let (root, _cleanup) = seed_temp_root("seed-differing-password");
+        let release = root.join("release");
+        let dev = root.join("dev");
+        fs::create_dir_all(&release).expect("create release dir");
+        fs::create_dir_all(&dev).expect("create dev dir");
+
+        fs::write(release.join(".local_key"), "release-key-a").expect("write release key");
+        fs::write(
+            release.join("ai_gateway.json"),
+            crate::crypto::encrypt(r#"{"schema_version":2,"providers":[]}"#, "release-key-a")
+                .expect("encrypt release gateway"),
+        )
+        .expect("write release gateway");
+        fs::write(dev.join(".local_key"), "dev-key-b").expect("write dev key");
+
+        seed_gateway_files(&release, &dev).expect("a differing master password is not fatal");
+
+        assert_eq!(
+            fs::read_to_string(dev.join(".local_key")).expect("read dev key"),
+            "dev-key-b",
+            "the dev master password must be preserved"
+        );
+        assert!(
+            !dev.join("ai_gateway.json").exists(),
+            "the gateway config must not be copied under a different master password"
+        );
+    }
+
+    #[test]
+    fn unit_test_compilation_never_creates_dev_directory_or_copies() {
+        let (root, _cleanup) = seed_temp_root("seed-test-profile");
+        let _guard = crate::config::test_home::TestHomeGuard::set(&root);
+
+        let release_dir = root.join(".config").join("onespace");
+        fs::create_dir_all(&release_dir).expect("create release dir");
+        let key_bytes = b"test-compilation-key";
+        let gateway_bytes = b"test-compilation-gateway";
+        fs::write(release_dir.join(".local_key"), key_bytes).expect("write release key");
+        fs::write(release_dir.join("ai_gateway.json"), gateway_bytes)
+            .expect("write release gateway");
+
+        assert!(
+            !crate::config::is_dev_build(),
+            "the unit-test compilation must not be treated as a dev build"
+        );
+
+        seed_dev_gateway_files_on_start();
+
+        assert!(
+            !root.join(".config").join("onespace-dev").exists(),
+            "a unit-test compilation must never create the dev directory"
+        );
+        assert_eq!(
+            fs::read(release_dir.join(".local_key")).expect("read release key"),
+            key_bytes,
+            "the release master password must be unchanged"
+        );
+        assert_eq!(
+            fs::read(release_dir.join("ai_gateway.json")).expect("read release gateway"),
+            gateway_bytes,
+            "the release gateway config must be unchanged"
+        );
     }
 }
