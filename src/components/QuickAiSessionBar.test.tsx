@@ -74,5 +74,6 @@ describe("QuickAiSessionBar workflow removal", () => {
         },
       });
     });
+    expect(workflowCalls()).toEqual([]);
   });
 });

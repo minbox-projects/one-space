@@ -57,6 +57,12 @@ describe("AiSessions workflow removal", () => {
     expect(screen.queryByText("Workflow Preset")).not.toBeInTheDocument();
     expect(screen.queryByText("No preset (manual)")).not.toBeInTheDocument();
 
+    // AC-001 also requires the session list container itself to keep rendering;
+    // pin it via its empty state so it cannot be confused with the removed controls.
+    expect(
+      await screen.findByText("No active AI terminal sessions found."),
+    ).toBeInTheDocument();
+
     // The manual create path still renders the command select and directory input.
     expect(screen.getByText("AI Command")).toBeInTheDocument();
     expect(
@@ -76,9 +82,8 @@ describe("AiSessions workflow removal", () => {
     await user.click(await screen.findByRole("button", { name: "New Session" }));
     await screen.findByRole("button", { name: "Launch" });
 
-    // Opening the form currently fetches presets; AC-002 only constrains the
-    // manual create submission itself, so scope the workflow-command check to
-    // the create action.
+    // AC-002 only constrains the manual create submission itself, so scope the
+    // workflow-command check to the create action rather than to mount.
     invokeMock.mockClear();
 
     await user.click(screen.getByRole("button", { name: "Browse" }));

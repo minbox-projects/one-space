@@ -24,5 +24,5 @@ Status: implemented
 - 既有 `workflow_presets.json` 与 `workflow_runs.json` 文件及其共享 profile 副本在磁盘上保持字节一致，且不会创建新的工作流共享副本。
 - 设置同步范围不再提供已移除的范围；`sync_policy` 仍携带 `workflow_presets` 的遗留 `config.json` 可加载并保留其他所有范围值，下次保存写出的 policy 不含该键。
 - `src-tauri/src/runtime_profiles.rs` 中的 `materialize_strict_profile` 与 `cleanup_stale_runtime_profiles` 已无调用方并产生 dead-code 警告，但因会话启动仍对既有会话使用 `runtime_env_for_profile` 而保留。
-- `data/runtime_profiles/` 产物保留在磁盘上并处于惰性状态。
+- 既有 `data/runtime_profiles/` 产物不再由任何工作流路径创建或清理，但 strict 模式会话启动仍通过 `runtime_env_for_profile` 读取并复用既有 profile：该函数要求 `data/runtime_profiles/<id>/` 目录已存在，会补齐其 `home` 与 `xdg_*` 子目录并在其中写入 `.last_used`，因此不得将其视为惰性产物或予以删除。
 - 没有任何活动 Note 被全部或部分取代：Notes 树中没有关于已移除工作流预设与运行记录能力的记录，而 [AI Workflow Model Switcher 记录](../feature/2026-09-22-ai-workflow-model-switcher.md) 与 [AI Workflow Profile 保存与激活记录](../feature/2026-09-23-ai-workflow-profile-save-activation.md) 仍然有效，因为该独立功能被保留。

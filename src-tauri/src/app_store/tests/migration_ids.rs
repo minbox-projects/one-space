@@ -836,7 +836,7 @@ fn migrate_step_removes_gemini_usage_state_and_tombstones() {
 }
 
 #[test]
-fn migrate_step_rewrites_workflows_workspaces_and_provider_presets() {
+fn migrate_step_leaves_workflow_files_untouched_and_rewrites_workspaces_and_provider_presets() {
     with_temp_dir("migration-antigravity-related-stores", |_| {
         let workflow_presets = json!([
             {
