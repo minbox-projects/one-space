@@ -65,7 +65,6 @@
         "src/lib/navigation.ts",
         "src/toolbox/registry.ts",
         "src/components/MoreToolsHub.tsx",
-        "src/components/SmartWorkspaceHub.tsx",
         "src/components/MessageCenter.tsx",
         "src/components/AboutModal.tsx",
         "src/components/AppErrorBoundary.tsx",
@@ -97,7 +96,6 @@
         "src/lib/navigation.ts",
         "src/toolbox/registry.ts",
         "src/components/MoreToolsHub.tsx",
-        "src/components/SmartWorkspaceHub.tsx",
         "src/components/MessageCenter.tsx",
         "src/components/AboutModal.tsx",
         "src/components/AppErrorBoundary.tsx",
@@ -574,29 +572,20 @@
       "id": "quick-ai-session",
       "name": "Quick AI Session Bar",
       "aliases": [
-        "quick-session",
-        "quick-assistant"
+        "quick-session"
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "全局快捷键唤起的快速 AI 会话浮条与快速助手窗口",
+      "responsibility": "全局快捷键唤起的快速 AI 会话浮条",
       "entries": [
         "src/components/QuickAiSessionBar.tsx"
       ],
-      "related_files": [
-        "src/components/QuickAssistantWindow.tsx"
-      ],
+      "related_files": [],
       "tests": [],
       "symbols": [
         {
           "file": "src/components/QuickAiSessionBar.tsx",
           "name": "QuickAiSessionBar",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/QuickAssistantWindow.tsx",
-          "name": "QuickAssistantWindow",
           "kind": "function",
           "visibility": "public"
         }
@@ -605,8 +594,7 @@
         "ai-sessions"
       ],
       "read_scope": [
-        "src/components/QuickAiSessionBar.tsx",
-        "src/components/QuickAssistantWindow.tsx"
+        "src/components/QuickAiSessionBar.tsx"
       ],
       "relations": [],
       "shared_entry": false
@@ -742,61 +730,6 @@
         "src/components/Workspaces/WorkspaceSubagentsPanel.test.tsx",
         "src/components/Workspaces/helpers/workspaceCapabilityHelpers.test.ts",
         "src/components/Workspaces/helpers/workspaceHelpers.test.ts"
-      ],
-      "relations": [],
-      "shared_entry": false
-    },
-    {
-      "id": "ai-workspace",
-      "name": "AI Workspace",
-      "aliases": [
-        "ai-assistant",
-        "assistant-conversation"
-      ],
-      "module_root": "frontend",
-      "owner_role": "frontend",
-      "responsibility": "应用内 AI 对话、助手预设、工具调用展示与 MCP 能力预览；能力徽标/开关与前端类型不再包含 `notes_search`，能力集与后端快照一致",
-      "entries": [
-        "src/components/AiWorkspace.tsx"
-      ],
-      "related_files": [
-        "src/components/AiWorkspace/AiWorkspaceSimple.tsx",
-        "src/components/AiWorkspace/CapabilityBadges.tsx",
-        "src/components/AiWorkspace/ConversationHistoryPanel.tsx",
-        "src/components/AiWorkspace/ToolCallsPanel.tsx",
-        "src/lib/aiWorkspace.ts",
-        "src/lib/aiAssistant.ts",
-        "src/lib/assistantToolCalls.ts",
-        "src/lib/assistantMcpDisplay.ts"
-      ],
-      "tests": [],
-      "symbols": [
-        {
-          "file": "src/components/AiWorkspace.tsx",
-          "name": "AiWorkspace",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/AiWorkspace/AiWorkspaceSimple.tsx",
-          "name": "AiWorkspaceSimple",
-          "kind": "function",
-          "visibility": "public"
-        }
-      ],
-      "depends_on": [
-        "ai-environments"
-      ],
-      "read_scope": [
-        "src/components/AiWorkspace.tsx",
-        "src/components/AiWorkspace/AiWorkspaceSimple.tsx",
-        "src/components/AiWorkspace/CapabilityBadges.tsx",
-        "src/components/AiWorkspace/ConversationHistoryPanel.tsx",
-        "src/components/AiWorkspace/ToolCallsPanel.tsx",
-        "src/lib/aiWorkspace.ts",
-        "src/lib/aiAssistant.ts",
-        "src/lib/assistantToolCalls.ts",
-        "src/lib/assistantMcpDisplay.ts"
       ],
       "relations": [],
       "shared_entry": false
@@ -2211,8 +2144,6 @@
         "src/components/SettingsView.tsx"
       ],
       "related_files": [
-        "src/components/AiConnectionsSettings.tsx",
-        "src/components/ModelCenter.tsx",
         "src/components/BackupManager.tsx",
         "src/components/UpdateUpgradeModal.tsx",
         "src/lib/aiGateway.ts",
@@ -2261,8 +2192,6 @@
       ],
       "read_scope": [
         "src/components/SettingsView.tsx",
-        "src/components/AiConnectionsSettings.tsx",
-        "src/components/ModelCenter.tsx",
         "src/components/BackupManager.tsx",
         "src/components/UpdateUpgradeModal.tsx",
         "src/lib/aiGateway.ts",
@@ -2301,38 +2230,6 @@
       "depends_on": [],
       "read_scope": [
         "src/components/OnboardingWizard.tsx"
-      ],
-      "relations": [],
-      "shared_entry": false
-    },
-    {
-      "id": "schedules",
-      "name": "Schedules",
-      "aliases": [
-        "assistant-schedules",
-        "cron-jobs"
-      ],
-      "module_root": "frontend",
-      "owner_role": "frontend",
-      "responsibility": "AI 助手的定时任务管理界面",
-      "entries": [
-        "src/components/Schedules.tsx"
-      ],
-      "related_files": [],
-      "tests": [],
-      "symbols": [
-        {
-          "file": "src/components/Schedules.tsx",
-          "name": "Schedules",
-          "kind": "function",
-          "visibility": "public"
-        }
-      ],
-      "depends_on": [
-        "ai-workspace"
-      ],
-      "read_scope": [
-        "src/components/Schedules.tsx"
       ],
       "relations": [],
       "shared_entry": false
@@ -2791,8 +2688,7 @@
         "src-tauri/src/mcp_servers/updates_state.rs",
         "src-tauri/src/mcp_runtime.rs",
         "src-tauri/src/mcp_templates.rs",
-        "src-tauri/src/mcp_export.rs",
-        "src-tauri/src/assistant_mcp.rs"
+        "src-tauri/src/mcp_export.rs"
       ],
       "tests": [
         "src-tauri/src/mcp_servers/tests.rs"
@@ -2812,7 +2708,6 @@
         "src-tauri/src/mcp_runtime.rs",
         "src-tauri/src/mcp_templates.rs",
         "src-tauri/src/mcp_export.rs",
-        "src-tauri/src/assistant_mcp.rs",
         "src-tauri/src/mcp_servers/tests.rs"
       ],
       "relations": [],
@@ -3665,56 +3560,6 @@
       "shared_entry": false
     },
     {
-      "id": "ai-assistant-backend",
-      "name": "AI Assistant Backend",
-      "aliases": [
-        "assistant-rust",
-        "schedules-rust"
-      ],
-      "module_root": "tauri-backend",
-      "owner_role": "backend",
-      "responsibility": "应用内助手对话、provider 调用、工具执行与定时任务调度；`AgentToolPolicy` 与 `AssistantCapabilitySnapshot` 不再携带 notes_search（策略仅 web_search 与 workspace_read，快照另含知识库、MCP 与记忆字段），模型工具定义、会话提示与默认 agents 同步收紧",
-      "entries": [
-        "src-tauri/src/ai_assistant.rs"
-      ],
-      "related_files": [
-        "src-tauri/src/ai_assistant/commands.rs",
-        "src-tauri/src/ai_assistant/conversations.rs",
-        "src-tauri/src/ai_assistant/model_request.rs",
-        "src-tauri/src/ai_assistant/providers.rs",
-        "src-tauri/src/ai_assistant/scheduler.rs",
-        "src-tauri/src/ai_assistant/schedules.rs",
-        "src-tauri/src/ai_assistant/settings.rs",
-        "src-tauri/src/ai_assistant/state.rs",
-        "src-tauri/src/ai_assistant/tools.rs",
-        "src-tauri/src/ai_assistant/types.rs"
-      ],
-      "tests": [
-        "src-tauri/src/ai_assistant/tests.rs"
-      ],
-      "symbols": [],
-      "depends_on": [
-        "config-backend",
-        "mcp-backend"
-      ],
-      "read_scope": [
-        "src-tauri/src/ai_assistant.rs",
-        "src-tauri/src/ai_assistant/commands.rs",
-        "src-tauri/src/ai_assistant/conversations.rs",
-        "src-tauri/src/ai_assistant/model_request.rs",
-        "src-tauri/src/ai_assistant/providers.rs",
-        "src-tauri/src/ai_assistant/scheduler.rs",
-        "src-tauri/src/ai_assistant/schedules.rs",
-        "src-tauri/src/ai_assistant/settings.rs",
-        "src-tauri/src/ai_assistant/state.rs",
-        "src-tauri/src/ai_assistant/tools.rs",
-        "src-tauri/src/ai_assistant/types.rs",
-        "src-tauri/src/ai_assistant/tests.rs"
-      ],
-      "relations": [],
-      "shared_entry": false
-    },
-    {
       "id": "ai-news-backend",
       "name": "AI News Backend",
       "aliases": [
@@ -3879,7 +3724,6 @@
         "docs/CLI.md",
         "docs/MCP.md",
         "docs/SKILLS.md",
-        "docs/ai-assistant-roadmap.md",
         "docs/ai-provider-refactor.md",
         "docs/ai-terminal-env-refactor.md",
         "docs/claude-multi-profile.md",
@@ -3894,7 +3738,6 @@
         "docs/CLI.md",
         "docs/MCP.md",
         "docs/SKILLS.md",
-        "docs/ai-assistant-roadmap.md",
         "docs/ai-provider-refactor.md",
         "docs/ai-terminal-env-refactor.md",
         "docs/claude-multi-profile.md",

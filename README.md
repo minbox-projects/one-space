@@ -8,7 +8,7 @@ OneSpace 是一个面向开发者的 macOS 桌面工作台，用来把 AI CLI、
 - 在原生终端中创建和恢复 AI 会话，并把会话记录同步回应用
 - 以模型维度管理 `Skills`、`Subagents` 和 `MCP Servers`
 - 通过工作流预设把目录、环境、MCP、Skills 一次性组合起来启动
-- 提供 `Workspaces`、`AI Workspace`、`AI Usage Stats`、`AI Flow`、`Launcher`、`SSH Tunnels`、`Protocol Router`、`Snippets`、`Bookmarks`、`Notes`、`AI News`、`Gmail` 等配套工具
+- 提供 `Workspaces`、`AI Usage Stats`、`AI Flow`、`Launcher`、`SSH Tunnels`、`Protocol Router`、`Snippets`、`Bookmarks`、`Notes`、`AI News`、`Gmail` 等配套工具
 
 ## 功能概览
 
@@ -30,10 +30,9 @@ OneSpace 是一个面向开发者的 macOS 桌面工作台，用来把 AI CLI、
 - 工作流可绑定工具、目录、环境、MCP、Skills、启动提示词和 `Shared/Strict` 作用域
 - 提供依赖检查、一键补依赖、最近运行记录、重放与失败恢复
 
-### Workspaces And AI Workspace
+### Workspaces
 
 - `Workspaces` 按项目目录组织会话、MCP、Skills 和 Subagents
-- `AI Workspace` 提供应用内 AI 对话、助手预设和 Quick Assistant 入口
 - `AI Usage Stats` 从本地 CLI 会话历史统计 token 用量
 - `AI Flow` 发现和操作项目中的 `.ai-flow` 目录，支持安装检查、计划状态和会话启动
 

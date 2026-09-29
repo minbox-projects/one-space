@@ -19,7 +19,7 @@ Status: implemented
 5. 旧导航兼容移除：`normalizeLegacyTabTarget` 与 Launcher `ai-flow` 过滤删除，`resolveNavigationTarget` 只解析当前 smart-workspace 别名与注册表别名。不再可解析的过期持久化启动项或历史消息目标原样透传并打开空白，这是已批准的代价，且不再有任何生产者发出这些目标。
 6. 一次性 localStorage 到后端启动项迁移删除；启动项只从后端存储读取。对当前数据而言该移除行为中性，因为已无生产者写入旧 localStorage 格式，已批准代价是未迁移的遗留条目不会被导入。
 7. 遗留历史迁移删除：RandomPassword 的遗留 localStorage 历史改为清除而非迁移，`jttInputHistory` 的字符串数组迁移删除，因此存储的遗留字符串数组会被其全有或全无恢复视为无效历史并清除，当前格式的读写保持不变。遗留格式已不再产生，因此不会丢失任何有效历史。
-8. `notes_search` 端到端撤出助手工具策略、能力快照、默认 agents、模型工具定义、会话提示、stub 分派器、AI Workspace 能力徽标与开关、前端类型以及双语标签，包括从两个 i18n bundle 删除的无引用键 `allowNotesSearchLabel`。撤出行为中性，因为该能力从来没有实现支撑，继续声明会让助手提供无法运行的能力；`AgentToolPolicy` 现在只携带已实现的 `web_search` 与 `workspace_read`。
+8. `notes_search` 端到端撤出助手工具策略、能力快照、默认 agents、模型工具定义、会话提示、stub 分派器、前端类型以及双语标签，包括从两个 i18n bundle 删除的无引用键 `allowNotesSearchLabel`。撤出行为中性，因为该能力从来没有实现支撑，继续声明会让助手提供无法运行的能力。该助手及其 AI Workspace 能力徽标与开关其后被整体删除（[AI Workspace Removed End to End](../simplification/2026-09-29-ai-workspace-removal.md)）；`AgentToolPolicy`、能力快照与能力徽标表面在代码树中均不复存在。
 9. AI Workflow 原子链移除：`save_and_activate_profile`、`ai_workflow_save_and_activate_profile`、命令注册与 re-export、前端 `saveAndActivateProfile` 封装以及以该原子语义为主题的 Rust 测试全部删除，`ai_workflow_rename_profile` 仍保留在注册命令中。保存与激活仍以不变行为彼此分离，且该原子命令没有生产调用方，因此移除不改变任何用户可见流程。
 10. 无可达路径使用的死代码与重复工具代码删除：JsonParser 不可达回退、FileSharing 未用快照字段与未使用的 `subscribeFileSharingUpdates` 导出、空快照重复与 `window.confirm`、SshServers 重复的 host 类型与仅在控制台输出的密钥文件错误、SshTunnels 重复的批量路径与过期的已保存探测展示（已保存探测现在会过期）、未本地化的草稿探测错误与硬编码中文、ProtocolRouter 重复的后端默认值与归一化器、双重统计控件与未加守卫的路由测试，以及 jttDataParser 重复的 hex/时间/uint32 helper、重复错误类型与死 CRC 条件。JT/T 位置解析器现在是唯一按规范排序的实现（纬度在字节偏移 8、经度在字节偏移 12），同时供给 tree、JSON、0x0801 多媒体与 JT809 路径，存有反向顺序的合成 fixture `JT808_F3_FRAGMENT_1` 通过交换位置 dword 修正，校验和保持不变。这些移除保留全部可达行为，并使标签与规范一致。
 
@@ -36,5 +36,5 @@ Status: implemented
 - 新增或调整工具箱工具只需编辑一个描述符：id、图标与配色、i18n 键或双语文本、别名、surface、默认可见性与顺序、组件。Hub 卡片、Launcher 快速与内部工具箱目标、侧边栏条目与导航别名由它派生，而托盘菜单结构仍为手工维护、仅 Notes/Snippets 标签经注册表解析；注册表完整性测试拒绝重复 id、未知 surface 与非 kebab-case 的 Hub id。
 - 共享运行时是已迁移的复制反馈、安全 localStorage 与历史 helper、Tauri 事件、可见性门控轮询以及工具 shell、徽标、空状态与错误横幅表面的唯一实现；共享历史存储当前支撑 `shortLinkHistory`，`jttInputHistory` 保留自己的恢复逻辑，SshServers 与 ProtocolRouterTool 的剩余原始 invoke 全部有调用时可用性检查。复制反馈在 1600 ms 后清除，损坏存储读取返回安全默认值，写入绝不抛出，隐藏工具不发起轮询或事件驱动 invoke。
 - 已移除的表面不再存在：CloudDrive、`backup` 路由、旧导航归一化、`ai-flow` 过滤、旧启动项与历史迁移、`moreToolPresentation.ts`、`notes_search` 与原子 AI Workflow 命令。过期持久化启动项与历史消息目标打开空白，这是已批准行为；没有生产者发出它们，也没有任何测试被削弱。
-- 助手能力契约如实：工具策略与能力快照只携带已有实现的字段，AI Workspace 徽标、开关、类型与标签与之一致。
+- 助手能力契约如实：工具策略与能力快照当时只携带已有实现的字段，该表面连同与之匹配的 AI Workspace 徽标、开关、类型与标签已被整体删除（[AI Workspace Removed End to End](../simplification/2026-09-29-ai-workspace-removal.md)）。
 - `MEMORY.md` 与 `.ai-workflow/index/navigation.json` 记录注册表、共享模块与移除项，本记录记录注册表决策、移除理由与行为中性论证。[Tray menu ownership and contract](2026-09-22-tray-menu-ownership-and-contract.md)、[AI Workflow Model Switcher Delivers 9-by-3 Matrix with Backend Profile Commands](../feature/2026-09-22-ai-workflow-model-switcher.md) 与 [AI Workflow Profile Save and Activation Are Separate Actions](../feature/2026-09-23-ai-workflow-profile-save-activation.md) 保留各自原有决策（无完全取代），并已就地更新为交付后的注册表布线、命令集与保存/激活分离流程。

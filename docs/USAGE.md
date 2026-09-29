@@ -358,32 +358,6 @@ OneSpace 会检查：
 - `Workspaces` 偏项目资产管理，适合长期维护一个项目的会话与能力绑定
 - `Workflow Presets` 偏启动模板，适合一键组合工具、目录、环境、MCP、Skills 和启动提示词
 
-## 8. AI Workspace
-
-`AI Workspace` 是应用内 AI 对话工作区，和 `AI Sessions` 的原生终端会话不同。
-
-### 8.1 当前定位
-
-- 在应用内创建和继续 AI 对话
-- 管理可复用助手预设
-- 配置 Quick Assistant 偏好
-- 对接已配置的 AI provider 与模型目录
-
-### 8.2 与 AI Sessions 的区别
-
-- `AI Workspace`
-  说明：应用内聊天体验，消息流会保存在 OneSpace 内，适合轻量问答、整理、改写和快速任务
-- `AI Sessions`
-  说明：在原生终端中启动 Claude / Codex / Antigravity / OpenCode，适合编码、仓库操作和 CLI 原生能力
-
-### 8.3 Quick Assistant
-
-Quick Assistant 用于快速发起一段应用内对话：
-
-- 可以从快捷窗口输入问题
-- 会创建真实对话记录
-- 后续可以回到 `AI Workspace` 中继续
-
 ## 9. AI Usage Stats
 
 `AI Usage Stats` 从本地会话历史中统计 token 用量，不会请求云端账单接口。
