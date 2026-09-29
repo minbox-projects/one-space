@@ -261,19 +261,18 @@ Project 目录：
 
 这在排查“为什么某个子代理没出现在 Recommended/Repository 里”时很有用。
 
-## 11. 与会话和工作流的关系
+## 11. 与会话的关系
 
 OneSpace 并不是只把 Skills/Subagents 安装到磁盘就结束了。
 
 在实际启动会话时：
 
 - `AI Sessions` 恢复会话前会做一次 Skills/Subagents 预检与 reconcile
-- `Workflow Presets` 也会在依赖检查里考虑 Skills
 
 因此推荐理解为：
 
 - 页面负责管理内容
-- 会话和工作流负责在启动时让内容进入正确上下文
+- 会话负责在启动时让内容进入正确上下文
 
 ## 12. Source 设置页
 
@@ -337,7 +336,7 @@ OneSpace 并不是只把 Skills/Subagents 安装到磁盘就结束了。
 1. 安装范围是否正确
 2. 当前会话对应的工具是否正确
 3. 是否需要重新启动会话
-4. 是否从 `AI Sessions`/工作流重新发起一次启动，让 reconcile 流程跑一遍
+4. 是否从 `AI Sessions` 重新发起一次启动，让 reconcile 流程跑一遍
 
 ### Q4：导入时报冲突
 
