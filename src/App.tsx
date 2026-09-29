@@ -1616,6 +1616,12 @@ function App() {
             name: t("aiUsageStatsMenu", "AI Usage Stats"),
             icon: BarChart3,
           },
+        ],
+      },
+      {
+        id: "tools",
+        label: i18n.language === "zh" ? "工具" : "Tools",
+        items: [
           {
             id: "skills",
             name: t("skills", "Skills"),
@@ -1634,12 +1640,6 @@ function App() {
             icon: Bot,
             count: counts.subagents,
           },
-        ],
-      },
-      {
-        id: "tools",
-        label: i18n.language === "zh" ? "工具" : "Tools",
-        items: [
           ...listToolboxTools("sidebar").map((tool) => ({
             id: tool.id,
             name: resolveToolboxText(tool.labelText, tool.labelKey, t),
