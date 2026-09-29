@@ -100,6 +100,8 @@ npm install
 npm run tauri dev
 ```
 
+`npm run tauri dev` 使用独立的 `~/.config/onespace-dev` 应用目录，与已安装的 release 应用（`~/.config/onespace`）互不共享可变状态。首次 debug 启动会从 `~/.config/onespace` 播种 `.local_key` 与 `ai_gateway.json`：仅在 dev 目标缺失时复制且绝不覆盖，两端 `.local_key` 不一致时不复制网关配置，用量数据库不参与复制。dev 默认使用 local 存储，并使用自己的终端服务商标识 `gateway-dev` / `AI Gateway (Dev)`，而已安装应用保持 `gateway` / `AI Gateway`。
+
 构建：
 
 ```bash

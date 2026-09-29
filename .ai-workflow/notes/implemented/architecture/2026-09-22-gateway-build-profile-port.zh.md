@@ -24,5 +24,5 @@ API 网关把配置保存在 `get_app_dir()` 下单一加密文件 `api_gateway.
 - `npm run tauri dev` 自动把共享配置中的 `17688` 解析为 `17689`，release 构建把 dev 写入的 `17689` 解析回 `17688`，两者无需手工修改即可同时监听。
 - `0`、`17688`、`17689` 之外的自定义端口绝不会被改写，bind 失败仍报告配置端口且绝不回退到其他端口。
 - 由于测试运行在 debug profile，API 网关测试现在会覆盖 dev 映射；终端同步接缝夹具使用端口 `19000` 以与规范映射保持独立。
-- 服务商、本地 Key、启用标志与终端同步台账仍在两个 profile 间共享；两个应用同时运行时 `synced_base_url` 可能在两个端口间交替，并在另一个应用中显示为待同步，这是已接受且本次不解决的问题。
+- **被 [Dev and Release Builds Isolate Application State and AI Gateway Terminal Identity](2026-09-29-dev-release-environment-isolation.md) 取代**：服务商、本地 Key、启用标志与终端同步台账不再在两个 profile 间共享，因为每个构建现在把自己的 `ai_gateway.json` 保存在各自的应用目录下，这里描述的 `synced_base_url` 交替待同步状态不再出现；上文按 profile 的 `resolve_port` 翻译继续有效。
 - 同一变更内 `MEMORY.md` 与 `docs/USAGE.md` 已描述按 profile 解析端口，导航索引因路径、归属与公共符号均未变化而保持不变。
