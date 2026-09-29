@@ -1,11 +1,9 @@
-mod ai_assistant;
 mod ai_env;
 mod ai_news;
 mod ai_sessions;
 mod ai_workflow_profiles;
 mod ai_gateway;
 mod app_store;
-mod assistant_mcp;
 mod backup;
 mod claude_profiles;
 mod cli_probe;

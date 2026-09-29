@@ -1,6 +1,6 @@
 use crate::{
-    ai_assistant, ai_env, ai_news, ai_sessions, ai_workflow_profiles, ai_gateway, app_store,
-    assistant_mcp, backup, cli_updates, config, config_conflict, file_sharing, mcp_export,
+    ai_env, ai_news, ai_sessions, ai_workflow_profiles, ai_gateway, app_store, backup, cli_updates,
+    config, config_conflict, file_sharing, mcp_export,
     mcp_servers, mcp_templates, messages, protocol_router, proxy, secrets, short_link, skills,
     ssh_tunnels, storage, subagents, version_detect, workflows, workspaces,
 };
@@ -111,7 +111,6 @@ pub fn run() {
                 let _ = app_handle.emit("ai-gateway-status-update", ());
             });
             setup_sessions_history_sync_service(app.handle());
-            crate::ai_assistant::init_scheduler(app.handle().clone());
             ssh_tunnels::start_system_wake_observer(app.handle().clone());
             ssh_tunnels::start_sleep_resume_monitor(app.handle().clone());
             // Avoid running heavy migration work before first-run onboarding.
@@ -199,36 +198,6 @@ pub fn run() {
             ai_env::get_master_password,
             ai_env::change_master_password,
             ai_env::skip_claude_onboarding_login,
-            ai_assistant::ai_workspace_bootstrap,
-            ai_assistant::workspace_settings_get,
-            ai_assistant::workspace_settings_save,
-            ai_assistant::workspace_model_roles_get,
-            ai_assistant::workspace_model_roles_save,
-            ai_assistant::provider_connection_test,
-            ai_assistant::provider_models_fetch,
-            ai_assistant::workspace_assistants_list,
-            ai_assistant::workspace_assistant_upsert,
-            ai_assistant::workspace_assistant_delete,
-            ai_assistant::workspace_assistant_test_run,
-            assistant_mcp::workspace_assistant_mcp_catalog,
-            assistant_mcp::mcp_tool_preview_refresh,
-            ai_assistant::workspace_conversations_list,
-            ai_assistant::workspace_conversation_get,
-            ai_assistant::workspace_conversation_create,
-            ai_assistant::workspace_conversation_update,
-            ai_assistant::workspace_conversation_delete,
-            ai_assistant::workspace_conversation_reset_context,
-            ai_assistant::workspace_schedule_resolve_draft,
-            ai_assistant::workspace_conversation_send,
-            ai_assistant::workspace_automations_list,
-            ai_assistant::workspace_automation_upsert,
-            ai_assistant::workspace_automation_delete,
-            ai_assistant::workspace_automation_toggle,
-            ai_assistant::workspace_automation_run_now,
-            ai_assistant::workspace_quick_assistant_get,
-            ai_assistant::workspace_quick_assistant_save,
-            ai_assistant::workspace_selection_assistant_get,
-            ai_assistant::workspace_selection_assistant_save,
             secrets::get_secret,
             secrets::save_secret,
             secrets::delete_secret,
@@ -240,10 +209,6 @@ pub fn run() {
             shortcuts_tray::toggle_quick_ai_window,
             windows_data::hide_window,
             windows_data::hide_quick_ai_window,
-            windows_data::show_quick_assistant_window,
-            windows_data::hide_quick_assistant_window,
-            windows_data::show_selection_assistant_window,
-            windows_data::hide_selection_assistant_window,
             shortcuts_tray::resize_window,
             windows_data::show_main_window,
             shortcuts_tray::check_cli_installed,

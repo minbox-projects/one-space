@@ -146,69 +146,6 @@ pub(super) fn toggle_quick_ai_window_internal(app: &tauri::AppHandle) {
     }
 }
 
-pub(super) fn toggle_quick_assistant_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("quick-assistant") {
-        if window.is_visible().unwrap_or(false) {
-            let _ = window.show();
-            let _ = window.set_focus();
-        } else {
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
-    } else if let Ok(window) = tauri::WebviewWindowBuilder::new(
-        app,
-        "quick-assistant",
-        WebviewUrl::App("index.html?view=quick-assistant".into()),
-    )
-    .title("Quick Assistant")
-    .inner_size(760.0, 560.0)
-    .min_inner_size(540.0, 420.0)
-    .resizable(true)
-    .decorations(false)
-    .always_on_top(true)
-    .center()
-    .transparent(false)
-    .skip_taskbar(true)
-    .build()
-    {
-        let _ = window.set_focus();
-        let w = window.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(180));
-            let _ = w.set_focus();
-        });
-    }
-}
-
-pub(super) fn toggle_selection_assistant_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("selection-assistant") {
-        let _ = window.show();
-        let _ = window.set_focus();
-    } else if let Ok(window) = tauri::WebviewWindowBuilder::new(
-        app,
-        "selection-assistant",
-        WebviewUrl::App("index.html?view=selection-assistant".into()),
-    )
-    .title("Selection Assistant")
-    .inner_size(760.0, 560.0)
-    .min_inner_size(540.0, 420.0)
-    .resizable(true)
-    .decorations(false)
-    .always_on_top(true)
-    .center()
-    .transparent(false)
-    .skip_taskbar(true)
-    .build()
-    {
-        let _ = window.set_focus();
-        let w = window.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(180));
-            let _ = w.set_focus();
-        });
-    }
-}
-
 use tauri_plugin_global_shortcut::ShortcutState;
 
 pub(super) fn get_fallback_tray_label(lang: &str, id: &str) -> &'static str {
