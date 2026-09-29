@@ -620,17 +620,30 @@ pub fn get_app_dir() -> Result<PathBuf, String> {
 /// dev destination is absent, and both `.local_key` files read as equal bytes;
 /// a missing or unreadable key, or a password mismatch, skips the copy without
 /// error. Missing release sources are a no-op and existing destination files are
-/// never overwritten, so a later start only restores files the user deleted. No
-/// other file (notably no usage database) is read or written.
-pub(crate) fn seed_gateway_files(release_dir: &Path, dev_dir: &Path) -> Result<(), String> {
+/// never overwritten, so a later start only restores files the user deleted. A
+/// failed copy removes its partial destination (best-effort) before returning
+/// the error, so a later start retries from a clean state. No other file
+/// (notably no usage database) is read or written.
+///
+/// Every file copy goes through the injectable `copy` seam so tests can simulate
+/// a mid-copy failure; `seed_gateway_files` delegates with [`fs::copy`].
+fn seed_gateway_files_with<F>(release_dir: &Path, dev_dir: &Path, copy: F) -> Result<(), String>
+where
+    F: FnMut(&Path, &Path) -> Result<(), String>,
+{
     let release_key = release_dir.join(".local_key");
     let dev_key = dev_dir.join(".local_key");
     let release_gateway = release_dir.join("ai_gateway.json");
     let dev_gateway = dev_dir.join("ai_gateway.json");
 
+    let mut copy = copy;
+
     if release_key.is_file() && !dev_key.exists() {
         fs::create_dir_all(dev_dir).map_err(|e| e.to_string())?;
-        fs::copy(&release_key, &dev_key).map_err(|e| e.to_string())?;
+        if let Err(err) = copy(&release_key, &dev_key) {
+            let _ = fs::remove_file(&dev_key);
+            return Err(err);
+        }
     }
 
     if release_gateway.is_file() && !dev_gateway.exists() {
@@ -638,12 +651,23 @@ pub(crate) fn seed_gateway_files(release_dir: &Path, dev_dir: &Path) -> Result<(
         let dev_key_bytes = fs::read(&dev_key);
         if let (Ok(release_key_bytes), Ok(dev_key_bytes)) = (release_key_bytes, dev_key_bytes) {
             if release_key_bytes == dev_key_bytes {
-                fs::copy(&release_gateway, &dev_gateway).map_err(|e| e.to_string())?;
+                if let Err(err) = copy(&release_gateway, &dev_gateway) {
+                    let _ = fs::remove_file(&dev_gateway);
+                    return Err(err);
+                }
             }
         }
     }
 
     Ok(())
+}
+
+/// Thin production wrapper over [`seed_gateway_files_with`] that performs the
+/// actual filesystem copy.
+pub(crate) fn seed_gateway_files(release_dir: &Path, dev_dir: &Path) -> Result<(), String> {
+    seed_gateway_files_with(release_dir, dev_dir, |src, dst| {
+        fs::copy(src, dst).map(|_| ()).map_err(|e| e.to_string())
+    })
 }
 
 /// Seed the dev profile's gateway files from the release profile on startup.
@@ -1195,7 +1219,9 @@ mod tests {
         app_dir_for, default_storage_type_for, ensure_local_data_mirror_initialized_at, is_dev_build,
         resolve_selected_storage_root_at, resolve_shared_storage_root_at, DeviceConfig,
     };
-    use super::{seed_dev_gateway_files_on_start, seed_gateway_files};
+    use super::{
+        seed_dev_gateway_files_on_start, seed_gateway_files, seed_gateway_files_with,
+    };
     use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
@@ -1888,6 +1914,57 @@ mod tests {
         assert_eq!(
             fs::read(dev.join("ai_gateway.json")).expect("read dev gateway"),
             fs::read(release.join("ai_gateway.json")).expect("read release gateway")
+        );
+    }
+
+    #[test]
+    fn failed_seed_copy_leaves_no_partial_file_and_next_start_retries() {
+        let (root, _cleanup) = seed_temp_root("seed-partial-failure");
+        let release = root.join("release");
+        let dev = root.join("dev");
+        fs::create_dir_all(&release).expect("create release dir");
+        fs::create_dir_all(&dev).expect("create dev dir");
+
+        let password = "partial-failure-key";
+        fs::write(release.join(".local_key"), password).expect("write release key");
+        fs::write(release.join("ai_gateway.json"), b"partial-failure-gateway-bytes")
+            .expect("write release gateway");
+
+        let result = seed_gateway_files_with(&release, &dev, |_src, dst| {
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent).expect("create destination parent");
+            }
+            fs::write(dst, b"partial-bytes").expect("write partial destination");
+            Err("simulated mid-copy failure".to_string())
+        });
+
+        assert!(
+            result.is_err(),
+            "a failed copy seam must report the seeding error"
+        );
+        assert!(
+            !dev.join(".local_key").exists(),
+            "a failed copy must not leave a partial destination that blocks the retry"
+        );
+
+        seed_gateway_files(&release, &dev).expect("the next start must complete the retry");
+        assert!(
+            dev.join(".local_key").is_file(),
+            "the retried start must seed the dev master password"
+        );
+        assert!(
+            dev.join("ai_gateway.json").is_file(),
+            "the retried start must seed the dev gateway config"
+        );
+        assert_eq!(
+            fs::read(dev.join(".local_key")).expect("read dev key"),
+            fs::read(release.join(".local_key")).expect("read release key"),
+            "the retried dev master password must be byte-identical to the release copy"
+        );
+        assert_eq!(
+            fs::read(dev.join("ai_gateway.json")).expect("read dev gateway"),
+            fs::read(release.join("ai_gateway.json")).expect("read release gateway"),
+            "the retried dev gateway config must be byte-identical to the release copy"
         );
     }
 

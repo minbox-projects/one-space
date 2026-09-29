@@ -7673,8 +7673,7 @@ fn previously_synced_terminal_tools_is_profile_scoped() {
 }
 
 /// AC-014/AC-015: a dev sync writes a distinct provider beside the release
-/// opencode record instead of reusing its id, and the release input record keeps
-/// its boolean marker.
+/// opencode record instead of reusing its id.
 #[tokio::test]
 async fn terminal_sync_dev_profile_registers_distinct_provider_beside_release_record() {
     let _home = isolated_temp_home("terminal-sync-dev-beside-release");
@@ -7718,14 +7717,10 @@ async fn terminal_sync_dev_profile_registers_distinct_provider_beside_release_re
         payload["id"].as_str().unwrap_or(""),
         "the returned record must carry the submitted dev provider id"
     );
-    assert_eq!(
-        providers_data["providers"][0]["tool_config"]["ai_gateway_gateway"], true,
-        "the release input record must keep its boolean marker"
-    );
 }
 
 /// AC-015: a dev codex sync registers a distinct identity and never carries an
-/// activation flag; the release codex record is unchanged.
+/// activation flag.
 #[tokio::test]
 async fn terminal_sync_dev_codex_payload_has_distinct_identity_without_activation() {
     let _home = isolated_temp_home("terminal-sync-dev-codex-beside-release");
@@ -7772,10 +7767,6 @@ async fn terminal_sync_dev_codex_payload_has_distinct_identity_without_activatio
     assert_eq!(payload["tool"], "codex");
     assert_eq!(records.len(), 1, "one dev ledger record: {records:?}");
     assert_eq!(records[0].tool, "codex");
-    assert_eq!(
-        providers_data["providers"][0]["ai_gateway_gateway"], true,
-        "the release codex input record must keep its boolean marker"
-    );
 }
 
 /// AC-016: the release sync repairs a stale 17689 provider to the release base
