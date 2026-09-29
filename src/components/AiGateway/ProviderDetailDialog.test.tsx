@@ -2717,11 +2717,13 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
 
     const keyRow = screen.getByTestId("ai-gateway-key-0");
     expect(keyRow.className).toContain("flex items-center");
+    expect(keyRow.className).toContain("flex-nowrap");
     expect(keyRow.className).not.toContain("flex-wrap");
 
     const nameInput = screen.getByTestId("ai-gateway-key-name-0");
     expect(nameInput.className).toContain("shrink-0");
-    expect(nameInput.className).toContain("!w-");
+    expect(nameInput.className).toContain("!w-64");
+    expect(nameInput.className).toContain("sm:!w-72");
 
     const valueInput = screen.getByTestId("ai-gateway-key-value-0");
     expect(valueInput.parentElement?.className).toContain("flex-1");

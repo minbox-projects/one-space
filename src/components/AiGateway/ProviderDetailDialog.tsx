@@ -126,7 +126,7 @@ const providerKeyStateClass: Record<GatewayProviderKeyState, string> = {
 };
 
 const providerKeyNameInputClass =
-  "h-9 !w-32 sm:!w-36 shrink-0 rounded-lg border border-border bg-background px-2.5 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/50";
+  "h-9 !w-64 sm:!w-72 shrink-0 rounded-lg border border-border bg-background px-2.5 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/50";
 
 const providerKeyValueInputClass =
   "h-9 w-full rounded-lg border border-border bg-background pl-2.5 pr-8 text-sm text-foreground font-mono outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/50";
@@ -957,7 +957,7 @@ export function ProviderDetailDialog({
                       <div
                         key={key.id}
                         data-testid={`ai-gateway-key-${index}`}
-                        className="flex items-center gap-2 rounded-lg border border-border bg-card p-2"
+                        className="flex items-center flex-nowrap gap-2 rounded-lg border border-border bg-card p-2"
                       >
                         <input
                           data-testid={`ai-gateway-key-name-${index}`}
@@ -1009,7 +1009,7 @@ export function ProviderDetailDialog({
                         </div>
                         <span
                           data-testid={`ai-gateway-key-state-${index}`}
-                          className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-4 ${providerKeyStateClass[state]}`}
+                          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-4 ${providerKeyStateClass[state]}`}
                         >
                           <span>
                             {t(PROVIDER_KEY_STATE_TRANSLATION_KEYS[state])}
@@ -1026,7 +1026,7 @@ export function ProviderDetailDialog({
                         {key.auto_marked && key.reason && key.reason.trim() ? (
                           <span
                             data-testid={`ai-gateway-key-reason-${index}`}
-                            className="max-w-[180px] truncate text-[11px] text-muted-foreground"
+                            className="max-w-[180px] shrink truncate text-[11px] text-muted-foreground"
                             title={key.reason.trim()}
                           >
                             {t("aiGatewayProviderKeyReasonLabel", "Reason")}:{" "}
@@ -1044,8 +1044,9 @@ export function ProviderDetailDialog({
                           onCheckedChange={(checked) =>
                             updateKey(index, { enabled: checked })
                           }
+                          className="shrink-0"
                         />
-                        <div className="flex items-center gap-1">
+                        <div className="flex shrink-0 items-center gap-1">
                           <button
                             type="button"
                             data-testid={`ai-gateway-key-up-${index}`}
