@@ -3,48 +3,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Terminal, Plus, FolderOpen, Loader2, AlertCircle, Settings2, Check } from 'lucide-react';
+import { Terminal, Plus, FolderOpen, Loader2, AlertCircle, Settings2 } from 'lucide-react';
 import type { AiProvidersState } from './AiEnvironments';
 import { ToolIcon } from './AiEnvironments';
 import { AiSessionsList } from './AiSessionsList';
-import { WorkflowPresetsPanel } from './WorkflowPresetsPanel';
-import { RecentWorkflowRuns } from './RecentWorkflowRuns';
 import { TerminalPermissionConfirmDialog } from './TerminalPermissionConfirmDialog';
 import { useToast } from './ToastProvider';
 import {
-  workflowsApplyDependencies,
-  workflowsCheckDependencies,
-  workflowsLaunchPreset,
-  workflowsListPresets,
-  type WorkflowDependencyState,
-  type WorkflowPreset,
-} from '@/lib/workflows';
-import {
   type TerminalPermissionMode,
 } from '@/lib/terminalPermissions';
-
-type MCPServerLite = { id: string; name: string };
-type SkillsCatalogLite = { id: string; source_id: string; rel_path: string; name: string };
-type SkillsRepoLite = {
-  repo_key: string;
-  skill_id: string;
-  name: string;
-  source_id: string;
-  source_rel_path: string;
-  models: string[];
-};
-type MCPStateResp = { servers?: Array<{ id?: string; name?: string }> };
-type SkillsCatalogResp = { data?: Array<{ id?: string; name?: string; source_id?: string; rel_path?: string }> };
-type SkillsRepoListResp = {
-  data?: Array<{
-    repo_key?: string;
-    skill_id?: string;
-    name?: string;
-    source_id?: string;
-    source_rel_path?: string;
-    models?: string[];
-  }>;
-};
 
 interface AiSession {
   id: string;
@@ -133,14 +100,6 @@ function getErrorCode(err: unknown): string | null {
   return null;
 }
 
-function encodeCatalogSkillValue(sourceId: string, relPath: string): string {
-  return `catalog::${sourceId}::${relPath}`;
-}
-
-function encodeRepoSkillValue(repoKey: string): string {
-  return `repo::${repoKey}`;
-}
-
 export function AiSessions({
   onNavigate,
   isVisible = false,
@@ -167,15 +126,6 @@ export function AiSessions({
 
   // Active environments state
   const [providersState, setProvidersState] = useState<AiProvidersState | null>(null);
-  const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
-  const [showWorkflowPresetsPanel, setShowWorkflowPresetsPanel] = useState(false);
-  const [selectedWorkflowPresetId, setSelectedWorkflowPresetId] = useState<string>('');
-  const [selectedWorkflowDeps, setSelectedWorkflowDeps] = useState<WorkflowDependencyState | null>(null);
-  const [workflowMcpNameMap, setWorkflowMcpNameMap] = useState<Record<string, string>>({});
-  const [workflowSkillNameMap, setWorkflowSkillNameMap] = useState<Record<string, string>>({});
-  const [checkingWorkflowDeps, setCheckingWorkflowDeps] = useState(false);
-  const [applyingWorkflowDeps, setApplyingWorkflowDeps] = useState(false);
-  const [activeContentTab, setActiveContentTab] = useState<'sessions' | 'runs'>('sessions');
 
   // Permission confirmation state
   const [permissionDialogOpen, setPermissionDialogOpen] = useState(false);
@@ -225,16 +175,6 @@ export function AiSessions({
       setProvidersState(res.data);
     } catch (e) {
       console.error(e);
-    }
-  }, [isTauri]);
-
-  const loadWorkflowPresets = useCallback(async () => {
-    if (!isTauri) return;
-    try {
-      const resp = await workflowsListPresets();
-      setWorkflowPresets(resp.data || []);
-    } catch (e) {
-      console.error('Failed to load workflow presets', e);
     }
   }, [isTauri]);
 
@@ -358,32 +298,23 @@ export function AiSessions({
     try {
       creatingRef.current = true;
       setLoading(true);
-      if (selectedWorkflowPresetId) {
-        await workflowsLaunchPreset({
-          preset_id: selectedWorkflowPresetId,
-          override_working_dir: newSessionDir || undefined,
-        });
-      } else {
-        if (!newSessionDir) {
-          setError(t('provideDirOnly', 'Please provide a working directory.'));
-          return;
-        }
-        await invoke('sessions_create', {
-          session: {
-            name: '',
-            working_dir: newSessionDir,
-            tool: selectedCommandId,
-            status: 'active'
-          }
-        });
+      if (!newSessionDir) {
+        setError(t('provideDirOnly', 'Please provide a working directory.'));
+        return;
       }
+      await invoke('sessions_create', {
+        session: {
+          name: '',
+          working_dir: newSessionDir,
+          tool: selectedCommandId,
+          status: 'active'
+        }
+      });
       
       emit('refresh-counts').catch(console.error);
       
       setIsCreating(false);
       setNewSessionDir('');
-      setSelectedWorkflowPresetId('');
-      setSelectedWorkflowDeps(null);
       await loadSessions();
     } catch (err: any) {
       setError(formatInvokeError(err));
@@ -496,173 +427,15 @@ export function AiSessions({
   const handleNewSession = async () => {
     await Promise.all([
       loadAiSessionConfig(),
-      loadProvidersState(),
-      loadWorkflowPresets()
+      loadProvidersState()
     ]);
-    setSelectedWorkflowPresetId('');
-    setSelectedWorkflowDeps(null);
     setIsCreating(true);
-  };
-
-  const commandIdFromTool = (tool: string) => {
-    const normalized = tool.toLowerCase();
-    if (normalized === 'claude') return 'claude';
-    if (normalized === 'antigravity') return 'antigravity';
-    if (normalized === 'codex') return 'codex';
-    if (normalized === 'opencode') return 'opencode';
-    return selectedCommandId;
   };
 
   const handleOpenAiSessionSettings = () => {
     const win = window as typeof window & { setSettingsTab?: (tab: string) => void };
     win.setSettingsTab?.('ai');
     onNavigate?.('settings');
-  };
-
-  const applyWorkflowPresetToForm = async (presetId: string) => {
-    setSelectedWorkflowPresetId(presetId);
-    if (!presetId) {
-      setSelectedWorkflowDeps(null);
-      setWorkflowMcpNameMap({});
-      setWorkflowSkillNameMap({});
-      return;
-    }
-    const preset = workflowPresets.find((item) => item.id === presetId);
-    if (!preset) return;
-    if (preset.working_dir?.trim()) {
-      setNewSessionDir(preset.working_dir);
-    }
-    setSelectedCommandId(commandIdFromTool(preset.tool));
-    setCheckingWorkflowDeps(true);
-    try {
-      const [depsResp, mcpResp, catalogResp, repoResp] = await Promise.all([
-        workflowsCheckDependencies(presetId),
-        invoke('get_mcp_servers') as Promise<MCPStateResp>,
-        invoke('skills_list_catalog', { model: preset.tool }) as Promise<SkillsCatalogResp>,
-        invoke('skills_repo_list') as Promise<SkillsRepoListResp>,
-      ]);
-      setSelectedWorkflowDeps(depsResp.data);
-
-      const mcpList: MCPServerLite[] = (Array.isArray(mcpResp?.servers) ? mcpResp.servers : [])
-        .map((server) => ({
-          id: String(server?.id || '').trim(),
-          name: String(server?.name || '').trim(),
-        }))
-        .filter((server) => Boolean(server.id && server.name));
-      setWorkflowMcpNameMap(
-        mcpList.reduce<Record<string, string>>((acc, server) => {
-          acc[server.id] = server.name;
-          return acc;
-        }, {})
-      );
-
-      const catalog: SkillsCatalogLite[] = (Array.isArray(catalogResp?.data) ? catalogResp.data : [])
-        .map((item) => ({
-          id: String(item?.id || '').trim(),
-          source_id: String(item?.source_id || '').trim(),
-          rel_path: String(item?.rel_path || item?.id || '').trim(),
-          name: String(item?.name || '').trim(),
-        }))
-        .filter((item) => Boolean(item.source_id && item.rel_path && item.name));
-      const recommendedSourceRef = new Set(catalog.map((item) => `${item.source_id}::${item.rel_path}`));
-      const repo: SkillsRepoLite[] = (Array.isArray(repoResp?.data) ? repoResp.data : [])
-        .map((item) => ({
-          repo_key: String(item?.repo_key || '').trim(),
-          skill_id: String(item?.skill_id || '').trim(),
-          name: String(item?.name || '').trim(),
-          source_id: String(item?.source_id || '').trim(),
-          source_rel_path: String(item?.source_rel_path || '').trim(),
-          models: Array.isArray(item?.models)
-            ? item.models.map((model) => String(model || '').toLowerCase().trim()).filter(Boolean)
-            : [],
-        }))
-        .filter((item) => Boolean(item.repo_key && item.name));
-
-      const nameMap: Record<string, string> = {};
-      const setSkillName = (keys: string[], name: string) => {
-        keys.forEach((key) => {
-          const normalized = key.trim();
-          if (!normalized || nameMap[normalized]) return;
-          nameMap[normalized] = name;
-        });
-      };
-
-      catalog.forEach((item) => {
-        setSkillName(
-          [
-            encodeCatalogSkillValue(item.source_id, item.rel_path),
-            `${item.source_id}::${item.rel_path}`,
-            item.rel_path,
-            item.id,
-            encodeCatalogSkillValue(item.source_id, item.id),
-          ],
-          item.name,
-        );
-      });
-      repo.forEach((item) => {
-        if (item.models.length > 0 && !item.models.includes(String(preset.tool).toLowerCase())) return;
-        if (item.source_id && item.source_rel_path && recommendedSourceRef.has(`${item.source_id}::${item.source_rel_path}`)) {
-          return;
-        }
-        setSkillName(
-          [
-            encodeRepoSkillValue(item.repo_key),
-            item.repo_key,
-            item.skill_id,
-            `${item.source_id}::${item.source_rel_path}`,
-            item.source_rel_path,
-            encodeCatalogSkillValue(item.source_id, item.source_rel_path),
-          ],
-          item.name,
-        );
-      });
-      setWorkflowSkillNameMap(nameMap);
-    } catch (e) {
-      console.error(e);
-      setSelectedWorkflowDeps(null);
-      setWorkflowMcpNameMap({});
-      setWorkflowSkillNameMap({});
-    } finally {
-      setCheckingWorkflowDeps(false);
-    }
-  };
-
-  const formatWorkflowMcpList = (ids: string[]) =>
-    ids.map((id) => workflowMcpNameMap[id] || id).join(', ') || '-';
-  const formatWorkflowSkillList = (ids: string[]) =>
-    ids.map((id) => workflowSkillNameMap[id] || id).join(', ') || '-';
-  const formatWorkflowMcpDeps = (ids: string[], names?: string[]) =>
-    (names && names.length > 0 ? names.join(', ') : formatWorkflowMcpList(ids)) || '-';
-  const formatWorkflowSkillDeps = (ids: string[], names?: string[]) =>
-    (names && names.length > 0 ? names.join(', ') : formatWorkflowSkillList(ids)) || '-';
-
-  useEffect(() => {
-    if (!isVisible) return;
-    if (activeContentTab !== 'runs' && !showWorkflowPresetsPanel) return;
-    void loadWorkflowPresets();
-  }, [isVisible, activeContentTab, showWorkflowPresetsPanel, loadWorkflowPresets]);
-
-  const handleApplyWorkflowDependencies = async () => {
-    if (!selectedWorkflowPresetId) return;
-    setApplyingWorkflowDeps(true);
-    try {
-      const result = await workflowsApplyDependencies(selectedWorkflowPresetId);
-      setSelectedWorkflowDeps(result.data.dependencies_after);
-      await Promise.all([loadProvidersState(), loadWorkflowPresets()]);
-      pushToast({
-        title: t('workflowPresetAppliedSummary', {
-          defaultValue: 'Dependencies applied: MCP linked {{linked}}, MCP enabled {{enabled}}, Skills installed {{installed}}',
-          linked: result.data.linked_mcp_count,
-          enabled: result.data.enabled_mcp_switch_count,
-          installed: result.data.installed_skill_count,
-        }),
-        kind: 'success',
-      });
-    } catch (e: any) {
-      setError(formatInvokeError(e));
-    } finally {
-      setApplyingWorkflowDeps(false);
-    }
   };
 
   const renderActiveProvider = () => {
@@ -708,17 +481,6 @@ export function AiSessions({
             {cliInstalled ? t('reinstallCli', 'Update CLI') : t('installCli', 'Install CLI')}
           </button>
           <button
-            onClick={() => setShowWorkflowPresetsPanel((prev) => !prev)}
-            className={`px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors ${
-              showWorkflowPresetsPanel
-                ? 'bg-secondary text-secondary-foreground'
-                : 'bg-muted text-muted-foreground hover:bg-muted/80'
-            }`}
-          >
-            <Settings2 className="w-4 h-4" />
-            {t('workflowPresets', 'Workflow Presets')}
-          </button>
-          <button
             onClick={handleNewSession}
             className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
           >
@@ -757,17 +519,6 @@ export function AiSessions({
         </div>
       )}
 
-      {showWorkflowPresetsPanel && (
-        <WorkflowPresetsPanel
-          onChanged={(presets) => setWorkflowPresets(presets)}
-          onSelectPreset={(presetId) => {
-            if (presetId) {
-              void applyWorkflowPresetToForm(presetId);
-            }
-          }}
-        />
-      )}
-
       {isCreating && (
         <div className="bg-card border rounded-xl p-5 shadow-sm space-y-4">
           <h3 className="font-semibold flex items-center gap-2">
@@ -775,95 +526,6 @@ export function AiSessions({
             {t('createNewAiSession')}
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2 md:col-span-2">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                {t('workflowPreset', 'Workflow Preset')}
-              </label>
-              <div className="flex gap-2">
-                <select
-                  value={selectedWorkflowPresetId}
-                  onChange={(e) => {
-                    void applyWorkflowPresetToForm(e.target.value);
-                  }}
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                >
-                  <option value="">{t('workflowPresetNoManual', 'No preset (manual)')}</option>
-                  {workflowPresets.map((preset) => (
-                    <option key={preset.id} value={preset.id}>
-                      {preset.name} ({preset.tool}/{preset.launch_scope || 'shared'})
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => setShowWorkflowPresetsPanel(true)}
-                  className="px-3 rounded-md border transition-colors bg-background hover:bg-muted text-muted-foreground"
-                  title={t('workflowPresetOpenEditor', 'Open preset editor')}
-                >
-                  <Settings2 className="w-4 h-4" />
-                </button>
-              </div>
-              {selectedWorkflowPresetId && (
-                <div className="text-xs rounded-md border bg-muted/20 px-2.5 py-2 space-y-1">
-                  {checkingWorkflowDeps ? (
-                    <div className="text-muted-foreground flex items-center gap-1.5">
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      {t('workflowPresetCheckingDeps', 'Checking preset dependencies...')}
-                    </div>
-                  ) : selectedWorkflowDeps ? (
-                    <>
-                      <div className="text-muted-foreground">
-                        {t('workflowPresetMissingMcp', 'Missing MCP')}:{' '}
-                        <span className="font-mono">
-                          {formatWorkflowMcpDeps(
-                            selectedWorkflowDeps.missing_mcp_server_ids,
-                            selectedWorkflowDeps.missing_mcp_names,
-                          )}
-                        </span>
-                      </div>
-                      <div className="text-muted-foreground">
-                        {t('workflowPresetInactiveMcp', 'Inactive MCP Link')}:{' '}
-                        <span className="font-mono">
-                          {formatWorkflowMcpDeps(
-                            selectedWorkflowDeps.inactive_mcp_server_ids,
-                            selectedWorkflowDeps.inactive_mcp_names,
-                          )}
-                        </span>
-                      </div>
-                      <div className="text-muted-foreground">
-                        {t('workflowPresetMissingSkills', 'Missing Skills')}:{' '}
-                        <span className="font-mono">
-                          {formatWorkflowSkillDeps(
-                            selectedWorkflowDeps.missing_skill_ids,
-                            selectedWorkflowDeps.missing_skill_names,
-                          )}
-                        </span>
-                      </div>
-                      {(selectedWorkflowDeps.inactive_mcp_server_ids.length > 0 ||
-                        selectedWorkflowDeps.installable_skill_ids.length > 0) && (
-                        <button
-                          type="button"
-                          onClick={() => void handleApplyWorkflowDependencies()}
-                          disabled={applyingWorkflowDeps}
-                          className="mt-1 px-2 py-1 rounded border text-xs hover:bg-muted disabled:opacity-50 flex items-center gap-1.5"
-                        >
-                          {applyingWorkflowDeps ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <Check className="w-3.5 h-3.5" />
-                          )}
-                          {t('workflowPresetFixDeps', 'One-click fix dependencies')}
-                        </button>
-                      )}
-                    </>
-                  ) : (
-                    <div className="text-muted-foreground">
-                      {t('workflowPresetNoDepsData', 'Dependency data unavailable.')}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
             <div className="space-y-2">
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('aiCommand')}</label>
               <div className="flex gap-2">
@@ -939,7 +601,7 @@ export function AiSessions({
             </button>
             <button 
               onClick={handleCreate}
-              disabled={loading || (!selectedWorkflowPresetId && !newSessionDir)}
+              disabled={loading || !newSessionDir}
               className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
             >
               {loading && <Loader2 className="w-4 h-4 animate-spin" />}
@@ -949,43 +611,14 @@ export function AiSessions({
         </div>
       )}
 
-      <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
-        <button
-          type="button"
-          onClick={() => setActiveContentTab('sessions')}
-          className={`px-3 py-1.5 rounded-md text-sm ${
-            activeContentTab === 'sessions'
-              ? 'bg-black text-white'
-              : 'bg-white text-black'
-          }`}
-        >
-          {t('terminalSessions', 'Terminal Sessions')}
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveContentTab('runs')}
-          className={`px-3 py-1.5 rounded-md text-sm ${
-            activeContentTab === 'runs'
-              ? 'bg-black text-white'
-              : 'bg-white text-black'
-          }`}
-        >
-          {t('workflowTab', 'Workflow')}
-        </button>
-      </div>
-
-      {activeContentTab === 'sessions' ? (
-        <AiSessionsList
-          sessions={sessions}
-          loading={loading || !sessionsInitialized}
-          onLaunch={handleLaunch}
-          onDelete={handleDelete}
-          onRename={handleRename}
-          onFavoriteChange={handleFavoriteChange}
-        />
-      ) : (
-        <RecentWorkflowRuns presets={workflowPresets} />
-      )}
+      <AiSessionsList
+        sessions={sessions}
+        loading={loading || !sessionsInitialized}
+        onLaunch={handleLaunch}
+        onDelete={handleDelete}
+        onRename={handleRename}
+        onFavoriteChange={handleFavoriteChange}
+      />
 
       {/* Permission confirmation dialog */}
       {permissionDialogSession && (

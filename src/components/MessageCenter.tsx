@@ -40,7 +40,6 @@ const SOURCE_LABELS: Record<string, string> = {
   skills: "Skills",
   subagents: "Subagents",
   mcp_servers: "MCP",
-  workflows: "Workflows",
   settings: "Settings",
   mail: "Mail",
   backup: "Backup",

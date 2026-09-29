@@ -6,7 +6,6 @@ import { useTranslation } from 'react-i18next';
 import { Terminal, Box, ChevronDown, ChevronUp, FolderOpen, Send } from 'lucide-react';
 import { ToolIcon } from './AiEnvironments';
 import { open } from '@tauri-apps/plugin-dialog';
-import { workflowsLaunchPreset, workflowsListPresets, type WorkflowPreset } from '@/lib/workflows';
 
 const QUICK_MODELS = [
   { id: 'claude', name: 'Claude Code', cmd: 'claude code' },
@@ -29,8 +28,6 @@ export function QuickAiSessionBar() {
   const [path, setPath] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
-  const [selectedWorkflowPresetId, setSelectedWorkflowPresetId] = useState('');
   const launchingRef = useRef(false);
 
   const handleLaunch = useCallback(async ({ closeImmediately = false }: { closeImmediately?: boolean } = {}) => {
@@ -60,21 +57,14 @@ export function QuickAiSessionBar() {
         targetPath = './';
       }
 
-      if (selectedWorkflowPresetId) {
-        await workflowsLaunchPreset({
-          preset_id: selectedWorkflowPresetId,
-          override_working_dir: targetPath || undefined,
-        });
-      } else {
-        await invoke('sessions_create', {
-          session: {
-            name: '',
-            working_dir: targetPath,
-            tool: model,
-            status: 'active'
-          }
-        });
-      }
+      await invoke('sessions_create', {
+        session: {
+          name: '',
+          working_dir: targetPath,
+          tool: model,
+          status: 'active'
+        }
+      });
       
       // Emit events and clear state
       emit('refresh-counts').catch(console.error);
@@ -96,7 +86,7 @@ export function QuickAiSessionBar() {
       launchingRef.current = false;
       setLoading(false);
     }
-  }, [path, model, selectedWorkflowPresetId]);
+  }, [path, model]);
 
   const applyQuickDefaults = useCallback(async () => {
     try {
@@ -110,27 +100,16 @@ export function QuickAiSessionBar() {
     }
   }, []);
 
-  const loadWorkflowPresets = useCallback(async () => {
-    try {
-      const resp = await workflowsListPresets();
-      setWorkflowPresets(resp.data || []);
-    } catch (e) {
-      console.error('Failed to load workflow presets in quick bar', e);
-    }
-  }, []);
-
   useEffect(() => {
     // Load default model/path on initial open
     applyQuickDefaults();
-    loadWorkflowPresets();
-  }, [applyQuickDefaults, loadWorkflowPresets]);
+  }, [applyQuickDefaults]);
 
   useEffect(() => {
     // Re-apply default model/path each time quick window becomes visible
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         applyQuickDefaults();
-        loadWorkflowPresets();
       }
     };
 
@@ -139,7 +118,7 @@ export function QuickAiSessionBar() {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [applyQuickDefaults, loadWorkflowPresets]);
+  }, [applyQuickDefaults]);
 
   useEffect(() => {
     // Global key listener
@@ -193,19 +172,6 @@ export function QuickAiSessionBar() {
     }
   }, []);
 
-  const handleSelectWorkflowPreset = (presetId: string) => {
-    setSelectedWorkflowPresetId(presetId);
-    if (!presetId) return;
-    const preset = workflowPresets.find((item) => item.id === presetId);
-    if (!preset) return;
-    if (QUICK_MODEL_IDS.has(preset.tool)) {
-      setModel(preset.tool);
-    }
-    if (preset.working_dir?.trim()) {
-      setPath(preset.working_dir.trim());
-    }
-  };
-
   const handleDragMouseDown = (e: React.MouseEvent<HTMLElement>) => {
     const target = e.target as HTMLElement;
     if (target.closest('button,input,select,textarea,a,[role="button"],[data-no-drag]')) {
@@ -224,9 +190,7 @@ export function QuickAiSessionBar() {
         
         <div className="flex-1 min-w-0">
           <div className="text-lg font-medium truncate">
-            {selectedWorkflowPresetId
-              ? workflowPresets.find((preset) => preset.id === selectedWorkflowPresetId)?.name || t('workflowPreset', 'Workflow Preset')
-              : t('quickSessionPlaceholder', 'Syncing title from history')}
+            {t('quickSessionPlaceholder', 'Syncing title from history')}
           </div>
           <div className="text-xs text-muted-foreground truncate">
             {path || t('noPathSelected', 'Choose a directory...')}
@@ -275,25 +239,6 @@ export function QuickAiSessionBar() {
 
       {expanded && (
         <div className="p-4 bg-muted/20 space-y-4 animate-in slide-in-from-top-2 duration-300">
-          <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
-              {t('workflowPreset', 'Workflow Preset')}
-            </label>
-            <select
-              value={selectedWorkflowPresetId}
-              onChange={(e) => {
-                handleSelectWorkflowPreset(e.target.value);
-              }}
-              className="w-full h-10 rounded-md border bg-background px-3 py-2 text-sm"
-            >
-              <option value="">{t('workflowPresetNoManual', 'No preset (manual)')}</option>
-              {workflowPresets.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.name} ({preset.tool}/{preset.launch_scope || 'shared'})
-                </option>
-              ))}
-            </select>
-          </div>
           <div className="space-y-2">
             <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('workingDirectory')}</label>
             <div className="flex gap-2">
