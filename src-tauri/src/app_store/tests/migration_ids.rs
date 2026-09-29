@@ -402,6 +402,10 @@ fn apply_provider_id_map_rewrites_dependent_state_files_and_profile_dirs() {
             ])
             .to_string(),
         );
+        let workflow_presets_before =
+            fs::read(data_dir.join("workflow_presets.json")).expect("read workflow presets");
+        let workflow_runs_before =
+            fs::read(data_dir.join("workflow_runs.json")).expect("read workflow runs");
 
         let mcp = mcp_servers::MCPServersState {
             servers: vec![mcp_servers::MCPServer {
@@ -458,17 +462,16 @@ fn apply_provider_id_map_rewrites_dependent_state_files_and_profile_dirs() {
             Some(new_id)
         );
 
-        let presets: Value = serde_json::from_str(
-            &fs::read_to_string(data_dir.join("workflow_presets.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(presets[0]["provider_id"], new_id);
-        assert_eq!(presets[0]["active_provider_id"], new_id);
-
-        let runs: Value =
-            serde_json::from_str(&fs::read_to_string(data_dir.join("workflow_runs.json")).unwrap())
-                .unwrap();
-        assert_eq!(runs[0]["provider_id"], new_id);
+        assert_eq!(
+            fs::read(data_dir.join("workflow_presets.json")).expect("read workflow presets"),
+            workflow_presets_before,
+            "provider-id remapping must not rewrite workflow_presets.json"
+        );
+        assert_eq!(
+            fs::read(data_dir.join("workflow_runs.json")).expect("read workflow runs"),
+            workflow_runs_before,
+            "provider-id remapping must not rewrite workflow_runs.json"
+        );
 
         let mcp_after: mcp_servers::MCPServersState =
             StorageEngine::read_json(&StorageEngine::mcp_path().unwrap()).unwrap();
@@ -847,10 +850,13 @@ fn migrate_step_rewrites_workflows_workspaces_and_provider_presets() {
                 "launch_prompt": "claude"
             }
         ]);
-        write_test_file(
-            &local_workflow_presets_path().unwrap(),
-            &workflow_presets.to_string(),
-        );
+        let workflow_presets_path = crate::get_data_dir()
+            .unwrap()
+            .join("workflow_presets.json");
+        let workflow_runs_path = crate::get_data_dir()
+            .unwrap()
+            .join("workflow_runs.json");
+        write_test_file(&workflow_presets_path, &workflow_presets.to_string());
         let workflow_runs = json!([
             {
                 "id": "r1",
@@ -865,10 +871,10 @@ fn migrate_step_rewrites_workflows_workspaces_and_provider_presets() {
                 "summary": "claude run"
             }
         ]);
-        write_test_file(
-            &local_workflow_runs_path().unwrap(),
-            &workflow_runs.to_string(),
-        );
+        write_test_file(&workflow_runs_path, &workflow_runs.to_string());
+        let workflow_presets_before =
+            fs::read(&workflow_presets_path).expect("read workflow presets");
+        let workflow_runs_before = fs::read(&workflow_runs_path).expect("read workflow runs");
 
         let workspaces_path = crate::get_data_dir()
             .unwrap()
@@ -915,15 +921,16 @@ fn migrate_step_rewrites_workflows_workspaces_and_provider_presets() {
 
         migrate_gemini_identifiers_to_antigravity().expect("migration step");
 
-        let presets = read_json_file(&local_workflow_presets_path().unwrap());
-        assert_eq!(presets[0]["tool"], "antigravity");
-        assert_eq!(presets[0]["launch_prompt"], "please run gemini now");
-        assert_eq!(presets[1]["tool"], "claude");
-
-        let runs = read_json_file(&local_workflow_runs_path().unwrap());
-        assert_eq!(runs[0]["tool"], "antigravity");
-        assert_eq!(runs[0]["summary"], "gemini run");
-        assert_eq!(runs[1]["tool"], "claude");
+        assert_eq!(
+            fs::read(&workflow_presets_path).expect("read workflow presets"),
+            workflow_presets_before,
+            "startup migration must leave workflow_presets.json byte-identical"
+        );
+        assert_eq!(
+            fs::read(&workflow_runs_path).expect("read workflow runs"),
+            workflow_runs_before,
+            "startup migration must leave workflow_runs.json byte-identical"
+        );
 
         let workspaces = read_json_file(&workspaces_path);
         assert_eq!(workspaces["workspaces"][0]["default_models"][0], "antigravity");
