@@ -1574,7 +1574,7 @@ function App() {
     () => [
       {
         id: "core",
-        label: i18n.language === "zh" ? "核心" : "Core",
+        label: i18n.language === "zh" ? "工作台" : "Workbench",
         items: [
           {
             id: "launcher",
@@ -1587,12 +1587,6 @@ function App() {
             name: t("workspaces", "Workspaces"),
             icon: FolderOpen,
             count: counts.workspaces,
-          },
-          {
-            id: "ai-sessions",
-            name: t("aiSessions"),
-            icon: Terminal,
-            count: counts.sessions,
           },
         ],
       },
@@ -1607,6 +1601,12 @@ function App() {
             count: counts.environments,
           },
           {
+            id: "ai-sessions",
+            name: t("aiSessions"),
+            icon: Terminal,
+            count: counts.sessions,
+          },
+          {
             id: "ai-gateway",
             name: t("aiGateway", "AI Gateway"),
             icon: Network,
@@ -1619,8 +1619,8 @@ function App() {
         ],
       },
       {
-        id: "tools",
-        label: i18n.language === "zh" ? "工具" : "Tools",
+        id: "extensions",
+        label: i18n.language === "zh" ? "AI 扩展" : "AI Extensions",
         items: [
           {
             id: "skills",
@@ -1640,6 +1640,12 @@ function App() {
             icon: Bot,
             count: counts.subagents,
           },
+        ],
+      },
+      {
+        id: "tools",
+        label: i18n.language === "zh" ? "工具" : "Tools",
+        items: [
           ...listToolboxTools("sidebar").map((tool) => ({
             id: tool.id,
             name: resolveToolboxText(tool.labelText, tool.labelKey, t),

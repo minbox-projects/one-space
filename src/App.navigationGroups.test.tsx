@@ -71,7 +71,7 @@ describe("App 侧边栏菜单分组", () => {
     return container as HTMLElement;
   }
 
-  it("将 skills、mcp-servers、subagents 归入工具分组并保留原有工具项", async () => {
+  it("工作台分组保留启动台与工作区，AI 终端会话已移出", async () => {
     renderWithProviders(
       <ThemeProvider>
         <App />
@@ -79,46 +79,26 @@ describe("App 侧边栏菜单分组", () => {
     );
     await screen.findByText("OneSpace");
 
-    const toolsGroup = groupContainer(/^(工具|Tools)$/);
+    const workbenchGroup = groupContainer(/^(工作台|Workbench)$/);
 
-    // Moved items
     expect(
-      within(toolsGroup).getByRole("button", {
-        name: namePattern(i18n.t("skills", "Skills")),
+      within(workbenchGroup).getByRole("button", {
+        name: namePattern(i18n.t("launcher")),
       }),
     ).toBeInTheDocument();
     expect(
-      within(toolsGroup).getByRole("button", {
-        name: namePattern("MCP Servers"),
+      within(workbenchGroup).getByRole("button", {
+        name: namePattern(i18n.t("workspaces", "Workspaces")),
       }),
     ).toBeInTheDocument();
     expect(
-      within(toolsGroup).getByRole("button", {
-        name: namePattern(i18n.t("subagents", "Subagents")),
+      within(workbenchGroup).queryByRole("button", {
+        name: namePattern(i18n.t("aiSessions")),
       }),
-    ).toBeInTheDocument();
-
-    // Existing registry-derived sidebar entries
-    expect(
-      within(toolsGroup).getByRole("button", {
-        name: namePattern(i18n.t("snippets", "Snippets")),
-      }),
-    ).toBeInTheDocument();
-    expect(
-      within(toolsGroup).getByRole("button", {
-        name: namePattern(i18n.t("notes", "Notes")),
-      }),
-    ).toBeInTheDocument();
-
-    // Existing More Tools entry (hardcoded zh/en label in App)
-    expect(
-      within(toolsGroup).getByRole("button", {
-        name: /^(更多工具|More Tools)$/,
-      }),
-    ).toBeInTheDocument();
+    ).not.toBeInTheDocument();
   });
 
-  it("AI 能力分组仅保留原有能力项，三个迁移项不再属于该分组", async () => {
+  it("AI 能力分组包含终端环境、终端会话、网关与用量", async () => {
     renderWithProviders(
       <ThemeProvider>
         <App />
@@ -131,6 +111,11 @@ describe("App 侧边栏菜单分组", () => {
     expect(
       within(capabilitiesGroup).getByRole("button", {
         name: namePattern(i18n.t("cliEnvironments", "AI Terminal Environments")),
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(capabilitiesGroup).getByRole("button", {
+        name: namePattern(i18n.t("aiSessions")),
       }),
     ).toBeInTheDocument();
     expect(
@@ -156,6 +141,66 @@ describe("App 侧边栏菜单分组", () => {
     ).not.toBeInTheDocument();
     expect(
       within(capabilitiesGroup).queryByRole("button", {
+        name: namePattern(i18n.t("subagents", "Subagents")),
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("AI 扩展分组承载 skills、MCP Servers 与 subagents，工具分组保留原有工具项", async () => {
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+    await screen.findByText("OneSpace");
+
+    const extensionsGroup = groupContainer(/^(AI 扩展|AI Extensions)$/);
+
+    expect(
+      within(extensionsGroup).getByRole("button", {
+        name: namePattern(i18n.t("skills", "Skills")),
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(extensionsGroup).getByRole("button", {
+        name: namePattern("MCP Servers"),
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(extensionsGroup).getByRole("button", {
+        name: namePattern(i18n.t("subagents", "Subagents")),
+      }),
+    ).toBeInTheDocument();
+
+    const toolsGroup = groupContainer(/^(工具|Tools)$/);
+
+    expect(
+      within(toolsGroup).getByRole("button", {
+        name: namePattern(i18n.t("snippets", "Snippets")),
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(toolsGroup).getByRole("button", {
+        name: namePattern(i18n.t("notes", "Notes")),
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(toolsGroup).getByRole("button", {
+        name: /^(更多工具|More Tools)$/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(toolsGroup).queryByRole("button", {
+        name: namePattern(i18n.t("skills", "Skills")),
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(toolsGroup).queryByRole("button", {
+        name: namePattern("MCP Servers"),
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(toolsGroup).queryByRole("button", {
         name: namePattern(i18n.t("subagents", "Subagents")),
       }),
     ).not.toBeInTheDocument();
