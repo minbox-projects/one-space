@@ -244,7 +244,7 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
     vi.useRealTimers();
   });
 
-  it("schedulesTheFirstBatchOnlyAfterTheConfiguredIntervalAndSkipsBlankModelsUrl", async () => {
+  it("runsOneBatchImmediatelyAtMountThenOnlyOnTheIntervalAndSkipsBlankModelsUrl", async () => {
     installInvoke({
       interval: 10,
       templates: [
@@ -259,19 +259,22 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
     mountAutoRefresh();
     await settle();
 
-    // 挂载时只读取间隔，不立即执行批次
+    // 挂载读取一次间隔后立即执行一个批次
     expect(autoRefreshReads()).toBe(1);
-    expect(batchCount()).toBe(0);
-    expect(syncIds()).toEqual([]);
-
-    await settle(9 * 60_000);
-    expect(batchCount()).toBe(0);
-    expect(syncIds()).toEqual([]);
-
-    await settle(60_000);
     expect(batchCount()).toBe(1);
     // 仅同步 models_url 非空的模板，且保持列表顺序
     expect(syncIds()).toEqual(["t1", "t2"]);
+
+    await settle(9 * 60_000);
+    expect(batchCount()).toBe(1);
+    expect(syncIds()).toEqual(["t1", "t2"]);
+
+    await settle(60_000);
+    expect(batchCount()).toBe(2);
+    expect(syncIds()).toEqual(["t1", "t2", "t1", "t2"]);
+
+    // 原始间隔读取只发生一次
+    expect(autoRefreshReads()).toBe(1);
   });
 
   it("intervalZeroNeverRunsABatch", async () => {
@@ -283,6 +286,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
+    // 0 归一化为 null：挂载时也不立即执行批次
+    expect(batchCount()).toBe(0);
     await settle(60 * 60_000);
 
     expect(batchCount()).toBe(0);
@@ -303,6 +308,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     expect(() => mountAutoRefresh()).not.toThrow();
     await settle();
+    // 归一化为 null：挂载时也不立即执行批次
+    expect(batchCount()).toBe(0);
     await settle(60 * 60_000);
 
     expect(batchCount()).toBe(0);
@@ -323,7 +330,7 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
     mountAutoRefresh();
     await settle();
 
-    await settle(10 * 60_000);
+    // 挂载立即批次：t1 的同步被挂起，批次仍在进行中
     expect(batchCount()).toBe(1);
     expect(syncIds()).toEqual(["t1"]);
 
@@ -361,9 +368,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     const { result } = mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
-    // 失败模板之后，健康模板仍在同一批次内被同步
+    // 挂载立即批次：失败模板之后，健康模板仍在同一批次内被同步
     expect(syncIds()).toEqual(["t1", "t2"]);
     expect(Object.keys(result.current)).toEqual(["t1"]);
     expect(result.current.t1).toContain("network down");
@@ -390,7 +396,6 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
     expect(syncIds()).toEqual(["t1", "t2"]);
 
@@ -425,7 +430,7 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
     const { result, unmount } = mountAutoRefresh();
     await settle();
 
-    await settle(10 * 60_000);
+    // 挂载立即批次即失败
     expect(result.current.t1).toContain("first failure");
 
     // 下一次成功批次自动清除该模板的失败
@@ -458,18 +463,21 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
     mountAutoRefresh();
     await settle();
 
+    // 挂载立即批次先同步两个模板
+    expect(syncIds()).toEqual(["t1", "t2"]);
+
     act(() => setTemplateSyncInFlight("t1", true));
     expect(isTemplateSyncInFlight("t1")).toBe(true);
 
     await settle(10 * 60_000);
     // t1 正被手动同步，自动批次必须跳过它但仍同步 t2
-    expect(syncIds()).toEqual(["t2"]);
+    expect(syncIds()).toEqual(["t1", "t2", "t2"]);
 
     act(() => setTemplateSyncInFlight("t1", false));
     expect(isTemplateSyncInFlight("t1")).toBe(false);
 
     await settle(10 * 60_000);
-    expect(syncIds()).toEqual(["t2", "t1", "t2"]);
+    expect(syncIds()).toEqual(["t1", "t2", "t2", "t1", "t2"]);
   });
 
   it("recomputesTheTimerWhenThePersistedIntervalChanges", async () => {
@@ -479,25 +487,57 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
     mountAutoRefresh();
     await settle();
 
-    // 持久化改为 0 并通知后，不再有任何触发
+    // 挂载立即批次
+    expect(batchCount()).toBe(1);
+    expect(syncIds()).toEqual(["t1"]);
+
+    // 持久化改为 0 并通知后，不再有任何触发（通知本身也不立即执行批次）
     installInvoke({ interval: 0, templates, sync: () => ({}) });
     act(() => notifyTemplateAutoRefreshIntervalChanged());
     await settle();
     await settle(30 * 60_000);
-    expect(batchCount()).toBe(0);
+    expect(batchCount()).toBe(1);
+    expect(syncIds()).toEqual(["t1"]);
 
     // 改为 20 并通知：下一次触发应在通知后 20 分钟（不是 10 分钟，也不是立即）
     installInvoke({ interval: 20, templates, sync: () => ({}) });
     act(() => notifyTemplateAutoRefreshIntervalChanged());
     await settle();
-    expect(batchCount()).toBe(0);
+    expect(batchCount()).toBe(1);
 
     await settle(19 * 60_000);
-    expect(batchCount()).toBe(0);
+    expect(batchCount()).toBe(1);
 
     await settle(60_000);
+    expect(batchCount()).toBe(2);
+    expect(syncIds()).toEqual(["t1", "t1"]);
+  });
+
+  it("anIntervalChangeNotificationNeverRunsAnImmediateBatch", async () => {
+    const templates = [makeView("t1", "https://one.test/models")];
+    installInvoke({ interval: 10, templates, sync: () => ({}) });
+
+    mountAutoRefresh();
+    await settle();
+    // 挂载立即批次
     expect(batchCount()).toBe(1);
     expect(syncIds()).toEqual(["t1"]);
+
+    // 收到间隔变更通知且新间隔有效：只重排定时器，不立即执行批次
+    installInvoke({ interval: 5, templates, sync: () => ({}) });
+    act(() => notifyTemplateAutoRefreshIntervalChanged());
+    await settle();
+    expect(batchCount()).toBe(1);
+    expect(syncIds()).toEqual(["t1"]);
+
+    // 新间隔（5 分钟）尚未走完：仍无新批次
+    await settle(4 * 60_000);
+    expect(batchCount()).toBe(1);
+
+    // 走完新间隔后才有第二个批次
+    await settle(60_000);
+    expect(batchCount()).toBe(2);
+    expect(syncIds()).toEqual(["t1", "t1"]);
   });
 
   // -------------------------------------------------------------------------
@@ -535,8 +575,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
+    // 挂载立即批次产生这一条通知
     expect(syncIds()).toEqual(["opencode-zen"]);
 
     const messages = recordedMessages();
@@ -579,8 +619,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
+    // 挂载立即批次产生这一条通知
     const messages = recordedMessages();
     expect(messages).toHaveLength(1);
     expect(messages[0].source).toBe("ai_gateway");
@@ -617,8 +657,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
+    // 挂载立即批次产生这一条通知
     const messages = recordedMessages();
     expect(messages).toHaveLength(1);
     expect(messages[0].detail).toContain("m");
@@ -671,8 +711,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
+    // 挂载立即批次
     expect(syncIds()).toEqual(["opencode-zen"]);
     expect(recordedMessages()).toHaveLength(0);
   });
@@ -705,8 +745,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
+    // 挂载立即批次
     expect(syncIds()).toEqual(["opencode-zen"]);
     expect(recordedMessages()).toHaveLength(0);
   });
@@ -752,8 +792,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
+    // 挂载立即批次
     expect(syncIds()).toEqual(["opencode-zen"]);
     expect(recordedMessages()).toHaveLength(0);
   });
@@ -791,8 +831,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
+    // 挂载立即批次
     expect(syncIds()).toEqual(["T1", "T2"]);
     const messages = recordedMessages();
     expect(messages).toHaveLength(1);
@@ -836,8 +876,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
+    // 挂载立即批次产生这一条通知
     const messages = recordedMessages();
     expect(messages).toHaveLength(1);
     const [message] = messages;
@@ -886,8 +926,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
+    // 挂载立即批次产生这一条通知
     const messages = recordedMessages();
     expect(messages).toHaveLength(1);
     expect(messages[0].detail).toContain("local-alias");
@@ -927,9 +967,10 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
+    // 挂载立即批次 = 第一个周期
     expect(recordedMessages()).toHaveLength(1);
 
+    // 第二个周期由间隔触发
     await settle(10 * 60_000);
     const messages = recordedMessages();
     expect(messages).toHaveLength(2);
@@ -964,8 +1005,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
+    // 挂载立即批次
     expect(syncIds()).toEqual(["T1", "T2"]);
     const messages = recordedMessages();
     expect(messages).toHaveLength(1);
@@ -996,8 +1037,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
+    // 挂载立即批次
     expect(syncIds()).toEqual(["T1", "T2"]);
     const messages = recordedMessages();
     expect(messages).toHaveLength(1);
@@ -1018,8 +1059,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
+    // 挂载立即批次
     expect(syncIds()).toEqual(["T1", "T2"]);
     expect(recordedMessages()).toHaveLength(0);
   });
@@ -1050,8 +1091,8 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
 
     mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
 
+    // 挂载立即批次
     expect(syncIds()).toEqual(["T1", "T2"]);
     expect(safeRecordMessageMock).toHaveBeenCalledTimes(2);
     const messages = recordedMessages();
@@ -1091,7 +1132,6 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
     scenario();
     const enMount = mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
     enMount.unmount();
 
     await setLanguage("zh");
@@ -1101,7 +1141,6 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
     scenario();
     const zhMount = mountAutoRefresh();
     await settle();
-    await settle(10 * 60_000);
     zhMount.unmount();
 
     const messages = recordedMessages();

@@ -317,13 +317,17 @@ export function useTemplateAutoRefresh(): void {
   }, []);
 
   const applyInterval = useCallback(
-    (value: unknown) => {
+    (value: unknown, runOnce = false) => {
       clearTimer();
       const minutes = normalizeTemplateAutoRefreshInterval(value);
       if (minutes === null) return;
       timerRef.current = setInterval(() => {
         void runBatch();
       }, minutes * 60_000);
+      // The startup read treats a valid interval as an already-elapsed cycle:
+      // run exactly one batch now, then keep the interval schedule above. The
+      // in-flight guard dedupes the StrictMode double-mount.
+      if (runOnce) void runBatch();
     },
     [clearTimer, runBatch],
   );
@@ -331,20 +335,22 @@ export function useTemplateAutoRefresh(): void {
   useEffect(() => {
     let cancelled = false;
 
-    const readAndApplyInterval = async () => {
+    const readAndApplyInterval = async (runOnce = false) => {
       try {
         const minutes = await aiGatewayTemplateAutoRefreshGet();
         if (cancelled) return;
-        applyInterval(minutes);
+        applyInterval(minutes, runOnce);
       } catch {
         // A read failure leaves the schedule stopped.
         if (!cancelled) applyInterval(0);
       }
     };
 
-    void readAndApplyInterval();
+    void readAndApplyInterval(true);
 
     const unsubscribe = subscribeTemplateAutoRefreshIntervalChanged(() => {
+      // A persisted-interval change only re-reads and re-applies the schedule;
+      // it never starts an immediate batch.
       void readAndApplyInterval();
     });
 
