@@ -506,12 +506,17 @@ pub fn get_mcp_templates() -> Vec<MCPTemplate> {
     ]
 }
 
+// Retained without production callers after the AI workspace removal; see the
+// decision record
+// .ai-workflow/notes/implemented/simplification/2026-09-29-ai-workspace-removal.md
+#[allow(dead_code)]
 pub fn find_mcp_template_for_server(server: &MCPServer) -> Option<MCPTemplate> {
     get_mcp_templates()
         .into_iter()
         .find(|template| server_matches_template(server, template))
 }
 
+#[allow(dead_code)]
 fn server_matches_template(server: &MCPServer, template: &MCPTemplate) -> bool {
     if server.id == format!("mcp-{}", template.id) {
         return true;

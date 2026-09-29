@@ -8,7 +8,6 @@ mod windows_data;
 
 use cli::*;
 use runtime_services::*;
-use shortcuts_tray::*;
 use windows_data::*;
 
 pub(crate) use cli::get_git_command;

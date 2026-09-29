@@ -1,3 +1,8 @@
+// The MCP session runtime is intentionally retained without production callers
+// after the AI workspace removal; see the decision record
+// .ai-workflow/notes/implemented/simplification/2026-09-29-ai-workspace-removal.md
+#![allow(dead_code)]
+
 use crate::mcp_servers::{MCPServer, MCPServerTransport};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
 use reqwest::Url;
