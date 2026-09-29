@@ -694,4 +694,79 @@ describe("SettingsView", () => {
       await i18n.changeLanguage("en");
     }
   });
+
+  it("hides the Workflow Presets sync scope and saves a policy without it", async () => {
+    const user = userEvent.setup();
+    const baseImplementation = invokeMock.getMockImplementation()!;
+    const icloudConfig = {
+      ...structuredClone(baseStorageConfig),
+      storage_type: "icloud",
+      sync_policy: {
+        providers: true,
+        mcp: true,
+        content: true,
+        skills_sources: true,
+        skills_repository: false,
+        subagents_sources: true,
+        subagents_repository: false,
+        ai_news: false,
+      },
+    };
+
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "get_storage_config") {
+        return structuredClone(icloudConfig);
+      }
+      return baseImplementation(command, args);
+    });
+
+    renderWithProviders(<SettingsView initialTab="storage" onBack={() => {}} />);
+
+    // The sync scope section renders for a non-local storage type.
+    expect(await screen.findByText("Sync Data Scope")).toBeInTheDocument();
+    expect(
+      screen.getByText("AI Terminal Service Providers"),
+    ).toBeInTheDocument();
+
+    // The removed Workflow Presets scope renders no label and no toggle.
+    expect(screen.queryByText("Workflow Presets")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Workflow\s+Presets/i)).not.toBeInTheDocument();
+
+    // Toggle a remaining scope so the storage section is dirty and savable.
+    const scopeSwitches = screen.getAllByRole("switch");
+    await user.click(scopeSwitches[0]);
+
+    // Saving the storage section persists a policy without the removed scope.
+    await user.click(
+      screen.getByRole("button", { name: /Save Settings|保存设置/ }),
+    );
+    const confirmButtons = screen.getAllByRole("button", { name: /Save|保存/ });
+    await user.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "save_storage_config",
+        expect.objectContaining({
+          config: expect.objectContaining({
+            sync_policy: expect.objectContaining({
+              mcp: true,
+              content: true,
+              skills_sources: true,
+              subagents_sources: true,
+            }),
+          }),
+        }),
+      ),
+    );
+
+    const saveCall = invokeMock.mock.calls.find(
+      ([command]) => command === "save_storage_config",
+    );
+    const savedSyncPolicy = (
+      saveCall?.[1] as {
+        config: { sync_policy: Record<string, unknown> };
+      }
+    ).config.sync_policy;
+    expect(Object.keys(savedSyncPolicy)).not.toContain("workflow_presets");
+  });
 });

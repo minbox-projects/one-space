@@ -75,7 +75,6 @@ interface SyncPolicy {
   providers: boolean;
   mcp: boolean;
   content: boolean;
-  workflow_presets: boolean;
   skills_sources: boolean;
   skills_repository: boolean;
   subagents_sources: boolean;
@@ -399,7 +398,6 @@ const DEFAULT_SYNC_POLICY: SyncPolicy = {
   providers: true,
   mcp: true,
   content: true,
-  workflow_presets: true,
   skills_sources: true,
   skills_repository: false,
   subagents_sources: true,
@@ -1421,7 +1419,6 @@ export function SettingsView({
             providers: policy.providers,
             mcp: policy.mcp,
             content: policy.content,
-            workflow_presets: policy.workflow_presets,
             skills_sources: policy.skills_sources,
             skills_repository: policy.skills_repository,
             subagents_sources: policy.subagents_sources,
@@ -2964,14 +2961,6 @@ export function SettingsView({
       titleFallback: "Content Data",
       descKey: "syncScopeContentDesc",
       descFallback: "Sync encrypted notes, bookmarks, and snippets only.",
-    },
-    {
-      key: "workflow_presets",
-      titleKey: "syncScopeWorkflowPresets",
-      titleFallback: "Workflow Presets",
-      descKey: "syncScopeWorkflowPresetsDesc",
-      descFallback:
-        "Sync workflow preset definitions (workflow_presets.json), excluding workflow run history.",
     },
     {
       key: "skills_sources",
