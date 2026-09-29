@@ -2,7 +2,7 @@ use crate::{
     ai_assistant, ai_env, ai_news, ai_sessions, ai_workflow_profiles, ai_gateway, app_store,
     assistant_mcp, backup, cli_updates, config, config_conflict, file_sharing, mcp_export,
     mcp_servers, mcp_templates, messages, protocol_router, proxy, secrets, short_link, skills,
-    ssh_tunnels, storage, subagents, version_detect, workflows, workspaces,
+    ssh_tunnels, storage, subagents, version_detect, workspaces,
 };
 use std::str::FromStr;
 use tauri::menu::{Menu, MenuItem};
@@ -119,17 +119,12 @@ pub fn run() {
             let should_show_onboarding = config::should_show_onboarding().unwrap_or(false);
             if !should_show_onboarding {
                 let _ = app_store::ensure_migrated_on_startup();
-                let _ = workflows::workflows_cleanup_runtime_profiles_on_startup();
                 workspaces::schedule_sync_from_sessions(app.handle().clone());
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let _ = ssh_tunnels::ssh_tunnels_bootstrap(app_handle).await;
                 });
             }
-            std::thread::spawn(|| loop {
-                std::thread::sleep(std::time::Duration::from_secs(30 * 60));
-                let _ = workflows::workflows_cleanup_runtime_profiles_on_startup();
-            });
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let _ = crate::skills::skills_initialize_unified();
@@ -468,17 +463,6 @@ pub fn run() {
             subagents::subagents_rescan_mirror,
             subagents::subagents_reconcile,
             subagents::subagents_open_folder,
-            // Workflows
-            workflows::workflows_presets_list,
-            workflows::workflows_preset_upsert,
-            workflows::workflows_preset_delete,
-            workflows::workflows_check_dependencies,
-            workflows::workflows_apply_dependencies,
-            workflows::workflows_launch_preset,
-            workflows::workflows_replay_run,
-            workflows::workflows_runs_list,
-            workflows::workflows_run_update,
-            workflows::workflows_run_delete,
             // AI Workflow Profiles
             ai_workflow_profiles::ai_workflow_list_profiles,
             ai_workflow_profiles::ai_workflow_get_profile_matrix,

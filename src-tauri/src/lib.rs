@@ -31,7 +31,6 @@ mod ssh_tunnels;
 mod storage;
 mod subagents;
 mod version_detect;
-mod workflows;
 mod workspaces;
 
 mod app_runtime;
