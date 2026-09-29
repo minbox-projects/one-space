@@ -1608,6 +1608,19 @@ const resources = {
       sshTunnelGroupDisconnectPartialDesc:
         "Disconnected {{success}}, failed {{failed}}. Failed tunnels: {{names}}",
       sshTunnelGroupDisconnectFailed: "Group disconnect failed",
+      sshTunnelConnectedView: "Connected",
+      sshTunnelConnectedViewAria: "View all active tunnels ({{count}})",
+      sshTunnelConnectedEmpty:
+        "No active or connected SSH tunnels currently.",
+      sshTunnelConnectedDisconnectAll: "Disconnect all active tunnels",
+      sshTunnelAllDisconnectSuccessTitle: "All tunnels disconnected",
+      sshTunnelAllDisconnectSuccessDesc:
+        "Disconnected {{count}} active tunnel(s){{skipped}}.",
+      sshTunnelGroupStatusTooltipConnected: "{{connected}} connected",
+      sshTunnelGroupStatusTooltipMixed:
+        "{{connected}} connected, {{errors}} failed",
+      sshTunnelGroupStatusTooltipError: "{{errors}} failed",
+      sshTunnelGroupStatusTooltipConnecting: "Connecting...",
       launcherSshTunnelConnecting: "Connecting...",
       launcherSshTunnelConnectedAria:
         "{{count}} SSH tunnels connected",
@@ -5617,6 +5630,18 @@ const resources = {
       sshTunnelGroupDisconnectPartialDesc:
         "成功断开 {{success}} 个，失败 {{failed}} 个。失败隧道：{{names}}",
       sshTunnelGroupDisconnectFailed: "分组断开失败",
+      sshTunnelConnectedView: "已连接",
+      sshTunnelConnectedViewAria: "查看全部正在连接的隧道 ({{count}})",
+      sshTunnelConnectedEmpty: "当前暂无正在连接或运行中的 SSH 隧道。",
+      sshTunnelConnectedDisconnectAll: "断开全部运行中隧道",
+      sshTunnelAllDisconnectSuccessTitle: "全部隧道已断开",
+      sshTunnelAllDisconnectSuccessDesc:
+        "已断开 {{count}} 条隧道{{skipped}}。",
+      sshTunnelGroupStatusTooltipConnected: "{{connected}} 个已连接",
+      sshTunnelGroupStatusTooltipMixed:
+        "{{connected}} 个已连接，{{errors}} 个失败",
+      sshTunnelGroupStatusTooltipError: "{{errors}} 个连接失败",
+      sshTunnelGroupStatusTooltipConnecting: "正在连接中...",
       launcherSshTunnelConnecting: "正在连接...",
       launcherSshTunnelConnectedAria: "已连接 {{count}} 条 SSH 隧道",
       launcherSshTunnelConnectingAria: "SSH 隧道正在自动连接中。",

@@ -62,6 +62,7 @@ import { getToolboxTool } from "@/toolbox/registry";
 import { useTauriEvent } from "@/toolbox/useTauriEvent";
 import { useVisibleInterval } from "@/toolbox/useVisibleInterval";
 import { ToolStatusBadge, type ToolStatusTone } from "./toolbox/ToolStatusBadge";
+import { ToolStatusDot, type ToolStatusDotTone } from "./toolbox/ToolStatusDot";
 import { ToolEmptyState } from "./toolbox/ToolEmptyState";
 import {
   sshHostsList,
@@ -74,10 +75,13 @@ import {
   sshTunnelGroupUpsert,
   sshTunnelProbeDraft,
   sshTunnelProbeSaved,
+  sshTunnelsDisconnectAll,
   sshTunnelsRefreshStatus,
   sshTunnelsSnapshot,
   sshTunnelUpsert,
 } from "@/lib/sshTunnels";
+
+const ALL_CONNECTED_TAB_ID = "__connected__";
 
 function parseOptionalPort(value: string): number | null {
   const trimmed = value.trim();
@@ -277,13 +281,113 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     [groups],
   );
 
-  const visibleTunnels = useMemo(
-    () =>
-      tunnels.filter(
-        (tunnel) => normalizeTunnelGroupId(tunnel.group_id) === activeGroupId,
-      ),
-    [tunnels, activeGroupId],
-  );
+  const isConnectedView = activeGroupId === ALL_CONNECTED_TAB_ID;
+
+  const groupStatusMap = useMemo(() => {
+    const result: Record<
+      string,
+      {
+        tone: ToolStatusDotTone | null;
+        connectedCount: number;
+        errorCount: number;
+        connectingCount: number;
+        tooltip: string;
+      }
+    > = {};
+
+    for (const group of groups) {
+      const groupTunnels = tunnels.filter(
+        (tunnel) => normalizeTunnelGroupId(tunnel.group_id) === group.id,
+      );
+      let connectedCount = 0;
+      let errorCount = 0;
+      let connectingCount = 0;
+
+      for (const tunnel of groupTunnels) {
+        const st = runtimeMap[tunnel.id]?.status;
+        if (st === "connected") connectedCount++;
+        else if (st === "error") errorCount++;
+        else if (st === "connecting" || st === "reconnecting") connectingCount++;
+      }
+
+      let tone: ToolStatusDotTone | null = null;
+      if (errorCount > 0) {
+        tone = "error";
+      } else if (connectingCount > 0) {
+        tone = "warning";
+      } else if (connectedCount > 0) {
+        tone = "success";
+      }
+
+      let tooltip = "";
+      if (connectedCount > 0 && errorCount > 0) {
+        tooltip = t("sshTunnelGroupStatusTooltipMixed", {
+          connected: connectedCount,
+          errors: errorCount,
+          defaultValue: `${connectedCount} connected, ${errorCount} failed`,
+        });
+      } else if (errorCount > 0) {
+        tooltip = t("sshTunnelGroupStatusTooltipError", {
+          errors: errorCount,
+          defaultValue: `${errorCount} failed`,
+        });
+      } else if (connectingCount > 0) {
+        tooltip = t("sshTunnelGroupStatusTooltipConnecting", "Connecting...");
+      } else if (connectedCount > 0) {
+        tooltip = t("sshTunnelGroupStatusTooltipConnected", {
+          connected: connectedCount,
+          defaultValue: `${connectedCount} connected`,
+        });
+      }
+
+      result[group.id] = {
+        tone,
+        connectedCount,
+        errorCount,
+        connectingCount,
+        tooltip,
+      };
+    }
+
+    return result;
+  }, [groups, tunnels, runtimeMap, t]);
+
+  const connectedTunnels = useMemo(() => {
+    return tunnels.filter((tunnel) => {
+      const st = runtimeMap[tunnel.id]?.status;
+      return (
+        st === "connected" ||
+        st === "connecting" ||
+        st === "reconnecting" ||
+        st === "error"
+      );
+    });
+  }, [tunnels, runtimeMap]);
+
+  const connectedViewTone: ToolStatusDotTone | null = useMemo(() => {
+    let hasError = false;
+    let hasConnecting = false;
+    let hasConnected = false;
+    for (const t of connectedTunnels) {
+      const st = runtimeMap[t.id]?.status;
+      if (st === "error") hasError = true;
+      else if (st === "connecting" || st === "reconnecting") hasConnecting = true;
+      else if (st === "connected") hasConnected = true;
+    }
+    if (hasError) return "error";
+    if (hasConnecting) return "warning";
+    if (hasConnected) return "success";
+    return null;
+  }, [connectedTunnels, runtimeMap]);
+
+  const visibleTunnels = useMemo(() => {
+    if (isConnectedView) {
+      return connectedTunnels;
+    }
+    return tunnels.filter(
+      (tunnel) => normalizeTunnelGroupId(tunnel.group_id) === activeGroupId,
+    );
+  }, [isConnectedView, connectedTunnels, tunnels, activeGroupId]);
 
   const getGroupLabel = (groupId?: string | null) => {
     if (!groupId || groupId === DEFAULT_TUNNEL_GROUP_ID) {
@@ -559,9 +663,10 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
 
   useEffect(() => {
     if (groups.length === 0) return;
-    setActiveGroupId((prev) =>
-      groups.some((group) => group.id === prev) ? prev : DEFAULT_TUNNEL_GROUP_ID,
-    );
+    setActiveGroupId((prev) => {
+      if (prev === ALL_CONNECTED_TAB_ID) return prev;
+      return groups.some((group) => group.id === prev) ? prev : DEFAULT_TUNNEL_GROUP_ID;
+    });
   }, [groups]);
 
   const notify = (
@@ -1080,6 +1185,86 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     }
   };
 
+  const handleAllDisconnect = async () => {
+    if (!isTauri) return;
+
+    const candidates = tunnels.filter((tunnel) => {
+      const status = runtimeMap[tunnel.id]?.status;
+      return status === "connected" || status === "connecting";
+    });
+
+    if (candidates.length === 0) {
+      pushToast({
+        title: t("sshTunnelGroupNoDisconnectable"),
+        description: t("sshTunnelGroupDisconnectInfo"),
+        kind: "info",
+      });
+      return;
+    }
+
+    try {
+      setGroupBusyAction("disconnect");
+      const result = await sshTunnelsDisconnectAll<SshTunnelBatchOperationResult>();
+      await loadData();
+
+      if (result.failed_count === 0) {
+        const skipped =
+          result.skipped_count > 0
+            ? t("sshTunnelGroupSkippedDisconnected", { count: result.skipped_count })
+            : "";
+        await notifyActionResult(
+          { pushToast, recordMessage: safeRecordMessage },
+          {
+            source: "ssh_tunnels",
+            category: "disconnect",
+            action: "tunnels-disconnect-all",
+            target: { tab: "ssh-tunnels", entity_id: "all" },
+            dedupeKey: "ssh-tunnels:disconnect:all",
+          },
+          "success",
+          {
+            title: t("sshTunnelAllDisconnectSuccessTitle"),
+            summary: t("sshTunnelAllDisconnectSuccessDesc", {
+              count: result.success_count,
+              skipped,
+            }),
+          },
+        );
+      } else {
+        const failureNames = result.failures.map((f) => f.tunnel_name).join(", ");
+        await notifyActionResult(
+          { pushToast, recordMessage: safeRecordMessage },
+          {
+            source: "ssh_tunnels",
+            category: "disconnect",
+            action: "tunnels-disconnect-all",
+            target: { tab: "ssh-tunnels", entity_id: "all" },
+            dedupeKey: "ssh-tunnels:disconnect:all:partial",
+          },
+          "error",
+          {
+            title: t("sshTunnelGroupDisconnectPartialTitle"),
+            summary: t("sshTunnelGroupDisconnectPartialDesc", {
+              success: result.success_count,
+              failed: result.failed_count,
+              names: failureNames,
+            }),
+          },
+        );
+      }
+    } catch (err) {
+      const text = formatTunnelError(err);
+      setError(text);
+      pushToast({
+        title: text,
+        description: t("sshTunnelGroupDisconnectFailed"),
+        kind: "error",
+      });
+    } finally {
+      setGroupBusyAction(null);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col space-y-6">
       <div className="flex items-start justify-between gap-4">
@@ -1145,25 +1330,84 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
+        <div className="inline-flex w-fit items-center rounded-lg border border-black bg-white p-1">
+          <button
+            type="button"
+            onClick={() => setActiveGroupId(ALL_CONNECTED_TAB_ID)}
+            title={
+              connectedViewTone
+                ? t("sshTunnelConnectedViewAria", {
+                    count: connectedTunnels.length,
+                    defaultValue: `View all active tunnels (${connectedTunnels.length})`,
+                  })
+                : undefined
+            }
+            className={`group relative inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition-colors ${
+              isConnectedView
+                ? "bg-black text-white"
+                : "bg-white text-black hover:bg-neutral-50"
+            }`}
+            data-testid="ssh-tunnel-connected-view-tab"
+          >
+            <Activity
+              className={`h-3.5 w-3.5 transition-colors ${
+                isConnectedView
+                  ? "text-white"
+                  : "text-muted-foreground group-hover:text-foreground"
+              }`}
+            />
+            <span className="font-medium">{t("sshTunnelConnectedView", "Connected")}</span>
+            <span
+              className={`rounded-full px-1.5 py-0.2 text-[11px] font-semibold transition-colors ${
+                isConnectedView
+                  ? "bg-white/20 text-white"
+                  : "bg-muted text-muted-foreground group-hover:bg-muted/80 group-hover:text-foreground"
+              }`}
+            >
+              {connectedTunnels.length}
+            </span>
+            {connectedViewTone && (
+              <ToolStatusDot
+                tone={connectedViewTone}
+                className="right-0.5 top-0.5"
+                testId="connected-view-status-dot"
+              />
+            )}
+          </button>
+          <div
+            className="mx-1 h-4 w-px bg-neutral-300 dark:bg-neutral-600"
+            aria-hidden="true"
+          />
           {groups.map((group) => {
             const label = group.is_default
               ? t("sshTunnelDefaultGroup")
               : group.name;
+            const statusInfo = groupStatusMap[group.id];
+            const isActive = !isConnectedView && activeGroupId === group.id;
             return (
               <button
                 key={group.id}
                 type="button"
                 onClick={() => setActiveGroupId(group.id)}
-                className={`px-3 py-1.5 rounded-md text-sm ${
-                  activeGroupId === group.id ? "bg-black text-white" : "bg-white text-black"
+                title={statusInfo?.tooltip || undefined}
+                className={`relative px-3 py-1.5 rounded-md text-sm transition-colors ${
+                  isActive ? "bg-black text-white" : "bg-white text-black"
                 }`}
+                data-testid={`ssh-tunnel-group-tab-${group.id}`}
               >
-                {label}
+                <span>{label}</span>
+                {statusInfo?.tone && (
+                  <ToolStatusDot
+                    tone={statusInfo.tone}
+                    className="right-0.5 top-0.5"
+                    testId={`group-tab-dot-${group.id}`}
+                  />
+                )}
               </button>
             );
           })}
         </div>
+
         <div className="relative" data-group-menu-root>
           <button
             type="button"
@@ -1183,42 +1427,64 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
           {groupMenuOpen ? (
             <div
               role="menu"
-              className="absolute left-0 top-full z-20 mt-1 w-40 rounded-lg border bg-popover p-1 shadow-lg"
+              className="absolute left-0 top-full z-20 mt-1 w-44 rounded-lg border bg-popover p-1 shadow-lg"
             >
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setGroupMenuOpen(false);
-                  void handleGroupBatch("connect", activeGroupId);
-                }}
-                disabled={visibleTunnels.filter(
-                  (tunnel) =>
-                    runtimeMap[tunnel.id]?.status !== "connected" &&
-                    runtimeMap[tunnel.id]?.status !== "connecting",
-                ).length === 0}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50"
-              >
-                <Play className="h-3.5 w-3.5" />
-                {t("sshTunnelGroupConnectAll")}
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setGroupMenuOpen(false);
-                  void handleGroupBatch("disconnect", activeGroupId);
-                }}
-                disabled={visibleTunnels.filter(
-                  (tunnel) =>
-                    runtimeMap[tunnel.id]?.status === "connected" ||
-                    runtimeMap[tunnel.id]?.status === "connecting",
-                ).length === 0}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
-              >
-                <Unplug className="h-3.5 w-3.5" />
-                {t("sshTunnelGroupDisconnectAll")}
-              </button>
+              {isConnectedView ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setGroupMenuOpen(false);
+                    void handleAllDisconnect();
+                  }}
+                  disabled={visibleTunnels.filter(
+                    (tunnel) =>
+                      runtimeMap[tunnel.id]?.status === "connected" ||
+                      runtimeMap[tunnel.id]?.status === "connecting",
+                  ).length === 0}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+                >
+                  <Unplug className="h-3.5 w-3.5" />
+                  {t("sshTunnelConnectedDisconnectAll", "Disconnect all active tunnels")}
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setGroupMenuOpen(false);
+                      void handleGroupBatch("connect", activeGroupId);
+                    }}
+                    disabled={visibleTunnels.filter(
+                      (tunnel) =>
+                        runtimeMap[tunnel.id]?.status !== "connected" &&
+                        runtimeMap[tunnel.id]?.status !== "connecting",
+                    ).length === 0}
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50"
+                  >
+                    <Play className="h-3.5 w-3.5" />
+                    {t("sshTunnelGroupConnectAll")}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setGroupMenuOpen(false);
+                      void handleGroupBatch("disconnect", activeGroupId);
+                    }}
+                    disabled={visibleTunnels.filter(
+                      (tunnel) =>
+                        runtimeMap[tunnel.id]?.status === "connected" ||
+                        runtimeMap[tunnel.id]?.status === "connecting",
+                    ).length === 0}
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+                  >
+                    <Unplug className="h-3.5 w-3.5" />
+                    {t("sshTunnelGroupDisconnectAll")}
+                  </button>
+                </>
+              )}
               <div className="my-1 border-t" />
               <button
                 type="button"
@@ -1248,21 +1514,25 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
             <div className="space-y-4">
               <ToolEmptyState
                 title={
-                  tunnels.length === 0
-                    ? t("sshTunnelEmpty")
-                    : t("sshTunnelEmptyForGroup")
+                  isConnectedView
+                    ? t("sshTunnelConnectedEmpty", "No active or connected SSH tunnels currently.")
+                    : tunnels.length === 0
+                      ? t("sshTunnelEmpty")
+                      : t("sshTunnelEmptyForGroup")
                 }
               />
-              <div className="flex justify-center">
-                <button
-                  type="button"
-                  onClick={openCreateEditor}
-                  className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                >
-                  <Plus className="h-4 w-4" />
-                  {t("newSshTunnel")}
-                </button>
-              </div>
+              {!isConnectedView && (
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    onClick={openCreateEditor}
+                    className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                  >
+                    <Plus className="h-4 w-4" />
+                    {t("newSshTunnel")}
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-4">

@@ -322,4 +322,239 @@ describe("SshTunnels", () => {
       screen.getByText(/部分断开成功|Disconnect partially|partially failed/i),
     ).toBeInTheDocument();
   });
+
+  it("分组 Tab 根据其名下隧道运行状态展示连接成功或失败徽标", async () => {
+    const devGroup: SshTunnelGroupView = {
+      id: "group-dev",
+      name: "Development",
+      created_at: 10,
+      updated_at: 10,
+      is_default: false,
+    };
+    const tunnelBeta: SshTunnelView = {
+      id: "tunnel-beta",
+      name: "Beta Tunnel",
+      group_id: "group-dev",
+      source_kind: "saved_host",
+      saved_host_name: "beta-host",
+      custom: null,
+      forward: {
+        mode: "local",
+        local_bind_host: "127.0.0.1",
+        local_port: 6379,
+        target_host: "127.0.0.1",
+        target_port: 6379,
+      },
+      auto_connect: false,
+      auto_reconnect: true,
+      created_at: 10,
+      updated_at: 10,
+      last_connected_at: null,
+      last_error: null,
+    };
+
+    const multiGroupSnapshot: SshTunnelsSnapshot = {
+      groups: [defaultGroup, devGroup],
+      tunnels: [tunnelAlpha, tunnelBeta],
+      runtime: [
+        runtime("connected", "Alpha running"),
+        {
+          id: tunnelBeta.id,
+          status: "error",
+          active_client_count: 0,
+          mode: "local",
+          summary: "Beta connection error",
+          resolved_server_host: null,
+          listening_addr: null,
+          last_error: "Connection refused",
+        },
+      ],
+    };
+
+    mockSnapshotInvokes(multiGroupSnapshot);
+    renderTunnels(<SshTunnels isVisible />);
+    await settle();
+
+    const defaultDot = screen.getByTestId("group-tab-dot-default");
+    const devDot = screen.getByTestId("group-tab-dot-group-dev");
+    expect(defaultDot).toBeInTheDocument();
+    expect(devDot).toBeInTheDocument();
+
+    const defaultCore = screen.getByTestId("group-tab-dot-default-core");
+    const devCore = screen.getByTestId("group-tab-dot-group-dev-core");
+    expect(defaultCore.className).toContain("bg-emerald-500");
+    expect(devCore.className).toContain("bg-destructive");
+  });
+
+  it("全局「已连接」胶囊按钮展示跨分组活跃隧道，并在无活跃隧道时展示专属空状态", async () => {
+    const devGroup: SshTunnelGroupView = {
+      id: "group-dev",
+      name: "Development",
+      created_at: 10,
+      updated_at: 10,
+      is_default: false,
+    };
+    const tunnelBeta: SshTunnelView = {
+      id: "tunnel-beta",
+      name: "Beta Tunnel",
+      group_id: "group-dev",
+      source_kind: "saved_host",
+      saved_host_name: "beta-host",
+      custom: null,
+      forward: {
+        mode: "local",
+        local_bind_host: "127.0.0.1",
+        local_port: 6379,
+        target_host: "127.0.0.1",
+        target_port: 6379,
+      },
+      auto_connect: false,
+      auto_reconnect: true,
+      created_at: 10,
+      updated_at: 10,
+      last_connected_at: null,
+      last_error: null,
+    };
+    const tunnelGamma: SshTunnelView = {
+      id: "tunnel-gamma",
+      name: "Gamma Tunnel",
+      group_id: "group-dev",
+      source_kind: "saved_host",
+      saved_host_name: "gamma-host",
+      custom: null,
+      forward: {
+        mode: "dynamic",
+        local_bind_host: "127.0.0.1",
+        local_port: 1080,
+      },
+      auto_connect: false,
+      auto_reconnect: true,
+      created_at: 20,
+      updated_at: 20,
+      last_connected_at: null,
+      last_error: null,
+    };
+
+    const multiGroupSnapshot: SshTunnelsSnapshot = {
+      groups: [defaultGroup, devGroup],
+      tunnels: [tunnelAlpha, tunnelBeta, tunnelGamma],
+      runtime: [
+        runtime("connected", "Alpha running"),
+        {
+          id: tunnelBeta.id,
+          status: "connecting",
+          active_client_count: 0,
+          mode: "local",
+          summary: "Beta connecting...",
+          resolved_server_host: null,
+          listening_addr: null,
+          last_error: null,
+        },
+        {
+          id: tunnelGamma.id,
+          status: "disconnected",
+          active_client_count: 0,
+          mode: "dynamic",
+          summary: "Gamma idle",
+          resolved_server_host: null,
+          listening_addr: null,
+          last_error: null,
+        },
+      ],
+    };
+
+    mockSnapshotInvokes(multiGroupSnapshot);
+    renderTunnels(<SshTunnels isVisible />);
+    await settle();
+
+    // 默认分组下只展示 Alpha Tunnel
+    expect(screen.getByText("Alpha Tunnel")).toBeInTheDocument();
+    expect(screen.queryByText("Beta Tunnel")).not.toBeInTheDocument();
+    expect(screen.queryByText("Gamma Tunnel")).not.toBeInTheDocument();
+
+    // 切换到「已连接」全局视图
+    const connectedBtn = screen.getByTestId("ssh-tunnel-connected-view-tab");
+    expect(connectedBtn).toHaveTextContent("2");
+    fireEvent.click(connectedBtn);
+    await settle();
+
+    // 跨分组同时展示 Alpha Tunnel 和 Beta Tunnel，不展示断开的 Gamma Tunnel
+    expect(screen.getByText("Alpha Tunnel")).toBeInTheDocument();
+    expect(screen.getByText("Beta Tunnel")).toBeInTheDocument();
+    expect(screen.queryByText("Gamma Tunnel")).not.toBeInTheDocument();
+
+    // 模拟无任何连接时并点击刷新
+    const allDisconnectedSnapshot: SshTunnelsSnapshot = {
+      groups: [defaultGroup, devGroup],
+      tunnels: [tunnelAlpha, tunnelBeta],
+      runtime: [
+        runtime("disconnected", "Alpha idle"),
+        {
+          id: tunnelBeta.id,
+          status: "disconnected",
+          active_client_count: 0,
+          mode: "local",
+          summary: "Beta idle",
+          resolved_server_host: null,
+          listening_addr: null,
+          last_error: null,
+        },
+      ],
+    };
+    mockSnapshotInvokes(allDisconnectedSnapshot);
+    fireEvent.click(screen.getByRole("button", { name: /刷新|Refresh/ }));
+    await settle();
+
+    expect(
+      screen.getByText(/当前暂无正在连接或运行中的 SSH 隧道|No active or connected SSH tunnels currently/i),
+    ).toBeInTheDocument();
+    expect(connectedBtn).toHaveTextContent("0");
+  });
+
+  it("在「已连接」全局视图下操作菜单支持全部断开", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "get_ssh_hosts") return [];
+      if (command === "ssh_tunnels_snapshot") return connectedSnapshot;
+      if (command === "ssh_tunnels_refresh_status") {
+        return connectedSnapshot.runtime;
+      }
+      if (command === "ssh_tunnels_disconnect_all") {
+        return {
+          operation: "disconnect",
+          group_id: "all",
+          group_name: "All Tunnels",
+          success_count: 1,
+          failed_count: 0,
+          skipped_count: 0,
+          total_count: 1,
+          failures: [],
+        };
+      }
+      return undefined;
+    });
+
+    renderTunnels(<SshTunnels isVisible />);
+    await settle();
+
+    // 点击切换到「已连接」全局视图
+    fireEvent.click(screen.getByTestId("ssh-tunnel-connected-view-tab"));
+    await settle();
+
+    // 打开操作菜单
+    fireEvent.click(
+      screen.getByRole("button", { name: /^(操作|Group actions|Actions)$/ }),
+    );
+    await settle();
+
+    const disconnectAllBtn = screen.getByRole("menuitem", {
+      name: /断开全部运行中隧道|Disconnect all active tunnels/,
+    });
+    fireEvent.click(disconnectAllBtn);
+    await settle();
+
+    expect(invokeMock).toHaveBeenCalledWith("ssh_tunnels_disconnect_all", undefined);
+    expect(
+      screen.getByText(/全部隧道已断开|All tunnels disconnected/i),
+    ).toBeInTheDocument();
+  });
 });
