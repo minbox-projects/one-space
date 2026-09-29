@@ -340,6 +340,14 @@ const resources = {
       launcherProtocolProxyDisabledAria: "Protocol proxy is disabled",
       launcherProtocolRouterDisabledAria: "Protocol router is disabled",
       launcherAiGatewayRunningAria: "AI Gateway running on port {{port}}",
+      launcherFileSharingRunningAria:
+        "File sharing running with {{files}} shared file(s)",
+      launcherSshTunnelsRunningAria:
+        "{{count}} SSH tunnel(s) connected",
+      launcherSshTunnelsConnectingAria:
+        "{{count}} SSH tunnel(s) connected, connecting...",
+      launcherSshTunnelsErrorAria:
+        "{{count}} SSH tunnel(s) connected, {{errors}} disconnected",
       selectAppFromApplications: "Choose app from Applications",
       selectFolderPath: "Choose folder",
       sshKeyPathPlaceholder: "e.g. /Users/name/.ssh/id_rsa",
@@ -4132,6 +4140,14 @@ const resources = {
       launcherProtocolProxyDisabledAria: "协议路由未启用",
       launcherProtocolRouterDisabledAria: "协议路由未启用",
       launcherAiGatewayRunningAria: "AI 网关正在端口 {{port}} 运行",
+      launcherFileSharingRunningAria:
+        "文件共享正在运行，正在共享 {{files}} 个文件",
+      launcherSshTunnelsRunningAria:
+        "已连接 {{count}} 条 SSH 隧道",
+      launcherSshTunnelsConnectingAria:
+        "已连接 {{count}} 条 SSH 隧道，正在连接...",
+      launcherSshTunnelsErrorAria:
+        "已连接 {{count}} 条 SSH 隧道，{{errors}} 断开异常",
       selectAppFromApplications: "从 Applications 选择应用",
       selectFolderPath: "选择文件夹",
       sshKeyPathPlaceholder: "例如：/Users/name/.ssh/id_rsa",

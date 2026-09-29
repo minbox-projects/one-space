@@ -36,6 +36,7 @@ import {
   Route,
   BarChart3,
   Network,
+  Share2,
 } from "lucide-react";
 import { AiSessions } from "./components/AiSessions";
 import { Workspaces } from "./components/Workspaces";
@@ -58,7 +59,7 @@ import { AboutModal } from "./components/AboutModal";
 import { QuickAiSessionBar } from "./components/QuickAiSessionBar";
 import { QuickAssistantWindow } from "./components/QuickAssistantWindow";
 import { SmartWorkspaceHub } from "./components/SmartWorkspaceHub";
-import { ToolStatusBadge } from "./components/toolbox/ToolStatusBadge";
+import { ToolStatusDot } from "./components/toolbox/ToolStatusDot";
 import { Documentation } from "./components/Documentation";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { FishPond } from "./components/FishPond";
@@ -320,6 +321,10 @@ function App() {
     useState<ProtocolRouterStatus | null>(null);
   const [aiGatewayHeaderStatus, setAiGatewayHeaderStatus] =
     useState<GatewayStatus | null>(null);
+  const [fileSharingHeaderStatus, setFileSharingHeaderStatus] = useState<{
+    running: boolean;
+    fileCount: number;
+  } | null>(null);
   const [trayState, setTrayState] = useState<TrayMenuState>({
     windowVisible: true,
     gateway: { running: false },
@@ -526,12 +531,14 @@ function App() {
     try {
       const snapshot = await fileSharingStatus();
       if (!snapshot) return;
+      const sharing = {
+        running: snapshot.running,
+        fileCount: (snapshot.files ?? []).length,
+      };
+      setFileSharingHeaderStatus(sharing);
       setTrayState((prev) => ({
         ...prev,
-        sharing: {
-          running: snapshot.running,
-          fileCount: (snapshot.files ?? []).length,
-        },
+        sharing,
       }));
     } catch {
       // Keep the last known state when the status query fails.
@@ -2311,10 +2318,7 @@ function App() {
                   data-testid="header-ai-gateway-status"
                 >
                   <Network className="w-5 h-5" />
-                  <span className="absolute right-1 top-1 flex h-2 w-2">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                    <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-                  </span>
+                  <ToolStatusDot tone="success" />
                 </button>
               )}
               {protocolRouterHeaderStatus?.enabled && (
@@ -2322,8 +2326,8 @@ function App() {
                   onClick={() => navigateToTab("protocol-router")}
                   className={`relative p-2.5 rounded-md transition-colors ${
                     protocolRouterHeaderStatus.running
-                      ? "text-emerald-600 hover:bg-emerald-500/10"
-                      : "text-amber-600 hover:bg-amber-500/10"
+                      ? "text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
+                      : "text-amber-600 hover:bg-amber-500/10 dark:text-amber-400"
                   }`}
                   title={
                     protocolRouterHeaderStatus.running
@@ -2349,18 +2353,12 @@ function App() {
                           defaultValue: `Protocol router is enabled but stopped on port ${protocolRouterHeaderStatus.port}`,
                         })
                   }
+                  data-testid="header-protocol-router-status"
                 >
                   <Route className="w-5 h-5" />
-                  <span className="absolute -right-0.5 -top-0.5">
-                    <ToolStatusBadge
-                      tone={protocolRouterHeaderStatus.running ? "success" : "warning"}
-                      label={
-                        protocolRouterHeaderStatus.route_count > 99
-                          ? "99+"
-                          : String(protocolRouterHeaderStatus.route_count)
-                      }
-                    />
-                  </span>
+                  <ToolStatusDot
+                    tone={protocolRouterHeaderStatus.running ? "success" : "warning"}
+                  />
                 </button>
               )}
               {sshTunnelSummary && sshTunnelSummary.connectedCount > 0 && (
@@ -2368,54 +2366,65 @@ function App() {
                   onClick={() => navigateToTab("ssh-tunnels")}
                   className={`relative p-2.5 rounded-md transition-colors ${
                     sshTunnelSummary.hasErrors
-                      ? "text-destructive hover:bg-destructive/10"
+                      ? "text-destructive hover:bg-destructive/10 dark:text-destructive"
                       : sshTunnelSummary.hasConnecting
-                        ? "text-blue-500 hover:bg-blue-500/10"
-                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                        ? "text-amber-600 hover:bg-amber-500/10 dark:text-amber-400"
+                        : "text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
                   }`}
                   title={
                     sshTunnelSummary.hasErrors
                       ? `${sshTunnelSummary.connectedCount} connected, ${sshTunnelSummary.errorTunnelNames.join(", ")} disconnected`
-                      : `${sshTunnelSummary.connectedCount} SSH tunnel${sshTunnelSummary.connectedCount > 1 ? "s" : ""} connected`
+                      : sshTunnelSummary.hasConnecting
+                        ? `${sshTunnelSummary.connectedCount} connected, connecting...`
+                        : `${sshTunnelSummary.connectedCount} SSH tunnel${sshTunnelSummary.connectedCount > 1 ? "s" : ""} connected`
                   }
+                  aria-label={
+                    sshTunnelSummary.hasErrors
+                      ? t("launcherSshTunnelsErrorAria", {
+                          count: sshTunnelSummary.connectedCount,
+                          errors: sshTunnelSummary.errorTunnelNames.join(", "),
+                          defaultValue: `${sshTunnelSummary.connectedCount} connected, ${sshTunnelSummary.errorTunnelNames.join(", ")} disconnected`,
+                        })
+                      : sshTunnelSummary.hasConnecting
+                        ? t("launcherSshTunnelsConnectingAria", {
+                            count: sshTunnelSummary.connectedCount,
+                            defaultValue: `${sshTunnelSummary.connectedCount} connected, connecting...`,
+                          })
+                        : t("launcherSshTunnelsRunningAria", {
+                            count: sshTunnelSummary.connectedCount,
+                            defaultValue: `${sshTunnelSummary.connectedCount} SSH tunnel(s) connected`,
+                          })
+                  }
+                  data-testid="header-ssh-tunnels-status"
                 >
                   <Waypoints className="w-5 h-5" />
-                  {sshTunnelSummary.hasErrors && (
-                    <span className="absolute -right-0.5 -top-0.5 animate-pulse">
-                      <ToolStatusBadge
-                        tone="error"
-                        label={
-                          sshTunnelSummary.connectedCount > 99
-                            ? "99+"
-                            : String(sshTunnelSummary.connectedCount)
-                        }
-                      />
-                    </span>
-                  )}
-                  {sshTunnelSummary.hasConnecting && !sshTunnelSummary.hasErrors && (
-                    <span className="absolute -right-0.5 -top-0.5 animate-pulse">
-                      <ToolStatusBadge
-                        tone="warning"
-                        label={
-                          sshTunnelSummary.connectedCount > 99
-                            ? "99+"
-                            : String(sshTunnelSummary.connectedCount)
-                        }
-                      />
-                    </span>
-                  )}
-                  {!sshTunnelSummary.hasErrors && !sshTunnelSummary.hasConnecting && (
-                    <span className="absolute -right-0.5 -top-0.5">
-                      <ToolStatusBadge
-                        tone="success"
-                        label={
-                          sshTunnelSummary.connectedCount > 99
-                            ? "99+"
-                            : String(sshTunnelSummary.connectedCount)
-                        }
-                      />
-                    </span>
-                  )}
+                  <ToolStatusDot
+                    tone={
+                      sshTunnelSummary.hasErrors
+                        ? "error"
+                        : sshTunnelSummary.hasConnecting
+                          ? "warning"
+                          : "success"
+                    }
+                  />
+                </button>
+              )}
+              {fileSharingHeaderStatus?.running && (
+                <button
+                  onClick={() => navigateToTab("file-sharing")}
+                  className="relative p-2.5 rounded-md transition-colors text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
+                  title={t("launcherFileSharingRunningAria", {
+                    files: fileSharingHeaderStatus.fileCount,
+                    defaultValue: `File sharing running with ${fileSharingHeaderStatus.fileCount} shared file(s)`,
+                  })}
+                  aria-label={t("launcherFileSharingRunningAria", {
+                    files: fileSharingHeaderStatus.fileCount,
+                    defaultValue: `File sharing running with ${fileSharingHeaderStatus.fileCount} shared file(s)`,
+                  })}
+                  data-testid="header-file-sharing-status"
+                >
+                  <Share2 className="w-5 h-5" />
+                  <ToolStatusDot tone="success" />
                 </button>
               )}
               <button

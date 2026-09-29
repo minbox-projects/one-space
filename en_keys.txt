@@ -379,6 +379,10 @@ languageDesc
 launch
 launcher
 launcherDesc
+launcherFileSharingRunningAria
+launcherSshTunnelsConnectingAria
+launcherSshTunnelsErrorAria
+launcherSshTunnelsRunningAria
 launchSession
 learnMore
 linkProvidersFailed
