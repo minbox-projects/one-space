@@ -293,7 +293,6 @@ onespace env use codex work_openai
 - 桌面端负责：
   - 环境编辑
   - 配置投影
-  - 工作流
   - MCP / Skills / Subagents 管理
   - 会话浏览与恢复
 - CLI 负责：

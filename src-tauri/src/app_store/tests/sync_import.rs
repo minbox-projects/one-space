@@ -278,7 +278,7 @@ fn shared_profile_sync_import_merges_service_state_without_legacy_overwrite() {
 }
 
 #[test]
-fn shared_profile_sync_remaps_imported_mcp_and_workflow_provider_refs() {
+fn shared_profile_sync_remaps_mcp_refs_and_leaves_workflow_files_untouched() {
     with_temp_dir("shared-profile-sync-remaps-provider-refs", |home| {
         let local_provider_id = "11111111-1111-4111-8111-111111111111";
         let remote_provider_id = "22222222-2222-4222-8222-222222222222";
@@ -288,13 +288,13 @@ fn shared_profile_sync_remaps_imported_mcp_and_workflow_provider_refs() {
         cfg.sync_policy = config::SyncPolicy {
             providers: true,
             mcp: true,
-            workflow_presets: true,
             content: false,
             skills_sources: false,
             skills_repository: false,
             subagents_sources: false,
             subagents_repository: false,
             ai_news: false,
+            ..config::SyncPolicy::default()
         };
 
         let local = ServiceProvidersState {
@@ -360,12 +360,19 @@ fn shared_profile_sync_remaps_imported_mcp_and_workflow_provider_refs() {
         )
         .expect("write shared mcp");
 
+        // Local workflow files must survive the sync untouched: no provider-id
+        // remap of the local copies and no export into the shared profile.
+        let local_presets_path = crate::get_data_dir()
+            .expect("data dir")
+            .join("workflow_presets.json");
+        let local_runs_path = crate::get_data_dir()
+            .expect("data dir")
+            .join("workflow_runs.json");
         write_test_file(
-            &shared_profile_path(&cfg, "workflow_presets.json")
-                .expect("shared workflow presets path"),
+            &local_presets_path,
             &json!([
                 {
-                    "id": "preset-remote",
+                    "id": "preset-local",
                     "tool": "claude",
                     "provider_id": remote_provider_id,
                     "active_provider_id": remote_provider_id,
@@ -374,6 +381,19 @@ fn shared_profile_sync_remaps_imported_mcp_and_workflow_provider_refs() {
             ])
             .to_string(),
         );
+        write_test_file(
+            &local_runs_path,
+            &json!([
+                {
+                    "id": "run-local",
+                    "preset_id": "preset-local",
+                    "provider_id": remote_provider_id
+                }
+            ])
+            .to_string(),
+        );
+        let presets_before = fs::read(&local_presets_path).expect("read local workflow presets");
+        let runs_before = fs::read(&local_runs_path).expect("read local workflow runs");
 
         run_local_shared_sync(&cfg).expect("shared sync");
 
@@ -396,15 +416,83 @@ fn shared_profile_sync_remaps_imported_mcp_and_workflow_provider_refs() {
             vec![local_provider_id.to_string()]
         );
 
-        let workflow_after: Value = serde_json::from_str(
-            &fs::read_to_string(local_workflow_presets_path().unwrap()).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(workflow_after[0]["provider_id"], local_provider_id);
-        assert_eq!(workflow_after[0]["active_provider_id"], local_provider_id);
         assert_eq!(
-            workflow_after[0]["linked_provider_ids"][0],
-            local_provider_id
+            fs::read(&local_presets_path).expect("read local workflow presets"),
+            presets_before,
+            "workflow_presets.json must stay byte-identical through local/shared sync"
+        );
+        assert_eq!(
+            fs::read(&local_runs_path).expect("read local workflow runs"),
+            runs_before,
+            "workflow_runs.json must stay byte-identical through local/shared sync"
+        );
+        let shared_presets_path = shared_profile_path(&cfg, "workflow_presets.json")
+            .expect("shared workflow presets path");
+        assert!(
+            !shared_presets_path.exists(),
+            "local/shared sync must not create a workflow_presets.json copy in the shared profile"
+        );
+        assert!(
+            !shared_profile_path(&cfg, "workflow_runs.json")
+                .expect("shared workflow runs path")
+                .exists(),
+            "local/shared sync must not create a workflow_runs.json copy in the shared profile"
+        );
+    });
+}
+
+#[test]
+fn shared_profile_sync_tolerates_shared_workflow_presets_without_local_copy() {
+    with_temp_dir("shared-profile-sync-shared-only-workflow-presets", |home| {
+        let mut cfg = config::StorageConfig::default();
+        cfg.storage_type = "local".to_string();
+        cfg.local_storage_path = Some(home.join("shared-root").to_string_lossy().to_string());
+        cfg.sync_policy = config::SyncPolicy {
+            providers: true,
+            mcp: true,
+            content: false,
+            skills_sources: false,
+            skills_repository: false,
+            subagents_sources: false,
+            subagents_repository: false,
+            ai_news: false,
+            ..config::SyncPolicy::default()
+        };
+
+        let shared_presets_path = shared_profile_path(&cfg, "workflow_presets.json")
+            .expect("shared workflow presets path");
+        write_test_file(
+            &shared_presets_path,
+            &json!([
+                {
+                    "id": "preset-shared-only",
+                    "tool": "claude",
+                    "provider_id": "22222222-2222-4222-8222-222222222222"
+                }
+            ])
+            .to_string(),
+        );
+        let shared_presets_before =
+            fs::read(&shared_presets_path).expect("read shared workflow presets");
+
+        let local_presets_path = crate::get_data_dir()
+            .expect("data dir")
+            .join("workflow_presets.json");
+        assert!(
+            !local_presets_path.exists(),
+            "local workflow_presets.json must not exist before the sync"
+        );
+
+        run_local_shared_sync(&cfg).expect("shared sync must not error");
+
+        assert_eq!(
+            fs::read(&shared_presets_path).expect("read shared workflow presets"),
+            shared_presets_before,
+            "shared workflow_presets.json must stay byte-identical through local/shared sync"
+        );
+        assert!(
+            !local_presets_path.exists(),
+            "local/shared sync must not create a local workflow_presets.json from the shared copy"
         );
     });
 }

@@ -612,50 +612,6 @@
       "shared_entry": false
     },
     {
-      "id": "workflows",
-      "name": "Workflow Presets",
-      "aliases": [
-        "workflow-presets",
-        "workflow-runs"
-      ],
-      "module_root": "frontend",
-      "owner_role": "frontend",
-      "responsibility": "工作流预设编辑、依赖检查、运行记录与重放",
-      "entries": [
-        "src/components/WorkflowPresetsPanel.tsx"
-      ],
-      "related_files": [
-        "src/components/RecentWorkflowRuns.tsx",
-        "src/lib/workflows.ts"
-      ],
-      "tests": [],
-      "symbols": [
-        {
-          "file": "src/components/WorkflowPresetsPanel.tsx",
-          "name": "WorkflowPresetsPanel",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/RecentWorkflowRuns.tsx",
-          "name": "RecentWorkflowRuns",
-          "kind": "function",
-          "visibility": "public"
-        }
-      ],
-      "depends_on": [
-        "ai-sessions",
-        "ai-environments"
-      ],
-      "read_scope": [
-        "src/components/WorkflowPresetsPanel.tsx",
-        "src/components/RecentWorkflowRuns.tsx",
-        "src/lib/workflows.ts"
-      ],
-      "relations": [],
-      "shared_entry": false
-    },
-    {
       "id": "workspaces",
       "name": "Workspaces",
       "aliases": [
@@ -1035,7 +991,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "统一搜索会话、启动项、SSH、代码片段、书签、笔记、Skills 与工作流",
+      "responsibility": "统一搜索会话、启动项、SSH、代码片段、书签、笔记、Skills",
       "entries": [
         "src/components/OmniSearch.tsx"
       ],
@@ -2970,49 +2926,6 @@
         "src-tauri/src/subagents/commands/repo_commands.rs",
         "src-tauri/src/subagents/commands/sync.rs",
         "src-tauri/src/subagents/tests.rs"
-      ],
-      "relations": [],
-      "shared_entry": false
-    },
-    {
-      "id": "workflows-backend",
-      "name": "Workflows Backend",
-      "aliases": [
-        "workflows-rust",
-        "workflow-runs-rust"
-      ],
-      "module_root": "tauri-backend",
-      "owner_role": "backend",
-      "responsibility": "工作流预设、依赖应用、运行记录与启动命令",
-      "entries": [
-        "src-tauri/src/workflows.rs"
-      ],
-      "related_files": [
-        "src-tauri/src/workflows/apply_dependencies.rs",
-        "src-tauri/src/workflows/dependencies_runs.rs",
-        "src-tauri/src/workflows/launch_commands.rs",
-        "src-tauri/src/workflows/preset_commands.rs",
-        "src-tauri/src/workflows/run_commands.rs",
-        "src-tauri/src/workflows/skill_resolution.rs",
-        "src-tauri/src/workflows/storage_providers.rs",
-        "src-tauri/src/workflows/types.rs"
-      ],
-      "tests": [],
-      "symbols": [],
-      "depends_on": [
-        "ai-env-backend",
-        "skills-backend"
-      ],
-      "read_scope": [
-        "src-tauri/src/workflows.rs",
-        "src-tauri/src/workflows/apply_dependencies.rs",
-        "src-tauri/src/workflows/dependencies_runs.rs",
-        "src-tauri/src/workflows/launch_commands.rs",
-        "src-tauri/src/workflows/preset_commands.rs",
-        "src-tauri/src/workflows/run_commands.rs",
-        "src-tauri/src/workflows/skill_resolution.rs",
-        "src-tauri/src/workflows/storage_providers.rs",
-        "src-tauri/src/workflows/types.rs"
       ],
       "relations": [],
       "shared_entry": false

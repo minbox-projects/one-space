@@ -169,8 +169,6 @@ pub struct SyncPolicy {
     #[serde(default = "default_true")]
     pub content: bool,
     #[serde(default = "default_true")]
-    pub workflow_presets: bool,
-    #[serde(default = "default_true")]
     pub skills_sources: bool,
     #[serde(default)]
     pub skills_repository: bool,
@@ -188,7 +186,6 @@ impl Default for SyncPolicy {
             providers: true,
             mcp: true,
             content: true,
-            workflow_presets: true,
             skills_sources: true,
             skills_repository: false,
             subagents_sources: true,
@@ -256,7 +253,6 @@ impl PartialEq for SyncPolicy {
         self.providers == other.providers
             && self.mcp == other.mcp
             && self.content == other.content
-            && self.workflow_presets == other.workflow_presets
             && self.skills_sources == other.skills_sources
             && self.skills_repository == other.skills_repository
             && self.subagents_sources == other.subagents_sources
@@ -805,8 +801,6 @@ fn ensure_local_data_mirror_initialized_at(
         for rel in [
             "data",
             "shared",
-            "workflow_presets.json",
-            "workflow_runs.json",
             "ai_providers.json",
             "providers.json",
             "snippets.json",
@@ -1258,6 +1252,45 @@ mod tests {
         assert!(!policy.skills_repository);
         assert!(!policy.subagents_repository);
         assert!(!policy.ai_news);
+    }
+
+    #[test]
+    fn legacy_sync_policy_with_removed_workflow_scope_loads_without_serializing_it() {
+        let json = r#"{
+            "providers": false,
+            "mcp": true,
+            "content": false,
+            "workflow_presets": true,
+            "skills_sources": true,
+            "skills_repository": true,
+            "subagents_sources": false,
+            "subagents_repository": true,
+            "ai_news": true
+        }"#;
+
+        let policy: SyncPolicy =
+            serde_json::from_str(json).expect("legacy sync policy should deserialize");
+
+        assert!(!policy.providers);
+        assert!(policy.mcp);
+        assert!(!policy.content);
+        assert!(policy.skills_sources);
+        assert!(policy.skills_repository);
+        assert!(!policy.subagents_sources);
+        assert!(policy.subagents_repository);
+        assert!(policy.ai_news);
+
+        let serialized = serde_json::to_string(&policy).expect("sync policy should serialize");
+        assert!(
+            !serialized.contains("workflow_presets"),
+            "removed workflow scope must not be serialized: {serialized}"
+        );
+        let serialized_value: serde_json::Value =
+            serde_json::from_str(&serialized).expect("serialized sync policy should be json");
+        assert!(
+            serialized_value.get("workflow_presets").is_none(),
+            "removed workflow scope must not be serialized: {serialized}"
+        );
     }
 
     #[test]

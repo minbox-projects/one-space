@@ -1,7 +1,7 @@
 use super::{
     apply_provider_id_map_to_dependent_state, detect_cli_installation, is_managed_tool,
-    load_migration_state, load_service_providers_state_with_id_map, local_workflow_presets_path,
-    local_workflow_runs_path, migrate_providers_to_service_providers, normalize_service_provider_ids,
+    load_migration_state, load_service_providers_state_with_id_map,
+    migrate_providers_to_service_providers, normalize_service_provider_ids,
     now_ts, resolved_claude_model_mappings, save_migration_state, save_outbox_state,
     save_service_providers_internal, shared_profile_path, strip_legacy_claude_model_keys,
     CryptoService, EncryptedBlob, MigrationReport, MigrationState, OutboxState, ProviderCore,
@@ -549,23 +549,6 @@ fn rewrite_provider_presets_value(value: &mut Value) -> bool {
     changed
 }
 
-fn rewrite_workflow_records_value(value: &mut Value) -> bool {
-    let Some(items) = value.as_array_mut() else {
-        return false;
-    };
-    let mut changed = false;
-    for item in items.iter_mut() {
-        let Some(obj) = item.as_object_mut() else {
-            continue;
-        };
-        changed |= rewrite_tool_identifier(obj);
-        if let Some(default_models) = obj.get_mut("default_models") {
-            changed |= replace_legacy_tool_in_array(default_models);
-        }
-    }
-    changed
-}
-
 fn rewrite_workspaces_value(value: &mut Value) -> bool {
     let Some(obj) = value.as_object_mut() else {
         return false;
@@ -708,14 +691,6 @@ pub(in crate::app_store) fn migrate_gemini_identifiers_to_antigravity() -> Resul
         &StorageEngine::provider_presets_path()?,
         rewrite_provider_presets_value,
     )?;
-    let _ = rewrite_json_file(
-        &local_workflow_presets_path()?,
-        rewrite_workflow_records_value,
-    )?;
-    let _ = rewrite_json_file(
-        &local_workflow_runs_path()?,
-        rewrite_workflow_records_value,
-    )?;
     let workspaces_path = data_dir.join("data").join("workspaces").join("state.json");
     let _ = rewrite_json_file(&workspaces_path, rewrite_workspaces_value)?;
 
@@ -727,20 +702,13 @@ pub(in crate::app_store) fn migrate_gemini_identifiers_to_antigravity() -> Resul
     }
 
     if let Ok(cfg) = config::get_config() {
-        for name in [
-            "providers.json",
-            "provider_presets.json",
-            "workflow_presets.json",
-        ] {
+        for name in ["providers.json", "provider_presets.json"] {
             let Ok(path) = shared_profile_path(&cfg, name) else {
                 continue;
             };
             let result = match name {
                 "providers.json" => rewrite_json_file(&path, rewrite_service_providers_value),
-                "provider_presets.json" => {
-                    rewrite_json_file(&path, rewrite_provider_presets_value)
-                }
-                _ => rewrite_json_file(&path, rewrite_workflow_records_value),
+                _ => rewrite_json_file(&path, rewrite_provider_presets_value),
             };
             let _ = result?;
         }

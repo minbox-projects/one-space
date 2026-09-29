@@ -20,7 +20,6 @@ import {
   Server, 
   Share2,
   Sparkles,
-  Waypoints,
   Download, 
   Info,
   ArrowLeft
@@ -159,7 +158,7 @@ export function Documentation() {
           summary: t('docsWorkspacesSummary', 'Organize project sessions, MCP, Skills, and Subagents around a workspace.'),
           icon: FolderOpen,
           docId: 'usage',
-          anchor: '7-workspaces',
+          anchor: '6-workspaces',
         },
         {
           id: 'ai-sessions',
@@ -168,14 +167,6 @@ export function Documentation() {
           icon: Terminal,
           docId: 'usage',
           anchor: '5-ai-sessions',
-        },
-        {
-          id: 'workflows',
-          name: t('workflowPresets', 'Workflow Presets'),
-          summary: t('docsWorkflowsSummary', 'Bundle directories, tools, environments, MCP, Skills, and prompts.'),
-          icon: Waypoints,
-          docId: 'usage',
-          anchor: '6-workflow-presets',
         },
       ],
     },
@@ -197,7 +188,7 @@ export function Documentation() {
           summary: t('docsAiWorkspaceSummary', 'Use in-app AI conversations, assistant presets, and Quick Assistant.'),
           icon: Bot,
           docId: 'usage',
-          anchor: '8-ai-workspace',
+          anchor: '7-ai-workspace',
         },
         {
           id: 'ai-usage',
@@ -205,7 +196,7 @@ export function Documentation() {
           summary: t('docsAiUsageSummary', 'Review token usage derived from local CLI session history.'),
           icon: BarChart3,
           docId: 'usage',
-          anchor: '9-ai-usage-stats',
+          anchor: '8-ai-usage-stats',
         },
         {
           id: 'skills',
@@ -249,7 +240,7 @@ export function Documentation() {
           summary: t('docsFileSharingSummary', 'Temporarily share selected files on a trusted local network.'),
           icon: Share2,
           docId: 'usage',
-          anchor: '15-file-sharing',
+          anchor: '142-file-sharing',
         },
         {
           id: 'snippets-bookmarks-notes',
@@ -294,7 +285,7 @@ export function Documentation() {
           summary: t('docsSettingsSummary', 'Configure storage, news, proxy, shortcuts, terminal commands, appearance, and security.'),
           icon: Code2,
           docId: 'usage',
-          anchor: '21-settings',
+          anchor: '20-settings',
         },
         {
           id: 'fish-pond',
@@ -302,7 +293,7 @@ export function Documentation() {
           summary: t('docsFishPondSummary', 'Find the built-in CyberMuyu, Snake, Tetris, Sudoku, Minesweeper, and Wordle games.'),
           icon: Gamepad2,
           docId: 'usage',
-          anchor: '20-fish-pond',
+          anchor: '19-fish-pond',
         },
         {
           id: 'faq',
@@ -310,7 +301,7 @@ export function Documentation() {
           summary: t('docsFaqSummary', 'Troubleshoot common CLI, environment, AI News, and macOS issues.'),
           icon: HelpCircle,
           docId: 'usage',
-          anchor: '24-常见问题',
+          anchor: '23-常见问题',
         },
       ],
     },
