@@ -1,4 +1,6 @@
-use super::commands::{build_gateway_provider, default_key_for_sync, terminal_sync_pending};
+use super::commands::{
+    build_gateway_provider, default_key_for_sync, terminal_sync_pending, TerminalSyncProfile,
+};
 use super::selection::{
     candidate_providers, classify_failure, classify_failure_with_message,
     clear_mapping_runtime_state, is_quota_exceeded_message, is_retryable_with_message,
@@ -2926,6 +2928,7 @@ fn build_gateway_provider_rejects_unsupported_tools() {
             "http://127.0.0.1:17688",
             "local-key",
             &[],
+            TerminalSyncProfile::RELEASE,
         )
         .unwrap_err();
         assert!(error.contains("unsupported"), "tool {tool:?} error: {error}");
@@ -2942,6 +2945,7 @@ fn build_gateway_provider_normalizes_tool_case_to_lowercase() {
         "http://127.0.0.1:17688",
         "local-key-123",
         &[],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("mixed-case opencode must build");
     assert_eq!(opencode["tool"], "opencode", "emitted tool must be lowercase: {opencode}");
@@ -2954,6 +2958,7 @@ fn build_gateway_provider_normalizes_tool_case_to_lowercase() {
         "http://127.0.0.1:17688",
         "local-key-123",
         &[],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("mixed-case codex must build");
     assert_eq!(codex["tool"], "codex", "emitted tool must be lowercase: {codex}");
@@ -3019,6 +3024,7 @@ fn build_gateway_provider_ignores_disabled_and_auto_disabled_gateways() {
         "http://127.0.0.1:17688",
         "local-key-123",
         &gateways,
+        TerminalSyncProfile::RELEASE,
     )
     .expect("opencode provider must build");
     // g1 excluded (enabled=false), g2 excluded (mapping auto_disabled).
@@ -3038,6 +3044,7 @@ fn build_gateway_provider_ignores_disabled_and_auto_disabled_gateways() {
         "http://127.0.0.1:17688",
         "local-key-123",
         &gateways,
+        TerminalSyncProfile::RELEASE,
     )
     .expect("codex provider must build");
     // The codex selects the first available non-auto-disabled mapping.
@@ -3071,6 +3078,7 @@ fn build_gateway_provider_excludes_disabled_mappings() {
         "http://127.0.0.1:17688",
         "local-key-123",
         &[gateway.clone()],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("opencode provider must build");
     assert_eq!(
@@ -3085,6 +3093,7 @@ fn build_gateway_provider_excludes_disabled_mappings() {
         "http://127.0.0.1:17688",
         "local-key-123",
         &[gateway],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("codex provider must build");
     assert_eq!(
@@ -3114,6 +3123,7 @@ fn build_gateway_provider_codex_falls_back_to_default_when_all_mappings_disabled
         "http://127.0.0.1:17688",
         "local-key-123",
         &[gateway.clone()],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("codex provider must build");
     assert_eq!(
@@ -3127,6 +3137,7 @@ fn build_gateway_provider_codex_falls_back_to_default_when_all_mappings_disabled
         "http://127.0.0.1:17688",
         "local-key-123",
         &[gateway],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("opencode provider must build");
     assert_eq!(
@@ -3151,6 +3162,7 @@ fn build_gateway_provider_opencode_carries_gateway_models_and_marker() {
         "http://127.0.0.1:17688",
         "local-key-123",
         &[gateway],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("opencode provider must build");
 
@@ -3202,6 +3214,7 @@ fn build_gateway_provider_opencode_carries_reasoning_efforts_as_variants() {
         "http://127.0.0.1:17688",
         "local-key-123",
         &[gateway.clone()],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("opencode provider must build");
 
@@ -3233,6 +3246,7 @@ fn build_gateway_provider_opencode_carries_reasoning_efforts_as_variants() {
         "http://127.0.0.1:17688",
         "local-key-123",
         &[gateway],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("codex provider must build");
     assert_eq!(
@@ -3261,6 +3275,7 @@ fn build_gateway_provider_opencode_keeps_first_duplicate_and_falls_back_names() 
         "http://127.0.0.1:17688",
         "local-key-123",
         &[first, second],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("opencode provider must build");
 
@@ -3307,6 +3322,7 @@ fn build_gateway_provider_opencode_marks_responses_only_models_with_responses_np
         "http://127.0.0.1:17688",
         "local-key-123",
         &[responses, chat],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("opencode provider must build");
 
@@ -3347,6 +3363,7 @@ fn build_gateway_provider_opencode_row_level_responses_override_marks_responses_
         "http://127.0.0.1:17688",
         "local-key-123",
         &[gateway],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("opencode provider must build");
 
@@ -3377,6 +3394,7 @@ fn build_gateway_provider_opencode_chat_service_on_any_gateway_keeps_no_provider
         "http://127.0.0.1:17688",
         "local-key-123",
         &[chat, responses],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("opencode provider must build");
 
@@ -3410,6 +3428,7 @@ fn build_gateway_provider_opencode_auto_disabled_rows_do_not_suppress_responses_
         "http://127.0.0.1:17688",
         "local-key-123",
         &[gateway],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("opencode provider must build");
 
@@ -3439,6 +3458,7 @@ fn build_gateway_provider_opencode_disabled_rows_do_not_trigger_responses_npm() 
         "http://127.0.0.1:17688",
         "local-key-123",
         &[gateway],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("opencode provider must build");
 
@@ -3472,6 +3492,7 @@ fn build_gateway_provider_opencode_default_model_chat_service_suppresses_respons
         "http://127.0.0.1:17688",
         "local-key-123",
         &[responses, chat_default],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("opencode provider must build");
 
@@ -3508,6 +3529,7 @@ fn build_gateway_provider_opencode_disabled_row_blocks_default_model_chat_servic
         "http://127.0.0.1:17688",
         "local-key-123",
         &[responses, chat_default],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("opencode provider must build");
 
@@ -3535,6 +3557,7 @@ fn build_gateway_provider_codex_shape_is_wire_api_chat_without_options() {
         "http://127.0.0.1:17688",
         "local-key-123",
         &[gateway],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("codex provider must build");
 
@@ -3575,6 +3598,7 @@ fn build_gateway_provider_codex_skips_empty_default_models() {
         "http://127.0.0.1:17688",
         "local-key-123",
         &[empty, named],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("codex provider must build");
 
@@ -3607,6 +3631,7 @@ fn build_gateway_provider_codex_prefers_mapping_local_model_over_default_model()
         "http://127.0.0.1:17688",
         "local-key-123",
         &[first, second],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("codex provider must build");
 
@@ -3631,6 +3656,7 @@ fn build_gateway_provider_codex_uses_first_non_empty_mapping_local_model() {
         "http://127.0.0.1:17688",
         "local-key-123",
         &[gateway],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("codex provider must build");
 
@@ -3647,6 +3673,7 @@ fn build_gateway_provider_codex_omits_model_without_any_mapping() {
         "http://127.0.0.1:17688",
         "local-key-123",
         &[gateway],
+        TerminalSyncProfile::RELEASE,
     )
     .expect("codex provider must build");
 
@@ -6550,6 +6577,7 @@ fn gateway_config(port: u16) -> GatewayConfig {
 async fn capture_terminal_sync(
     providers_data: &Value,
     tools: Vec<String>,
+    profile: TerminalSyncProfile,
 ) -> (Vec<Value>, Vec<TerminalSyncRecord>) {
     let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = captured.clone();
@@ -6563,6 +6591,7 @@ async fn capture_terminal_sync(
             })
         },
         tools,
+        profile,
     )
     .await
     .expect("terminal sync must succeed");
@@ -6597,6 +6626,7 @@ async fn terminal_sync_with_seam_creates_one_gateway_provider_per_tool() {
             })
         },
         vec!["opencode".to_string(), "codex".to_string()],
+        TerminalSyncProfile::RELEASE,
     )
     .await
     .expect("terminal sync must succeed");
@@ -6694,6 +6724,7 @@ async fn terminal_sync_with_seam_reuses_provider_per_tool_without_duplicate_ledg
             })
         },
         tools.clone(),
+        TerminalSyncProfile::RELEASE,
     )
     .await
     .expect("first sync must succeed");
@@ -6715,6 +6746,7 @@ async fn terminal_sync_with_seam_reuses_provider_per_tool_without_duplicate_ledg
             })
         },
         tools,
+        TerminalSyncProfile::RELEASE,
     )
     .await
     .expect("second sync must succeed");
@@ -6783,6 +6815,7 @@ async fn terminal_sync_with_seam_reuses_ledger_provider_marked_in_providers_data
             })
         },
         vec!["opencode".to_string(), "codex".to_string()],
+        TerminalSyncProfile::RELEASE,
     )
     .await
     .expect("sync must succeed");
@@ -6846,7 +6879,7 @@ async fn terminal_sync_with_seam_does_not_reuse_unmarked_stale_ledger_provider()
 
     let providers_data = json!({ "providers": [unmarked_user_provider("user-oc", "opencode")] });
     let (submitted, records) =
-        capture_terminal_sync(&providers_data, vec!["opencode".to_string()]).await;
+        capture_terminal_sync(&providers_data, vec!["opencode".to_string()], TerminalSyncProfile::RELEASE).await;
 
     assert_eq!(submitted.len(), 1, "one upsert for the requested tool: {submitted:?}");
     let submitted_id = submitted[0]["id"].as_str().unwrap_or("");
@@ -6896,6 +6929,7 @@ async fn terminal_sync_with_seam_prefers_marker_over_unmarked_stale_ledger() {
     let (submitted, records) = capture_terminal_sync(
         &terminal_providers_payload(),
         vec!["opencode".to_string()],
+        TerminalSyncProfile::RELEASE,
     )
     .await;
 
@@ -6921,6 +6955,7 @@ async fn terminal_sync_with_seam_reuses_marker_provider_without_any_ledger() {
     let (submitted, records) = capture_terminal_sync(
         &terminal_providers_payload(),
         vec!["opencode".to_string()],
+        TerminalSyncProfile::RELEASE,
     )
     .await;
 
@@ -6950,6 +6985,7 @@ async fn terminal_sync_with_seam_reuses_marker_provider_when_ledger_id_absent() 
     let (submitted, records) = capture_terminal_sync(
         &terminal_providers_payload(),
         vec!["opencode".to_string()],
+        TerminalSyncProfile::RELEASE,
     )
     .await;
 
@@ -6988,7 +7024,7 @@ async fn terminal_sync_upgrades_legacy_marker_provider_in_place() {
 
     // The target projection recognizes the legacy marker as managed and reuses
     // the provider id.
-    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let targets = super::commands::terminal_targets_from(&config, &providers_data, TerminalSyncProfile::RELEASE);
     let opencode = target_for(&targets, "opencode");
     assert_eq!(
         opencode.provider_id.as_deref(),
@@ -7005,6 +7041,7 @@ async fn terminal_sync_upgrades_legacy_marker_provider_in_place() {
     let (submitted, records) = capture_terminal_sync(
         &providers_data,
         vec!["opencode".to_string()],
+        TerminalSyncProfile::RELEASE,
     )
     .await;
     assert_eq!(submitted.len(), 1, "exactly one upsert: {submitted:?}");
@@ -7069,6 +7106,7 @@ async fn terminal_sync_with_seam_aborts_without_writing_ledger_on_upsert_error()
             })
         },
         vec!["opencode".to_string(), "codex".to_string()],
+        TerminalSyncProfile::RELEASE,
     )
     .await
     .unwrap_err();
@@ -7100,6 +7138,7 @@ async fn terminal_sync_with_seam_rejects_empty_target_tools() {
             })
         },
         Vec::new(),
+        TerminalSyncProfile::RELEASE,
     )
     .await
     .unwrap_err();
@@ -7117,6 +7156,7 @@ async fn terminal_sync_with_seam_rejects_unsupported_tools() {
         &json!({ "providers": [] }),
         |_value| -> super::commands::UpsertFuture { Box::pin(async move { Ok(()) }) },
         vec!["claude".to_string()],
+        TerminalSyncProfile::RELEASE,
     )
     .await
     .unwrap_err();
@@ -7135,6 +7175,7 @@ async fn terminal_sync_with_seam_requires_an_enabled_local_key() {
         &json!({ "providers": [] }),
         |_value| -> super::commands::UpsertFuture { Box::pin(async move { Ok(()) }) },
         vec!["opencode".to_string()],
+        TerminalSyncProfile::RELEASE,
     )
     .await
     .unwrap_err();
@@ -7164,7 +7205,7 @@ fn target_for<'a>(
 #[test]
 fn terminal_targets_from_lists_supported_tools_in_order() {
     let config = GatewayConfig::default();
-    let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }));
+    let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }), TerminalSyncProfile::RELEASE);
 
     assert_eq!(targets.len(), 2, "one target per supported tool: {targets:?}");
     let tools: Vec<&str> = targets.iter().map(|target| target.tool.as_str()).collect();
@@ -7179,7 +7220,7 @@ fn terminal_targets_from_reports_unsynced_without_ledger_or_marker() {
     let mut config = GatewayConfig::default();
     config.keys.push(key_named("k1", "local-key-123"));
 
-    let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }));
+    let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }), TerminalSyncProfile::RELEASE);
     for target in &targets {
         assert_eq!(
             target.provider_id, None,
@@ -7204,7 +7245,7 @@ fn terminal_targets_from_does_not_claim_unmarked_user_provider() {
     });
     let providers_data = json!({ "providers": [unmarked_user_provider("user-oc", "opencode")] });
 
-    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let targets = super::commands::terminal_targets_from(&config, &providers_data, TerminalSyncProfile::RELEASE);
     let opencode = target_for(&targets, "opencode");
     assert_eq!(
         opencode.provider_id, None,
@@ -7236,11 +7277,12 @@ fn terminal_targets_from_marks_synced_when_marker_and_ledger_match() {
         "http://127.0.0.1:17688/v1",
         "previous-local-key",
         &config.providers,
+        TerminalSyncProfile::RELEASE,
     )
     .expect("managed gateway provider must build");
     let providers_data = json!({ "providers": [stored] });
 
-    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let targets = super::commands::terminal_targets_from(&config, &providers_data, TerminalSyncProfile::RELEASE);
     let opencode = target_for(&targets, "opencode");
     assert_eq!(opencode.provider_id.as_deref(), Some("managed-oc"));
     assert!(opencode.synced);
@@ -7271,7 +7313,7 @@ fn terminal_targets_from_reports_unsynced_when_managed_provider_deleted() {
         synced_at: 10,
     });
 
-    let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }));
+    let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }), TerminalSyncProfile::RELEASE);
     let opencode = target_for(&targets, "opencode");
     assert_eq!(opencode.provider_id, None);
     assert!(!opencode.synced);
@@ -7297,7 +7339,7 @@ fn terminal_targets_from_marks_pending_when_ledger_key_or_base_url_drifted() {
     let providers_data =
         json!({ "providers": [managed_gateway_provider("managed-oc", "opencode")] });
 
-    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let targets = super::commands::terminal_targets_from(&config, &providers_data, TerminalSyncProfile::RELEASE);
     let opencode = target_for(&targets, "opencode");
     assert!(opencode.synced, "the record still points at the marked provider");
     assert!(
@@ -7307,7 +7349,7 @@ fn terminal_targets_from_marks_pending_when_ledger_key_or_base_url_drifted() {
 
     config.terminal_syncs[0].synced_key_id = "k1".to_string();
     config.terminal_syncs[0].synced_base_url = "http://127.0.0.1:1".to_string();
-    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let targets = super::commands::terminal_targets_from(&config, &providers_data, TerminalSyncProfile::RELEASE);
     let opencode = target_for(&targets, "opencode");
     assert!(opencode.synced, "the record still points at the marked provider");
     assert!(
@@ -7333,6 +7375,7 @@ fn terminal_targets_from_marks_pending_when_opencode_models_drifted() {
         "http://127.0.0.1:17688/v1",
         "previous-local-key",
         &config.providers,
+        TerminalSyncProfile::RELEASE,
     )
     .expect("stored gateway provider must build");
 
@@ -7347,7 +7390,7 @@ fn terminal_targets_from_marks_pending_when_opencode_models_drifted() {
     });
 
     let providers_data = json!({ "providers": [stored] });
-    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let targets = super::commands::terminal_targets_from(&config, &providers_data, TerminalSyncProfile::RELEASE);
     let opencode = target_for(&targets, "opencode");
     assert!(
         opencode.synced,
@@ -7380,11 +7423,12 @@ fn terminal_targets_from_keeps_synced_opencode_record_when_models_match() {
         "http://127.0.0.1:17688/v1",
         "previous-local-key",
         &config.providers,
+        TerminalSyncProfile::RELEASE,
     )
     .expect("stored gateway provider must build");
     let providers_data = json!({ "providers": [stored] });
 
-    let targets = super::commands::terminal_targets_from(&config, &providers_data);
+    let targets = super::commands::terminal_targets_from(&config, &providers_data, TerminalSyncProfile::RELEASE);
     let opencode = target_for(&targets, "opencode");
     assert!(
         opencode.synced,
@@ -7429,7 +7473,7 @@ fn terminal_targets_from_marks_pending_when_codex_model_drifted() {
             }
         }]
     });
-    let targets = super::commands::terminal_targets_from(&config, &drifted);
+    let targets = super::commands::terminal_targets_from(&config, &drifted, TerminalSyncProfile::RELEASE);
     let codex = target_for(&targets, "codex");
     assert!(
         codex.synced,
@@ -7455,7 +7499,7 @@ fn terminal_targets_from_marks_pending_when_codex_model_drifted() {
             }
         }]
     });
-    let targets = super::commands::terminal_targets_from(&config, &in_sync);
+    let targets = super::commands::terminal_targets_from(&config, &in_sync, TerminalSyncProfile::RELEASE);
     let codex = target_for(&targets, "codex");
     assert!(
         codex.synced,
@@ -7464,6 +7508,323 @@ fn terminal_targets_from_marks_pending_when_codex_model_drifted() {
     assert!(
         !codex.pending_sync,
         "the current codex model must not require a re-sync: {codex:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Plan 20260929-dev-release-environment-isolation, Step 3 (RED)
+//
+// REQ-004: the AI Gateway terminal-sync identity is profile-specific. The
+// release profile owns `gateway` / `AI Gateway` / boolean marker `true`; the dev
+// profile owns `gateway-dev` / `AI Gateway (Dev)` / marker string `"dev"`, and
+// each profile treats the other profile's records as absent.
+// ---------------------------------------------------------------------------
+
+/// AC-012: the payload identity is profile-specific. Both profiles build the
+/// same tool with their own key, name, marker and base URL, and neither payload
+/// carries an `active`/`is_active` flag.
+#[test]
+fn build_gateway_provider_identity_is_profile_specific() {
+    let mut gateway = upstream_provider("g1", "Gateway A", "https://upstream.example/v1", "sk", None);
+    gateway.mappings = vec![mapping("local-a", "remote-a", Some("Local A"))];
+    let gateways = [gateway];
+
+    let release = build_gateway_provider(
+        "b-1",
+        "opencode",
+        "http://127.0.0.1:17688/v1",
+        "local-key-123",
+        &gateways,
+        TerminalSyncProfile::RELEASE,
+    )
+    .expect("release opencode payload must build");
+    assert_eq!(release["provider_key"], "gateway");
+    assert_eq!(release["name"], "AI Gateway");
+    assert_eq!(release["tool_config"]["ai_gateway_gateway"], true);
+    assert_eq!(release["base_url"], "http://127.0.0.1:17688/v1");
+    assert!(release.get("active").is_none(), "release must not carry active: {release}");
+    assert!(
+        release.get("is_active").is_none(),
+        "release must not carry is_active: {release}"
+    );
+
+    let dev = build_gateway_provider(
+        "b-1",
+        "opencode",
+        "http://127.0.0.1:17689/v1",
+        "local-key-123",
+        &gateways,
+        TerminalSyncProfile::DEV,
+    )
+    .expect("dev opencode payload must build");
+    assert_eq!(dev["provider_key"], "gateway-dev");
+    assert_eq!(dev["name"], "AI Gateway (Dev)");
+    assert_eq!(dev["tool_config"]["ai_gateway_gateway"], "dev");
+    assert_eq!(dev["base_url"], "http://127.0.0.1:17689/v1");
+    assert!(dev.get("active").is_none(), "dev must not carry active: {dev}");
+    assert!(dev.get("is_active").is_none(), "dev must not carry is_active: {dev}");
+}
+
+/// AC-014: each profile treats the other profile's marked records as absent when
+/// the terminal targets are computed, even when the ledger still points at the
+/// foreign record.
+#[test]
+fn terminal_targets_ignore_the_other_profiles_records() {
+    let mut config = gateway_config(19000);
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "rel-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:19000/v1".to_string(),
+        synced_at: 1,
+    });
+    let providers_data = json!({
+        "providers": [
+            managed_gateway_provider("rel-oc", "opencode"),
+            {
+                "id": "dev-cx",
+                "tool": "codex",
+                "name": "AI Gateway (Dev)",
+                "base_url": "http://127.0.0.1:19000/v1",
+                "api_key": "dev-local-key",
+                "tool_config": { "ai_gateway_gateway": "dev", "wire_api": "chat" }
+            }
+        ]
+    });
+
+    let release_targets = super::commands::terminal_targets_from(
+        &config,
+        &providers_data,
+        TerminalSyncProfile::RELEASE,
+    );
+    let release_opencode = target_for(&release_targets, "opencode");
+    assert_eq!(release_opencode.provider_id.as_deref(), Some("rel-oc"));
+    assert!(
+        release_opencode.synced,
+        "release must claim its own marked record: {release_opencode:?}"
+    );
+    let release_codex = target_for(&release_targets, "codex");
+    assert_eq!(
+        release_codex.provider_id, None,
+        "release must treat the dev codex record as absent: {release_codex:?}"
+    );
+    assert!(!release_codex.synced);
+
+    let dev_targets =
+        super::commands::terminal_targets_from(&config, &providers_data, TerminalSyncProfile::DEV);
+    let dev_opencode = target_for(&dev_targets, "opencode");
+    assert_eq!(
+        dev_opencode.provider_id, None,
+        "dev must treat the release opencode record as absent even though its ledger points at it: {dev_opencode:?}"
+    );
+    assert!(!dev_opencode.synced);
+    let dev_codex = target_for(&dev_targets, "codex");
+    assert_eq!(dev_codex.provider_id.as_deref(), Some("dev-cx"));
+    assert!(
+        dev_codex.synced,
+        "dev must claim its own marked record: {dev_codex:?}"
+    );
+}
+
+/// AC-014: the previously-synced tool list is profile-scoped, so a profile never
+/// refreshes a tool it does not own.
+#[test]
+fn previously_synced_terminal_tools_is_profile_scoped() {
+    let mut config = gateway_config(19000);
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "rel-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:19000/v1".to_string(),
+        synced_at: 1,
+    });
+    let providers_data = json!({
+        "providers": [
+            managed_gateway_provider("rel-oc", "opencode"),
+            {
+                "id": "dev-cx",
+                "tool": "codex",
+                "name": "AI Gateway (Dev)",
+                "base_url": "http://127.0.0.1:19000/v1",
+                "api_key": "dev-local-key",
+                "tool_config": { "ai_gateway_gateway": "dev", "wire_api": "chat" }
+            }
+        ]
+    });
+
+    assert_eq!(
+        super::commands::previously_synced_terminal_tools(
+            &config,
+            &providers_data,
+            TerminalSyncProfile::RELEASE,
+        ),
+        vec!["opencode".to_string()],
+        "release lists only its own marked tool"
+    );
+    assert_eq!(
+        super::commands::previously_synced_terminal_tools(
+            &config,
+            &providers_data,
+            TerminalSyncProfile::DEV,
+        ),
+        vec!["codex".to_string()],
+        "dev lists only its own marked tool"
+    );
+}
+
+/// AC-014/AC-015: a dev sync writes a distinct provider beside the release
+/// opencode record instead of reusing its id, and the release input record keeps
+/// its boolean marker.
+#[tokio::test]
+async fn terminal_sync_dev_profile_registers_distinct_provider_beside_release_record() {
+    let _home = isolated_temp_home("terminal-sync-dev-beside-release");
+    let mut config = gateway_config(19000);
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "rel-oc".to_string(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:19000/v1".to_string(),
+        synced_at: 1,
+    });
+    super::storage::write_config(&config).unwrap();
+
+    let providers_data = json!({
+        "providers": [managed_gateway_provider("rel-oc", "opencode")]
+    });
+    let (submitted, records) = capture_terminal_sync(
+        &providers_data,
+        vec!["opencode".to_string()],
+        TerminalSyncProfile::DEV,
+    )
+    .await;
+
+    assert_eq!(submitted.len(), 1, "one dev payload: {submitted:?}");
+    let payload = &submitted[0];
+    assert_ne!(
+        payload["id"], "rel-oc",
+        "the dev profile must not reuse the release provider id: {payload}"
+    );
+    assert_eq!(payload["provider_key"], "gateway-dev");
+    assert_eq!(payload["name"], "AI Gateway (Dev)");
+    assert_eq!(payload["tool_config"]["ai_gateway_gateway"], "dev");
+    assert!(payload.get("active").is_none(), "dev must never auto-activate: {payload}");
+    assert!(
+        payload.get("is_active").is_none(),
+        "dev must never auto-activate: {payload}"
+    );
+    assert_eq!(records.len(), 1, "one dev ledger record: {records:?}");
+    assert_eq!(
+        records[0].provider_id,
+        payload["id"].as_str().unwrap_or(""),
+        "the returned record must carry the submitted dev provider id"
+    );
+    assert_eq!(
+        providers_data["providers"][0]["tool_config"]["ai_gateway_gateway"], true,
+        "the release input record must keep its boolean marker"
+    );
+}
+
+/// AC-015: a dev codex sync registers a distinct identity and never carries an
+/// activation flag; the release codex record is unchanged.
+#[tokio::test]
+async fn terminal_sync_dev_codex_payload_has_distinct_identity_without_activation() {
+    let _home = isolated_temp_home("terminal-sync-dev-codex-beside-release");
+    let mut config = gateway_config(19000);
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "rel-cx".to_string(),
+        tool: "codex".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: "http://127.0.0.1:19000/v1".to_string(),
+        synced_at: 1,
+    });
+    super::storage::write_config(&config).unwrap();
+
+    let providers_data = json!({
+        "providers": [{
+            "id": "rel-cx",
+            "tool": "codex",
+            "name": "AI Gateway",
+            "base_url": "http://127.0.0.1:17688/v1",
+            "api_key": "previous-local-key",
+            "ai_gateway_gateway": true
+        }]
+    });
+    let (submitted, records) = capture_terminal_sync(
+        &providers_data,
+        vec!["codex".to_string()],
+        TerminalSyncProfile::DEV,
+    )
+    .await;
+
+    assert_eq!(submitted.len(), 1, "one dev payload: {submitted:?}");
+    let payload = &submitted[0];
+    assert_ne!(
+        payload["id"], "rel-cx",
+        "the dev profile must not reuse the release provider id: {payload}"
+    );
+    assert_eq!(payload["name"], "AI Gateway (Dev)");
+    assert_eq!(payload["tool_config"]["ai_gateway_gateway"], "dev");
+    assert!(payload.get("active").is_none(), "dev must never auto-activate: {payload}");
+    assert!(
+        payload.get("is_active").is_none(),
+        "dev must never auto-activate: {payload}"
+    );
+    assert_eq!(payload["tool"], "codex");
+    assert_eq!(records.len(), 1, "one dev ledger record: {records:?}");
+    assert_eq!(records[0].tool, "codex");
+    assert_eq!(
+        providers_data["providers"][0]["ai_gateway_gateway"], true,
+        "the release codex input record must keep its boolean marker"
+    );
+}
+
+/// AC-016: the release sync repairs a stale 17689 provider to the release base
+/// URL under the release `gateway` key and never submits a `gateway-dev` payload.
+#[tokio::test]
+async fn terminal_sync_release_payload_keeps_gateway_key_and_release_base_url() {
+    let _home = isolated_temp_home("terminal-sync-release-base-url-repair");
+    // A custom port is used because canonical defaults (17688/17689) are
+    // remapped per profile by `resolve_port` under `cargo test`, so they cannot
+    // pin the payload URL; the exact 17688 release identity is asserted at
+    // payload level in `build_gateway_provider_identity_is_profile_specific`.
+    super::storage::write_config(&gateway_config(19000)).unwrap();
+
+    let providers_data = json!({
+        "providers": [{
+            "id": "rel-oc",
+            "tool": "opencode",
+            "name": "AI Gateway",
+            "base_url": "http://127.0.0.1:17689/v1",
+            "api_key": "previous-local-key",
+            "tool_config": {
+                "ai_gateway_gateway": true,
+                "npm": "@ai-sdk/openai-compatible",
+            }
+        }]
+    });
+    let (submitted, _records) = capture_terminal_sync(
+        &providers_data,
+        vec!["opencode".to_string()],
+        TerminalSyncProfile::RELEASE,
+    )
+    .await;
+
+    assert_eq!(submitted.len(), 1, "one release payload: {submitted:?}");
+    let payload = &submitted[0];
+    assert_eq!(payload["provider_key"], "gateway");
+    assert_eq!(
+        payload["base_url"],
+        super::storage::local_base_url(19000)
+    );
+    assert_eq!(
+        payload["tool_config"]["options"]["baseURL"],
+        super::storage::local_base_url(19000)
+    );
+    assert!(
+        submitted
+            .iter()
+            .all(|value| value.get("provider_key").and_then(Value::as_str) != Some("gateway-dev")),
+        "the release sync must never submit a dev payload: {submitted:?}"
     );
 }
 
@@ -26487,7 +26848,7 @@ async fn terminal_refresh_failure_is_swallowed_and_never_fails_the_template_sync
         "the port must still be invoked once before its error is swallowed"
     );
     assert!(
-        super::commands::previously_synced_terminal_tools(&config, &Value::Null).is_empty(),
+        super::commands::previously_synced_terminal_tools(&config, &Value::Null, TerminalSyncProfile::RELEASE).is_empty(),
         "an unreadable service-provider payload degrades to no synced tools"
     );
 }
@@ -26577,7 +26938,7 @@ fn previously_synced_terminal_tools_lists_only_marked_managed_providers_in_suppo
         json!({"providers": "not-an-array"}),
     ] {
         assert!(
-            super::commands::previously_synced_terminal_tools(&config, &empty).is_empty(),
+            super::commands::previously_synced_terminal_tools(&config, &empty, TerminalSyncProfile::RELEASE).is_empty(),
             "a payload without a provider array must have no synced tools: {empty}"
         );
     }
@@ -26586,7 +26947,7 @@ fn previously_synced_terminal_tools_lists_only_marked_managed_providers_in_suppo
         "providers": [unmarked_user_provider("user-oc", "opencode")]
     });
     assert!(
-        super::commands::previously_synced_terminal_tools(&config, &unmarked_only).is_empty(),
+        super::commands::previously_synced_terminal_tools(&config, &unmarked_only, TerminalSyncProfile::RELEASE).is_empty(),
         "an unmarked user provider is not a synced managed gateway"
     );
 
@@ -26600,7 +26961,7 @@ fn previously_synced_terminal_tools_lists_only_marked_managed_providers_in_suppo
         synced_at: 1,
     });
     assert!(
-        super::commands::previously_synced_terminal_tools(&stale, &unmarked_only).is_empty(),
+        super::commands::previously_synced_terminal_tools(&stale, &unmarked_only, TerminalSyncProfile::RELEASE).is_empty(),
         "a ledger id that now points at an unmarked user provider is stale"
     );
 
@@ -26618,7 +26979,7 @@ fn previously_synced_terminal_tools_lists_only_marked_managed_providers_in_suppo
         ]
     });
     assert_eq!(
-        super::commands::previously_synced_terminal_tools(&config, &codex_first),
+        super::commands::previously_synced_terminal_tools(&config, &codex_first, TerminalSyncProfile::RELEASE),
         vec!["opencode".to_string(), "codex".to_string()],
         "marked managed providers are listed in supported-tool order, ignoring other tools"
     );
@@ -26627,7 +26988,7 @@ fn previously_synced_terminal_tools_lists_only_marked_managed_providers_in_suppo
         "providers": [managed_gateway_provider_top_level("managed-cx", "codex")]
     });
     assert_eq!(
-        super::commands::previously_synced_terminal_tools(&config, &codex_only),
+        super::commands::previously_synced_terminal_tools(&config, &codex_only, TerminalSyncProfile::RELEASE),
         vec!["codex".to_string()],
         "only the marked tool is listed"
     );
@@ -28803,7 +29164,7 @@ async fn terminal_sync_bytes_ignore_upstream_key_pool_changes() {
         ],
     ))
     .expect("seed config A");
-    let (first, _) = capture_terminal_sync(&providers_data, tools.clone()).await;
+    let (first, _) = capture_terminal_sync(&providers_data, tools.clone(), TerminalSyncProfile::RELEASE).await;
     assert_eq!(first.len(), 1, "one payload per requested tool");
 
     super::storage::write_config(&sync_config(
@@ -28815,7 +29176,7 @@ async fn terminal_sync_bytes_ignore_upstream_key_pool_changes() {
         ],
     ))
     .expect("seed config B");
-    let (second, _) = capture_terminal_sync(&providers_data, tools).await;
+    let (second, _) = capture_terminal_sync(&providers_data, tools, TerminalSyncProfile::RELEASE).await;
     assert_eq!(second.len(), 1);
 
     let bytes_first = serde_json::to_vec(&first).expect("serialize first payload");
