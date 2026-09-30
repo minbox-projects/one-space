@@ -6,6 +6,7 @@ import {
   AlertCircle,
   ChevronRight,
   Globe,
+  Hash,
   KeyRound,
   Layers,
   Link2,
@@ -35,6 +36,8 @@ import {
 } from "./ui/dialog";
 import { Switch } from "./ui/switch";
 import { SshTunnelGroupManagerDialog } from "./sshTunnels/SshTunnelGroupManagerDialog";
+import { SshCommonPortManagerDialog } from "./sshTunnels/SshCommonPortManagerDialog";
+import { CommonPortSelectMenu } from "./sshTunnels/CommonPortSelectMenu";
 import { errorToMessage, safeRecordMessage } from "@/lib/messages";
 import {
   notifyActionResult,
@@ -51,6 +54,8 @@ import {
   type SshTunnelForwardMode,
   type SshHost,
   type SshTunnelGroupView,
+  type SshCommonPortView,
+  type SshCommonPortUpsertInput,
   type SshTunnelProbeResult,
   type SshTunnelsSnapshot,
   type SshTunnelRuntimeView,
@@ -67,6 +72,8 @@ import { ToolStatusBadge, type ToolStatusTone } from "./toolbox/ToolStatusBadge"
 import type { ToolStatusDotTone } from "./toolbox/ToolStatusDot";
 import { ToolEmptyState } from "./toolbox/ToolEmptyState";
 import {
+  sshCommonPortDelete,
+  sshCommonPortUpsert,
   sshHostsList,
   sshTunnelConnect,
   sshTunnelDelete,
@@ -232,6 +239,9 @@ export function SshTunnels({
   const [form, setForm] = useState<TunnelFormState>(DEFAULT_TUNNEL_FORM);
   const [editorOpen, setEditorOpen] = useState(false);
   const [groupManagerOpen, setGroupManagerOpen] = useState(false);
+  const [commonPorts, setCommonPorts] = useState<SshCommonPortView[]>([]);
+  const [commonPortManagerOpen, setCommonPortManagerOpen] = useState(false);
+  const [commonPortSubmitting, setCommonPortSubmitting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [groupSubmitting, setGroupSubmitting] = useState(false);
   const [draftProbe, setDraftProbe] = useState<SshTunnelProbeResult | null>(null);
@@ -601,6 +611,9 @@ export function SshTunnels({
     setGroups(sortTunnelGroups(ensureDefaultGroup(snapshot.groups)));
     setTunnels(snapshot.tunnels.map(normalizeTunnel));
     setRuntimeMap(mapRuntimeById(snapshot.runtime));
+    if (Array.isArray(snapshot.common_ports)) {
+      setCommonPorts(snapshot.common_ports);
+    }
   };
 
   const loadData = async () => {
@@ -907,6 +920,180 @@ export function SshTunnels({
     } finally {
       setGroupSubmitting(false);
     }
+  };
+
+  const handleCreateCommonPort = async (input: SshCommonPortUpsertInput) => {
+    if (!isTauri) return;
+    try {
+      setCommonPortSubmitting(true);
+      const saved = await runUserAction(
+        actionContext,
+        {
+          source: "ssh_tunnels",
+          category: "save",
+          action: "create-common-port",
+          target: { tab: "ssh-tunnels", entity_id: null },
+          dedupeKey: `ssh-tunnels:create-common-port:${input.port}:${input.name}`,
+          success: {
+            title: t("sshTunnelCommonPortCreated", "Common port added"),
+            summary: t(
+              "sshTunnelCommonPortCreatedSummary",
+              "Common port added successfully.",
+            ),
+          },
+          error: {
+            title: t("sshTunnelCommonPortCreateFailed", "Failed to add common port"),
+          },
+        },
+        () => sshCommonPortUpsert<SshCommonPortView>(input),
+      );
+      if (!saved) return;
+      setCommonPorts((prev) => {
+        const next = prev.filter((p) => p.id !== saved.id);
+        next.push(saved);
+        next.sort(
+          (a, b) =>
+            a.localPort - b.localPort ||
+            a.remotePort - b.remotePort ||
+            a.name.localeCompare(b.name),
+        );
+        return next;
+      });
+      void loadData();
+    } catch (err) {
+      const text = formatTunnelError(err);
+      setError(text);
+      await notify(text);
+      throw err;
+    } finally {
+      setCommonPortSubmitting(false);
+    }
+  };
+
+  const handleUpdateCommonPort = async (
+    port: SshCommonPortView,
+    input: SshCommonPortUpsertInput,
+  ) => {
+    if (!isTauri) return;
+    try {
+      setCommonPortSubmitting(true);
+      const saved = await runUserAction(
+        actionContext,
+        {
+          source: "ssh_tunnels",
+          category: "save",
+          action: "update-common-port",
+          target: { tab: "ssh-tunnels", entity_id: port.id },
+          dedupeKey: `ssh-tunnels:update-common-port:${port.id}`,
+          success: {
+            title: t("sshTunnelCommonPortUpdated", "Common port updated"),
+            summary: t(
+              "sshTunnelCommonPortUpdatedSummary",
+              "Common port updated successfully.",
+            ),
+          },
+          error: {
+            title: t("sshTunnelCommonPortUpdateFailed", "Failed to update common port"),
+          },
+        },
+        () => sshCommonPortUpsert<SshCommonPortView>(input),
+      );
+      if (!saved) return;
+      setCommonPorts((prev) => {
+        const next = prev.filter((p) => p.id !== saved.id);
+        next.push(saved);
+        next.sort(
+          (a, b) =>
+            a.localPort - b.localPort ||
+            a.remotePort - b.remotePort ||
+            a.name.localeCompare(b.name),
+        );
+        return next;
+      });
+      void loadData();
+    } catch (err) {
+      const text = formatTunnelError(err);
+      setError(text);
+      await notify(text);
+      throw err;
+    } finally {
+      setCommonPortSubmitting(false);
+    }
+  };
+
+  const handleDeleteCommonPort = async (port: SshCommonPortView) => {
+    if (!isTauri) return;
+    const confirmed = await confirmDialog(
+      t(
+        "sshTunnelDeleteCommonPortConfirm",
+        "Are you sure you want to remove {{name}} ({{port}}) from common ports?",
+        { name: port.name, port: port.port },
+      ),
+      {
+        title: t("sshTunnelDeleteCommonPortTitle", "Delete Common Port"),
+        okLabel: t("delete", "Delete"),
+        cancelLabel: t("cancel", "Cancel"),
+        kind: "warning",
+      },
+    );
+    if (!confirmed) return;
+    try {
+      setCommonPortSubmitting(true);
+      await runUserAction(
+        actionContext,
+        {
+          source: "ssh_tunnels",
+          category: "delete",
+          action: "delete-common-port",
+          target: { tab: "ssh-tunnels", entity_id: port.id },
+          dedupeKey: `ssh-tunnels:delete-common-port:${port.id}`,
+          success: {
+            title: t("sshTunnelCommonPortDeleted", "Common port deleted"),
+            summary: t(
+              "sshTunnelCommonPortDeletedSummary",
+              "Common port removed successfully.",
+            ),
+          },
+          error: {
+            title: t("sshTunnelCommonPortDeleteFailed", "Failed to delete common port"),
+          },
+        },
+        () => sshCommonPortDelete(port.id),
+      );
+      setCommonPorts((prev) => prev.filter((item) => item.id !== port.id));
+      void loadData();
+    } catch (err) {
+      const text = formatTunnelError(err);
+      setError(text);
+      await notify(text);
+    } finally {
+      setCommonPortSubmitting(false);
+    }
+  };
+
+  const handleSelectCommonPort = (item: SshCommonPortView) => {
+    setForm((prev) => {
+      const next = { ...prev };
+      if (prev.forward_mode === "local") {
+        next.local_port = String(item.localPort);
+        next.target_port = String(item.remotePort);
+        if (!prev.name.trim()) {
+          next.name = `${item.name} (${item.remotePort})`;
+        }
+      } else if (prev.forward_mode === "remote") {
+        next.remote_port = String(item.remotePort);
+        next.target_port = String(item.localPort);
+        if (!prev.name.trim()) {
+          next.name = `${item.name} (${item.remotePort})`;
+        }
+      } else if (prev.forward_mode === "dynamic") {
+        next.local_port = String(item.localPort);
+        if (!prev.name.trim()) {
+          next.name = `${item.name} (${item.localPort})`;
+        }
+      }
+      return next;
+    });
   };
 
   const handlePickKey = async () => {
@@ -1596,6 +1783,14 @@ export function SshTunnels({
           </button>
           <button
             type="button"
+            onClick={() => setCommonPortManagerOpen(true)}
+            className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+          >
+            <Hash className="h-4 w-4 text-muted-foreground" />
+            {t("sshTunnelCommonPorts", "Common Ports")}
+          </button>
+          <button
+            type="button"
             onClick={openCreateEditor}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
           >
@@ -1824,6 +2019,18 @@ export function SshTunnels({
                 <Pencil className="h-3.5 w-3.5" />
                 {t("sshTunnelManageGroups")}
               </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setGroupMenuOpen(false);
+                  setCommonPortManagerOpen(true);
+                }}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium transition-colors hover:bg-muted"
+              >
+                <Hash className="h-3.5 w-3.5" />
+                {t("sshTunnelManageCommonPorts", "Manage Common Ports")}
+              </button>
             </div>
           ) : null}
         </div>
@@ -1935,6 +2142,16 @@ export function SshTunnels({
         onCreate={handleCreateGroup}
         onRename={handleRenameGroup}
         onDelete={handleDeleteGroup}
+      />
+
+      <SshCommonPortManagerDialog
+        open={commonPortManagerOpen}
+        onOpenChange={setCommonPortManagerOpen}
+        ports={commonPorts}
+        submitting={commonPortSubmitting}
+        onCreate={handleCreateCommonPort}
+        onUpdate={handleUpdateCommonPort}
+        onDelete={handleDeleteCommonPort}
       />
 
       <Dialog
@@ -2281,6 +2498,17 @@ export function SshTunnels({
                     )}
                   </div>
                 )}
+
+                <div className="flex items-center justify-between border-b pb-2 pt-2">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    {t("sshTunnelPortSettings", "Port Configuration")}
+                  </div>
+                  <CommonPortSelectMenu
+                    ports={commonPorts}
+                    onSelect={handleSelectCommonPort}
+                    onManage={() => setCommonPortManagerOpen(true)}
+                  />
+                </div>
 
                 {form.forward_mode === "local" ? (
                   <div className="grid gap-4 md:grid-cols-2">

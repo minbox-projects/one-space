@@ -177,6 +177,7 @@ fn normalize_state_injects_default_group() {
             is_default: false,
         }],
         tunnels: vec![sample_record("")],
+        common_ports: default_common_ports(),
     };
 
     normalize_state(&mut state);
@@ -202,6 +203,7 @@ fn normalize_state_falls_back_invalid_group_ids() {
             },
         ],
         tunnels: vec![sample_record("missing")],
+        common_ports: default_common_ports(),
     };
 
     normalize_state(&mut state);
@@ -448,4 +450,125 @@ fn invoke_handler_registers_both_all_tunnels_batch_commands_exactly_once() {
         1,
         "ssh_tunnels_disconnect_all must be registered exactly once"
     );
+}
+
+#[test]
+fn invoke_handler_registers_common_port_commands_exactly_once() {
+    let block = invoke_handler_registration_block();
+
+    assert_eq!(
+        block
+            .matches("ssh_tunnels::ssh_common_ports_list")
+            .count(),
+        1,
+        "ssh_common_ports_list must be registered exactly once"
+    );
+    assert_eq!(
+        block
+            .matches("ssh_tunnels::ssh_common_port_upsert")
+            .count(),
+        1,
+        "ssh_common_port_upsert must be registered exactly once"
+    );
+    assert_eq!(
+        block
+            .matches("ssh_tunnels::ssh_common_port_delete")
+            .count(),
+        1,
+        "ssh_common_port_delete must be registered exactly once"
+    );
+}
+
+#[test]
+fn normalize_state_cleans_and_sorts_common_ports() {
+    let mut state = SshTunnelState {
+        groups: vec![default_group_record()],
+        tunnels: vec![],
+        common_ports: vec![
+            SshCommonPortRecord {
+                id: "dup".to_string(),
+                name: "MySQL".to_string(),
+                local_port: 3306,
+                remote_port: 3306,
+                port: None,
+                description: None,
+                created_at: 1,
+                updated_at: 1,
+            },
+            SshCommonPortRecord {
+                id: "dup".to_string(),
+                name: "Duplicate".to_string(),
+                local_port: 3307,
+                remote_port: 3307,
+                port: None,
+                description: None,
+                created_at: 2,
+                updated_at: 2,
+            },
+            SshCommonPortRecord {
+                id: "redis".to_string(),
+                name: "Redis".to_string(),
+                local_port: 6379,
+                remote_port: 6379,
+                port: None,
+                description: Some("Redis cache".to_string()),
+                created_at: 3,
+                updated_at: 3,
+            },
+            SshCommonPortRecord {
+                id: "ssh".to_string(),
+                name: "SSH".to_string(),
+                local_port: 22,
+                remote_port: 22,
+                port: None,
+                description: None,
+                created_at: 4,
+                updated_at: 4,
+            },
+            SshCommonPortRecord {
+                id: "zero".to_string(),
+                name: "Zero Port".to_string(),
+                local_port: 0,
+                remote_port: 0,
+                port: None,
+                description: None,
+                created_at: 5,
+                updated_at: 5,
+            },
+            SshCommonPortRecord {
+                id: "empty-name".to_string(),
+                name: "   ".to_string(),
+                local_port: 8080,
+                remote_port: 8080,
+                port: None,
+                description: None,
+                created_at: 6,
+                updated_at: 6,
+            },
+        ],
+    };
+
+    normalize_state(&mut state);
+
+    assert_eq!(state.common_ports.len(), 3);
+    assert_eq!(state.common_ports[0].local_port, 22);
+    assert_eq!(state.common_ports[0].remote_port, 22);
+    assert_eq!(state.common_ports[0].name, "SSH");
+    assert_eq!(state.common_ports[1].local_port, 3306);
+    assert_eq!(state.common_ports[1].remote_port, 3306);
+    assert_eq!(state.common_ports[1].name, "MySQL");
+    assert_eq!(state.common_ports[2].local_port, 6379);
+    assert_eq!(state.common_ports[2].remote_port, 6379);
+    assert_eq!(state.common_ports[2].name, "Redis");
+}
+
+#[test]
+fn default_common_ports_contain_standard_services() {
+    let ports = default_common_ports();
+    assert!(ports.iter().any(|p| p.local_port == 22 && p.remote_port == 22 && p.name == "SSH"));
+    assert!(ports.iter().any(|p| p.local_port == 80 && p.remote_port == 80 && p.name == "HTTP"));
+    assert!(ports.iter().any(|p| p.local_port == 443 && p.remote_port == 443 && p.name == "HTTPS"));
+    assert!(ports.iter().any(|p| p.local_port == 3306 && p.remote_port == 3306 && p.name == "MySQL"));
+    assert!(ports.iter().any(|p| p.local_port == 5432 && p.remote_port == 5432 && p.name == "PostgreSQL"));
+    assert!(ports.iter().any(|p| p.local_port == 6379 && p.remote_port == 6379 && p.name == "Redis"));
 }
