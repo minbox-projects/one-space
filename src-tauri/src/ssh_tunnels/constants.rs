@@ -21,7 +21,8 @@ pub(in crate::ssh_tunnels) const SSH_CONNECT_TIMEOUT: Duration = Duration::from_
 pub(in crate::ssh_tunnels) const SSH_SESSION_POOL_MAX_IDLE: usize = 4;
 pub(in crate::ssh_tunnels) const SSH_KEEPALIVE_INTERVAL_SECS: u32 = 30;
 pub(in crate::ssh_tunnels) const RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(2);
-pub(in crate::ssh_tunnels) const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);
+pub(in crate::ssh_tunnels) const SUPERVISOR_RETRY_MAX_BASE_DELAY: Duration = Duration::from_secs(48);
+pub(in crate::ssh_tunnels) const SUPERVISOR_RETRY_JITTER_RATIO: f64 = 0.25;
 pub(in crate::ssh_tunnels) const RECONNECT_HEALTH_CHECK_INTERVAL: Duration =
     Duration::from_secs(30);
 pub(in crate::ssh_tunnels) const RECONNECT_BACKOFF_STEP: Duration = Duration::from_millis(500);

@@ -1,5 +1,5 @@
 use super::{
-    find_default_ssh_keys, password_exists, password_for_tunnel, set_session_timeout,
+    find_default_ssh_keys, password_exists, password_for_tunnel, set_session_timeout, FailureKind,
     ParsedSshAlias, ResolvedAuth, ResolvedSshConfig, SshTunnelAuthKind, SshTunnelForwardMode,
     SshTunnelProbeDraftInput, SshTunnelRecord, SshTunnelSourceKind, SshTunnelUpsertInput,
     SSH_CONNECT_TIMEOUT, SSH_IO_TIMEOUT, SSH_KEEPALIVE_INTERVAL_SECS,
@@ -643,6 +643,14 @@ pub(in crate::ssh_tunnels) fn authenticate_session(
 pub(in crate::ssh_tunnels) fn open_authenticated_session(
     config: &ResolvedSshConfig,
 ) -> Result<Session, String> {
+    open_authenticated_session_kinded(config).map_err(|(_kind, message)| message)
+}
+
+/// Opens an authenticated SSH session, classifying the failure so the
+/// supervisor can decide whether to retry.
+pub(in crate::ssh_tunnels) fn open_authenticated_session_kinded(
+    config: &ResolvedSshConfig,
+) -> Result<Session, (FailureKind, String)> {
     let addr = format!("{}:{}", config.host, config.port);
     let socket_addr = addr
         .parse::<SocketAddr>()
@@ -653,19 +661,30 @@ pub(in crate::ssh_tunnels) fn open_authenticated_session(
                 .ok()
                 .and_then(|mut addrs| addrs.next())
         })
-        .ok_or_else(|| format!("Could not resolve SSH server {}", addr))?;
-    let tcp = TcpStream::connect_timeout(&socket_addr, SSH_CONNECT_TIMEOUT)
-        .map_err(|e| format!("Failed to connect to SSH server {}: {}", addr, e))?;
+        .ok_or_else(|| {
+            (
+                FailureKind::Transport,
+                format!("Could not resolve SSH server {}", addr),
+            )
+        })?;
+    let tcp = TcpStream::connect_timeout(&socket_addr, SSH_CONNECT_TIMEOUT).map_err(|e| {
+        (
+            FailureKind::Transport,
+            format!("Failed to connect to SSH server {}: {}", addr, e),
+        )
+    })?;
     tcp.set_nodelay(true).ok();
     tcp.set_read_timeout(Some(SSH_CONNECT_TIMEOUT)).ok();
     tcp.set_write_timeout(Some(SSH_CONNECT_TIMEOUT)).ok();
 
-    let mut session = Session::new().map_err(|e| e.to_string())?;
+    let mut session = Session::new().map_err(|e| (FailureKind::Transport, e.to_string()))?;
     session.set_tcp_stream(tcp);
     set_session_timeout(&session, SSH_CONNECT_TIMEOUT);
-    session.handshake().map_err(|e| e.to_string())?;
-    verify_host_key(&session, config)?;
-    authenticate_session(&session, config)?;
+    session
+        .handshake()
+        .map_err(|e| (FailureKind::Transport, e.to_string()))?;
+    verify_host_key(&session, config).map_err(|e| (FailureKind::HostKey, e))?;
+    authenticate_session(&session, config).map_err(|e| (FailureKind::Auth, e))?;
     set_session_timeout(&session, SSH_IO_TIMEOUT);
     session.set_keepalive(true, SSH_KEEPALIVE_INTERVAL_SECS);
     Ok(session)

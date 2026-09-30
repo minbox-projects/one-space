@@ -1,13 +1,16 @@
 use crate::ssh_tunnels::{
     bridge_streams, emit_connect_failed, emit_tunnels_updated, ensure_local_target_reachable,
-    handle_dynamic_client, load_records, open_authenticated_session, prepare_session_for_reuse,
-    record_tunnel_failure, resolve_ssh_config_from_record, runtime_manager, runtime_view,
-    serve_dynamic_listener, sleep_respecting_stop, start_local_runtime, tunnel_summary,
+    handle_dynamic_client, load_records, open_authenticated_session,
+    open_authenticated_session_kinded, prepare_session_for_reuse, resolve_ssh_config_from_record,
+    run_supervision, runtime_manager, runtime_view, serve_dynamic_listener, sleep_respecting_stop,
+    start_local_runtime, tunnel_failure_message_input, tunnel_summary,
     update_record_connection_success, update_record_error, update_runtime_state,
-    with_session_connect_timeout, ResolvedSshConfig, RunningTunnel, RuntimeState, SessionPool,
-    SshTunnelForwardMode, SshTunnelRecord, SshTunnelRuntimeView, SshTunnelStatus, StartupResult,
-    StartupSuccess, LOCAL_BIND_HOST, RECONNECT_HEALTH_CHECK_INTERVAL, RECONNECT_INITIAL_BACKOFF,
-    RECONNECT_MAX_BACKOFF, REMOTE_BIND_HOST, SSH_CONNECT_TIMEOUT,
+    with_session_connect_timeout, AppSupervisorObserver, FailureKind, PreSpawnConnectFailure,
+    ResolvedSshConfig, RunningTunnel, RuntimeOutcome, RuntimeState, SessionPool,
+    SshTunnelFailureEvent, SshTunnelForwardMode, SshTunnelRecord, SshTunnelRuntimeView,
+    SshTunnelStatus, StartupResult, StartupSuccess, LOCAL_BIND_HOST,
+    RECONNECT_HEALTH_CHECK_INTERVAL, REMOTE_BIND_HOST, SSH_CONNECT_TIMEOUT,
+    SSH_TUNNEL_CONNECT_FAILED_EVENT,
 };
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -15,7 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self};
 use std::time::{Duration, Instant};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 pub(in crate::ssh_tunnels) fn start_remote_runtime(
     app: AppHandle,
@@ -25,37 +28,52 @@ pub(in crate::ssh_tunnels) fn start_remote_runtime(
     stop: Arc<AtomicBool>,
     active_clients: Arc<AtomicUsize>,
     startup: mpsc::Sender<StartupResult>,
-) {
+) -> RuntimeOutcome {
     let target_host = match record.forward.target_host.clone() {
         Some(host) => host,
         None => {
-            let _ = startup.send(StartupResult::Failed("Missing target host".to_string()));
-            return;
+            let message = "Missing target host".to_string();
+            let _ = startup.send(StartupResult::Failed(message.clone()));
+            return RuntimeOutcome::FailedAtStartup {
+                kind: FailureKind::Config,
+                message,
+            };
         }
     };
     let target_port = match record.forward.target_port {
         Some(port) => port,
         None => {
-            let _ = startup.send(StartupResult::Failed("Missing target port".to_string()));
-            return;
+            let message = "Missing target port".to_string();
+            let _ = startup.send(StartupResult::Failed(message.clone()));
+            return RuntimeOutcome::FailedAtStartup {
+                kind: FailureKind::Config,
+                message,
+            };
         }
     };
     if let Err(error) = ensure_local_target_reachable(&target_host, target_port) {
-        let _ = startup.send(StartupResult::Failed(error));
-        return;
+        let _ = startup.send(StartupResult::Failed(error.clone()));
+        return RuntimeOutcome::FailedAtStartup {
+            kind: FailureKind::Target,
+            message: error,
+        };
     }
-    let session = match open_authenticated_session(&resolved) {
+    let session = match open_authenticated_session_kinded(&resolved) {
         Ok(session) => session,
-        Err(error) => {
-            let _ = startup.send(StartupResult::Failed(error));
-            return;
+        Err((kind, message)) => {
+            let _ = startup.send(StartupResult::Failed(message.clone()));
+            return RuntimeOutcome::FailedAtStartup { kind, message };
         }
     };
     let remote_port = match record.forward.remote_port {
         Some(port) => port,
         None => {
-            let _ = startup.send(StartupResult::Failed("Missing remote port".to_string()));
-            return;
+            let message = "Missing remote port".to_string();
+            let _ = startup.send(StartupResult::Failed(message.clone()));
+            return RuntimeOutcome::FailedAtStartup {
+                kind: FailureKind::Config,
+                message,
+            };
         }
     };
     let remote_host = record
@@ -72,11 +90,15 @@ pub(in crate::ssh_tunnels) fn start_remote_runtime(
     }) {
         Ok(result) => result,
         Err(error) => {
-            let _ = startup.send(StartupResult::Failed(format!(
+            let message = format!(
                 "Failed to reserve remote port {}:{}: {}",
                 remote_host, remote_port, error
-            )));
-            return;
+            );
+            let _ = startup.send(StartupResult::Failed(message.clone()));
+            return RuntimeOutcome::FailedAtStartup {
+                kind: FailureKind::Port,
+                message,
+            };
         }
     };
 
@@ -139,37 +161,34 @@ pub(in crate::ssh_tunnels) fn start_remote_runtime(
                 if last_health_check.elapsed() >= RECONNECT_HEALTH_CHECK_INTERVAL {
                     last_health_check = Instant::now();
                     if let Err(e) = prepare_session_for_reuse(&session) {
-                        let error_msg = format!("SSH session health check failed: {}", e);
-                        let _ = update_record_error(&record.id, &error_msg);
-                        record_tunnel_failure(&app, &record, &error_msg, "health-check");
-                        let _ = update_runtime_state(&app, &record.id, |state| {
-                            state.status = SshTunnelStatus::Error;
-                            state.last_error = Some(error_msg);
-                        });
-                        return;
+                        let message = format!("SSH session health check failed: {}", e);
+                        return if stop.load(Ordering::Relaxed) {
+                            RuntimeOutcome::Stopped
+                        } else {
+                            RuntimeOutcome::DroppedAfterConnected {
+                                kind: FailureKind::Transport,
+                                message,
+                            }
+                        };
                     }
                 }
                 continue;
             }
             Err(error) => {
-                let err = error.to_string();
-                let _ = update_record_error(&record.id, &err);
-                let _ = update_runtime_state(&app, &record.id, |state| {
-                    state.status = if stop.load(Ordering::Relaxed) {
-                        SshTunnelStatus::Disconnected
-                    } else {
-                        SshTunnelStatus::Error
-                    };
-                    state.last_error = Some(err.clone());
-                });
-                return;
+                let message = error.to_string();
+                return if stop.load(Ordering::Relaxed) {
+                    RuntimeOutcome::Stopped
+                } else {
+                    RuntimeOutcome::DroppedAfterConnected {
+                        kind: FailureKind::Transport,
+                        message,
+                    }
+                };
             }
         }
     }
 
-    let _ = update_runtime_state(&app, &record.id, |state| {
-        state.status = SshTunnelStatus::Disconnected;
-    });
+    RuntimeOutcome::Stopped
 }
 
 pub(in crate::ssh_tunnels) fn spawn_runtime_thread(
@@ -196,93 +215,76 @@ pub(in crate::ssh_tunnels) fn spawn_runtime_thread(
     let resolved_for_thread = resolved.clone();
 
     let join = thread::spawn(move || {
-        let mut first_attempt = true;
-        let mut backoff = RECONNECT_INITIAL_BACKOFF;
         let mut startup_tx = Some(startup_tx);
+        let mut first_attempt = true;
 
-        loop {
+        let app_for_runtime = app_for_thread.clone();
+        let record_for_runtime = record_for_thread.clone();
+        let resolved_for_runtime = resolved_for_thread.clone();
+        let state_for_runtime = state_for_thread.clone();
+        let stop_for_runtime = stop_for_thread.clone();
+        let active_for_runtime = active_for_thread.clone();
+
+        let next_outcome = move || -> RuntimeOutcome {
             let tx = startup_tx.take().unwrap_or_else(|| mpsc::channel().0);
 
             if !first_attempt {
                 let grace_start = Instant::now();
-                while active_for_thread.load(Ordering::Relaxed) > 0
+                while active_for_runtime.load(Ordering::Relaxed) > 0
                     && grace_start.elapsed() < Duration::from_secs(3)
-                    && !stop_for_thread.load(Ordering::Relaxed)
+                    && !stop_for_runtime.load(Ordering::Relaxed)
                 {
                     thread::sleep(Duration::from_millis(100));
                 }
-                if stop_for_thread.load(Ordering::Relaxed) {
-                    break;
+                if stop_for_runtime.load(Ordering::Relaxed) {
+                    return RuntimeOutcome::Stopped;
                 }
-                {
-                    let mut g = state_for_thread.lock().ok();
-                    if let Some(ref mut g) = g {
-                        g.status = SshTunnelStatus::Reconnecting;
-                        g.last_error = None;
-                    }
-                }
-                emit_tunnels_updated(&app_for_thread);
             }
             first_attempt = false;
 
-            match record_for_thread.forward.mode {
+            match record_for_runtime.forward.mode {
                 SshTunnelForwardMode::Local => start_local_runtime(
-                    app_for_thread.clone(),
-                    record_for_thread.clone(),
-                    resolved_for_thread.clone(),
-                    state_for_thread.clone(),
-                    stop_for_thread.clone(),
-                    active_for_thread.clone(),
+                    app_for_runtime.clone(),
+                    record_for_runtime.clone(),
+                    resolved_for_runtime.clone(),
+                    state_for_runtime.clone(),
+                    stop_for_runtime.clone(),
+                    active_for_runtime.clone(),
                     tx,
                 ),
                 SshTunnelForwardMode::Remote => start_remote_runtime(
-                    app_for_thread.clone(),
-                    record_for_thread.clone(),
-                    resolved_for_thread.clone(),
-                    state_for_thread.clone(),
-                    stop_for_thread.clone(),
-                    active_for_thread.clone(),
+                    app_for_runtime.clone(),
+                    record_for_runtime.clone(),
+                    resolved_for_runtime.clone(),
+                    state_for_runtime.clone(),
+                    stop_for_runtime.clone(),
+                    active_for_runtime.clone(),
                     tx,
                 ),
                 SshTunnelForwardMode::Dynamic => serve_dynamic_listener(
-                    app_for_thread.clone(),
-                    record_for_thread.clone(),
-                    resolved_for_thread.clone(),
-                    state_for_thread.clone(),
-                    stop_for_thread.clone(),
-                    active_for_thread.clone(),
+                    app_for_runtime.clone(),
+                    record_for_runtime.clone(),
+                    resolved_for_runtime.clone(),
+                    state_for_runtime.clone(),
+                    stop_for_runtime.clone(),
+                    active_for_runtime.clone(),
                     tx,
                 ),
             }
+        };
 
-            if stop_for_thread.load(Ordering::Relaxed) {
-                break;
-            }
+        let stop_for_sleep = stop_for_thread.clone();
+        let sleeper = move |delay: Duration| sleep_respecting_stop(&stop_for_sleep, delay);
+        let mut observer = AppSupervisorObserver::new(&app_for_thread, &record_for_thread);
 
-            let was_connected_before = state_for_thread
-                .lock()
-                .ok()
-                .map_or(false, |g| g.status == SshTunnelStatus::Connected);
-
-            let should_reconnect = record_for_thread.auto_reconnect
-                && state_for_thread
-                    .lock()
-                    .ok()
-                    .map_or(false, |g| g.status == SshTunnelStatus::Error);
-
-            if !should_reconnect {
-                break;
-            }
-
-            if was_connected_before {
-                backoff = RECONNECT_INITIAL_BACKOFF;
-            }
-
-            if !sleep_respecting_stop(&stop_for_thread, backoff) {
-                break;
-            }
-            backoff = (backoff * 2).min(RECONNECT_MAX_BACKOFF);
-        }
+        run_supervision(
+            &state_for_thread,
+            record_for_thread.auto_reconnect,
+            &stop_for_thread,
+            next_outcome,
+            sleeper,
+            &mut observer,
+        );
     });
 
     let tunnel = RunningTunnel {
@@ -397,7 +399,31 @@ pub(in crate::ssh_tunnels) fn connect_internal(
         .ok_or_else(|| "Tunnel not found".to_string())?;
 
     let _ = disconnect_runtime(&id);
-    let resolved = resolve_ssh_config_from_record(&record)?;
+    let resolved = match resolve_connect_target(&record) {
+        Ok(resolved) => resolved,
+        Err(failure) => {
+            log::warn!(
+                "SSH tunnel {} connect failed before spawn ({:?}): {}",
+                record.id,
+                failure.kind,
+                failure.message
+            );
+            let input = tunnel_failure_message_input(&record, "auto-connect", &failure.message);
+            let _ = crate::messages::create_message_with_app(&app, input);
+            if emit_failure_event {
+                let _ = app.emit(
+                    SSH_TUNNEL_CONNECT_FAILED_EVENT,
+                    SshTunnelFailureEvent {
+                        id: record.id.clone(),
+                        name: record.name.clone(),
+                        error: failure.message.clone(),
+                        auto_connect: record.auto_connect,
+                    },
+                );
+            }
+            return Err(failure.message);
+        }
+    };
     let (running, startup_result) = spawn_runtime_thread(app.clone(), record.clone(), resolved)?;
 
     let view = runtime_view(&record, Some(&running));
@@ -415,6 +441,24 @@ pub(in crate::ssh_tunnels) fn connect_internal(
                 emit_connect_failed(&app, &record, &error);
             }
             Err(error)
+        }
+    }
+}
+
+/// Resolves the SSH configuration before spawning a runtime. A failure is
+/// terminal for this connect attempt: the error is persisted and returned
+/// without spawning or retrying.
+pub(in crate::ssh_tunnels) fn resolve_connect_target(
+    record: &SshTunnelRecord,
+) -> Result<ResolvedSshConfig, PreSpawnConnectFailure> {
+    match resolve_ssh_config_from_record(record) {
+        Ok(resolved) => Ok(resolved),
+        Err(message) => {
+            let _ = update_record_error(&record.id, &message);
+            Err(PreSpawnConnectFailure {
+                kind: FailureKind::Config,
+                message,
+            })
         }
     }
 }

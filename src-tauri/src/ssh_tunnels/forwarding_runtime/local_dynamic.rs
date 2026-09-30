@@ -1,8 +1,8 @@
 use crate::ssh_tunnels::{
     bind_local_listener, bridge_streams_dedicated_session, emit_tunnels_updated,
-    ensure_local_port_available, open_authenticated_session, open_direct_tcpip_channel,
-    record_tunnel_failure, tunnel_summary, update_record_connection_success, update_record_error,
-    update_runtime_state, ResolvedSshConfig, RuntimeState, SessionPool, SshTunnelRecord,
+    ensure_local_port_available, open_authenticated_session_kinded, open_direct_tcpip_channel,
+    tunnel_summary, update_record_connection_success, update_record_error, update_runtime_state,
+    FailureKind, ResolvedSshConfig, RuntimeOutcome, RuntimeState, SessionPool, SshTunnelRecord,
     SshTunnelStatus, StartupResult, StartupSuccess, LOCAL_BIND_HOST,
     RECONNECT_HEALTH_CHECK_INTERVAL, SSH_IO_TIMEOUT,
 };
@@ -22,40 +22,55 @@ pub(in crate::ssh_tunnels) fn start_local_runtime(
     stop: Arc<AtomicBool>,
     active_clients: Arc<AtomicUsize>,
     startup: mpsc::Sender<StartupResult>,
-) {
+) -> RuntimeOutcome {
     let summary = tunnel_summary(&record.forward);
     let local_port = match record.forward.local_port {
         Some(port) => port,
         None => {
-            let _ = startup.send(StartupResult::Failed("Missing local port".to_string()));
-            return;
+            let message = "Missing local port".to_string();
+            let _ = startup.send(StartupResult::Failed(message.clone()));
+            return RuntimeOutcome::FailedAtStartup {
+                kind: FailureKind::Config,
+                message,
+            };
         }
     };
     let target_host = match record.forward.target_host.clone() {
         Some(host) => host,
         None => {
-            let _ = startup.send(StartupResult::Failed("Missing target host".to_string()));
-            return;
+            let message = "Missing target host".to_string();
+            let _ = startup.send(StartupResult::Failed(message.clone()));
+            return RuntimeOutcome::FailedAtStartup {
+                kind: FailureKind::Config,
+                message,
+            };
         }
     };
     let target_port = match record.forward.target_port {
         Some(port) => port,
         None => {
-            let _ = startup.send(StartupResult::Failed("Missing target port".to_string()));
-            return;
+            let message = "Missing target port".to_string();
+            let _ = startup.send(StartupResult::Failed(message.clone()));
+            return RuntimeOutcome::FailedAtStartup {
+                kind: FailureKind::Config,
+                message,
+            };
         }
     };
 
     if let Err(error) = ensure_local_port_available(local_port) {
-        let _ = startup.send(StartupResult::Failed(error));
-        return;
+        let _ = startup.send(StartupResult::Failed(error.clone()));
+        return RuntimeOutcome::FailedAtStartup {
+            kind: FailureKind::Port,
+            message: error,
+        };
     }
 
-    let initial_session = match open_authenticated_session(&resolved) {
+    let initial_session = match open_authenticated_session_kinded(&resolved) {
         Ok(session) => session,
-        Err(error) => {
-            let _ = startup.send(StartupResult::Failed(error));
-            return;
+        Err((kind, message)) => {
+            let _ = startup.send(StartupResult::Failed(message.clone()));
+            return RuntimeOutcome::FailedAtStartup { kind, message };
         }
     };
 
@@ -65,8 +80,11 @@ pub(in crate::ssh_tunnels) fn start_local_runtime(
             Ok(())
         })
     {
-        let _ = startup.send(StartupResult::Failed(error));
-        return;
+        let _ = startup.send(StartupResult::Failed(error.clone()));
+        return RuntimeOutcome::FailedAtStartup {
+            kind: FailureKind::Target,
+            message: error,
+        };
     }
 
     let session_pool = Arc::new(SessionPool::with_initial_session(
@@ -77,8 +95,11 @@ pub(in crate::ssh_tunnels) fn start_local_runtime(
     let listener = match bind_local_listener(local_port) {
         Ok(listener) => listener,
         Err(error) => {
-            let _ = startup.send(StartupResult::Failed(error));
-            return;
+            let _ = startup.send(StartupResult::Failed(error.clone()));
+            return RuntimeOutcome::FailedAtStartup {
+                kind: FailureKind::Port,
+                message: error,
+            };
         }
     };
 
@@ -143,33 +164,34 @@ pub(in crate::ssh_tunnels) fn start_local_runtime(
                 if last_health_check.elapsed() >= RECONNECT_HEALTH_CHECK_INTERVAL {
                     last_health_check = Instant::now();
                     if let Err(e) = session_pool.health_check() {
-                        let error_msg = format!("SSH session health check failed: {}", e);
-                        let _ = update_record_error(&record.id, &error_msg);
-                        record_tunnel_failure(&app, &record, &error_msg, "health-check");
-                        let _ = update_runtime_state(&app, &record.id, |s| {
-                            s.status = SshTunnelStatus::Error;
-                            s.last_error = Some(error_msg);
-                        });
-                        return;
+                        let message = format!("SSH session health check failed: {}", e);
+                        return if stop.load(Ordering::Relaxed) {
+                            RuntimeOutcome::Stopped
+                        } else {
+                            RuntimeOutcome::DroppedAfterConnected {
+                                kind: FailureKind::Transport,
+                                message,
+                            }
+                        };
                     }
                 }
                 thread::sleep(Duration::from_millis(150));
             }
             Err(error) => {
-                let _ = startup.send(StartupResult::Failed(error.to_string()));
-                let _ = update_record_error(&record.id, &error.to_string());
-                let _ = update_runtime_state(&app, &record.id, |state| {
-                    state.status = SshTunnelStatus::Error;
-                    state.last_error = Some(error.to_string());
-                });
-                return;
+                let message = error.to_string();
+                return if stop.load(Ordering::Relaxed) {
+                    RuntimeOutcome::Stopped
+                } else {
+                    RuntimeOutcome::DroppedAfterConnected {
+                        kind: FailureKind::Transport,
+                        message,
+                    }
+                };
             }
         }
     }
 
-    let _ = update_runtime_state(&app, &record.id, |state| {
-        state.status = SshTunnelStatus::Disconnected;
-    });
+    RuntimeOutcome::Stopped
 }
 
 pub(in crate::ssh_tunnels) fn read_socks_address(
@@ -269,23 +291,30 @@ pub(in crate::ssh_tunnels) fn serve_dynamic_listener(
     stop: Arc<AtomicBool>,
     active_clients: Arc<AtomicUsize>,
     startup: mpsc::Sender<StartupResult>,
-) {
+) -> RuntimeOutcome {
     let local_port = match record.forward.local_port {
         Some(port) => port,
         None => {
-            let _ = startup.send(StartupResult::Failed("Missing local port".to_string()));
-            return;
+            let message = "Missing local port".to_string();
+            let _ = startup.send(StartupResult::Failed(message.clone()));
+            return RuntimeOutcome::FailedAtStartup {
+                kind: FailureKind::Config,
+                message,
+            };
         }
     };
     if let Err(error) = ensure_local_port_available(local_port) {
-        let _ = startup.send(StartupResult::Failed(error));
-        return;
+        let _ = startup.send(StartupResult::Failed(error.clone()));
+        return RuntimeOutcome::FailedAtStartup {
+            kind: FailureKind::Port,
+            message: error,
+        };
     }
-    let initial_session = match open_authenticated_session(&resolved) {
+    let initial_session = match open_authenticated_session_kinded(&resolved) {
         Ok(session) => session,
-        Err(error) => {
-            let _ = startup.send(StartupResult::Failed(error));
-            return;
+        Err((kind, message)) => {
+            let _ = startup.send(StartupResult::Failed(message.clone()));
+            return RuntimeOutcome::FailedAtStartup { kind, message };
         }
     };
     let session_pool = Arc::new(SessionPool::with_initial_session(
@@ -295,8 +324,11 @@ pub(in crate::ssh_tunnels) fn serve_dynamic_listener(
     let listener = match bind_local_listener(local_port) {
         Ok(listener) => listener,
         Err(error) => {
-            let _ = startup.send(StartupResult::Failed(error));
-            return;
+            let _ = startup.send(StartupResult::Failed(error.clone()));
+            return RuntimeOutcome::FailedAtStartup {
+                kind: FailureKind::Port,
+                message: error,
+            };
         }
     };
 
@@ -343,30 +375,32 @@ pub(in crate::ssh_tunnels) fn serve_dynamic_listener(
                 if last_health_check.elapsed() >= RECONNECT_HEALTH_CHECK_INTERVAL {
                     last_health_check = Instant::now();
                     if let Err(e) = session_pool.health_check() {
-                        let error_msg = format!("SSH session health check failed: {}", e);
-                        let _ = update_record_error(&record.id, &error_msg);
-                        record_tunnel_failure(&app, &record, &error_msg, "health-check");
-                        let _ = update_runtime_state(&app, &record.id, |s| {
-                            s.status = SshTunnelStatus::Error;
-                            s.last_error = Some(error_msg);
-                        });
-                        return;
+                        let message = format!("SSH session health check failed: {}", e);
+                        return if stop.load(Ordering::Relaxed) {
+                            RuntimeOutcome::Stopped
+                        } else {
+                            RuntimeOutcome::DroppedAfterConnected {
+                                kind: FailureKind::Transport,
+                                message,
+                            }
+                        };
                     }
                 }
                 thread::sleep(Duration::from_millis(150));
             }
             Err(error) => {
-                let _ = update_record_error(&record.id, &error.to_string());
-                let _ = update_runtime_state(&app, &record.id, |state| {
-                    state.status = SshTunnelStatus::Error;
-                    state.last_error = Some(error.to_string());
-                });
-                return;
+                let message = error.to_string();
+                return if stop.load(Ordering::Relaxed) {
+                    RuntimeOutcome::Stopped
+                } else {
+                    RuntimeOutcome::DroppedAfterConnected {
+                        kind: FailureKind::Transport,
+                        message,
+                    }
+                };
             }
         }
     }
 
-    let _ = update_runtime_state(&app, &record.id, |state| {
-        state.status = SshTunnelStatus::Disconnected;
-    });
+    RuntimeOutcome::Stopped
 }
