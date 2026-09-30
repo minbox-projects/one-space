@@ -181,12 +181,30 @@ pub(in crate::ssh_tunnels) struct SshTunnelGroupRecord {
     pub is_default: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct SshCommonPortRecord {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub local_port: u16,
+    #[serde(default)]
+    pub remote_port: u16,
+    #[serde(default, skip_serializing)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(in crate::ssh_tunnels) struct SshTunnelState {
     #[serde(default)]
     pub groups: Vec<SshTunnelGroupRecord>,
     #[serde(default)]
     pub tunnels: Vec<SshTunnelRecord>,
+    #[serde(default = "default_common_ports")]
+    pub common_ports: Vec<SshCommonPortRecord>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -221,13 +239,29 @@ pub struct SshTunnelView {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct SshTunnelGroupView {
     pub id: String,
     pub name: String,
     pub created_at: u64,
     pub updated_at: u64,
     pub is_default: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct SshCommonPortView {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "localPort")]
+    pub local_port: u16,
+    #[serde(rename = "remotePort")]
+    pub remote_port: u16,
+    #[serde(default)]
+    pub port: u16,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -279,6 +313,8 @@ pub struct SshTunnelsSnapshot {
     pub groups: Vec<SshTunnelGroupView>,
     pub tunnels: Vec<SshTunnelView>,
     pub runtime: Vec<SshTunnelRuntimeView>,
+    #[serde(default)]
+    pub common_ports: Vec<SshCommonPortView>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -319,6 +355,21 @@ pub struct SshTunnelGroupUpsertInput {
     #[serde(default)]
     pub id: Option<String>,
     pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SshCommonPortUpsertInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub name: String,
+    #[serde(rename = "localPort", default)]
+    pub local_port: u16,
+    #[serde(rename = "remotePort", default)]
+    pub remote_port: u16,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 pub type SshTunnelProbeDraftInput = SshTunnelUpsertInput;
@@ -462,6 +513,151 @@ pub(in crate::ssh_tunnels) fn default_group_record() -> SshTunnelGroupRecord {
     }
 }
 
+pub(in crate::ssh_tunnels) fn default_common_ports() -> Vec<SshCommonPortRecord> {
+    vec![
+        SshCommonPortRecord {
+            id: "ssh".to_string(),
+            name: "SSH".to_string(),
+            local_port: 22,
+            remote_port: 22,
+            port: None,
+            description: Some("Secure Shell".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        },
+        SshCommonPortRecord {
+            id: "http".to_string(),
+            name: "HTTP".to_string(),
+            local_port: 80,
+            remote_port: 80,
+            port: None,
+            description: Some("Hypertext Transfer Protocol".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        },
+        SshCommonPortRecord {
+            id: "https".to_string(),
+            name: "HTTPS".to_string(),
+            local_port: 443,
+            remote_port: 443,
+            port: None,
+            description: Some("Hypertext Transfer Protocol Secure".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        },
+        SshCommonPortRecord {
+            id: "web-dev".to_string(),
+            name: "Web Dev".to_string(),
+            local_port: 3000,
+            remote_port: 3000,
+            port: None,
+            description: Some("React / Next.js / Vite dev server".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        },
+        SshCommonPortRecord {
+            id: "mysql".to_string(),
+            name: "MySQL".to_string(),
+            local_port: 3306,
+            remote_port: 3306,
+            port: None,
+            description: Some("MySQL / MariaDB database".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        },
+        SshCommonPortRecord {
+            id: "postgres".to_string(),
+            name: "PostgreSQL".to_string(),
+            local_port: 5432,
+            remote_port: 5432,
+            port: None,
+            description: Some("PostgreSQL database".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        },
+        SshCommonPortRecord {
+            id: "redis".to_string(),
+            name: "Redis".to_string(),
+            local_port: 6379,
+            remote_port: 6379,
+            port: None,
+            description: Some("Redis key-value store".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        },
+        SshCommonPortRecord {
+            id: "http-alt".to_string(),
+            name: "HTTP Alt".to_string(),
+            local_port: 8080,
+            remote_port: 8080,
+            port: None,
+            description: Some("Tomcat / Spring Boot / HTTP alternate".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        },
+        SshCommonPortRecord {
+            id: "clickhouse".to_string(),
+            name: "ClickHouse".to_string(),
+            local_port: 8123,
+            remote_port: 8123,
+            port: None,
+            description: Some("ClickHouse HTTP interface".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        },
+        SshCommonPortRecord {
+            id: "https-alt".to_string(),
+            name: "HTTPS Alt".to_string(),
+            local_port: 8443,
+            remote_port: 8443,
+            port: None,
+            description: Some("HTTPS alternate".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        },
+        SshCommonPortRecord {
+            id: "minio".to_string(),
+            name: "MinIO".to_string(),
+            local_port: 9000,
+            remote_port: 9000,
+            port: None,
+            description: Some("MinIO S3 API / PHP-FPM".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        },
+        SshCommonPortRecord {
+            id: "kafka".to_string(),
+            name: "Kafka".to_string(),
+            local_port: 9092,
+            remote_port: 9092,
+            port: None,
+            description: Some("Apache Kafka broker".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        },
+        SshCommonPortRecord {
+            id: "elasticsearch".to_string(),
+            name: "Elasticsearch".to_string(),
+            local_port: 9200,
+            remote_port: 9200,
+            port: None,
+            description: Some("Elasticsearch REST API".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        },
+        SshCommonPortRecord {
+            id: "mongodb".to_string(),
+            name: "MongoDB".to_string(),
+            local_port: 27017,
+            remote_port: 27017,
+            port: None,
+            description: Some("MongoDB document database".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        },
+    ]
+}
+
 pub(in crate::ssh_tunnels) fn is_reserved_default_group_name(name: &str) -> bool {
     matches!(
         name.trim().to_ascii_lowercase().as_str(),
@@ -549,6 +745,46 @@ pub(in crate::ssh_tunnels) fn normalize_state(state: &mut SshTunnelState) {
     }
 
     state.groups = groups;
+
+    let mut seen_port_ids = HashSet::new();
+    let mut normalized_ports = Vec::new();
+    for port in state.common_ports.drain(..) {
+        let trimmed_id = port.id.trim();
+        let trimmed_name = port.name.trim();
+        let local_port = if port.local_port == 0 {
+            port.port.unwrap_or(0)
+        } else {
+            port.local_port
+        };
+        let remote_port = if port.remote_port == 0 {
+            port.port.unwrap_or(0)
+        } else {
+            port.remote_port
+        };
+        if trimmed_id.is_empty() || trimmed_name.is_empty() || local_port == 0 || remote_port == 0 {
+            continue;
+        }
+        if !seen_port_ids.insert(trimmed_id.to_string()) {
+            continue;
+        }
+        normalized_ports.push(SshCommonPortRecord {
+            id: trimmed_id.to_string(),
+            name: trimmed_name.to_string(),
+            local_port,
+            remote_port,
+            port: None,
+            description: port
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string()),
+            created_at: port.created_at,
+            updated_at: port.updated_at,
+        });
+    }
+    sort_common_ports(&mut normalized_ports);
+    state.common_ports = normalized_ports;
 }
 
 pub(in crate::ssh_tunnels) fn parse_state_payload(content: &str) -> Result<SshTunnelState, String> {
@@ -560,10 +796,11 @@ pub(in crate::ssh_tunnels) fn parse_state_payload(content: &str) -> Result<SshTu
             Ok(SshTunnelState {
                 groups: vec![default_group_record()],
                 tunnels: records,
+                common_ports: default_common_ports(),
             })
         }
         serde_json::Value::Object(ref map)
-            if map.contains_key("groups") || map.contains_key("tunnels") =>
+            if map.contains_key("groups") || map.contains_key("tunnels") || map.contains_key("common_ports") =>
         {
             serde_json::from_value::<SshTunnelState>(value).map_err(|e| e.to_string())
         }
@@ -577,6 +814,7 @@ pub(in crate::ssh_tunnels) fn load_state_unlocked() -> Result<SshTunnelState, St
         return Ok(SshTunnelState {
             groups: vec![default_group_record()],
             tunnels: Vec::new(),
+            common_ports: default_common_ports(),
         });
     }
     let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
@@ -584,6 +822,7 @@ pub(in crate::ssh_tunnels) fn load_state_unlocked() -> Result<SshTunnelState, St
         return Ok(SshTunnelState {
             groups: vec![default_group_record()],
             tunnels: Vec::new(),
+            common_ports: default_common_ports(),
         });
     }
     if let Ok(mut state) = parse_state_payload(&content) {
@@ -692,6 +931,21 @@ pub(in crate::ssh_tunnels) fn to_group_view(group: &SshTunnelGroupRecord) -> Ssh
         created_at: group.created_at,
         updated_at: group.updated_at,
         is_default: group.is_default,
+    }
+}
+
+pub(in crate::ssh_tunnels) fn to_common_port_view(
+    port: &SshCommonPortRecord,
+) -> SshCommonPortView {
+    SshCommonPortView {
+        id: port.id.clone(),
+        name: port.name.clone(),
+        local_port: port.local_port,
+        remote_port: port.remote_port,
+        port: port.remote_port,
+        description: port.description.clone(),
+        created_at: port.created_at,
+        updated_at: port.updated_at,
     }
 }
 
@@ -1031,4 +1285,14 @@ pub(in crate::ssh_tunnels) fn sort_groups(groups: &mut [SshTunnelGroupRecord]) {
 
 pub(in crate::ssh_tunnels) fn sort_tunnels(tunnels: &mut [SshTunnelRecord]) {
     tunnels.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+}
+
+pub(in crate::ssh_tunnels) fn sort_common_ports(ports: &mut [SshCommonPortRecord]) {
+    ports.sort_by(|a, b| {
+        a.local_port
+            .cmp(&b.local_port)
+            .then_with(|| a.remote_port.cmp(&b.remote_port))
+            .then_with(|| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()))
+            .then_with(|| a.id.cmp(&b.id))
+    });
 }

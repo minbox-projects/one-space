@@ -19,7 +19,6 @@ import {
   Sun,
   Monitor,
   Cpu,
-  BookOpen,
   Info,
   Github,
   Fish,
@@ -2264,19 +2263,6 @@ function App() {
                 {t("settings")}
               </button>
               <button
-                onClick={() => navigateToTab("documentation")}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
-                  activeTab === "documentation"
-                    ? "bg-primary/10 text-primary font-medium"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                }`}
-              >
-                <BookOpen
-                  className={`w-4 h-4 ${activeTab === "documentation" ? "animate-pulse" : ""}`}
-                />
-                {t("usageDocs")}
-              </button>
-              <button
                 onClick={() => {
                   setMobileNavigationOpen(false);
                   setAboutOpen(true);
@@ -2304,19 +2290,6 @@ function App() {
                   }`}
                 >
                   <Settings className="w-4 h-4" />
-                </button>
-              </Tooltip>
-              <Tooltip content={t("usageDocs")} side="right">
-                <button
-                  onClick={() => navigateToTab("documentation")}
-                  aria-label={t("usageDocs")}
-                  className={`w-10 h-10 flex items-center justify-center rounded-md text-sm transition-colors ${
-                    activeTab === "documentation"
-                      ? "bg-primary/10 text-primary font-medium"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                  }`}
-                >
-                  <BookOpen className="w-4 h-4" />
                 </button>
               </Tooltip>
               <Tooltip content={t("about")} side="right">
@@ -2353,25 +2326,10 @@ function App() {
               >
                 <Menu className="h-4 w-4" />
               </button>
-              <button
-                onClick={() => setOmniOpen(true)}
-                className="flex items-center justify-between w-full max-w-[320px] px-3 py-1.5 text-sm text-muted-foreground bg-muted/40 hover:bg-muted/60 rounded-lg border border-border/50 transition-all shadow-sm group"
-              >
-                <div className="flex items-center gap-2.5">
-                  <Search className="w-4 h-4 text-muted-foreground/70 group-hover:text-foreground transition-colors" />
-                  <span className="group-hover:text-foreground transition-colors">
-                    {t("search")}...
-                  </span>
-                </div>
-                <kbd className="hidden sm:inline-flex h-5 items-center gap-1 rounded border bg-background/50 px-1.5 font-mono text-[10px] font-medium opacity-60">
-                  <span className="text-xs">⌘</span>K
-                </kbd>
-              </button>
-
               {activeTab === "more-tools" && moreToolsSectionTitle ? (
                 <nav
                   aria-label={t("breadcrumb", "Breadcrumb")}
-                  className="hidden min-w-0 items-center gap-2 text-sm sm:flex"
+                  className="hidden min-w-0 items-center gap-2 text-sm sm:flex shrink-0"
                 >
                   <span className="hidden text-muted-foreground sm:inline">
                     {moreToolsLabel}
@@ -2387,6 +2345,21 @@ function App() {
                   </h1>
                 </nav>
               ) : null}
+
+              <button
+                onClick={() => setOmniOpen(true)}
+                className="flex items-center justify-between w-full max-w-[320px] px-3 py-1.5 text-sm text-muted-foreground bg-muted/40 hover:bg-muted/60 rounded-lg border border-border/50 transition-all shadow-sm group"
+              >
+                <div className="flex items-center gap-2.5">
+                  <Search className="w-4 h-4 text-muted-foreground/70 group-hover:text-foreground transition-colors" />
+                  <span className="group-hover:text-foreground transition-colors">
+                    {t("search")}...
+                  </span>
+                </div>
+                <kbd className="hidden sm:inline-flex h-5 items-center gap-1 rounded border bg-background/50 px-1.5 font-mono text-[10px] font-medium opacity-60">
+                  <span className="text-xs">⌘</span>K
+                </kbd>
+              </button>
 
               {syncStatus !== "idle" && (
                 <div className="flex items-center gap-2">
@@ -2881,6 +2854,10 @@ function App() {
         open={aboutOpen}
         onClose={() => setAboutOpen(false)}
         autoCheckOnOpen={aboutAutoCheck}
+        onOpenDocs={() => {
+          setAboutOpen(false);
+          navigateToTab("documentation");
+        }}
       />
       <UpdateUpgradeModal
         open={updateDialogOpen}

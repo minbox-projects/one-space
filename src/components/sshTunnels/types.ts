@@ -39,6 +39,26 @@ export type SshTunnelGroupView = {
   is_default: boolean;
 };
 
+export type SshCommonPortView = {
+  id: string;
+  name: string;
+  localPort: number;
+  remotePort: number;
+  port?: number;
+  description?: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+export type SshCommonPortUpsertInput = {
+  id?: string;
+  name: string;
+  localPort: number;
+  remotePort: number;
+  port?: number;
+  description?: string;
+};
+
 export type SshTunnelView = {
   id: string;
   name: string;
@@ -77,6 +97,7 @@ export type SshTunnelsSnapshot = {
   groups: SshTunnelGroupView[];
   tunnels: SshTunnelView[];
   runtime: SshTunnelRuntimeView[];
+  common_ports?: SshCommonPortView[];
 };
 
 export type TunnelFormState = {

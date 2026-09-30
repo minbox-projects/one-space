@@ -3,9 +3,10 @@ use super::{
     default_runtime_view, disconnect_tunnel, emit_tunnels_updated, load_records, load_state,
     mutate_records, mutate_state, normalize_group_id, now_ts, probe_forward,
     record_group_operation_failure, resolve_ssh_config_from_input, resolve_ssh_config_from_record,
-    runtime_manager, runtime_view, secret_key_for_tunnel, sort_groups, sort_tunnels, to_group_view,
-    to_view, tunnel_summary, update_record_error, validate_group_name, validate_input,
-    SshTunnelAuthKind, SshTunnelBatchFailureDetail, SshTunnelBatchOperationResult,
+    runtime_manager, runtime_view, secret_key_for_tunnel, sort_common_ports, sort_groups,
+    sort_tunnels, to_common_port_view, to_group_view, to_view, tunnel_summary, update_record_error,
+    validate_group_name, validate_input, SshCommonPortRecord, SshCommonPortUpsertInput,
+    SshCommonPortView, SshTunnelAuthKind, SshTunnelBatchFailureDetail, SshTunnelBatchOperationResult,
     SshTunnelCustomConfig, SshTunnelForwardConfig, SshTunnelGroupRecord, SshTunnelGroupUpsertInput,
     SshTunnelGroupView, SshTunnelProbeDraftInput, SshTunnelProbeResult, SshTunnelRecord,
     SshTunnelRuntimeView, SshTunnelSourceKind, SshTunnelStatus, SshTunnelUpsertInput, SshTunnelView,
@@ -76,6 +77,97 @@ pub fn ssh_tunnel_group_delete(app: AppHandle, id: String) -> Result<(), String>
                 tunnel.group_id = DEFAULT_TUNNEL_GROUP_ID.to_string();
                 tunnel.updated_at = now_ts();
             }
+        }
+        Ok(())
+    })?;
+    emit_tunnels_updated(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn ssh_common_ports_list() -> Result<Vec<SshCommonPortView>, String> {
+    let mut state = load_state()?;
+    sort_common_ports(&mut state.common_ports);
+    Ok(state.common_ports.iter().map(to_common_port_view).collect())
+}
+
+#[tauri::command]
+pub fn ssh_common_port_upsert(
+    app: AppHandle,
+    input: SshCommonPortUpsertInput,
+) -> Result<SshCommonPortView, String> {
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err("Common port name cannot be empty".to_string());
+    }
+    let local_port = if input.local_port == 0 {
+        input.port.unwrap_or(0)
+    } else {
+        input.local_port
+    };
+    let remote_port = if input.remote_port == 0 {
+        input.port.unwrap_or(0)
+    } else {
+        input.remote_port
+    };
+    if local_port == 0 || remote_port == 0 {
+        return Err("Port must be between 1 and 65535".to_string());
+    }
+    let description = input
+        .description
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let now = now_ts();
+    let saved_view = mutate_state(|state| {
+        if let Some(id) = input.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(existing) = state.common_ports.iter_mut().find(|p| p.id == id) {
+                existing.name = name.to_string();
+                existing.local_port = local_port;
+                existing.remote_port = remote_port;
+                existing.port = None;
+                existing.description = description;
+                existing.updated_at = now;
+                return Ok(to_common_port_view(existing));
+            }
+        }
+        let id = input
+            .id
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        let record = SshCommonPortRecord {
+            id,
+            name: name.to_string(),
+            local_port,
+            remote_port,
+            port: None,
+            description,
+            created_at: now,
+            updated_at: now,
+        };
+        let view = to_common_port_view(&record);
+        state.common_ports.push(record);
+        sort_common_ports(&mut state.common_ports);
+        Ok(view)
+    })?;
+
+    emit_tunnels_updated(&app);
+    Ok(saved_view)
+}
+
+#[tauri::command]
+pub fn ssh_common_port_delete(app: AppHandle, id: String) -> Result<(), String> {
+    let trimmed_id = id.trim();
+    if trimmed_id.is_empty() {
+        return Err("Port id cannot be empty".to_string());
+    }
+    mutate_state(|state| {
+        let initial_len = state.common_ports.len();
+        state.common_ports.retain(|p| p.id != trimmed_id);
+        if state.common_ports.len() == initial_len {
+            return Err(format!("Common port '{trimmed_id}' not found"));
         }
         Ok(())
     })?;
@@ -675,11 +767,13 @@ pub(in crate::ssh_tunnels) fn snapshot_state() -> Result<SshTunnelsSnapshot, Str
     let mut state = load_state()?;
     sort_groups(&mut state.groups);
     sort_tunnels(&mut state.tunnels);
+    sort_common_ports(&mut state.common_ports);
     let runtime = ssh_tunnels_refresh_status()?;
     Ok(SshTunnelsSnapshot {
         groups: state.groups.iter().map(to_group_view).collect(),
         tunnels: state.tunnels.iter().map(to_view).collect(),
         runtime,
+        common_ports: state.common_ports.iter().map(to_common_port_view).collect(),
     })
 }
 

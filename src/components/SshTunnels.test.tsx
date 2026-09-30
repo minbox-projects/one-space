@@ -722,4 +722,83 @@ describe("SshTunnels", () => {
     const stgTab = screen.getByTestId("ssh-tunnel-group-tab-group-staging");
     expect(stgTab.className).toContain("bg-black text-white");
   });
+
+  it("点击常用端口按钮可打开管理常用端口弹窗", async () => {
+    const testSnapshot: SshTunnelsSnapshot = {
+      groups: [defaultGroup],
+      tunnels: [],
+      runtime: [],
+      common_ports: [
+        {
+          id: "mysql-port",
+          name: "MySQL",
+          localPort: 3306,
+          remotePort: 3306,
+          description: "Database",
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+    };
+    mockSnapshotInvokes(testSnapshot);
+    renderTunnels(<SshTunnels isVisible />);
+    await settle();
+
+    // 点击顶部“常用端口”按钮
+    const commonPortsButton = screen.getByRole("button", { name: /Common Ports|常用端口/i });
+    expect(commonPortsButton).toBeInTheDocument();
+    fireEvent.click(commonPortsButton);
+    await settle();
+
+    // 检查管理弹窗是否展示了 MySQL 3306 → 3306
+    expect(screen.getByText("3306 → 3306")).toBeInTheDocument();
+    expect(screen.getByText("MySQL")).toBeInTheDocument();
+  });
+
+  it("新建隧道时只保留单个常用端口按钮，选中后同时作用于本地与目标端口", async () => {
+    const testSnapshot: SshTunnelsSnapshot = {
+      groups: [defaultGroup],
+      tunnels: [],
+      runtime: [],
+      common_ports: [
+        {
+          id: "pg-port",
+          name: "PostgreSQL",
+          localPort: 5432,
+          remotePort: 5432,
+          description: "Postgres DB",
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+    };
+    mockSnapshotInvokes(testSnapshot);
+    renderTunnels(<SshTunnels isVisible />);
+    await settle();
+
+    // 打开新建隧道弹窗
+    const newTunnelButtons = screen.getAllByRole("button", { name: /New Tunnel|新建隧道/i });
+    fireEvent.click(newTunnelButtons[0]);
+    await settle();
+
+    // 验证新建隧道弹窗中只保留了一个常用端口下拉按钮
+    const portSelectButtons = screen.getAllByTitle(/Select from common ports|从常用端口中选择/i);
+    expect(portSelectButtons).toHaveLength(1);
+
+    // 点击该唯一的常用端口选择按钮
+    fireEvent.click(portSelectButtons[0]);
+    await settle();
+
+    // 在下拉菜单中选择 PostgreSQL (5432 → 5432)
+    const pgOption = screen.getByRole("button", { name: /PostgreSQL.*5432/i });
+    fireEvent.click(pgOption);
+    await settle();
+
+    // 检查 Target Port、Local Port 以及 Name 的自动联动填充
+    const portInputs = screen.getAllByDisplayValue("5432");
+    expect(portInputs).toHaveLength(2);
+
+    const nameInput = screen.getByDisplayValue("PostgreSQL (5432)");
+    expect(nameInput).toBeInTheDocument();
+  });
 });

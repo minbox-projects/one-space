@@ -23,6 +23,25 @@ export function sshTunnelGroupDelete<T>(id: string) {
   return invokeTyped<T>("ssh_tunnel_group_delete", { id });
 }
 
+export function sshCommonPortsList<T>() {
+  return invokeTyped<T>("ssh_common_ports_list");
+}
+
+export function sshCommonPortUpsert<T>(input: {
+  id?: string;
+  name: string;
+  localPort: number;
+  remotePort: number;
+  port?: number;
+  description?: string;
+}) {
+  return invokeTyped<T>("ssh_common_port_upsert", { input });
+}
+
+export function sshCommonPortDelete<T>(id: string) {
+  return invokeTyped<T>("ssh_common_port_delete", { id });
+}
+
 export function sshTunnelUpsert<T>(input: Record<string, unknown>) {
   return invokeTyped<T>("ssh_tunnel_upsert", { input });
 }

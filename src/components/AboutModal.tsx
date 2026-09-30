@@ -13,6 +13,7 @@ import {
   MessageSquare,
   Sparkles,
   Clock,
+  BookOpen,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -52,12 +53,14 @@ export function AboutModal({
   autoCheckOnOpen = false,
   checkForUpdates = updater.checkForUpdates,
   fetchReleaseNotes = updater.fetchCurrentVersionReleaseNotes,
+  onOpenDocs,
 }: {
   open: boolean;
   onClose: () => void;
   autoCheckOnOpen?: boolean;
   checkForUpdates?: typeof updater.checkForUpdates;
   fetchReleaseNotes?: typeof updater.fetchCurrentVersionReleaseNotes;
+  onOpenDocs?: () => void;
 }) {
   const { t } = useTranslation();
   const [currentVersion, setCurrentVersion] = useState('');
@@ -476,9 +479,26 @@ export function AboutModal({
         </div>
 
         {/* Footer Area */}
-        <div className="py-3 px-6 bg-muted/20 border-t flex flex-col sm:flex-row items-center justify-between gap-1 text-[11px] text-muted-foreground/70">
-          <p>{t('copyRight')}</p>
-          <p>{t('builtWith')}</p>
+        <div className="py-3 px-6 bg-muted/20 border-t flex flex-col sm:flex-row items-center justify-between gap-2 text-[11px] text-muted-foreground/70">
+          <div className="flex items-center gap-3">
+            <p>{t('copyRight')}</p>
+            <span className="hidden sm:inline opacity-40">·</span>
+            <p className="hidden sm:inline">{t('builtWith')}</p>
+          </div>
+          {onOpenDocs && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenDocs();
+              }}
+              data-testid="about-usage-docs-button"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-foreground hover:text-primary transition-colors cursor-pointer"
+            >
+              <BookOpen className="w-3.5 h-3.5 text-primary" />
+              <span>{t('usageDocs')}</span>
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -984,18 +984,23 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "local / remote / dynamic SSH 转发配置，测试、连接与自动重连",
+      "responsibility": "local / remote / dynamic SSH 转发配置、常用端口快速选择与维护，测试、连接与自动重连",
       "entries": [
         "src/components/SshTunnels.tsx"
       ],
       "related_files": [
+        "src/components/sshTunnels/CommonPortSelectMenu.tsx",
+        "src/components/sshTunnels/SshCommonPortManagerDialog.tsx",
         "src/components/sshTunnels/SshTunnelGroupManagerDialog.tsx",
         "src/components/sshTunnels/types.ts",
         "src/lib/sshTunnels.ts",
         "src/lib/sshTunnelI18n.ts",
         "src/lib/sshTunnelSummary.ts"
       ],
-      "tests": [],
+      "tests": [
+        "src/components/SshTunnels.test.tsx",
+        "src/components/sshTunnels/SshCommonPortManagerDialog.test.tsx"
+      ],
       "symbols": [
         {
           "file": "src/components/SshTunnels.tsx",
@@ -1009,11 +1014,15 @@
       ],
       "read_scope": [
         "src/components/SshTunnels.tsx",
+        "src/components/sshTunnels/CommonPortSelectMenu.tsx",
+        "src/components/sshTunnels/SshCommonPortManagerDialog.tsx",
         "src/components/sshTunnels/SshTunnelGroupManagerDialog.tsx",
         "src/components/sshTunnels/types.ts",
         "src/lib/sshTunnels.ts",
         "src/lib/sshTunnelI18n.ts",
-        "src/lib/sshTunnelSummary.ts"
+        "src/lib/sshTunnelSummary.ts",
+        "src/components/SshTunnels.test.tsx",
+        "src/components/sshTunnels/SshCommonPortManagerDialog.test.tsx"
       ],
       "relations": [],
       "shared_entry": false
@@ -2856,7 +2865,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "SSH 转发配置、运行时桥接与持久监管（持久重试监管循环、类型化终态分类、双步往返健康探测、desired-running 看门狗与启动认领、唤醒/窗口显示重试 poke）、配置校验与全量隧道批量连接/断开（批次标识 `all` / `All Tunnels`）",
+      "responsibility": "SSH 转发配置、常用端口管理、运行时桥接与持久监管（持久重试监管循环、类型化终态分类、双步往返健康探测、desired-running 看门狗与启动认领、唤醒/窗口显示重试 poke）、配置校验与全量隧道批量连接/断开（批次标识 `all` / `All Tunnels`）",
       "entries": [
         "src-tauri/src/ssh_tunnels.rs"
       ],
@@ -2877,6 +2886,24 @@
         "src-tauri/src/ssh_tunnels/tests.rs"
       ],
       "symbols": [
+        {
+          "file": "src-tauri/src/ssh_tunnels/commands.rs",
+          "name": "ssh_common_ports_list",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ssh_tunnels/commands.rs",
+          "name": "ssh_common_port_upsert",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ssh_tunnels/commands.rs",
+          "name": "ssh_common_port_delete",
+          "kind": "function",
+          "visibility": "public"
+        },
         {
           "file": "src-tauri/src/ssh_tunnels/commands.rs",
           "name": "ssh_tunnels_connect_all",
