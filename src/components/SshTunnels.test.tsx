@@ -557,4 +557,127 @@ describe("SshTunnels", () => {
       screen.getByText(/全部隧道已断开|All tunnels disconnected/i),
     ).toBeInTheDocument();
   });
+
+  it("在「已连接」视图中根据所属分组进行分组展示，并且空分组不展示", async () => {
+    const stagingGroup: SshTunnelGroupView = {
+      id: "group-staging",
+      name: "Staging",
+      created_at: 5,
+      updated_at: 5,
+      is_default: false,
+    };
+    const prodGroup: SshTunnelGroupView = {
+      id: "group-prod",
+      name: "Production",
+      created_at: 10,
+      updated_at: 10,
+      is_default: false,
+    };
+    const emptyGroup: SshTunnelGroupView = {
+      id: "group-empty",
+      name: "Empty Group",
+      created_at: 15,
+      updated_at: 15,
+      is_default: false,
+    };
+
+    const stagingTunnel1: SshTunnelView = {
+      ...tunnelAlpha,
+      id: "tunnel-stg-1",
+      name: "Staging Redis",
+      group_id: "group-staging",
+    };
+    const stagingTunnel2: SshTunnelView = {
+      ...tunnelAlpha,
+      id: "tunnel-stg-2",
+      name: "Staging DB",
+      group_id: "group-staging",
+    };
+    const prodTunnel: SshTunnelView = {
+      ...tunnelAlpha,
+      id: "tunnel-prod-1",
+      name: "Prod Web",
+      group_id: "group-prod",
+    };
+    const disconnectedTunnel: SshTunnelView = {
+      ...tunnelAlpha,
+      id: "tunnel-empty-1",
+      name: "Empty Offline",
+      group_id: "group-empty",
+    };
+
+    const testSnapshot: SshTunnelsSnapshot = {
+      groups: [defaultGroup, stagingGroup, prodGroup, emptyGroup],
+      tunnels: [stagingTunnel1, stagingTunnel2, prodTunnel, disconnectedTunnel],
+      runtime: [
+        {
+          id: stagingTunnel1.id,
+          status: "connected",
+          active_client_count: 0,
+          mode: "local",
+          summary: "Staging Redis connected",
+          resolved_server_host: null,
+          listening_addr: null,
+          last_error: null,
+        },
+        {
+          id: stagingTunnel2.id,
+          status: "connecting",
+          active_client_count: 0,
+          mode: "local",
+          summary: "Staging DB connecting",
+          resolved_server_host: null,
+          listening_addr: null,
+          last_error: null,
+        },
+        {
+          id: prodTunnel.id,
+          status: "connected",
+          active_client_count: 0,
+          mode: "local",
+          summary: "Prod Web connected",
+          resolved_server_host: null,
+          listening_addr: null,
+          last_error: null,
+        },
+        {
+          id: disconnectedTunnel.id,
+          status: "disconnected",
+          active_client_count: 0,
+          mode: "local",
+          summary: "Offline",
+          resolved_server_host: null,
+          listening_addr: null,
+          last_error: null,
+        },
+      ],
+    };
+
+    mockSnapshotInvokes(testSnapshot);
+    renderTunnels(<SshTunnels isVisible />);
+    await settle();
+
+    // 切换到「已连接」全局视图
+    fireEvent.click(screen.getByTestId("ssh-tunnel-connected-view-tab"));
+    await settle();
+
+    // 验证 staging 分组存在，且展示 2 个连接
+    const stgSection = screen.getByTestId("ssh-tunnel-connected-group-group-staging");
+    expect(stgSection).toBeInTheDocument();
+    expect(within(stgSection).getByText("Staging")).toBeInTheDocument();
+    expect(within(stgSection).getByText("2")).toBeInTheDocument();
+    expect(within(stgSection).getByText("Staging Redis")).toBeInTheDocument();
+    expect(within(stgSection).getByText("Staging DB")).toBeInTheDocument();
+
+    // 验证 prod 分组存在，且展示 1 个连接
+    const prodSection = screen.getByTestId("ssh-tunnel-connected-group-group-prod");
+    expect(prodSection).toBeInTheDocument();
+    expect(within(prodSection).getByText("Production")).toBeInTheDocument();
+    expect(within(prodSection).getByText("1")).toBeInTheDocument();
+    expect(within(prodSection).getByText("Prod Web")).toBeInTheDocument();
+
+    // 验证没有任何活跃连接的分组（default 和 emptyGroup）不渲染分组区块
+    expect(screen.queryByTestId("ssh-tunnel-connected-group-default")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ssh-tunnel-connected-group-group-empty")).not.toBeInTheDocument();
+  });
 });
