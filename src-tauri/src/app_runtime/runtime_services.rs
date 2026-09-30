@@ -21,8 +21,8 @@ fn epoch_secs(at: Option<SystemTime>) -> i64 {
 }
 
 /// Record the most recent detected system resume (REQ-004). Called from the
-/// SSH-tunnel sleep-gap heartbeat and the macOS wake observer before they
-/// schedule their SSH reconnect work.
+/// SSH-tunnel sleep-gap heartbeat and the macOS wake observer, which also bump
+/// the tunnel retry poke so an in-progress tunnel wait wakes early.
 pub(crate) fn mark_system_resume() {
     SYSTEM_RESUME_AT_SECS.store(epoch_secs(Some(SystemTime::now())), Ordering::Relaxed);
 }

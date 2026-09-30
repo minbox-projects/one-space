@@ -1,15 +1,16 @@
 use super::{
-    bump_retry_poke, clear_record_error, connect_internal, default_runtime_view, disconnect_tunnel,
-    emit_tunnels_updated, load_records, load_state, mutate_records, mutate_state, normalize_group_id,
-    now_ts, probe_forward, record_group_operation_failure, resolve_ssh_config_from_input,
-    resolve_ssh_config_from_record, runtime_manager, runtime_view, secret_key_for_tunnel,
-    sort_groups, sort_tunnels, to_group_view, to_view, tunnel_summary, update_record_error,
-    validate_group_name, validate_input, SshTunnelAuthKind, SshTunnelBatchFailureDetail,
-    SshTunnelBatchOperationResult, SshTunnelCustomConfig, SshTunnelForwardConfig,
-    SshTunnelGroupRecord, SshTunnelGroupUpsertInput, SshTunnelGroupView, SshTunnelProbeDraftInput,
-    SshTunnelProbeResult, SshTunnelRecord, SshTunnelRuntimeView, SshTunnelSourceKind,
-    SshTunnelUpsertInput, SshTunnelView, SshTunnelsSnapshot, ALL_TUNNELS_BATCH_ID,
-    ALL_TUNNELS_BATCH_NAME, DEFAULT_TUNNEL_GROUP_ID, DEFAULT_TUNNEL_GROUP_NAME, LOCAL_BIND_HOST,
+    bump_retry_poke, clear_record_error, connect_blocking_running_ids, connect_internal,
+    default_runtime_view, disconnect_tunnel, emit_tunnels_updated, load_records, load_state,
+    mutate_records, mutate_state, normalize_group_id, now_ts, probe_forward,
+    record_group_operation_failure, resolve_ssh_config_from_input, resolve_ssh_config_from_record,
+    runtime_manager, runtime_view, secret_key_for_tunnel, sort_groups, sort_tunnels, to_group_view,
+    to_view, tunnel_summary, update_record_error, validate_group_name, validate_input,
+    SshTunnelAuthKind, SshTunnelBatchFailureDetail, SshTunnelBatchOperationResult,
+    SshTunnelCustomConfig, SshTunnelForwardConfig, SshTunnelGroupRecord, SshTunnelGroupUpsertInput,
+    SshTunnelGroupView, SshTunnelProbeDraftInput, SshTunnelProbeResult, SshTunnelRecord,
+    SshTunnelRuntimeView, SshTunnelSourceKind, SshTunnelStatus, SshTunnelUpsertInput, SshTunnelView,
+    SshTunnelsSnapshot, ALL_TUNNELS_BATCH_ID, ALL_TUNNELS_BATCH_NAME, DEFAULT_TUNNEL_GROUP_ID,
+    DEFAULT_TUNNEL_GROUP_NAME, LOCAL_BIND_HOST,
 };
 use std::collections::HashSet;
 use tauri::AppHandle;
@@ -296,9 +297,10 @@ pub fn ssh_tunnel_group_connect(
     let mut skipped_count = 0;
     let mut failures: Vec<SshTunnelBatchFailureDetail> = Vec::new();
 
-    let manager = runtime_manager().lock().map_err(|e| e.to_string())?;
-    let running_ids: HashSet<String> = manager.keys().cloned().collect();
-    drop(manager);
+    let running_ids = {
+        let manager = runtime_manager().lock().map_err(|e| e.to_string())?;
+        connect_blocking_running_ids(&manager)
+    };
 
     for tunnel in tunnels {
         if running_ids.contains(&tunnel.id) {
@@ -472,7 +474,7 @@ pub async fn ssh_tunnels_connect_all(
 
     let running_ids = {
         let manager = runtime_manager().lock().map_err(|e| e.to_string())?;
-        manager.keys().cloned().collect::<HashSet<String>>()
+        connect_blocking_running_ids(&manager)
     };
 
     let selected_ids =
@@ -632,15 +634,26 @@ pub fn ssh_tunnels_refresh_status() -> Result<Vec<SshTunnelRuntimeView>, String>
     let finished_ids = manager
         .iter()
         .filter_map(|(id, running)| {
-            if running
+            let finished = running
                 .join
                 .as_ref()
                 .map(|handle| handle.is_finished())
-                .unwrap_or(false)
-            {
-                Some(id.clone())
-            } else {
+                .unwrap_or(false);
+            if !finished {
+                return None;
+            }
+            // A terminal Error instance is kept so its status and last_error
+            // persist until a user connect/disconnect replaces it; only
+            // finished instances in any other status are reaped.
+            let is_terminal_error = running
+                .state
+                .lock()
+                .map(|state| state.status == SshTunnelStatus::Error)
+                .unwrap_or(false);
+            if is_terminal_error {
                 None
+            } else {
+                Some(id.clone())
             }
         })
         .collect::<Vec<_>>();

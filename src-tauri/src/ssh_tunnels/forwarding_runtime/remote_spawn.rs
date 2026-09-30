@@ -1,17 +1,17 @@
 use crate::ssh_tunnels::{
     abandon_tunnel_start, accept_error_is_periodic_tick, apply_probe_outcome, begin_tunnel_start,
-    bridge_streams, emit_connect_failed, emit_tunnels_updated, ensure_local_target_reachable,
-    finish_tunnel_start, handle_dynamic_client, load_record_by_id, open_authenticated_session,
-    open_authenticated_session_kinded, probe_tick_due, resolve_ssh_config_from_record,
-    retry_poke_epoch, run_supervision, run_two_step_probe, runtime_manager, runtime_view,
-    serve_dynamic_listener, sleep_respecting_stop_and_poke, start_local_runtime,
-    transport_round_trip, tunnel_failure_message_input, tunnel_summary,
-    update_record_connection_success, update_record_error, update_runtime_state,
-    with_session_connect_timeout, AppSupervisorObserver, FailureKind, PreSpawnConnectFailure,
-    ResolvedSshConfig, RunningTunnel, RuntimeOutcome, RuntimeState, SessionPool,
-    SshTunnelFailureEvent, SshTunnelForwardMode, SshTunnelRecord, SshTunnelRuntimeView,
-    SshTunnelStatus, StartupResult, StartupSuccess, LOCAL_BIND_HOST, REMOTE_BIND_HOST,
-    SSH_CONNECT_TIMEOUT, SSH_TUNNEL_CONNECT_FAILED_EVENT,
+    bridge_streams, default_runtime_view, emit_connect_failed, emit_tunnels_updated,
+    ensure_local_target_reachable, finish_tunnel_start, handle_dynamic_client, load_record_by_id,
+    open_authenticated_session, open_authenticated_session_kinded, probe_tick_due,
+    reconcile_started_tunnel_with_desired, resolve_ssh_config_from_record, retry_poke_epoch,
+    run_supervision, run_two_step_probe, runtime_manager, runtime_view, serve_dynamic_listener,
+    sleep_respecting_stop_and_poke, start_local_runtime, transport_round_trip,
+    tunnel_failure_message_input, tunnel_summary, update_record_connection_success,
+    update_record_error, update_runtime_state, with_session_connect_timeout, AppSupervisorObserver,
+    FailureKind, PreSpawnConnectFailure, ResolvedSshConfig, RunningTunnel, RuntimeOutcome,
+    RuntimeState, SessionPool, SshTunnelFailureEvent, SshTunnelForwardMode, SshTunnelRecord,
+    SshTunnelRuntimeView, SshTunnelStatus, StartupResult, StartupSuccess, LOCAL_BIND_HOST,
+    REMOTE_BIND_HOST, SSH_CONNECT_TIMEOUT, SSH_TUNNEL_CONNECT_FAILED_EVENT,
 };
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -479,6 +479,13 @@ fn connect_after_claim(
         .lock()
         .map_err(|e| e.to_string())?
         .insert(record.id.clone(), running);
+    if !reconcile_started_tunnel_with_desired(&record.id) {
+        // The desired flag was cleared between claiming the start and inserting
+        // the instance (e.g. the user disconnected). Release the claim and
+        // report a disconnected view without awaiting the startup result.
+        finish_tunnel_start(&record.id);
+        return Ok(default_runtime_view(&record));
+    }
     finish_tunnel_start(&record.id);
     emit_tunnels_updated(&app);
 

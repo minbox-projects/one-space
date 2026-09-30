@@ -1,10 +1,11 @@
 use super::*;
 use crate::config::test_home::TestHomeGuard;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 fn local_forward() -> SshTunnelForwardConfig {
@@ -606,13 +607,29 @@ fn supervisor_three_consecutive_startup_failures_still_retry_with_growing_delays
         attempts.clone(),
     );
 
+    // The supervisor must keep the status at `Connecting` until it has an
+    // outcome, and must switch to `Reconnecting` before every backoff sleep.
+    assert_eq!(status_of(&state), SshTunnelStatus::Connecting);
+
+    let state_for_sleep = state.clone();
+    let delays_for_sleep = delays.clone();
+    let mut sleep = move |delay: Duration| {
+        delays_for_sleep.lock().unwrap().push(delay);
+        assert_eq!(
+            status_of(&state_for_sleep),
+            SshTunnelStatus::Reconnecting,
+            "the tunnel must read as Reconnecting while backing off"
+        );
+        true
+    };
+
     run_supervision(
         "test-supervisor-three-failures",
         &state,
         true,
         &stop,
         source,
-        delay_collector(delays.clone()),
+        &mut sleep,
         &mut observer,
     );
 
@@ -1038,12 +1055,49 @@ fn accept_timeout_kinds_are_periodic_ticks_regardless_of_message_text() {
     )));
 }
 
-fn dummy_running_tunnel() -> RunningTunnel {
+fn dummy_running_tunnel_with_stop(stop: Arc<AtomicBool>) -> RunningTunnel {
+    RunningTunnel {
+        stop,
+        active_clients: Arc::new(AtomicUsize::new(0)),
+        state: Arc::new(Mutex::new(test_runtime_state())),
+        join: None,
+    }
+}
+
+fn dummy_running_tunnel_with_status(status: SshTunnelStatus) -> RunningTunnel {
+    let mut state = test_runtime_state();
+    state.status = status;
+    RunningTunnel {
+        stop: Arc::new(AtomicBool::new(false)),
+        active_clients: Arc::new(AtomicUsize::new(0)),
+        state: Arc::new(Mutex::new(state)),
+        join: None,
+    }
+}
+
+fn running_tunnel_with_join(join: Option<JoinHandle<()>>) -> RunningTunnel {
     RunningTunnel {
         stop: Arc::new(AtomicBool::new(false)),
         active_clients: Arc::new(AtomicUsize::new(0)),
         state: Arc::new(Mutex::new(test_runtime_state())),
-        join: None,
+        join,
+    }
+}
+
+fn dummy_running_tunnel() -> RunningTunnel {
+    dummy_running_tunnel_with_stop(Arc::new(AtomicBool::new(false)))
+}
+
+/// Blocks the calling thread until `handle` has finished, bounded so a broken
+/// spawn can never hang the test run.
+fn wait_until_finished(handle: &JoinHandle<()>) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !handle.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "spawned thread must finish within the test bound"
+        );
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -1058,6 +1112,74 @@ fn cleanup_tunnel_state(id: &str) {
     release_tunnel_start_claim(id);
     abandon_tunnel_start(id);
     runtime_manager().lock().unwrap().remove(id);
+}
+
+#[test]
+fn terminal_error_view_survives_refresh_status() {
+    let _home = isolated_temp_home("terminal-error-view");
+    let error_id = unique_tunnel_id("terminal-error");
+    let disconnected_id = unique_tunnel_id("terminal-disconnected");
+
+    mutate_records(|records| {
+        records.push(record_with_id(&error_id, "Terminal error"));
+        records.push(record_with_id(&disconnected_id, "Finished disconnected"));
+        Ok(())
+    })
+    .expect("seed tunnel records");
+
+    let error_join = std::thread::spawn(|| {});
+    wait_until_finished(&error_join);
+    let mut error_state = test_runtime_state();
+    error_state.status = SshTunnelStatus::Error;
+    error_state.last_error = Some("boom".to_string());
+    runtime_manager().lock().unwrap().insert(
+        error_id.clone(),
+        RunningTunnel {
+            stop: Arc::new(AtomicBool::new(false)),
+            active_clients: Arc::new(AtomicUsize::new(0)),
+            state: Arc::new(Mutex::new(error_state)),
+            join: Some(error_join),
+        },
+    );
+
+    let disconnected_join = std::thread::spawn(|| {});
+    wait_until_finished(&disconnected_join);
+    let mut disconnected_state = test_runtime_state();
+    disconnected_state.status = SshTunnelStatus::Disconnected;
+    runtime_manager().lock().unwrap().insert(
+        disconnected_id.clone(),
+        RunningTunnel {
+            stop: Arc::new(AtomicBool::new(false)),
+            active_clients: Arc::new(AtomicUsize::new(0)),
+            state: Arc::new(Mutex::new(disconnected_state)),
+            join: Some(disconnected_join),
+        },
+    );
+
+    let views = ssh_tunnels_refresh_status().expect("refresh status must succeed");
+
+    let error_view = views
+        .iter()
+        .find(|view| view.id == error_id)
+        .expect("error tunnel view must be present");
+    assert_eq!(
+        error_view.status,
+        SshTunnelStatus::Error,
+        "a terminal Error view must survive refresh_status reaping"
+    );
+
+    let disconnected_view = views
+        .iter()
+        .find(|view| view.id == disconnected_id)
+        .expect("disconnected tunnel view must be present");
+    assert_eq!(disconnected_view.status, SshTunnelStatus::Disconnected);
+    assert!(
+        !runtime_manager().lock().unwrap().contains_key(&disconnected_id),
+        "a finished Disconnected instance must still be reaped"
+    );
+
+    cleanup_tunnel_state(&error_id);
+    cleanup_tunnel_state(&disconnected_id);
 }
 
 #[test]
@@ -1106,12 +1228,13 @@ fn manual_disconnect_removes_a_tunnel_from_watchdog_candidates() {
 fn start_claim_is_exclusive() {
     let id = unique_tunnel_id("start-claim-exclusive");
 
-    assert!(try_claim_tunnel_start(&id));
-    assert!(!try_claim_tunnel_start(&id));
+    mark_tunnel_desired(&id);
+    assert!(matches!(begin_tunnel_start(&id, false), Ok(None)));
+    assert!(begin_tunnel_start(&id, false).is_err());
     assert!(tunnel_start_claim_held(&id));
 
     release_tunnel_start_claim(&id);
-    assert!(try_claim_tunnel_start(&id));
+    assert!(matches!(begin_tunnel_start(&id, false), Ok(None)));
 
     cleanup_tunnel_state(&id);
 }
@@ -1119,20 +1242,133 @@ fn start_claim_is_exclusive() {
 #[test]
 fn instance_in_manager_blocks_a_new_claim() {
     let id = unique_tunnel_id("instance-blocks-claim");
+    mark_tunnel_desired(&id);
     runtime_manager()
         .lock()
         .unwrap()
         .insert(id.clone(), dummy_running_tunnel());
 
-    assert!(!try_claim_tunnel_start(&id));
+    assert!(begin_tunnel_start(&id, false).is_err());
+    assert!(!tunnel_start_claim_held(&id));
 
-    runtime_manager().lock().unwrap().remove(&id);
     cleanup_tunnel_state(&id);
+}
+
+#[test]
+fn watchdog_start_requires_the_desired_flag() {
+    let id = unique_tunnel_id("watchdog-requires-desired");
+
+    assert!(begin_tunnel_start(&id, false).is_err());
+    assert!(!desired_tunnel_ids().contains(&id));
+
+    mark_tunnel_desired(&id);
+    assert!(matches!(begin_tunnel_start(&id, false), Ok(None)));
+    finish_tunnel_start(&id);
+
+    cleanup_tunnel_state(&id);
+}
+
+#[test]
+fn reconcile_started_tunnel_stops_an_instance_whose_desired_flag_was_cleared() {
+    let id = unique_tunnel_id("reconcile-stops-cleared");
+    let stop = Arc::new(AtomicBool::new(false));
+    runtime_manager()
+        .lock()
+        .unwrap()
+        .insert(id.clone(), dummy_running_tunnel_with_stop(stop.clone()));
+    mark_tunnel_desired(&id);
+
+    assert!(reconcile_started_tunnel_with_desired(&id));
+    assert!(runtime_manager().lock().unwrap().contains_key(&id));
+
+    clear_tunnel_desired(&id);
+    assert!(!reconcile_started_tunnel_with_desired(&id));
+    assert!(!runtime_manager().lock().unwrap().contains_key(&id));
+    assert!(stop.load(Ordering::Relaxed));
+
+    cleanup_tunnel_state(&id);
+}
+
+#[test]
+fn watchdog_busy_ids_ignores_finished_instances() {
+    let live_id = unique_tunnel_id("watchdog-busy-live");
+    let finished_id = unique_tunnel_id("watchdog-busy-finished");
+    let no_join_id = unique_tunnel_id("watchdog-busy-no-join");
+    let claimed_id = unique_tunnel_id("watchdog-busy-claimed");
+
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let live_join = std::thread::spawn(move || {
+        let _ = release_rx.recv();
+    });
+
+    let finished_join = std::thread::spawn(|| {});
+    wait_until_finished(&finished_join);
+
+    let mut instances: HashMap<String, RunningTunnel> = HashMap::new();
+    instances.insert(live_id.clone(), running_tunnel_with_join(Some(live_join)));
+    instances.insert(
+        finished_id.clone(),
+        running_tunnel_with_join(Some(finished_join)),
+    );
+    instances.insert(no_join_id.clone(), dummy_running_tunnel());
+
+    let mut claims: HashSet<String> = HashSet::new();
+    claims.insert(claimed_id.clone());
+
+    let busy = watchdog_busy_ids(&instances, &claims);
+
+    let expected: HashSet<String> = [live_id.clone(), no_join_id.clone(), claimed_id.clone()]
+        .into_iter()
+        .collect();
+    assert_eq!(busy, expected);
+    assert!(!busy.contains(&finished_id));
+
+    let _ = release_tx.send(());
+    if let Some(instance) = instances.remove(&live_id) {
+        if let Some(join) = instance.join {
+            join.join().expect("live watchdog thread must join");
+        }
+    }
+}
+
+#[test]
+fn group_connect_blocking_ids_exclude_terminal_errors() {
+    let error_id = unique_tunnel_id("blocking-error");
+    let connecting_id = unique_tunnel_id("blocking-connecting");
+    let connected_id = unique_tunnel_id("blocking-connected");
+    let reconnecting_id = unique_tunnel_id("blocking-reconnecting");
+
+    let mut instances: HashMap<String, RunningTunnel> = HashMap::new();
+    instances.insert(
+        error_id.clone(),
+        dummy_running_tunnel_with_status(SshTunnelStatus::Error),
+    );
+    instances.insert(
+        connecting_id.clone(),
+        dummy_running_tunnel_with_status(SshTunnelStatus::Connecting),
+    );
+    instances.insert(
+        connected_id.clone(),
+        dummy_running_tunnel_with_status(SshTunnelStatus::Connected),
+    );
+    instances.insert(
+        reconnecting_id.clone(),
+        dummy_running_tunnel_with_status(SshTunnelStatus::Reconnecting),
+    );
+
+    let blocking = connect_blocking_running_ids(&instances);
+
+    let expected: HashSet<String> = [connecting_id, connected_id, reconnecting_id]
+        .into_iter()
+        .collect();
+    assert_eq!(blocking, expected);
+    assert!(!blocking.contains(&error_id));
 }
 
 #[test]
 fn concurrent_start_claims_have_exactly_one_winner() {
     let id = unique_tunnel_id("start-claim-race");
+    mark_tunnel_desired(&id);
     let barrier = Arc::new(std::sync::Barrier::new(2));
 
     let mut handles = Vec::new();
@@ -1141,7 +1377,7 @@ fn concurrent_start_claims_have_exactly_one_winner() {
         let barrier = barrier.clone();
         handles.push(std::thread::spawn(move || -> bool {
             barrier.wait();
-            try_claim_tunnel_start(&id)
+            begin_tunnel_start(&id, false).is_ok()
         }));
     }
 
@@ -1159,7 +1395,7 @@ fn concurrent_start_claims_have_exactly_one_winner() {
 fn connecting_marks_the_tunnel_desired() {
     let id = unique_tunnel_id("connecting-marks-desired");
 
-    let started = begin_tunnel_start(&id, false);
+    let started = begin_tunnel_start(&id, true);
     assert!(matches!(started, Ok(None)));
     assert!(desired_tunnel_ids().contains(&id));
     assert!(tunnel_start_claim_held(&id));
@@ -1192,11 +1428,15 @@ fn begin_replace_existing_returns_the_running_instance_once() {
 fn abandon_start_releases_claim_and_clears_desired() {
     let id = unique_tunnel_id("abandon-start");
 
+    mark_tunnel_desired(&id);
     assert!(begin_tunnel_start(&id, false).is_ok());
     abandon_tunnel_start(&id);
 
     assert!(!desired_tunnel_ids().contains(&id));
     assert!(!tunnel_start_claim_held(&id));
+
+    // The claim is free again, so the tunnel can be started once it is desired.
+    mark_tunnel_desired(&id);
     assert!(begin_tunnel_start(&id, false).is_ok());
 
     cleanup_tunnel_state(&id);

@@ -5,7 +5,7 @@ use crate::ssh_tunnels::{
     PROBE_INTERVAL, RECONNECT_BACKOFF_STEP, RECONNECT_INITIAL_BACKOFF,
     SUPERVISOR_RETRY_JITTER_RATIO, SUPERVISOR_RETRY_MAX_BASE_DELAY, TUNNEL_WATCHDOG_INTERVAL,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self};
@@ -25,23 +25,7 @@ fn tunnel_start_claims() -> &'static Mutex<HashSet<String>> {
     TUNNEL_START_CLAIMS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-/// Claims the right to start `id`, returning `false` when the manager already
-/// holds an instance or another start is in flight.
-#[allow(dead_code)] // part of the start-claim interface exercised by the behavior tests
-pub(in crate::ssh_tunnels) fn try_claim_tunnel_start(id: &str) -> bool {
-    let manager = match runtime_manager().lock() {
-        Ok(manager) => manager,
-        Err(_) => return false,
-    };
-    if manager.contains_key(id) {
-        return false;
-    }
-    match tunnel_start_claims().lock() {
-        Ok(mut claims) => claims.insert(id.to_string()),
-        Err(_) => false,
-    }
-}
-
+/// Releases the start claim for `id` so a future start may claim it again.
 pub(in crate::ssh_tunnels) fn release_tunnel_start_claim(id: &str) {
     if let Ok(mut claims) = tunnel_start_claims().lock() {
         claims.remove(id);
@@ -59,7 +43,9 @@ pub(in crate::ssh_tunnels) fn tunnel_start_claim_held(id: &str) -> bool {
 /// Reserves `id` for a start: claims it, marks it desired and, when
 /// `replace_existing` is set, removes and returns the running instance so the
 /// caller can stop and join it outside the lock. Returns `Err` when a claim is
-/// already held, or when an instance exists and `replace_existing` is false.
+/// already held, when an instance exists and `replace_existing` is false, or
+/// when `replace_existing` is false and the tunnel is not desired; a rejected
+/// start never marks the tunnel desired.
 pub(in crate::ssh_tunnels) fn begin_tunnel_start(
     id: &str,
     replace_existing: bool,
@@ -73,10 +59,30 @@ pub(in crate::ssh_tunnels) fn begin_tunnel_start(
         if manager.contains_key(id) && !replace_existing {
             return Err("Tunnel is already running".to_string());
         }
+        if !replace_existing && !desired_tunnel_ids().contains(id) {
+            return Err("Tunnel is not desired".to_string());
+        }
         claims.insert(id.to_string());
     }
     mark_tunnel_desired(id);
     Ok(if replace_existing { manager.remove(id) } else { None })
+}
+
+/// Stops an instance whose desired flag was cleared between the start claim and
+/// the manager insert. Returns `true` when the tunnel is still desired; when it
+/// is not, the instance is removed and its `stop` flag set. The start claim is
+/// intentionally left held so the caller can release it with
+/// `finish_tunnel_start`.
+pub(in crate::ssh_tunnels) fn reconcile_started_tunnel_with_desired(id: &str) -> bool {
+    if desired_tunnel_ids().contains(id) {
+        return true;
+    }
+    if let Ok(mut manager) = runtime_manager().lock() {
+        if let Some(running) = manager.remove(id) {
+            running.stop.store(true, Ordering::Relaxed);
+        }
+    }
+    false
 }
 
 /// Releases the claim after the instance is in the manager (or the spawn
@@ -107,6 +113,52 @@ pub(in crate::ssh_tunnels) fn watchdog_restart_candidates(
     let mut candidates = desired.difference(busy).cloned().collect::<Vec<_>>();
     candidates.sort();
     candidates
+}
+
+/// Busy ids for the watchdog: every held start claim plus every instance whose
+/// runtime thread is still live (an instance with no join handle is treated as
+/// live). A finished runtime thread is not busy and may be restarted.
+pub(in crate::ssh_tunnels) fn watchdog_busy_ids(
+    instances: &HashMap<String, RunningTunnel>,
+    claims: &HashSet<String>,
+) -> HashSet<String> {
+    let mut busy: HashSet<String> = claims.iter().cloned().collect();
+    for (id, running) in instances {
+        if running
+            .join
+            .as_ref()
+            .map_or(true, |handle| !handle.is_finished())
+        {
+            busy.insert(id.clone());
+        }
+    }
+    busy
+}
+
+/// Ids that block an explicit reconnect because their runtime is starting,
+/// connected or retrying. A terminal `Error` instance does not block, so a user
+/// connect may replace it and retry.
+pub(in crate::ssh_tunnels) fn connect_blocking_running_ids(
+    instances: &HashMap<String, RunningTunnel>,
+) -> HashSet<String> {
+    instances
+        .iter()
+        .filter_map(|(id, running)| {
+            let blocks = running
+                .state
+                .lock()
+                .map(|state| {
+                    matches!(
+                        state.status,
+                        SshTunnelStatus::Connecting
+                            | SshTunnelStatus::Connected
+                            | SshTunnelStatus::Reconnecting
+                    )
+                })
+                .unwrap_or(false);
+            blocks.then(|| id.clone())
+        })
+        .collect()
 }
 
 pub(in crate::ssh_tunnels) fn bump_retry_poke() {
@@ -164,11 +216,7 @@ pub fn start_tunnel_watchdog(app: AppHandle) {
                 Ok(claims) => claims,
                 Err(_) => continue,
             };
-            manager
-                .keys()
-                .chain(claimed.iter())
-                .cloned()
-                .collect::<HashSet<String>>()
+            watchdog_busy_ids(&manager, &claimed)
         };
         for id in watchdog_restart_candidates(&desired, &busy) {
             if let Err(error) = connect_internal_if_missing(app.clone(), id.clone(), false) {

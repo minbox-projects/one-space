@@ -1,10 +1,11 @@
 use crate::ssh_tunnels::{
     bind_local_listener, bridge_streams_dedicated_session, emit_tunnels_updated,
     ensure_local_port_available, open_authenticated_session_kinded, open_direct_tcpip_channel,
-    probe_dynamic_via_temp_proxy, probe_local_target, run_pool_probe_tick, tunnel_summary,
-    update_record_connection_success, update_record_error, update_runtime_state, FailureKind,
-    ProbeTickResult, ResolvedSshConfig, RuntimeOutcome, RuntimeState, SessionPool, SshTunnelRecord,
-    SshTunnelStatus, StartupResult, StartupSuccess, LOCAL_BIND_HOST, PROBE_INTERVAL, SSH_IO_TIMEOUT,
+    probe_dynamic_via_temp_proxy, probe_local_target, probe_tick_due, retry_poke_epoch,
+    run_pool_probe_tick, tunnel_summary, update_record_connection_success, update_record_error,
+    update_runtime_state, FailureKind, ProbeTickResult, ResolvedSshConfig, RuntimeOutcome,
+    RuntimeState, SessionPool, SshTunnelRecord, SshTunnelStatus, StartupResult, StartupSuccess,
+    LOCAL_BIND_HOST, SSH_IO_TIMEOUT,
 };
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -119,6 +120,7 @@ pub(in crate::ssh_tunnels) fn start_local_runtime(
     }));
 
     let mut last_probe = Instant::now();
+    let mut last_seen_poke = retry_poke_epoch();
     let mut consecutive_transport_failures: u32 = 0;
 
     while !stop.load(Ordering::Relaxed) {
@@ -162,8 +164,10 @@ pub(in crate::ssh_tunnels) fn start_local_runtime(
                 });
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if last_probe.elapsed() >= PROBE_INTERVAL {
+                let poke = retry_poke_epoch();
+                if probe_tick_due(last_probe.elapsed(), poke != last_seen_poke) {
                     last_probe = Instant::now();
+                    last_seen_poke = poke;
                     let target_host_for_probe = target_host.clone();
                     let probe = run_pool_probe_tick(
                         &app,
@@ -369,6 +373,7 @@ pub(in crate::ssh_tunnels) fn serve_dynamic_listener(
     };
 
     let mut last_probe = Instant::now();
+    let mut last_seen_poke = retry_poke_epoch();
     let mut consecutive_transport_failures: u32 = 0;
 
     while !stop.load(Ordering::Relaxed) {
@@ -395,8 +400,10 @@ pub(in crate::ssh_tunnels) fn serve_dynamic_listener(
                 });
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if last_probe.elapsed() >= PROBE_INTERVAL {
+                let poke = retry_poke_epoch();
+                if probe_tick_due(last_probe.elapsed(), poke != last_seen_poke) {
                     last_probe = Instant::now();
+                    last_seen_poke = poke;
                     let resolved_for_probe = resolved.clone();
                     let probe_target_for_probe = probe_target.clone();
                     let probe = run_pool_probe_tick(

@@ -44,15 +44,6 @@ pub(in crate::ssh_tunnels) fn clear_tunnel_desired(id: &str) {
     }
 }
 
-#[allow(dead_code)] // batch clear helper kept on the desired-set interface
-pub(in crate::ssh_tunnels) fn clear_tunnels_desired(ids: &[String]) {
-    if let Ok(mut desired) = desired_tunnel_id_set().lock() {
-        for id in ids {
-            desired.remove(id);
-        }
-    }
-}
-
 pub(in crate::ssh_tunnels) fn desired_tunnel_ids() -> HashSet<String> {
     desired_tunnel_id_set()
         .lock()
