@@ -113,8 +113,9 @@ pub fn run() {
                 let _ = app_handle.emit("ai-gateway-status-update", ());
             });
             setup_sessions_history_sync_service(app.handle());
-            ssh_tunnels::start_system_wake_observer(app.handle().clone());
-            ssh_tunnels::start_sleep_resume_monitor(app.handle().clone());
+            ssh_tunnels::start_system_wake_observer();
+            ssh_tunnels::start_sleep_resume_monitor();
+            ssh_tunnels::start_tunnel_watchdog(app.handle().clone());
             // Avoid running heavy migration work before first-run onboarding.
             // Otherwise startup may create default data and suppress onboarding.
             let should_show_onboarding = config::should_show_onboarding().unwrap_or(false);

@@ -10,7 +10,7 @@ use ssh2::Session;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,11 +19,45 @@ use tauri::{AppHandle, Emitter};
 pub(in crate::ssh_tunnels) static RECORDS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 pub(in crate::ssh_tunnels) static RUNTIME_MANAGER: OnceLock<Mutex<HashMap<String, RunningTunnel>>> =
     OnceLock::new();
-pub(in crate::ssh_tunnels) static RECONNECT_RECONCILE_RUNNING: AtomicBool = AtomicBool::new(false);
-pub(in crate::ssh_tunnels) static LAST_RECONNECT_RECONCILE_AT: AtomicU64 = AtomicU64::new(0);
+/// Process-memory set of tunnels the user wants running. Cleared on every stop
+/// path so a manual disconnect is never resurrected by the watchdog.
+pub(in crate::ssh_tunnels) static DESIRED_TUNNEL_IDS: OnceLock<Mutex<HashSet<String>>> =
+    OnceLock::new();
 
 pub(in crate::ssh_tunnels) fn records_lock() -> &'static Mutex<()> {
     RECORDS_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn desired_tunnel_id_set() -> &'static Mutex<HashSet<String>> {
+    DESIRED_TUNNEL_IDS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub(in crate::ssh_tunnels) fn mark_tunnel_desired(id: &str) {
+    if let Ok(mut ids) = desired_tunnel_id_set().lock() {
+        ids.insert(id.to_string());
+    }
+}
+
+pub(in crate::ssh_tunnels) fn clear_tunnel_desired(id: &str) {
+    if let Ok(mut ids) = desired_tunnel_id_set().lock() {
+        ids.remove(id);
+    }
+}
+
+#[allow(dead_code)] // batch clear helper kept on the desired-set interface
+pub(in crate::ssh_tunnels) fn clear_tunnels_desired(ids: &[String]) {
+    if let Ok(mut desired) = desired_tunnel_id_set().lock() {
+        for id in ids {
+            desired.remove(id);
+        }
+    }
+}
+
+pub(in crate::ssh_tunnels) fn desired_tunnel_ids() -> HashSet<String> {
+    desired_tunnel_id_set()
+        .lock()
+        .map(|ids| ids.clone())
+        .unwrap_or_default()
 }
 
 pub(in crate::ssh_tunnels) fn runtime_manager() -> &'static Mutex<HashMap<String, RunningTunnel>> {
@@ -306,13 +340,6 @@ pub(in crate::ssh_tunnels) struct SshTunnelFailureEvent {
     pub auto_connect: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub(in crate::ssh_tunnels) struct SshTunnelWindowReconnectDoneEvent {
-    pub total: usize,
-    pub succeeded: usize,
-    pub failed: usize,
-}
-
 #[derive(Debug, Clone)]
 pub(in crate::ssh_tunnels) struct RuntimeState {
     pub(in crate::ssh_tunnels) status: SshTunnelStatus,
@@ -410,12 +437,6 @@ impl SessionPool {
                 None => return open_authenticated_session(&self.resolved),
             }
         }
-    }
-
-    pub(in crate::ssh_tunnels) fn health_check(&self) -> Result<(), String> {
-        let session = self.acquire()?;
-        self.release(session);
-        Ok(())
     }
 
     pub(in crate::ssh_tunnels) fn release(&self, session: Session) {

@@ -1,20 +1,18 @@
 use super::{
-    clear_record_error, connect_internal, default_runtime_view, disconnect_runtime,
-    emit_tunnels_updated, load_record_by_id, load_records, load_state, mutate_records,
-    mutate_state, normalize_group_id, now_ts, probe_forward, record_group_operation_failure,
-    record_tunnel_failure, resolve_ssh_config_from_input, resolve_ssh_config_from_record,
-    runtime_manager, runtime_view, secret_key_for_tunnel, sort_groups, sort_tunnels, to_group_view,
-    to_view, tunnel_summary, update_record_error, validate_group_name, validate_input,
-    SshTunnelAuthKind, SshTunnelBatchFailureDetail, SshTunnelBatchOperationResult,
-    SshTunnelCustomConfig, SshTunnelForwardConfig, SshTunnelGroupRecord, SshTunnelGroupUpsertInput,
-    SshTunnelGroupView, SshTunnelProbeDraftInput, SshTunnelProbeResult, SshTunnelRecord,
-    SshTunnelRuntimeView, SshTunnelSourceKind, SshTunnelStatus, SshTunnelUpsertInput,
-    SshTunnelView, SshTunnelWindowReconnectDoneEvent, SshTunnelsSnapshot, ALL_TUNNELS_BATCH_ID,
+    bump_retry_poke, clear_record_error, connect_internal, default_runtime_view, disconnect_tunnel,
+    emit_tunnels_updated, load_records, load_state, mutate_records, mutate_state, normalize_group_id,
+    now_ts, probe_forward, record_group_operation_failure, resolve_ssh_config_from_input,
+    resolve_ssh_config_from_record, runtime_manager, runtime_view, secret_key_for_tunnel,
+    sort_groups, sort_tunnels, to_group_view, to_view, tunnel_summary, update_record_error,
+    validate_group_name, validate_input, SshTunnelAuthKind, SshTunnelBatchFailureDetail,
+    SshTunnelBatchOperationResult, SshTunnelCustomConfig, SshTunnelForwardConfig,
+    SshTunnelGroupRecord, SshTunnelGroupUpsertInput, SshTunnelGroupView, SshTunnelProbeDraftInput,
+    SshTunnelProbeResult, SshTunnelRecord, SshTunnelRuntimeView, SshTunnelSourceKind,
+    SshTunnelUpsertInput, SshTunnelView, SshTunnelsSnapshot, ALL_TUNNELS_BATCH_ID,
     ALL_TUNNELS_BATCH_NAME, DEFAULT_TUNNEL_GROUP_ID, DEFAULT_TUNNEL_GROUP_NAME, LOCAL_BIND_HOST,
-    SSH_TUNNEL_WINDOW_RECONNECT_DONE_EVENT, SSH_TUNNEL_WINDOW_RECONNECT_START_EVENT,
 };
 use std::collections::HashSet;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 #[tauri::command]
 pub fn ssh_tunnel_groups_list() -> Result<Vec<SshTunnelGroupView>, String> {
@@ -107,7 +105,7 @@ pub async fn ssh_tunnel_upsert(
     validate_input(&input, existing.as_ref())?;
 
     if let Some(id) = input.id.as_ref() {
-        let _ = disconnect_runtime(id);
+        let _ = disconnect_tunnel(id);
     }
 
     let now = now_ts();
@@ -227,7 +225,7 @@ pub async fn ssh_tunnel_upsert(
 
 #[tauri::command]
 pub async fn ssh_tunnel_delete(app: AppHandle, id: String) -> Result<(), String> {
-    let _ = disconnect_runtime(&id);
+    let _ = disconnect_tunnel(&id);
     mutate_records(|records| {
         let before = records.len();
         records.retain(|record| record.id != id);
@@ -252,7 +250,7 @@ pub fn ssh_tunnel_disconnect(app: AppHandle, id: String) -> Result<SshTunnelRunt
         .into_iter()
         .find(|record| record.id == id)
         .ok_or_else(|| "Tunnel not found".to_string())?;
-    disconnect_runtime(&record.id)?;
+    disconnect_tunnel(&record.id)?;
     let _ = clear_record_error(&record.id);
     record.last_error = None;
     emit_tunnels_updated(&app);
@@ -391,7 +389,7 @@ pub fn ssh_tunnel_group_disconnect(
             continue;
         }
 
-        match disconnect_runtime(&tunnel.id) {
+        match disconnect_tunnel(&tunnel.id) {
             Ok(_) => success_count += 1,
             Err(error) => {
                 failures.push(SshTunnelBatchFailureDetail {
@@ -544,7 +542,7 @@ pub async fn ssh_tunnels_disconnect_all(
             continue;
         }
 
-        match disconnect_runtime(&tunnel.id) {
+        match disconnect_tunnel(&tunnel.id) {
             Ok(_) => success_count += 1,
             Err(error) => {
                 failures.push(SshTunnelBatchFailureDetail {
@@ -687,90 +685,8 @@ pub async fn ssh_tunnels_bootstrap(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-pub fn ssh_tunnels_on_window_show(app: AppHandle) {
-    let result = (|| -> Result<(), String> {
-        let records = load_records()?;
-        let reconnect_enabled_ids: HashSet<_> = records
-            .iter()
-            .filter(|r| r.auto_reconnect)
-            .map(|r| r.id.clone())
-            .collect();
-
-        let failed_ids = {
-            let manager = runtime_manager().lock().map_err(|e| e.to_string())?;
-            manager
-                .iter()
-                .filter(|(id, running)| {
-                    if !reconnect_enabled_ids.contains(*id) {
-                        return false;
-                    }
-                    running
-                        .state
-                        .lock()
-                        .map(|s| {
-                            matches!(
-                                s.status,
-                                SshTunnelStatus::Error | SshTunnelStatus::Disconnected
-                            )
-                        })
-                        .unwrap_or(false)
-                })
-                .map(|(id, _)| id.clone())
-                .collect::<Vec<_>>()
-        };
-
-        if failed_ids.is_empty() {
-            log::debug!("SSH tunnel window-show reconnect: no failed tunnels");
-            return Ok(());
-        }
-
-        log::info!(
-            "SSH tunnel window-show reconnect: {} failed tunnel(s)",
-            failed_ids.len()
-        );
-
-        let total = failed_ids.len();
-        let _ = app.emit(
-            SSH_TUNNEL_WINDOW_RECONNECT_START_EVENT,
-            serde_json::json!({ "total": total }),
-        );
-
-        let mut succeeded = 0usize;
-        for id in failed_ids {
-            match connect_internal(app.clone(), id.clone(), true) {
-                Ok(_) => {
-                    succeeded += 1;
-                    log::info!("SSH tunnel window-show reconnected: {}", id);
-                }
-                Err(error) => {
-                    let _ = update_record_error(&id, &error);
-                    if let Ok(Some(record)) = load_record_by_id(&id) {
-                        record_tunnel_failure(&app, &record, &error, "window-show-reconnect");
-                    }
-                    log::warn!(
-                        "SSH tunnel window-show reconnect failed for {}: {}",
-                        id,
-                        error
-                    );
-                }
-            }
-        }
-
-        let _ = app.emit(
-            SSH_TUNNEL_WINDOW_RECONNECT_DONE_EVENT,
-            SshTunnelWindowReconnectDoneEvent {
-                total,
-                succeeded,
-                failed: total - succeeded,
-            },
-        );
-
-        Ok(())
-    })();
-
-    if let Err(error) = result {
-        log::warn!("SSH tunnel window-show reconnect error: {}", error);
-    }
+pub fn ssh_tunnels_poke() {
+    bump_retry_poke();
 }
 
 pub fn shutdown_runtime() -> Result<(), String> {
@@ -781,7 +697,7 @@ pub fn shutdown_runtime() -> Result<(), String> {
         .cloned()
         .collect::<Vec<_>>();
     for id in ids {
-        let _ = disconnect_runtime(&id);
+        let _ = disconnect_tunnel(&id);
     }
     Ok(())
 }

@@ -4,10 +4,6 @@ use std::time::Duration;
 pub(in crate::ssh_tunnels) const SSH_TUNNELS_UPDATED_EVENT: &str = "ssh-tunnels-updated";
 pub(in crate::ssh_tunnels) const SSH_TUNNEL_CONNECT_FAILED_EVENT: &str =
     "ssh-tunnel-connect-failed";
-pub(in crate::ssh_tunnels) const SSH_TUNNEL_WINDOW_RECONNECT_START_EVENT: &str =
-    "ssh-tunnel-window-reconnect-start";
-pub(in crate::ssh_tunnels) const SSH_TUNNEL_WINDOW_RECONNECT_DONE_EVENT: &str =
-    "ssh-tunnel-window-reconnect-done";
 pub(in crate::ssh_tunnels) const PASSWORD_SECRET_PREFIX: &str = "onespace_ssh_tunnel_password:";
 pub(in crate::ssh_tunnels) const LOCAL_BIND_HOST: &str = "127.0.0.1";
 pub(in crate::ssh_tunnels) const REMOTE_BIND_HOST: &str = "127.0.0.1";
@@ -28,8 +24,8 @@ pub(in crate::ssh_tunnels) const PROBE_INTERVAL: Duration = Duration::from_secs(
 /// Bounded budget for a single probe round trip.
 pub(in crate::ssh_tunnels) const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(in crate::ssh_tunnels) const RECONNECT_BACKOFF_STEP: Duration = Duration::from_millis(500);
-pub(in crate::ssh_tunnels) const RECONNECT_RESUME_DELAY: Duration = Duration::from_secs(15);
-pub(in crate::ssh_tunnels) const RECONNECT_RECONCILE_COOLDOWN: Duration = Duration::from_secs(20);
+/// How often the watchdog scans for desired tunnels with no live instance.
+pub(in crate::ssh_tunnels) const TUNNEL_WATCHDOG_INTERVAL: Duration = Duration::from_secs(30);
 pub(in crate::ssh_tunnels) const SLEEP_RESUME_HEARTBEAT_INTERVAL: Duration =
     Duration::from_secs(15);
 pub(in crate::ssh_tunnels) const SLEEP_RESUME_GAP_THRESHOLD: Duration = Duration::from_secs(60);

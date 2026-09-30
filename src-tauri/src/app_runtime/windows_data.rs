@@ -39,7 +39,7 @@ pub(super) fn show_main_window(app: tauri::AppHandle) {
         });
     }
     emit_main_window_visibility(&app);
-    ssh_tunnels::ssh_tunnels_on_window_show(app);
+    ssh_tunnels::ssh_tunnels_poke();
 }
 
 pub(super) fn toggle_main_window(app: tauri::AppHandle) {
