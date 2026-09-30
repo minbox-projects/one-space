@@ -336,4 +336,27 @@ describe("App 更多工具详情导航", () => {
       screen.getByRole("navigation", { name: /Breadcrumb|面包屑/ }),
     ).toHaveTextContent(expectedTitle);
   });
+
+  it("顶栏 Header 中面包屑导航位置在全局搜索框之前", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "从启动台打开 MD5" }),
+    );
+
+    const breadcrumb = screen.getByRole("navigation", { name: /Breadcrumb|面包屑/ });
+    const searchButton = screen.getByRole("button", { name: /搜索|Search/ });
+
+    expect(breadcrumb).toBeInTheDocument();
+    expect(searchButton).toBeInTheDocument();
+
+    expect(
+      Boolean(breadcrumb.compareDocumentPosition(searchButton) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true);
+  });
 });

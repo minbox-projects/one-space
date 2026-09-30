@@ -166,4 +166,36 @@ describe('AboutModal component', () => {
       expect(checkForUpdatesSpy).toHaveBeenCalledWith(false, true, true);
     });
   });
+
+  it('renders usage docs button in footer when onOpenDocs is provided and invokes callbacks on click', async () => {
+    const onCloseSpy = vi.fn();
+    const onOpenDocsSpy = vi.fn();
+
+    render(
+      <AboutModal
+        open={true}
+        onClose={onCloseSpy}
+        onOpenDocs={onOpenDocsSpy}
+      />,
+    );
+
+    const docsBtn = await screen.findByTestId('about-usage-docs-button');
+    expect(docsBtn).toBeInTheDocument();
+
+    fireEvent.click(docsBtn);
+
+    expect(onCloseSpy).toHaveBeenCalledTimes(1);
+    expect(onOpenDocsSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not render usage docs button when onOpenDocs is not provided', () => {
+    render(
+      <AboutModal
+        open={true}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId('about-usage-docs-button')).not.toBeInTheDocument();
+  });
 });

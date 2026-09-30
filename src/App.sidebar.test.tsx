@@ -104,4 +104,21 @@ describe("App 侧边栏折叠与展开功能", () => {
     await user.keyboard("{Meta>}b{/Meta}");
     expect(await screen.findByText("OneSpace")).toBeInTheDocument();
   });
+
+  it("侧边栏底部仅保留设置与关于，移除了使用文档菜单", async () => {
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+
+    expect(await screen.findByText("OneSpace")).toBeInTheDocument();
+
+    // 侧边栏底部有“设置”与“关于”
+    expect(screen.getByRole("button", { name: /^设置$|^Settings$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^关于$|^About$/ })).toBeInTheDocument();
+
+    // 侧边栏底部不再有“使用文档”按钮
+    expect(screen.queryByRole("button", { name: /^使用文档$|^Documentation$/ })).not.toBeInTheDocument();
+  });
 });
