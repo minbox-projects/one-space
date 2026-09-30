@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/bug-fix/2026-09-30-ssh-tunnel-reconnect-resilience.md
-2026-09-30-ssh-tunnel-reconnect-resilience.md: 9f755655db71bc19284ce0025e59ee119e32eeae
-2026-09-30-ssh-tunnel-reconnect-resilience.zh.md: fa2c97852ad808bff7b78bec4bb011273996d8eb
+2026-09-30-ssh-tunnel-reconnect-resilience.md: c279dbc81a698ed561819a31a541960d49b10e97
+2026-09-30-ssh-tunnel-reconnect-resilience.zh.md: 1f7d4003085452bd885c0e736980778b95ac07cc

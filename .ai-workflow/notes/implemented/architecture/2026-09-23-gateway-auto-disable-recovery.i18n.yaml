@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-23-gateway-auto-disable-recovery.md
-2026-09-23-gateway-auto-disable-recovery.md: 5014109508db19a93a3fb34e10745ffd437829ff
-2026-09-23-gateway-auto-disable-recovery.zh.md: 61ad0f78eea1eb03aa4ed6b53fca4d89e47cc7fa
+2026-09-23-gateway-auto-disable-recovery.md: b16467512e5c41369be2fd030c666af2879baa1f
+2026-09-23-gateway-auto-disable-recovery.zh.md: 42c0fefb52b7a8ccf73b8e1ad1134d5f34b327a0
