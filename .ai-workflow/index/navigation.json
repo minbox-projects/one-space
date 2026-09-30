@@ -2856,7 +2856,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "SSH 转发配置、运行时桥接、重连、配置校验与全量隧道批量连接/断开（批次标识 `all` / `All Tunnels`）",
+      "responsibility": "SSH 转发配置、运行时桥接与持久监管（持久重试监管循环、类型化终态分类、双步往返健康探测、desired-running 看门狗与启动认领、唤醒/窗口显示重试 poke）、配置校验与全量隧道批量连接/断开（批次标识 `all` / `All Tunnels`）",
       "entries": [
         "src-tauri/src/ssh_tunnels.rs"
       ],
@@ -2868,6 +2868,7 @@
         "src-tauri/src/ssh_tunnels/forwarding_runtime/local_dynamic.rs",
         "src-tauri/src/ssh_tunnels/forwarding_runtime/remote_spawn.rs",
         "src-tauri/src/ssh_tunnels/forwarding_runtime/session_probe.rs",
+        "src-tauri/src/ssh_tunnels/forwarding_runtime/supervisor.rs",
         "src-tauri/src/ssh_tunnels/reconnect.rs",
         "src-tauri/src/ssh_tunnels/types_state.rs",
         "src-tauri/src/ssh_tunnels/validation_ssh_config.rs"
@@ -2911,6 +2912,7 @@
         "src-tauri/src/ssh_tunnels/forwarding_runtime/local_dynamic.rs",
         "src-tauri/src/ssh_tunnels/forwarding_runtime/remote_spawn.rs",
         "src-tauri/src/ssh_tunnels/forwarding_runtime/session_probe.rs",
+        "src-tauri/src/ssh_tunnels/forwarding_runtime/supervisor.rs",
         "src-tauri/src/ssh_tunnels/reconnect.rs",
         "src-tauri/src/ssh_tunnels/types_state.rs",
         "src-tauri/src/ssh_tunnels/validation_ssh_config.rs",
