@@ -1,18 +1,17 @@
 use crate::ssh_tunnels::{
-    bridge_streams, emit_connect_failed, emit_tunnels_updated, ensure_local_target_reachable,
-    handle_dynamic_client, load_records, open_authenticated_session,
-    open_authenticated_session_kinded, prepare_session_for_reuse, resolve_ssh_config_from_record,
-    run_supervision, runtime_manager, runtime_view, serve_dynamic_listener, sleep_respecting_stop,
-    start_local_runtime, tunnel_failure_message_input, tunnel_summary,
-    update_record_connection_success, update_record_error, update_runtime_state,
+    accept_error_is_periodic_tick, apply_probe_outcome, bridge_streams, emit_connect_failed,
+    emit_tunnels_updated, ensure_local_target_reachable, handle_dynamic_client, load_records,
+    open_authenticated_session, open_authenticated_session_kinded, resolve_ssh_config_from_record,
+    run_supervision, run_two_step_probe, runtime_manager, runtime_view, serve_dynamic_listener,
+    sleep_respecting_stop, start_local_runtime, transport_round_trip, tunnel_failure_message_input,
+    tunnel_summary, update_record_connection_success, update_record_error, update_runtime_state,
     with_session_connect_timeout, AppSupervisorObserver, FailureKind, PreSpawnConnectFailure,
     ResolvedSshConfig, RunningTunnel, RuntimeOutcome, RuntimeState, SessionPool,
     SshTunnelFailureEvent, SshTunnelForwardMode, SshTunnelRecord, SshTunnelRuntimeView,
-    SshTunnelStatus, StartupResult, StartupSuccess, LOCAL_BIND_HOST,
-    RECONNECT_HEALTH_CHECK_INTERVAL, REMOTE_BIND_HOST, SSH_CONNECT_TIMEOUT,
-    SSH_TUNNEL_CONNECT_FAILED_EVENT,
+    SshTunnelStatus, StartupResult, StartupSuccess, LOCAL_BIND_HOST, PROBE_INTERVAL,
+    REMOTE_BIND_HOST, SSH_CONNECT_TIMEOUT, SSH_TUNNEL_CONNECT_FAILED_EVENT,
 };
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -116,7 +115,8 @@ pub(in crate::ssh_tunnels) fn start_remote_runtime(
         resolved_server_host: format!("{}:{}", resolved.host, resolved.port),
     }));
 
-    let mut last_health_check = Instant::now();
+    let mut last_probe = Instant::now();
+    let mut consecutive_transport_failures: u32 = 0;
 
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
@@ -157,25 +157,45 @@ pub(in crate::ssh_tunnels) fn start_remote_runtime(
                     }
                 });
             }
-            Err(error) if error.to_string().to_lowercase().contains("timed out") => {
-                if last_health_check.elapsed() >= RECONNECT_HEALTH_CHECK_INTERVAL {
-                    last_health_check = Instant::now();
-                    if let Err(e) = prepare_session_for_reuse(&session) {
-                        let message = format!("SSH session health check failed: {}", e);
-                        return if stop.load(Ordering::Relaxed) {
-                            RuntimeOutcome::Stopped
-                        } else {
-                            RuntimeOutcome::DroppedAfterConnected {
-                                kind: FailureKind::Transport,
-                                message,
-                            }
-                        };
-                    }
-                }
-                continue;
-            }
             Err(error) => {
-                let message = error.to_string();
+                let io_error = io::Error::from(error);
+                if accept_error_is_periodic_tick(&io_error) {
+                    if last_probe.elapsed() >= PROBE_INTERVAL {
+                        last_probe = Instant::now();
+                        let outcome =
+                            run_two_step_probe(|| transport_round_trip(&session), || Ok(()));
+                        let transport_message = match &outcome {
+                            Err((_kind, message)) => Some(message.clone()),
+                            Ok(()) => None,
+                        };
+                        let previous_error =
+                            state.lock().ok().and_then(|guard| guard.last_error.clone());
+                        let should_reconnect = apply_probe_outcome(
+                            &state,
+                            &mut consecutive_transport_failures,
+                            outcome,
+                        );
+                        let current_error =
+                            state.lock().ok().and_then(|guard| guard.last_error.clone());
+                        if previous_error != current_error {
+                            emit_tunnels_updated(&app);
+                        }
+                        if should_reconnect {
+                            return if stop.load(Ordering::Relaxed) {
+                                RuntimeOutcome::Stopped
+                            } else {
+                                RuntimeOutcome::DroppedAfterConnected {
+                                    kind: FailureKind::Transport,
+                                    message: transport_message.unwrap_or_else(|| {
+                                        "SSH transport probe failed".to_string()
+                                    }),
+                                }
+                            };
+                        }
+                    }
+                    continue;
+                }
+                let message = io_error.to_string();
                 return if stop.load(Ordering::Relaxed) {
                     RuntimeOutcome::Stopped
                 } else {

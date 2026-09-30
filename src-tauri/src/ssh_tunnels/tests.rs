@@ -888,3 +888,138 @@ fn supervised_failure_messages_deduplicate_for_one_tunnel() {
     );
     assert_eq!(messages[0].occurrences, 2);
 }
+
+#[test]
+fn two_step_probe_classifies_transport_failure_and_skips_target() {
+    let target_ran = Arc::new(AtomicBool::new(false));
+    let target_ran_for_probe = target_ran.clone();
+
+    let outcome = run_two_step_probe(
+        || -> Result<(), String> { Err("blackhole".to_string()) },
+        move || -> Result<(), String> {
+            target_ran_for_probe.store(true, Ordering::Relaxed);
+            Ok(())
+        },
+    );
+
+    assert_eq!(
+        outcome,
+        Err((FailureKind::Transport, "blackhole".to_string()))
+    );
+    assert!(!target_ran.load(Ordering::Relaxed));
+}
+
+#[test]
+fn two_step_probe_classifies_target_failure_after_transport_success() {
+    let outcome = run_two_step_probe(
+        || -> Result<(), String> { Ok(()) },
+        || -> Result<(), String> { Err("target refused".to_string()) },
+    );
+
+    assert_eq!(
+        outcome,
+        Err((FailureKind::Target, "target refused".to_string()))
+    );
+}
+
+#[test]
+fn two_step_probe_succeeds_when_both_steps_succeed() {
+    let outcome = run_two_step_probe(
+        || -> Result<(), String> { Ok(()) },
+        || -> Result<(), String> { Ok(()) },
+    );
+
+    assert_eq!(outcome, Ok(()));
+}
+
+#[test]
+fn probe_reconnects_only_on_the_second_consecutive_transport_failure() {
+    let state = Arc::new(Mutex::new(test_runtime_state()));
+    let mut counter: u32 = 0;
+
+    let first = apply_probe_outcome(
+        &state,
+        &mut counter,
+        Err((FailureKind::Transport, "reset".to_string())),
+    );
+    assert!(!first);
+    assert_eq!(counter, 1);
+    assert_eq!(state.lock().unwrap().last_error, Some("reset".to_string()));
+
+    let second = apply_probe_outcome(
+        &state,
+        &mut counter,
+        Err((FailureKind::Transport, "reset".to_string())),
+    );
+    assert!(second);
+    assert_eq!(counter, 2);
+}
+
+#[test]
+fn probe_success_resets_the_transport_counter_and_clears_last_error() {
+    let state = Arc::new(Mutex::new(test_runtime_state()));
+    state.lock().unwrap().last_error = Some("stale".to_string());
+    let mut counter: u32 = 2;
+
+    let should_reconnect = apply_probe_outcome(&state, &mut counter, Ok(()));
+
+    assert!(!should_reconnect);
+    assert_eq!(counter, 0);
+    assert_eq!(state.lock().unwrap().last_error, None);
+}
+
+#[test]
+fn probe_target_failure_records_error_without_touching_the_transport_counter() {
+    let state = Arc::new(Mutex::new(test_runtime_state()));
+    let mut counter: u32 = 1;
+
+    let target_result = apply_probe_outcome(
+        &state,
+        &mut counter,
+        Err((FailureKind::Target, "refused".to_string())),
+    );
+
+    assert!(!target_result);
+    assert_eq!(counter, 1);
+    assert_eq!(state.lock().unwrap().last_error, Some("refused".to_string()));
+
+    // The retained earlier transport failure makes this the second consecutive
+    // transport failure.
+    let transport_result = apply_probe_outcome(
+        &state,
+        &mut counter,
+        Err((FailureKind::Transport, "dead".to_string())),
+    );
+    assert!(transport_result);
+
+    // A single target failure on a fresh counter never reconnects.
+    let fresh_state = Arc::new(Mutex::new(test_runtime_state()));
+    let mut fresh_counter: u32 = 0;
+    let alone = apply_probe_outcome(
+        &fresh_state,
+        &mut fresh_counter,
+        Err((FailureKind::Target, "refused".to_string())),
+    );
+    assert!(!alone);
+    assert_eq!(fresh_counter, 0);
+}
+
+#[test]
+fn accept_timeout_kinds_are_periodic_ticks_regardless_of_message_text() {
+    assert!(accept_error_is_periodic_tick(&io::Error::new(
+        io::ErrorKind::TimedOut,
+        "totally unrelated"
+    )));
+    assert!(accept_error_is_periodic_tick(&io::Error::new(
+        io::ErrorKind::WouldBlock,
+        "some other text"
+    )));
+    assert!(!accept_error_is_periodic_tick(&io::Error::new(
+        io::ErrorKind::ConnectionReset,
+        "Operation timed out"
+    )));
+    assert!(!accept_error_is_periodic_tick(&io::Error::new(
+        io::ErrorKind::Other,
+        "timed out"
+    )));
+}

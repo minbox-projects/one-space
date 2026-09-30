@@ -1,12 +1,16 @@
 use crate::ssh_tunnels::{
-    open_authenticated_session, probe_dynamic_via_temp_proxy, ResolvedSshConfig,
-    SshTunnelForwardConfig, SshTunnelForwardMode, LOCAL_BIND_HOST, REMOTE_BIND_HOST,
-    SSH_CONNECT_TIMEOUT, SSH_IO_TIMEOUT, SSH_KEEPALIVE_INTERVAL_SECS,
+    emit_tunnels_updated, open_authenticated_session, probe_dynamic_via_temp_proxy, FailureKind,
+    ResolvedSshConfig, RuntimeState, SessionPool, SshTunnelForwardConfig, SshTunnelForwardMode,
+    LOCAL_BIND_HOST, PROBE_TIMEOUT, REMOTE_BIND_HOST, SSH_CONNECT_TIMEOUT, SSH_IO_TIMEOUT,
+    SSH_KEEPALIVE_INTERVAL_SECS,
 };
 use ssh2::Session;
+use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tauri::AppHandle;
 
 pub(in crate::ssh_tunnels) fn session_timeout_ms(timeout: Duration) -> u32 {
     timeout.as_millis().min(u128::from(u32::MAX)) as u32
@@ -37,6 +41,155 @@ pub(in crate::ssh_tunnels) fn with_session_connect_timeout<T>(
     let result = operation(session);
     set_session_timeout(session, SSH_IO_TIMEOUT);
     result
+}
+
+pub(in crate::ssh_tunnels) fn with_session_probe_timeout<T>(
+    session: &Session,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    set_session_timeout(session, PROBE_TIMEOUT);
+    let result = operation();
+    set_session_timeout(session, SSH_IO_TIMEOUT);
+    result
+}
+
+/// Step one of the round-trip probe: opens and closes an SSH session channel so
+/// the server must answer the channel-open request within the probe timeout.
+pub(in crate::ssh_tunnels) fn transport_round_trip(session: &Session) -> Result<(), String> {
+    with_session_probe_timeout(session, || {
+        let mut channel = session.channel_session().map_err(|e| e.to_string())?;
+        let _ = channel.close();
+        Ok(())
+    })
+}
+
+/// Step two of the local round-trip probe: opens and closes a `direct-tcpip`
+/// channel to the forwarding target through the session.
+pub(in crate::ssh_tunnels) fn probe_local_target(
+    session: &Session,
+    target_host: &str,
+    target_port: u16,
+) -> Result<(), String> {
+    with_session_probe_timeout(session, || {
+        let mut channel = session
+            .channel_direct_tcpip(target_host, target_port, None)
+            .map_err(|e| e.to_string())?;
+        let _ = channel.close();
+        Ok(())
+    })
+}
+
+/// Runs the two probe steps in order. A step-one failure is a transport
+/// failure and the target step is never invoked; a step-two failure after a
+/// successful step one is a target failure.
+pub(in crate::ssh_tunnels) fn run_two_step_probe(
+    transport: impl FnOnce() -> Result<(), String>,
+    target: impl FnOnce() -> Result<(), String>,
+) -> Result<(), (FailureKind, String)> {
+    transport().map_err(|message| (FailureKind::Transport, message))?;
+    target().map_err(|message| (FailureKind::Target, message))?;
+    Ok(())
+}
+
+/// Folds one probe outcome into the runtime state. A success clears the
+/// counter and the recorded error; a target failure only records the error; a
+/// transport failure increments the counter and reports whether the runtime
+/// must reconnect (two consecutive failures).
+pub(in crate::ssh_tunnels) fn apply_probe_outcome(
+    state: &Arc<Mutex<RuntimeState>>,
+    consecutive_transport_failures: &mut u32,
+    outcome: Result<(), (FailureKind, String)>,
+) -> bool {
+    match outcome {
+        Ok(()) => {
+            *consecutive_transport_failures = 0;
+            if let Ok(mut guard) = state.lock() {
+                guard.last_error = None;
+            }
+            false
+        }
+        Err((FailureKind::Target, message)) => {
+            if let Ok(mut guard) = state.lock() {
+                guard.last_error = Some(message);
+            }
+            false
+        }
+        Err((_kind, message)) => {
+            *consecutive_transport_failures += 1;
+            if let Ok(mut guard) = state.lock() {
+                guard.last_error = Some(message);
+            }
+            *consecutive_transport_failures >= 2
+        }
+    }
+}
+
+/// A `TimedOut` or `WouldBlock` accept error is the periodic non-blocking tick
+/// of a bounded accept call; any other kind is a real listener error. The
+/// message text is deliberately not inspected.
+pub(in crate::ssh_tunnels) fn accept_error_is_periodic_tick(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    )
+}
+
+/// Result of one probe tick driven from a runtime accept loop.
+pub(in crate::ssh_tunnels) enum ProbeTickResult {
+    /// The tunnel stays connected.
+    Continue,
+    /// The transport failed twice consecutively; reconnect with this message.
+    Reconnect { message: String },
+}
+
+/// Runs one pooled-session probe tick: acquires a session, runs the two-step
+/// probe and folds the outcome into the state, releasing a live session back to
+/// the pool and dropping a session whose transport round trip failed. Emits
+/// `ssh-tunnels-updated` only when the recorded error changes.
+pub(in crate::ssh_tunnels) fn run_pool_probe_tick<T>(
+    app: &AppHandle,
+    session_pool: &SessionPool,
+    state: &Arc<Mutex<RuntimeState>>,
+    consecutive_transport_failures: &mut u32,
+    target: T,
+) -> ProbeTickResult
+where
+    T: FnOnce(&Session) -> Result<(), String>,
+{
+    let previous_error = state.lock().ok().and_then(|guard| guard.last_error.clone());
+
+    let outcome = match session_pool.acquire() {
+        Ok(session) => {
+            let outcome =
+                run_two_step_probe(|| transport_round_trip(&session), || target(&session));
+            if matches!(&outcome, Err((FailureKind::Transport, _))) {
+                let _ = session.disconnect(None, "Probe transport round trip failed", None);
+            } else {
+                session_pool.release(session);
+            }
+            outcome
+        }
+        Err(message) => Err((FailureKind::Transport, message)),
+    };
+
+    let reconnect_message = match &outcome {
+        Err((_kind, message)) => Some(message.clone()),
+        Ok(()) => None,
+    };
+    let should_reconnect = apply_probe_outcome(state, consecutive_transport_failures, outcome);
+
+    let current_error = state.lock().ok().and_then(|guard| guard.last_error.clone());
+    if previous_error != current_error {
+        emit_tunnels_updated(app);
+    }
+
+    if should_reconnect {
+        ProbeTickResult::Reconnect {
+            message: reconnect_message.unwrap_or_else(|| "SSH transport probe failed".to_string()),
+        }
+    } else {
+        ProbeTickResult::Continue
+    }
 }
 
 pub(in crate::ssh_tunnels) fn open_direct_tcpip_channel(

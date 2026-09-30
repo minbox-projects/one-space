@@ -23,8 +23,10 @@ pub(in crate::ssh_tunnels) const SSH_KEEPALIVE_INTERVAL_SECS: u32 = 30;
 pub(in crate::ssh_tunnels) const RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(2);
 pub(in crate::ssh_tunnels) const SUPERVISOR_RETRY_MAX_BASE_DELAY: Duration = Duration::from_secs(48);
 pub(in crate::ssh_tunnels) const SUPERVISOR_RETRY_JITTER_RATIO: f64 = 0.25;
-pub(in crate::ssh_tunnels) const RECONNECT_HEALTH_CHECK_INTERVAL: Duration =
-    Duration::from_secs(30);
+/// How often a connected runtime runs the round-trip liveness probe.
+pub(in crate::ssh_tunnels) const PROBE_INTERVAL: Duration = Duration::from_secs(10);
+/// Bounded budget for a single probe round trip.
+pub(in crate::ssh_tunnels) const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(in crate::ssh_tunnels) const RECONNECT_BACKOFF_STEP: Duration = Duration::from_millis(500);
 pub(in crate::ssh_tunnels) const RECONNECT_RESUME_DELAY: Duration = Duration::from_secs(15);
 pub(in crate::ssh_tunnels) const RECONNECT_RECONCILE_COOLDOWN: Duration = Duration::from_secs(20);

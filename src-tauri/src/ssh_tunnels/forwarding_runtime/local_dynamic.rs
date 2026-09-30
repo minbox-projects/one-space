@@ -1,10 +1,10 @@
 use crate::ssh_tunnels::{
     bind_local_listener, bridge_streams_dedicated_session, emit_tunnels_updated,
     ensure_local_port_available, open_authenticated_session_kinded, open_direct_tcpip_channel,
-    tunnel_summary, update_record_connection_success, update_record_error, update_runtime_state,
-    FailureKind, ResolvedSshConfig, RuntimeOutcome, RuntimeState, SessionPool, SshTunnelRecord,
-    SshTunnelStatus, StartupResult, StartupSuccess, LOCAL_BIND_HOST,
-    RECONNECT_HEALTH_CHECK_INTERVAL, SSH_IO_TIMEOUT,
+    probe_dynamic_via_temp_proxy, probe_local_target, run_pool_probe_tick, tunnel_summary,
+    update_record_connection_success, update_record_error, update_runtime_state, FailureKind,
+    ProbeTickResult, ResolvedSshConfig, RuntimeOutcome, RuntimeState, SessionPool, SshTunnelRecord,
+    SshTunnelStatus, StartupResult, StartupSuccess, LOCAL_BIND_HOST, PROBE_INTERVAL, SSH_IO_TIMEOUT,
 };
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -118,7 +118,8 @@ pub(in crate::ssh_tunnels) fn start_local_runtime(
         resolved_server_host: format!("{}:{}", resolved.host, resolved.port),
     }));
 
-    let mut last_health_check = Instant::now();
+    let mut last_probe = Instant::now();
+    let mut consecutive_transport_failures: u32 = 0;
 
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
@@ -161,10 +162,19 @@ pub(in crate::ssh_tunnels) fn start_local_runtime(
                 });
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if last_health_check.elapsed() >= RECONNECT_HEALTH_CHECK_INTERVAL {
-                    last_health_check = Instant::now();
-                    if let Err(e) = session_pool.health_check() {
-                        let message = format!("SSH session health check failed: {}", e);
+                if last_probe.elapsed() >= PROBE_INTERVAL {
+                    last_probe = Instant::now();
+                    let target_host_for_probe = target_host.clone();
+                    let probe = run_pool_probe_tick(
+                        &app,
+                        &session_pool,
+                        &state,
+                        &mut consecutive_transport_failures,
+                        move |session| {
+                            probe_local_target(session, &target_host_for_probe, target_port)
+                        },
+                    );
+                    if let ProbeTickResult::Reconnect { message } = probe {
                         return if stop.load(Ordering::Relaxed) {
                             RuntimeOutcome::Stopped
                         } else {
@@ -346,7 +356,20 @@ pub(in crate::ssh_tunnels) fn serve_dynamic_listener(
         resolved_server_host: format!("{}:{}", resolved.host, resolved.port),
     }));
 
-    let mut last_health_check = Instant::now();
+    let probe_target = match (
+        record
+            .forward
+            .dynamic_probe_host
+            .as_deref()
+            .filter(|value| !value.trim().is_empty()),
+        record.forward.dynamic_probe_port,
+    ) {
+        (Some(host), Some(port)) => Some((host.to_string(), port)),
+        _ => None,
+    };
+
+    let mut last_probe = Instant::now();
+    let mut consecutive_transport_failures: u32 = 0;
 
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
@@ -372,10 +395,25 @@ pub(in crate::ssh_tunnels) fn serve_dynamic_listener(
                 });
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if last_health_check.elapsed() >= RECONNECT_HEALTH_CHECK_INTERVAL {
-                    last_health_check = Instant::now();
-                    if let Err(e) = session_pool.health_check() {
-                        let message = format!("SSH session health check failed: {}", e);
+                if last_probe.elapsed() >= PROBE_INTERVAL {
+                    last_probe = Instant::now();
+                    let resolved_for_probe = resolved.clone();
+                    let probe_target_for_probe = probe_target.clone();
+                    let probe = run_pool_probe_tick(
+                        &app,
+                        &session_pool,
+                        &state,
+                        &mut consecutive_transport_failures,
+                        move |_session| match &probe_target_for_probe {
+                            Some((host, port)) => probe_dynamic_via_temp_proxy(
+                                resolved_for_probe.clone(),
+                                host.clone(),
+                                *port,
+                            ),
+                            None => Ok(()),
+                        },
+                    );
+                    if let ProbeTickResult::Reconnect { message } = probe {
                         return if stop.load(Ordering::Relaxed) {
                             RuntimeOutcome::Stopped
                         } else {
