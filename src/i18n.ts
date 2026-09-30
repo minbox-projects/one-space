@@ -1604,6 +1604,8 @@ const resources = {
       sshTunnelGroupDisconnectFailed: "Group disconnect failed",
       sshTunnelConnectedView: "Connected",
       sshTunnelConnectedViewAria: "View all active tunnels ({{count}})",
+      sshTunnelSwitchToGroup: "Switch to {{name}}",
+      sshTunnelViewAllInGroup: "View all",
       sshTunnelConnectedEmpty:
         "No active or connected SSH tunnels currently.",
       sshTunnelConnectedDisconnectAll: "Disconnect all active tunnels",
@@ -5241,6 +5243,8 @@ const resources = {
       sshTunnelGroupDisconnectFailed: "分组断开失败",
       sshTunnelConnectedView: "已连接",
       sshTunnelConnectedViewAria: "查看全部正在连接的隧道 ({{count}})",
+      sshTunnelSwitchToGroup: "切换到 {{name}} 分组",
+      sshTunnelViewAllInGroup: "查看全部",
       sshTunnelConnectedEmpty: "当前暂无正在连接或运行中的 SSH 隧道。",
       sshTunnelConnectedDisconnectAll: "断开全部运行中隧道",
       sshTunnelAllDisconnectSuccessTitle: "全部隧道已断开",

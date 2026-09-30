@@ -77,6 +77,7 @@ export function resolveToolboxNavigationAlias(
         tab: isHubTool ? "more-tools" : tool.id,
         ...(isHubTool ? { moreToolsSection: tool.id } : {}),
         ...(alias.jttParserTab ? { jttParserTab: alias.jttParserTab } : {}),
+        ...(alias.sshTunnelTab ? { sshTunnelTab: alias.sshTunnelTab } : {}),
       };
     }
   }

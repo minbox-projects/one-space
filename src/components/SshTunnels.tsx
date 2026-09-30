@@ -4,8 +4,10 @@ import { useTranslation } from "react-i18next";
 import {
   Activity,
   AlertCircle,
+  ChevronRight,
   Globe,
   KeyRound,
+  Layers,
   Link2,
   Loader2,
   MoreHorizontal,
@@ -62,7 +64,7 @@ import { getToolboxTool } from "@/toolbox/registry";
 import { useTauriEvent } from "@/toolbox/useTauriEvent";
 import { useVisibleInterval } from "@/toolbox/useVisibleInterval";
 import { ToolStatusBadge, type ToolStatusTone } from "./toolbox/ToolStatusBadge";
-import { ToolStatusDot, type ToolStatusDotTone } from "./toolbox/ToolStatusDot";
+import type { ToolStatusDotTone } from "./toolbox/ToolStatusDot";
 import { ToolEmptyState } from "./toolbox/ToolEmptyState";
 import {
   sshHostsList,
@@ -192,7 +194,15 @@ function mapRuntimeById(runtime: SshTunnelRuntimeView[]) {
 
 type TunnelBusyAction = "probe" | "connect" | "disconnect" | "delete";
 
-export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
+export function SshTunnels({
+  isVisible = true,
+  initialTab,
+  navigationNonce,
+}: {
+  isVisible?: boolean;
+  initialTab?: string;
+  navigationNonce?: number;
+}) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const { pushToast } = useToast();
@@ -209,6 +219,12 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const [hosts, setHosts] = useState<SshHost[]>([]);
   const [groups, setGroups] = useState<SshTunnelGroupView[]>([]);
   const [activeGroupId, setActiveGroupId] = useState(DEFAULT_TUNNEL_GROUP_ID);
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveGroupId(initialTab);
+    }
+  }, [initialTab, navigationNonce]);
   const [tunnels, setTunnels] = useState<SshTunnelView[]>([]);
   const [runtimeMap, setRuntimeMap] = useState<Record<string, SshTunnelRuntimeView>>({});
   const [loading, setLoading] = useState(true);
@@ -1646,18 +1662,14 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
               className={`rounded-full px-1.5 py-0.2 text-[11px] font-semibold transition-colors ${
                 isConnectedView
                   ? "bg-white/20 text-white"
-                  : "bg-muted text-muted-foreground group-hover:bg-muted/80 group-hover:text-foreground"
+                  : connectedTunnels.length > 0
+                    ? "bg-emerald-50 text-emerald-700 border border-emerald-200/60"
+                    : "bg-muted text-muted-foreground group-hover:bg-muted/80 group-hover:text-foreground"
               }`}
+              data-testid="connected-view-count"
             >
               {connectedTunnels.length}
             </span>
-            {connectedViewTone && (
-              <ToolStatusDot
-                tone={connectedViewTone}
-                className="right-0.5 top-0.5"
-                testId="connected-view-status-dot"
-              />
-            )}
           </button>
           <div
             className="mx-1 h-4 w-px bg-neutral-300 dark:bg-neutral-600"
@@ -1675,18 +1687,47 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                 type="button"
                 onClick={() => setActiveGroupId(group.id)}
                 title={statusInfo?.tooltip || undefined}
-                className={`relative px-3 py-1.5 rounded-md text-sm transition-colors ${
-                  isActive ? "bg-black text-white" : "bg-white text-black"
+                className={`group relative inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition-colors ${
+                  isActive ? "bg-black text-white" : "bg-white text-black hover:bg-neutral-50"
                 }`}
                 data-testid={`ssh-tunnel-group-tab-${group.id}`}
               >
                 <span>{label}</span>
-                {statusInfo?.tone && (
-                  <ToolStatusDot
-                    tone={statusInfo.tone}
-                    className="right-0.5 top-0.5"
-                    testId={`group-tab-dot-${group.id}`}
-                  />
+                {statusInfo && statusInfo.connectedCount > 0 && (
+                  <span
+                    className={`rounded-full px-1.5 py-0.2 text-[11px] font-semibold transition-colors ${
+                      isActive
+                        ? "bg-white/20 text-white"
+                        : "bg-emerald-50 text-emerald-700 border border-emerald-200/60"
+                    }`}
+                    data-testid={`group-tab-count-${group.id}`}
+                  >
+                    {statusInfo.connectedCount}
+                  </span>
+                )}
+                {statusInfo && statusInfo.connectedCount === 0 && statusInfo.errorCount > 0 && (
+                  <span
+                    className={`rounded-full px-1.5 py-0.2 text-[11px] font-semibold transition-colors ${
+                      isActive
+                        ? "bg-white/20 text-white"
+                        : "bg-destructive/10 text-destructive border border-destructive/20"
+                    }`}
+                    data-testid={`group-tab-count-${group.id}`}
+                  >
+                    {statusInfo.errorCount}
+                  </span>
+                )}
+                {statusInfo && statusInfo.connectedCount === 0 && statusInfo.errorCount === 0 && statusInfo.connectingCount > 0 && (
+                  <span
+                    className={`rounded-full px-1.5 py-0.2 text-[11px] font-semibold transition-colors ${
+                      isActive
+                        ? "bg-white/20 text-white"
+                        : "bg-amber-50 text-amber-700 border border-amber-200/60"
+                    }`}
+                    data-testid={`group-tab-count-${group.id}`}
+                  >
+                    {statusInfo.connectingCount}
+                  </span>
                 )}
               </button>
             );
@@ -1829,17 +1870,49 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                   <section
                     key={group.id}
                     data-testid={`ssh-tunnel-connected-group-${group.id}`}
-                    className="space-y-3"
+                    className="rounded-2xl border bg-muted/20 p-4 transition-colors dark:bg-muted/10"
                   >
-                    <div className="flex items-center gap-2 px-1">
-                      <h3 className="text-sm font-semibold text-foreground">
-                        {groupLabel}
-                      </h3>
-                      <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                        {groupTunnels.length}
-                      </span>
+                    <div className="mb-3.5 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5">
+                        <div className="flex h-7 w-7 items-center justify-center rounded-lg border bg-background shadow-xs">
+                          <Layers className="h-3.5 w-3.5 text-muted-foreground" />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setActiveGroupId(group.id)}
+                          className="group/title inline-flex items-center gap-1.5 text-left text-sm font-semibold tracking-tight text-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          title={t("sshTunnelSwitchToGroup", {
+                            name: groupLabel,
+                            defaultValue: `Switch to ${groupLabel}`,
+                          })}
+                        >
+                          <span>{groupLabel}</span>
+                        </button>
+                        <span
+                          className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200/60 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:border-emerald-800/60 dark:bg-emerald-950/40 dark:text-emerald-300"
+                          title={t("sshTunnelGroupStatusTooltipConnected", {
+                            connected: groupTunnels.length,
+                            defaultValue: `${groupTunnels.length} connected`,
+                          })}
+                        >
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                          <span>{groupTunnels.length}</span>
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setActiveGroupId(group.id)}
+                        className="group/btn inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-background/80 hover:text-foreground"
+                        title={t("sshTunnelSwitchToGroup", {
+                          name: groupLabel,
+                          defaultValue: `Switch to ${groupLabel}`,
+                        })}
+                      >
+                        <span>{t("sshTunnelViewAllInGroup", "View all")}</span>
+                        <ChevronRight className="h-3.5 w-3.5 transition-transform group-hover/btn:translate-x-0.5" />
+                      </button>
                     </div>
-                    <div className="space-y-4">
+                    <div className="space-y-3">
                       {groupTunnels.map(renderTunnelCard)}
                     </div>
                   </section>

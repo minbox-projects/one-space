@@ -29,6 +29,8 @@ type MoreToolsHubProps = {
   onBack: () => void;
   backToLauncher?: boolean;
   jttParserTab?: JttParserTab;
+  sshTunnelTab?: string;
+  sshTunnelNavigationNonce?: number;
   isVisible?: boolean;
 };
 
@@ -36,7 +38,8 @@ const HUB_TOOLS = listToolboxTools("hub");
 
 type ActiveToolComponent = ComponentType<{
   isVisible?: boolean;
-  initialTab?: JttParserTab;
+  initialTab?: string;
+  navigationNonce?: number;
 }>;
 
 export function MoreToolsHub({
@@ -45,6 +48,8 @@ export function MoreToolsHub({
   onBack,
   backToLauncher = false,
   jttParserTab,
+  sshTunnelTab,
+  sshTunnelNavigationNonce,
   isVisible = true,
 }: MoreToolsHubProps) {
   const { i18n, t } = useTranslation();
@@ -154,6 +159,12 @@ export function MoreToolsHub({
               isVisible={isVisible && activeTool === activeDescriptor.id}
               {...(activeDescriptor.id === "jtt-data-parser"
                 ? { initialTab: jttParserTab }
+                : {})}
+              {...(activeDescriptor.id === "ssh-tunnels"
+                ? {
+                    initialTab: sshTunnelTab,
+                    navigationNonce: sshTunnelNavigationNonce,
+                  }
                 : {})}
             />
           ) : null}

@@ -19,6 +19,7 @@ export type ResolvedNavigationTarget = {
   tab: string;
   moreToolsSection?: MoreToolsSection;
   jttParserTab?: JttParserTab;
+  sshTunnelTab?: string;
 };
 
 export function resolveNavigationTarget(target: string): ResolvedNavigationTarget {
@@ -30,6 +31,9 @@ export function resolveNavigationTarget(target: string): ResolvedNavigationTarge
         moreToolsSection: toolboxTarget.moreToolsSection as MoreToolsSection,
         ...(toolboxTarget.jttParserTab
           ? { jttParserTab: toolboxTarget.jttParserTab }
+          : {}),
+        ...(toolboxTarget.sshTunnelTab
+          ? { sshTunnelTab: toolboxTarget.sshTunnelTab }
           : {}),
       };
     }

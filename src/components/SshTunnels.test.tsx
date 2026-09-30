@@ -375,15 +375,49 @@ describe("SshTunnels", () => {
     renderTunnels(<SshTunnels isVisible />);
     await settle();
 
-    const defaultDot = screen.getByTestId("group-tab-dot-default");
-    const devDot = screen.getByTestId("group-tab-dot-group-dev");
-    expect(defaultDot).toBeInTheDocument();
-    expect(devDot).toBeInTheDocument();
+    const defaultCount = screen.getByTestId("group-tab-count-default");
+    const devCount = screen.getByTestId("group-tab-count-group-dev");
+    expect(defaultCount).toHaveTextContent("1");
+    expect(devCount).toHaveTextContent("1");
 
-    const defaultCore = screen.getByTestId("group-tab-dot-default-core");
-    const devCore = screen.getByTestId("group-tab-dot-group-dev-core");
-    expect(defaultCore.className).toContain("bg-emerald-500");
-    expect(devCore.className).toContain("bg-destructive");
+    // 初始状态下：默认分组被选中（黑底），其已连接徽标自适应切换为白色文字与半透明白背景（text-white bg-white/20）
+    expect(defaultCount.className).toContain("text-white");
+    expect(defaultCount.className).toContain("bg-white/20");
+    // dev 分组未选中（白底），其错误徽标展示为红色（text-destructive）
+    expect(devCount.className).toContain("text-destructive");
+
+    // 点击切换选中 dev 分组后：
+    const devTab = screen.getByTestId("ssh-tunnel-group-tab-group-dev");
+    fireEvent.click(devTab);
+    await settle();
+    // dev 分组变为选中（黑底），其错误徽标切换为白色文字与半透明白背景
+    expect(devCount.className).toContain("text-white");
+    expect(devCount.className).toContain("bg-white/20");
+    // 默认分组变为未选中（白底），其已连接徽标切换为绿色（text-emerald-700 bg-emerald-50）
+    expect(defaultCount.className).toContain("text-emerald-700");
+    expect(defaultCount.className).toContain("bg-emerald-50");
+  });
+
+  it("响应 initialTab 属性自动切换并选中「已连接」全局视图", async () => {
+    mockSnapshotInvokes(connectedSnapshot);
+    const { rerender } = renderTunnels(<SshTunnels isVisible initialTab="__connected__" />);
+    await settle();
+
+    // 已连接全局视图处于激活态（黑底白字）
+    const connectedBtn = screen.getByTestId("ssh-tunnel-connected-view-tab");
+    expect(connectedBtn.className).toContain("bg-black text-white");
+
+    // 切换到默认分组
+    const defaultTab = screen.getByTestId("ssh-tunnel-group-tab-default");
+    fireEvent.click(defaultTab);
+    await settle();
+    expect(defaultTab.className).toContain("bg-black text-white");
+    expect(connectedBtn.className).not.toContain("bg-black text-white");
+
+    // 再次通过 initialTab 与 navigationNonce 触发切换
+    rerender(<SshTunnels isVisible initialTab="__connected__" navigationNonce={2} />);
+    await settle();
+    expect(connectedBtn.className).toContain("bg-black text-white");
   });
 
   it("全局「已连接」胶囊按钮展示跨分组活跃隧道，并在无活跃隧道时展示专属空状态", async () => {
@@ -679,5 +713,13 @@ describe("SshTunnels", () => {
     // 验证没有任何活跃连接的分组（default 和 emptyGroup）不渲染分组区块
     expect(screen.queryByTestId("ssh-tunnel-connected-group-default")).not.toBeInTheDocument();
     expect(screen.queryByTestId("ssh-tunnel-connected-group-group-empty")).not.toBeInTheDocument();
+
+    // 验证新优化的分组头部包含快捷跳转操作并支持点击切换到对应分组
+    const viewAllButtons = within(stgSection).getAllByRole("button", { name: /View all|查看全部/i });
+    expect(viewAllButtons.length).toBeGreaterThan(0);
+    fireEvent.click(viewAllButtons[0]);
+    await settle();
+    const stgTab = screen.getByTestId("ssh-tunnel-group-tab-group-staging");
+    expect(stgTab.className).toContain("bg-black text-white");
   });
 });

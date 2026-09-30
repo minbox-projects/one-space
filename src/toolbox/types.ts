@@ -13,6 +13,7 @@ export type JttParserTabId = "jt808" | "jt809" | "jt1078" | "hex";
 export type ToolboxNavAlias = {
   target: string;
   jttParserTab?: JttParserTabId;
+  sshTunnelTab?: string;
 };
 
 export type ToolboxBilingualText = {
@@ -40,4 +41,5 @@ export type ResolvedToolboxTarget = {
   tab: string;
   moreToolsSection?: string;
   jttParserTab?: JttParserTabId;
+  sshTunnelTab?: string;
 };

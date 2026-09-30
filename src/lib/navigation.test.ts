@@ -50,6 +50,14 @@ describe("registry-derived navigation aliases", () => {
     });
   });
 
+  it("resolves ssh-tunnels:connected to its more-tools detail with sshTunnelTab", () => {
+    expect(resolveNavigationTarget("ssh-tunnels:connected")).toEqual({
+      tab: "more-tools",
+      moreToolsSection: "ssh-tunnels",
+      sshTunnelTab: "__connected__",
+    });
+  });
+
   it("carries the JT/T parser tab payload from the registry alias", async () => {
     const registry = await loadRegistry();
     for (const alias of ["808", "809", "1078", "hex"]) {

@@ -10,8 +10,17 @@ vi.mock("@/components/Launcher", () => ({
   Launcher: () => <div data-testid="mock-launcher" />,
 }));
 vi.mock("@/components/MoreToolsHub", () => ({
-  MoreToolsHub: ({ activeTool }: { activeTool?: string | null }) => (
-    <div data-testid={`mock-more-tools-${activeTool ?? "hub"}`} />
+  MoreToolsHub: ({
+    activeTool,
+    sshTunnelTab,
+  }: {
+    activeTool?: string | null;
+    sshTunnelTab?: string;
+  }) => (
+    <div
+      data-testid={`mock-more-tools-${activeTool ?? "hub"}`}
+      data-ssh-tunnel-tab={sshTunnelTab}
+    />
   ),
 }));
 vi.mock("@/components/AiSessions", () => ({
@@ -257,7 +266,9 @@ describe("App 窗口顶部右侧各工具状态图标", () => {
 
       const btn = await screen.findByTestId("header-ssh-tunnels-status");
       await user.click(btn);
-      expect(await screen.findByTestId("mock-more-tools-ssh-tunnels")).toBeInTheDocument();
+      const detail = await screen.findByTestId("mock-more-tools-ssh-tunnels");
+      expect(detail).toBeInTheDocument();
+      expect(detail).toHaveAttribute("data-ssh-tunnel-tab", "__connected__");
     });
   });
 

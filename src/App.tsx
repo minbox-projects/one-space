@@ -332,6 +332,8 @@ function App() {
   const [moreToolsSection, setMoreToolsSection] =
     useState<MoreToolsSection | null>(null);
   const [jttParserTab, setJttParserTab] = useState<JttParserTab | null>(null);
+  const [sshTunnelTab, setSshTunnelTab] = useState<string | null>(null);
+  const [sshTunnelNavigationNonce, setSshTunnelNavigationNonce] = useState(0);
   const [moreToolsReturnTab, setMoreToolsReturnTab] = useState<
     "launcher" | "more-tools"
   >("more-tools");
@@ -457,6 +459,10 @@ function App() {
       setMoreToolsSection(null);
     }
     setJttParserTab(resolved.jttParserTab ?? null);
+    setSshTunnelTab(resolved.sshTunnelTab ?? null);
+    if (resolved.sshTunnelTab) {
+      setSshTunnelNavigationNonce((prev) => prev + 1);
+    }
 
     if (resolved.tab === "settings") {
       const currentTab = activeTabRef.current;
@@ -2054,6 +2060,8 @@ function App() {
               onBack={handleMoreToolsBack}
               backToLauncher={moreToolsReturnTab === "launcher"}
               jttParserTab={jttParserTab ?? undefined}
+              sshTunnelTab={sshTunnelTab ?? undefined}
+              sshTunnelNavigationNonce={sshTunnelNavigationNonce}
               isVisible={activeTab === "more-tools"}
             />
           </div>
@@ -2508,7 +2516,7 @@ function App() {
               )}
               {sshTunnelSummary && sshTunnelSummary.connectedCount > 0 && (
                 <button
-                  onClick={() => navigateToTab("ssh-tunnels")}
+                  onClick={() => navigateToTab("ssh-tunnels:connected")}
                   className={`relative p-2.5 rounded-md transition-colors ${
                     sshTunnelSummary.hasErrors
                       ? "text-destructive hover:bg-destructive/10 dark:text-destructive"
