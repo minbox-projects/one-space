@@ -1211,16 +1211,16 @@ fn clear_ttl_expired_key_runtime_state(
 
 /// Classify a pre-first-byte HTTP failure as key-scoped: a 401 always marks the
 /// key authentication-failed, a 403 marks it only when its sanitized text names
-/// a credential problem, and a quota-classified 429 marks it quota-exhausted.
-/// Every other status is not key-scoped, so a non-credential 403 falls through
-/// to the mapping-scoped immediate disable.
+/// a credential problem, and a quota-classified 400, 402 or 429 marks it
+/// quota-exhausted. Every other status is not key-scoped, so a non-credential
+/// 403 falls through to the mapping-scoped immediate disable.
 fn key_failure_kind(status: u16, error_message: Option<&str>) -> Option<KeyFailureKind> {
     match status {
         401 => Some(KeyFailureKind::Authentication),
         403 if is_authentication_error_message(error_message) => {
             Some(KeyFailureKind::Authentication)
         }
-        429 if is_quota_exceeded_message(error_message) => Some(KeyFailureKind::Quota),
+        400 | 402 | 429 if is_quota_exceeded_message(error_message) => Some(KeyFailureKind::Quota),
         _ => None,
     }
 }
