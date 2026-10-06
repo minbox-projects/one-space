@@ -731,8 +731,11 @@ pub(in crate::ai_gateway) fn is_authentication_error_message(message: Option<&st
 
 /// Classify an upstream failure with the sanitized error text available.
 ///
-/// A 429 whose message matches [`is_quota_exceeded_message`] is `Retryable`
-/// (counts toward mapping health); any other 429 stays `Transient`.
+/// A quota-message classifier hit on HTTP 400, 402 or 429 is `Retryable`
+/// (counts toward mapping health); any other 429 stays `Transient` and any
+/// other 400/402 keeps its `ReturnToClient` class. Such a matching quota
+/// message always yields a key-scoped mark in `runtime_http::key_failure_kind`,
+/// so no other path can observe the upgraded class as a plain retry.
 /// Everything else delegates to [`classify_failure`].
 pub(in crate::ai_gateway) fn classify_failure_with_message(
     status: u16,
@@ -740,7 +743,10 @@ pub(in crate::ai_gateway) fn classify_failure_with_message(
     body_parsed: bool,
     error_message: Option<&str>,
 ) -> FailureClass {
-    if status == 429 && !network_error && is_quota_exceeded_message(error_message) {
+    if matches!(status, 400 | 402 | 429)
+        && !network_error
+        && is_quota_exceeded_message(error_message)
+    {
         return FailureClass::Retryable;
     }
     classify_failure(status, network_error, body_parsed)

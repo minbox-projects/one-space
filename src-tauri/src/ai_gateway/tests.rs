@@ -556,6 +556,68 @@ fn quota_429_counts_toward_health_but_rate_limit_429_does_not() {
     assert!(quota_provider.mappings[0].auto_disabled);
 }
 
+/// AC-005 / REQ-002: a quota-message classifier hit on HTTP 400 or 402 is
+/// `Retryable` exactly as the established quota 429 is, so the attempt takes
+/// the key-scoped quota path instead of returning the upstream error. The
+/// CommandCode `insufficient credits` 400 is the production shape.
+#[test]
+fn credit_exhaustion_400_and_402_classify_retryable_with_quota_message() {
+    let credits =
+        Some("You have insufficient credits to use this model. Please add credits.");
+    assert!(
+        is_quota_exceeded_message(credits),
+        "the `insufficient credits` fixture must be a quota signal"
+    );
+    assert_eq!(
+        classify_failure_with_message(400, false, true, credits),
+        FailureClass::Retryable
+    );
+    let monthly = Some("You've reached your monthly usage limit. Upgrade plan to continue.");
+    assert!(
+        is_quota_exceeded_message(monthly),
+        "the monthly-limit fixture must be a quota signal"
+    );
+    assert_eq!(
+        classify_failure_with_message(402, false, true, monthly),
+        FailureClass::Retryable
+    );
+}
+
+/// AC-004 / REQ-002: the same statuses without quota text keep their
+/// return-to-client class, so the credit-exhaustion exception never widens the
+/// boundary for ordinary client errors.
+#[test]
+fn non_quota_400_and_402_stay_return_to_client() {
+    let invalid = Some("invalid request");
+    assert!(!is_quota_exceeded_message(invalid));
+    assert_eq!(
+        classify_failure_with_message(400, false, true, invalid),
+        FailureClass::ReturnToClient
+    );
+    assert_eq!(
+        classify_failure_with_message(402, false, true, invalid),
+        FailureClass::ReturnToClient
+    );
+}
+
+/// AC-005 accepted boundary / REQ-002: the shared quota classifier is
+/// keyword-based, so a 400 whose text carries `insufficient permissions` (the
+/// `insufficient` keyword but not account exhaustion) follows the key-mark
+/// path. Pinned explicitly so the deliberately accepted breadth cannot move
+/// silently.
+#[test]
+fn quota_keyword_breadth_on_400_is_retryable() {
+    let permissions = Some("insufficient permissions for this model");
+    assert!(
+        is_quota_exceeded_message(permissions),
+        "the shared classifier treats `insufficient` as a quota signal"
+    );
+    assert_eq!(
+        classify_failure_with_message(400, false, true, permissions),
+        FailureClass::Retryable
+    );
+}
+
 #[test]
 fn auto_disable_threshold_immediate_disable_and_success_reset() {
     // Full failure-class matrix at the ROW level (REQ-002 / AC-002).
@@ -5504,6 +5566,158 @@ async fn end_to_end_quota_429_marks_the_key_while_rate_limit_429_does_not() {
             );
         }
     }
+}
+
+/// AC-004 / REQ-002: a 400 without quota text keeps the existing
+/// return-to-client behavior. The upstream body reaches the client unchanged,
+/// no key is marked, and mapping health is untouched.
+#[tokio::test]
+async fn non_quota_400_is_returned_to_client_without_marking_a_key() {
+    let _home = isolated_temp_home("credit-400-non-quota-returned");
+    let (bad_url, bad_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(400, json!({"error": {"message": "invalid request"}}))
+    })
+    .await;
+
+    let mut config = config_with_key(0);
+    let mut a = upstream_provider("a", "Provider A", &bad_url, "sk-a", Some("remote-model"));
+    a.mappings = vec![mapping("local-model", "remote-model", None)];
+    config.providers.push(a.clone());
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+    // The marking path reads and writes the persisted configuration, so the
+    // request inputs must exist on disk first (mirroring production).
+    super::storage::write_config(&config).expect("seed relay config");
+
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &[a.clone()],
+        "/v1/chat/completions",
+        &body,
+        Some("local-model"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 400, "a non-quota 400 must pass through");
+    assert!(
+        String::from_utf8_lossy(&response.body).contains("invalid request"),
+        "the upstream body must reach the client unchanged"
+    );
+    assert_eq!(bad_log.lock().unwrap().len(), 1);
+    assert_eq!(attempts.len(), 1, "ReturnToClient must not switch candidates");
+    assert_eq!(attempts[0].status, 400);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+
+    let key_a = on_disk_key_entry("a", "key-default").expect("provider a key must persist");
+    assert_eq!(
+        key_a["auto_marked"], false,
+        "a non-quota 400 must not mark a key: {key_a}"
+    );
+    assert_eq!(key_a["failure_kind"], Value::Null);
+
+    let stored = super::storage::read_config().expect("read persisted state");
+    let provider = stored.providers.iter().find(|p| p.id == "a").unwrap();
+    assert!(
+        !provider.mappings[0].auto_disabled,
+        "a non-quota 400 must not disable the mapping"
+    );
+    assert_eq!(provider.mappings[0].consecutive_failures, 0);
+    assert_eq!(provider.mappings[0].last_error_at, None);
+}
+
+/// AC-001 / REQ-001: a credit-exhaustion 400 on a single-key provider marks the
+/// attempted key quota-exhausted, persists the mark (kind, time, sanitized
+/// reason), continues the same request on the healthy candidate, and never
+/// returns the upstream 400 to the client. Mapping health stays untouched.
+#[tokio::test]
+async fn credit_exhaustion_400_marks_the_key_and_falls_back_to_the_next_candidate() {
+    const QUOTA_MESSAGE: &str =
+        "You have insufficient credits to use this model. Please add credits.";
+    let _home = isolated_temp_home("credit-400-fallback");
+    let (limited_url, limited_log) = spawn_mock_upstream(move |_| {
+        MockReply::Json(400, json!({"error": {"message": QUOTA_MESSAGE}}))
+    })
+    .await;
+    let (healthy_url, _) =
+        spawn_json_sequence_mock(vec![(200, json!({"id": "healthy-fallback"}))]).await;
+
+    let mut config = GatewayConfig::default();
+    let mut limited =
+        upstream_provider("a", "Limited", &limited_url, "sk", Some("remote-model"));
+    limited.mappings = vec![mapping("local-model", "remote-model", None)];
+    let mut healthy =
+        upstream_provider("b", "Healthy", &healthy_url, "sk", Some("remote-model"));
+    healthy.mappings = vec![mapping("other-model", "remote-model", None)];
+    config.providers = vec![limited.clone(), healthy.clone()];
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+    super::storage::write_config(&config).expect("seed relay config");
+
+    let live = super::storage::read_config().expect("read persisted state");
+    let candidates: Vec<GatewayUpstreamProvider> = candidate_providers(
+        &live.providers,
+        Some("local-model"),
+        super::UpstreamProtocol::ChatCompletions,
+    )
+    .into_iter()
+    .cloned()
+    .collect();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &candidates,
+        "/v1/chat/completions",
+        &body,
+        Some("local-model"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 200, "the healthy candidate must serve");
+    assert!(
+        String::from_utf8_lossy(&response.body).contains("healthy-fallback"),
+        "the client must receive the healthy body, never the upstream 400"
+    );
+    assert_eq!(
+        limited_log.lock().unwrap().len(),
+        1,
+        "the exhausted key is attempted once"
+    );
+
+    let limited_key =
+        on_disk_key_entry("a", "key-default").expect("provider a key must persist");
+    assert_eq!(
+        limited_key["auto_marked"], true,
+        "the credit-exhaustion key must be marked: {limited_key}"
+    );
+    assert_eq!(limited_key["failure_kind"], "quota");
+    assert!(
+        limited_key["marked_at"].as_u64().is_some(),
+        "the marking time must be recorded: {limited_key}"
+    );
+    assert!(
+        limited_key["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("insufficient credits"),
+        "the sanitized reason must keep the upstream message: {limited_key}"
+    );
+
+    let live = super::storage::read_config().expect("read persisted state");
+    let stored = live.providers.iter().find(|p| p.id == "a").unwrap();
+    assert!(
+        !stored.mappings[0].auto_disabled,
+        "a key-scoped quota 400 must not auto-disable the mapping row"
+    );
+    assert_eq!(
+        stored.mappings[0].consecutive_failures, 0,
+        "a key-scoped quota 400 must not register mapping health"
+    );
+    assert_eq!(stored.mappings[0].last_error_at, None);
 }
 
 #[tokio::test]
@@ -27429,6 +27643,173 @@ async fn quota_429_rotates_without_leaking_key_value() {
     );
 }
 
+/// AC-002 / REQ-001: a credit-exhaustion 400 on the first of two enabled keys
+/// rotates the same request to the second key, which serves. Only the first key
+/// carries the persisted quota mark.
+#[tokio::test]
+async fn credit_exhaustion_400_rotates_to_the_second_key() {
+    const QUOTA_MESSAGE: &str =
+        "You have insufficient credits to use this model. Please add credits.";
+    let _home = isolated_temp_home("key-pool-credit-400-rotation");
+    let (upstream_url, log) = spawn_mock_upstream(move |captured| {
+        match auth_header_of(captured) {
+            Some("Bearer sk-credit-a") => {
+                MockReply::Json(400, json!({"error": {"message": QUOTA_MESSAGE}}))
+            }
+            Some("Bearer sk-credit-b") => MockReply::Json(200, json!({"id": "served-by-b"})),
+            other => MockReply::Json(
+                500,
+                json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+            ),
+        }
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-credit-a", true),
+                pool_key("key-b", "B", "sk-credit-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(
+        response.status, 200,
+        "the second key must serve after the credit-exhaustion 400"
+    );
+    assert!(String::from_utf8_lossy(&response.body).contains("served-by-b"));
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(captured.len(), 2, "{}", captured_summary(&captured));
+    assert_eq!(auth_header_of(&captured[0]), Some("Bearer sk-credit-a"));
+    assert_eq!(auth_header_of(&captured[1]), Some("Bearer sk-credit-b"));
+
+    let key_a = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+    assert_eq!(
+        key_a["auto_marked"], true,
+        "only the first key must be marked: {key_a}"
+    );
+    assert_eq!(key_a["failure_kind"], "quota");
+    assert!(key_a["marked_at"].as_u64().is_some());
+    let key_b = on_disk_key_entry("p1", "key-b").expect("key-b must stay persisted");
+    assert_eq!(
+        key_b["auto_marked"], false,
+        "the second key must stay unmarked: {key_b}"
+    );
+    assert_eq!(key_b["failure_kind"], Value::Null);
+}
+
+/// AC-003 / REQ-001: a provider whose only key is credit-exhausted is skipped.
+/// The first request never returns the upstream 400, persists the quota mark
+/// and exhausts the provider; every later request reports the excluded-key
+/// summary without contacting the upstream again.
+#[tokio::test]
+async fn all_keys_credit_exhausted_provider_is_skipped_and_reported() {
+    const QUOTA_MESSAGE: &str =
+        "You have insufficient credits to use this model. Please add credits.";
+    let _home = isolated_temp_home("credit-400-all-exhausted");
+    let (upstream_url, log) = spawn_mock_upstream(move |_| {
+        MockReply::Json(400, json!({"error": {"message": QUOTA_MESSAGE}}))
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider Alpha",
+            &upstream_url,
+            vec![pool_key("key-a", "A", "sk-credit-a", true)],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let body = serde_json::to_vec(&json!({"model": "local-a"})).unwrap();
+
+    // First request: the 400 must not reach the client; the only key is marked
+    // and the now-unusable provider is exhausted.
+    let mut attempts = Vec::new();
+    let first = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+    assert_ne!(
+        first.status, 400,
+        "the upstream credit-exhaustion 400 must not be returned to the client"
+    );
+    assert_eq!(
+        first.status, 502,
+        "an exhausted single candidate yields the all-unavailable 502"
+    );
+    assert_eq!(log.lock().unwrap().len(), 1, "the only key is attempted once");
+
+    let key_a = on_disk_key_entry("p1", "key-a").expect("key-a must persist");
+    assert_eq!(
+        key_a["auto_marked"], true,
+        "the credit-exhaustion key must be marked: {key_a}"
+    );
+    assert_eq!(key_a["failure_kind"], "quota");
+    assert!(key_a["marked_at"].as_u64().is_some());
+    assert!(key_a["reason"]
+        .as_str()
+        .unwrap_or("")
+        .contains("insufficient credits"));
+
+    // Second request: the marked provider is skipped entirely and the summary
+    // names the quota-exhausted key.
+    let mut attempts = Vec::new();
+    let second = super::runtime_http::attempt_non_streaming(
+        &live_candidates("local-a"),
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+    assert_eq!(second.status, 502);
+    assert!(
+        String::from_utf8_lossy(&second.body)
+            .contains("no usable upstream key (1 quota exhausted)"),
+        "the skipped provider must report its quota-exhausted key: {}",
+        String::from_utf8_lossy(&second.body)
+    );
+    assert_eq!(
+        log.lock().unwrap().len(),
+        1,
+        "the skipped provider must not be attempted again"
+    );
+}
+
 /// AC-014 / REQ-005: 5xx, network, 404 and other returned 4xx failures never
 /// rotate a key and never mark one. The retryable classes (5xx, network) follow
 /// the single-candidate bounded retry schedule on the first key, while 404 is a
@@ -28742,6 +29123,117 @@ async fn streaming_quota_429_rotates_to_next_key_and_marks_first() {
         key_a["marked_at"].as_u64().is_some(),
         "the marking time must be recorded: {key_a}"
     );
+}
+
+/// AC-005 streaming / REQ-001: a pre-first-byte credit-exhaustion 400 on the
+/// first streaming key marks it and rotates the same request to the next usable
+/// key, which serves; the upstream 400 is never written to the client.
+#[tokio::test]
+async fn streaming_credit_exhaustion_400_rotates_to_next_key_and_marks_first() {
+    const QUOTA_MESSAGE: &str =
+        "You have insufficient credits to use this model. Please add credits.";
+    let _home = isolated_temp_home("key-pool-streaming-credit-400-rotation");
+    let sse = "data: {\"id\":\"served-by-b\"}\n\ndata: [DONE]\n\n".to_string();
+    let (upstream_url, log) = spawn_mock_upstream(move |captured| {
+        match auth_header_of(captured) {
+            Some("Bearer sk-stream-credit-a") => {
+                MockReply::Json(400, json!({"error": {"message": QUOTA_MESSAGE}}))
+            }
+            Some("Bearer sk-stream-credit-b") => MockReply::Stream(sse.clone()),
+            other => MockReply::Json(
+                500,
+                json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+            ),
+        }
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-stream-credit-a", true),
+                pool_key("key-b", "B", "sk-stream-credit-b", true),
+            ],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let ordered = live_candidates("local-a");
+    let body = serde_json::to_vec(&json!({"model": "local-a", "stream": true})).unwrap();
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts = Vec::new();
+    let capture = super::runtime_http::attempt_streaming(
+        &mut server,
+        &ordered,
+        "/v1/chat/completions",
+        &body,
+        Some("local-a"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await
+    .expect("streaming attempt");
+    drop(server);
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.expect("read relay stream");
+    let text = String::from_utf8_lossy(&out).into_owned();
+
+    assert_eq!(capture.status, 200, "B must serve the rotated stream: {text}");
+    assert!(
+        text.contains("served-by-b"),
+        "the served stream must reach the client: {text}"
+    );
+    assert!(
+        text.contains("data: [DONE]"),
+        "the served stream must terminate normally: {text}"
+    );
+    assert!(
+        !text.contains("insufficient credits"),
+        "the upstream credit-exhaustion 400 must never be written to the client: {text}"
+    );
+
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        2,
+        "exactly two upstream attempts (A then B): {}",
+        captured_summary(&captured)
+    );
+    assert_eq!(
+        auth_header_of(&captured[0]),
+        Some("Bearer sk-stream-credit-a"),
+        "the first usable key must be attempted first"
+    );
+    assert_eq!(
+        auth_header_of(&captured[1]),
+        Some("Bearer sk-stream-credit-b"),
+        "the same streaming request must continue on the next usable key"
+    );
+
+    assert_eq!(attempts.len(), 2, "one failed attempt plus one terminal success row");
+    assert_eq!(attempts[0].status, 400);
+    assert_eq!(attempts[0].result, UsageResult::Failure);
+    assert_eq!(attempts[1].status, 200);
+    assert_eq!(attempts[1].result, UsageResult::Success);
+
+    let key_a = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+    assert_eq!(
+        key_a["auto_marked"], true,
+        "the exhausted key must be marked: {key_a}"
+    );
+    assert_eq!(key_a["failure_kind"], "quota");
+    assert!(
+        key_a["marked_at"].as_u64().is_some(),
+        "the marking time must be recorded: {key_a}"
+    );
+    let key_b = on_disk_key_entry("p1", "key-b").expect("key-b must stay persisted");
+    assert_eq!(key_b["auto_marked"], false, "the second key must stay unmarked: {key_b}");
 }
 
 /// AC-004 boundary / REQ-004: once the first streaming byte is written a
