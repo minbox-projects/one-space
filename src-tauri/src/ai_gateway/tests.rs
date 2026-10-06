@@ -5720,6 +5720,99 @@ async fn credit_exhaustion_400_marks_the_key_and_falls_back_to_the_next_candidat
     assert_eq!(stored.mappings[0].last_error_at, None);
 }
 
+/// AC-001 / REQ-001 (repair F-1): a credit-exhaustion 402 on a single-key
+/// provider marks the attempted key quota-exhausted, persists the mark (kind,
+/// time, sanitized reason), continues the same request on the healthy candidate,
+/// and never returns the upstream 402 to the client. Mapping health stays
+/// untouched. This pins the `402` arm of `runtime_http::key_failure_kind`:
+/// removing that arm must turn this test red.
+#[tokio::test]
+async fn credit_exhaustion_402_marks_the_key_and_falls_back_to_the_next_candidate() {
+    const QUOTA_MESSAGE: &str = "Payment required: insufficient credits";
+    let _home = isolated_temp_home("credit-402-fallback");
+    let (limited_url, limited_log) = spawn_mock_upstream(move |_| {
+        MockReply::Json(402, json!({"error": {"message": QUOTA_MESSAGE}}))
+    })
+    .await;
+    let (healthy_url, _) =
+        spawn_json_sequence_mock(vec![(200, json!({"id": "healthy-fallback"}))]).await;
+
+    let mut config = GatewayConfig::default();
+    let mut limited =
+        upstream_provider("a", "Limited", &limited_url, "sk", Some("remote-model"));
+    limited.mappings = vec![mapping("local-model", "remote-model", None)];
+    let mut healthy =
+        upstream_provider("b", "Healthy", &healthy_url, "sk", Some("remote-model"));
+    healthy.mappings = vec![mapping("other-model", "remote-model", None)];
+    config.providers = vec![limited.clone(), healthy.clone()];
+    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
+    super::storage::write_config(&config).expect("seed relay config");
+
+    let live = super::storage::read_config().expect("read persisted state");
+    let candidates: Vec<GatewayUpstreamProvider> = candidate_providers(
+        &live.providers,
+        Some("local-model"),
+        super::UpstreamProtocol::ChatCompletions,
+    )
+    .into_iter()
+    .cloned()
+    .collect();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &candidates,
+        "/v1/chat/completions",
+        &body,
+        Some("local-model"),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 200, "the healthy candidate must serve");
+    assert!(
+        String::from_utf8_lossy(&response.body).contains("healthy-fallback"),
+        "the client must receive the healthy body, never the upstream 402"
+    );
+    assert_eq!(
+        limited_log.lock().unwrap().len(),
+        1,
+        "the exhausted key is attempted once"
+    );
+
+    let limited_key =
+        on_disk_key_entry("a", "key-default").expect("provider a key must persist");
+    assert_eq!(
+        limited_key["auto_marked"], true,
+        "the credit-exhaustion 402 key must be marked: {limited_key}"
+    );
+    assert_eq!(limited_key["failure_kind"], "quota");
+    assert!(
+        limited_key["marked_at"].as_u64().is_some(),
+        "the marking time must be recorded: {limited_key}"
+    );
+    assert!(
+        limited_key["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("insufficient credits"),
+        "the sanitized reason must keep the upstream message: {limited_key}"
+    );
+
+    let live = super::storage::read_config().expect("read persisted state");
+    let stored = live.providers.iter().find(|p| p.id == "a").unwrap();
+    assert!(
+        !stored.mappings[0].auto_disabled,
+        "a key-scoped quota 402 must not auto-disable the mapping row"
+    );
+    assert_eq!(
+        stored.mappings[0].consecutive_failures, 0,
+        "a key-scoped quota 402 must not register mapping health"
+    );
+    assert_eq!(stored.mappings[0].last_error_at, None);
+}
+
 #[tokio::test]
 async fn end_to_end_transient_429_and_404_switch_without_disabling() {
     // AC-011: 429/404 switch to the next candidate but never count as failures. Row-level settlement.
@@ -28477,6 +28570,63 @@ fn reenable_provider_key_clears_runtime_state_without_enabling_a_disabled_key() 
         assert_eq!(
             on_disk["auto_marked"], false,
             "the runtime mark must be cleared on disk: {on_disk}"
+        );
+        assert_eq!(on_disk["failure_kind"], Value::Null);
+        assert_eq!(on_disk["marked_at"], Value::Null);
+        assert_eq!(on_disk["reason"], Value::Null);
+    });
+}
+
+/// AC-008 (repair F-3): `ai_gateway_reenable_provider_key` clears a fresh
+/// quota runtime mark — the mark a quota-classified 402/429 writes — without
+/// rewriting the user's `enabled=true` intent, and the cleared state persists.
+#[test]
+fn reenable_provider_key_clears_a_quota_mark_without_changing_enabled() {
+    with_temp_home("key-pool-reenable-quota", |_home| {
+        write_raw_gateway_config(&pool_config(
+            0,
+            vec![pool_provider(
+                "p1",
+                "Provider One",
+                "https://api.example.com/v1",
+                vec![pool_key_marked(
+                    "key-a",
+                    "A",
+                    "SAFE_FIXTURE_quota_pool_value",
+                    true,
+                    "quota",
+                    super::types_config::now_ts(),
+                    "402 Payment required: insufficient credits",
+                )],
+                vec![],
+            )],
+        ));
+
+        let after = super::commands::ai_gateway_reenable_provider_key(
+            "p1".to_string(),
+            "key-a".to_string(),
+        )
+        .expect("re-enabling a known key must succeed");
+        let key = after
+            .providers
+            .iter()
+            .find(|provider| provider.id == "p1")
+            .expect("p1 must survive")
+            .keys
+            .iter()
+            .find(|key| key.id == "key-a")
+            .expect("key-a must survive");
+        assert!(key.enabled, "the user's enabled intent must be preserved");
+        assert!(!key.auto_marked, "the runtime mark must be cleared");
+        assert_eq!(key.failure_kind, None, "the failure kind must be cleared");
+        assert_eq!(key.marked_at, None, "the marking time must be cleared");
+        assert_eq!(key.reason, None, "the failure reason must be cleared");
+
+        let on_disk = on_disk_key_entry("p1", "key-a").expect("key-a must stay persisted");
+        assert_eq!(on_disk["enabled"], true, "the enabled intent must persist");
+        assert_eq!(
+            on_disk["auto_marked"], false,
+            "the quota mark must be cleared on disk: {on_disk}"
         );
         assert_eq!(on_disk["failure_kind"], Value::Null);
         assert_eq!(on_disk["marked_at"], Value::Null);
