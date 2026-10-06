@@ -8,13 +8,18 @@ import {
   type ProviderQuota,
   type QuotaWindow,
 } from "@/lib/aiGateway";
-import { formatResetTime } from "./gatewayShared";
+import {
+  formatResetTime,
+  resolveCreditTone,
+} from "./gatewayShared";
 
 type ProviderQuotaBlockProps = {
   provider: GatewayUpstreamProvider;
   baseNow?: number | Date;
   refreshToken?: number;
   onRefreshed?: (timestamp: number) => void;
+  onQuotaLoaded?: (quota: ProviderQuota | null) => void;
+  hideCreditsHeader?: boolean;
 };
 
 type QuotaState =
@@ -107,6 +112,8 @@ export function ProviderQuotaBlock({
   baseNow,
   refreshToken = 0,
   onRefreshed,
+  onQuotaLoaded,
+  hideCreditsHeader = false,
 }: ProviderQuotaBlockProps) {
   const { t } = useTranslation();
   const [state, setState] = useState<QuotaState>({ status: "loading" });
@@ -122,13 +129,15 @@ export function ProviderQuotaBlock({
       const quota = await aiGatewayProviderQuota(provider.id, forceRefresh);
       setState({ status: "success", quota });
       onRefreshed?.(Date.now());
+      onQuotaLoaded?.(quota);
     } catch (error) {
       setState({
         status: "error",
         reason: error instanceof Error ? error.message : String(error),
       });
+      onQuotaLoaded?.(null);
     }
-  }, [provider.id, onRefreshed]);
+  }, [provider.id, onRefreshed, onQuotaLoaded]);
 
   useEffect(() => {
     void loadQuota();
@@ -146,6 +155,71 @@ export function ProviderQuotaBlock({
   const quota = state.status === "success" ? state.quota : null;
   const windowLimits = quota?.windowLimits;
   const effectiveNow = refreshNow ?? baseNow;
+  const hasVisibleWindows = Boolean(
+    quota &&
+      windowLimits?.limited === true &&
+      ((windowLimits.fiveHour && windowLimits.fiveHour.cap > 0) ||
+        (windowLimits.weekly && windowLimits.weekly.cap > 0)),
+  );
+
+  if (hideCreditsHeader) {
+    if (!hasVisibleWindows && state.status === "success") {
+      return <div data-testid={`ai-gateway-provider-quota-${id}`} className="hidden" />;
+    }
+    return (
+      <section
+        data-testid={`ai-gateway-provider-quota-${id}`}
+        aria-label={t("aiGatewayQuotaTitle")}
+        className="mt-2 space-y-1.5 rounded-lg border border-border/60 bg-muted/20 p-2 text-xs"
+      >
+        {state.status === "loading" ? (
+          <p
+            data-testid={`ai-gateway-provider-quota-loading-${id}`}
+            role="status"
+            aria-live="polite"
+            className="text-[11px] text-muted-foreground"
+          >
+            {t("aiGatewayQuotaLoading")}
+          </p>
+        ) : null}
+
+        {state.status === "error" ? (
+          <p
+            data-testid={`ai-gateway-provider-quota-error-${id}`}
+            role="status"
+            className="text-[11px] text-destructive"
+          >
+            {formatQuotaError(state.reason, t)}
+          </p>
+        ) : null}
+
+        {hasVisibleWindows && windowLimits ? (
+          <div className="space-y-1.5">
+            {windowLimits.fiveHour && windowLimits.fiveHour.cap > 0 ? (
+              <QuotaWindowLine
+                window={windowLimits.fiveHour}
+                label={t("aiGatewayQuotaWindow5h")}
+                testId={`ai-gateway-provider-quota-window-5h-${id}`}
+                t={t}
+                defaultOffsetHours={5}
+                baseNow={effectiveNow}
+              />
+            ) : null}
+            {windowLimits.weekly && windowLimits.weekly.cap > 0 ? (
+              <QuotaWindowLine
+                window={windowLimits.weekly}
+                label={t("aiGatewayQuotaWindowWeekly")}
+                testId={`ai-gateway-provider-quota-window-weekly-${id}`}
+                t={t}
+                defaultOffsetHours={7 * 24}
+                baseNow={effectiveNow}
+              />
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+    );
+  }
 
   return (
     <section
@@ -153,39 +227,83 @@ export function ProviderQuotaBlock({
       aria-label={t("aiGatewayQuotaTitle")}
       className="mt-2 space-y-1.5 rounded-lg border border-border/60 bg-muted/20 p-2 text-xs"
     >
-      <div className="flex items-center justify-between gap-2">
-        {quota ? (
+      {quota ? (() => {
+        const totalAmount =
+          quota.credits.monthlyCredits +
+          quota.credits.purchasedCredits +
+          quota.credits.freeCredits;
+        const tone = resolveCreditTone(totalAmount, quota.credits.belowThreshold);
+        const isDepleted = totalAmount <= 0;
+        const isBelow = quota.credits.belowThreshold;
+
+        return (
           <div
             data-testid={`ai-gateway-provider-quota-credits-${id}`}
-            className="flex items-baseline gap-1 text-[11px]"
+            className="flex items-center justify-between gap-2"
           >
-            <span className="text-muted-foreground">{t("aiGatewayQuotaCredits")}:</span>
-            <span className="font-semibold text-foreground">
-              ${(quota.credits.monthlyCredits + quota.credits.purchasedCredits + quota.credits.freeCredits).toFixed(2)}
-            </span>
-            {quota.credits.belowThreshold ? (
-              <span className="rounded bg-amber-500/15 px-1 py-0.2 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-                {t("aiGatewayQuotaLowBalance")}
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="text-[11px] font-medium text-muted-foreground shrink-0">
+                {t("aiGatewayQuotaCredits")}
               </span>
+              <span
+                className={`text-xs font-bold font-mono tracking-tight ${
+                  tone === "low"
+                    ? "text-destructive"
+                    : tone === "medium"
+                      ? "text-amber-700 dark:text-amber-400"
+                      : "text-emerald-600 dark:text-emerald-400"
+                }`}
+              >
+                ${totalAmount.toFixed(2)}
+              </span>
+              {isDepleted ? (
+                <span className="rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
+                  {t("aiGatewayQuotaDepleted", "已耗尽")}
+                </span>
+              ) : tone === "low" ? (
+                <span className="rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
+                  {t("aiGatewayQuotaCritical", "极低")}
+                </span>
+              ) : isBelow ? (
+                <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+                  {t("aiGatewayQuotaLowBalance")}
+                </span>
+              ) : null}
+            </div>
+
+            {state.status !== "loading" ? (
+              <button
+                type="button"
+                data-testid={`ai-gateway-provider-quota-refresh-${id}`}
+                aria-label={t("aiGatewayQuotaRefreshAria")}
+                title={t("aiGatewayQuotaRefresh")}
+                onClick={() => void loadQuota(true)}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
+              >
+                <RotateCcw className="h-3 w-3" />
+                <span>{t("aiGatewayQuotaRefresh")}</span>
+              </button>
             ) : null}
           </div>
-        ) : (
+        );
+      })() : (
+        <div className="flex items-center justify-between gap-2">
           <div />
-        )}
-        {state.status !== "loading" ? (
-          <button
-            type="button"
-            data-testid={`ai-gateway-provider-quota-refresh-${id}`}
-            aria-label={t("aiGatewayQuotaRefreshAria")}
-            title={t("aiGatewayQuotaRefresh")}
-            onClick={() => void loadQuota(true)}
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
-          >
-            <RotateCcw className="h-3 w-3" />
-            <span>{t("aiGatewayQuotaRefresh")}</span>
-          </button>
-        ) : null}
-      </div>
+          {state.status !== "loading" ? (
+            <button
+              type="button"
+              data-testid={`ai-gateway-provider-quota-refresh-${id}`}
+              aria-label={t("aiGatewayQuotaRefreshAria")}
+              title={t("aiGatewayQuotaRefresh")}
+              onClick={() => void loadQuota(true)}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
+            >
+              <RotateCcw className="h-3 w-3" />
+              <span>{t("aiGatewayQuotaRefresh")}</span>
+            </button>
+          ) : null}
+        </div>
+      )}
 
       {state.status === "loading" ? (
         <p
@@ -208,8 +326,8 @@ export function ProviderQuotaBlock({
         </p>
       ) : null}
 
-      {quota && windowLimits?.limited === true ? (
-        <div className="space-y-1.5 pt-0.5 border-t border-border/40">
+      {hasVisibleWindows && windowLimits ? (
+        <div className="space-y-1.5 pt-1 border-t border-border/40">
           {windowLimits.fiveHour && windowLimits.fiveHour.cap > 0 ? (
             <QuotaWindowLine
               window={windowLimits.fiveHour}

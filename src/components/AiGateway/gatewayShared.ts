@@ -127,3 +127,36 @@ export function formatTimeHms(ts: number | Date | null | undefined): string | nu
   }).format(d);
 }
 
+export type CreditTone = "high" | "medium" | "low";
+
+/**
+ * Resolve visual tone for a credit balance:
+ * - `low`: amount < $2.00 (critical or depleted)
+ * - `medium`: $2.00 <= amount < $10.00, or explicitly marked belowThreshold
+ * - `high`: amount >= $10.00 and not belowThreshold
+ */
+export function resolveCreditTone(
+  amount: number,
+  belowThreshold = false,
+): CreditTone {
+  if (amount < 2) return "low";
+  if (amount < 10 || belowThreshold) return "medium";
+  return "high";
+}
+
+/**
+ * Tailwind badge styling classes for a credit tone.
+ */
+export function creditToneBadgeClass(tone: CreditTone): string {
+  switch (tone) {
+    case "low":
+      return "border-destructive/30 bg-destructive/10 text-destructive";
+    case "medium":
+      return "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-400";
+    case "high":
+    default:
+      return "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
+  }
+}
+
+

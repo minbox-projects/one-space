@@ -10,6 +10,7 @@ import type {
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 import { ProviderQuotaBlock } from "./ProviderQuotaBlock";
+import { creditToneBadgeClass, resolveCreditTone } from "./gatewayShared";
 
 const FIXTURE: ProviderQuota = {
   credits: {
@@ -50,6 +51,8 @@ const QUOTA_I18N_KEYS = [
   "aiGatewayQuotaErrorHttp",
   "aiGatewayQuotaErrorInvalid",
   "aiGatewayQuotaLowBalance",
+  "aiGatewayQuotaCritical",
+  "aiGatewayQuotaDepleted",
   "aiGatewayQuotaExceeded",
 ] as const;
 
@@ -519,4 +522,44 @@ describe("ProviderQuotaBlock", () => {
     await user.click(screen.getByTestId("quota-token-bump"));
     expect(forcedQuotaCalls()).toHaveLength(0);
   });
+
+  describe("resolveCreditTone & creditToneBadgeClass", () => {
+    it("resolves tone levels correctly based on amount and belowThreshold", () => {
+      // High: >= 10 and not belowThreshold
+      expect(resolveCreditTone(15, false)).toBe("high");
+      expect(resolveCreditTone(10, false)).toBe("high");
+
+      // Medium: 2 <= amount < 10, or belowThreshold
+      expect(resolveCreditTone(9.99, false)).toBe("medium");
+      expect(resolveCreditTone(2, false)).toBe("medium");
+      expect(resolveCreditTone(15, true)).toBe("medium");
+
+      // Low: < 2
+      expect(resolveCreditTone(1.99, false)).toBe("low");
+      expect(resolveCreditTone(0, false)).toBe("low");
+      expect(resolveCreditTone(-1, false)).toBe("low");
+    });
+
+    it("returns correct Tailwind classes for each tone", () => {
+      expect(creditToneBadgeClass("high")).toContain("text-emerald-600");
+      expect(creditToneBadgeClass("medium")).toContain("text-amber-700");
+      expect(creditToneBadgeClass("low")).toContain("text-destructive");
+    });
+
+    it("renders corresponding warning text for depleted or critical balance", async () => {
+      // depleted (0)
+      mockQuotaResult({
+        ...FIXTURE,
+        credits: { monthlyCredits: 0, purchasedCredits: 0, freeCredits: 0, belowThreshold: true },
+      });
+      renderQuotaBlock();
+
+      const creditEl = await screen.findByTestId("ai-gateway-provider-quota-credits-quota-provider");
+      expect(creditEl).toHaveTextContent(i18n.t("aiGatewayQuotaDepleted"));
+      const amountEl = creditEl.querySelector(".font-bold.text-destructive");
+      expect(amountEl).toBeInTheDocument();
+      expect(amountEl).toHaveTextContent("$0.00");
+    });
+  });
 });
+

@@ -944,6 +944,31 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders quota credits compactly inside the provider quota block, leaving provider header uncrowded", async () => {
+    renderProviderList(
+      makeProvider({
+        id: "cc-provider",
+        name: "CommandCode Main Production",
+        base_url: "https://api.commandcode.ai/provider/v1",
+      }),
+    );
+
+    const quotaSection = await screen.findByTestId(
+      "ai-gateway-provider-quota-cc-provider",
+    );
+    expect(quotaSection).toBeInTheDocument();
+
+    const creditsEl = within(quotaSection).getByTestId(
+      "ai-gateway-provider-quota-credits-cc-provider",
+    );
+    expect(creditsEl).toBeInTheDocument();
+    expect(creditsEl).toHaveTextContent("$43.75");
+
+    const nameBtn = screen.getByRole("button", { name: "CommandCode Main Production" });
+    expect(nameBtn).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: /CommandCode Main Production/i })).toBeInTheDocument();
+  });
+
   it("AC-008 keeps provider enable, edit, and delete controls available after quota failure", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command === "ai_gateway_provider_quota") {
