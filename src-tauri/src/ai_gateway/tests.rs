@@ -33103,3 +33103,554 @@ async fn ac006_mixed_reason_diagnostics_follow_order_and_hint_condition() {
         );
     }
 }
+
+// ===========================================================================
+// Plan 20261007-gateway-alert-badges-and-message-center, Step 1 (RED):
+// REQ-005 / AC-005 — a mapping row that actually enters `auto_disabled` must
+// record exactly one provider-scoped warning Message Center entry naming the
+// provider's full current auto-disabled set, from both settlement paths.
+//
+// The backend observability seam below does not exist yet, so this whole
+// section is expected to fail compilation with an unresolved-path error until
+// Step 1 lands:
+//   - super::runtime_http::MAPPING_AUTO_DISABLED_MESSAGE_INPUTS
+// That compile failure is the expected RED evidence.
+// ===========================================================================
+
+/// Snapshot the same-thread mapping-auto-disabled message-input recorder, the
+/// REQ-005/AC-005 mirror of [`recorded_key_auth_failed_message_inputs`].
+fn recorded_mapping_auto_disabled_message_inputs() -> Vec<crate::messages::MessageCreateInput> {
+    super::runtime_http::MAPPING_AUTO_DISABLED_MESSAGE_INPUTS.with(
+        |inputs: &std::cell::RefCell<Vec<crate::messages::MessageCreateInput>>| {
+            inputs.borrow().clone()
+        },
+    )
+}
+
+/// Reset the same-thread mapping-auto-disabled message-input recorder. Every
+/// new AC-005 test clears it first because the `thread_local` persists across
+/// tests on the same thread.
+fn clear_mapping_auto_disabled_message_inputs() {
+    super::runtime_http::MAPPING_AUTO_DISABLED_MESSAGE_INPUTS.with(
+        |inputs: &std::cell::RefCell<Vec<crate::messages::MessageCreateInput>>| {
+            inputs.borrow_mut().clear()
+        },
+    );
+}
+
+/// Assert one recorded input matches the exact REQ-005/AC-005 contract using
+/// only literal source/category/severity values and the bilingual `localized`
+/// helper, independently of the production builder.
+fn assert_mapping_auto_disabled_input(
+    input: &crate::messages::MessageCreateInput,
+    provider_id: &str,
+    provider_name: &str,
+    models: &str,
+) {
+    assert_eq!(input.source, "ai_gateway");
+    assert_eq!(input.category, "mapping_auto_disabled");
+    assert_eq!(input.severity, "warning");
+    assert_eq!(
+        input.title,
+        crate::messages::localized(
+            "AI 网关映射自动禁用",
+            "AI Gateway mappings auto-disabled",
+        )
+    );
+    let expected_summary = crate::messages::localized(
+        &format!("服务商 {} 的映射已自动禁用：{}", provider_name, models),
+        &format!("Provider {} mappings auto-disabled: {}", provider_name, models),
+    );
+    assert_eq!(input.summary.as_deref(), Some(expected_summary.as_str()));
+    assert_eq!(input.detail.as_deref(), Some(models));
+    let expected_dedupe_key = format!("ai_gateway_mapping_auto_disabled:{provider_id}");
+    assert_eq!(
+        input.dedupe_key.as_deref(),
+        Some(expected_dedupe_key.as_str())
+    );
+    let target = input.target.as_ref().expect("the input must target a tab");
+    assert_eq!(target.tab, "ai-gateway");
+    assert_eq!(target.section, None);
+    assert_eq!(target.entity_id.as_deref(), Some(provider_id));
+}
+
+/// Replay captured transition inputs through the real message store exactly as
+/// the AC-007 key-auth test does, returning the persisted records so a caller
+/// can assert the store's dedupe/merge behavior.
+fn persist_and_list_messages(
+    inputs: &[crate::messages::MessageCreateInput],
+) -> Vec<crate::messages::MessageRecord> {
+    let app = tauri::test::mock_app();
+    let handle = app.handle();
+    for input in inputs {
+        crate::messages::create_message_with_app(handle, input.clone())
+            .expect("the captured message input must persist");
+    }
+    crate::messages::list_messages_with_app(handle).expect("list messages")
+}
+
+/// A read-only permissions guard that restores write access before the temp
+/// home is removed, even when an assertion panics (mirrors the migration test).
+#[cfg(unix)]
+struct RestoreMappingWritePermissions(PathBuf);
+
+#[cfg(unix)]
+impl Drop for RestoreMappingWritePermissions {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700));
+    }
+}
+
+/// AC-005 / REQ-005: an immediate non-credential 403 flips the only mapping row
+/// into `auto_disabled` and records exactly one provider-scoped warning whose
+/// full set is that single row; the persisted store yields one warning entry.
+#[tokio::test]
+async fn ac005_immediate_non_credential_403_records_one_mapping_auto_disabled_message() {
+    clear_mapping_auto_disabled_message_inputs();
+    let _home = isolated_temp_home("ac005-immediate-403");
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(403, json!({"error": {"message": "MODEL_NOT_IN_PLAN"}}))
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![pool_key("key-a", "A", "sk-ac005-a", true)],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    let response = attempt_without_probe(&live_candidates("local-a"), "local-a").await;
+    assert_ne!(
+        response.status, 200,
+        "the non-credential 403 must not be served as success"
+    );
+
+    let inputs = recorded_mapping_auto_disabled_message_inputs();
+    assert_eq!(
+        inputs.len(),
+        1,
+        "the immediate auto-disable must build exactly one input: {inputs:?}"
+    );
+    assert_mapping_auto_disabled_input(&inputs[0], "p1", "Provider One", "local-a");
+
+    let row = stored_probe_row("p1");
+    assert!(
+        row.auto_disabled,
+        "the immediate 403 must persist the auto-disable on disk"
+    );
+
+    let messages = persist_and_list_messages(&inputs);
+    assert_eq!(
+        messages.len(),
+        1,
+        "one transition must yield one store entry: {messages:?}"
+    );
+    let record = &messages[0];
+    assert_eq!(record.source, "ai_gateway");
+    assert_eq!(record.category, "mapping_auto_disabled");
+    assert_eq!(record.severity, "warning");
+    assert_eq!(record.occurrences, 1);
+    assert_eq!(
+        record.dedupe_key.as_deref(),
+        Some("ai_gateway_mapping_auto_disabled:p1")
+    );
+    let target = record.target.as_ref().expect("the entry must target a tab");
+    assert_eq!(target.tab, "ai-gateway");
+    assert_eq!(target.entity_id.as_deref(), Some("p1"));
+    let summary = record.summary.as_deref().unwrap_or("");
+    assert!(
+        summary.contains("Provider One"),
+        "the summary must name the provider: {summary}"
+    );
+    assert!(
+        summary.contains("local-a"),
+        "the summary must name the disabled model: {summary}"
+    );
+    assert_eq!(record.detail.as_deref(), Some("local-a"));
+
+    clear_mapping_auto_disabled_message_inputs();
+}
+
+/// AC-005 / REQ-005: a second transition for the same provider inside the store
+/// dedupe window merges into one entry with `occurrences = 2` and refreshes the
+/// summary/detail to the latest COMPLETE auto-disabled set, while two separate
+/// inputs were built — each naming the full set at its own transition.
+#[tokio::test]
+async fn ac005_second_transition_merges_inside_dedupe_window_and_refreshes_full_set() {
+    clear_mapping_auto_disabled_message_inputs();
+    let _home = isolated_temp_home("ac005-second-transition");
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(403, json!({"error": {"message": "MODEL_NOT_IN_PLAN"}}))
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![
+                pool_key("key-a", "A", "sk-ac005-a", true),
+                pool_key("key-b", "B", "sk-ac005-b", true),
+            ],
+            vec![
+                json_mapping("local-a", "remote-a", None),
+                json_mapping("local-b", "remote-b", None),
+            ],
+        )],
+    ));
+
+    let first = attempt_without_probe(&live_candidates("local-a"), "local-a").await;
+    assert_ne!(first.status, 200, "the first 403 must not be served as success");
+    let second = attempt_without_probe(&live_candidates("local-b"), "local-b").await;
+    assert_ne!(second.status, 200, "the second 403 must not be served as success");
+
+    let inputs = recorded_mapping_auto_disabled_message_inputs();
+    assert_eq!(
+        inputs.len(),
+        2,
+        "one input must be built per transition: {inputs:?}"
+    );
+    assert_mapping_auto_disabled_input(&inputs[0], "p1", "Provider One", "local-a");
+    assert_mapping_auto_disabled_input(&inputs[1], "p1", "Provider One", "local-a, local-b");
+
+    let messages = persist_and_list_messages(&inputs);
+    assert_eq!(
+        messages.len(),
+        1,
+        "transitions inside the dedupe window must merge: {messages:?}"
+    );
+    let record = &messages[0];
+    assert_eq!(record.category, "mapping_auto_disabled");
+    assert_eq!(record.severity, "warning");
+    assert_eq!(
+        record.occurrences, 2,
+        "the dedupe window must count both transitions"
+    );
+    assert_eq!(
+        record.dedupe_key.as_deref(),
+        Some("ai_gateway_mapping_auto_disabled:p1")
+    );
+    assert_eq!(
+        record.detail.as_deref(),
+        Some("local-a, local-b"),
+        "the detail must refresh to the latest complete set"
+    );
+    let summary = record.summary.as_deref().unwrap_or("");
+    assert!(
+        summary.contains("local-a, local-b"),
+        "the summary must list the latest complete set: {summary}"
+    );
+    let target = record.target.as_ref().expect("the entry must target a tab");
+    assert_eq!(target.entity_id.as_deref(), Some("p1"));
+
+    clear_mapping_auto_disabled_message_inputs();
+}
+
+/// AC-005 / REQ-005: the request-end threshold settle that flips the row records
+/// exactly one input with the exact contract and persists `auto_disabled = true`,
+/// mirroring `threshold_flip_emits_exactly_one_config_update_event`.
+#[tokio::test]
+async fn ac005_threshold_settle_records_one_mapping_auto_disabled_message() {
+    clear_mapping_auto_disabled_message_inputs();
+    let _home = isolated_temp_home("ac005-threshold");
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "still down"}})))
+            .await;
+
+    let provider = health_counter_provider(
+        "cfg-threshold-notify",
+        &upstream_url,
+        "cfg-local-notify",
+        "cfg-remote-notify",
+        super::FAILURE_THRESHOLD - 1,
+    );
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed relay config");
+
+    clear_config_update_events();
+    let response = attempt_without_probe(std::slice::from_ref(&provider), "cfg-local-notify").await;
+
+    assert_eq!(response.status, 502, "the exhausted request answers the existing 502");
+    assert_eq!(upstream_log.lock().unwrap().len(), single_provider_attempt_cap());
+    assert_eq!(
+        recorded_config_update_events(),
+        vec![CONFIG_UPDATE_EVENT_NAME.to_string()],
+        "the threshold flip must still emit exactly one config-update event"
+    );
+
+    let inputs = recorded_mapping_auto_disabled_message_inputs();
+    assert_eq!(
+        inputs.len(),
+        1,
+        "the threshold settle must build exactly one input: {inputs:?}"
+    );
+    assert_mapping_auto_disabled_input(
+        &inputs[0],
+        "cfg-threshold-notify",
+        "Provider cfg-threshold-notify",
+        "cfg-local-notify",
+    );
+
+    let row = stored_probe_row("cfg-threshold-notify");
+    assert!(
+        row.auto_disabled,
+        "the threshold settlement must persist the auto-disable"
+    );
+    assert_eq!(row.consecutive_failures, super::FAILURE_THRESHOLD);
+
+    clear_mapping_auto_disabled_message_inputs();
+    clear_config_update_events();
+}
+
+/// AC-005 / REQ-005: transitions on two different providers produce two inputs
+/// with different dedupe keys and entity ids, and two distinct store entries.
+#[tokio::test]
+async fn ac005_two_providers_record_two_distinct_mapping_auto_disabled_entries() {
+    clear_mapping_auto_disabled_message_inputs();
+    let _home = isolated_temp_home("ac005-two-providers");
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(403, json!({"error": {"message": "MODEL_NOT_IN_PLAN"}}))
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![
+            pool_provider(
+                "p1",
+                "Provider One",
+                &upstream_url,
+                vec![pool_key("key-a", "A", "sk-ac005-p1", true)],
+                vec![json_mapping("local-a", "remote-a", None)],
+            ),
+            pool_provider(
+                "p2",
+                "Provider Two",
+                &upstream_url,
+                vec![pool_key("key-b", "B", "sk-ac005-p2", true)],
+                vec![json_mapping("local-b", "remote-b", None)],
+            ),
+        ],
+    ));
+
+    let first = attempt_without_probe(&live_candidates("local-a"), "local-a").await;
+    assert_ne!(first.status, 200, "provider p1 must not be served as success");
+    let second = attempt_without_probe(&live_candidates("local-b"), "local-b").await;
+    assert_ne!(second.status, 200, "provider p2 must not be served as success");
+
+    let inputs = recorded_mapping_auto_disabled_message_inputs();
+    assert_eq!(
+        inputs.len(),
+        2,
+        "each provider transition must build its own input: {inputs:?}"
+    );
+    assert_mapping_auto_disabled_input(&inputs[0], "p1", "Provider One", "local-a");
+    assert_mapping_auto_disabled_input(&inputs[1], "p2", "Provider Two", "local-b");
+    assert_ne!(
+        inputs[0].dedupe_key, inputs[1].dedupe_key,
+        "distinct providers must not share a dedupe key"
+    );
+
+    let messages = persist_and_list_messages(&inputs);
+    assert_eq!(
+        messages.len(),
+        2,
+        "distinct providers must not merge into one entry: {messages:?}"
+    );
+    let mut entities: Vec<&str> = messages
+        .iter()
+        .map(|message| {
+            message
+                .target
+                .as_ref()
+                .and_then(|target| target.entity_id.as_deref())
+                .unwrap_or("")
+        })
+        .collect();
+    entities.sort_unstable();
+    assert_eq!(entities, vec!["p1", "p2"]);
+
+    clear_mapping_auto_disabled_message_inputs();
+}
+
+/// AC-005 / REQ-005 (counterexample): a failed half-open probe only re-arms the
+/// cooldown of an already auto-disabled row, so it builds no input and emits no
+/// config-update event while the row stays auto-disabled.
+#[tokio::test]
+async fn ac005_probe_rearm_records_no_mapping_auto_disabled_message() {
+    clear_mapping_auto_disabled_message_inputs();
+    let _home = isolated_temp_home("ac005-probe-rearm");
+    let (upstream_url, upstream_log) =
+        spawn_mock_upstream(|_| MockReply::Json(500, json!({"error": {"message": "still down"}})))
+            .await;
+
+    let now = probe_now();
+    let initial = now.saturating_sub(120);
+    let provider = probe_row_provider(
+        "ac005-probe-rearm",
+        &upstream_url,
+        "ac005-local-rearm",
+        "ac005-remote-rearm",
+        Some(initial),
+    );
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider.clone());
+    super::storage::write_config(&config).expect("seed probe config");
+
+    let candidate = super::selection::find_probe_candidate(
+        std::slice::from_ref(&provider),
+        Some("ac005-local-rearm"),
+        UpstreamProtocol::ChatCompletions,
+        &[],
+        now,
+    )
+    .expect("the seeded row must be probe-eligible");
+
+    clear_config_update_events();
+    let body = serde_json::to_vec(&json!({"model": "ac005-local-rearm"})).unwrap();
+    let mut attempts = Vec::new();
+    let response = super::runtime_http::attempt_non_streaming(
+        &[],
+        "/v1/chat/completions",
+        &body,
+        Some("ac005-local-rearm"),
+        &HashMap::new(),
+        false,
+        Some(&candidate),
+        &mut attempts,
+    )
+    .await;
+
+    assert_eq!(response.status, 502, "a failed probe answers the existing 502");
+    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+    assert!(
+        recorded_mapping_auto_disabled_message_inputs().is_empty(),
+        "a probe re-arm of an already disabled row must record nothing"
+    );
+    assert!(
+        recorded_config_update_events().is_empty(),
+        "a re-armed probe keeps the row disabled and must emit no event"
+    );
+    let row = stored_probe_row("ac005-probe-rearm");
+    assert!(row.auto_disabled, "a failed probe keeps the row auto-disabled");
+
+    clear_mapping_auto_disabled_message_inputs();
+    clear_config_update_events();
+}
+
+/// AC-005 / REQ-005 (counterexample): a successful attempt on a healthy row
+/// changes no runtime field, so it records no input and emits no config-update
+/// event.
+#[tokio::test]
+async fn ac005_no_change_settlement_records_no_mapping_auto_disabled_message() {
+    clear_mapping_auto_disabled_message_inputs();
+    let _home = isolated_temp_home("ac005-no-change");
+    let (upstream_url, upstream_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(200, json!({"id": "served", "choices": []}))
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![pool_key("key-a", "A", "sk-ac005-ok", true)],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    clear_config_update_events();
+    let response = attempt_without_probe(&live_candidates("local-a"), "local-a").await;
+    assert_eq!(response.status, 200, "the healthy row must serve");
+    assert_eq!(upstream_log.lock().unwrap().len(), 1);
+
+    assert!(
+        recorded_mapping_auto_disabled_message_inputs().is_empty(),
+        "a settlement that changes no runtime field must record nothing"
+    );
+    assert!(
+        recorded_config_update_events().is_empty(),
+        "a no-change settlement must emit no config-update event"
+    );
+    let row = stored_probe_row("p1");
+    assert!(!row.auto_disabled);
+    assert_eq!(row.consecutive_failures, 0);
+
+    clear_mapping_auto_disabled_message_inputs();
+    clear_config_update_events();
+}
+
+/// AC-005 / REQ-005 (counterexample): when the configuration write fails (a
+/// read-only app directory) nothing is recorded and the persisted row stays
+/// healthy.
+#[cfg(unix)]
+#[tokio::test]
+async fn ac005_failed_config_write_records_no_mapping_auto_disabled_message() {
+    use std::os::unix::fs::PermissionsExt;
+
+    clear_mapping_auto_disabled_message_inputs();
+    let _home = isolated_temp_home("ac005-failed-write");
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(403, json!({"error": {"message": "MODEL_NOT_IN_PLAN"}}))
+    })
+    .await;
+
+    write_raw_gateway_config(&pool_config(
+        0,
+        vec![pool_provider(
+            "p1",
+            "Provider One",
+            &upstream_url,
+            vec![pool_key("key-a", "A", "sk-ac005-fail", true)],
+            vec![json_mapping("local-a", "remote-a", None)],
+        )],
+    ));
+
+    // Warm the read cache and prove the row starts healthy before the write is
+    // forced to fail.
+    let candidates = live_candidates("local-a");
+    assert_eq!(candidates.len(), 1, "the seeded provider must serve local-a");
+    assert!(
+        !stored_probe_row("p1").auto_disabled,
+        "the row must start not auto-disabled"
+    );
+
+    clear_config_update_events();
+    let dir = crate::config::get_app_dir().expect("app dir");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500))
+        .expect("make the app directory read-only");
+    let restore = RestoreMappingWritePermissions(dir);
+
+    let response = attempt_without_probe(&candidates, "local-a").await;
+    assert_ne!(response.status, 200, "the 403 must not be served as success");
+
+    assert!(
+        recorded_mapping_auto_disabled_message_inputs().is_empty(),
+        "a failed configuration write must record no message"
+    );
+    assert!(
+        recorded_config_update_events().is_empty(),
+        "a failed configuration write must emit no config-update event"
+    );
+
+    drop(restore);
+    let row = stored_probe_row("p1");
+    assert!(
+        !row.auto_disabled,
+        "a failed write must leave the persisted row not auto-disabled"
+    );
+
+    clear_mapping_auto_disabled_message_inputs();
+    clear_config_update_events();
+}

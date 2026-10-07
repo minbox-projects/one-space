@@ -82,6 +82,9 @@ thread_local! {
     pub(in crate::ai_gateway) static KEY_AUTH_FAILED_MESSAGE_INPUTS:
         std::cell::RefCell<Vec<crate::messages::MessageCreateInput>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    pub(in crate::ai_gateway) static MAPPING_AUTO_DISABLED_MESSAGE_INPUTS:
+        std::cell::RefCell<Vec<crate::messages::MessageCreateInput>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Emit one `ai-gateway-config-update` event when a handle was captured; a
@@ -163,6 +166,136 @@ fn emit_key_auth_failed(transition: &KeyAuthFailedTransition) {
     KEY_AUTH_FAILED_MESSAGE_INPUTS.with(|inputs| inputs.borrow_mut().push(input.clone()));
     if let Some(handle) = captured_app_handle() {
         let _ = handle.emit(super::AI_GATEWAY_KEY_AUTH_FAILED_EVENT, &payload);
+        crate::messages::record_message_silent(&handle, input);
+    }
+}
+
+/// One provider whose mapping rows entered `auto_disabled` during a successful
+/// settlement, carrying everything the message-center input needs. The joined
+/// `models` are the provider's complete auto-disabled set after the mutation, in
+/// row order; no key value is ever carried (REQ-005/AC-005).
+struct MappingAutoDisabledTransition {
+    provider_id: String,
+    provider_name: String,
+    models: String,
+}
+
+/// The display names of every auto-disabled mapping row of `provider`, in row
+/// order, joined with `, `. A row contributes its trimmed `local_model` when
+/// non-empty, otherwise its `upstream_model`.
+fn auto_disabled_models(provider: &GatewayUpstreamProvider) -> String {
+    provider
+        .mappings
+        .iter()
+        .filter(|mapping| mapping.auto_disabled)
+        .map(|mapping| {
+            let local = mapping.local_model.trim();
+            if local.is_empty() {
+                mapping.upstream_model.clone()
+            } else {
+                local.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Whether any row matching `target`'s trimmed key entered `auto_disabled`
+/// (`false`/absent -> `true`) since `before`. A probe re-arm of an already
+/// disabled row is not a transition (REQ-005/AC-005).
+fn auto_disabled_entered(
+    provider: &GatewayUpstreamProvider,
+    target: &MappingTarget,
+    before: &[bool],
+) -> bool {
+    provider
+        .mappings
+        .iter()
+        .filter(|mapping| {
+            mapping_matches_key(mapping, &target.local_model, &target.upstream_model)
+        })
+        .map(|mapping| mapping.auto_disabled)
+        .zip(before.iter().copied())
+        .any(|(after, was)| after && !was)
+}
+
+/// Record one affected provider id once, preserving first-seen provider order so
+/// repeated targets of the same provider settle into a single input. The
+/// transition's full auto-disabled set is built after every mutation has been
+/// applied, never mid-loop (REQ-005/AC-005).
+fn push_auto_disabled_provider_id(provider_ids: &mut Vec<String>, provider_id: &str) {
+    if provider_ids.iter().any(|id| id == provider_id) {
+        return;
+    }
+    provider_ids.push(provider_id.to_string());
+}
+
+/// Build one transition per affected provider, in first-seen order, from each
+/// provider's complete auto-disabled set in the fully mutated configuration.
+fn auto_disabled_transitions(
+    latest: &GatewayConfig,
+    provider_ids: &[String],
+) -> Vec<MappingAutoDisabledTransition> {
+    provider_ids
+        .iter()
+        .filter_map(|id| latest.providers.iter().find(|provider| &provider.id == id))
+        .map(|provider| MappingAutoDisabledTransition {
+            provider_id: provider.id.clone(),
+            provider_name: provider.name.clone(),
+            models: auto_disabled_models(provider),
+        })
+        .collect()
+}
+
+/// Build the message-center input for one provider's auto-disable transition.
+/// The provider-scoped `dedupe_key` makes repeated transitions inside the
+/// store's dedupe window merge into one entry with an incremented occurrence
+/// count while refreshing the full set; the targeted AI Gateway tab carries the
+/// provider as its entity id. Only provider and model names appear (REQ-005).
+fn mapping_auto_disabled_message_input(
+    transition: &MappingAutoDisabledTransition,
+) -> crate::messages::MessageCreateInput {
+    crate::messages::MessageCreateInput {
+        source: "ai_gateway".to_string(),
+        category: "mapping_auto_disabled".to_string(),
+        severity: "warning".to_string(),
+        title: crate::messages::localized(
+            "AI 网关映射自动禁用",
+            "AI Gateway mappings auto-disabled",
+        ),
+        summary: Some(crate::messages::localized(
+            &format!(
+                "服务商 {} 的映射已自动禁用：{}",
+                transition.provider_name, transition.models
+            ),
+            &format!(
+                "Provider {} mappings auto-disabled: {}",
+                transition.provider_name, transition.models
+            ),
+        )),
+        detail: Some(transition.models.clone()),
+        dedupe_key: Some(format!(
+            "ai_gateway_mapping_auto_disabled:{}",
+            transition.provider_id
+        )),
+        target: Some(crate::messages::MessageTarget {
+            tab: "ai-gateway".to_string(),
+            section: None,
+            entity_id: Some(transition.provider_id.clone()),
+        }),
+        metadata: None,
+    }
+}
+
+/// Record one auto-disable transition: push the literal input onto the test
+/// seam and persist exactly one message input through the captured handle. A
+/// missing handle skips the production write but still records the seam value so
+/// the transition is observable in tests (REQ-005/AC-005).
+fn emit_mapping_auto_disabled(transition: &MappingAutoDisabledTransition) {
+    let input = mapping_auto_disabled_message_input(transition);
+    #[cfg(test)]
+    MAPPING_AUTO_DISABLED_MESSAGE_INPUTS.with(|inputs| inputs.borrow_mut().push(input.clone()));
+    if let Some(handle) = captured_app_handle() {
         crate::messages::record_message_silent(&handle, input);
     }
 }
@@ -729,24 +862,41 @@ fn all_unavailable_message(failures: &[(String, String)]) -> String {
 /// primitive, and a mutation that changes nothing never rewrites the file.
 fn apply_failure(target: &MappingTarget, class: FailureClass, reason: &str) {
     let at = now_ts();
-    let flipped = modify_config(|latest| {
+    // The closure returns the transition only once a row entered
+    // `auto_disabled`; the message input is built after the write lock is
+    // released, and a failed write yields no transition and no input
+    // (REQ-005/AC-005).
+    let transition = modify_config(|latest| {
         let Some(stored) = latest
             .providers
             .iter_mut()
             .find(|stored| stored.id == target.provider_id)
         else {
-            return Ok((false, false));
+            return Ok((false, None));
         };
         let before_runtime = mapping_runtime_snapshot(stored, target);
         let before_auto_disabled = auto_disabled_snapshot(stored, target);
         register_mapping_failure(stored, target, class, reason, at);
         let changed = mapping_runtime_snapshot(stored, target) != before_runtime;
-        let flipped = auto_disabled_flipped(stored, target, &before_auto_disabled);
-        Ok((changed, flipped))
-    })
-    .unwrap_or(false);
-    if flipped {
+        let transition = if auto_disabled_entered(stored, target, &before_auto_disabled) {
+            Some(MappingAutoDisabledTransition {
+                provider_id: stored.id.clone(),
+                provider_name: stored.name.clone(),
+                models: auto_disabled_models(stored),
+            })
+        } else {
+            None
+        };
+        Ok((changed, transition))
+    });
+    let Ok(transition) = transition else {
+        return;
+    };
+    if transition.is_some() {
         emit_config_updated();
+    }
+    if let Some(transition) = transition {
+        emit_mapping_auto_disabled(&transition);
     }
 }
 
@@ -1019,9 +1169,13 @@ impl RequestHealth {
         // Whether any settled row flipped `auto_disabled` during this write:
         // exactly one transition event is emitted after a successful write even
         // when several rows flipped (REQ-005/AC-008).
-        let flipped = modify_config(|latest| {
+        let outcome = modify_config(|latest| {
             let mut changed = false;
             let mut flipped = false;
+            // One transition per affected provider, preserving first-seen
+            // provider order; repeated targets of the same provider collapse
+            // into one entry listing its full auto-disabled set (REQ-005/AC-005).
+            let mut transition_provider_ids: Vec<String> = Vec::new();
             // The half-open probe settles first: a success clears the row, a
             // failure re-arms its cooldown without ever touching the counter.
             // Details are refreshed unless the failure was a transport failure
@@ -1073,6 +1227,9 @@ impl RequestHealth {
                     if auto_disabled_flipped(stored, &probe.target, &before_auto_disabled) {
                         flipped = true;
                     }
+                    if auto_disabled_entered(stored, &probe.target, &before_auto_disabled) {
+                        push_auto_disabled_provider_id(&mut transition_provider_ids, &stored.id);
+                    }
                 }
             }
             for target in &self.order {
@@ -1110,12 +1267,27 @@ impl RequestHealth {
                 if auto_disabled_flipped(stored, target, &before_auto_disabled) {
                     flipped = true;
                 }
+                if auto_disabled_entered(stored, target, &before_auto_disabled) {
+                    push_auto_disabled_provider_id(&mut transition_provider_ids, &stored.id);
+                }
             }
-            Ok((changed, flipped))
-        })
-        .unwrap_or(false);
+            // Every mutation has settled; now read each affected provider's
+            // complete auto-disabled set from the fully mutated configuration.
+            let transitions = auto_disabled_transitions(latest, &transition_provider_ids);
+            Ok((changed, (flipped, transitions)))
+        });
+        // A failed write yields no outcome: nothing is emitted and no input is
+        // built. A successful write emits the single config-update event first,
+        // then one message input per affected provider, all after the write lock
+        // is released (REQ-005/AC-005, AC-008).
+        let Ok((flipped, transitions)) = outcome else {
+            return;
+        };
         if flipped {
             emit_config_updated();
+        }
+        for transition in &transitions {
+            emit_mapping_auto_disabled(transition);
         }
     }
 }
