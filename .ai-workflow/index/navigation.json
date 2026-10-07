@@ -1099,6 +1099,7 @@
         "src/components/AiGateway/gatewayShared.ts",
         "src/components/AiGateway/useTemplateAutoRefresh.ts",
         "src/lib/aiGateway.ts",
+        "src/lib/aiGatewayAlertBadges.ts",
         "src/i18n.ts"
       ],
       "tests": [
@@ -1118,7 +1119,8 @@
         "src/components/AiGateway/UsageLogsPanel.test.tsx",
         "src/components/AiGateway/UsageStatsPanel.test.tsx",
         "src/components/AiGateway/useTemplateAutoRefresh.test.ts",
-        "src/lib/aiGateway.test.ts"
+        "src/lib/aiGateway.test.ts",
+        "src/lib/aiGatewayAlertBadges.test.ts"
       ],
       "symbols": [
         {
@@ -1576,6 +1578,48 @@
           "name": "providerMarkedKeys",
           "kind": "function",
           "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "AI_GATEWAY_ALERT_AUTO_DISMISS_MS",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGatewayAlertBadges.ts",
+          "name": "AI_GATEWAY_ALERT_BADGES_STORAGE_KEY",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGatewayAlertBadges.ts",
+          "name": "autoDisabledAlertInstanceKey",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGatewayAlertBadges.ts",
+          "name": "retiredMappingAlertInstanceKey",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGatewayAlertBadges.ts",
+          "name": "readDismissedAlertInstanceKeys",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGatewayAlertBadges.ts",
+          "name": "dismissAlertInstanceKeys",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGatewayAlertBadges.ts",
+          "name": "reconcileDismissedAlertInstanceKeys",
+          "kind": "function",
+          "visibility": "public"
         }
       ],
       "depends_on": [],
@@ -1618,7 +1662,9 @@
         "src/components/AiGateway/gatewayShared.ts",
         "src/components/AiGateway/useTemplateAutoRefresh.ts",
         "src/lib/aiGateway.test.ts",
+        "src/lib/aiGatewayAlertBadges.test.ts",
         "src/lib/aiGateway.ts",
+        "src/lib/aiGatewayAlertBadges.ts",
         "src/i18n.ts"
       ],
       "relations": [],
@@ -3412,6 +3458,24 @@
         {
           "file": "src-tauri/src/ai_gateway/types_config.rs",
           "name": "resolve_port",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/templates.rs",
+          "name": "ProviderRetirementNotice",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/templates.rs",
+          "name": "apply_template_sync_with_notices",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/commands.rs",
+          "name": "record_template_mappings_retired_messages",
           "kind": "function",
           "visibility": "public"
         }
