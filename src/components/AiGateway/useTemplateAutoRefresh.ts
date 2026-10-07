@@ -123,17 +123,16 @@ function describeAutoRefreshFailure(value: unknown): string {
 interface TemplateSyncChange {
   affectedProviderCount: number;
   addedCount: number;
-  disabledCount: number;
   detail: string;
 }
 
 /**
  * Diff the providers bound to one template between two gateway configurations.
  *
- * Only model-mapping additions (an `upstream_model` absent before) and enables
- * that turned into an explicit `false` qualify; field-only differences and
- * providers not bound to the template produce nothing. Returns `null` when no
- * provider qualified.
+ * Only model-mapping additions (an `upstream_model` absent before) qualify.
+ * A mapping that already existed and merely flipped `enabled` true -> false or
+ * changed any other field produces nothing, as do providers not bound to the
+ * template. Returns `null` when no provider qualified.
  */
 function computeTemplateSyncChange(
   previous: GatewayConfig,
@@ -142,30 +141,22 @@ function computeTemplateSyncChange(
 ): TemplateSyncChange | null {
   const affected: Array<{ name: string; identifiers: string[] }> = [];
   let addedCount = 0;
-  let disabledCount = 0;
 
   for (const provider of current.providers) {
     if (provider.template_id !== templateId) continue;
     const previousProvider = previous.providers.find(
       (candidate) => candidate.id === provider.id,
     );
-    const previousByUpstream = new Map(
-      (previousProvider?.mappings ?? []).map((mapping) => [
-        mapping.upstream_model,
-        mapping,
-      ]),
+    const previousByUpstream = new Set(
+      (previousProvider?.mappings ?? []).map(
+        (mapping) => mapping.upstream_model,
+      ),
     );
 
     const identifiers: string[] = [];
     for (const mapping of provider.mappings) {
-      const before = previousByUpstream.get(mapping.upstream_model);
-      if (before === undefined) {
-        addedCount += 1;
-      } else if (before.enabled !== false && mapping.enabled === false) {
-        disabledCount += 1;
-      } else {
-        continue;
-      }
+      if (previousByUpstream.has(mapping.upstream_model)) continue;
+      addedCount += 1;
       const localModel = mapping.local_model.trim();
       identifiers.push(localModel !== "" ? localModel : mapping.upstream_model);
     }
@@ -180,7 +171,6 @@ function computeTemplateSyncChange(
   return {
     affectedProviderCount: affected.length,
     addedCount,
-    disabledCount,
     detail: affected
       .map(({ name, identifiers }) =>
         i18n.t("aiGatewayTemplateSyncNotificationDetailProvider", {
@@ -206,13 +196,6 @@ function buildTemplateSyncMessage(
     parts.push(
       i18n.t("aiGatewayTemplateSyncNotificationAddedCount", {
         count: change.addedCount,
-      }),
-    );
-  }
-  if (change.disabledCount > 0) {
-    parts.push(
-      i18n.t("aiGatewayTemplateSyncNotificationDisabledCount", {
-        count: change.disabledCount,
       }),
     );
   }

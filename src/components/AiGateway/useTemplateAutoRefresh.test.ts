@@ -199,10 +199,6 @@ function tAddedCount(count: number): string {
   return i18n.t("aiGatewayTemplateSyncNotificationAddedCount", { count });
 }
 
-function tDisabledCount(count: number): string {
-  return i18n.t("aiGatewayTemplateSyncNotificationDisabledCount", { count });
-}
-
 function tDetailProvider(provider: string, models: string): string {
   return i18n.t("aiGatewayTemplateSyncNotificationDetailProvider", {
     provider,
@@ -630,7 +626,7 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
     expect(messages[0].dedupe_key).toBeUndefined();
   });
 
-  it("AC-002 失效映射转为禁用的通知摘要只含禁用子句", async () => {
+  it("AC-007 仅退役/禁用的同步不创建 template_sync 通知", async () => {
     await setLanguage("en");
     const before = makeConfig([
       makeProvider({
@@ -658,14 +654,9 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
     mountAutoRefresh();
     await settle();
 
-    // 挂载立即批次产生这一条通知
-    const messages = recordedMessages();
-    expect(messages).toHaveLength(1);
-    expect(messages[0].detail).toContain("m");
-    // 摘要必须与「服务商数 + 禁用数」完全一致，证明新增子句被省略。
-    expect(messages[0].summary).toBe(
-      [tProviderCount(1), tDisabledCount(1)].join("; "),
-    );
+    // 同步命令仍然执行，但仅退役/禁用的变更不满足「至少新增一个映射」的资格。
+    expect(syncIds()).toEqual(["opencode-zen"]);
+    expect(recordedMessages()).toHaveLength(0);
   });
 
   it("AC-003a 仅显示名/协议/服务商名称变化不创建通知", async () => {
@@ -882,13 +873,15 @@ describe("useTemplateAutoRefresh 模板自动刷新调度", () => {
     expect(messages).toHaveLength(1);
     const [message] = messages;
     expect(message.title).toContain("opencode-zen");
-    expect(message.summary).toContain(tProviderCount(1));
-    expect(message.summary).toContain(tAddedCount(2));
-    expect(message.summary).toContain(tDisabledCount(1));
+    // 摘要只含服务商数与新增数：退役/禁用子句被完全省略。
+    expect(message.summary).toBe(
+      [tProviderCount(1), tAddedCount(2)].join("; "),
+    );
     expect(message.detail).toContain("Zen Upstream");
     expect(message.detail).toContain("new-a");
     expect(message.detail).toContain("remote-b");
-    expect(message.detail).toContain("old");
+    // 已退役/禁用的映射既不计数也不出现在明细中。
+    expect(message.detail).not.toContain("old");
   });
 
   it("AC-006 明细优先使用非空 local_model 而非 upstream_model", async () => {

@@ -955,7 +955,6 @@ const resources = {
       aiGatewayTemplateSyncNotificationProviderCount:
         "{{count}} provider(s) affected",
       aiGatewayTemplateSyncNotificationAddedCount: "{{count}} added",
-      aiGatewayTemplateSyncNotificationDisabledCount: "{{count}} disabled",
       aiGatewayTemplateSyncNotificationDetailProvider: "{{provider}}: {{models}}",
       protocolRouterTokenLabel: "Router Token",
       protocolRouterTokenDesc:
@@ -4535,7 +4534,6 @@ const resources = {
       aiGatewayTemplateSyncNotificationTitle: "服务商模板 {{template}} 模型已变更",
       aiGatewayTemplateSyncNotificationProviderCount: "{{count}} 个服务商受影响",
       aiGatewayTemplateSyncNotificationAddedCount: "新增 {{count}}",
-      aiGatewayTemplateSyncNotificationDisabledCount: "禁用 {{count}}",
       aiGatewayTemplateSyncNotificationDetailProvider: "{{provider}}：{{models}}",
       protocolRouterTokenLabel: "Router Token",
       protocolRouterTokenDesc:
