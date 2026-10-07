@@ -1,15 +1,22 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { UpstreamProviderList } from "./UpstreamProviderList";
 import {
+  AI_GATEWAY_ALERT_AUTO_DISMISS_MS,
   formatGatewayTimestamp,
   type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
   type ProviderGoUsage,
   type ProviderQuota,
 } from "@/lib/aiGateway";
+import {
+  AI_GATEWAY_ALERT_BADGES_STORAGE_KEY,
+  autoDisabledAlertInstanceKey,
+  readDismissedAlertInstanceKeys,
+  retiredMappingAlertInstanceKey,
+} from "@/lib/aiGatewayAlertBadges";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
@@ -1648,3 +1655,494 @@ describe("UpstreamProviderList 已标记密钥区块 (AC-011)", () => {
   });
 });
 
+
+// ---------------------------------------------------------------------------
+// Step 3: dismissible, auto-hiding warning pills with per-instance persisted
+// dismissals (AC-001 .. AC-004, AC-008).
+// RED tests: the badge store module, the auto-dismiss constant, the close
+// control and the new i18n keys do not exist yet.
+// ---------------------------------------------------------------------------
+
+describe("UpstreamProviderList 可关闭的告警标签 (Step 3)", () => {
+  const DISMISS_LABEL_EN = "Dismiss alert";
+  const DISMISS_LABEL_ZH = "关闭提醒";
+
+  type Mapping = GatewayUpstreamProvider["mappings"][number];
+  const autoMapping = (local: string, upstream: string): Mapping => ({
+    local_model: local,
+    upstream_model: upstream,
+    enabled: true,
+    auto_disabled: true,
+  });
+  const retiredMapping = (local: string, upstream: string): Mapping => ({
+    local_model: local,
+    upstream_model: upstream,
+    enabled: false,
+  });
+
+  function listElement(
+    providers: GatewayUpstreamProvider[],
+    templates?: GatewayProviderTemplateView[],
+    handlers: {
+      onSelect?: (providerId: string) => void;
+      onToggleEnabled?: (
+        provider: GatewayUpstreamProvider,
+        enabled: boolean,
+      ) => void;
+    } = {},
+  ) {
+    return (
+      <UpstreamProviderList
+        providers={providers}
+        templates={templates}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={handlers.onSelect ?? vi.fn()}
+        onToggleEnabled={handlers.onToggleEnabled ?? vi.fn()}
+        onAdd={vi.fn()}
+      />
+    );
+  }
+
+  function renderList(
+    providers: GatewayUpstreamProvider[],
+    templates?: GatewayProviderTemplateView[],
+    handlers: {
+      onSelect?: (providerId: string) => void;
+      onToggleEnabled?: (
+        provider: GatewayUpstreamProvider,
+        enabled: boolean,
+      ) => void;
+    } = {},
+  ) {
+    return renderWithProviders(listElement(providers, templates, handlers));
+  }
+
+  function ListHost({
+    providers,
+    templates,
+  }: {
+    providers: GatewayUpstreamProvider[];
+    templates?: GatewayProviderTemplateView[];
+  }) {
+    return listElement(providers, templates);
+  }
+
+  const autoPillTestId = (providerId: string) =>
+    `ai-gateway-provider-auto-disabled-models-${providerId}`;
+  const retiredPillTestId = (providerId: string) =>
+    `ai-gateway-provider-retired-mappings-${providerId}`;
+
+  beforeEach(async () => {
+    window.localStorage.clear();
+    await i18n.changeLanguage("en");
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("AI_GATEWAY_ALERT_AUTO_DISMISS_MS 固定为 8000 毫秒", () => {
+    expect(AI_GATEWAY_ALERT_AUTO_DISMISS_MS).toBe(8000);
+  });
+
+  it("AC-001 手动关闭退休与自动禁用标签立即隐藏并持久化实例键，且不选中卡片", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const onToggleEnabled = vi.fn();
+    const template = makeTemplateView({
+      id: "tpl-close",
+      models: ["kept-model"],
+    });
+    const provider = makeProvider({
+      id: "p-close-manual",
+      name: "Manual Close Provider",
+      template_id: "tpl-close",
+      mappings: [
+        { local_model: "l-retired", upstream_model: "gone-model", enabled: false },
+        {
+          local_model: "l-auto",
+          upstream_model: "auto-model",
+          enabled: true,
+          auto_disabled: true,
+        },
+      ],
+    });
+
+    renderList([provider], [template], { onSelect, onToggleEnabled });
+
+    const retiredKey = retiredMappingAlertInstanceKey(
+      "p-close-manual",
+      "tpl-close",
+      "gone-model",
+    );
+    const autoKey = autoDisabledAlertInstanceKey(
+      "p-close-manual",
+      "l-auto",
+      "auto-model",
+    );
+
+    const retiredPill = screen.getByTestId(
+      retiredPillTestId("p-close-manual"),
+    );
+    await user.click(
+      within(retiredPill).getByRole("button", { name: DISMISS_LABEL_EN }),
+    );
+    expect(
+      screen.queryByTestId(retiredPillTestId("p-close-manual")),
+    ).not.toBeInTheDocument();
+    expect(
+      readDismissedAlertInstanceKeys(window.localStorage).has(retiredKey),
+    ).toBe(true);
+
+    const autoPill = screen.getByTestId(autoPillTestId("p-close-manual"));
+    await user.click(
+      within(autoPill).getByRole("button", { name: DISMISS_LABEL_EN }),
+    );
+    expect(
+      screen.queryByTestId(autoPillTestId("p-close-manual")),
+    ).not.toBeInTheDocument();
+
+    const dismissed = readDismissedAlertInstanceKeys(window.localStorage);
+    expect(dismissed.has(retiredKey)).toBe(true);
+    expect(dismissed.has(autoKey)).toBe(true);
+
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onToggleEnabled).not.toHaveBeenCalled();
+  });
+
+  it("AC-002 7999ms 仍可见，8000ms 自动隐藏并持久化", () => {
+    vi.useFakeTimers();
+    const provider = makeProvider({
+      id: "p-timer-boundary",
+      mappings: [autoMapping("l-boundary", "m-boundary")],
+    });
+    renderList([provider]);
+
+    const testId = autoPillTestId("p-timer-boundary");
+    expect(screen.getByTestId(testId)).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(7999);
+    });
+    expect(screen.getByTestId(testId)).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+    expect(
+      readDismissedAlertInstanceKeys(window.localStorage).has(
+        autoDisabledAlertInstanceKey(
+          "p-timer-boundary",
+          "l-boundary",
+          "m-boundary",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("AC-002 无关 re-render 不会重置自动关闭计时器", () => {
+    vi.useFakeTimers();
+    const providers = [
+      makeProvider({
+        id: "p-timer-rerender",
+        mappings: [autoMapping("l-rerender", "m-rerender")],
+      }),
+    ];
+    const view = render(<ListHost providers={providers} />);
+    const testId = autoPillTestId("p-timer-rerender");
+
+    act(() => {
+      vi.advanceTimersByTime(4000);
+    });
+    view.rerender(<ListHost providers={providers} />);
+    expect(screen.getByTestId(testId)).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(4000);
+    });
+    expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+  });
+
+  it("AC-002 新实例加入时重新计时并一起关闭", () => {
+    vi.useFakeTimers();
+    const providerId = "p-timer-restart";
+    const view = render(
+      <ListHost
+        providers={[
+          makeProvider({
+            id: providerId,
+            mappings: [autoMapping("l-restart-a", "m-restart-a")],
+          }),
+        ]}
+      />,
+    );
+    const testId = autoPillTestId(providerId);
+
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    view.rerender(
+      <ListHost
+        providers={[
+          makeProvider({
+            id: providerId,
+            mappings: [
+              autoMapping("l-restart-a", "m-restart-a"),
+              autoMapping("l-restart-b", "m-restart-b"),
+            ],
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByTestId(testId)).toBeInTheDocument();
+
+    // 原始计时器本应在 8000ms 触发；新实例出现后应重新从 5000ms 起算到 13000ms。
+    act(() => {
+      vi.advanceTimersByTime(7999);
+    });
+    expect(screen.getByTestId(testId)).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+
+    const dismissed = readDismissedAlertInstanceKeys(window.localStorage);
+    expect(
+      dismissed.has(
+        autoDisabledAlertInstanceKey(providerId, "l-restart-a", "m-restart-a"),
+      ),
+    ).toBe(true);
+    expect(
+      dismissed.has(
+        autoDisabledAlertInstanceKey(providerId, "l-restart-b", "m-restart-b"),
+      ),
+    ).toBe(true);
+  });
+
+  it("AC-002 卸载会清除自动关闭计时器", () => {
+    vi.useFakeTimers();
+    const provider = makeProvider({
+      id: "p-timer-unmount",
+      mappings: [autoMapping("l-unmount", "m-unmount")],
+    });
+    const view = renderList([provider]);
+    expect(screen.getByTestId(autoPillTestId("p-timer-unmount"))).toBeInTheDocument();
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("AC-003 关闭在重挂载与探针重臂后保持隐藏，观测健康时清除，复发时重新出现", async () => {
+    const user = userEvent.setup();
+    const providerId = "p-reconcile";
+    const local = "l-reconcile";
+    const upstream = "m-reconcile";
+    const instanceKey = autoDisabledAlertInstanceKey(providerId, local, upstream);
+    const disabledProvider = (
+      runtime: Partial<Mapping> = {},
+    ): GatewayUpstreamProvider =>
+      makeProvider({
+        id: providerId,
+        mappings: [{ ...autoMapping(local, upstream), ...runtime }],
+      });
+    const healthyProvider = (): GatewayUpstreamProvider =>
+      makeProvider({
+        id: providerId,
+        mappings: [{ local_model: local, upstream_model: upstream, enabled: true }],
+      });
+
+    const first = renderList([
+      disabledProvider({
+        disabled_at: 1,
+        disabled_reason: "first",
+        consecutive_failures: 3,
+      }),
+    ]);
+    const testId = autoPillTestId(providerId);
+    await user.click(
+      within(screen.getByTestId(testId)).getByRole("button", {
+        name: DISMISS_LABEL_EN,
+      }),
+    );
+    expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+    expect(
+      readDismissedAlertInstanceKeys(window.localStorage).has(instanceKey),
+    ).toBe(true);
+    first.unmount();
+
+    const second = renderList([
+      disabledProvider({
+        disabled_at: 99,
+        disabled_reason: "re-armed",
+        consecutive_failures: 1,
+      }),
+    ]);
+    expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+    expect(
+      readDismissedAlertInstanceKeys(window.localStorage).has(instanceKey),
+    ).toBe(true);
+    second.unmount();
+
+    const third = renderList([healthyProvider()]);
+    expect(
+      readDismissedAlertInstanceKeys(window.localStorage).has(instanceKey),
+    ).toBe(false);
+    third.unmount();
+
+    renderList([disabledProvider()]);
+    expect(screen.getByTestId(testId)).toBeInTheDocument();
+  });
+
+  it("AC-003 损坏存储不报错，关闭后写回有效 JSON 数组", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      AI_GATEWAY_ALERT_BADGES_STORAGE_KEY,
+      "{not json",
+    );
+    const provider = makeProvider({
+      id: "p-corrupt",
+      mappings: [autoMapping("l-corrupt", "m-corrupt")],
+    });
+    renderList([provider]);
+
+    const testId = autoPillTestId("p-corrupt");
+    await user.click(
+      within(screen.getByTestId(testId)).getByRole("button", {
+        name: DISMISS_LABEL_EN,
+      }),
+    );
+    expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+
+    const raw = window.localStorage.getItem(AI_GATEWAY_ALERT_BADGES_STORAGE_KEY);
+    expect(raw).not.toBeNull();
+    const parsed = JSON.parse(raw as string);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toContain(
+      autoDisabledAlertInstanceKey("p-corrupt", "l-corrupt", "m-corrupt"),
+    );
+  });
+
+  it("AC-004 自动禁用标签的计数与 tooltip 仅含未关闭实例", async () => {
+    const user = userEvent.setup();
+    const providerId = "p-partial-auto";
+    const provider = makeProvider({
+      id: providerId,
+      mappings: [
+        autoMapping("m-one", "m-one"),
+        autoMapping("m-two", "m-two"),
+        autoMapping("m-three", "m-three"),
+      ],
+    });
+    window.localStorage.setItem(
+      AI_GATEWAY_ALERT_BADGES_STORAGE_KEY,
+      JSON.stringify([autoDisabledAlertInstanceKey(providerId, "m-one", "m-one")]),
+    );
+
+    renderList([provider]);
+    const testId = autoPillTestId(providerId);
+    const pill = screen.getByTestId(testId);
+    expect(pill).toHaveTextContent(
+      i18n.t("aiGatewayProviderAutoDisabledModelsHint", { count: 2 }),
+    );
+    expect(pill).toHaveAttribute(
+      "title",
+      i18n.t("aiGatewayProviderAutoDisabledModelsTooltip", {
+        models: "m-two, m-three",
+      }),
+    );
+
+    await user.click(
+      within(pill).getByRole("button", { name: DISMISS_LABEL_EN }),
+    );
+    expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+  });
+
+  it("AC-004 退休标签的计数与 tooltip 仅含未关闭实例", async () => {
+    const user = userEvent.setup();
+    const providerId = "p-partial-retired";
+    const template = makeTemplateView({
+      id: "tpl-partial",
+      models: ["kept-model"],
+    });
+    const provider = makeProvider({
+      id: providerId,
+      template_id: "tpl-partial",
+      mappings: [
+        retiredMapping("l-one", "gone-one"),
+        retiredMapping("l-two", "gone-two"),
+        retiredMapping("l-three", "gone-three"),
+      ],
+    });
+    window.localStorage.setItem(
+      AI_GATEWAY_ALERT_BADGES_STORAGE_KEY,
+      JSON.stringify([
+        retiredMappingAlertInstanceKey(providerId, "tpl-partial", "gone-one"),
+      ]),
+    );
+
+    renderList([provider], [template]);
+    const testId = retiredPillTestId(providerId);
+    const pill = screen.getByTestId(testId);
+    expect(pill).toHaveTextContent(
+      i18n.t("aiGatewayTemplateRetiredMappings", { count: 2 }),
+    );
+    expect(pill).toHaveAttribute(
+      "title",
+      i18n.t("aiGatewayTemplateRetiredMappingsTooltip", {
+        models: "gone-two, gone-three",
+      }),
+    );
+
+    await user.click(
+      within(pill).getByRole("button", { name: DISMISS_LABEL_EN }),
+    );
+    expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+  });
+
+  it("AC-008 关闭控件具备本地化无障碍名称且可用键盘触发", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const provider = makeProvider({
+      id: "p-a11y",
+      mappings: [autoMapping("l-a11y", "m-a11y")],
+    });
+    renderList([provider], undefined, { onSelect });
+
+    const testId = autoPillTestId("p-a11y");
+    const closeControl = within(screen.getByTestId(testId)).getByRole(
+      "button",
+      { name: DISMISS_LABEL_EN },
+    );
+    expect(closeControl).toHaveAttribute("type", "button");
+    closeControl.focus();
+    expect(document.activeElement).toBe(closeControl);
+    await user.keyboard("{Enter}");
+    expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("AC-008 中文环境下关闭控件使用中文无障碍名称", async () => {
+    const user = userEvent.setup();
+    await i18n.changeLanguage("zh");
+    const provider = makeProvider({
+      id: "p-a11y-zh",
+      mappings: [autoMapping("l-a11y-zh", "m-a11y-zh")],
+    });
+    renderList([provider]);
+
+    const testId = autoPillTestId("p-a11y-zh");
+    const closeControl = within(screen.getByTestId(testId)).getByRole(
+      "button",
+      { name: DISMISS_LABEL_ZH },
+    );
+    expect(closeControl).toHaveAttribute("type", "button");
+    closeControl.focus();
+    expect(document.activeElement).toBe(closeControl);
+    await user.keyboard("{Enter}");
+    expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+  });
+});

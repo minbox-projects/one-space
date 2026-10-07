@@ -12,6 +12,8 @@ export const AI_GATEWAY_CONFIG_UPDATED_EVENT = "ai-gateway-config-update";
 export const AI_GATEWAY_KEY_AUTH_FAILED_EVENT = "ai-gateway-key-auth-failed";
 /** Per-provider aggregation window for authentication-failed toasts. */
 export const AI_GATEWAY_KEY_AUTH_TOAST_WINDOW_MS = 1500;
+/** Delay before an unacknowledged provider-card warning pill auto-dismisses. */
+export const AI_GATEWAY_ALERT_AUTO_DISMISS_MS = 8000;
 
 /** Terminal tools AI Gateway is allowed to configure; claude/antigravity are excluded. */
 export const AI_GATEWAY_SUPPORTED_TERMINAL_TOOLS = ["opencode", "codex"] as const;

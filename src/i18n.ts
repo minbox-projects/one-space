@@ -561,6 +561,9 @@ const resources = {
       aiGatewayDisabled: "Disabled",
       aiGatewayProviderAutoDisabledModelsHint:
         "{{count}} mapping(s) auto-disabled",
+      aiGatewayProviderAutoDisabledModelsTooltip:
+        "Auto-disabled mappings: {{models}}",
+      aiGatewayAlertBadgeDismissAria: "Dismiss alert",
       aiGatewayReenableMapping: "Re-enable mapping",
       aiGatewayReenableAllMappings: "Re-enable all mappings",
       aiGatewayEnableAllMappings: "Enable all",
@@ -4153,6 +4156,8 @@ const resources = {
       aiGatewayEnabled: "已启用",
       aiGatewayDisabled: "已禁用",
       aiGatewayProviderAutoDisabledModelsHint: "{{count}} 个映射已被自动禁用",
+      aiGatewayProviderAutoDisabledModelsTooltip: "已自动禁用的映射：{{models}}",
+      aiGatewayAlertBadgeDismissAria: "关闭提醒",
       aiGatewayReenableMapping: "重新启用映射",
       aiGatewayReenableAllMappings: "重新启用所有映射",
       aiGatewayEnableAllMappings: "全部启用",
