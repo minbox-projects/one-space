@@ -660,11 +660,23 @@ export function UpstreamProviderList({
   );
 
   useEffect(() => {
-    setDismissedKeys(reconcileDismissedAlertInstanceKeys(currentInstanceKeys));
+    setDismissedKeys((previous) => {
+      const reconciled = reconcileDismissedAlertInstanceKeys(currentInstanceKeys);
+      const next = new Set<string>();
+      for (const key of previous) {
+        if (currentInstanceKeys.has(key)) next.add(key);
+      }
+      for (const key of reconciled) next.add(key);
+      return next;
+    });
   }, [currentInstanceKeys]);
 
   const handleDismissInstances = useCallback((keys: string[]) => {
-    setDismissedKeys(() => dismissAlertInstanceKeys(keys));
+    setDismissedKeys((previous) => {
+      const merged = new Set(previous);
+      for (const key of keys) merged.add(key);
+      return dismissAlertInstanceKeys(merged);
+    });
   }, []);
 
   const refreshableProviderIds = useMemo(() => {

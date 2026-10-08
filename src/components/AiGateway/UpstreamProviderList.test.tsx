@@ -1739,6 +1739,7 @@ describe("UpstreamProviderList 可关闭的告警标签 (Step 3)", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -2144,5 +2145,57 @@ describe("UpstreamProviderList 可关闭的告警标签 (Step 3)", () => {
     expect(document.activeElement).toBe(closeControl);
     await user.keyboard("{Enter}");
     expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+  });
+
+  it("AC-003 存储不可读时关闭仅会话有效，强制 reconcile 后标签保持隐藏", async () => {
+    const user = userEvent.setup();
+    // 存储读写都抛错：没有可用的持久化后端。
+    const getItemSpy = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new Error("storage denied");
+      });
+    const setItemSpy = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("storage denied");
+      });
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    // 内容相同但对象全新的 provider，用于在 re-render 时强制 currentInstanceKeys 重算。
+    const providers = () => [
+      makeProvider({
+        id: "p-session-auto",
+        name: "Session Auto",
+        mappings: [autoMapping("l-session-auto", "m-session-auto")],
+      }),
+    ];
+
+    const view = render(<ListHost providers={providers()} />);
+
+    const autoTestId = autoPillTestId("p-session-auto");
+    expect(screen.getByTestId(autoTestId)).toBeInTheDocument();
+
+    // 关闭告警标签：存储不可写，仅内存 session 保留。
+    await user.click(
+      within(screen.getByTestId(autoTestId)).getByRole("button", {
+        name: DISMISS_LABEL_EN,
+      }),
+    );
+    expect(screen.queryByTestId(autoTestId)).not.toBeInTheDocument();
+    expect(consoleError).not.toHaveBeenCalled();
+
+    // 内容相同但对象全新的 props 触发 reconcile 路径。
+    view.rerender(<ListHost providers={providers()} />);
+
+    // 存储不可读导致持久化集为空，但内存中的关闭集不能被清空。
+    expect(screen.queryByTestId(autoTestId)).not.toBeInTheDocument();
+    expect(consoleError).not.toHaveBeenCalled();
+
+    getItemSpy.mockRestore();
+    setItemSpy.mockRestore();
+    consoleError.mockRestore();
   });
 });
