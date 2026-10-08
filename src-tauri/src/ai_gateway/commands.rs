@@ -10,7 +10,7 @@ use super::storage::{
 };
 use super::templates::{
     apply_create_provider_from_template, apply_delete_provider_model,
-    apply_delete_provider_template, apply_reset_provider_templates, apply_restore_provider_model,
+    apply_delete_provider_template, apply_restore_provider_model,
     apply_template_sync_from_body, apply_upsert_provider_template, effective_template,
     fetch_template_models, provider_template_views, ProviderRetirementNotice, ProviderTemplateView,
 };
@@ -1380,15 +1380,6 @@ pub fn ai_gateway_delete_provider_template(
 ) -> Result<Vec<ProviderTemplateView>, String> {
     modify_config(|config| {
         let views = apply_delete_provider_template(config, &template_id, |_| Ok(()))?;
-        Ok((true, views))
-    })
-}
-
-/// Reset built-in provider templates back to snapshot defaults.
-#[tauri::command]
-pub fn ai_gateway_reset_provider_templates() -> Result<Vec<ProviderTemplateView>, String> {
-    modify_config(|config| {
-        let views = apply_reset_provider_templates(config, |_| Ok(()))?;
         Ok((true, views))
     })
 }

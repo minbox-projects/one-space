@@ -295,7 +295,6 @@ pub fn run() {
             ai_gateway::ai_gateway_restore_provider_model,
             ai_gateway::ai_gateway_upsert_provider_template,
             ai_gateway::ai_gateway_delete_provider_template,
-            ai_gateway::ai_gateway_reset_provider_templates,
             ai_gateway::ai_gateway_template_auto_refresh_get,
             ai_gateway::ai_gateway_template_auto_refresh_save,
             ai_gateway::ai_gateway_provider_quota,

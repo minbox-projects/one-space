@@ -4296,7 +4296,6 @@ fn every_command_is_registered_in_the_invoke_handler() {
         "ai_gateway_restore_provider_model",
         "ai_gateway_upsert_provider_template",
         "ai_gateway_delete_provider_template",
-        "ai_gateway_reset_provider_templates",
         // 20260923-template-auto-refresh commands.
         "ai_gateway_template_auto_refresh_get",
         "ai_gateway_template_auto_refresh_save",
@@ -4322,7 +4321,6 @@ fn every_command_is_registered_in_the_invoke_handler() {
         "ai_gateway_restore_provider_model",
         "ai_gateway_upsert_provider_template",
         "ai_gateway_delete_provider_template",
-        "ai_gateway_reset_provider_templates",
     ] {
         assert!(
             LIB_SOURCE.contains(command),
@@ -4369,6 +4367,18 @@ fn every_command_is_registered_in_the_invoke_handler() {
     // The obsolete provider-level re-enable was replaced by per-row and provider-level
     // commands; its registration and export must be absent.
     for removed in ["ai_gateway_reenable_provider"] {
+        assert!(
+            !RUN_APP_SOURCE.contains(&format!("ai_gateway::{removed},")),
+            "the removed command {removed} must not be registered in generate_handler!"
+        );
+        assert!(
+            !LIB_SOURCE.contains(removed),
+            "the removed command {removed} must not be exported from lib.rs"
+        );
+    }
+    // 20261008-provider-template-reset-removal: the built-in template reset
+    // command is removed from the surface.
+    for removed in ["ai_gateway_reset_provider_templates"] {
         assert!(
             !RUN_APP_SOURCE.contains(&format!("ai_gateway::{removed},")),
             "the removed command {removed} must not be registered in generate_handler!"

@@ -12,8 +12,8 @@
 use crate::ai_gateway::commands::record_template_mappings_retired_messages;
 use crate::ai_gateway::templates::{
     apply_create_provider_from_template, apply_delete_provider_model,
-    apply_delete_provider_template, apply_reset_provider_templates,
-    apply_restore_provider_model, apply_template_sync_from_body, apply_template_sync_with,
+    apply_delete_provider_template, apply_restore_provider_model,
+    apply_template_sync_from_body, apply_template_sync_with,
     apply_template_sync_with_notices, apply_upsert_provider_template, builtin_templates,
     find_builtin_template, parse_template_snapshot, provider_template_views,
     ProviderRetirementNotice, ProviderTemplateView,
@@ -2278,21 +2278,13 @@ fn test_template_delete_fails_when_used_by_provider() {
 }
 
 #[test]
-fn test_template_delete_succeeds_when_unused_and_reset_restores() {
+fn test_template_delete_succeeds_when_unused() {
     let mut config = GatewayConfig::default();
     let views = apply_delete_provider_template(&mut config, "commandcode", |_| Ok(()))
         .expect("delete should succeed");
 
     assert!(views.iter().all(|view| view.template.id != "commandcode"));
     assert!(config.deleted_template_ids.contains(&"commandcode".to_string()));
-
-    let restored_views = apply_reset_provider_templates(&mut config, |_| Ok(()))
-        .expect("reset should succeed");
-
-    assert!(restored_views
-        .iter()
-        .any(|view| view.template.id == "commandcode"));
-    assert!(config.deleted_template_ids.is_empty());
 }
 
 // ---------------------------------------------------------------------------

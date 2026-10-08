@@ -1204,24 +1204,7 @@ where
     provider_template_views(config)
 }
 
-/// Reset built-in provider templates back to snapshot defaults.
-pub fn apply_reset_provider_templates<W>(
-    config: &mut GatewayConfig,
-    write: W,
-) -> Result<Vec<ProviderTemplateView>, String>
-where
-    W: FnOnce(&GatewayConfig) -> Result<(), String>,
-{
-    config.deleted_template_ids.clear();
-    let builtins = builtin_templates()?;
-    for state in &mut config.provider_templates {
-        if builtins.iter().any(|b| b.id == state.template_id) {
-            state.template = None;
-        }
-    }
-    write(config)?;
-    provider_template_views(config)
-}
+
 
 
 

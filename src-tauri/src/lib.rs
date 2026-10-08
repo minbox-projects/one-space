@@ -46,7 +46,7 @@ pub use ai_gateway::{
     ai_gateway_create_provider_from_template, ai_gateway_delete_provider_model,
     ai_gateway_delete_provider_template, ai_gateway_provider_templates,
     ai_gateway_request_logs,
-    ai_gateway_reset_provider_templates, ai_gateway_restore_provider_model,
+    ai_gateway_restore_provider_model,
     ai_gateway_sync_provider_template, ai_gateway_upsert_provider_template,
     ai_gateway_usage_retention_get, ai_gateway_usage_retention_save, ai_gateway_usage_stats,
 };
