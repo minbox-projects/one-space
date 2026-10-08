@@ -1308,6 +1308,64 @@ fn sync_deletes_mappings_for_models_removed_by_the_sync() {
     );
 }
 
+/// REQ-001 / REQ-002 / REQ-003 / AC-001 / AC-003: the `default_model` removal
+/// comparison trims the stored value, so a padded value naming a removed model
+/// is cleared while a padded value naming a kept model stays byte-identical.
+#[test]
+fn sync_clears_a_padded_default_model_only_when_it_names_a_removed_model() {
+    let previous = template_with_models(
+        "t",
+        Some(SYNC_URL),
+        UpstreamProtocol::ChatCompletions,
+        vec![
+            template_model("A", Some("Local A"), None, true),
+            template_model("M", Some("Local M"), Some(UpstreamProtocol::Responses), true),
+        ],
+    );
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, previous.clone());
+    let mapping_a = mapping_for(&previous.models[0], &previous);
+    let mapping_m = mapping_for(&previous.models[1], &previous);
+
+    // This provider has a removal, and its padded default names that removed M.
+    let mut padded_removed = bound_provider("p-removed", "t");
+    padded_removed.mappings = vec![mapping_a.clone(), mapping_m.clone()];
+    padded_removed.default_model = Some(" M ".to_string());
+    config.providers.push(padded_removed);
+
+    // This provider also has a removal, but its padded default names the kept A,
+    // so the value must survive byte-identical.
+    let mut padded_kept = bound_provider("p-kept", "t");
+    padded_kept.mappings = vec![mapping_a, mapping_m];
+    padded_kept.default_model = Some(" A ".to_string());
+    config.providers.push(padded_kept);
+
+    let body = json!({"data": [{"id": "A"}]}).to_string();
+    apply_template_sync_with(&mut config, "t", |_t| Ok(body.clone()), |_n| Ok(()))
+        .expect("the sync must succeed");
+
+    let padded_removed = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p-removed")
+        .expect("the provider whose padded default names the removed model must exist");
+    assert_eq!(
+        padded_removed.default_model, None,
+        "a padded default_model naming a removed model must be cleared"
+    );
+
+    let padded_kept = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p-kept")
+        .expect("the provider whose padded default names the kept model must exist");
+    assert_eq!(
+        padded_kept.default_model.as_deref(),
+        Some(" A "),
+        "a padded default_model naming a kept model must stay byte-identical"
+    );
+}
+
 /// REQ-001 / REQ-002 / REQ-003 / AC-001 / AC-003: a sync deletes the removed
 /// model's mapping and provider-scoped price row on every provider bound to the
 /// template and appends the removed model to each ignored set exactly once even
@@ -3413,12 +3471,23 @@ fn ac006_failed_sync_returns_err_and_no_notice_escapes() {
                 template_model("m3", Some("M3"), None, true),
             ],
         );
-        config.providers.push(bound_provider_with_mappings(
+        let mut provider = bound_provider_with_mappings(
             "p1",
             "Provider One",
             &template,
             &["m1", "m2", "m3"],
-        ));
+        );
+        // Seed state a leaked staged deletion would change so the whole-config
+        // equality below cannot pass vacuously for `default_model` and
+        // `model_prices`: the sync body lists only m3, so m2 is a removed model.
+        provider.default_model = Some("m2".to_string());
+        config.providers.push(provider);
+        config.model_prices = vec![
+            // The affected provider's row for the removed model.
+            price_row("p1", "m2"),
+            // Another provider's row for the same removed model must also stay.
+            price_row("p2", "m2"),
+        ];
         let before = serde_json::to_value(&config).expect("encode before");
 
         let body = json!({"data": [{"id": "m3"}]}).to_string();
