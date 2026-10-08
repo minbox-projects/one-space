@@ -1203,12 +1203,13 @@ pub fn ai_gateway_provider_templates() -> Result<Vec<ProviderTemplateView>, Stri
 }
 
 /// Build the message-center input for one provider's template-retirement
-/// transition. Only the provider and model names appear; the provider-scoped
-/// `dedupe_key` makes repeated transitions inside the store's dedupe window
-/// merge into one entry while refreshing the latest retired set, and the
-/// targeted AI Gateway tab carries the provider as its entity id. Neither the
-/// title, summary, dedupe key, target nor metadata ever carries a key value
-/// (REQ-006).
+/// transition. Only the provider and model names appear; both the summary and
+/// the `detail` list the removed models in mapping row order without
+/// duplicates, the provider-scoped `dedupe_key` makes repeated transitions
+/// inside the store's dedupe window merge into one entry while refreshing the
+/// latest removed models, and the targeted AI Gateway tab carries the provider
+/// as its entity id. Neither the title, summary, detail, dedupe key, target nor
+/// metadata ever carries a key value (REQ-006).
 fn template_mappings_retired_message_input(
     notice: &ProviderRetirementNotice,
 ) -> crate::messages::MessageCreateInput {
@@ -1228,7 +1229,7 @@ fn template_mappings_retired_message_input(
                 notice.provider_name, models
             ),
         )),
-        detail: None,
+        detail: Some(models),
         dedupe_key: Some(format!(
             "ai_gateway_template_mappings_retired:{}",
             notice.provider_id
