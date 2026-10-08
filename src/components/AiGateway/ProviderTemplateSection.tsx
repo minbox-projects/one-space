@@ -10,7 +10,6 @@ import {
   Pencil,
   Plus,
   RefreshCw,
-  RotateCcw,
   Search,
   Sparkles,
   X,
@@ -35,7 +34,6 @@ export type ProviderTemplateSectionProps = {
   onCreateProvider: (request: CreateProviderFromTemplateRequest) => Promise<boolean>;
   onEditTemplate?: (template: GatewayProviderTemplate) => void;
   onNewTemplate?: () => void;
-  onResetBuiltin?: () => void;
   hideHeader?: boolean;
   expandedIds?: Record<string, boolean>;
   onToggleExpand?: (templateId: string) => void;
@@ -518,7 +516,6 @@ export function ProviderTemplateSection({
   onCreateProvider,
   onEditTemplate,
   onNewTemplate,
-  onResetBuiltin,
   hideHeader,
   expandedIds,
   onToggleExpand,
@@ -604,20 +601,6 @@ export function ProviderTemplateSection({
                     ? t("aiGatewayTemplateCollapseAll", "Collapse all")
                     : t("aiGatewayTemplateExpandAll", "Expand all")}
                 </span>
-              </button>
-            )}
-
-            {onResetBuiltin && (
-              <button
-                type="button"
-                data-testid="template-section-reset-btn"
-                onClick={onResetBuiltin}
-                disabled={busy}
-                title={t("aiGatewayTemplateResetBuiltin", "Restore built-in presets")}
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted disabled:opacity-50"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                <span>{t("aiGatewayTemplateResetBuiltin", "Restore built-in presets")}</span>
               </button>
             )}
 

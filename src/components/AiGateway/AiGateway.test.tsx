@@ -2187,7 +2187,7 @@ describe("AiGateway", () => {
 
     // 可以在弹出的服务商模板管理中查看到模板卡片和管理按钮
     expect(await screen.findByText("Test Presets Vendor")).toBeInTheDocument();
-    expect(screen.getByTestId("template-section-reset-btn")).toBeInTheDocument();
+    expect(screen.queryByTestId("template-section-reset-btn")).not.toBeInTheDocument();
     expect(screen.getByTestId("template-section-new-btn")).toBeInTheDocument();
     // 关闭模板管理弹窗
     fireEvent.click(screen.getByRole("button", { name: "Close" }));

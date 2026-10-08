@@ -8,7 +8,6 @@ import {
   KeyRound,
   Network,
   Plus,
-  RotateCcw,
   ScrollText,
   Server,
   Sparkles,
@@ -36,7 +35,6 @@ import {
   aiGatewayReenableProviderModel,
   aiGatewayReenableProviderModels,
   aiGatewayRequestLogs,
-  aiGatewayResetProviderTemplates,
   aiGatewayRestoreProviderModel,
   aiGatewaySetDefaultKey,
   aiGatewaySetProviderEnabled,
@@ -956,37 +954,6 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
     }
   };
 
-  const handleResetBuiltinTemplates = async (): Promise<boolean> => {
-    try {
-      const nextViews = await aiGatewayResetProviderTemplates();
-      setTemplates(nextViews);
-      pushToast({
-        title: t(
-          "aiGatewayTemplateResetSuccess",
-          "Built-in templates restored.",
-        ),
-        kind: "success",
-      });
-      return true;
-    } catch (err) {
-      pushToast({
-        title: t(
-          "aiGatewayTemplateOperationFailed",
-          "Provider template operation failed: {{name}}",
-          {
-            name: t(
-              "aiGatewayTemplateResetBuiltin",
-              "Restore built-in presets",
-            ),
-          },
-        ),
-        description: errorToMessage(err),
-        kind: "error",
-      });
-      return false;
-    }
-  };
-
   const handleCopyAddress = async () => {
     if (!config) return;
     const address = localBaseUrl(config.port);
@@ -1536,18 +1503,6 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
 
                   <button
                     type="button"
-                    data-testid="template-section-reset-btn"
-                    onClick={() => void handleResetBuiltinTemplates()}
-                    disabled={busy}
-                    title={t("aiGatewayTemplateResetBuiltin", "Restore built-in presets")}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/80 bg-background px-3 text-xs font-medium text-foreground shadow-2xs transition hover:bg-muted active:scale-98 disabled:opacity-50"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
-                    <span>{t("aiGatewayTemplateResetBuiltin", "Restore built-in presets")}</span>
-                  </button>
-
-                  <button
-                    type="button"
                     data-testid="template-section-new-btn"
                     onClick={() => {
                       setEditingTemplate(null);
@@ -1598,7 +1553,6 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
                   setEditingTemplate(null);
                   setIsTemplateEditOpen(true);
                 }}
-                onResetBuiltin={() => void handleResetBuiltinTemplates()}
               />
             </div>
           </DialogContent>

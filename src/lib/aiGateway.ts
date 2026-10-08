@@ -1206,12 +1206,6 @@ export function aiGatewayDeleteProviderTemplate(templateId: string) {
   );
 }
 
-export function aiGatewayResetProviderTemplates() {
-  return invoke<GatewayProviderTemplateView[]>(
-    "ai_gateway_reset_provider_templates",
-  );
-}
-
 export function aiGatewayCreateProviderFromTemplate(
   request: CreateProviderFromTemplateRequest,
 ) {

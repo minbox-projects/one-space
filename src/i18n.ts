@@ -745,10 +745,8 @@ const resources = {
       aiGatewayDeleteTemplate: "Delete template",
       aiGatewayTemplateInUseBy:
         "Used by upstream provider \"{{name}}\", cannot be deleted.",
-      aiGatewayTemplateResetBuiltin: "Restore built-in presets",
       aiGatewayTemplateSaved: "Template saved: {{name}}.",
       aiGatewayTemplateDeleted: "Template deleted: {{name}}.",
-      aiGatewayTemplateResetSuccess: "Built-in templates restored.",
       aiGatewayTemplateTab: "Templates",
       aiGatewayBoundTemplate: "Associated Provider Template",
       aiGatewayBoundTemplateBadge: "Template: {{name}}",
@@ -4331,10 +4329,8 @@ const resources = {
       aiGatewayDeleteTemplate: "删除模板",
       aiGatewayTemplateInUseBy:
         "已被上游服务商 \"{{name}}\" 使用，无法删除。",
-      aiGatewayTemplateResetBuiltin: "恢复内置预设",
       aiGatewayTemplateSaved: "服务商模板已保存：{{name}}。",
       aiGatewayTemplateDeleted: "已删除服务商模板：{{name}}。",
-      aiGatewayTemplateResetSuccess: "已恢复内置官方模板。",
       aiGatewayTemplateTab: "服务商模板",
       aiGatewayBoundTemplate: "关联服务商模板",
       aiGatewayBoundTemplateBadge: "模板: {{name}}",
