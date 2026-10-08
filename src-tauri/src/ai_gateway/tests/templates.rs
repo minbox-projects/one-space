@@ -3260,7 +3260,10 @@ fn ac006_successful_sync_records_one_retirement_message_per_affected_provider() 
 
 /// AC-006 / REQ-006: a second retirement inside the store's one-hour dedupe
 /// window for the same provider merges into the first entry, increments
-/// `occurrences` and refreshes the summary to the latest retired set.
+/// `occurrences` and refreshes the summary to the provider's full currently
+/// retired set at the event time (every disabled mapping whose upstream model is
+/// absent from the current template), not only the mappings the triggering sync
+/// newly retired.
 #[test]
 fn ac006_second_sync_merges_retirement_message_inside_dedupe_window() {
     clear_template_retirement_inputs();
@@ -3302,7 +3305,9 @@ fn ac006_second_sync_merges_retirement_message_inside_dedupe_window() {
         )
         .expect("the second sync must succeed");
         assert_eq!(second_notices.len(), 1);
-        assert_retirement_notice(&second_notices[0], "p1", "Provider One", &["m2"]);
+        // m1 is still disabled and still absent from the template after the second
+        // sync; m2 is newly retired. Row order is m1, m2.
+        assert_retirement_notice(&second_notices[0], "p1", "Provider One", &["m1", "m2"]);
         record_template_mappings_retired_messages(None, &second_notices);
 
         let inputs = recorded_template_retirement_inputs();
@@ -3323,13 +3328,13 @@ fn ac006_second_sync_merges_retirement_message_inside_dedupe_window() {
             Some("ai_gateway_template_mappings_retired:p1")
         );
         let expected_summary = crate::messages::localized(
-            "服务商 Provider One 的映射已从模板移除：m2",
-            "Provider Provider One mappings removed from template: m2",
+            "服务商 Provider One 的映射已从模板移除：m1, m2",
+            "Provider Provider One mappings removed from template: m1, m2",
         );
         assert_eq!(
             record.summary.as_deref(),
             Some(expected_summary.as_str()),
-            "the merged summary must reflect the latest retired set"
+            "the merged summary must reflect the provider's full currently retired set"
         );
         assert_eq!(record.detail, None, "the retirement detail is always absent");
     });

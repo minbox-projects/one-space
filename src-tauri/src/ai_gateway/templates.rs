@@ -197,10 +197,11 @@ pub struct ProviderTemplateView {
     pub from_snapshot: bool,
 }
 
-/// One provider whose derived mappings were newly retired by a template sync:
-/// mappings that were enabled before the sync and became disabled because their
-/// upstream model left the template, in mapping row order. The provider name is
-/// the stored name after propagation; no key value is ever carried.
+/// One provider whose derived mappings were retired by a template sync: the
+/// provider's full currently retired set at event time — every disabled mapping
+/// whose upstream model is absent from the synced template — in mapping row
+/// order. The provider name is the stored name after propagation; no key value
+/// is ever carried.
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::ai_gateway) struct ProviderRetirementNotice {
     pub provider_id: String,
@@ -591,11 +592,12 @@ fn upsert_template_state(
 /// instead of an explicit value. Ignored models and disabled template
 /// models are skipped, and no price row is ever created or modified.
 ///
-/// Returns one [`ProviderRetirementNotice`] for every bound provider that had at
-/// least one mapping newly retired in this sync (an enabled mapping whose
-/// upstream model left the template), in provider order and with the retired
-/// models in mapping row order. A provider with no newly retired mapping yields
-/// no notice.
+/// Returns one [`ProviderRetirementNotice`] for every bound provider that newly
+/// retired at least one mapping in this sync (an enabled mapping whose upstream
+/// model left the template), in provider order. Each notice lists that
+/// provider's full currently retired set at event time — every disabled mapping
+/// whose upstream model is absent from the new template — in mapping row order.
+/// A provider with no newly retired mapping yields no notice.
 fn propagate_to_derived(
     config: &mut GatewayConfig,
     template_id: &str,
@@ -635,9 +637,10 @@ fn propagate_to_derived(
         }
         let provider_protocol = provider.protocol;
 
-        // Only a mapping that actually flips from enabled to disabled counts as
-        // newly retired; an already-disabled mapping stays disabled silently.
-        let mut newly_retired: Vec<String> = Vec::new();
+        // Only a mapping that actually flips from enabled to disabled in this
+        // sync counts as newly retired and gates the notice; an already-disabled
+        // mapping stays disabled silently.
+        let mut newly_retired = false;
         for mapping in provider.mappings.iter_mut() {
             if retired_models
                 .iter()
@@ -645,14 +648,29 @@ fn propagate_to_derived(
                 && mapping.enabled
             {
                 mapping.enabled = false;
-                newly_retired.push(mapping.upstream_model.clone());
+                newly_retired = true;
             }
         }
-        if !newly_retired.is_empty() {
+        if newly_retired {
+            // The notice names the provider's full currently retired set: every
+            // disabled mapping whose upstream model is absent from the new
+            // template, in mapping row order, no matter when it was disabled.
+            let currently_retired: Vec<String> = provider
+                .mappings
+                .iter()
+                .filter(|mapping| {
+                    !mapping.enabled
+                        && !new_template
+                            .models
+                            .iter()
+                            .any(|model| model.upstream_model == mapping.upstream_model)
+                })
+                .map(|mapping| mapping.upstream_model.clone())
+                .collect();
             notices.push(ProviderRetirementNotice {
                 provider_id: provider.id.clone(),
                 provider_name: provider.name.clone(),
-                retired_models: newly_retired,
+                retired_models: currently_retired,
             });
         }
 
