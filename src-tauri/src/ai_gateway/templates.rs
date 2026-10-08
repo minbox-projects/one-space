@@ -197,11 +197,11 @@ pub struct ProviderTemplateView {
     pub from_snapshot: bool,
 }
 
-/// One provider whose derived mappings were retired by a template sync: the
-/// provider's full currently retired set at event time — every disabled mapping
-/// whose upstream model is absent from the synced template — in mapping row
-/// order. The provider name is the stored name after propagation; no key value
-/// is ever carried.
+/// One provider whose derived mappings a template sync removed: the removed
+/// `upstream_model` values in mapping row order without duplicates. Emitted once
+/// per bound provider with at least one removal, including a provider whose only
+/// removals were already-disabled legacy rows. The provider name is the stored
+/// name after propagation; no key value is ever carried.
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::ai_gateway) struct ProviderRetirementNotice {
     pub provider_id: String,
@@ -583,21 +583,24 @@ fn upsert_template_state(
 /// Propagate a template update to every derived provider whose `template_id`
 /// matches: provider name/base_url/protocol update only while they still equal
 /// the previous template values, and only enabled template models add or update
-/// mappings. A mapping whose model the previous template carried but the new
-/// template removed is disabled (only `false` is ever written: the mapping is
-/// never deleted and never re-enabled), so retired models stop serving. Mapping
+/// mappings. A mapping is deleted when its upstream model left the template
+/// (whatever its enabled flag) or when it was already disabled and its model the
+/// new template does not list; a retired model is appended once to the
+/// provider's ignored set so a later sync cannot resurrect it, its
+/// provider-scoped price row is deleted, and a `default_model` naming it is
+/// cleared. An enabled mapping the sync did not retire and a user-disabled
+/// mapping whose model the new template still lists stay untouched. Mapping
 /// display name/protocol update only while they equal the previous template
 /// values (`local_model` is never touched); a mapping whose effective protocol
 /// equals the provider protocol is stored as `None` (follow the provider)
 /// instead of an explicit value. Ignored models and disabled template
-/// models are skipped, and no price row is ever created or modified.
+/// models are skipped.
 ///
-/// Returns one [`ProviderRetirementNotice`] for every bound provider that newly
-/// retired at least one mapping in this sync (an enabled mapping whose upstream
-/// model left the template), in provider order. Each notice lists that
-/// provider's full currently retired set at event time — every disabled mapping
-/// whose upstream model is absent from the new template — in mapping row order.
-/// A provider with no newly retired mapping yields no notice.
+/// Returns one [`ProviderRetirementNotice`] for every bound provider with at
+/// least one removal in this sync, in provider order. Each notice lists the
+/// provider's removed models in mapping row order without duplicates,
+/// including a provider whose only removals were already-disabled legacy rows.
+/// A provider with no removal yields no notice.
 fn propagate_to_derived(
     config: &mut GatewayConfig,
     template_id: &str,
@@ -619,6 +622,10 @@ fn propagate_to_derived(
         .collect();
 
     let mut notices: Vec<ProviderRetirementNotice> = Vec::new();
+    // Removed models per provider id, in mapping row order without duplicates,
+    // collected while the provider loop holds the `config.providers` borrow so
+    // the staged price rows can be pruned right after it.
+    let mut removed_by_provider: Vec<(String, Vec<String>)> = Vec::new();
     let providers = &mut config.providers;
 
     for provider in providers
@@ -637,41 +644,63 @@ fn propagate_to_derived(
         }
         let provider_protocol = provider.protocol;
 
-        // Only a mapping that actually flips from enabled to disabled in this
-        // sync counts as newly retired and gates the notice; an already-disabled
-        // mapping stays disabled silently.
-        let mut newly_retired = false;
-        for mapping in provider.mappings.iter_mut() {
-            if retired_models
+        // Delete every mapping this sync retires: one whose upstream model the
+        // previous template carried but the new template dropped (whatever its
+        // enabled flag), or an already-disabled row whose model the new template
+        // does not list. An enabled manual extra the sync never retired stays.
+        let mut removed: Vec<String> = Vec::new();
+        provider.mappings.retain(|mapping| {
+            let retired_by_sync = retired_models
                 .iter()
-                .any(|retired| *retired == mapping.upstream_model)
-                && mapping.enabled
-            {
-                mapping.enabled = false;
-                newly_retired = true;
+                .any(|retired| *retired == mapping.upstream_model);
+            let legacy_retired = !mapping.enabled
+                && !new_template
+                    .models
+                    .iter()
+                    .any(|model| model.upstream_model == mapping.upstream_model);
+            if retired_by_sync || legacy_retired {
+                if !removed
+                    .iter()
+                    .any(|existing| existing == &mapping.upstream_model)
+                {
+                    removed.push(mapping.upstream_model.clone());
+                }
+                false
+            } else {
+                true
             }
-        }
-        if newly_retired {
-            // The notice names the provider's full currently retired set: every
-            // disabled mapping whose upstream model is absent from the new
-            // template, in mapping row order, no matter when it was disabled.
-            let currently_retired: Vec<String> = provider
-                .mappings
-                .iter()
-                .filter(|mapping| {
-                    !mapping.enabled
-                        && !new_template
-                            .models
-                            .iter()
-                            .any(|model| model.upstream_model == mapping.upstream_model)
-                })
-                .map(|mapping| mapping.upstream_model.clone())
-                .collect();
+        });
+
+        if !removed.is_empty() {
+            // Each removed model is ignored once so a later sync cannot
+            // resurrect it, whichever row first carried it.
+            for model in &removed {
+                if !provider
+                    .ignored_models
+                    .iter()
+                    .any(|ignored| ignored == model)
+                {
+                    provider.ignored_models.push(model.clone());
+                }
+            }
+            // A `default_model` naming a removed model is cleared; a trimmed
+            // comparison keeps whitespace-padded values matching.
+            let clears_default_model = provider
+                .default_model
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|default_model| {
+                    removed.iter().any(|model| model.as_str() == default_model)
+                });
+            if clears_default_model {
+                provider.default_model = None;
+            }
             notices.push(ProviderRetirementNotice {
                 provider_id: provider.id.clone(),
                 provider_name: provider.name.clone(),
-                retired_models: currently_retired,
+                retired_models: removed.clone(),
             });
+            removed_by_provider.push((provider.id.clone(), removed));
         }
 
         for model in new_template.models.iter().filter(|model| model.enabled) {
@@ -738,6 +767,15 @@ fn propagate_to_derived(
         }
     }
 
+    // Drop exactly the staged price rows of each affected provider and removed
+    // model; rows of other providers or other models stay.
+    config.model_prices.retain(|row| {
+        !removed_by_provider.iter().any(|(provider_id, removed)| {
+            row.provider_id.as_deref() == Some(provider_id.as_str())
+                && removed.iter().any(|model| model == &row.upstream_model)
+        })
+    });
+
     notices
 }
 
@@ -748,16 +786,18 @@ fn propagate_to_derived(
 /// source-provided display name completed with the identifier's uncovered
 /// remainder (and the derived protocol) wins while a locally owned
 /// `enabled` flag and any omitted value are kept for models the new list still
-/// carries. A sync disables the derived mapping of every model the previous
-/// template carried but the new list removed (only `false` is ever written: the
-/// mapping is never deleted and never enabled), so a retired model stops
-/// serving. A blank URL and every fatal source problem (fetch error, non-JSON,
-/// missing model array, entry without an identifier, empty effective set) write
-/// nothing. The new template and every derived provider update are staged on a
-/// clone, handed to `persist`, and only committed to `config` once persistence
-/// succeeds. The notices are computed from the staged clone and returned only
-/// after `persist` succeeds and `config` is updated; any error returns no
-/// notices.
+/// carries. A sync deletes the derived mapping of every model the previous
+/// template carried but the new list removed (whatever the mapping's enabled
+/// flag) and of every already-disabled mapping whose model the new list no
+/// longer has; each removed model is recorded once in the provider's ignored
+/// set, its provider-scoped price row is deleted, and a `default_model` naming
+/// it is cleared. A blank URL and every fatal source problem (fetch error,
+/// non-JSON, missing model array, entry without an identifier, empty effective
+/// set) write nothing. The new template and every derived provider update are
+/// staged on a clone, handed to `persist`, and only committed to `config` once
+/// persistence succeeds. The notices are computed from the staged clone and
+/// returned only after `persist` succeeds and `config` is updated; any error
+/// returns no notices.
 pub(in crate::ai_gateway) fn apply_template_sync_with_notices(
     config: &mut GatewayConfig,
     template_id: &str,

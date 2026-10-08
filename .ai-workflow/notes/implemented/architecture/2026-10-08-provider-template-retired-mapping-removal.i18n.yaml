@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (.ai-workflow/notes/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+# ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-10-08-provider-template-retired-mapping-removal.md
+2026-10-08-provider-template-retired-mapping-removal.md: f1c2b9ebb402a1cb02e088c0476b7a6676fddd83
+2026-10-08-provider-template-retired-mapping-removal.zh.md: 65e4d29ecc0f2a89936aa16ea329d37f90b13c55

@@ -320,7 +320,8 @@ pub struct GatewayUpstreamProvider {
     /// Template this provider was created from; `None` for manual providers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,
-    /// Upstream model names the user explicitly removed so a template sync
+    /// Upstream model names removed from this provider — by the manual model
+    /// delete or by a template sync that dropped the model — so a later sync
     /// must not resurrect them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ignored_models: Vec<String>,

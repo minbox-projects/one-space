@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-09-24-ai-gateway-template-auto-sync-notification.md
-2026-09-24-ai-gateway-template-auto-sync-notification.md: 731b3973d955a440cb3c33e2958c41c61e5786d4
-2026-09-24-ai-gateway-template-auto-sync-notification.zh.md: 6465cf7ecd35bb012645f3c6f0c56a22849fdbb8
+2026-09-24-ai-gateway-template-auto-sync-notification.md: 2ea931838a7342c6872e8e0298dfc2e7ee18a90a
+2026-09-24-ai-gateway-template-auto-sync-notification.zh.md: 39fd4c65e3ca6ac8512082021db1bc7c7fd74ab0

@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-07-gateway-alert-badges-and-message-center.md
-2026-10-07-gateway-alert-badges-and-message-center.md: b9ba5d2df926f0bfaf027fbc45392431c8c5a97b
-2026-10-07-gateway-alert-badges-and-message-center.zh.md: 81ed0babac44778acc90ac6cb54f3f62d4d1b8c6
+2026-10-07-gateway-alert-badges-and-message-center.md: c43d64760aa12497c7d88f152ab2b8e8c168dbc5
+2026-10-07-gateway-alert-badges-and-message-center.zh.md: c0bd90a03b881c73d5bbfdc9e6367e55354926bb
