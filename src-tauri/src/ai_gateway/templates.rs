@@ -197,6 +197,18 @@ pub struct ProviderTemplateView {
     pub from_snapshot: bool,
 }
 
+/// One provider whose derived mappings were retired by a template sync: the
+/// provider's full currently retired set at event time — every disabled mapping
+/// whose upstream model is absent from the synced template — in mapping row
+/// order. The provider name is the stored name after propagation; no key value
+/// is ever carried.
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::ai_gateway) struct ProviderRetirementNotice {
+    pub provider_id: String,
+    pub provider_name: String,
+    pub retired_models: Vec<String>,
+}
+
 /// Resolve the effective template data for `template_id`: the last persisted
 /// sync result when present, else the built-in snapshot. An unknown id is an
 /// actionable error naming the id.
@@ -579,12 +591,19 @@ fn upsert_template_state(
 /// equals the provider protocol is stored as `None` (follow the provider)
 /// instead of an explicit value. Ignored models and disabled template
 /// models are skipped, and no price row is ever created or modified.
+///
+/// Returns one [`ProviderRetirementNotice`] for every bound provider that newly
+/// retired at least one mapping in this sync (an enabled mapping whose upstream
+/// model left the template), in provider order. Each notice lists that
+/// provider's full currently retired set at event time — every disabled mapping
+/// whose upstream model is absent from the new template — in mapping row order.
+/// A provider with no newly retired mapping yields no notice.
 fn propagate_to_derived(
     config: &mut GatewayConfig,
     template_id: &str,
     previous: &ProviderTemplate,
     new_template: &ProviderTemplate,
-) {
+) -> Vec<ProviderRetirementNotice> {
     // Models the previous template carried that the new template no longer lists
     // are retired regardless of their enabled flag in either template.
     let retired_models: Vec<&str> = previous
@@ -599,6 +618,7 @@ fn propagate_to_derived(
         .map(|model| model.upstream_model.as_str())
         .collect();
 
+    let mut notices: Vec<ProviderRetirementNotice> = Vec::new();
     let providers = &mut config.providers;
 
     for provider in providers
@@ -617,13 +637,41 @@ fn propagate_to_derived(
         }
         let provider_protocol = provider.protocol;
 
+        // Only a mapping that actually flips from enabled to disabled in this
+        // sync counts as newly retired and gates the notice; an already-disabled
+        // mapping stays disabled silently.
+        let mut newly_retired = false;
         for mapping in provider.mappings.iter_mut() {
             if retired_models
                 .iter()
                 .any(|retired| *retired == mapping.upstream_model)
+                && mapping.enabled
             {
                 mapping.enabled = false;
+                newly_retired = true;
             }
+        }
+        if newly_retired {
+            // The notice names the provider's full currently retired set: every
+            // disabled mapping whose upstream model is absent from the new
+            // template, in mapping row order, no matter when it was disabled.
+            let currently_retired: Vec<String> = provider
+                .mappings
+                .iter()
+                .filter(|mapping| {
+                    !mapping.enabled
+                        && !new_template
+                            .models
+                            .iter()
+                            .any(|model| model.upstream_model == mapping.upstream_model)
+                })
+                .map(|mapping| mapping.upstream_model.clone())
+                .collect();
+            notices.push(ProviderRetirementNotice {
+                provider_id: provider.id.clone(),
+                provider_name: provider.name.clone(),
+                retired_models: currently_retired,
+            });
         }
 
         for model in new_template.models.iter().filter(|model| model.enabled) {
@@ -689,9 +737,12 @@ fn propagate_to_derived(
             }
         }
     }
+
+    notices
 }
 
-/// Apply one template sync with injectable fetch and persistence seams.
+/// Apply one template sync with injectable fetch and persistence seams, returning
+/// the retirement notices alongside the view.
 ///
 /// The template's model list is replaced wholesale from its `models_url`; a
 /// source-provided display name completed with the identifier's uncovered
@@ -704,13 +755,15 @@ fn propagate_to_derived(
 /// missing model array, entry without an identifier, empty effective set) write
 /// nothing. The new template and every derived provider update are staged on a
 /// clone, handed to `persist`, and only committed to `config` once persistence
-/// succeeds.
-pub fn apply_template_sync_with(
+/// succeeds. The notices are computed from the staged clone and returned only
+/// after `persist` succeeds and `config` is updated; any error returns no
+/// notices.
+pub(in crate::ai_gateway) fn apply_template_sync_with_notices(
     config: &mut GatewayConfig,
     template_id: &str,
     fetch: impl FnOnce(&ProviderTemplate) -> Result<String, String>,
     persist: impl FnOnce(&GatewayConfig) -> Result<(), String>,
-) -> Result<ProviderTemplateView, String> {
+) -> Result<(ProviderTemplateView, Vec<ProviderRetirementNotice>), String> {
     let previous = effective_template(config, template_id)?;
     let url = previous
         .models_url
@@ -728,7 +781,7 @@ pub fn apply_template_sync_with(
     next_template.models = models;
 
     let mut next = config.clone();
-    propagate_to_derived(&mut next, template_id, &previous, &next_template);
+    let notices = propagate_to_derived(&mut next, template_id, &previous, &next_template);
     let synced_at = now_ts();
     let source = next_template.source.clone();
     upsert_template_state(
@@ -742,12 +795,30 @@ pub fn apply_template_sync_with(
     persist(&next)?;
     *config = next;
 
-    Ok(ProviderTemplateView {
-        template: next_template,
-        synced_at: Some(synced_at),
-        source,
-        from_snapshot: false,
-    })
+    Ok((
+        ProviderTemplateView {
+            template: next_template,
+            synced_at: Some(synced_at),
+            source,
+            from_snapshot: false,
+        },
+        notices,
+    ))
+}
+
+/// Apply one template sync with injectable fetch and persistence seams, dropping
+/// the retirement notices.
+///
+/// This is the backwards-compatible entry point; [`apply_template_sync_with_notices`]
+/// carries the same behavior plus the notices.
+pub fn apply_template_sync_with(
+    config: &mut GatewayConfig,
+    template_id: &str,
+    fetch: impl FnOnce(&ProviderTemplate) -> Result<String, String>,
+    persist: impl FnOnce(&GatewayConfig) -> Result<(), String>,
+) -> Result<ProviderTemplateView, String> {
+    apply_template_sync_with_notices(config, template_id, fetch, persist)
+        .map(|(view, _notices)| view)
 }
 
 /// Apply one template sync from an already-fetched model-list body, with no
@@ -757,13 +828,14 @@ pub fn apply_template_sync_with(
 /// then runs this inside the serialized mutation: the body is parsed against
 /// the latest persisted template exactly like [`apply_template_sync_with`], and
 /// every template/derived-provider change is committed to `config`. A parse
-/// failure writes nothing.
+/// failure writes nothing. The retirement notices computed by the sync are
+/// returned so the caller can record them once the write stands.
 pub(in crate::ai_gateway) fn apply_template_sync_from_body(
     config: &mut GatewayConfig,
     template_id: &str,
     raw: &str,
-) -> Result<ProviderTemplateView, String> {
-    apply_template_sync_with(config, template_id, |_| Ok(raw.to_string()), |_| Ok(()))
+) -> Result<(ProviderTemplateView, Vec<ProviderRetirementNotice>), String> {
+    apply_template_sync_with_notices(config, template_id, |_| Ok(raw.to_string()), |_| Ok(()))
 }
 
 /// Fetch a template's model list from its configured `models_url` through

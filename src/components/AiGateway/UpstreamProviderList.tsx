@@ -14,6 +14,7 @@ import {
   Server,
   Sparkles,
   Tag,
+  X,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { ProviderQuotaBlock } from "./ProviderQuotaBlock";
@@ -26,6 +27,7 @@ import {
   formatTimeHms,
 } from "./gatewayShared";
 import {
+  AI_GATEWAY_ALERT_AUTO_DISMISS_MS,
   formatGatewayTimestamp,
   isCommandCodeProvider,
   isOpencodeGoProvider,
@@ -37,6 +39,12 @@ import {
   type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
 } from "@/lib/aiGateway";
+import {
+  autoDisabledAlertInstanceKey,
+  dismissAlertInstanceKeys,
+  reconcileDismissedAlertInstanceKeys,
+  retiredMappingAlertInstanceKey,
+} from "@/lib/aiGatewayAlertBadges";
 
 export type ProviderStatusFilter = "all" | "enabled" | "disabled";
 
@@ -61,6 +69,10 @@ type UpstreamProviderCardItemProps = {
   templates?: GatewayProviderTemplateView[];
   baseNow?: number | Date;
   quotaRefreshToken: number;
+  /** Instance keys the user (or the auto-dismiss timer) has dismissed. */
+  dismissedKeys: Set<string>;
+  /** Dismiss every provided problem instance of this card's pills. */
+  handleDismissInstances: (keys: string[]) => void;
   onSelect: (providerId: string) => void;
   onToggleEnabled: (provider: GatewayUpstreamProvider, enabled: boolean) => void;
   onReenableKey?: (providerId: string, keyId: string) => void;
@@ -74,6 +86,8 @@ function UpstreamProviderCardItem({
   templates,
   baseNow,
   quotaRefreshToken,
+  dismissedKeys,
+  handleDismissInstances,
   onSelect,
   onToggleEnabled,
   onReenableKey,
@@ -85,22 +99,104 @@ function UpstreamProviderCardItem({
   const mappingCount = provider.mappings?.length ?? 0;
   const providerKeys = providerKeyPool(provider);
   const markedKeys = providerMarkedKeys(provider);
-  const autoDisabledMappings = (provider.mappings ?? []).filter(
-    (mapping) => mapping.auto_disabled === true,
-  );
   const isChatProtocol = provider.protocol !== "responses";
   const templateView = provider.template_id
     ? templates?.find(
         (view) => view.template.id === provider.template_id,
       )
     : undefined;
-  const retiredMappings = templateView
-    ? (provider.mappings ?? []).filter(
+
+  const autoDisabledInstances = useMemo(
+    () =>
+      (provider.mappings ?? [])
+        .filter((mapping) => mapping.auto_disabled === true)
+        .map((mapping) => ({
+          key: autoDisabledAlertInstanceKey(
+            provider.id,
+            mapping.local_model,
+            mapping.upstream_model,
+          ),
+          label: mapping.local_model.trim() || mapping.upstream_model,
+        })),
+    [provider.id, provider.mappings],
+  );
+
+  const retiredInstances = useMemo(() => {
+    if (!templateView) return [];
+    const templateId = templateView.template.id;
+    return (provider.mappings ?? [])
+      .filter(
         (mapping) =>
           mapping.enabled === false &&
           isMappingDeprecated(mapping, templateView.template),
       )
-    : [];
+      .map((mapping) => ({
+        key: retiredMappingAlertInstanceKey(
+          provider.id,
+          templateId,
+          mapping.upstream_model,
+        ),
+        label: mapping.upstream_model,
+      }));
+  }, [provider.id, provider.mappings, templateView]);
+
+  const pendingAutoInstances = useMemo(
+    () => autoDisabledInstances.filter((instance) => !dismissedKeys.has(instance.key)),
+    [autoDisabledInstances, dismissedKeys],
+  );
+  const pendingRetiredInstances = useMemo(
+    () => retiredInstances.filter((instance) => !dismissedKeys.has(instance.key)),
+    [retiredInstances, dismissedKeys],
+  );
+
+  // Stable key arrays keyed on content so an unrelated re-render does not restart
+  // the timer, while a new instance changes the joined string and does restart it.
+  const pendingAutoKeyString = useMemo(
+    () =>
+      pendingAutoInstances
+        .map((instance) => instance.key)
+        .sort()
+        .join("\n"),
+    [pendingAutoInstances],
+  );
+  const pendingAutoKeys = useMemo(
+    () => (pendingAutoKeyString ? pendingAutoKeyString.split("\n") : []),
+    [pendingAutoKeyString],
+  );
+  const pendingRetiredKeyString = useMemo(
+    () =>
+      pendingRetiredInstances
+        .map((instance) => instance.key)
+        .sort()
+        .join("\n"),
+    [pendingRetiredInstances],
+  );
+  const pendingRetiredKeys = useMemo(
+    () => (pendingRetiredKeyString ? pendingRetiredKeyString.split("\n") : []),
+    [pendingRetiredKeyString],
+  );
+
+  useEffect(() => {
+    if (!pendingAutoKeyString) return;
+    const timer = window.setTimeout(
+      () => handleDismissInstances(pendingAutoKeys),
+      AI_GATEWAY_ALERT_AUTO_DISMISS_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [pendingAutoKeyString, pendingAutoKeys, handleDismissInstances]);
+
+  useEffect(() => {
+    if (!pendingRetiredKeyString) return;
+    const timer = window.setTimeout(
+      () => handleDismissInstances(pendingRetiredKeys),
+      AI_GATEWAY_ALERT_AUTO_DISMISS_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [pendingRetiredKeyString, pendingRetiredKeys, handleDismissInstances]);
+
+  const dismissAriaLabel = t("aiGatewayAlertBadgeDismissAria", {
+    defaultValue: "Dismiss alert",
+  });
 
   return (
     <div
@@ -277,42 +373,74 @@ function UpstreamProviderCardItem({
         )}
 
         {/* 退休映射提示：模板同步移除模型后其派生映射被自动禁用 */}
-        {retiredMappings.length > 0 ? (
+        {pendingRetiredInstances.length > 0 ? (
           <div
             data-testid={`ai-gateway-provider-retired-mappings-${provider.id}`}
             title={t("aiGatewayTemplateRetiredMappingsTooltip", {
-              models: retiredMappings
-                .map((mapping) => mapping.upstream_model)
+              models: pendingRetiredInstances
+                .map((instance) => instance.label)
                 .join(", "),
-              defaultValue: `Removed from the template and disabled: ${retiredMappings
-                .map((mapping) => mapping.upstream_model)
+              defaultValue: `Removed from the template and disabled: ${pendingRetiredInstances
+                .map((instance) => instance.label)
                 .join(", ")}`,
             })}
-            className="mt-2 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
+            className="mt-2 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/15 pl-2 pr-1 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
           >
             <AlertTriangle className="h-3 w-3 shrink-0" />
             <span>
               {t("aiGatewayTemplateRetiredMappings", {
-                count: retiredMappings.length,
-                defaultValue: `${retiredMappings.length} mapping(s) removed from template`,
+                count: pendingRetiredInstances.length,
+                defaultValue: `${pendingRetiredInstances.length} mapping(s) removed from template`,
               })}
             </span>
+            <button
+              type="button"
+              data-testid={`ai-gateway-provider-retired-mappings-dismiss-${provider.id}`}
+              aria-label={dismissAriaLabel}
+              onClick={(event) => {
+                event.stopPropagation();
+                handleDismissInstances(pendingRetiredKeys);
+              }}
+              className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full text-amber-700/70 transition hover:bg-amber-500/25 hover:text-amber-800 dark:text-amber-400/80 dark:hover:text-amber-200"
+            >
+              <X className="h-2.5 w-2.5" />
+            </button>
           </div>
         ) : null}
 
         {/* 逐行自动禁用读提示：健康失败累计后由后端按映射行自动禁用 */}
-        {autoDisabledMappings.length > 0 ? (
+        {pendingAutoInstances.length > 0 ? (
           <div
             data-testid={`ai-gateway-provider-auto-disabled-models-${provider.id}`}
-            className="mt-2 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
+            title={t("aiGatewayProviderAutoDisabledModelsTooltip", {
+              models: pendingAutoInstances
+                .map((instance) => instance.label)
+                .join(", "),
+              defaultValue: `Auto-disabled mappings: ${pendingAutoInstances
+                .map((instance) => instance.label)
+                .join(", ")}`,
+            })}
+            className="mt-2 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/15 pl-2 pr-1 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
           >
             <AlertTriangle className="h-3 w-3 shrink-0" />
             <span>
               {t("aiGatewayProviderAutoDisabledModelsHint", {
-                count: autoDisabledMappings.length,
-                defaultValue: `${autoDisabledMappings.length} mapping(s) auto-disabled`,
+                count: pendingAutoInstances.length,
+                defaultValue: `${pendingAutoInstances.length} mapping(s) auto-disabled`,
               })}
             </span>
+            <button
+              type="button"
+              data-testid={`ai-gateway-provider-auto-disabled-models-dismiss-${provider.id}`}
+              aria-label={dismissAriaLabel}
+              onClick={(event) => {
+                event.stopPropagation();
+                handleDismissInstances(pendingAutoKeys);
+              }}
+              className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full text-amber-700/70 transition hover:bg-amber-500/25 hover:text-amber-800 dark:text-amber-400/80 dark:hover:text-amber-200"
+            >
+              <X className="h-2.5 w-2.5" />
+            </button>
           </div>
         ) : null}
 
@@ -395,6 +523,7 @@ export function UpstreamProviderList({
   onReenableKey,
 }: UpstreamProviderListProps) {
   const { t } = useTranslation();
+
   // 计算所有服务商之前仅获取一次当前时间（有意读取时钟，providers 变化时重拍）
   // eslint-disable-next-line react-hooks/purity -- baseNow 需要在 providers 变化时快照 Date.now()
   const baseNow = useMemo(() => Date.now(), [providers]);
@@ -482,6 +611,73 @@ export function UpstreamProviderList({
       return true;
     });
   }, [providers, statusFilter, selectedTags]);
+
+  // Every currently actionable warning instance across all providers: auto-disabled
+  // rows and template-retired rows. Dismissals are pruned against this set so a
+  // resolved instance is forgotten and a later recurrence shows again.
+  const currentInstanceKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const provider of providers) {
+      const mappings = provider.mappings ?? [];
+      for (const mapping of mappings) {
+        if (mapping.auto_disabled === true) {
+          keys.add(
+            autoDisabledAlertInstanceKey(
+              provider.id,
+              mapping.local_model,
+              mapping.upstream_model,
+            ),
+          );
+        }
+      }
+      const templateView = provider.template_id
+        ? templates?.find(
+            (view) => view.template.id === provider.template_id,
+          )
+        : undefined;
+      if (templateView) {
+        for (const mapping of mappings) {
+          if (
+            mapping.enabled === false &&
+            isMappingDeprecated(mapping, templateView.template)
+          ) {
+            keys.add(
+              retiredMappingAlertInstanceKey(
+                provider.id,
+                templateView.template.id,
+                mapping.upstream_model,
+              ),
+            );
+          }
+        }
+      }
+    }
+    return keys;
+  }, [providers, templates]);
+
+  const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(() =>
+    reconcileDismissedAlertInstanceKeys(currentInstanceKeys),
+  );
+
+  useEffect(() => {
+    setDismissedKeys((previous) => {
+      const reconciled = reconcileDismissedAlertInstanceKeys(currentInstanceKeys);
+      const next = new Set<string>();
+      for (const key of previous) {
+        if (currentInstanceKeys.has(key)) next.add(key);
+      }
+      for (const key of reconciled) next.add(key);
+      return next;
+    });
+  }, [currentInstanceKeys]);
+
+  const handleDismissInstances = useCallback((keys: string[]) => {
+    setDismissedKeys((previous) => {
+      const merged = new Set(previous);
+      for (const key of keys) merged.add(key);
+      return dismissAlertInstanceKeys(merged);
+    });
+  }, []);
 
   const refreshableProviderIds = useMemo(() => {
     const ids = new Set<string>();
@@ -838,6 +1034,8 @@ export function UpstreamProviderList({
               templates={templates}
               baseNow={baseNow}
               quotaRefreshToken={quotaRefreshToken}
+              dismissedKeys={dismissedKeys}
+              handleDismissInstances={handleDismissInstances}
               onSelect={onSelect}
               onToggleEnabled={onToggleEnabled}
               onReenableKey={onReenableKey}

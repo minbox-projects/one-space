@@ -9,12 +9,14 @@
 //! (missing `enabled` field, removed price fields, changed behavior) until
 //! Step 1 lands.
 
+use crate::ai_gateway::commands::record_template_mappings_retired_messages;
 use crate::ai_gateway::templates::{
     apply_create_provider_from_template, apply_delete_provider_model,
     apply_delete_provider_template, apply_reset_provider_templates,
-    apply_restore_provider_model, apply_template_sync_with, apply_upsert_provider_template,
-    builtin_templates, find_builtin_template, parse_template_snapshot, provider_template_views,
-    ProviderTemplateView,
+    apply_restore_provider_model, apply_template_sync_from_body, apply_template_sync_with,
+    apply_template_sync_with_notices, apply_upsert_provider_template, builtin_templates,
+    find_builtin_template, parse_template_snapshot, provider_template_views,
+    ProviderRetirementNotice, ProviderTemplateView,
 };
 use crate::ai_gateway::types_config::{
     GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelMapping, ModelPrice, ProviderTemplate,
@@ -2932,4 +2934,659 @@ fn sync_preserves_derived_provider_weight() {
             .enabled,
         "a retired model must still be disabled without touching the weight"
     );
+}
+
+// ---------------------------------------------------------------------------
+// AC-006 / REQ-006: template-retirement transition Message Center warning
+// ---------------------------------------------------------------------------
+
+// The backend observability seam referenced below does not exist yet, so this
+// whole section is expected to fail compilation with an unresolved-item error
+// until Step 2 lands:
+//   - crate::ai_gateway::templates::{ProviderRetirementNotice,
+//     apply_template_sync_with_notices, apply_template_sync_from_body}
+//   - crate::ai_gateway::commands::{TEMPLATE_MAPPINGS_RETIRED_MESSAGE_INPUTS,
+//     record_template_mappings_retired_messages}
+// That compile failure is the expected RED evidence.
+
+/// Snapshot the same-thread template-retirement message-input seam. The
+/// `thread_local` persists across tests on one thread, so every test that uses
+/// it clears it first.
+fn recorded_template_retirement_inputs() -> Vec<crate::messages::MessageCreateInput> {
+    crate::ai_gateway::commands::TEMPLATE_MAPPINGS_RETIRED_MESSAGE_INPUTS.with(
+        |inputs: &RefCell<Vec<crate::messages::MessageCreateInput>>| inputs.borrow().clone(),
+    )
+}
+
+/// Reset the same-thread template-retirement message-input seam.
+fn clear_template_retirement_inputs() {
+    crate::ai_gateway::commands::TEMPLATE_MAPPINGS_RETIRED_MESSAGE_INPUTS.with(
+        |inputs: &RefCell<Vec<crate::messages::MessageCreateInput>>| inputs.borrow_mut().clear(),
+    );
+}
+
+/// Run a test body under an isolated `HOME` so the message store and the
+/// bilingual `localized` helper resolve against a fresh test home (whose default
+/// language is Chinese).
+fn with_isolated_messages_home<T>(name: &str, f: impl FnOnce() -> T) -> T {
+    super::with_temp_home(name, |_home| f())
+}
+
+/// Seed the `t` template (`SYNC_URL`, Chat Completions) with `models` and return
+/// the previous template so callers can derive mappings from it.
+fn seed_sync_template(
+    config: &mut GatewayConfig,
+    models: Vec<ProviderTemplateModel>,
+) -> ProviderTemplate {
+    let template = template_with_models(
+        "t",
+        Some(SYNC_URL),
+        UpstreamProtocol::ChatCompletions,
+        models,
+    );
+    seed_template(config, template.clone());
+    template
+}
+
+/// Build the mapping a bound provider carries for one model of `template`.
+fn mapping_for_template_model(template: &ProviderTemplate, upstream_model: &str) -> ModelMapping {
+    let model = template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == upstream_model)
+        .unwrap_or_else(|| panic!("the template model {upstream_model} must exist"));
+    mapping_for(model, template)
+}
+
+/// A bound provider with the given name carrying enabled mappings for `models`,
+/// in the order given.
+fn bound_provider_with_mappings(
+    id: &str,
+    name: &str,
+    template: &ProviderTemplate,
+    models: &[&str],
+) -> GatewayUpstreamProvider {
+    let mut provider = bound_provider(id, "t");
+    provider.name = name.to_string();
+    provider.mappings = models
+        .iter()
+        .map(|model| mapping_for_template_model(template, model))
+        .collect();
+    provider
+}
+
+/// Assert one notice matches the exact AC-006 retirement contract.
+fn assert_retirement_notice(
+    notice: &ProviderRetirementNotice,
+    provider_id: &str,
+    provider_name: &str,
+    retired_models: &[&str],
+) {
+    assert_eq!(notice.provider_id, provider_id);
+    assert_eq!(notice.provider_name, provider_name);
+    let models: Vec<&str> = notice
+        .retired_models
+        .iter()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        models.as_slice(),
+        retired_models,
+        "the retired models must follow configuration row order"
+    );
+}
+
+/// Assert one recorded input matches the exact AC-006 message contract using
+/// only literal values and the bilingual `localized` helper.
+fn assert_template_retirement_input(
+    input: &crate::messages::MessageCreateInput,
+    provider_id: &str,
+    provider_name: &str,
+    models: &str,
+) {
+    assert_eq!(input.source, "ai_gateway");
+    assert_eq!(input.category, "template_mappings_retired");
+    assert_eq!(input.severity, "warning");
+    assert_eq!(
+        input.title,
+        crate::messages::localized(
+            "AI 网关模板映射已移除",
+            "AI Gateway template mappings retired",
+        )
+    );
+    let expected_summary = crate::messages::localized(
+        &format!("服务商 {} 的映射已从模板移除：{}", provider_name, models),
+        &format!(
+            "Provider {} mappings removed from template: {}",
+            provider_name, models
+        ),
+    );
+    assert_eq!(input.summary.as_deref(), Some(expected_summary.as_str()));
+    assert_eq!(input.detail, None);
+    let expected_dedupe_key = format!("ai_gateway_template_mappings_retired:{provider_id}");
+    assert_eq!(
+        input.dedupe_key.as_deref(),
+        Some(expected_dedupe_key.as_str())
+    );
+    let target = input.target.as_ref().expect("the input must target a tab");
+    assert_eq!(target.tab, "ai-gateway");
+    assert_eq!(target.section, None);
+    assert_eq!(target.entity_id.as_deref(), Some(provider_id));
+}
+
+/// Assert one persisted record matches the exact AC-006 message contract.
+fn assert_template_retirement_record(
+    record: &crate::messages::MessageRecord,
+    provider_id: &str,
+    provider_name: &str,
+    models: &str,
+) {
+    assert_eq!(record.source, "ai_gateway");
+    assert_eq!(record.category, "template_mappings_retired");
+    assert_eq!(record.severity, "warning");
+    assert_eq!(
+        record.title,
+        crate::messages::localized(
+            "AI 网关模板映射已移除",
+            "AI Gateway template mappings retired",
+        )
+    );
+    let expected_summary = crate::messages::localized(
+        &format!("服务商 {} 的映射已从模板移除：{}", provider_name, models),
+        &format!(
+            "Provider {} mappings removed from template: {}",
+            provider_name, models
+        ),
+    );
+    assert_eq!(record.summary.as_deref(), Some(expected_summary.as_str()));
+    assert_eq!(record.detail, None);
+    let expected_dedupe_key = format!("ai_gateway_template_mappings_retired:{provider_id}");
+    assert_eq!(
+        record.dedupe_key.as_deref(),
+        Some(expected_dedupe_key.as_str())
+    );
+    let target = record.target.as_ref().expect("the entry must target a tab");
+    assert_eq!(target.tab, "ai-gateway");
+    assert_eq!(target.section, None);
+    assert_eq!(target.entity_id.as_deref(), Some(provider_id));
+}
+
+/// Replay captured retirement inputs through the real message store, returning
+/// the persisted records so a caller can assert dedupe/merge behavior.
+fn persist_template_retirement_messages(
+    inputs: &[crate::messages::MessageCreateInput],
+) -> Vec<crate::messages::MessageRecord> {
+    let app = tauri::test::mock_app();
+    let handle = app.handle();
+    for input in inputs {
+        crate::messages::create_message_with_app(handle, input.clone())
+            .expect("the captured retirement input must persist");
+    }
+    crate::messages::list_messages_with_app(handle).expect("list messages")
+}
+
+/// AC-006 / REQ-006: a successful sync that drops two models from two bound
+/// providers records exactly one notice per affected provider (config order,
+/// each listing both newly retired models) and one warning Message Center entry
+/// per provider; an unbound provider carrying the same mappings stays
+/// noticed-free and untouched.
+#[test]
+fn ac006_successful_sync_records_one_retirement_message_per_affected_provider() {
+    clear_template_retirement_inputs();
+    with_isolated_messages_home("ac006-success", || {
+        let mut config = GatewayConfig::default();
+        let template = seed_sync_template(
+            &mut config,
+            vec![
+                template_model("m1", Some("M1"), None, true),
+                template_model("m2", Some("M2"), None, true),
+                template_model("m3", Some("M3"), None, true),
+            ],
+        );
+
+        for (id, name) in [("p1", "Provider One"), ("p2", "Provider Two")] {
+            config.providers.push(bound_provider_with_mappings(
+                id,
+                name,
+                &template,
+                &["m1", "m2", "m3"],
+            ));
+        }
+
+        // An unbound provider (no `template_id`) carries the same mappings and
+        // must stay noticed-free and byte-for-byte untouched.
+        let mut unbound = bound_provider_with_mappings(
+            "p3",
+            "Unbound Provider",
+            &template,
+            &["m1", "m2"],
+        );
+        unbound.template_id = None;
+        config.providers.push(unbound);
+        let p3_before = serde_json::to_value(&config.providers[2]).expect("encode p3 before");
+
+        let body = json!({"data": [{"id": "m3", "name": "M3"}]}).to_string();
+        let (_view, notices) = apply_template_sync_with_notices(
+            &mut config,
+            "t",
+            |_t| Ok(body.clone()),
+            |_n| Ok(()),
+        )
+        .expect("the sync must succeed");
+
+        assert_eq!(notices.len(), 2, "exactly one notice per affected provider");
+        assert_retirement_notice(&notices[0], "p1", "Provider One", &["m1", "m2"]);
+        assert_retirement_notice(&notices[1], "p2", "Provider Two", &["m1", "m2"]);
+
+        for id in ["p1", "p2"] {
+            let provider = config
+                .providers
+                .iter()
+                .find(|provider| provider.id == id)
+                .unwrap_or_else(|| panic!("provider {id} must exist"));
+            for model in ["m1", "m2"] {
+                assert!(
+                    !find_mapping(provider, model)
+                        .unwrap_or_else(|| panic!("provider {id} must keep mapping {model}"))
+                        .enabled,
+                    "provider {id}: mapping {model} must be disabled by the sync"
+                );
+            }
+            assert!(
+                find_mapping(provider, "m3").expect("m3").enabled,
+                "provider {id}: the surviving mapping must stay enabled"
+            );
+        }
+
+        assert_eq!(
+            p3_before,
+            serde_json::to_value(&config.providers[2]).expect("encode p3 after"),
+            "an unbound provider must be byte-for-byte untouched"
+        );
+
+        record_template_mappings_retired_messages(None, &notices);
+        let inputs = recorded_template_retirement_inputs();
+        assert_eq!(inputs.len(), 2, "one input per affected provider");
+        assert_template_retirement_input(&inputs[0], "p1", "Provider One", "m1, m2");
+        assert_template_retirement_input(&inputs[1], "p2", "Provider Two", "m1, m2");
+        assert_ne!(
+            inputs[0].dedupe_key, inputs[1].dedupe_key,
+            "each provider must carry a distinct dedupe key"
+        );
+        assert_ne!(
+            inputs[0]
+                .target
+                .as_ref()
+                .and_then(|target| target.entity_id.clone()),
+            inputs[1]
+                .target
+                .as_ref()
+                .and_then(|target| target.entity_id.clone()),
+            "each provider must be its own target entity"
+        );
+
+        let records = persist_template_retirement_messages(&inputs);
+        assert_eq!(records.len(), 2, "one store entry per affected provider");
+        let p1_record = records
+            .iter()
+            .find(|record| {
+                record.dedupe_key.as_deref()
+                    == Some("ai_gateway_template_mappings_retired:p1")
+            })
+            .expect("the p1 retirement entry must exist");
+        assert_template_retirement_record(p1_record, "p1", "Provider One", "m1, m2");
+        let p2_record = records
+            .iter()
+            .find(|record| {
+                record.dedupe_key.as_deref()
+                    == Some("ai_gateway_template_mappings_retired:p2")
+            })
+            .expect("the p2 retirement entry must exist");
+        assert_template_retirement_record(p2_record, "p2", "Provider Two", "m1, m2");
+
+        for record in &records {
+            let text = format!(
+                "{} {}",
+                record.summary.as_deref().unwrap_or(""),
+                record.detail.as_deref().unwrap_or("")
+            );
+            assert!(
+                !text.contains("m3"),
+                "no retirement entry may mention the surviving model: {text}"
+            );
+        }
+    });
+}
+
+/// AC-006 / REQ-006: a second retirement inside the store's one-hour dedupe
+/// window for the same provider merges into the first entry, increments
+/// `occurrences` and refreshes the summary to the provider's full currently
+/// retired set at the event time (every disabled mapping whose upstream model is
+/// absent from the current template), not only the mappings the triggering sync
+/// newly retired.
+#[test]
+fn ac006_second_sync_merges_retirement_message_inside_dedupe_window() {
+    clear_template_retirement_inputs();
+    with_isolated_messages_home("ac006-merge", || {
+        let mut config = GatewayConfig::default();
+        let template = seed_sync_template(
+            &mut config,
+            vec![
+                template_model("m1", Some("M1"), None, true),
+                template_model("m2", Some("M2"), None, true),
+                template_model("m3", Some("M3"), None, true),
+            ],
+        );
+        config.providers.push(bound_provider_with_mappings(
+            "p1",
+            "Provider One",
+            &template,
+            &["m1", "m2", "m3"],
+        ));
+
+        let first_body = json!({"data": [{"id": "m2"}, {"id": "m3"}]}).to_string();
+        let (_view, first_notices) = apply_template_sync_with_notices(
+            &mut config,
+            "t",
+            |_t| Ok(first_body.clone()),
+            |_n| Ok(()),
+        )
+        .expect("the first sync must succeed");
+        assert_eq!(first_notices.len(), 1);
+        assert_retirement_notice(&first_notices[0], "p1", "Provider One", &["m1"]);
+        record_template_mappings_retired_messages(None, &first_notices);
+
+        let second_body = json!({"data": [{"id": "m3"}]}).to_string();
+        let (_view, second_notices) = apply_template_sync_with_notices(
+            &mut config,
+            "t",
+            |_t| Ok(second_body.clone()),
+            |_n| Ok(()),
+        )
+        .expect("the second sync must succeed");
+        assert_eq!(second_notices.len(), 1);
+        // m1 is still disabled and still absent from the template after the second
+        // sync; m2 is newly retired. Row order is m1, m2.
+        assert_retirement_notice(&second_notices[0], "p1", "Provider One", &["m1", "m2"]);
+        record_template_mappings_retired_messages(None, &second_notices);
+
+        let inputs = recorded_template_retirement_inputs();
+        assert_eq!(inputs.len(), 2, "both transitions must be recorded");
+        let records = persist_template_retirement_messages(&inputs);
+        assert_eq!(
+            records.len(),
+            1,
+            "both transitions must merge into one entry inside the dedupe window"
+        );
+        let record = &records[0];
+        assert_eq!(
+            record.occurrences, 2,
+            "the merge must increment the occurrence count"
+        );
+        assert_eq!(
+            record.dedupe_key.as_deref(),
+            Some("ai_gateway_template_mappings_retired:p1")
+        );
+        let expected_summary = crate::messages::localized(
+            "服务商 Provider One 的映射已从模板移除：m1, m2",
+            "Provider Provider One mappings removed from template: m1, m2",
+        );
+        assert_eq!(
+            record.summary.as_deref(),
+            Some(expected_summary.as_str()),
+            "the merged summary must reflect the provider's full currently retired set"
+        );
+        assert_eq!(record.detail, None, "the retirement detail is always absent");
+    });
+}
+
+/// AC-006 / REQ-006: a persistence failure returns an error, leaves the
+/// in-memory configuration unchanged and lets no notice escape; the seam and the
+/// messages store stay empty.
+#[test]
+fn ac006_failed_sync_returns_err_and_no_notice_escapes() {
+    clear_template_retirement_inputs();
+    with_isolated_messages_home("ac006-failed", || {
+        let mut config = GatewayConfig::default();
+        let template = seed_sync_template(
+            &mut config,
+            vec![
+                template_model("m1", Some("M1"), None, true),
+                template_model("m2", Some("M2"), None, true),
+                template_model("m3", Some("M3"), None, true),
+            ],
+        );
+        config.providers.push(bound_provider_with_mappings(
+            "p1",
+            "Provider One",
+            &template,
+            &["m1", "m2", "m3"],
+        ));
+        let before = serde_json::to_value(&config).expect("encode before");
+
+        let body = json!({"data": [{"id": "m3"}]}).to_string();
+        let result = apply_template_sync_with_notices(
+            &mut config,
+            "t",
+            |_t| Ok(body.clone()),
+            |_n| Err("disk full".to_string()),
+        );
+        let error = match result {
+            Ok(_) => panic!("a failed persist must fail the sync"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("disk full"),
+            "the persist reason must surface: {error}"
+        );
+        assert_eq!(
+            before,
+            serde_json::to_value(&config).expect("encode after"),
+            "a failed persist must leave the in-memory config untouched"
+        );
+        assert!(
+            recorded_template_retirement_inputs().is_empty(),
+            "no notice may escape a failed sync"
+        );
+        let records = persist_template_retirement_messages(&[]);
+        assert!(
+            records.is_empty(),
+            "the messages store must stay empty for a failed sync"
+        );
+    });
+}
+
+/// AC-006 / REQ-006: a template with no bound provider returns no notice and
+/// records nothing; the production `apply_template_sync_from_body` path pins the
+/// tuple return.
+#[test]
+fn ac006_template_without_bound_provider_records_nothing() {
+    clear_template_retirement_inputs();
+    with_isolated_messages_home("ac006-unbound", || {
+        let mut config = GatewayConfig::default();
+        seed_sync_template(
+            &mut config,
+            vec![
+                template_model("m1", Some("M1"), None, true),
+                template_model("m2", Some("M2"), None, true),
+                template_model("m3", Some("M3"), None, true),
+            ],
+        );
+
+        let body = json!({"data": [{"id": "m3"}]}).to_string();
+        let (view, notices) = apply_template_sync_from_body(&mut config, "t", &body)
+            .expect("the sync must succeed");
+        let ids: Vec<&str> = view
+            .template
+            .models
+            .iter()
+            .map(|model| model.upstream_model.as_str())
+            .collect();
+        assert_eq!(ids, vec!["m3"], "the template list must be replaced");
+        assert!(
+            notices.is_empty(),
+            "a template with no bound provider must return no notice"
+        );
+
+        record_template_mappings_retired_messages(None, &notices);
+        assert!(
+            recorded_template_retirement_inputs().is_empty(),
+            "an empty notice list must record no input"
+        );
+        let records = persist_template_retirement_messages(&[]);
+        assert!(
+            records.is_empty(),
+            "the messages store must stay empty when nothing retires"
+        );
+    });
+}
+
+/// AC-006 / REQ-006 counterexample: (a) a provider whose mappings all remain in
+/// the new template produces no notice, and (b) a provider whose only
+/// removed-model mapping was already disabled before the sync produces no notice
+/// while its state stays disabled.
+#[test]
+fn ac006_provider_with_no_newly_retired_mapping_records_nothing() {
+    clear_template_retirement_inputs();
+    with_isolated_messages_home("ac006-no-retire", || {
+        // (a) Every mapping stays in the new template.
+        {
+            let mut config = GatewayConfig::default();
+            let template = seed_sync_template(
+                &mut config,
+                vec![
+                    template_model("m1", Some("M1"), None, true),
+                    template_model("m2", Some("M2"), None, true),
+                    template_model("m3", Some("M3"), None, true),
+                ],
+            );
+            config.providers.push(bound_provider_with_mappings(
+                "p1",
+                "Provider One",
+                &template,
+                &["m1", "m2", "m3"],
+            ));
+
+            let body = json!({"data": [
+                {"id": "m1", "name": "M1"},
+                {"id": "m2", "name": "M2"},
+                {"id": "m3", "name": "M3"}
+            ]})
+            .to_string();
+            let (_view, notices) = apply_template_sync_with_notices(
+                &mut config,
+                "t",
+                |_t| Ok(body.clone()),
+                |_n| Ok(()),
+            )
+            .expect("the sync must succeed");
+            assert!(
+                notices.is_empty(),
+                "a provider whose mappings all survive must produce no notice"
+            );
+            record_template_mappings_retired_messages(None, &notices);
+            assert!(
+                recorded_template_retirement_inputs().is_empty(),
+                "no surviving provider may record a message"
+            );
+        }
+
+        // (b) The only removed-model mapping was already disabled before the sync.
+        {
+            let mut config = GatewayConfig::default();
+            let template = seed_sync_template(
+                &mut config,
+                vec![
+                    template_model("m1", Some("M1"), None, true),
+                    template_model("m2", Some("M2"), None, true),
+                ],
+            );
+            let mut provider = bound_provider_with_mappings(
+                "p2",
+                "Provider Two",
+                &template,
+                &["m1", "m2"],
+            );
+            provider
+                .mappings
+                .iter_mut()
+                .find(|mapping| mapping.upstream_model == "m2")
+                .expect("mapping m2")
+                .enabled = false;
+            config.providers.push(provider);
+
+            let body = json!({"data": [{"id": "m1", "name": "M1"}]}).to_string();
+            let (_view, notices) = apply_template_sync_with_notices(
+                &mut config,
+                "t",
+                |_t| Ok(body.clone()),
+                |_n| Ok(()),
+            )
+            .expect("the sync must succeed");
+            assert!(
+                notices.is_empty(),
+                "an already-disabled removed mapping is not newly retired"
+            );
+            let provider = config
+                .providers
+                .iter()
+                .find(|provider| provider.id == "p2")
+                .expect("the bound provider must exist");
+            assert!(
+                !find_mapping(provider, "m2").expect("m2").enabled,
+                "an already-disabled mapping must stay disabled"
+            );
+            assert!(
+                find_mapping(provider, "m1").expect("m1").enabled,
+                "a surviving mapping must stay enabled"
+            );
+            record_template_mappings_retired_messages(None, &notices);
+            assert!(
+                recorded_template_retirement_inputs().is_empty(),
+                "no newly retired mapping may record a message"
+            );
+        }
+    });
+}
+
+/// AC-006 / REQ-006: the notice's `retired_models` follow the configuration row
+/// order of the mappings newly disabled in this sync, and the summary lists them
+/// in that same order.
+#[test]
+fn ac006_retired_models_follow_configuration_row_order() {
+    clear_template_retirement_inputs();
+    with_isolated_messages_home("ac006-row-order", || {
+        let mut config = GatewayConfig::default();
+        let template = seed_sync_template(
+            &mut config,
+            vec![
+                template_model("m1", Some("M1"), None, true),
+                template_model("m2", Some("M2"), None, true),
+                template_model("m3", Some("M3"), None, true),
+            ],
+        );
+        // Configuration row order is m2 then m1; both leave the template.
+        config.providers.push(bound_provider_with_mappings(
+            "p1",
+            "Provider One",
+            &template,
+            &["m2", "m1", "m3"],
+        ));
+
+        let body = json!({"data": [{"id": "m3", "name": "M3"}]}).to_string();
+        let (_view, notices) = apply_template_sync_with_notices(
+            &mut config,
+            "t",
+            |_t| Ok(body.clone()),
+            |_n| Ok(()),
+        )
+        .expect("the sync must succeed");
+        assert_eq!(notices.len(), 1);
+        assert_retirement_notice(&notices[0], "p1", "Provider One", &["m2", "m1"]);
+
+        record_template_mappings_retired_messages(None, &notices);
+        let inputs = recorded_template_retirement_inputs();
+        assert_eq!(inputs.len(), 1);
+        assert_template_retirement_input(&inputs[0], "p1", "Provider One", "m2, m1");
+    });
 }

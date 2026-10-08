@@ -12,7 +12,7 @@ use super::templates::{
     apply_create_provider_from_template, apply_delete_provider_model,
     apply_delete_provider_template, apply_reset_provider_templates, apply_restore_provider_model,
     apply_template_sync_from_body, apply_upsert_provider_template, effective_template,
-    fetch_template_models, provider_template_views, ProviderTemplateView,
+    fetch_template_models, provider_template_views, ProviderRetirementNotice, ProviderTemplateView,
 };
 #[cfg(test)]
 use super::templates::apply_template_sync_with;
@@ -28,6 +28,13 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+
+#[cfg(test)]
+thread_local! {
+    pub(in crate::ai_gateway) static TEMPLATE_MAPPINGS_RETIRED_MESSAGE_INPUTS:
+        std::cell::RefCell<Vec<crate::messages::MessageCreateInput>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
 
 /// Terminal tools that AI Gateway is allowed to write to.
 pub(in crate::ai_gateway) const SUPPORTED_TERMINAL_TOOLS: [&str; 2] = ["opencode", "codex"];
@@ -1195,6 +1202,64 @@ pub fn ai_gateway_provider_templates() -> Result<Vec<ProviderTemplateView>, Stri
     provider_template_views(&config)
 }
 
+/// Build the message-center input for one provider's template-retirement
+/// transition. Only the provider and model names appear; the provider-scoped
+/// `dedupe_key` makes repeated transitions inside the store's dedupe window
+/// merge into one entry while refreshing the latest retired set, and the
+/// targeted AI Gateway tab carries the provider as its entity id. Neither the
+/// title, summary, dedupe key, target nor metadata ever carries a key value
+/// (REQ-006).
+fn template_mappings_retired_message_input(
+    notice: &ProviderRetirementNotice,
+) -> crate::messages::MessageCreateInput {
+    let models = notice.retired_models.join(", ");
+    crate::messages::MessageCreateInput {
+        source: "ai_gateway".to_string(),
+        category: "template_mappings_retired".to_string(),
+        severity: "warning".to_string(),
+        title: crate::messages::localized(
+            "AI 网关模板映射已移除",
+            "AI Gateway template mappings retired",
+        ),
+        summary: Some(crate::messages::localized(
+            &format!("服务商 {} 的映射已从模板移除：{}", notice.provider_name, models),
+            &format!(
+                "Provider {} mappings removed from template: {}",
+                notice.provider_name, models
+            ),
+        )),
+        detail: None,
+        dedupe_key: Some(format!(
+            "ai_gateway_template_mappings_retired:{}",
+            notice.provider_id
+        )),
+        target: Some(crate::messages::MessageTarget {
+            tab: "ai-gateway".to_string(),
+            section: None,
+            entity_id: Some(notice.provider_id.clone()),
+        }),
+        metadata: None,
+    }
+}
+
+/// Record one template-retirement transition per notice, in order: push the
+/// literal input onto the test seam and persist exactly one message input through
+/// the supplied handle. A missing handle skips the production write but still
+/// records the seam value so the transition is observable in tests (REQ-006).
+pub(in crate::ai_gateway) fn record_template_mappings_retired_messages(
+    app: Option<&tauri::AppHandle>,
+    notices: &[ProviderRetirementNotice],
+) {
+    for notice in notices {
+        let input = template_mappings_retired_message_input(notice);
+        #[cfg(test)]
+        TEMPLATE_MAPPINGS_RETIRED_MESSAGE_INPUTS.with(|inputs| inputs.borrow_mut().push(input.clone()));
+        if let Some(handle) = app {
+            crate::messages::record_message_silent(handle, input);
+        }
+    }
+}
+
 /// Refresh one template from its public source, merge it under the
 /// "source fields win, untouched template fields kept" rule, propagate the
 /// update incrementally to every derived provider, and persist atomically. Any
@@ -1218,8 +1283,8 @@ pub async fn ai_gateway_sync_provider_template(
         .unwrap_or(Value::Null);
     // The read, staging and persistence all happen inside the serialized
     // mutation, so a concurrent configuration write cannot be lost.
-    let (view, tools) = modify_config(|config| {
-        let view = apply_template_sync_from_body(config, &template_id, &raw)?;
+    let (view, tools, notices) = modify_config(|config| {
+        let (view, notices) = apply_template_sync_from_body(config, &template_id, &raw)?;
         let bound = config
             .providers
             .iter()
@@ -1229,8 +1294,11 @@ pub async fn ai_gateway_sync_provider_template(
         } else {
             Vec::new()
         };
-        Ok((true, (view, tools)))
+        Ok((true, (view, tools, notices)))
     })?;
+    // The retirement warning is recorded only after the configuration write
+    // stood; a failed write returned before this point, so no notice escapes.
+    record_template_mappings_retired_messages(Some(&app), &notices);
     // The terminal refresh performs its own network upserts and serialized
     // ledger write after the template sync stands, so a failure is swallowed.
     if !tools.is_empty() {

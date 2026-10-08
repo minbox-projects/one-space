@@ -464,7 +464,6 @@ const TEMPLATE_SYNC_NOTIFICATION_KEYS = [
   "aiGatewayTemplateSyncNotificationTitle",
   "aiGatewayTemplateSyncNotificationProviderCount",
   "aiGatewayTemplateSyncNotificationAddedCount",
-  "aiGatewayTemplateSyncNotificationDisabledCount",
   "aiGatewayTemplateSyncNotificationDetailProvider",
   "messageSource_ai_gateway",
 ] as const;
@@ -472,7 +471,6 @@ const TEMPLATE_SYNC_NOTIFICATION_KEYS = [
 const TEMPLATE_SYNC_COUNT_KEYS = [
   "aiGatewayTemplateSyncNotificationProviderCount",
   "aiGatewayTemplateSyncNotificationAddedCount",
-  "aiGatewayTemplateSyncNotificationDisabledCount",
 ] as const;
 
 describe("服务商模板自动同步通知国际化键", () => {
@@ -531,6 +529,26 @@ describe("服务商模板自动同步通知国际化键", () => {
       });
       expect(detail).toContain("Zen Upstream");
       expect(detail).toContain("m, n");
+    },
+  );
+});
+
+// REQ-007 / AC-007 guard: the automatic-refresh message reports additions only,
+// so this unreferenced bilingual disabled-count key must be removed.
+const REMOVED_TEMPLATE_SYNC_NOTIFICATION_KEYS = [
+  "aiGatewayTemplateSyncNotificationDisabledCount",
+] as const;
+
+describe("服务商模板自动同步通知禁用计数键移除", () => {
+  it.each(["en", "zh"] as const)(
+    "为 %s 移除未引用的禁用计数键",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      for (const key of REMOVED_TEMPLATE_SYNC_NOTIFICATION_KEYS) {
+        expect(i18n.t(key), `${language} 中已移除键 ${key} 应回退为键名`).toBe(
+          key,
+        );
+      }
     },
   );
 });
@@ -745,3 +763,61 @@ describe("AI 网关已标记密钥与鉴权失败通知国际化键", () => {
   });
 });
 
+
+// ---------------------------------------------------------------------------
+// Step 3: dismissible alert-badge close label and auto-disabled tooltip copy.
+// RED assertions: the two keys must be added to both bundles by Step 3.
+// ---------------------------------------------------------------------------
+
+const ALERT_BADGE_I18N_COPY: Record<
+  "aiGatewayAlertBadgeDismissAria" | "aiGatewayProviderAutoDisabledModelsTooltip",
+  Record<"en" | "zh", string>
+> = {
+  aiGatewayAlertBadgeDismissAria: {
+    en: "Dismiss alert",
+    zh: "关闭提醒",
+  },
+  aiGatewayProviderAutoDisabledModelsTooltip: {
+    en: "Auto-disabled mappings: {{models}}",
+    zh: "已自动禁用的映射：{{models}}",
+  },
+};
+
+describe("AI 网关告警标签关闭与自动禁用提示国际化键", () => {
+  it.each(["en", "zh"] as const)(
+    "为 %s 提供精确文案且不回退为键名",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      for (const [key, copy] of Object.entries(ALERT_BADGE_I18N_COPY)) {
+        const translation = i18n.getResource(language, "translation", key);
+        expect(typeof translation, `${language}:${key} 应为字符串`).toBe(
+          "string",
+        );
+        expect(translation, `${language}:${key} 文案不匹配`).toBe(
+          copy[language],
+        );
+        expect(translation, `${language}:${key} 不应回退为键名`).not.toBe(key);
+      }
+    },
+  );
+
+  it.each(["en", "zh"] as const)(
+    "为 %s 的自动禁用提示保留 {{models}} 并正常插值",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      const raw = i18n.getResource(
+        language,
+        "translation",
+        "aiGatewayProviderAutoDisabledModelsTooltip",
+      ) as string;
+      expect(typeof raw, `${language} 中提示应为字符串`).toBe("string");
+      expect(raw).toContain("{{models}}");
+
+      const rendered = i18n.t("aiGatewayProviderAutoDisabledModelsTooltip", {
+        models: "model-two, model-three",
+      });
+      expect(rendered).toContain("model-two, model-three");
+      expect(rendered).not.toContain("{{");
+    },
+  );
+});
