@@ -1618,7 +1618,7 @@ export function ProviderDetailDialog({
                 <p className="mt-0.5 text-[11px] text-muted-foreground">
                   {t(
                     "aiGatewayIgnoredModelsDesc",
-                    "Models you removed from this template. Restore one to rebuild it from the template's current data.",
+                    "Models removed from this provider, either by you or by a template sync. Restore one to rebuild it from the template's current data.",
                   )}
                 </p>
                 <ul className="mt-1.5 space-y-1">

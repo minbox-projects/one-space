@@ -764,7 +764,7 @@ const resources = {
       aiGatewayTemplateSearchModels: "Search models...",
       aiGatewayIgnoredModels: "Ignored models",
       aiGatewayIgnoredModelsDesc:
-        "Models you removed from this template. Restore one to rebuild it from the template's current data.",
+        "Models removed from this provider, either by you or by a template sync. Restore one to rebuild it from the template's current data.",
       aiGatewayRestoreModel: "Restore",
       aiGatewayReasoningEfforts: "Reasoning efforts",
       aiGatewayReasoningEffortsDesc:
@@ -4348,7 +4348,7 @@ const resources = {
       aiGatewayTemplateSearchModels: "搜索模型...",
       aiGatewayIgnoredModels: "已忽略的模型",
       aiGatewayIgnoredModelsDesc:
-        "你从此模板中移除的模型。恢复后会按模板当前数据重建。",
+        "已从此服务商移除的模型（由你手动删除，或模板同步时移除）。恢复后会按模板当前数据重建。",
       aiGatewayRestoreModel: "恢复",
       aiGatewayReasoningEfforts: "推理档位",
       aiGatewayReasoningEffortsDesc: "添加或删除该模型支持的推理档位标识。",
