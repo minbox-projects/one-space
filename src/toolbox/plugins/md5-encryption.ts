@@ -1,6 +1,5 @@
 import { Hash } from "lucide-react";
 
-import { Md5EncryptionTool } from "@/components/Md5EncryptionTool";
 import type { ToolboxToolDescriptor } from "../types";
 
 export const md5EncryptionTool: ToolboxToolDescriptor = {
@@ -13,5 +12,8 @@ export const md5EncryptionTool: ToolboxToolDescriptor = {
   surfaces: ["hub", "launcher-quick"],
   defaultVisible: true,
   defaultOrder: 7,
-  component: Md5EncryptionTool,
+  loadComponent: () =>
+    import("@/components/Md5EncryptionTool").then((m) => ({
+      default: m.Md5EncryptionTool,
+    })),
 };

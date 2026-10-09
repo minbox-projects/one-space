@@ -58,7 +58,6 @@ import { Notes } from "./components/Notes";
 import { SettingsView } from "./components/SettingsView";
 import { Snippets } from "./components/Snippets";
 import { AboutModal } from "./components/AboutModal";
-import { QuickAiSessionBar } from "./components/QuickAiSessionBar";
 import { ToolStatusDot } from "./components/toolbox/ToolStatusDot";
 import { Documentation } from "./components/Documentation";
 import { OnboardingWizard } from "./components/OnboardingWizard";
@@ -1969,11 +1968,6 @@ function App() {
         : theme,
     [theme],
   );
-
-  // If we are in quick-ai view, render only that component
-  if (isQuickAiView) {
-    return <QuickAiSessionBar />;
-  }
 
   if (onboardingStatus === "checking") {
     return (

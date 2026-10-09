@@ -65,14 +65,29 @@ describe("toolbox registry descriptors", () => {
     expect(getToolboxTool("__not-a-toolbox-tool__")).toBeUndefined();
   });
 
-  it("exposes non-empty label and description keys and a component for every descriptor", () => {
+  it("exposes non-empty label and description keys and a distinct lazy loader for every descriptor", async () => {
+    const loaders = new Set<() => Promise<{ default: unknown }>>();
     for (const tool of TOOLBOX_TOOLS) {
       expect(tool.labelKey.length).toBeGreaterThan(0);
       expect(tool.descriptionKey.length).toBeGreaterThan(0);
-      expect(tool.component).toBeTruthy();
       expect(tool.icon).toBeTruthy();
       expect(typeof tool.iconClassName).toBe("string");
+
+      // REQ-006 / AC-006: descriptor metadata is the single source and must not
+      // inline an already-resolved implementation; callers resolve the selected
+      // tool through its own deferred loader.
+      expect(tool).not.toHaveProperty("component");
+      expect(typeof tool.loadComponent).toBe("function");
+      expect(loaders.has(tool.loadComponent)).toBe(false);
+      loaders.add(tool.loadComponent);
+
+      const resolved = await tool.loadComponent();
+      expect(resolved).toBeTruthy();
+      expect(["function", "object"]).toContain(typeof resolved.default);
     }
+    // No two descriptors share one loader, so each tool implementation stays
+    // independently deferred.
+    expect(loaders.size).toBe(TOOLBOX_TOOLS.length);
   });
 
   it("uses only known surfaces", () => {

@@ -1,6 +1,5 @@
 import { Server } from "lucide-react";
 
-import { SshServers } from "@/components/SshServers";
 import type { ToolboxToolDescriptor } from "../types";
 
 export const sshServersTool: ToolboxToolDescriptor = {
@@ -13,5 +12,6 @@ export const sshServersTool: ToolboxToolDescriptor = {
   surfaces: ["hub", "launcher-quick"],
   defaultVisible: true,
   defaultOrder: 2,
-  component: SshServers,
+  loadComponent: () =>
+    import("@/components/SshServers").then((m) => ({ default: m.SshServers })),
 };

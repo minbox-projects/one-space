@@ -1,6 +1,5 @@
 import { Link } from "lucide-react";
 
-import { ShortLinkTool } from "@/components/ShortLinkTool";
 import type { ToolboxToolDescriptor } from "../types";
 
 export const shortLinkTool: ToolboxToolDescriptor = {
@@ -13,5 +12,8 @@ export const shortLinkTool: ToolboxToolDescriptor = {
   surfaces: ["hub", "launcher-quick"],
   defaultVisible: true,
   defaultOrder: 8,
-  component: ShortLinkTool,
+  loadComponent: () =>
+    import("@/components/ShortLinkTool").then((m) => ({
+      default: m.ShortLinkTool,
+    })),
 };

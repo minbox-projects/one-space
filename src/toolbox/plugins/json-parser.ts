@@ -1,6 +1,5 @@
 import { Braces } from "lucide-react";
 
-import { JsonParserTool } from "@/components/JsonParserTool";
 import type { ToolboxToolDescriptor } from "../types";
 
 export const jsonParserTool: ToolboxToolDescriptor = {
@@ -13,5 +12,8 @@ export const jsonParserTool: ToolboxToolDescriptor = {
   surfaces: ["hub", "launcher-quick"],
   defaultVisible: true,
   defaultOrder: 6,
-  component: JsonParserTool,
+  loadComponent: () =>
+    import("@/components/JsonParserTool").then((m) => ({
+      default: m.JsonParserTool,
+    })),
 };

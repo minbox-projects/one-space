@@ -6,7 +6,7 @@ Status: implemented
 
 ## Problem
 
-GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入口，已各自演化为不同实现。安装的 CLI 会改写会话名（空格与点号转为下划线）、自行拼装启动命令、写明文会话 JSON，并伪造原生会话 ID；GUI 则走另一套新终端适配器。`resume` 分支在 Shell 脚本里硬编码各工具恢复命令，忽略共享的 provider 与 runtime 环境。服务商激活与 `onespace env use` 同样分叉，而 OpenCode 的活动服务商被表示为单个槽位，而非其真实的多活动集合。本记录描述计划 `20261009-core-workflows-cleanup-and-optimization` 已交付的事实；当前正文覆盖前五步，该计划的后续步骤不在此描述。
+GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入口，已各自演化为不同实现。安装的 CLI 会改写会话名（空格与点号转为下划线）、自行拼装启动命令、写明文会话 JSON，并伪造原生会话 ID；GUI 则走另一套新终端适配器。`resume` 分支在 Shell 脚本里硬编码各工具恢复命令，忽略共享的 provider 与 runtime 环境。服务商激活与 `onespace env use` 同样分叉，而 OpenCode 的活动服务商被表示为单个槽位，而非其真实的多活动集合。本记录描述计划 `20261009-core-workflows-cleanup-and-optimization` 已交付的事实；当前正文覆盖前六步，该计划的后续步骤不在此描述。
 
 ## Decision
 
@@ -44,6 +44,11 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - Step 5 — 测量而非断言：`tools/measure-core-workflows.mjs` 仅用 Node 内置模块运行 ignored 的 `core_workflows_perf` 测试，解析 `CWF_METRIC dataset=... phase=... wall_ms=... key=...` 行，采集 cold 加 5 次 warm，记录环境与数据集维度，并把 harness 计时与原始 wall 分开（缺失时如实 `not_measured`）。相关 ignored 用例为 `ai_sessions/performance_tests.rs`、`ai_gateway/tests/performance.rs` 与 SSH 缓存用例。
 - Step 5 — 为前端用量调用提供类型：`src/lib/aiUsage.ts` 提供用量 DTO 与 `sessionsUsageToolStats` / `sessionsUsageDayStats` / `sessionsUsageClearCache` / `sessionsAntigravityQuota` 封装，AiUsageStats 与 App 使用它们。手动刷新先清缓存再查询窗口与当日，四工具渐进渲染与逐工具失败隔离保持不变。
 
+- Step 6 — 用类型化 loader 推迟工具实现：`src/toolbox/types.ts` 把描述符的急切 `component` 替换为 `loadComponent: ToolboxToolComponentLoader`（动态 `import` 并把组件作为默认导出返回），并新增 `ToolboxNavigationProps = { isVisible?, initialTab?, navigationNonce? }` 以表达 JT/T 与 SSH 导航而无需 `as unknown as` 断言。13 个 plugin 描述符各用唯一的动态 import loader 把命名导出映射为 `{ default }`，`registry.ts` 只静态导入元数据与 loader。
+- Step 6 — 让 Hub 惰性解析：`MoreToolsHub` 仅在打开工具时调用 `loadComponent()`，跟踪 idle/loading/ready/error，渲染可访问加载态（`role=status`、`aria-live`）、失败时可重试以及带 reset key 的 `AppErrorBoundary`，且恰好渲染一个工具。
+- Step 6 — 隔离快速入口：`src/main.tsx` 导出 `resolveEntryKind(search)`，并在渲染前动态导入 `QuickAiApp` 或 `App`。新的 `src/QuickAiApp.tsx` 只渲染 quick UI 与 `ThemeProvider`（不含 App、toolbox 或 AiEnvironments）；App 无用的 quick-view 早退被移除，而 `isQuickAiView` 守卫、keepalive 与 Notes/Snippets/草稿保留；`ToolIcon` 抽到 `src/components/AiEnvironments/ToolIcon.tsx`，barrel 再导出不变且 QuickAiSessionBar 导入该轻量模块。
+- Step 6 — 真实 `npm run build` 的产物图证据：入口 `index-*.js` 为 312.80 kB（gzip 95.91），静态导入仅 i18n 与 vendor，动态导入 App/QuickAiApp/providers，且不含任何工具 chunk；`App-*.js` 为 1217.40 kB 动态；`QuickAiApp-*.js` 为 5.26 kB（gzip 2.16），静态导入仅 aiSessions/i18n/icons/tauri/ThemeProvider/vendor，不含 App/AiEnvironments/工具 chunk；每个工具各自产出 chunk（Bookmarks 10.03、FileSharingTool 10.05、JsonParserTool 3.03、JttDataParserTool 44.79、Md5EncryptionTool 7.18、ProtocolRouterTool 23.52、RandomPasswordTool 9.58、ShortLinkTool 17.86、SshServers 17.91、SshTunnels 70.48、AiWorkflowModelSwitcher 34.09 kB）。Notes/Snippets 因 App 为 keepalive 静态导入而留在 App chunk；工具 chunk 为共享注册表模块携带指回 App 的静态边，而 App 本身是动态的，因此启动闭包中不含任何工具实现。
+
 ## Alternatives considered
 
 - 保留 Shell 脚本写明文会话 JSON，只修补名称或 ID。拒绝原因：它无法与 GUI 共享 canonical 注册、写者协调、pending 绑定或 spawn 失败回滚。
@@ -61,6 +66,8 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - Step 5 — 用内容哈希缓存解析后的来源。拒绝原因：路径+长度+mtime 已能检测变更、截断与被替换的文件，无需对数据做哈希。
 - Step 5 — 按文件备忘录化 OpenCode 历史。拒绝原因：其解析依赖其他文件，按文件缓存会在文件间返回不一致结果；跨文件遍历保留。
 - Step 5 — 引入通用数据库连接池。拒绝原因：每个数据库路径一条写连接、在池锁下借出整个操作已足够，并避免池调优。
+- Step 6 — 保留急切 `component` 并在调用点用 `React.lazy`。拒绝原因：描述符仍会把实现静态导入注册表与启动闭包。
+- Step 6 — 在 `App.tsx` 内选择快速入口。拒绝原因：App 仍会在决策前被导入并加载，因此快速窗口会拉入主 UI。
 
 ## Consequences
 
@@ -82,5 +89,7 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - Step 4 诚实限制：FileSharingTool 页面数据尚未从 store 渲染（已记录边界）；请求序列守卫经 store API 而非真实事件顺序在挂载组件上验证；完整单进程套件交错推迟到 Step 8 集成；Windows 未测试，Step 5–8 尚未开始。
 - Step 5 已验证证据：`cargo test --lib ai_sessions` 通过 83、3 ignored；`app_store` 通过 127、2 ignored；`ai_gateway` 通过 631、2 ignored（含 4 个新原子性测试与 1 个 ignored 计数器测试）；前端 AiUsageStats 23 个未修改通过；`npm run build` 退出 0；最终测量 harness 验证退出 0。同数据集基线 vs 最终（Apple M1 Max、rustc 1.93.1）：usage 暖 source_reads 稳定 3001 且每次 +4 cache_hits（约 207ms → 25ms）；gateway cold db_opens 10000 → 1（约 18.2s → 4.4s）、warm 约 14–18s → 4.4s，每请求 transactions/rows/batches 不变；ssh cold 52ms、warm 约 0.13ms；两次独立 final 运行一致。
 - Step 5 诚实限制：OpenCode 历史未按文件复用；被替换的用量来源在 TTL 到期或显式刷新前保持过期；计数器精确相等断言位于序列化的 ignored 测试，因为接缝为进程全局；WAL 可见性依赖 freshness/refresh 契约；测试不含绝对计时阈值。
+- Step 6 已验证证据：注册表惰性契约测试与 MoreToolsHub 异步/REQ-006 测试通过；新增 `src/entrypoints.test.tsx` 覆盖 `resolveEntryKind`、QuickAiApp 在不含主 shell 标记下的 quick-bar 渲染与 App shell 渲染；完整 Step 6 门禁通过 11 文件 240 测试；`npm run build` 退出 0。原生 macOS smoke（工具箱别名、快速窗口、草稿隐藏/显示）未执行，按 AC-006 措辞如实记录为 blocked/unexecuted。
+- Step 6 诚实限制：原生 smoke 仍属未执行；目录中的逐工具 chunk 列表与 Notes/Snippets 留在 App chunk 的例外是实测产物图，而非 mock 测试。
 
 - 诚实的限制：release-profile 的权限行为未独立测试；`--permission-mode` 的缺值/非法值路径已实现但只有单测覆盖；显示名无法通过真实二进制 smoke 观测，由共享服务特征化覆盖；Windows `LockFile` 分支未在本次 macOS-only 验证中做运行时测试。该计划后续步骤尚未开始，且刻意不在此描述。

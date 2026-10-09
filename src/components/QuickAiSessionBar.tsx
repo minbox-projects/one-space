@@ -3,7 +3,7 @@ import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
 import { Terminal, Box, ChevronDown, ChevronUp, FolderOpen, Send } from 'lucide-react';
-import { ToolIcon } from './AiEnvironments';
+import { ToolIcon } from './AiEnvironments/ToolIcon';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   getAiSessionStorageConfig,

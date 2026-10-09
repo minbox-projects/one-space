@@ -4,8 +4,7 @@ import { emit } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { v4 as uuidv4 } from 'uuid';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Pencil, Plus, Settings2, TerminalSquare, Trash2, Upload, X } from 'lucide-react';
-import { ClaudeIcon, OpenAIIcon, AntigravityIcon, OpenCodeIcon } from './icons';
+import { Loader2, Pencil, Plus, Settings2, Trash2, Upload, X } from 'lucide-react';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
 import { CliVersionCards } from './CliVersionCards';
 import { ToolSectionHeader } from './ToolSectionHeader';
@@ -333,15 +332,9 @@ const DEFAULT_STATE: AiProvidersState = {
   is_encrypted: false
 };
 
-export const ToolIcon = ({ tool, className }: { tool: string, className?: string }) => {
-  switch (tool.toLowerCase()) {
-    case 'claude': return <ClaudeIcon className={className} />;
-    case 'codex': return <OpenAIIcon className={className} />;
-    case 'antigravity': return <AntigravityIcon className={className} />;
-    case 'opencode': return <OpenCodeIcon className={className} />;
-    default: return <TerminalSquare className={className} />;
-  }
-};
+import { ToolIcon } from "./ToolIcon";
+
+export { ToolIcon };
 
 export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const { t } = useTranslation();

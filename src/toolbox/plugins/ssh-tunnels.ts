@@ -1,6 +1,5 @@
 import { Waypoints } from "lucide-react";
 
-import { SshTunnels } from "@/components/SshTunnels";
 import type { ToolboxToolDescriptor } from "../types";
 
 export const sshTunnelsTool: ToolboxToolDescriptor = {
@@ -16,5 +15,6 @@ export const sshTunnelsTool: ToolboxToolDescriptor = {
   surfaces: ["hub", "launcher-quick"],
   defaultVisible: true,
   defaultOrder: 3,
-  component: SshTunnels,
+  loadComponent: () =>
+    import("@/components/SshTunnels").then((m) => ({ default: m.SshTunnels })),
 };

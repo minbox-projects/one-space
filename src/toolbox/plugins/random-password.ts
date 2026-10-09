@@ -1,6 +1,5 @@
 import { KeyRound } from "lucide-react";
 
-import { RandomPasswordTool } from "@/components/RandomPasswordTool";
 import type { ToolboxToolDescriptor } from "../types";
 
 export const randomPasswordTool: ToolboxToolDescriptor = {
@@ -13,5 +12,8 @@ export const randomPasswordTool: ToolboxToolDescriptor = {
   surfaces: ["hub", "launcher-quick"],
   defaultVisible: true,
   defaultOrder: 5,
-  component: RandomPasswordTool,
+  loadComponent: () =>
+    import("@/components/RandomPasswordTool").then((m) => ({
+      default: m.RandomPasswordTool,
+    })),
 };

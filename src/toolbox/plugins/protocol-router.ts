@@ -1,6 +1,5 @@
 import { Route } from "lucide-react";
 
-import { ProtocolRouterTool } from "@/components/ProtocolRouterTool";
 import type { ToolboxToolDescriptor } from "../types";
 
 export const protocolRouterTool: ToolboxToolDescriptor = {
@@ -13,5 +12,8 @@ export const protocolRouterTool: ToolboxToolDescriptor = {
   surfaces: ["hub", "launcher-quick"],
   defaultVisible: true,
   defaultOrder: 4,
-  component: ProtocolRouterTool,
+  loadComponent: () =>
+    import("@/components/ProtocolRouterTool").then((m) => ({
+      default: m.ProtocolRouterTool,
+    })),
 };

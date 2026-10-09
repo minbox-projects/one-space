@@ -1,6 +1,5 @@
 import { Star } from "lucide-react";
 
-import { Bookmarks } from "@/components/Bookmarks";
 import type { ToolboxToolDescriptor } from "../types";
 
 export const bookmarksTool: ToolboxToolDescriptor = {
@@ -17,5 +16,6 @@ export const bookmarksTool: ToolboxToolDescriptor = {
   surfaces: ["hub", "launcher-quick"],
   defaultVisible: true,
   defaultOrder: 0,
-  component: Bookmarks,
+  loadComponent: () =>
+    import("@/components/Bookmarks").then((m) => ({ default: m.Bookmarks })),
 };

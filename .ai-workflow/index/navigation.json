@@ -61,6 +61,8 @@
       ],
       "related_files": [
         "src/main.tsx",
+        "src/QuickAiApp.tsx",
+        "src/components/AiEnvironments/ToolIcon.tsx",
         "src/i18n.ts",
         "src/lib/navigation.ts",
         "src/lib/runtimeStatus.ts",
@@ -78,6 +80,7 @@
         "src/App.moreToolsNavigation.test.tsx",
         "src/App.headerToolsStatus.test.tsx",
         "src/lib/runtimeStatus.test.ts",
+        "src/entrypoints.test.tsx",
         "src/i18n.test.ts",
         "src/lib/navigation.test.ts",
         "src/components/MoreToolsHub.test.tsx"
@@ -86,6 +89,18 @@
         {
           "file": "src/lib/navigation.ts",
           "name": "resolveNavigationTarget",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/main.tsx",
+          "name": "EntryKind",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/main.tsx",
+          "name": "resolveEntryKind",
           "kind": "function",
           "visibility": "public"
         },
@@ -142,6 +157,8 @@
       "read_scope": [
         "src/App.tsx",
         "src/main.tsx",
+        "src/QuickAiApp.tsx",
+        "src/components/AiEnvironments/ToolIcon.tsx",
         "src/i18n.ts",
         "src/lib/navigation.ts",
         "src/lib/runtimeStatus.ts",
@@ -157,6 +174,7 @@
         "src/App.moreToolsNavigation.test.tsx",
         "src/App.headerToolsStatus.test.tsx",
         "src/lib/runtimeStatus.test.ts",
+        "src/entrypoints.test.tsx",
         "src/i18n.test.ts",
         "src/lib/navigation.test.ts",
         "src/components/MoreToolsHub.test.tsx"
@@ -174,7 +192,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "工具箱唯一注册表与共享运行时：每个工具一个描述符（`ToolboxToolDescriptor`），Hub 卡片来自 `hub` surface 且绝不因启动台可见性隐藏，Hub 详情、Launcher 快速工具与内部工具箱目标（Notes/Snippets，经 `launcher-internal`）、导航别名解析、启动台可见性默认值、`listToolboxTools` 按 `defaultOrder` 的排序、Notes/Snippets 侧边栏条目以及 App 活动工具面包屑由注册表派生；托盘菜单结构仍为手工维护，仅 Notes/Snippets 标签经注册表解析（缺失时回退 `tray.notes` / `tray.snippets`）；另提供共享 invoke（`invokeToolboxCommand` / `ToolboxInvokeError` / `isToolboxInvokeAvailable`）、localStorage 写入（`writeLocalJson`）、复制反馈（`useCopyToClipboard`，`COPIED_FEEDBACK_RESET_MS = 1600`）、Tauri 事件（`useTauriEvent`，可选 `respectVisibility` 让页面消费者在隐藏时跳过处理）、可见性门控轮询（`useVisibleInterval`，document 或原生窗口隐藏时暂停、hidden→visible 时恰好一次追赶、启用时不回调）与 ToolShell、ToolErrorBanner、ToolStatusBadge、ToolStatusDot、ToolEmptyState",
+      "responsibility": "工具箱唯一注册表与共享运行时：每个工具一个描述符（`ToolboxToolDescriptor`，`loadComponent` 为动态 import loader、静态导入仅保留元数据与 loader，`ToolboxNavigationProps` 以可选字段表达 JTT/SSH 导航而无需 `as unknown as`），Hub 卡片来自 `hub` surface 且绝不因启动台可见性隐藏，Hub 详情、Launcher 快速工具与内部工具箱目标（Notes/Snippets，经 `launcher-internal`）、导航别名解析、启动台可见性默认值、`listToolboxTools` 按 `defaultOrder` 的排序、Notes/Snippets 侧边栏条目以及 App 活动工具面包屑由注册表派生；`MoreToolsHub` 仅在打开时经 `loadComponent()` 解析所选工具（idle/loading/ready/error、`role=status`/aria-live 加载态、可重试错误、`AppErrorBoundary` resetKey，同一时刻只渲染一个工具）；托盘菜单结构仍为手工维护，仅 Notes/Snippets 标签经注册表解析（缺失时回退 `tray.notes` / `tray.snippets`）；另提供共享 invoke（`invokeToolboxCommand` / `ToolboxInvokeError` / `isToolboxInvokeAvailable`）、localStorage 写入（`writeLocalJson`）、复制反馈（`useCopyToClipboard`，`COPIED_FEEDBACK_RESET_MS = 1600`）、Tauri 事件（`useTauriEvent`，可选 `respectVisibility` 让页面消费者在隐藏时跳过处理）、可见性门控轮询（`useVisibleInterval`，document 或原生窗口隐藏时暂停、hidden→visible 时恰好一次追赶、启用时不回调）与 ToolShell、ToolErrorBanner、ToolStatusBadge、ToolStatusDot、ToolEmptyState",
       "entries": [
         "src/toolbox/registry.ts"
       ],
@@ -273,6 +291,18 @@
         {
           "file": "src/toolbox/types.ts",
           "name": "ToolboxToolDescriptor",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/types.ts",
+          "name": "ToolboxNavigationProps",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/types.ts",
+          "name": "ToolboxToolComponentLoader",
           "kind": "type",
           "visibility": "public"
         },

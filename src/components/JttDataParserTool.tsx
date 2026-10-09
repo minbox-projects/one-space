@@ -12,7 +12,7 @@ import {
   type JttInputHistoryRecord,
   type JttInputHistoryTab,
 } from "@/lib/jttInputHistory";
-import type { JttParserTab } from "@/lib/navigation";
+import type { ToolboxNavigationProps } from "@/toolbox/types";
 import {
   JT1078_DIRECTIONS,
   JT1078_OPERATIONS,
@@ -37,6 +37,21 @@ import {
 } from "@/lib/jttDataParser";
 
 type TabKey = JttInputHistoryTab;
+
+/**
+ * Narrows the shared navigation `initialTab` (which also carries opaque SSH
+ * values) to a rendered JT/T tab, falling back to the default parser view.
+ */
+function toJttTabKey(value: string | undefined): TabKey {
+  switch (value) {
+    case "jt809":
+    case "jt1078":
+    case "hex":
+      return value;
+    default:
+      return "jt808";
+  }
+}
 
 type Jt808State = {
   input: string;
@@ -373,7 +388,7 @@ function HistoryDialog({
 export function JttDataParserTool({
   initialTab,
 }: {
-  initialTab?: JttParserTab;
+  initialTab?: ToolboxNavigationProps["initialTab"];
 }) {
   const { i18n, t } = useTranslation();
   const { pushToast } = useToast();
@@ -385,7 +400,7 @@ export function JttDataParserTool({
       pushToast({ title: t("jttCopyFailed", "Unable to copy result"), kind: "error" }),
   });
 
-  const [activeTab, setActiveTab] = useState<TabKey>(initialTab ?? "jt808");
+  const [activeTab, setActiveTab] = useState<TabKey>(() => toJttTabKey(initialTab));
   const [jt808State, setJt808State] = useState<Jt808State>(initialJt808State);
   const [jt809State, setJt809State] = useState<Jt809State>(initialJt809State);
   const [jt1078State, setJt1078State] = useState<Jt1078State>(initialJt1078State);

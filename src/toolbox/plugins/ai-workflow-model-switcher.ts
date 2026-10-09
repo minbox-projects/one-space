@@ -1,7 +1,5 @@
 import { SlidersHorizontal } from "lucide-react";
-import type { ComponentType } from "react";
 
-import { AiWorkflowModelSwitcher } from "@/components/AiWorkflowModelSwitcher";
 import type { ToolboxToolDescriptor } from "../types";
 
 export const aiWorkflowModelSwitcherTool: ToolboxToolDescriptor = {
@@ -14,7 +12,8 @@ export const aiWorkflowModelSwitcherTool: ToolboxToolDescriptor = {
   surfaces: ["hub", "launcher-quick"],
   defaultVisible: true,
   defaultOrder: 11,
-  component: AiWorkflowModelSwitcher as unknown as ComponentType<{
-    isVisible?: boolean;
-  }>,
+  loadComponent: () =>
+    import("@/components/AiWorkflowModelSwitcher").then((m) => ({
+      default: m.AiWorkflowModelSwitcher,
+    })),
 };

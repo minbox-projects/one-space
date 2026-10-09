@@ -113,7 +113,7 @@ describe("MoreToolsHub", () => {
       />,
     );
 
-    expect(screen.getByText("Bookmarks detail")).toBeInTheDocument();
+    expect(await screen.findByText("Bookmarks detail")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Back to tools|返回工具列表/ }));
     expect(onBack).toHaveBeenCalledOnce();
@@ -157,7 +157,7 @@ describe("MoreToolsHub", () => {
         onBack={vi.fn()}
       />,
     );
-    expect(screen.getByText("MD5 Encryption detail")).toBeInTheDocument();
+    expect(await screen.findByText("MD5 Encryption detail")).toBeInTheDocument();
   });
 
   it("显示短链接卡片、分发详情并返回工具列表", async () => {
@@ -184,7 +184,7 @@ describe("MoreToolsHub", () => {
         onBack={onBack}
       />,
     );
-    expect(screen.getByText("Short Link detail")).toBeInTheDocument();
+    expect(await screen.findByText("Short Link detail")).toBeInTheDocument();
 
     await user.click(
       screen.getByRole("button", { name: /Back to tools|返回工具列表/ }),
@@ -219,12 +219,12 @@ describe("MoreToolsHub", () => {
       />,
     );
     expect(
-      screen.getByText("AI Workflow Model Switcher detail"),
+      await screen.findByText("AI Workflow Model Switcher detail"),
     ).toBeInTheDocument();
   });
 
 
-  it("忽略遗留 md5Encryption 记录并在网格中保留 MD5 卡片", () => {
+  it("忽略遗留 md5Encryption 记录并在网格中保留 MD5 卡片", async () => {
     localStorage.setItem(
       LAUNCHER_TOOL_VISIBILITY_KEY,
       JSON.stringify({ md5Encryption: false }),
@@ -244,7 +244,7 @@ describe("MoreToolsHub", () => {
         onBack={vi.fn()}
       />,
     );
-    expect(screen.getByText("MD5 Encryption detail")).toBeInTheDocument();
+    expect(await screen.findByText("MD5 Encryption detail")).toBeInTheDocument();
     expect(
       screen.getByRole("switch", {
         name: /Show in Launcher|在启动台展示/,
@@ -287,7 +287,7 @@ describe("MoreToolsHub", () => {
     ).toHaveAttribute("aria-checked", "false");
   });
 
-  it("Hub 隐藏时将 isVisible=false 传给当前活动工具", () => {
+  it("Hub 隐藏时将 isVisible=false 传给当前活动工具", async () => {
     renderWithProviders(
       <MoreToolsHub
         activeTool="file-sharing"
@@ -297,7 +297,7 @@ describe("MoreToolsHub", () => {
       />,
     );
 
-    expect(screen.getByTestId("file-sharing-is-visible")).toHaveTextContent(
+    expect(await screen.findByTestId("file-sharing-is-visible")).toHaveTextContent(
       "false",
     );
   });
@@ -442,7 +442,7 @@ describe("MoreToolsHub", () => {
         onBack={vi.fn()}
       />,
     );
-    expect(screen.getByText(/JT\/T Data Parser detail/)).toBeInTheDocument();
+    expect(await screen.findByText(/JT\/T Data Parser detail/)).toBeInTheDocument();
   });
 
   it("不再把 AI 网关作为更多工具卡片展示", () => {
@@ -455,7 +455,7 @@ describe("MoreToolsHub", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("将可选 JT/T 子标签页传达到解析器组件", () => {
+  it("将可选 JT/T 子标签页传达到解析器组件", async () => {
     renderWithProviders(
       <MoreToolsHub
         activeTool="jtt-data-parser"
@@ -465,7 +465,7 @@ describe("MoreToolsHub", () => {
       />,
     );
 
-    expect(screen.getByText(/subtab=jt809/)).toBeInTheDocument();
+    expect(await screen.findByText(/subtab=jt809/)).toBeInTheDocument();
   });
 
   it("隐藏启动台展示后 JT/T 目录卡片仍然可见并可通过详情开关恢复", async () => {
@@ -725,5 +725,50 @@ describe("MoreToolsHub", () => {
         expect(onSelectTool).toHaveBeenCalledWith(tool.id);
       }
     });
+  });
+});
+
+/**
+ * REQ-006 / AC-006 lazy-loading contract. Descriptor metadata stays the single
+ * source: it must describe a tool and expose a deferred loader, not carry the
+ * already-resolved implementation. Otherwise importing the registry eagerly
+ * pulls every tool component into the startup dependency closure. The selected
+ * tool's details are resolved only through `loadComponent`, whose resolved
+ * module exposes the component as its default export (React `lazy` shape), so a
+ * caller can render a visible loading state until it settles.
+ */
+type LazyContractDescriptor = {
+  id: string;
+  loadComponent?: () => Promise<{ default: unknown }>;
+  component?: unknown;
+};
+
+describe("REQ-006 工具详情惰性加载契约", () => {
+  it("每个注册工具暴露独立的 loadComponent 且不在注册表中内联已解析组件", async () => {
+    const registry = await loadRegistry();
+    const descriptors = registry.TOOLBOX_TOOLS as unknown as LazyContractDescriptor[];
+    expect(descriptors.length).toBeGreaterThan(0);
+
+    const loaders = new Set<unknown>();
+    for (const descriptor of descriptors) {
+      // 描述符必须提供延迟加载器; 当前实现内联了已解析组件, 因此这里为 RED。
+      expect(typeof descriptor.loadComponent).toBe("function");
+
+      // 元数据不得内联已解析组件, 否则导入注册表就会同步拉起全部工具实现。
+      expect(descriptor).not.toHaveProperty("component");
+
+      const loadComponent = descriptor.loadComponent as () => Promise<{
+        default: unknown;
+      }>;
+      loaders.add(loadComponent);
+
+      const resolved = await loadComponent();
+      expect(resolved).toBeTruthy();
+      // 解析结果必须暴露可渲染的组件作为默认导出 (React.lazy 兼容形态)。
+      expect(["function", "object"]).toContain(typeof resolved.default);
+    }
+
+    // 每个工具拥有各自的加载器, 不存在共享的已解析组件引用。
+    expect(loaders.size).toBe(descriptors.length);
   });
 });

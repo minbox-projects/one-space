@@ -1,6 +1,5 @@
 import { NotebookPen } from "lucide-react";
 
-import { Notes } from "@/components/Notes";
 import type { ToolboxToolDescriptor } from "../types";
 
 export const notesTool: ToolboxToolDescriptor = {
@@ -13,5 +12,6 @@ export const notesTool: ToolboxToolDescriptor = {
   surfaces: ["sidebar", "tray", "launcher-internal"],
   defaultVisible: true,
   defaultOrder: 13,
-  component: Notes,
+  loadComponent: () =>
+    import("@/components/Notes").then((m) => ({ default: m.Notes })),
 };

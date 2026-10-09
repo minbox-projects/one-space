@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ComponentType } from "react";
-import { ArrowLeft, GripVertical } from "lucide-react";
+import type { ComponentType, ReactNode } from "react";
+import { AlertCircle, ArrowLeft, GripVertical, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Switch } from "./ui/switch";
+import { AppErrorBoundary } from "./AppErrorBoundary";
 import type { JttParserTab, MoreToolsSection } from "@/lib/navigation";
 import {
   MORE_TOOLS_ORDER_KEY,
@@ -22,6 +23,7 @@ import {
   listToolboxTools,
   resolveToolboxText,
 } from "@/toolbox/registry";
+import type { ToolboxNavigationProps } from "@/toolbox/types";
 
 type MoreToolsHubProps = {
   activeTool: MoreToolsSection | null;
@@ -34,13 +36,13 @@ type MoreToolsHubProps = {
   isVisible?: boolean;
 };
 
-const HUB_TOOLS = listToolboxTools("hub");
+type ToolLoadState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; Component: ComponentType<ToolboxNavigationProps> }
+  | { status: "error"; error: unknown };
 
-type ActiveToolComponent = ComponentType<{
-  isVisible?: boolean;
-  initialTab?: string;
-  navigationNonce?: number;
-}>;
+const HUB_TOOLS = listToolboxTools("hub");
 
 export function MoreToolsHub({
   activeTool,
@@ -59,6 +61,8 @@ export function MoreToolsHub({
   const [toolOrder, setToolOrder] = useState<string[]>(() =>
     readSavedOrder(MORE_TOOLS_ORDER_KEY),
   );
+  const [toolLoad, setToolLoad] = useState<ToolLoadState>({ status: "idle" });
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   useEffect(() => {
     const refreshVisibility = () => {
@@ -84,6 +88,35 @@ export function MoreToolsHub({
     },
     [visibility],
   );
+
+  const activeDescriptor = activeTool ? getToolboxTool(activeTool) : undefined;
+
+  // Resolve the active tool's implementation only when it is opened. The
+  // descriptor loader keeps tool-exclusive modules out of the startup closure;
+  // a rejected import surfaces a recoverable error state instead of crashing.
+  useEffect(() => {
+    if (!activeDescriptor) {
+      setToolLoad({ status: "idle" });
+      return;
+    }
+    let cancelled = false;
+    setToolLoad({ status: "loading" });
+    activeDescriptor
+      .loadComponent()
+      .then((module) => {
+        if (!cancelled) {
+          setToolLoad({ status: "ready", Component: module.default });
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setToolLoad({ status: "error", error });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeDescriptor, reloadNonce]);
 
   const moreToolsLabel =
     i18n.language === "zh" ? "更多工具" : "More Tools";
@@ -112,12 +145,86 @@ export function MoreToolsHub({
     i18n.language === "zh" ? "在启动台展示" : "Show in Launcher";
   const hideInLauncherLabel =
     i18n.language === "zh" ? "不在启动台展示" : "Hide from Launcher";
-  const activeDescriptor = activeTool ? getToolboxTool(activeTool) : undefined;
 
   if (activeTool) {
-    const ActiveComponent = activeDescriptor
-      ? (activeDescriptor.component as ActiveToolComponent)
-      : undefined;
+    const loadingLabel =
+      i18n.language === "zh" ? "正在加载工具…" : "Loading tool…";
+    const loadErrorTitle =
+      i18n.language === "zh" ? "工具加载失败" : "Failed to load tool";
+    const loadErrorHint =
+      i18n.language === "zh"
+        ? "请重试；若仍然失败，请查看控制台日志。"
+        : "Try again; if it still fails, check the console log.";
+    const retryLabel = i18n.language === "zh" ? "重试" : "Retry";
+
+    let toolContent: ReactNode = null;
+    if (activeDescriptor && toolLoad.status === "ready") {
+      const ActiveComponent = toolLoad.Component;
+      const renderProps: ToolboxNavigationProps = {
+        isVisible: isVisible && activeTool === activeDescriptor.id,
+        ...(activeDescriptor.id === "jtt-data-parser"
+          ? { initialTab: jttParserTab }
+          : {}),
+        ...(activeDescriptor.id === "ssh-tunnels"
+          ? {
+              initialTab: sshTunnelTab,
+              navigationNonce: sshTunnelNavigationNonce,
+            }
+          : {}),
+      };
+      toolContent = (
+        <AppErrorBoundary
+          label={resolveToolboxText(
+            activeDescriptor.labelText,
+            activeDescriptor.labelKey,
+            t,
+          )}
+          resetKey={`${activeDescriptor.id}:${reloadNonce}`}
+        >
+          <ActiveComponent
+            key={
+              activeDescriptor.id === "jtt-data-parser"
+                ? jttParserTab ?? "jt808"
+                : activeDescriptor.id
+            }
+            {...renderProps}
+          />
+        </AppErrorBoundary>
+      );
+    } else if (activeDescriptor && toolLoad.status === "error") {
+      toolContent = (
+        <div
+          role="alert"
+          className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center"
+        >
+          <div className="rounded-full bg-destructive/10 p-2 text-destructive">
+            <AlertCircle className="h-5 w-5" aria-hidden="true" />
+          </div>
+          <div className="space-y-1">
+            <div className="text-sm font-semibold">{loadErrorTitle}</div>
+            <p className="text-sm text-muted-foreground">{loadErrorHint}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setReloadNonce((prev) => prev + 1)}
+            className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
+          >
+            {retryLabel}
+          </button>
+        </div>
+      );
+    } else {
+      toolContent = (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex h-full items-center justify-center gap-2 p-6 text-sm text-muted-foreground"
+        >
+          <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+          <span>{loadingLabel}</span>
+        </div>
+      );
+    }
 
     return (
       <div className="flex h-full min-h-0 flex-col gap-5">
@@ -148,27 +255,7 @@ export function MoreToolsHub({
           ) : null}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          {ActiveComponent && activeDescriptor ? (
-            <ActiveComponent
-              key={
-                activeDescriptor.id === "jtt-data-parser"
-                  ? jttParserTab ?? "jt808"
-                  : activeDescriptor.id
-              }
-              isVisible={isVisible && activeTool === activeDescriptor.id}
-              {...(activeDescriptor.id === "jtt-data-parser"
-                ? { initialTab: jttParserTab }
-                : {})}
-              {...(activeDescriptor.id === "ssh-tunnels"
-                ? {
-                    initialTab: sshTunnelTab,
-                    navigationNonce: sshTunnelNavigationNonce,
-                  }
-                : {})}
-            />
-          ) : null}
-        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto">{toolContent}</div>
       </div>
     );
   }

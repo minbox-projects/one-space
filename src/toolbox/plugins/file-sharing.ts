@@ -1,6 +1,5 @@
 import { Share2 } from "lucide-react";
 
-import { FileSharingTool } from "@/components/FileSharingTool";
 import type { ToolboxToolDescriptor } from "../types";
 
 export const fileSharingTool: ToolboxToolDescriptor = {
@@ -13,5 +12,8 @@ export const fileSharingTool: ToolboxToolDescriptor = {
   surfaces: ["hub", "launcher-quick"],
   defaultVisible: true,
   defaultOrder: 9,
-  component: FileSharingTool,
+  loadComponent: () =>
+    import("@/components/FileSharingTool").then((m) => ({
+      default: m.FileSharingTool,
+    })),
 };

@@ -1,6 +1,5 @@
 import { Code2 } from "lucide-react";
 
-import { Snippets } from "@/components/Snippets";
 import type { ToolboxToolDescriptor } from "../types";
 
 export const snippetsTool: ToolboxToolDescriptor = {
@@ -13,5 +12,6 @@ export const snippetsTool: ToolboxToolDescriptor = {
   surfaces: ["sidebar", "tray", "launcher-internal"],
   defaultVisible: true,
   defaultOrder: 12,
-  component: Snippets,
+  loadComponent: () =>
+    import("@/components/Snippets").then((m) => ({ default: m.Snippets })),
 };

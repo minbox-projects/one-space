@@ -1,7 +1,5 @@
 import { Binary } from "lucide-react";
-import type { ComponentType } from "react";
 
-import { JttDataParserTool } from "@/components/JttDataParserTool";
 import type { ToolboxToolDescriptor } from "../types";
 
 export const jttDataParserTool: ToolboxToolDescriptor = {
@@ -28,7 +26,8 @@ export const jttDataParserTool: ToolboxToolDescriptor = {
   surfaces: ["hub", "launcher-quick"],
   defaultVisible: true,
   defaultOrder: 10,
-  component: JttDataParserTool as unknown as ComponentType<{
-    isVisible?: boolean;
-  }>,
+  loadComponent: () =>
+    import("@/components/JttDataParserTool").then((m) => ({
+      default: m.JttDataParserTool,
+    })),
 };
