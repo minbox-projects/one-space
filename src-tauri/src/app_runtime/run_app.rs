@@ -436,6 +436,7 @@ pub fn run() {
             // AI Workflow Profiles
             ai_workflow_profiles::ai_workflow_list_profiles,
             ai_workflow_profiles::ai_workflow_get_profile_matrix,
+            ai_workflow_profiles::ai_workflow_get_active_models,
             ai_workflow_profiles::ai_workflow_get_model_sources,
             ai_workflow_profiles::ai_workflow_activate_profile,
             ai_workflow_profiles::ai_workflow_save_profile,

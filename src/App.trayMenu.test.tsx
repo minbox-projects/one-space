@@ -11,6 +11,7 @@ import {
   resetTauriMocks,
 } from "@/test/mocks/tauri";
 import type { TrayMenuNode } from "@/lib/trayMenu";
+import * as aiWorkflowProfiles from "@/lib/aiWorkflowProfiles";
 
 type RegistryToolDescriptor = {
   id: string;
@@ -183,6 +184,25 @@ describe("App tray menu integration", () => {
   let sshDisconnectResult: BatchResult | null;
   let sshSnapshotAfterConnect: typeof SSH_SNAPSHOT | null;
   let sshSnapshotAfterDisconnect: typeof SSH_SNAPSHOT | null;
+  let activeModelsResult: unknown;
+  let activeModelsError: Error | null;
+  let activationReport: {
+    active_profile: string;
+    hosts: string[];
+    installations: unknown[];
+  };
+
+  function appActiveMatrix(name: string, backendModel: string) {
+    return {
+      name,
+      rows: aiWorkflowProfiles.SUPPORTED_ROLES.map((role) => ({
+        role,
+        ...(role === "backend"
+          ? { codex: { model: backendModel, reasoning_effort: "high" } }
+          : {}),
+      })),
+    };
+  }
 
   function gatewayStatus() {
     return {
@@ -293,6 +313,9 @@ describe("App tray menu integration", () => {
     sshDisconnectResult = null;
     sshSnapshotAfterConnect = null;
     sshSnapshotAfterDisconnect = null;
+    activeModelsResult = null;
+    activeModelsError = null;
+    activationReport = { active_profile: "team-alpha", hosts: [], installations: [] };
     aboutModalHarness.props.length = 0;
 
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
@@ -401,6 +424,11 @@ describe("App tray menu integration", () => {
             },
             lastError: null,
           };
+        case "ai_workflow_get_active_models":
+          if (activeModelsError) throw activeModelsError;
+          return activeModelsResult;
+        case "ai_workflow_activate_profile":
+          return activationReport;
         default:
           return undefined;
       }
@@ -928,5 +956,134 @@ describe("App tray menu integration", () => {
     expect(
       listenMock.mock.calls.some(([name]) => name === "trigger-sync"),
     ).toBe(false);
+  });
+
+  it("shows the installed active profile and role hosts on mount", async () => {
+    activeModelsResult = appActiveMatrix("team-alpha", "gpt-6-astra");
+    renderApp();
+
+    await waitFor(() =>
+      expect(
+        findModelItem(latestModel(), "ai-workflow-role-backend"),
+      ).toBeDefined(),
+    );
+
+    const model = latestModel();
+    expect(findModelItem(model, "ai-workflow")?.label).toBe("AI WorkFlow");
+    expect(findModelItem(model, "ai-workflow-profile")?.label).toBe(
+      "Active profile: team-alpha",
+    );
+    expect(findModelItem(model, "ai-workflow-role-backend-codex")?.label).toBe(
+      "Codex: gpt-6-astra · Reasoning: high",
+    );
+    expect(
+      commandCallCount("ai_workflow_get_active_models"),
+    ).toBeGreaterThan(0);
+  });
+
+  it("shows the empty state when no profile is active", async () => {
+    activeModelsResult = null;
+    renderApp();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "ai-workflow-empty")).toBeDefined(),
+    );
+    expect(findModelItem(latestModel(), "ai-workflow-empty")?.label).toBe(
+      "No active profile",
+    );
+  });
+
+  it("refetches on a visibility change and surfaces unavailable, clearing stale rows", async () => {
+    activeModelsResult = appActiveMatrix("team-alpha", "gpt-6-astra");
+    renderApp();
+
+    await waitFor(() =>
+      expect(
+        findModelItem(latestModel(), "ai-workflow-role-backend"),
+      ).toBeDefined(),
+    );
+
+    activeModelsError = new Error("active models read failed");
+    await triggerEvent("main-window-visibility-changed", false);
+
+    await waitFor(() =>
+      expect(
+        findModelItem(latestModel(), "ai-workflow-unavailable"),
+      ).toBeDefined(),
+    );
+    expect(
+      findModelItem(latestModel(), "ai-workflow-unavailable")?.label,
+    ).toBe("Unable to read active models");
+    expect(
+      findModelItem(latestModel(), "ai-workflow-role-backend"),
+    ).toBeUndefined();
+  });
+
+  it("refetches after a successful profile activation event", async () => {
+    activeModelsResult = appActiveMatrix("team-alpha", "gpt-6-astra");
+    renderApp();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "ai-workflow-profile")?.label).toBe(
+        "Active profile: team-alpha",
+      ),
+    );
+
+    activationReport = {
+      active_profile: "team-beta",
+      hosts: [],
+      installations: [],
+    };
+    activeModelsResult = appActiveMatrix("team-beta", "gpt-6-beta");
+
+    await act(async () => {
+      await aiWorkflowProfiles.activateProfile("team-beta");
+    });
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "ai-workflow-profile")?.label).toBe(
+        "Active profile: team-beta",
+      ),
+    );
+    expect(
+      findModelItem(latestModel(), "ai-workflow-role-backend-codex")?.label,
+    ).toBe("Codex: gpt-6-beta · Reasoning: high");
+  });
+
+  it("polls active models every 60000ms even while hidden and stops on unmount", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      activeModelsResult = appActiveMatrix("team-alpha", "gpt-6-astra");
+      isVisibleMock.mockResolvedValue(false);
+
+      const view = renderApp();
+
+      await waitFor(() =>
+        expect(
+          commandCallCount("ai_workflow_get_active_models"),
+        ).toBeGreaterThan(0),
+      );
+      const afterMount = commandCallCount("ai_workflow_get_active_models");
+
+      await act(async () => {
+        vi.advanceTimersByTime(60000);
+      });
+      await waitFor(() =>
+        expect(
+          commandCallCount("ai_workflow_get_active_models"),
+        ).toBeGreaterThan(afterMount),
+      );
+
+      view.unmount();
+      const afterUnmount = commandCallCount("ai_workflow_get_active_models");
+      await act(async () => {
+        vi.advanceTimersByTime(180000);
+      });
+      expect(commandCallCount("ai_workflow_get_active_models")).toBe(
+        afterUnmount,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

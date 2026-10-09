@@ -380,14 +380,15 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "托盘原生菜单所有权：`buildTrayMenuModel` 结构/标签/启用勾选/快捷键提示（遵循已注册快捷键的语义，`Meta` 不是修饰键，非法或未命名值省略）、`applyTrayMenu` 原生应用（单条目 accelerator 被拒时降级重试），Notes / Snippets 条目按工具 id 经工具箱注册表描述符解析标签（缺失时回退 `tray.notes` / `tray.snippets`），`src/App.tsx` 控制器按窗口可见性、服务状态、`tray-shortcuts-updated`（Settings 保存快捷键后发出）与 i18n 语言变化重建并执行全部动作",
+      "responsibility": "托盘原生菜单所有权：`buildTrayMenuModel` 结构/标签/启用勾选/快捷键提示（遵循已注册快捷键的语义，`Meta` 不是修饰键，非法或未命名值省略）、`applyTrayMenu` 原生应用（单条目 accelerator 被拒时降级重试），Notes / Snippets 条目按工具 id 经工具箱注册表描述符解析标签（缺失时回退 `tray.notes` / `tray.snippets`），`src/App.tsx` 控制器按窗口可见性、服务状态、`tray-shortcuts-updated`（Settings 保存快捷键后发出）与 i18n 语言变化重建并执行全部动作；顶层 AI WorkFlow 子菜单位于 ai-usage 与 more-pages 之间，以禁用态 profile 头、9 个角色子菜单（各含 codex/claude/opencode 三个禁用 host 行，展示完整 model 与 reasoning effort）呈现 `ai_workflow_get_active_models` 的当前已安装快照，并有双语的加载/未激活/不可用/未设置文案",
       "entries": [
         "src/lib/trayMenu.ts"
       ],
       "related_files": [
         "src/App.tsx",
         "src/i18n.ts",
-        "src/toolbox/registry.ts"
+        "src/toolbox/registry.ts",
+        "src/lib/aiWorkflowProfiles.ts"
       ],
       "tests": [
         "src/App.trayMenu.test.tsx",
@@ -431,14 +432,17 @@
           "visibility": "public"
         }
       ],
-      "depends_on": [],
+      "depends_on": [
+        "ai-workflow-model-switcher"
+      ],
       "read_scope": [
         "src/App.trayMenu.test.tsx",
         "src/App.tsx",
         "src/i18n.ts",
         "src/toolbox/registry.ts",
         "src/lib/trayMenu.test.ts",
-        "src/lib/trayMenu.ts"
+        "src/lib/trayMenu.ts",
+        "src/lib/aiWorkflowProfiles.ts"
       ],
       "relations": [],
       "shared_entry": false
@@ -2287,7 +2291,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "AI Workflow subagent 角色模型切换工具箱工具：9×3 矩阵编辑、自动模型源候选与手动输入降级；Activate 只激活已保存 YAML，Save 仅保存既有 profile，新建 profile 首次保存时提供一次 Yes/No 保存后激活确认，保存成功更新 dirty baseline",
+      "responsibility": "AI Workflow subagent 角色模型切换工具箱工具：9×3 矩阵编辑、自动模型源候选与手动输入降级；Activate 只激活已保存 YAML，Save 仅保存既有 profile，新建 profile 首次保存时提供一次 Yes/No 保存后激活确认，保存成功更新 dirty baseline；`getActiveModels` 经 `ai_workflow_get_active_models` 读取当前已安装快照（绝不读已保存 profile YAML），`AI_WORKFLOW_PROFILE_UPDATED_EVENT` 在激活成功后发出以通知托盘等消费者刷新",
       "entries": [
         "src/components/AiWorkflowModelSwitcher/index.ts"
       ],
@@ -2299,7 +2303,8 @@
         "src-tauri/src/ai_workflow_profiles.rs"
       ],
       "tests": [
-        "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx"
+        "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx",
+        "src/lib/aiWorkflowProfiles.test.ts"
       ],
       "symbols": [
         {
@@ -2355,6 +2360,18 @@
           "name": "deleteProfile",
           "kind": "function",
           "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "getActiveModels",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "AI_WORKFLOW_PROFILE_UPDATED_EVENT",
+          "kind": "constant",
+          "visibility": "public"
         }
       ],
       "depends_on": [],
@@ -2365,7 +2382,8 @@
         "src/components/AiWorkflowModelSwitcher/SearchableModelCombobox.tsx",
         "src/lib/aiWorkflowProfiles.ts",
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx",
-        "src-tauri/src/ai_workflow_profiles.rs"
+        "src-tauri/src/ai_workflow_profiles.rs",
+        "src/lib/aiWorkflowProfiles.test.ts"
       ],
       "relations": [],
       "shared_entry": false
@@ -2379,12 +2397,13 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "AI Workflow profile 与模型源后端：规范化 profile 矩阵，严格校验并原子保存 YAML；save-only 保存不运行 CLI 或改变 active profile，激活由独立命令执行且激活失败不丢弃已保存的 profile；原子 save-and-activate 命令及其回滚链已移除",
+      "responsibility": "AI Workflow profile 与模型源后端：规范化 profile 矩阵，严格校验并原子保存 YAML；save-only 保存不运行 CLI 或改变 active profile，激活由独立命令执行且激活失败不丢弃已保存的 profile；原子 save-and-activate 命令及其回滚链已移除；`ai_workflow_get_active_models` 只读读取 `config.yaml` 的 `active_profile`（缺失或空白返回 None）与三 host 的固定 9 角色已安装文件（Codex `.codex/agents/<role>.toml` 的 `model`/`model_reasoning_effort`；Claude `.claude/agents/<role>.md` frontmatter 的 `model`/`effort`；OpenCode `.config/opencode/agents/<role>.md` 的 `model`/`reasoningEffort`），绝不读取已保存 profile YAML 或运行 CLI；缺失文件按可选 host 返回 None，字段缺失或空白返回空串，已存在但损坏的文件返回错误，读取过程不做任何变更",
       "entries": [
         "src-tauri/src/ai_workflow_profiles.rs"
       ],
       "related_files": [
-        "src-tauri/src/ai_workflow_profiles/tests.rs"
+        "src-tauri/src/ai_workflow_profiles/tests.rs",
+        "src-tauri/src/app_runtime/run_app.rs"
       ],
       "tests": [
         "src-tauri/src/ai_workflow_profiles/tests.rs"
@@ -2401,12 +2420,25 @@
           "name": "save_profile",
           "kind": "function",
           "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_workflow_profiles.rs",
+          "name": "ai_workflow_get_active_models",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_workflow_profiles.rs",
+          "name": "get_active_models",
+          "kind": "function",
+          "visibility": "public"
         }
       ],
       "depends_on": [],
       "read_scope": [
         "src-tauri/src/ai_workflow_profiles.rs",
-        "src-tauri/src/ai_workflow_profiles/tests.rs"
+        "src-tauri/src/ai_workflow_profiles/tests.rs",
+        "src-tauri/src/app_runtime/run_app.rs"
       ],
       "relations": [],
       "shared_entry": false

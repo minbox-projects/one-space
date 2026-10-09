@@ -88,6 +88,11 @@ import {
   type TrayMenuState,
   type TrayTranslate,
 } from "./lib/trayMenu";
+import {
+  AI_WORKFLOW_PROFILE_UPDATED_EVENT,
+  SUPPORTED_TOOLS,
+  getActiveModels,
+} from "./lib/aiWorkflowProfiles";
 import type {
   SshTunnelBatchOperationResult,
   SshTunnelsSnapshot,
@@ -375,6 +380,7 @@ function App() {
     shortcuts: { main: null, quick: null },
   });
   const trayStateRef = useRef(trayState);
+  const trayMenuApplyRef = useRef<Promise<void>>(Promise.resolve());
   const trayActionRef = useRef<(id: string) => Promise<void>>(async () => {});
   const gatewayBaseUrlRef = useRef<string | null>(null);
   const sshTunnelSummaryRef = useRef<{
@@ -514,9 +520,11 @@ function App() {
   const applyTrayModel = useCallback(
     (state: TrayMenuState) => {
       if (!isTauri || isQuickAiView) return;
-      void applyTrayMenu(buildTrayMenuModel(state, t as TrayTranslate), (id) =>
-        trayActionRef.current(id),
-      );
+      const model = buildTrayMenuModel(state, t as TrayTranslate);
+      // A slow native submenu build must not overwrite a newer menu.
+      trayMenuApplyRef.current = trayMenuApplyRef.current.then(async () => {
+        await applyTrayMenu(model, (id) => trayActionRef.current(id));
+      });
     },
     [isQuickAiView, isTauri, t],
   );
@@ -749,6 +757,40 @@ function App() {
   useEffect(() => {
     if (!isTauri || isQuickAiView) return;
 
+    let disposed = false;
+    let aiWorkflowRequest = 0;
+    const refreshTrayAiWorkflow = async () => {
+      const request = ++aiWorkflowRequest;
+      try {
+        const profile = await getActiveModels();
+        if (disposed || request !== aiWorkflowRequest) return;
+        setTrayState((prev) => {
+          const previous = prev.aiWorkflow?.profile;
+          const unchanged = previous === profile || (
+            previous && profile &&
+            previous.name === profile.name &&
+            previous.rows.length === profile.rows.length &&
+            previous.rows.every((row, index) => {
+              const next = profile.rows[index];
+              return row.role === next.role && SUPPORTED_TOOLS.every((tool) =>
+                row[tool]?.model === next[tool]?.model &&
+                row[tool]?.reasoning_effort === next[tool]?.reasoning_effort,
+              );
+            })
+          );
+          return unchanged && !prev.aiWorkflow?.unavailable
+            ? prev
+            : { ...prev, aiWorkflow: { profile } };
+        });
+      } catch {
+        if (disposed || request !== aiWorkflowRequest) return;
+        setTrayState((prev) => prev.aiWorkflow?.unavailable
+          ? prev
+          : { ...prev, aiWorkflow: { profile: null, unavailable: true } },
+        );
+      }
+    };
+
     const unlistenFns: Array<() => void> = [];
     const addListener = (
       eventName: string,
@@ -756,7 +798,8 @@ function App() {
     ) => {
       listen(eventName, handler)
         .then((fn) => {
-          unlistenFns.push(fn);
+          if (disposed) fn();
+          else unlistenFns.push(fn);
         })
         .catch((e) => {
           console.error(`Failed to subscribe to ${eventName}`, e);
@@ -764,6 +807,7 @@ function App() {
     };
 
     addListener("main-window-visibility-changed", (event) => {
+      void refreshTrayAiWorkflow();
       const payload = event.payload;
       if (typeof payload === "boolean") {
         setTrayState((prev) =>
@@ -803,6 +847,9 @@ function App() {
     };
     i18n.on("languageChanged", handleLanguageChanged);
 
+    window.addEventListener(AI_WORKFLOW_PROFILE_UPDATED_EVENT, refreshTrayAiWorkflow);
+    const aiWorkflowTimer = window.setInterval(refreshTrayAiWorkflow, 60_000);
+    void refreshTrayAiWorkflow();
     void refreshTrayGateway();
     void refreshTrayRouter();
     void refreshTrayTunnels();
@@ -822,6 +869,9 @@ function App() {
       .catch(() => {});
 
     return () => {
+      disposed = true;
+      window.clearInterval(aiWorkflowTimer);
+      window.removeEventListener(AI_WORKFLOW_PROFILE_UPDATED_EVENT, refreshTrayAiWorkflow);
       unlistenFns.forEach((fn) => fn());
       i18n.off("languageChanged", handleLanguageChanged);
     };

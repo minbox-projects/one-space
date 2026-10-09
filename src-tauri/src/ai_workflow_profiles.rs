@@ -326,6 +326,125 @@ pub fn get_profile_matrix(
     })
 }
 
+fn read_optional_config(path: &Path) -> Result<Option<String>, String> {
+    match fs::read_to_string(path) {
+        Ok(content) => Ok(Some(content)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("Failed to read {}: {}", path.display(), e)),
+    }
+}
+
+fn read_yaml_string(value: &serde_yaml::Value, key: &str, path: &Path) -> Result<String, String> {
+    if !value.is_null() && !value.is_mapping() {
+        return Err(format!(
+            "Invalid YAML in {}: root must be a mapping",
+            path.display()
+        ));
+    }
+    match value.get(key) {
+        None | Some(serde_yaml::Value::Null) => Ok(String::new()),
+        Some(serde_yaml::Value::String(value)) => Ok(value.clone()),
+        Some(_) => Err(format!(
+            "Invalid {} in {}: expected a string",
+            key,
+            path.display()
+        )),
+    }
+}
+
+fn read_installed_model(path: &Path, effort_key: &str) -> Result<Option<ModelEffort>, String> {
+    let Some(content) = read_optional_config(path)? else {
+        return Ok(None);
+    };
+    let mut result = if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
+        let doc = content
+            .parse::<DocumentMut>()
+            .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
+        let field = |key: &str| -> Result<String, String> {
+            match doc.get(key) {
+                None => Ok(String::new()),
+                Some(value) => value.as_str().map(str::to_string).ok_or_else(|| {
+                    format!("Invalid {} in {}: expected a string", key, path.display())
+                }),
+            }
+        };
+        ModelEffort {
+            model: field("model")?,
+            reasoning_effort: field(effort_key)?,
+        }
+    } else {
+        let mut lines = content.lines();
+        if lines.next().map(str::trim) != Some("---") {
+            return Err(format!("Missing YAML frontmatter in {}", path.display()));
+        }
+        let mut frontmatter = String::new();
+        let mut closed = false;
+        for line in lines {
+            if line.trim() == "---" {
+                closed = true;
+                break;
+            }
+            frontmatter.push_str(line);
+            frontmatter.push('\n');
+        }
+        if !closed {
+            return Err(format!("Unclosed YAML frontmatter in {}", path.display()));
+        }
+        let value = serde_yaml::from_str::<serde_yaml::Value>(&frontmatter)
+            .map_err(|e| format!("Failed to parse frontmatter in {}: {}", path.display(), e))?;
+        ModelEffort {
+            model: read_yaml_string(&value, "model", path)?,
+            reasoning_effort: read_yaml_string(&value, effort_key, path)?,
+        }
+    };
+    for field in [&mut result.model, &mut result.reasoning_effort] {
+        if field.trim().is_empty() {
+            field.clear();
+        }
+    }
+    Ok(Some(result))
+}
+
+/// Reads the active profile's installed host models, never its saved profile YAML.
+/// Missing activation returns None; existing unreadable or malformed files return an error.
+pub fn get_active_models(home_override: Option<&Path>) -> Result<Option<ProfileMatrix>, String> {
+    let home = resolve_home_dir(home_override)?;
+    let config_path = home.join(".config/ai-workflow/config.yaml");
+    let Some(content) = read_optional_config(&config_path)? else {
+        return Ok(None);
+    };
+    let config = serde_yaml::from_str::<serde_yaml::Value>(&content)
+        .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?;
+    let name = read_yaml_string(&config, "active_profile", &config_path)?
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        return Ok(None);
+    }
+
+    let mut rows = Vec::with_capacity(SUPPORTED_ROLES.len());
+    for &role in &SUPPORTED_ROLES {
+        rows.push(AgentMatrixRow {
+            role: role.to_string(),
+            codex: read_installed_model(
+                &home.join(".codex/agents").join(format!("{}.toml", role)),
+                "model_reasoning_effort",
+            )?,
+            claude: read_installed_model(
+                &home.join(".claude/agents").join(format!("{}.md", role)),
+                "effort",
+            )?,
+            opencode: read_installed_model(
+                &home
+                    .join(".config/opencode/agents")
+                    .join(format!("{}.md", role)),
+                "reasoningEffort",
+            )?,
+        });
+    }
+    Ok(Some(ProfileMatrix { name, rows }))
+}
+
 /// Gathers model source candidate lists for opencode, codex, and claude.
 /// Individual column errors degrade that column while keeping others available.
 pub fn get_model_sources(home_override: Option<&Path>) -> Result<ModelSourcesResult, String> {
@@ -761,6 +880,11 @@ pub fn ai_workflow_get_profile_matrix(
 }
 
 #[tauri::command]
+pub fn ai_workflow_get_active_models() -> Result<Option<ProfileMatrix>, String> {
+    get_active_models(None)
+}
+
+#[tauri::command]
 pub fn ai_workflow_get_model_sources(
     home_override: Option<String>,
 ) -> Result<ModelSourcesResult, String> {
@@ -809,4 +933,3 @@ pub fn ai_workflow_rename_profile(
 ) -> Result<(), String> {
     rename_profile(&old_name, &new_name, home_override.as_deref().map(Path::new))
 }
-

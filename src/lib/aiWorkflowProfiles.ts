@@ -17,6 +17,8 @@ export type SupportedRole = (typeof SUPPORTED_ROLES)[number];
 export const SUPPORTED_TOOLS = ["codex", "claude", "opencode"] as const;
 export type SupportedTool = (typeof SUPPORTED_TOOLS)[number];
 
+export const AI_WORKFLOW_PROFILE_UPDATED_EVENT = "ai-workflow-profile-updated";
+
 export const VALID_EFFORTS = [
   "low",
   "medium",
@@ -91,6 +93,10 @@ export async function getProfileMatrix(name: string): Promise<ProfileMatrix> {
   });
 }
 
+export async function getActiveModels(): Promise<ProfileMatrix | null> {
+  return invokeToolboxCommand<ProfileMatrix | null>("ai_workflow_get_active_models");
+}
+
 export async function getModelSources(): Promise<ModelSourcesResult> {
   return invokeToolboxCommand<ModelSourcesResult>("ai_workflow_get_model_sources");
 }
@@ -108,9 +114,11 @@ export async function saveProfile(
 export async function activateProfile(
   name: string,
 ): Promise<ProfileActivationReport> {
-  return invokeToolboxCommand<ProfileActivationReport>("ai_workflow_activate_profile", {
+  const report = await invokeToolboxCommand<ProfileActivationReport>("ai_workflow_activate_profile", {
     name,
   });
+  window.dispatchEvent(new Event(AI_WORKFLOW_PROFILE_UPDATED_EVENT));
+  return report;
 }
 
 export async function createProfile(
@@ -138,4 +146,3 @@ export async function renameProfile(
     newName,
   });
 }
-

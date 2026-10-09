@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
+import { SUPPORTED_ROLES, type ProfileMatrix } from "@/lib/aiWorkflowProfiles";
 import {
   buildTrayMenuModel,
   isAcceleratorHint,
@@ -135,6 +136,7 @@ describe("tray menu structure", () => {
       "ai-environments",
       "ai-gateway",
       "ai-usage",
+      "ai-workflow",
       "more-pages",
       "separator",
       "services",
@@ -609,6 +611,159 @@ describe("registry-derived tray entries", () => {
     for (const id of ["notes", "snippets"]) {
       expect(itemById(morePages, id).enabled).toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AI WorkFlow tray submenu: currently installed model + reasoning effort for
+// every subagent role across the supported hosts, plus loading / empty /
+// unavailable states. The exact user-visible labels and ids are the frozen
+// contract for the implementation.
+// ---------------------------------------------------------------------------
+
+type AiWorkflowTrayState = {
+  profile: ProfileMatrix | null;
+  unavailable?: boolean;
+};
+
+function fixedT(language: "en" | "zh") {
+  return i18n.getFixedT(language) as (
+    key: string,
+    options?: Record<string, unknown>,
+  ) => string;
+}
+
+function buildWithAiWorkflow(
+  aiWorkflow: AiWorkflowTrayState | undefined,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): TrayMenuNode[] {
+  const state: TrayMenuState & { aiWorkflow?: AiWorkflowTrayState } = {
+    ...BASE_STATE,
+    aiWorkflow,
+  };
+  return buildTrayMenuModel(state, t);
+}
+
+function activeProfileMatrix(): ProfileMatrix {
+  return {
+    name: "team-alpha",
+    rows: [
+      {
+        role: "backend",
+        codex: { model: "gpt-6-astra", reasoning_effort: "high" },
+      },
+      {
+        role: "frontend",
+        claude: { model: "claude-sonnet-4", reasoning_effort: "medium" },
+      },
+      {
+        role: "test",
+        opencode: { model: "opencode/deepseek-v4", reasoning_effort: "low" },
+      },
+      { role: "researcher", codex: { model: "", reasoning_effort: "" } },
+    ],
+  };
+}
+
+describe("AI WorkFlow tray submenu", () => {
+  it("renders the active profile header and every role host leaf", () => {
+    const model = buildWithAiWorkflow(
+      { profile: activeProfileMatrix() },
+      fixedT("en"),
+    );
+
+    expect(itemById(model, "ai-workflow").label).toBe("AI WorkFlow");
+    const header = itemById(model, "ai-workflow-profile");
+    expect(header.enabled).toBe(false);
+    expect(header.label).toBe("Active profile: team-alpha");
+
+    for (const role of SUPPORTED_ROLES) {
+      const roleNode = itemById(model, `ai-workflow-role-${role}`);
+      expect(roleNode.kind).toBe("item");
+      expect(roleNode.submenu, `role ${role} must expose a submenu`).toBeDefined();
+    }
+
+    expect(itemById(model, "ai-workflow-role-backend-codex")).toMatchObject({
+      enabled: false,
+      label: "Codex: gpt-6-astra · Reasoning: high",
+    });
+    expect(itemById(model, "ai-workflow-role-frontend-claude").label).toBe(
+      "Claude Code: claude-sonnet-4 · Reasoning: medium",
+    );
+    expect(itemById(model, "ai-workflow-role-test-opencode").label).toBe(
+      "OpenCode: opencode/deepseek-v4 · Reasoning: low",
+    );
+  });
+
+  it("renders Not set for absent and blank host values", () => {
+    const model = buildWithAiWorkflow(
+      { profile: activeProfileMatrix() },
+      fixedT("en"),
+    );
+
+    expect(itemById(model, "ai-workflow-role-backend-claude").label).toBe(
+      "Claude Code: Not set · Reasoning: Not set",
+    );
+    expect(itemById(model, "ai-workflow-role-researcher-codex").label).toBe(
+      "Codex: Not set · Reasoning: Not set",
+    );
+    expect(itemById(model, "ai-workflow-role-researcher-opencode").label).toBe(
+      "OpenCode: Not set · Reasoning: Not set",
+    );
+  });
+
+  it("renders the localized Chinese header and host labels", () => {
+    const model = buildWithAiWorkflow(
+      { profile: activeProfileMatrix() },
+      fixedT("zh"),
+    );
+
+    expect(itemById(model, "ai-workflow").label).toBe("AI WorkFlow");
+    expect(itemById(model, "ai-workflow-profile").label).toBe(
+      "当前方案：team-alpha",
+    );
+    expect(itemById(model, "ai-workflow-role-backend-codex").label).toBe(
+      "Codex：gpt-6-astra · 推理强度：high",
+    );
+    expect(itemById(model, "ai-workflow-role-test-opencode").label).toBe(
+      "OpenCode：opencode/deepseek-v4 · 推理强度：low",
+    );
+    expect(itemById(model, "ai-workflow-role-backend-claude").label).toBe(
+      "Claude Code：未设置 · 推理强度：未设置",
+    );
+  });
+
+  it("renders the loading placeholder while the state is undefined", () => {
+    const model = buildWithAiWorkflow(undefined, fixedT("en"));
+    expect(findItem(model, "ai-workflow-loading")).toBeDefined();
+  });
+
+  it("renders the empty state for a null active profile", () => {
+    const enModel = buildWithAiWorkflow({ profile: null }, fixedT("en"));
+    expect(itemById(enModel, "ai-workflow-empty").label).toBe("No active profile");
+    expect(findItem(enModel, "ai-workflow-role-backend")).toBeUndefined();
+
+    const zhModel = buildWithAiWorkflow({ profile: null }, fixedT("zh"));
+    expect(itemById(zhModel, "ai-workflow-empty").label).toBe("未激活方案");
+  });
+
+  it("renders unavailable and supersedes stale role rows", () => {
+    const enModel = buildWithAiWorkflow(
+      { profile: activeProfileMatrix(), unavailable: true },
+      fixedT("en"),
+    );
+    expect(itemById(enModel, "ai-workflow-unavailable").label).toBe(
+      "Unable to read active models",
+    );
+    expect(findItem(enModel, "ai-workflow-role-backend")).toBeUndefined();
+
+    const zhModel = buildWithAiWorkflow(
+      { profile: activeProfileMatrix(), unavailable: true },
+      fixedT("zh"),
+    );
+    expect(itemById(zhModel, "ai-workflow-unavailable").label).toBe(
+      "无法读取当前模型",
+    );
   });
 });
 

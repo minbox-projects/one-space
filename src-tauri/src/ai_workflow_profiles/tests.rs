@@ -758,3 +758,338 @@ fn test_ai_workflow_rename_profile_validations() {
     });
 }
 
+// ============================================================================
+// 7. get_active_models tests
+//
+// `get_active_models` reads the CURRENTLY INSTALLED per-host agent files for
+// the active profile only. It must never read saved profile YAML or invoke the
+// CLI, and any corrupt existing file/config must surface an error rather than
+// stale data.
+// ============================================================================
+
+fn write_active_profile_config(home: &Path, name: &str) {
+    let dir = home.join(".config/ai-workflow");
+    fs::create_dir_all(&dir).expect("create ai-workflow config dir");
+    fs::write(dir.join("config.yaml"), format!("active_profile: {}\n", name))
+        .expect("write config.yaml");
+}
+
+fn write_installed_codex_agent(home: &Path, role: &str, body: &str) {
+    let dir = home.join(".codex/agents");
+    fs::create_dir_all(&dir).expect("create codex agents dir");
+    fs::write(dir.join(format!("{}.toml", role)), body).expect("write codex agent toml");
+}
+
+fn write_installed_claude_agent(home: &Path, role: &str, frontmatter: &str) {
+    let dir = home.join(".claude/agents");
+    fs::create_dir_all(&dir).expect("create claude agents dir");
+    let content = format!("---\n{}---\n\nBody for {}.\n", frontmatter, role);
+    fs::write(dir.join(format!("{}.md", role)), content).expect("write claude agent md");
+}
+
+fn write_installed_opencode_agent(home: &Path, role: &str, frontmatter: &str) {
+    let dir = home.join(".config/opencode/agents");
+    fs::create_dir_all(&dir).expect("create opencode agents dir");
+    let content = format!("---\n{}---\n\nBody for {}.\n", frontmatter, role);
+    fs::write(dir.join(format!("{}.md", role)), content).expect("write opencode agent md");
+}
+
+#[test]
+fn test_ai_workflow_get_active_models_uses_installed_hosts_not_saved_profile() {
+    with_temp_test_home("active-models-installed", |home| {
+        write_active_profile_config(home, "team-alpha");
+
+        // A saved profile YAML with different sentinel values. It must never be
+        // used as the source of truth, and it must not even be required to exist.
+        let profiles_dir = home.join(".config/ai-workflow/profiles");
+        fs::create_dir_all(&profiles_dir).expect("create profiles dir");
+        fs::write(
+            profiles_dir.join("team-alpha.yaml"),
+            "version: 1.0.0\nagents:\n  backend:\n    codex: { model: saved-sentinel, reasoning_effort: low }\n  frontend:\n    claude: { model: saved-sentinel, reasoning_effort: low }\n  test:\n    opencode: { model: saved-sentinel, reasoning_effort: low }\n",
+        )
+        .expect("write saved profile yaml");
+
+        write_installed_codex_agent(
+            home,
+            "backend",
+            "model = \"codex-installed-model\"\nmodel_reasoning_effort = \"high\"\n",
+        );
+        write_installed_claude_agent(
+            home,
+            "frontend",
+            "model: claude-installed-model\neffort: medium\n",
+        );
+        write_installed_opencode_agent(
+            home,
+            "test",
+            "model: opencode-installed-model\nreasoningEffort: low\n",
+        );
+
+        let tracked_paths = [
+            home.join(".codex/agents/backend.toml"),
+            home.join(".claude/agents/frontend.md"),
+            home.join(".config/opencode/agents/test.md"),
+            home.join(".config/ai-workflow/config.yaml"),
+            profiles_dir.join("team-alpha.yaml"),
+        ];
+        let before: Vec<Vec<u8>> = tracked_paths
+            .iter()
+            .map(|path| fs::read(path).expect("read tracked file before"))
+            .collect();
+
+        let matrix = get_active_models(Some(home))
+            .expect("get_active_models must succeed on valid installed fixtures")
+            .expect("a config with an active_profile must yield Some(ProfileMatrix)");
+
+        assert_eq!(
+            matrix.name, "team-alpha",
+            "the name must come from config.yaml active_profile"
+        );
+        assert_eq!(matrix.rows.len(), 9, "all supported roles must be present");
+        let role_names: Vec<&str> = matrix.rows.iter().map(|row| row.role.as_str()).collect();
+        assert_eq!(role_names, SUPPORTED_ROLES);
+
+        let backend = matrix.rows.iter().find(|row| row.role == "backend").unwrap();
+        assert_eq!(
+            backend.codex,
+            Some(ModelEffort {
+                model: "codex-installed-model".to_string(),
+                reasoning_effort: "high".to_string(),
+            }),
+            "codex model/effort must come from the installed TOML"
+        );
+        assert_eq!(backend.claude, None, "a missing claude file must be None");
+        assert_eq!(backend.opencode, None, "a missing opencode file must be None");
+
+        let frontend = matrix.rows.iter().find(|row| row.role == "frontend").unwrap();
+        assert_eq!(
+            frontend.claude,
+            Some(ModelEffort {
+                model: "claude-installed-model".to_string(),
+                reasoning_effort: "medium".to_string(),
+            }),
+            "claude model/effort must come from the installed Markdown frontmatter"
+        );
+        assert_eq!(frontend.codex, None);
+
+        let test_row = matrix.rows.iter().find(|row| row.role == "test").unwrap();
+        assert_eq!(
+            test_row.opencode,
+            Some(ModelEffort {
+                model: "opencode-installed-model".to_string(),
+                reasoning_effort: "low".to_string(),
+            }),
+            "opencode model/effort must come from the installed Markdown frontmatter"
+        );
+
+        // The saved profile sentinels must never surface anywhere.
+        for row in &matrix.rows {
+            for host in [&row.codex, &row.claude, &row.opencode] {
+                if let Some(entry) = host {
+                    assert_ne!(
+                        entry.model, "saved-sentinel",
+                        "saved profile YAML values must never be returned"
+                    );
+                }
+            }
+        }
+
+        // Reading must not mutate any tracked file.
+        let after: Vec<Vec<u8>> = tracked_paths
+            .iter()
+            .map(|path| fs::read(path).expect("read tracked file after"))
+            .collect();
+        assert_eq!(after, before, "reading active models must never mutate files");
+    });
+}
+
+#[test]
+fn test_ai_workflow_get_active_models_reads_fresh_values_after_edit() {
+    with_temp_test_home("active-models-fresh", |home| {
+        write_active_profile_config(home, "team-alpha");
+        write_installed_codex_agent(
+            home,
+            "backend",
+            "model = \"codex-first\"\nmodel_reasoning_effort = \"low\"\n",
+        );
+
+        let first = get_active_models(Some(home)).unwrap().unwrap();
+        let first_backend = first.rows.iter().find(|row| row.role == "backend").unwrap();
+        assert_eq!(first_backend.codex.as_ref().unwrap().model, "codex-first");
+
+        write_installed_codex_agent(
+            home,
+            "backend",
+            "model = \"codex-second\"\nmodel_reasoning_effort = \"xhigh\"\n",
+        );
+        let second = get_active_models(Some(home)).unwrap().unwrap();
+        let second_backend = second.rows.iter().find(|row| row.role == "backend").unwrap();
+        assert_eq!(
+            second_backend.codex,
+            Some(ModelEffort {
+                model: "codex-second".to_string(),
+                reasoning_effort: "xhigh".to_string(),
+            }),
+            "a subsequent read must observe the edited installed value"
+        );
+
+        write_installed_claude_agent(home, "frontend", "model: claude-first\neffort: low\n");
+        let third = get_active_models(Some(home)).unwrap().unwrap();
+        let third_frontend = third.rows.iter().find(|row| row.role == "frontend").unwrap();
+        assert_eq!(
+            third_frontend.claude.as_ref().unwrap().model,
+            "claude-first"
+        );
+
+        write_installed_claude_agent(home, "frontend", "model: claude-second\neffort: high\n");
+        let fourth = get_active_models(Some(home)).unwrap().unwrap();
+        let fourth_frontend = fourth.rows.iter().find(|row| row.role == "frontend").unwrap();
+        assert_eq!(
+            fourth_frontend.claude.as_ref().unwrap().model,
+            "claude-second"
+        );
+    });
+}
+
+#[test]
+fn test_ai_workflow_get_active_models_blank_fields_yield_empty_strings() {
+    with_temp_test_home("active-models-blank", |home| {
+        write_active_profile_config(home, "team-alpha");
+
+        // Present codex file with a model but no effort.
+        write_installed_codex_agent(home, "backend", "model = \"codex-only-model\"\n");
+        // Present codex file with no model and no effort.
+        write_installed_codex_agent(home, "researcher", "# configuration only\n");
+        // Present claude file with an effort but no model.
+        write_installed_claude_agent(home, "frontend", "effort: high\n");
+
+        let matrix = get_active_models(Some(home)).unwrap().unwrap();
+
+        let backend = matrix.rows.iter().find(|row| row.role == "backend").unwrap();
+        assert_eq!(
+            backend.codex,
+            Some(ModelEffort {
+                model: "codex-only-model".to_string(),
+                reasoning_effort: String::new(),
+            }),
+            "a present host with a missing effort must yield an empty effort string"
+        );
+
+        let researcher = matrix.rows.iter().find(|row| row.role == "researcher").unwrap();
+        assert_eq!(
+            researcher.codex,
+            Some(ModelEffort {
+                model: String::new(),
+                reasoning_effort: String::new(),
+            }),
+            "a present host with no fields must yield empty strings, not None"
+        );
+
+        let frontend = matrix.rows.iter().find(|row| row.role == "frontend").unwrap();
+        assert_eq!(
+            frontend.claude,
+            Some(ModelEffort {
+                model: String::new(),
+                reasoning_effort: "high".to_string(),
+            }),
+            "a present host with a missing model must yield an empty model string"
+        );
+    });
+}
+
+#[test]
+fn test_ai_workflow_get_active_models_missing_config_or_active_is_none() {
+    with_temp_test_home("active-models-none", |home| {
+        let missing = get_active_models(Some(home)).expect("a missing config must not error");
+        assert!(missing.is_none(), "a missing config.yaml must yield None");
+
+        let config_dir = home.join(".config/ai-workflow");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::write(config_dir.join("config.yaml"), "other_setting: true\n")
+            .expect("write config without active profile");
+        let no_active = get_active_models(Some(home))
+            .expect("a config without active_profile must not error");
+        assert!(
+            no_active.is_none(),
+            "a config without active_profile must yield None"
+        );
+
+        fs::write(config_dir.join("config.yaml"), "active_profile: \"\"\n")
+            .expect("write blank active profile");
+        let blank_active = get_active_models(Some(home))
+            .expect("a blank active_profile must not error");
+        assert!(
+            blank_active.is_none(),
+            "a blank active_profile must yield None"
+        );
+
+        // Installed files alone must never fabricate an active profile.
+        write_installed_codex_agent(
+            home,
+            "backend",
+            "model = \"codex-installed\"\nmodel_reasoning_effort = \"high\"\n",
+        );
+        fs::write(config_dir.join("config.yaml"), "other_setting: true\n")
+            .expect("write config without active profile again");
+        let installed_only = get_active_models(Some(home))
+            .expect("installed files without an active profile must not error");
+        assert!(
+            installed_only.is_none(),
+            "installed files must not fabricate an active profile"
+        );
+    });
+}
+
+#[test]
+fn test_ai_workflow_get_active_models_corrupt_config_is_error() {
+    with_temp_test_home("active-models-corrupt-config", |home| {
+        let config_dir = home.join(".config/ai-workflow");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::write(
+            config_dir.join("config.yaml"),
+            ":::: invalid yaml content\n active: [unmatched",
+        )
+        .expect("write corrupt config.yaml");
+
+        let res = get_active_models(Some(home));
+        assert!(
+            res.is_err(),
+            "a corrupt config.yaml must be an error, never stale data"
+        );
+    });
+}
+
+#[test]
+fn test_ai_workflow_get_active_models_corrupt_installed_host_is_error() {
+    with_temp_test_home("active-models-corrupt-hosts", |home| {
+        write_active_profile_config(home, "team-alpha");
+
+        // Corrupt codex TOML.
+        write_installed_codex_agent(home, "backend", "[invalid toml syntax :::");
+        assert!(
+            get_active_models(Some(home)).is_err(),
+            "a corrupt codex agent TOML must be an error"
+        );
+
+        // Corrupt claude frontmatter, with the codex file restored to valid.
+        write_installed_codex_agent(
+            home,
+            "backend",
+            "model = \"ok\"\nmodel_reasoning_effort = \"low\"\n",
+        );
+        write_installed_claude_agent(home, "frontend", "model: [unclosed\n");
+        assert!(
+            get_active_models(Some(home)).is_err(),
+            "corrupt claude frontmatter must be an error"
+        );
+
+        // Corrupt opencode frontmatter, with the claude file restored to valid.
+        write_installed_claude_agent(home, "frontend", "model: ok\neffort: low\n");
+        write_installed_opencode_agent(home, "test", "model: { broken\n");
+        assert!(
+            get_active_models(Some(home)).is_err(),
+            "corrupt opencode frontmatter must be an error"
+        );
+    });
+}
+

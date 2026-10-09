@@ -8,6 +8,11 @@ import {
 import { TrayIcon } from "@tauri-apps/api/tray";
 
 import { getToolboxTool, resolveToolboxText } from "@/toolbox/registry";
+import {
+  SUPPORTED_ROLES,
+  SUPPORTED_TOOLS,
+  type ProfileMatrix,
+} from "./aiWorkflowProfiles";
 
 export type TrayMenuSeparator = { kind: "separator" };
 
@@ -35,6 +40,7 @@ export interface TrayMenuState {
   tunnels: { connected: number; total: number };
   sharing: { running: boolean; fileCount: number };
   shortcuts: { main: string | null | undefined; quick: string | null | undefined };
+  aiWorkflow?: { profile: ProfileMatrix | null; unavailable?: boolean };
 }
 
 export type TrayTranslate = (key: string, options?: Record<string, unknown>) => string;
@@ -155,6 +161,51 @@ function buildMorePagesMenu(t: TrayTranslate): TrayMenuNode[] {
   ];
 }
 
+function buildAiWorkflowMenu(
+  state: TrayMenuState["aiWorkflow"],
+  t: TrayTranslate,
+): TrayMenuNode[] {
+  if (!state) {
+    return [menuItem("ai-workflow-loading", t("loading"), { enabled: false })];
+  }
+  if (state.unavailable) {
+    return [
+      menuItem("ai-workflow-unavailable", t("tray.aiWorkflow.unavailable"), {
+        enabled: false,
+      }),
+    ];
+  }
+  const { profile } = state;
+  if (!profile) {
+    return [
+      menuItem("ai-workflow-empty", t("tray.aiWorkflow.empty"), { enabled: false }),
+    ];
+  }
+
+  return [
+    menuItem("ai-workflow-profile", t("tray.aiWorkflow.profile", { name: profile.name }), {
+      enabled: false,
+    }),
+    ...SUPPORTED_ROLES.map((role) => {
+      const row = profile.rows.find((entry) => entry.role === role);
+      return menuItem(`ai-workflow-role-${role}`, role, {
+        submenu: SUPPORTED_TOOLS.map((tool) => {
+          const cell = row?.[tool];
+          return menuItem(
+            `ai-workflow-role-${role}-${tool}`,
+            t("tray.aiWorkflow.host", {
+              tool: t(`aiWorkflow.tools.${tool}`),
+              model: cell?.model?.trim() || t("aiWorkflow.notSet"),
+              effort: cell?.reasoning_effort?.trim() || t("aiWorkflow.notSet"),
+            }),
+            { enabled: false },
+          );
+        }),
+      });
+    }),
+  ];
+}
+
 function serviceLabel(
   service: TrayServiceState,
   runningKey: string,
@@ -238,6 +289,9 @@ export function buildTrayMenuModel(state: TrayMenuState, t: TrayTranslate): Tray
     menuItem("ai-environments", t("tray.aiEnvironments")),
     menuItem("ai-gateway", t("tray.aiGateway")),
     menuItem("ai-usage", t("tray.aiUsage")),
+    menuItem("ai-workflow", t("tray.aiWorkflow"), {
+      submenu: buildAiWorkflowMenu(state.aiWorkflow, t),
+    }),
     menuItem("more-pages", t("tray.morePages"), {
       submenu: buildMorePagesMenu(t),
     }),
