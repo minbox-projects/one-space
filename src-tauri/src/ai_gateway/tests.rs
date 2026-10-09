@@ -31,7 +31,9 @@ mod go_usage;
 mod migration;
 mod routing_hardening;
 mod auto_refresh;
+mod performance;
 mod runtime_lifecycle;
+mod usage_store;
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(

@@ -1890,3 +1890,82 @@ fn ssh_state_cache_error_after_rotated_key_never_returns_stale_state() {
         "a failed decrypt must not return the stale cached state"
     );
 }
+
+// ============================================================
+// REQ-005/AC-005 synthetic measurement (plan Step 5)
+// ============================================================
+
+fn print_ssh_metric(phase: &str, wall_ms: f64, stats: &SshStateCacheStats) {
+    // Leading newline detaches the metric from libtest's `test <name> ... `
+    // banner, which otherwise glues to the first captured output line.
+    println!(
+        "\nCWF_METRIC dataset=ssh_records phase={phase} wall_ms={wall_ms:.3} \
+         fills={} misses={} decrypts={}",
+        stats.fills, stats.misses, stats.decrypts
+    );
+}
+
+/// Ignored synthetic measurement of repeated snapshot/refresh reads over 100
+/// saved encrypted SSH records, reporting the Step-4 decoded-state cache
+/// counters. Structural assertions only; no absolute wall-time threshold.
+///
+/// Holds `lock_test_home_env()` (through [`isolated_temp_home`]) because the
+/// cache counters are process-global.
+#[test]
+#[ignore = "synthetic REQ-005/AC-005 measurement; run via tools/measure-core-workflows.mjs"]
+fn core_workflows_perf_ssh_records() {
+    let _home = isolated_temp_home("perf-ssh-records");
+    let records = (0..100)
+        .map(|index| {
+            let mut record = record_with_id(
+                &format!("perf-ssh-{index}"),
+                &format!("Perf SSH {index}"),
+            );
+            let port = 20_000 + index as u16;
+            record.forward.local_port = Some(port);
+            record.forward.target_port = Some(port);
+            record
+        })
+        .collect::<Vec<_>>();
+    mutate_records(|existing| {
+        existing.extend(records);
+        Ok(())
+    })
+    .expect("seed 100 saved records");
+
+    reset_ssh_state_cache();
+
+    let started = Instant::now();
+    let cold_snapshot = snapshot_state().expect("cold snapshot");
+    let cold_wall = started.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(cold_snapshot.tunnels.len(), 100);
+    let cold = ssh_state_cache_stats();
+    assert!(
+        cold.decrypts >= 1,
+        "the cold snapshot must decrypt the encrypted state once"
+    );
+    print_ssh_metric("cold", cold_wall, &cold);
+
+    let mut previous = cold;
+    for _ in 0..5 {
+        let started = Instant::now();
+        let snapshot = snapshot_state().expect("warm snapshot");
+        let warm_wall = started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(snapshot.tunnels.len(), 100);
+        let current = ssh_state_cache_stats();
+        assert!(
+            current.fills >= previous.fills,
+            "fills must never decrease across passes"
+        );
+        assert!(
+            current.misses >= previous.misses,
+            "misses must never decrease across passes"
+        );
+        assert!(
+            current.decrypts >= previous.decrypts,
+            "decrypts must never decrease across passes"
+        );
+        print_ssh_metric("warm", warm_wall, &current);
+        previous = current;
+    }
+}

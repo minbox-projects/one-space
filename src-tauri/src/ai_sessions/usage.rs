@@ -1,7 +1,8 @@
 use super::{
     antigravity_brain_roots, antigravity_conversations_roots, antigravity_entry_timestamp_ms,
-    candidate_home_dirs, candidate_opencode_storage_paths, collect_codex_session_files,
-    find_antigravity_transcript, parse_rfc3339_millis, system_time_to_epoch_millis,
+    candidate_home_dirs, candidate_opencode_storage_paths, clear_source_file_caches,
+    clear_tool_scan_caches, collect_codex_session_files, find_antigravity_transcript,
+    parse_rfc3339_millis, shared_usage_file_cache, system_time_to_epoch_millis, tool_scan_cache,
 };
 use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone};
 use rusqlite::{params, Connection};
@@ -17,8 +18,8 @@ use std::time::{Duration as StdDuration, Instant};
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const USAGE_TOOLS: [&str; 4] = ["claude", "codex", "antigravity", "opencode"];
-const USAGE_SCAN_CACHE_TTL: StdDuration = StdDuration::from_secs(30);
+pub(in crate::ai_sessions) const USAGE_TOOLS: [&str; 4] =
+    ["claude", "codex", "antigravity", "opencode"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct SessionUsageSummary {
@@ -157,94 +158,83 @@ pub(in crate::ai_sessions) struct ToolScan {
     pub(in crate::ai_sessions) errors: Vec<String>,
 }
 
-#[derive(Debug)]
-struct CachedToolScan {
-    collected_at: Instant,
-    start_ms: i64,
-    end_ms: i64,
-    scan: Arc<ToolScan>,
+// ---------------------------------------------------------------------------
+// Benchmark-only usage-collection counters (REQ-005/AC-005 baseline).
+//
+// Compiled only into test builds; the ignored `core_workflows_perf` measurement
+// tests reset and read them. They never run in production and change no
+// behavior. `cache_hits` counts reuse of the per-tool scan cache (all four
+// tools) and of the per-source parse cache.
+// ---------------------------------------------------------------------------
+
+/// Counters describing one or more usage-collection passes.
+#[cfg(test)]
+#[allow(dead_code)] // consumed by the Test-owned `core_workflows_perf` measurement tests
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UsageCollectionStats {
+    pub source_reads: u64,
+    pub parsed_entries: u64,
+    pub collection_calls: u64,
+    pub cache_hits: u64,
 }
 
-#[derive(Debug, Default)]
-pub(in crate::ai_sessions) struct ToolScanCache {
-    entry: Mutex<Option<CachedToolScan>>,
+#[cfg(test)]
+static USAGE_SOURCE_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static USAGE_PARSED_ENTRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static USAGE_COLLECTION_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static USAGE_CACHE_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+fn record_usage_source_read() {
+    USAGE_SOURCE_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
+#[cfg(not(test))]
+fn record_usage_source_read() {}
 
-impl ToolScanCache {
-    pub(in crate::ai_sessions) fn get_or_collect<F>(
-        &self,
-        start_ms: i64,
-        end_ms: i64,
-        collect: F,
-    ) -> Arc<ToolScan>
-    where
-        F: FnOnce() -> ToolScan,
-    {
-        let mut entry = self
-            .entry
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(cached) = entry.as_ref() {
-            if cached.collected_at.elapsed() < USAGE_SCAN_CACHE_TTL
-                && cached.start_ms <= start_ms
-                && cached.end_ms >= end_ms
-            {
-                return cached.scan.clone();
-            }
-        }
-
-        let scan = Arc::new(collect());
-        *entry = Some(CachedToolScan {
-            collected_at: Instant::now(),
-            start_ms,
-            end_ms,
-            scan: Arc::clone(&scan),
-        });
-        scan
-    }
-
-    pub(in crate::ai_sessions) fn clear(&self) {
-        let mut entry = self
-            .entry
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *entry = None;
-    }
+#[cfg(test)]
+fn record_usage_parsed_entry() {
+    USAGE_PARSED_ENTRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
+#[cfg(not(test))]
+fn record_usage_parsed_entry() {}
 
-#[derive(Debug)]
-struct UsageScanCaches {
-    by_tool: HashMap<&'static str, ToolScanCache>,
+#[cfg(test)]
+fn record_usage_collection_call() {
+    USAGE_COLLECTION_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
+#[cfg(not(test))]
+fn record_usage_collection_call() {}
 
-impl UsageScanCaches {
-    fn for_tool(&self, tool: &str) -> Option<&ToolScanCache> {
-        self.by_tool.get(tool)
-    }
+#[cfg(test)]
+pub(in crate::ai_sessions) fn record_usage_cache_hit() {
+    USAGE_CACHE_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+#[cfg(not(test))]
+pub(in crate::ai_sessions) fn record_usage_cache_hit() {}
 
-    fn clear(&self) {
-        for cache in self.by_tool.values() {
-            cache.clear();
-        }
+/// Snapshot of the benchmark-only usage-collection counters.
+#[cfg(test)]
+#[allow(dead_code)] // consumed by the Test-owned `core_workflows_perf` measurement tests
+pub fn usage_collection_stats() -> UsageCollectionStats {
+    UsageCollectionStats {
+        source_reads: USAGE_SOURCE_READS.load(std::sync::atomic::Ordering::Relaxed),
+        parsed_entries: USAGE_PARSED_ENTRIES.load(std::sync::atomic::Ordering::Relaxed),
+        collection_calls: USAGE_COLLECTION_CALLS.load(std::sync::atomic::Ordering::Relaxed),
+        cache_hits: USAGE_CACHE_HITS.load(std::sync::atomic::Ordering::Relaxed),
     }
 }
 
-impl Default for UsageScanCaches {
-    fn default() -> Self {
-        Self {
-            by_tool: USAGE_TOOLS
-                .iter()
-                .copied()
-                .filter(|tool| *tool != "opencode" && *tool != "antigravity")
-                .map(|tool| (tool, ToolScanCache::default()))
-                .collect(),
-        }
-    }
-}
-
-fn usage_scan_caches() -> &'static UsageScanCaches {
-    static CACHES: OnceLock<UsageScanCaches> = OnceLock::new();
-    CACHES.get_or_init(UsageScanCaches::default)
+/// Zero the benchmark-only usage-collection counters.
+#[cfg(test)]
+#[allow(dead_code)] // consumed by the Test-owned `core_workflows_perf` measurement tests
+pub fn reset_usage_collection_stats() {
+    USAGE_SOURCE_READS.store(0, std::sync::atomic::Ordering::Relaxed);
+    USAGE_PARSED_ENTRIES.store(0, std::sync::atomic::Ordering::Relaxed);
+    USAGE_COLLECTION_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
+    USAGE_CACHE_HITS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[derive(Debug, Default)]
@@ -272,7 +262,8 @@ fn add_record_to_bucket(bucket: &mut UsageBucket, record: &UsageRecord) {
 
 #[tauri::command]
 pub fn sessions_usage_clear_cache() {
-    usage_scan_caches().clear();
+    clear_tool_scan_caches();
+    clear_source_file_caches();
     let cache = antigravity_quota_cache();
     let mut guard = cache
         .lock()
@@ -576,16 +567,8 @@ fn collect_usage_records_for_tool(
     window: &UsageWindow,
     include_model_breakdown: bool,
 ) -> Arc<ToolScan> {
-    if tool == "opencode" {
-        return Arc::new(collect_opencode_usage_records(
-            window,
-            include_model_breakdown,
-        ));
-    }
-    if tool == "antigravity" {
-        return Arc::new(collect_antigravity_usage_records(window));
-    }
-    let Some(cache) = usage_scan_caches().for_tool(tool) else {
+    record_usage_collection_call();
+    let Some(cache) = tool_scan_cache(tool) else {
         return Arc::new(ToolScan {
             source_status: "unavailable".to_string(),
             scanned_sessions: 0,
@@ -594,9 +577,12 @@ fn collect_usage_records_for_tool(
             errors: vec![format!("unsupported tool: {tool}")],
         });
     };
-    cache.get_or_collect(window.start_ms, window.end_ms, || match tool {
+    let root = usage_source_root(tool);
+    cache.get_or_collect_keyed(&root, window.start_ms, window.end_ms, || match tool {
         "claude" => collect_claude_usage_records(window),
         "codex" => collect_codex_usage_records(window),
+        "antigravity" => collect_antigravity_usage_records(window),
+        "opencode" => collect_opencode_usage_records(window, include_model_breakdown),
         _ => ToolScan {
             source_status: "unavailable".to_string(),
             scanned_sessions: 0,
@@ -605,6 +591,15 @@ fn collect_usage_records_for_tool(
             errors: vec![format!("unsupported tool: {tool}")],
         },
     })
+}
+
+/// Resolves the source root that a tool's collection depends on. Used only as a
+/// cache discriminator so isolated HOMEs never share a cached collection.
+fn usage_source_root(tool: &str) -> PathBuf {
+    match tool {
+        "antigravity" => usage_home_dir().unwrap_or_default(),
+        _ => dirs::home_dir().unwrap_or_default(),
+    }
 }
 
 fn normalize_usage_days(days: Option<u16>) -> u16 {
@@ -1006,8 +1001,8 @@ fn collect_claude_usage_records(window: &UsageWindow) -> ToolScan {
             continue;
         }
         scan.scanned_sessions += 1;
-        match parse_claude_usage_file(&path) {
-            Ok(records) => scan.records.extend(records),
+        match shared_usage_file_cache().get_or_parse(&path, || parse_claude_usage_file(&path)) {
+            Ok(records) => scan.records.extend(records.iter().cloned()),
             Err(error) => scan.errors.push(format!("{}: {error}", path.display())),
         }
     }
@@ -1018,6 +1013,7 @@ pub(in crate::ai_sessions) fn parse_claude_usage_file(
     path: &Path,
 ) -> Result<Vec<UsageRecord>, String> {
     let file = fs::File::open(path).map_err(|e| e.to_string())?;
+    record_usage_source_read();
     let reader = BufReader::new(file);
     let fallback_session_id = file_stem_session_id(path);
     let mut out = Vec::new();
@@ -1047,6 +1043,7 @@ pub(in crate::ai_sessions) fn parse_claude_usage_file(
             .and_then(|v| v.as_str())
             .and_then(parse_rfc3339_millis)
             .unwrap_or_else(|| modified_ms(path));
+        record_usage_parsed_entry();
         out.push(UsageRecord {
             session_id: value
                 .get("sessionId")
@@ -1091,8 +1088,8 @@ fn collect_codex_usage_records(window: &UsageWindow) -> ToolScan {
                     break;
                 }
                 scan.scanned_sessions += 1;
-                match parse_codex_usage_file(&path) {
-                    Ok(records) => scan.records.extend(records),
+                match shared_usage_file_cache().get_or_parse(&path, || parse_codex_usage_file(&path)) {
+                    Ok(records) => scan.records.extend(records.iter().cloned()),
                     Err(error) => scan.errors.push(format!("{}: {error}", path.display())),
                 }
             }
@@ -1105,6 +1102,7 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
     path: &Path,
 ) -> Result<Vec<UsageRecord>, String> {
     let file = fs::File::open(path).map_err(|e| e.to_string())?;
+    record_usage_source_read();
     let reader = BufReader::new(file);
     let fallback_session_id = file_stem_session_id(path);
     let mut session_id = String::new();
@@ -1187,6 +1185,7 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
         if model.is_none() {
             records_pending_model.push(out.len());
         }
+        record_usage_parsed_entry();
         out.push(UsageRecord {
             session_id: if session_id.is_empty() {
                 fallback_session_id.clone()
@@ -1455,6 +1454,7 @@ fn read_antigravity_db_tokens(
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| e.to_string())?;
+    record_usage_source_read();
 
     if !sqlite_table_exists(&conn, "steps").unwrap_or(false) {
         return Ok(Vec::new());
@@ -1516,6 +1516,7 @@ fn read_antigravity_db_tokens(
                 step_tokens.output_tokens,
                 step_tokens.cache_tokens,
             );
+            record_usage_parsed_entry();
             records.push(UsageRecord {
                 session_id: session_id.to_string(),
                 model: Some(model),
@@ -1589,17 +1590,20 @@ fn collect_antigravity_usage_records(window: &UsageWindow) -> ToolScan {
             continue;
         }
         scan.scanned_sessions += 1;
-        let parsed = if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl") {
-            parse_antigravity_jsonl_usage_file(&path)
-        } else {
-            parse_antigravity_json_usage_file(&path)
-        };
+        let is_jsonl = path.extension().and_then(|extension| extension.to_str()) == Some("jsonl");
+        let parsed = shared_usage_file_cache().get_or_parse(&path, || {
+            if is_jsonl {
+                parse_antigravity_jsonl_usage_file(&path)
+            } else {
+                parse_antigravity_json_usage_file(&path)
+            }
+        });
         match parsed {
             Ok(records) => {
-                for r in &records {
+                for r in records.iter() {
                     seen_session_ids.insert(r.session_id.clone());
                 }
-                scan.records.extend(records);
+                scan.records.extend(records.iter().cloned());
             }
             Err(error) => scan.errors.push(format!("{}: {error}", path.display())),
         }
@@ -1656,6 +1660,7 @@ fn parse_antigravity_transcript_calls(
     end_ms: i64,
 ) -> Result<u64, String> {
     let file = fs::File::open(path).map_err(|error| error.to_string())?;
+    record_usage_source_read();
     let reader = BufReader::new(file);
     let fallback_ms = modified_ms(path);
     let mut calls = 0_u64;
@@ -1680,6 +1685,7 @@ fn parse_antigravity_transcript_calls(
         }
         let timestamp_ms = antigravity_entry_timestamp_ms(&value).unwrap_or(fallback_ms);
         if timestamp_ms >= start_ms && timestamp_ms < end_ms {
+            record_usage_parsed_entry();
             calls += 1;
         }
     }
@@ -1728,6 +1734,7 @@ fn json_millis(value: Option<&Value>) -> Option<i64> {
 
 fn parse_antigravity_json_usage_file(path: &Path) -> Result<Vec<UsageRecord>, String> {
     let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    record_usage_source_read();
     let value: Value = serde_json::from_str(&content).map_err(|error| error.to_string())?;
     let session_id = json_nonempty_string(value.get("sessionId"))
         .unwrap_or_else(|| file_stem_session_id(path));
@@ -1751,6 +1758,7 @@ fn parse_antigravity_json_usage_file(path: &Path) -> Result<Vec<UsageRecord>, St
             .or_else(|| json_millis(value.get("lastUpdated")))
             .or_else(|| json_millis(value.get("startTime")))
             .unwrap_or_else(|| modified_ms(path));
+        record_usage_parsed_entry();
         out.push(UsageRecord {
             session_id: session_id.clone(),
             model: json_nonempty_string(message.get("model"))
@@ -1774,6 +1782,7 @@ fn parse_antigravity_json_usage_file(path: &Path) -> Result<Vec<UsageRecord>, St
 
 fn parse_antigravity_jsonl_usage_file(path: &Path) -> Result<Vec<UsageRecord>, String> {
     let file = fs::File::open(path).map_err(|error| error.to_string())?;
+    record_usage_source_read();
     let reader = BufReader::new(file);
     let fallback_session_id = file_stem_session_id(path);
     let mut session_id = String::new();
@@ -1806,6 +1815,7 @@ fn parse_antigravity_jsonl_usage_file(path: &Path) -> Result<Vec<UsageRecord>, S
         let timestamp_ms = json_millis(value.get("timestamp"))
             .or_else(|| json_millis(value.get("time")))
             .unwrap_or_else(|| modified_ms(path));
+        record_usage_parsed_entry();
         out.push(UsageRecord {
             session_id: if session_id.is_empty() {
                 fallback_session_id.clone()
@@ -1892,6 +1902,7 @@ pub(in crate::ai_sessions) fn collect_opencode_usage_records_from_sources(
     if db_path.is_file() {
         match Connection::open(db_path) {
             Ok(conn) => {
+                record_usage_source_read();
                 let mut found_supported_schema = false;
                 for schema in [OpenCodeDbUsageSchema::V2, OpenCodeDbUsageSchema::V1] {
                     match opencode_db_schema_presence(&conn, schema) {
@@ -2104,6 +2115,7 @@ fn read_opencode_usage_source_from_db(
                 if let Some((input, output, cache, cache_read, total)) =
                     parse_opencode_tokens_value(tokens)
                 {
+                    record_usage_parsed_entry();
                     source.records.push(UsageRecord {
                         session_id: session_id.to_string(),
                         model: match schema {
@@ -2198,45 +2210,51 @@ pub(in crate::ai_sessions) fn parse_opencode_message_usage_dir(
         return (out, errors);
     }
     for path in json_files_recursive(messages_dir, "json") {
-        let content = match fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(error) => {
-                errors.push(format!("{}: {error}", path.display()));
-                continue;
-            }
-        };
-        let value: Value = match serde_json::from_str(&content) {
-            Ok(value) => value,
-            Err(error) => {
-                errors.push(format!("{}: {error}", path.display()));
-                continue;
-            }
-        };
-        let Some((input, output, cache, cache_read, total)) = parse_opencode_tokens_value(
-            value
-                .get("tokens")
-                .or_else(|| value.get("data").and_then(|data| data.get("tokens"))),
-        ) else {
-            continue;
-        };
-        let timestamp_ms = value
-            .get("time")
-            .and_then(|time| time.get("created"))
-            .and_then(|v| v.as_i64())
-            .or_else(|| value.get("time_created").and_then(|v| v.as_i64()))
-            .unwrap_or_else(|| modified_ms(&path));
-        out.push(UsageRecord {
-            session_id: session_id.to_string(),
-            model: opencode_model_name(&value),
-            timestamp_ms,
-            input_tokens: input,
-            output_tokens: output,
-            cache_tokens: cache,
-            cache_read_tokens: cache_read,
-            total_tokens: total,
-        });
+        match shared_usage_file_cache()
+            .get_or_parse(&path, || parse_opencode_usage_message_file(&path, session_id))
+        {
+            Ok(records) => out.extend(records.iter().cloned()),
+            Err(error) => errors.push(error),
+        }
     }
     (out, errors)
+}
+
+/// Parses one OpenCode storage message file into its optional usage record.
+/// Errors carry the file path, matching the directory-level contract.
+fn parse_opencode_usage_message_file(
+    path: &Path,
+    session_id: &str,
+) -> Result<Vec<UsageRecord>, String> {
+    let content =
+        fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    record_usage_source_read();
+    let value: Value =
+        serde_json::from_str(&content).map_err(|error| format!("{}: {error}", path.display()))?;
+    let Some((input, output, cache, cache_read, total)) = parse_opencode_tokens_value(
+        value
+            .get("tokens")
+            .or_else(|| value.get("data").and_then(|data| data.get("tokens"))),
+    ) else {
+        return Ok(Vec::new());
+    };
+    let timestamp_ms = value
+        .get("time")
+        .and_then(|time| time.get("created"))
+        .and_then(|v| v.as_i64())
+        .or_else(|| value.get("time_created").and_then(|v| v.as_i64()))
+        .unwrap_or_else(|| modified_ms(path));
+    record_usage_parsed_entry();
+    Ok(vec![UsageRecord {
+        session_id: session_id.to_string(),
+        model: opencode_model_name(&value),
+        timestamp_ms,
+        input_tokens: input,
+        output_tokens: output,
+        cache_tokens: cache,
+        cache_read_tokens: cache_read,
+        total_tokens: total,
+    }])
 }
 
 fn parse_opencode_tokens_value(tokens: Option<&Value>) -> Option<(u64, u64, u64, u64, u64)> {
@@ -2316,6 +2334,7 @@ fn opencode_json_session_ids(sessions_root: &Path) -> Vec<String> {
         let Ok(content) = fs::read_to_string(path) else {
             continue;
         };
+        record_usage_source_read();
         let Ok(value) = serde_json::from_str::<Value>(&content) else {
             continue;
         };

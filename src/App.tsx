@@ -100,6 +100,7 @@ import {
   SUPPORTED_TOOLS,
   getActiveModels,
 } from "./lib/aiWorkflowProfiles";
+import { sessionsUsageDayStats } from "./lib/aiUsage";
 import type {
   SshTunnelBatchOperationResult,
   SshTunnelsSnapshot,
@@ -193,10 +194,6 @@ type RepoAutoUpdateResult = {
 };
 const SKILLS_AUTO_UPDATED_EVENT = "onespace:skills-auto-updated";
 const USAGE_TODAY_TOKENS_REFRESH_MS = 5 * 60 * 1000;
-
-type UsageDayTokens = {
-  total_tokens?: number;
-};
 
 function localDateString(date = new Date()): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -1139,9 +1136,7 @@ function App() {
   const loadUsageTodayTokens = async () => {
     if (!isTauri) return;
     try {
-      const stats = await invoke<UsageDayTokens>("sessions_usage_day_stats", {
-        date: localDateString(),
-      });
+      const stats = await sessionsUsageDayStats(localDateString());
       setUsageTodayTokens(stats?.total_tokens ?? 0);
     } catch (e) {
       console.error("Failed to load today's AI usage tokens", e);

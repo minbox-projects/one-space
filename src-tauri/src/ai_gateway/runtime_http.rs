@@ -3155,7 +3155,8 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                 Some(&message),
                 reasoning_effort,
             ),
-        );
+        )
+        .await;
         return Ok(());
     }
 
@@ -3288,7 +3289,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                     capture.message.as_deref(),
                     reasoning_effort.clone(),
                 );
-                record_usage_log(&config, &record);
+                record_usage_log(&config, &record).await;
             } else {
                 let terminal = attempts.len() - 1;
                 record_request_usage_logs(
@@ -3297,7 +3298,8 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                     reasoning_effort.clone(),
                     &attempts,
                     terminal,
-                );
+                )
+                .await;
             }
         }
         // A downstream cancellation or an undeliverable response is an internal
@@ -3347,7 +3349,7 @@ fn extract_reasoning_effort(body: &Value) -> Option<String> {
 /// terminal row instead. All rows of one request go through one store and one
 /// batch, and any storage failure is logged and swallowed — the response has
 /// already been produced and must not be affected.
-fn record_request_usage_logs(
+async fn record_request_usage_logs(
     config: &GatewayConfig,
     local_model: Option<&str>,
     reasoning_effort: Option<String>,
@@ -3379,7 +3381,7 @@ fn record_request_usage_logs(
             },
         })
         .collect();
-    write_usage_log_entries(config, entries);
+    write_usage_log_entries(config, entries).await;
 }
 
 /// The gateway's own terminal row, attributed to no provider: an empty upstream
@@ -3452,29 +3454,41 @@ fn build_usage_log_row(
     }
 }
 
-/// Write one request row through a single store call; a storage failure is
-/// reported only as a swallowed log-write warning (REQ-005). A synthetic
-/// gateway row carries no upstream usage object.
-fn record_usage_log(config: &GatewayConfig, record: &UsageLogRecord) {
+/// Write one request row through a single store call on the blocking executor;
+/// a storage failure is reported only as a swallowed log-write warning
+/// (REQ-005). A synthetic gateway row carries no upstream usage object.
+async fn record_usage_log(config: &GatewayConfig, record: &UsageLogRecord) {
     let retention = normalize_retention_days(config.usage_retention_days);
+    let record = record.clone();
     let accounting = UsageAccounting {
         present: false,
         valid: false,
     };
-    let write = UsageLogStore::default_store()
-        .and_then(|store| store.append_with_accounting(record, accounting, retention));
-    if let Err(error) = write {
-        log::warn!("AI gateway usage log write failed: {error}");
+    let write = tokio::task::spawn_blocking(move || {
+        UsageLogStore::default_store()
+            .and_then(|store| store.append_with_accounting(&record, accounting, retention))
+    })
+    .await;
+    match write {
+        Ok(Err(error)) => log::warn!("AI gateway usage log write failed: {error}"),
+        Err(error) => log::warn!("AI gateway usage log task failed: {error}"),
+        Ok(Ok(())) => {}
     }
 }
 
-/// Write every entry of one request through a single store and batch; a storage
-/// failure is reported only as a swallowed log-write warning (REQ-005).
-fn write_usage_log_entries(config: &GatewayConfig, entries: Vec<UsageLogEntry>) {
+/// Write every entry of one request through a single store and batch on the
+/// blocking executor; a storage failure is reported only as a swallowed
+/// log-write warning (REQ-005).
+async fn write_usage_log_entries(config: &GatewayConfig, entries: Vec<UsageLogEntry>) {
     let retention = normalize_retention_days(config.usage_retention_days);
-    let write = UsageLogStore::default_store()
-        .and_then(|store| store.append_batch_with_accounting(&entries, retention));
-    if let Err(error) = write {
-        log::warn!("AI gateway usage log write failed: {error}");
+    let write = tokio::task::spawn_blocking(move || {
+        UsageLogStore::default_store()
+            .and_then(|store| store.append_batch_with_accounting(&entries, retention))
+    })
+    .await;
+    match write {
+        Ok(Err(error)) => log::warn!("AI gateway usage log write failed: {error}"),
+        Err(error) => log::warn!("AI gateway usage log task failed: {error}"),
+        Ok(Ok(())) => {}
     }
 }

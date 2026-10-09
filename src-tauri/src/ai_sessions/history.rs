@@ -1,7 +1,7 @@
 use super::{
     candidate_home_dirs, candidate_opencode_storage_paths, canonicalize_to_string,
-    collect_codex_session_files, parse_rfc3339_millis, system_time_to_epoch_millis,
-    HistorySessionEntry,
+    collect_codex_session_files, parse_rfc3339_millis, shared_history_file_cache,
+    system_time_to_epoch_millis, HistorySessionEntry, SourceFileMeta,
 };
 use rusqlite::Connection;
 use serde::Deserialize;
@@ -26,14 +26,77 @@ pub(in crate::ai_sessions) fn history_scan_due(
     min_updated_at_ms: Option<i64>,
 ) -> bool {
     let Some(min_updated_at_ms) = min_updated_at_ms else {
+        record_history_source_scanned();
         return true;
     };
-    fs::metadata(path)
+    let due = fs::metadata(path)
         .ok()
         .and_then(|metadata| metadata.modified().ok())
         .map(system_time_to_epoch_millis)
         .map(|modified_at_ms| modified_at_ms + 2_000 >= min_updated_at_ms)
-        .unwrap_or(true)
+        .unwrap_or(true);
+    if due {
+        record_history_source_scanned();
+    } else {
+        record_history_source_skipped();
+    }
+    due
+}
+
+// ---------------------------------------------------------------------------
+// Benchmark-only history-sync counters (REQ-005/AC-005 baseline).
+//
+// Compiled only into test builds; the ignored `core_workflows_perf` measurement
+// tests reset and read them. They record whether the incremental timestamp
+// cursor let a native history source be scanned or skipped. `opencode` history
+// pushes its cursor into SQL/JSON filters instead of calling `history_scan_due`
+// and is therefore not counted here. They change no behavior.
+// ---------------------------------------------------------------------------
+
+/// Counters describing one incremental native-history pass.
+#[cfg(test)]
+#[allow(dead_code)] // consumed by the Test-owned `core_workflows_perf` measurement tests
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::ai_sessions) struct HistorySyncStats {
+    pub sources_scanned: u64,
+    pub sources_skipped: u64,
+}
+
+#[cfg(test)]
+static HISTORY_SOURCES_SCANNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static HISTORY_SOURCES_SKIPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+fn record_history_source_scanned() {
+    HISTORY_SOURCES_SCANNED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+#[cfg(not(test))]
+fn record_history_source_scanned() {}
+
+#[cfg(test)]
+fn record_history_source_skipped() {
+    HISTORY_SOURCES_SKIPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+#[cfg(not(test))]
+fn record_history_source_skipped() {}
+
+/// Snapshot of the benchmark-only history-sync counters.
+#[cfg(test)]
+#[allow(dead_code)] // consumed by the Test-owned `core_workflows_perf` measurement tests
+pub(in crate::ai_sessions) fn history_sync_stats() -> HistorySyncStats {
+    HistorySyncStats {
+        sources_scanned: HISTORY_SOURCES_SCANNED.load(std::sync::atomic::Ordering::Relaxed),
+        sources_skipped: HISTORY_SOURCES_SKIPPED.load(std::sync::atomic::Ordering::Relaxed),
+    }
+}
+
+/// Zero the benchmark-only history-sync counters.
+#[cfg(test)]
+#[allow(dead_code)] // consumed by the Test-owned `core_workflows_perf` measurement tests
+pub(in crate::ai_sessions) fn reset_history_sync_stats() {
+    HISTORY_SOURCES_SCANNED.store(0, std::sync::atomic::Ordering::Relaxed);
+    HISTORY_SOURCES_SKIPPED.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub(in crate::ai_sessions) fn value_as_text(value: &Value) -> Option<String> {
@@ -68,6 +131,15 @@ pub(in crate::ai_sessions) fn value_as_text(value: &Value) -> Option<String> {
 pub(in crate::ai_sessions) fn fallback_history_title(tool: &str, session_id: &str) -> String {
     let suffix: String = session_id.chars().take(8).collect();
     format!("{} {}", tool.to_uppercase(), suffix)
+}
+
+/// A stable metadata discriminator for history parse-cache keys. It is built
+/// from a file's byte length and mtime (never a hash), so a changed shared
+/// index or transcript forces only its dependent parses to re-run.
+fn history_dependency(path: &Path) -> String {
+    SourceFileMeta::for_path(path)
+        .map(|meta| format!("{}:{}", meta.len, meta.modified_ms))
+        .unwrap_or_else(|| "none".to_string())
 }
 
 pub(in crate::ai_sessions) fn collect_codex_history_sessions(
@@ -109,16 +181,20 @@ pub(in crate::ai_sessions) fn collect_codex_history_sessions(
             }
         }
 
+        let index_dependency = history_dependency(&index_path);
         for (path, modified_ms) in collect_codex_session_files(&sessions_root, usize::MAX) {
             if !history_scan_due(&path, min_updated_at_ms) {
                 continue;
             }
-            let Some(session) =
-                read_codex_history_session_file(&path, &titles, &updated_at_map, modified_ms)
-            else {
+            let dependency = format!("{index_dependency}:{modified_ms}");
+            let Some(session) = shared_history_file_cache().get_or_parse(
+                &path,
+                &dependency,
+                || read_codex_history_session_file(&path, &titles, &updated_at_map, modified_ms),
+            ) else {
                 continue;
             };
-            out.push(session);
+            out.push((*session).clone());
         }
     }
 
@@ -238,7 +314,7 @@ pub(in crate::ai_sessions) fn collect_claude_history_sessions(
 
     let mut fallback_by_session = HashMap::<String, (String, String)>::new();
     let history_path = home.join(".claude").join("history.jsonl");
-    if let Ok(content) = fs::read_to_string(history_path) {
+    if let Ok(content) = fs::read_to_string(&history_path) {
         for line in content.lines() {
             let Ok(value) = serde_json::from_str::<Value>(line) else {
                 continue;
@@ -261,6 +337,7 @@ pub(in crate::ai_sessions) fn collect_claude_history_sessions(
             fallback_by_session.insert(session_id.to_string(), (cwd, title));
         }
     }
+    let history_dependency = history_dependency(&history_path);
 
     let mut stack = vec![projects_root];
     let mut out = Vec::new();
@@ -285,17 +362,23 @@ pub(in crate::ai_sessions) fn collect_claude_history_sessions(
             if !history_scan_due(&path, min_updated_at_ms) {
                 continue;
             }
-            let Some(session) = read_claude_project_file(
+            let Some(session) = shared_history_file_cache().get_or_parse(
                 &path,
-                fallback_by_session.get(
-                    path.file_stem()
-                        .and_then(|stem| stem.to_str())
-                        .unwrap_or_default(),
-                ),
+                &history_dependency,
+                || {
+                    read_claude_project_file(
+                        &path,
+                        fallback_by_session.get(
+                            path.file_stem()
+                                .and_then(|stem| stem.to_str())
+                                .unwrap_or_default(),
+                        ),
+                    )
+                },
             ) else {
                 continue;
             };
-            out.push(session);
+            out.push((*session).clone());
         }
     }
 
@@ -604,10 +687,13 @@ pub(in crate::ai_sessions) fn collect_antigravity_sessions_from_brain_root(
         if !history_scan_due(&transcript, min_updated_at_ms) {
             continue;
         }
-        if let Some(session) =
-            read_antigravity_history_file(&transcript, conversation_id, working_dir)
-        {
-            out.push(session);
+        let dependency = format!("{conversation_id}\u{1}{working_dir}");
+        if let Some(session) = shared_history_file_cache().get_or_parse(
+            &transcript,
+            &dependency,
+            || read_antigravity_history_file(&transcript, conversation_id, working_dir),
+        ) {
+            out.push((*session).clone());
         }
     }
     out

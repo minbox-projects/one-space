@@ -3,14 +3,18 @@ mod public_resolver;
 mod resolver;
 mod terminal;
 #[cfg(test)]
+mod performance_tests;
+#[cfg(test)]
 mod tests;
 mod types_store;
 mod usage;
+mod usage_cache;
 
 pub(in crate::ai_sessions) use history::*;
 pub(in crate::ai_sessions) use resolver::*;
 pub(in crate::ai_sessions) use terminal::*;
 pub(in crate::ai_sessions) use types_store::*;
+pub(in crate::ai_sessions) use usage_cache::*;
 
 pub use public_resolver::*;
 pub use terminal::{

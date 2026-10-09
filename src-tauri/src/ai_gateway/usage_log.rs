@@ -14,7 +14,7 @@ use rusqlite::{params_from_iter, Connection, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// File name of the dedicated usage-log database under `get_app_dir()`.
@@ -1128,14 +1128,158 @@ fn insert_record(
             accounting.present as i64,
             accounting.valid as i64,
         ])
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 /// Permanently delete rows older than the retention window (REQ-009).
 fn apply_retention(connection: &Connection, retention_days: u32) {
     let cutoff = now_millis() - normalize_retention_days(retention_days) as i64 * DAY_MS;
     let _ = connection.execute("DELETE FROM usage_logs WHERE timestamp_ms < ?", [cutoff]);
+}
+
+// ---------------------------------------------------------------------------
+// Benchmark-only usage-log write counters (REQ-005/AC-005 baseline).
+//
+// Compiled only into test builds; the ignored `core_workflows_perf` measurement
+// tests reset and read them. `db_opens` counts every `UsageLogStore` connection
+// opened for a write, `transactions` counts each committed write unit (one per
+// single/batch append; at baseline these are SQLite autocommits, and the later
+// per-request transaction increments the same counter once), `rows_written`
+// counts successful row inserts and `batch_writes` counts batch append calls.
+// They change no behavior.
+// ---------------------------------------------------------------------------
+
+/// Counters describing one or more usage-log write passes.
+#[cfg(test)]
+#[allow(dead_code)] // consumed by the Test-owned `core_workflows_perf` measurement tests
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::ai_gateway) struct UsageLogWriteStats {
+    pub db_opens: u64,
+    pub transactions: u64,
+    pub rows_written: u64,
+    pub batch_writes: u64,
+}
+
+#[cfg(test)]
+static USAGE_LOG_DB_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static USAGE_LOG_TRANSACTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static USAGE_LOG_ROWS_WRITTEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static USAGE_LOG_BATCH_WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+fn record_usage_log_db_open() {
+    USAGE_LOG_DB_OPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+#[cfg(not(test))]
+fn record_usage_log_db_open() {}
+
+#[cfg(test)]
+fn record_usage_log_transaction() {
+    USAGE_LOG_TRANSACTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+#[cfg(not(test))]
+fn record_usage_log_transaction() {}
+
+#[cfg(test)]
+fn record_usage_log_row_written() {
+    USAGE_LOG_ROWS_WRITTEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+#[cfg(not(test))]
+fn record_usage_log_row_written() {}
+
+#[cfg(test)]
+fn record_usage_log_batch_write() {
+    USAGE_LOG_BATCH_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+#[cfg(not(test))]
+fn record_usage_log_batch_write() {}
+
+/// Snapshot of the benchmark-only usage-log write counters.
+#[cfg(test)]
+#[allow(dead_code)] // consumed by the Test-owned `core_workflows_perf` measurement tests
+pub(in crate::ai_gateway) fn usage_log_write_stats() -> UsageLogWriteStats {
+    UsageLogWriteStats {
+        db_opens: USAGE_LOG_DB_OPENS.load(std::sync::atomic::Ordering::Relaxed),
+        transactions: USAGE_LOG_TRANSACTIONS.load(std::sync::atomic::Ordering::Relaxed),
+        rows_written: USAGE_LOG_ROWS_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
+        batch_writes: USAGE_LOG_BATCH_WRITES.load(std::sync::atomic::Ordering::Relaxed),
+    }
+}
+
+/// Zero the benchmark-only usage-log write counters.
+#[cfg(test)]
+#[allow(dead_code)] // consumed by the Test-owned `core_workflows_perf` measurement tests
+pub(in crate::ai_gateway) fn reset_usage_log_write_stats() {
+    USAGE_LOG_DB_OPENS.store(0, std::sync::atomic::Ordering::Relaxed);
+    USAGE_LOG_TRANSACTIONS.store(0, std::sync::atomic::Ordering::Relaxed);
+    USAGE_LOG_ROWS_WRITTEN.store(0, std::sync::atomic::Ordering::Relaxed);
+    USAGE_LOG_BATCH_WRITES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Opens a usage-log database and brings it to the current schema. Shared by
+/// the separate query connection and the path-scoped write connection so both
+/// initialize and migrate the actual database exactly once per open.
+fn initialize_connection(path: &Path) -> Result<Connection, String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    record_usage_log_db_open();
+    connection
+        .busy_timeout(std::time::Duration::from_secs(2))
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute_batch(SCHEMA)
+        .map_err(|error| error.to_string())?;
+    migrate_usage_logs(&connection)?;
+    // The version-gated one-time cleanup lives in the permanent migration
+    // module; a later open finds the marker advanced and deletes nothing.
+    super::migration::migrate_usage_database(&connection)?;
+    Ok(connection)
+}
+
+// ---------------------------------------------------------------------------
+// Test-only deterministic write-fault seam (REQ-005/AC-005).
+//
+// The batch insert path consults this seam at each 0-based insert index. The
+// Test-owned atomic-batch test arms it so the batch fails mid-request, then
+// asserts no partial batch remains and the transaction counter did not move.
+// It is compiled only into test builds and never affects production.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+static USAGE_LOG_FAIL_AT_INSERT: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(-1);
+
+/// Arms a one-shot fault that fails the batch when it reaches the 0-based
+/// `insert_index`. Cleared automatically when it fires.
+#[cfg(test)]
+pub(in crate::ai_gateway) fn inject_usage_log_insert_failure_at(insert_index: usize) {
+    USAGE_LOG_FAIL_AT_INSERT.store(insert_index as i64, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Disarms any pending write fault.
+#[cfg(test)]
+pub(in crate::ai_gateway) fn clear_usage_log_insert_failure() {
+    USAGE_LOG_FAIL_AT_INSERT.store(-1, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn usage_log_write_fault_should_fail(insert_index: usize) -> bool {
+    let armed = USAGE_LOG_FAIL_AT_INSERT.load(std::sync::atomic::Ordering::SeqCst);
+    if armed < 0 || armed != insert_index as i64 {
+        return false;
+    }
+    USAGE_LOG_FAIL_AT_INSERT.store(-1, std::sync::atomic::Ordering::SeqCst);
+    true
+}
+#[cfg(not(test))]
+fn usage_log_write_fault_should_fail(_insert_index: usize) -> bool {
+    false
 }
 
 /// SQLite-backed usage-log storage bound to one explicit database path.
@@ -1159,21 +1303,15 @@ impl UsageLogStore {
     }
 
     fn open(&self) -> Result<Connection, String> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        let connection = Connection::open(&self.path).map_err(|error| error.to_string())?;
-        connection
-            .busy_timeout(std::time::Duration::from_secs(2))
-            .map_err(|error| error.to_string())?;
-        connection
-            .execute_batch(SCHEMA)
-            .map_err(|error| error.to_string())?;
-        migrate_usage_logs(&connection)?;
-        // The version-gated one-time cleanup lives in the permanent migration
-        // module; a later open finds the marker advanced and deletes nothing.
-        super::migration::migrate_usage_database(&connection)?;
-        Ok(connection)
+        initialize_connection(&self.path)
+    }
+
+    /// Borrows the path-scoped reusable write connection, initializing and
+    /// migrating the owned database only when it is actually opened or reopened
+    /// (REQ-005). Query helpers keep using [`Self::open`] so read connections
+    /// may stay separate.
+    fn write_connection(&self) -> Result<super::usage_store::WriteConnection, String> {
+        super::usage_store::write_connection(&self.path, initialize_connection)
     }
 
     /// Insert one record with the canonical request-log classification
@@ -1196,13 +1334,15 @@ impl UsageLogStore {
         accounting: UsageAccounting,
         retention_days: u32,
     ) -> Result<(), String> {
-        let connection = self.open()?;
+        let connection = self.write_connection()?;
         {
             let mut statement = connection
                 .prepare(INSERT_SQL)
                 .map_err(|error| error.to_string())?;
             insert_record(&mut statement, record, accounting)?;
         }
+        record_usage_log_row_written();
+        record_usage_log_transaction();
         apply_retention(&connection, retention_days);
         Ok(())
     }
@@ -1228,21 +1368,39 @@ impl UsageLogStore {
         self.append_batch_with_accounting(&entries, retention_days)
     }
 
-    /// Insert every entry of one request through a single connection, in slice
-    /// order, then apply the same retention cleanup as [`Self::append`]
-    /// (REQ-005). An empty slice writes nothing.
+    /// Insert every entry of one request through one explicit transaction on the
+    /// path-scoped write connection, in slice order, committing only after every
+    /// insert succeeded, then apply the same retention cleanup as [`Self::append`]
+    /// (REQ-005). A failed insert rolls the whole batch back, leaving no partial
+    /// request. An empty slice writes nothing.
     pub(in crate::ai_gateway) fn append_batch_with_accounting(
         &self,
         entries: &[UsageLogEntry],
         retention_days: u32,
     ) -> Result<(), String> {
-        let connection = self.open()?;
-        {
-            let mut statement = connection
-                .prepare(INSERT_SQL)
-                .map_err(|error| error.to_string())?;
-            for entry in entries {
-                insert_record(&mut statement, &entry.record, entry.accounting)?;
+        let mut connection = self.write_connection()?;
+        if !entries.is_empty() {
+            {
+                let transaction = connection
+                    .transaction()
+                    .map_err(|error| error.to_string())?;
+                {
+                    let mut statement = transaction
+                        .prepare(INSERT_SQL)
+                        .map_err(|error| error.to_string())?;
+                    for (index, entry) in entries.iter().enumerate() {
+                        if usage_log_write_fault_should_fail(index) {
+                            return Err("injected usage log insert failure".to_string());
+                        }
+                        insert_record(&mut statement, &entry.record, entry.accounting)?;
+                    }
+                }
+                transaction.commit().map_err(|error| error.to_string())?;
+            }
+            record_usage_log_batch_write();
+            record_usage_log_transaction();
+            for _ in entries {
+                record_usage_log_row_written();
             }
         }
         apply_retention(&connection, retention_days);

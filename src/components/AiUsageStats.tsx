@@ -1,92 +1,28 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
 import { skillModelOptions } from "./skillsModelOptions";
 import { errorToMessage } from "@/lib/messages";
+import {
+  sessionsAntigravityQuota,
+  sessionsUsageClearCache,
+  sessionsUsageDayStats,
+  sessionsUsageToolStats,
+  type AiModelId,
+  type AiUsageDaily,
+  type AiUsageDayStats,
+  type AiUsageSummary,
+  type AiUsageToolStats,
+  type AiUsageWindowDays,
+  type AntigravityQuota,
+} from "@/lib/aiUsage";
 
-type AiModelId = "claude" | "antigravity" | "codex" | "opencode";
-type AiUsageWindowDays = 7 | 15 | 30;
 type ToolLoadState = "loading" | "ready" | "error";
-
-interface AiUsageSummary {
-  total_tokens: number;
-  calls: number;
-  sessions: number;
-  cache_hit_rate: number;
-  input_tokens: number;
-  output_tokens: number;
-  cache_tokens: number;
-}
-
-interface AiUsageDaily extends AiUsageSummary {
-  date: string;
-}
-
-interface AiUsageToolStats {
-  tool: AiModelId;
-  source_status: string;
-  summary: AiUsageSummary;
-  daily: AiUsageDaily[];
-  peak_day?: {
-    date: string;
-    total_tokens: number;
-    calls: number;
-  } | null;
-  scanned_sessions: number;
-  scanned_calls: number;
-  errors: string[];
-}
-
-interface AiUsageDayBreakdown {
-  tool: AiModelId;
-  total_tokens: number;
-  calls: number;
-  cache_hit_rate: number;
-  input_tokens: number;
-  output_tokens: number;
-  cache_tokens: number;
-  models: AiUsageModelStats[];
-}
-
-interface AiUsageModelStats extends AiUsageSummary {
-  model: string;
-}
-
-interface AiUsageDayStats {
-  date: string;
-  total_tokens: number;
-  calls: number;
-  sessions: number;
-  input_tokens: number;
-  output_tokens: number;
-  cache_tokens: number;
-  breakdown: AiUsageDayBreakdown[];
-}
 
 interface ToolState {
   status: ToolLoadState;
   data: AiUsageToolStats | null;
   error: string;
-}
-
-interface AntigravityQuotaBucket {
-  id: string;
-  name: string;
-  window: string;
-  remaining_fraction: number;
-  reset_time: string;
-  description: string | null;
-}
-
-interface AntigravityQuotaGroup {
-  name: string;
-  description: string | null;
-  buckets: AntigravityQuotaBucket[];
-}
-
-interface AntigravityQuota {
-  groups: AntigravityQuotaGroup[];
 }
 
 interface QuotaState {
@@ -300,7 +236,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
     setDayStatsError("");
     setDayStatsLoading(true);
     setDayStats(null);
-    void invoke<AiUsageDayStats>("sessions_usage_day_stats", { date })
+    void sessionsUsageDayStats(date)
       .then((data) => {
         if (dayRequestSeqRef.current !== requestSeq) return;
         setDayStats(data);
@@ -331,10 +267,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
     );
 
     const requests = AI_USAGE_TOOLS.map((tool) =>
-      invoke<AiUsageToolStats>("sessions_usage_tool_stats", {
-        tool,
-        days: nextDays,
-      })
+      sessionsUsageToolStats(tool, nextDays)
         .then((data) => {
           if (requestSeqRef.current !== requestSeq) return;
           setToolStates((current) => ({
@@ -363,13 +296,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
     } else {
       setQuotaState({ status: "loading", data: null, error: "" });
     }
-    const invokePromise = force
-      ? invoke<AntigravityQuota>("sessions_antigravity_quota", {
-          forceRefresh: true,
-        })
-      : invoke<AntigravityQuota>("sessions_antigravity_quota");
-
-    return invokePromise
+    return sessionsAntigravityQuota(force)
       .then((data) => {
         setQuotaState({ status: "ready", data, error: "" });
       })
@@ -390,7 +317,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
   const refreshUsage = () => {
     const scheduledDayRequestSeq = dayRequestSeqRef.current;
     void loadQuota();
-    void invoke<void>("sessions_usage_clear_cache")
+    void sessionsUsageClearCache()
       .catch(() => undefined)
       .finally(() => {
         void loadUsage(days);

@@ -8,12 +8,12 @@ use super::{
     parse_antigravity_quota_envelope, parse_claude_usage_file, parse_codex_usage_file,
     parse_opencode_message_usage_dir, read_antigravity_history_file, read_claude_project_file,
     read_codex_history_session_file, read_opencode_history_file,
-    read_opencode_message_tokens_for_test, run_native_terminal_command_for_app_with_executor,
-    select_antigravity_session_for_create, select_antigravity_session_for_existing,
-    sessions_antigravity_quota, sessions_usage_clear_cache, sessions_usage_day_stats,
-    sessions_usage_tool_stats, timestamp_days_ago,
-    usage_file_may_overlap_window_for_test, validate_create_command, AntigravitySessionCandidate,
-    ToolScan, ToolScanCache, UsageRecord,
+    read_opencode_message_tokens_for_test, reset_usage_collection_stats,
+    run_native_terminal_command_for_app_with_executor, select_antigravity_session_for_create,
+    select_antigravity_session_for_existing, sessions_antigravity_quota, sessions_usage_clear_cache,
+    sessions_usage_day_stats, sessions_usage_tool_stats, timestamp_days_ago,
+    usage_collection_stats, usage_file_may_overlap_window_for_test, validate_create_command,
+    AntigravitySessionCandidate, ToolScan, ToolScanCache, UsageRecord,
 };
 use chrono::Local;
 use rusqlite::{params, Connection};
@@ -3541,5 +3541,92 @@ fn antigravity_sqlite_database_prevents_duplicate_calls_from_brain_transcript() 
     assert_eq!(stats.summary.calls, 1);
     assert_eq!(stats.summary.total_tokens, 1100);
 
+    let _ = fs::remove_dir_all(root);
+}
+
+// ============================================================
+// REQ-005/AC-005 freshness contract (public boundary)
+// ============================================================
+
+/// Frozen contract: "Cache collection for all supported tools with a
+/// 30-second freshness window and explicit-refresh bypass" (REQ-005).
+///
+/// A second collection of unchanged synthetic sources inside the freshness
+/// window must reuse the cached source records instead of reading them again,
+/// and an explicit refresh must bypass the cache and re-read. Observed only
+/// through the real public entry point plus the benchmark counters.
+///
+/// Expected RED before the Backend implementation: the current collection path
+/// re-reads an uncached tool's sources on every call.
+#[test]
+fn usage_collection_reuses_sources_within_freshness_window_and_refresh_bypasses_cache() {
+    let root = make_temp_dir("usage-freshness-window");
+    let _guard = crate::config::test_home::TestHomeGuard::set(&root);
+    sessions_usage_clear_cache();
+
+    // Two in-window messages in one synthetic Antigravity source file.
+    let ts = Local::now().to_rfc3339();
+    let chats_dir = root
+        .join(".gemini")
+        .join("tmp")
+        .join("rollout-red")
+        .join("chats");
+    write_temp_file(
+        &chats_dir.join("session-red.json"),
+        &format!(
+            r#"{{
+  "sessionId": "red-1",
+  "messages": [
+    {{"tokens": {{ "input": 10, "output": 5, "cached": 1, "total": 0 }}, "model": "gemini-pro", "timestamp": "{ts}"}},
+    {{"tokens": {{ "input": 20, "output": 7, "cached": 0, "total": 0 }}, "model": "gemini-pro", "timestamp": "{ts}"}}
+  ]
+}}"#
+        ),
+    );
+
+    // Cold collection reads the synthetic source.
+    reset_usage_collection_stats();
+    let cold = sessions_usage_tool_stats("antigravity".to_string(), Some(7)).expect("cold stats");
+    let cold_counters = usage_collection_stats();
+    assert_eq!(cold.tool, "antigravity");
+    assert_eq!(cold.source_status, "available");
+    assert_eq!(cold.summary.calls, 2);
+    assert!(
+        cold_counters.source_reads >= 1,
+        "the cold collection must read the synthetic source"
+    );
+    assert!(
+        cold_counters.parsed_entries >= 2,
+        "the cold collection must parse the synthetic entries"
+    );
+
+    // A second collection inside the 30-second freshness window must reuse the
+    // cached source records instead of re-reading them.
+    reset_usage_collection_stats();
+    let warm = sessions_usage_tool_stats("antigravity".to_string(), Some(7)).expect("warm stats");
+    let warm_counters = usage_collection_stats();
+    assert_eq!(warm.summary.calls, 2);
+    assert_eq!(
+        warm_counters.source_reads, 0,
+        "a second collection within the freshness window must not re-read sources"
+    );
+    assert!(
+        warm_counters.cache_hits >= 1,
+        "the warmed collection must report cache reuse"
+    );
+
+    // An explicit refresh bypasses the freshness window and re-reads the source.
+    sessions_usage_clear_cache();
+    reset_usage_collection_stats();
+    let refreshed =
+        sessions_usage_tool_stats("antigravity".to_string(), Some(7)).expect("refreshed stats");
+    let refreshed_counters = usage_collection_stats();
+    assert_eq!(refreshed.summary.calls, 2);
+    assert!(
+        refreshed_counters.source_reads >= 1,
+        "an explicit refresh must bypass the cache and re-read sources"
+    );
+
+    sessions_usage_clear_cache();
     let _ = fs::remove_dir_all(root);
 }
