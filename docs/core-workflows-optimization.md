@@ -60,7 +60,7 @@
 
 - 删除 `storage::query_model_reasoning_efforts` 与 `storage::normalize_template_prices_and_efforts` 及其读/写调用，普通读写不再猜测；显式存储值、`normalize_stored_config`、`scope_model_prices`、迁移版本门控与模板显式规则保留。
 - 决策核心抽到 `ai_gateway/attempt_policy.rs`（候选/key/重试/探测决策），传输专属首字节边界、SSE 回放与取消留在 `runtime_http.rs`。
-- 证据：新增 `tests/attempt_policy.rs` 15 个行为测试；未修改的 `tests/templates.rs::ac007_unrelated_save_keeps_explicit_values_and_does_not_guess` 为 GREEN；`ai_gateway` 647 通过 / 2 ignored；`tools/check-ai-gateway-redaction.sh` 退出 0（凭据字面量=0）；前端 AiGateway + lib 17 文件 495 通过；`npm run build` 退出 0。
+- 证据：新增 `tests/attempt_policy.rs` 15 个行为测试；`tests/templates.rs::ac007_unrelated_save_keeps_explicit_values_and_does_not_guess` 为本步新增（实现前先红 RED、实现后绿 GREEN）；`ai_gateway` 647 通过 / 2 ignored；`tools/check-ai-gateway-redaction.sh` 退出 0（凭据字面量=0）；前端 AiGateway + lib 17 文件 495 通过；`npm run build` 退出 0。
 
 ## 3. 移除 / 保留符号账本
 
@@ -81,6 +81,10 @@
 - 永久版本门控迁移读取器与 `migration.rs`。
 - `scope_model_prices`（写路径价格裁剪）与全部保留的 schema 字段、旧值与显式存储值（含空 effort 列表、显式/零价格、已存本地模型）。
 - 模板同步、退役删除、忽略模型、价格与默认模型清理、best-effort 终端重同步的显式规则。
+
+### 有界扩展（orchestrator 授权）
+
+- 移除 `sync_import.rs` 孤儿测试、增加 `workspaces.rs` 测试小节、SSH 隧道性能测试、`config.rs` 的 `SAFE_FIXTURE_partial-failure-key` 字面量、`ToolIcon` 抽取（`AiEnvironments` barrel 再导出不变、`QuickAiSessionBar` 导入路径改用轻量模块）、以及 `provider_types.rs`/`antigravity_opencode.rs` 的闭包（`AppSnapshot`/`build_projection_diff`）。
 
 ## 4. 数据兼容与回滚
 
@@ -130,3 +134,5 @@
 - `mcp_runtime legacy_sse_transport`（既有问题，属本计划范围之外）。
 
 未执行 / 阻塞：原生 macOS GUI smoke（工具箱别名、快速窗口、草稿隐藏/显示）因无 GUI runner 而 BLOCKED/未执行；Windows 未测试。
+
+复审修复新增验证：三消费方隐藏窗口门控测试、模板消息测试、来源失效测试、retire 争用修复与其测试、草稿测试、`File::set_modified` 测试卫生、i18n 键。更新计数：`ai_gateway` 652 通过 / 0 失败 / 2 ignored、`ai_sessions` 85 / 0 / 3 ignored、`ssh_tunnels` 68 / 0 / 1 ignored、前端 7 文件 216 测试、`npm run build` 退出 0。

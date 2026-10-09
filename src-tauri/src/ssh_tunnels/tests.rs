@@ -1852,12 +1852,19 @@ fn ssh_state_cache_decrypts_again_after_key_file_identity_change() {
     assert_eq!(load_records().expect("warm read").len(), 1);
     assert_eq!(ssh_state_cache_stats().decrypts, 1);
 
-    // Rewrite the same key bytes after a pause so the key file identity changes
-    // while the key material (and therefore decryption) stays valid.
+    // Rewrite the same key bytes with an explicit, deterministic mtime change so
+    // the key file identity changes while the key material (and therefore
+    // decryption) stays valid: no wall-clock sleep is needed.
     let key_path = crate::crypto::get_local_key_path().expect("key path");
     let password = crate::crypto::get_or_init_master_password().expect("master password");
-    std::thread::sleep(Duration::from_millis(20));
     std::fs::write(&key_path, &password).expect("rewrite key file");
+    let key_file = std::fs::File::options()
+        .write(true)
+        .open(&key_path)
+        .expect("open the key file");
+    key_file
+        .set_modified(std::time::SystemTime::now() + Duration::from_secs(1))
+        .expect("set a distinct key-file mtime");
 
     let reloaded = load_records().expect("reload after key identity change");
     assert_eq!(reloaded.len(), 1);

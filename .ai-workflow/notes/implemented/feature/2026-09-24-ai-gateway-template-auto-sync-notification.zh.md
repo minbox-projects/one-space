@@ -31,7 +31,7 @@ Status: implemented
 - 每个发生变化模板每次同步恰好一条聚合消息：受影响服务商数聚合该模板所有合格的绑定服务商，一次同步为每个发生变化模板创建一条消息，无论同步是手动还是自动。
 - 重复新增产生独立消息：未设置 `dedupe_key`，因此两个连续合格周期创建两条独立消息；这是刻意且被接受的。
 - 失败与退役：失败同步不产生 `template_sync` info 消息，仅退役的同步改为记录后端按服务商范围的 `template_mappings_retired` warning；该 warning 仅在成功配置写入后出现。
-- 消息文本跟随当前语言：标题、摘要与明细在创建时经 `crate::messages::localized` 与两个 bundle 中的既有键解析。
+- 消息文本跟随当前语言：标题、摘要与明细在创建时经内联 `crate::messages::localized` 事件时字符串解析，而非经前端 i18n bundle。四个早先的前端 `aiGatewayTemplateSyncNotification*` 键仍保留在两个 bundle 中，但在 [Core Workflows Cleanup and Optimization](../architecture/2026-10-09-core-workflows-cleanup-and-optimization.md) 把消息产生移到后端后不再被生产使用。
 - 没有后端命令、持久化格式或消息 schema 变化：info 通知复用既有消息存储并只读取既有加密网关配置。
 - 验证：交付的行为测试为 `src-tauri/src/ai_gateway/tests/auto_refresh.rs` 与 `src-tauri/src/ai_gateway/tests/templates.rs` 的 additions-only 差异与消息记录路径、`src-tauri/src/ai_gateway/tests.rs` 的共享命令行为，以及 `src/components/AiGateway/AiGateway.test.tsx` / `src/i18n.test.ts` 的既有键与手动路径。
 - 关系与取代：部分取代。[Core Workflows Cleanup and Optimization](../architecture/2026-10-09-core-workflows-cleanup-and-optimization.md) 替换本记录的前端消息产生及其被拒绝的后端替代方案，而 additions-only、无 dedupe 与失败隔离决策继续有效；本记录保留并交叉链接，不归档。本记录继续扩展 [Provider Templates Refresh Automatically on a Persisted Interval](../feature/2026-09-23-template-auto-refresh.md)，且 [A Provider Template Sync Deletes Retired Mappings](../architecture/2026-10-08-provider-template-retired-mapping-removal.md) 与 [Gateway Alert Pills Dismiss per Instance and Archive Provider-Scoped Warnings](2026-10-07-gateway-alert-badges-and-message-center.md) 的退役语义继续有效。

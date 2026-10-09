@@ -9,7 +9,8 @@
 
 use super::{free_port, temp_home};
 use crate::ai_gateway::runtime_http::{
-    force_next_accept_failure, server_status, start_server, state_lock, stop_server,
+    force_next_accept_failure, retire_listener_epoch, server_status, start_server, state_lock,
+    stop_server,
 };
 use crate::ai_gateway::storage::write_config;
 use crate::ai_gateway::types_config::GatewayConfig;
@@ -96,6 +97,7 @@ async fn replacement_listener_survives_the_old_listeners_late_cleanup() {
     let first = start_server(None).await.expect("start the old listener");
     assert!(first.running);
     assert_eq!(first.port, port_a);
+    let retire_epoch_before = retire_listener_epoch();
 
     // The different-port start takes the old slot entry, signals the old
     // listener and installs a new generation under the same lock.
@@ -105,6 +107,17 @@ async fn replacement_listener_survives_the_old_listeners_late_cleanup() {
         .expect("install the replacement listener");
     assert!(second.running);
     assert_eq!(second.port, port_b);
+
+    // Deterministically wait until the old listener's exiting task has entered
+    // retirement, then prove the replacement still owns the slot.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while retire_listener_epoch() == retire_epoch_before {
+        assert!(
+            Instant::now() < deadline,
+            "the old listener never entered retirement"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
 
     // Let the old task finish its exit and late cleanup, then prove the
     // replacement still owns the listener slot.
@@ -125,4 +138,53 @@ async fn replacement_listener_survives_the_old_listeners_late_cleanup() {
     assert_eq!(final_status.port, port_b);
 
     stop_server().await.expect("stop the replacement listener");
+}
+
+/// AC-002: a listener whose accept loop faults while the state lock is held
+/// cannot skip retirement. Retirement awaits the lock, clears the slot once the
+/// lock is released, and publishes the stopped status. `retire_listener_epoch`
+/// proves the retiring task truly entered (and was blocked on) the lock rather
+/// than being silently skipped by a `try_lock` miss.
+#[tokio::test]
+async fn faulted_listener_retirement_awaits_the_held_state_lock() {
+    let _home = temp_home("runtime-lifecycle-retire-contention");
+    let port = free_port().await;
+    let _ = stop_server().await;
+
+    seed_listener_config(port);
+    let started = start_server(None).await.expect("start the gateway listener");
+    assert!(started.running);
+
+    let epoch_before = retire_listener_epoch();
+    let guard = state_lock().lock().await;
+
+    // Force the accept loop to exit abnormally while we hold the lock.
+    force_next_accept_failure();
+
+    // Bounded wait until the retiring task has entered retirement; because the
+    // epoch is bumped before it waits on the lock, an advance proves it is
+    // blocked rather than skipped.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while retire_listener_epoch() == epoch_before {
+        assert!(
+            Instant::now() < deadline,
+            "the faulted listener never entered retirement"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    // Retirement is provably in flight yet cannot clear the slot while the lock
+    // is held.
+    assert!(
+        guard.as_ref().is_some(),
+        "retirement must not clear the slot while the state lock is held"
+    );
+    drop(guard);
+
+    wait_for_listener_slot_to_clear("the contended retirement to clear").await;
+    let status = server_status().expect("read the stopped status");
+    assert!(
+        !status.running,
+        "the retirement must publish the actual stopped lifetime"
+    );
 }

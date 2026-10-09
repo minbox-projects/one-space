@@ -17,6 +17,7 @@ import { useToast } from "@/components/ToastProvider";
 import { useConfirmDialog } from "@/components/ConfirmDialogProvider";
 import { errorToMessage } from "@/lib/messages";
 import { publishRuntimeStatus } from "@/lib/runtimeStatus";
+import { useVisibleInterval } from "@/toolbox/useVisibleInterval";
 import {
   AI_GATEWAY_CONFIG_UPDATED_EVENT,
   AI_GATEWAY_DEFAULT_PORT,
@@ -436,15 +437,15 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
     };
   }, [isVisible, refreshTodayUsage]);
 
-  useEffect(() => {
-    if (!isVisible || !status?.running) return;
-    const timer = setInterval(() => {
+  // 今日用量新鲜度轮询：仅在页签可见且网关运行时按间隔刷新；原生窗口或文档
+  // 隐藏时暂停，hidden -> visible 时恰好追赶一次。
+  useVisibleInterval(
+    () => {
       void refreshTodayUsage(true);
-    }, 5000);
-    return () => {
-      clearInterval(timer);
-    };
-  }, [isVisible, status?.running, refreshTodayUsage]);
+    },
+    5000,
+    isVisible && Boolean(status?.running),
+  );
 
   const applyConfig = useCallback(async (next: GatewayConfig) => {
     setConfig(next);

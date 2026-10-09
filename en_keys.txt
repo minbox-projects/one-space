@@ -698,3 +698,7 @@ reasoningEffortMax
 selectFetchedModel
 supportedCapabilities
 supportedCapabilitiesPlaceholder
+toolLoading
+toolLoadFailed
+toolLoadFailedHint
+toolLoadRetry

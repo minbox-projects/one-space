@@ -10,7 +10,7 @@
 ## Key Changes
 
 - 全栈命名与迁移：
-    - 新增 ServiceProviderRecord、ServiceProvidersState、ServiceProviderInput，替代后端 Provider* domain 命名；前端 AiProvider 改为 AiServiceProvider。
+    - 新增 ServiceProviderRecord、ServiceProvidersState、ServiceProviderInput，替代后端 Provider* domain 命名；前端 AiProvider 改为 AiServiceProvider。（历史注记：`ServiceProviderInput` 已在计划 20261009 Step 3 移除）
     - 新增 service_providers_* Tauri commands；旧 providers_* 和 claude_profile_* 命令保留为 deprecated 兼容壳，内部转调新实现。
     - 持久化迁移到 service_providers schema；读取旧 providers state 自动迁移并写新 state。导入/export 同时接受旧 providers 与新 service_providers payload。
     - 同步事件、Dashboard count、App/Settings/Workflow/AiSessions/ConfigConflict/内部 CLI 等现有调用点统一改用服务商命名；旧 provider_id 字段保留兼容，新增展示/接口字段使用

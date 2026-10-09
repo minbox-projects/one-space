@@ -2,7 +2,8 @@ use super::{
     aggregate_day_stats_for_test, aggregate_usage_for_test, antigravity_brain_roots,
     antigravity_conversation_bindings_from_value, antigravity_managed_launch_env,
     antigravity_quota_cache_fresh, build_native_terminal_applescript, clean_terminal_app_name,
-    collect_antigravity_sessions_from_brain_root, collect_opencode_history_sessions_from_sources,
+    clear_tool_scan_caches, collect_antigravity_sessions_from_brain_root,
+    collect_opencode_history_sessions_from_sources,
     collect_opencode_usage_records_from_sources, command_uses_resume_semantics,
     normalize_initial_prompt, normalize_terminal_app_key, normalize_working_dir_for_terminal,
     parse_antigravity_quota_envelope, parse_claude_usage_file, parse_codex_usage_file,
@@ -13,7 +14,8 @@ use super::{
     select_antigravity_session_for_existing, sessions_antigravity_quota, sessions_usage_clear_cache,
     sessions_usage_day_stats, sessions_usage_tool_stats, timestamp_days_ago,
     usage_collection_stats, usage_file_may_overlap_window_for_test, validate_create_command,
-    AntigravitySessionCandidate, ToolScan, ToolScanCache, UsageRecord,
+    AntigravitySessionCandidate, HistoryFileCache, HistorySessionEntry, ToolScan, ToolScanCache,
+    UsageRecord,
 };
 use chrono::Local;
 use rusqlite::{params, Connection};
@@ -3560,6 +3562,7 @@ fn antigravity_sqlite_database_prevents_duplicate_calls_from_brain_transcript() 
 /// re-reads an uncached tool's sources on every call.
 #[test]
 fn usage_collection_reuses_sources_within_freshness_window_and_refresh_bypasses_cache() {
+    let _serial = crate::lock_test_home_env();
     let root = make_temp_dir("usage-freshness-window");
     let _guard = crate::config::test_home::TestHomeGuard::set(&root);
     sessions_usage_clear_cache();
@@ -3628,5 +3631,189 @@ fn usage_collection_reuses_sources_within_freshness_window_and_refresh_bypasses_
     );
 
     sessions_usage_clear_cache();
+    let _ = fs::remove_dir_all(root);
+}
+
+// ============================================================
+// REQ-005/AC-005 source invalidation (S-3, public boundary + cache seam)
+// ============================================================
+
+/// Explicitly advance a temp file's mtime to a distinct value so a metadata-keyed
+/// source identity changes deterministically (no wall-clock sleep).
+fn bump_file_modified(path: &Path) {
+    let file = fs::File::options()
+        .write(true)
+        .open(path)
+        .expect("open temp file to bump its mtime");
+    file.set_modified(std::time::SystemTime::now() + StdDuration::from_secs(1))
+        .expect("set a distinct mtime");
+}
+
+/// AC-005 / REQ-005: a changed, truncated or deleted source file updates only
+/// its own contribution on the next real collection, while the unchanged file
+/// stays cached. The freshness window is expired by clearing only the tool-scan
+/// layer, so the per-source parse cache stays warm exactly as the contract
+/// requires.
+#[test]
+fn usage_source_cache_revalidates_only_changed_truncated_or_deleted_files() {
+    let _serial = crate::lock_test_home_env();
+    let root = make_temp_dir("usage-source-invalidation");
+    let _guard = crate::config::test_home::TestHomeGuard::set(&root);
+    sessions_usage_clear_cache();
+
+    let ts = Local::now().to_rfc3339();
+    let chats_dir = root
+        .join(".gemini")
+        .join("tmp")
+        .join("rollout-inv")
+        .join("chats");
+    let file_a = chats_dir.join("session-inv-a.json");
+    let file_b = chats_dir.join("session-inv-b.json");
+    let body = |session_id: &str, input: u64| {
+        format!(
+            r#"{{
+  "sessionId": "{session_id}",
+  "messages": [
+    {{"tokens": {{ "input": {input}, "output": 0, "cached": 0, "total": 0 }}, "model": "gemini-pro", "timestamp": "{ts}"}}
+  ]
+}}"#
+        )
+    };
+    write_temp_file(&file_a, &body("inv-a", 100));
+    write_temp_file(&file_b, &body("inv-b", 200));
+
+    // Cold collection reads both synthetic sources.
+    reset_usage_collection_stats();
+    let cold = sessions_usage_tool_stats("antigravity".to_string(), Some(7)).expect("cold stats");
+    let cold_stats = usage_collection_stats();
+    assert_eq!(cold.summary.total_tokens, 300);
+    assert!(
+        cold_stats.source_reads >= 2,
+        "the cold collection must read both files"
+    );
+    assert_eq!(cold_stats.cache_hits, 0);
+
+    // (a) A changed: expiring only the tool-scan layer leaves the per-source
+    // cache warm, so only the changed file is re-read.
+    clear_tool_scan_caches();
+    write_temp_file(&file_a, &body("inv-a", 150));
+    bump_file_modified(&file_a);
+    reset_usage_collection_stats();
+    let changed =
+        sessions_usage_tool_stats("antigravity".to_string(), Some(7)).expect("changed stats");
+    let changed_stats = usage_collection_stats();
+    assert_eq!(
+        changed.summary.total_tokens, 350,
+        "only the changed file's contribution updates (150 + cached 200)"
+    );
+    assert_eq!(
+        changed_stats.source_reads, 1,
+        "only the changed source may be re-read"
+    );
+    assert!(
+        changed_stats.cache_hits >= 1,
+        "the unchanged file must stay cached"
+    );
+
+    // (b) B truncated: only B is re-read and its records drop. The truncated
+    // content is still valid JSON (an emptied message list), so the re-parse is
+    // cached for the next pass.
+    clear_tool_scan_caches();
+    write_temp_file(&file_b, r#"{"sessionId": "inv-b", "messages": []}"#);
+    bump_file_modified(&file_b);
+    reset_usage_collection_stats();
+    let truncated =
+        sessions_usage_tool_stats("antigravity".to_string(), Some(7)).expect("truncated stats");
+    let truncated_stats = usage_collection_stats();
+    assert_eq!(
+        truncated.summary.total_tokens, 150,
+        "the truncated file's records must drop (changed A stays)"
+    );
+    assert_eq!(
+        truncated_stats.source_reads, 1,
+        "only the truncated source may be re-read"
+    );
+    assert!(
+        truncated_stats.cache_hits >= 1,
+        "the unchanged file must stay cached"
+    );
+
+    // (c) A deleted: no source is re-read and A's records drop.
+    clear_tool_scan_caches();
+    fs::remove_file(&file_a).expect("delete source A");
+    reset_usage_collection_stats();
+    let deleted =
+        sessions_usage_tool_stats("antigravity".to_string(), Some(7)).expect("deleted stats");
+    let deleted_stats = usage_collection_stats();
+    assert_eq!(
+        deleted.summary.total_tokens, 0,
+        "the deleted file's records must drop"
+    );
+    assert_eq!(
+        deleted_stats.source_reads, 0,
+        "a deleted source is not read and the surviving file is served from cache"
+    );
+    assert!(
+        deleted_stats.cache_hits >= 1,
+        "the surviving unchanged file must stay cached"
+    );
+
+    sessions_usage_clear_cache();
+    let _ = fs::remove_dir_all(root);
+}
+
+/// AC-005 / REQ-005: the per-source history cache reuses an unchanged file plus
+/// unchanged dependency, re-reads when the file identity changes, and re-reads
+/// when only the dependency identity changes.
+#[test]
+fn history_file_cache_revalidates_on_dependency_or_file_identity_change() {
+    let root = make_temp_dir("history-file-cache-dependency");
+    let path = root.join("history.jsonl");
+    write_temp_file(&path, "first");
+    let cache = HistoryFileCache::default();
+    let reads = AtomicUsize::new(0);
+
+    let parse = |reads: &AtomicUsize| {
+        reads.fetch_add(1, Ordering::SeqCst);
+        Some(HistorySessionEntry {
+            tool: "opencode".to_string(),
+            tool_session_id: "s1".to_string(),
+            title: "Session One".to_string(),
+            working_dir: "/tmp".to_string(),
+            model_name: None,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+        })
+    };
+
+    assert!(cache.get_or_parse(&path, "index-A", || parse(&reads)).is_some());
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+
+    // Same file identity + same dependency: reused, no re-parse.
+    assert!(cache.get_or_parse(&path, "index-A", || parse(&reads)).is_some());
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        1,
+        "an unchanged file and dependency must be reused"
+    );
+
+    // File identity change (same dependency): re-parse.
+    write_temp_file(&path, "second");
+    bump_file_modified(&path);
+    assert!(cache.get_or_parse(&path, "index-A", || parse(&reads)).is_some());
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        2,
+        "a changed file must force a re-parse"
+    );
+
+    // Dependency identity change (file unchanged since the last parse): re-parse.
+    assert!(cache.get_or_parse(&path, "index-B", || parse(&reads)).is_some());
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        3,
+        "a changed dependency must force a re-parse"
+    );
+
     let _ = fs::remove_dir_all(root);
 }

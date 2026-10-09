@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { isAppVisible, useAppVisibility } from "@/lib/runtimeStatus";
 import { collectWorkspaceTags, filterWorkspacesByTags, normalizeWorkspaceView } from "../helpers/workspaceHelpers";
 import type { ApiResp, WorkspaceView } from "../types";
 
@@ -45,11 +46,19 @@ export function useWorkspaceCollection(args: {
 
   // Coalesce the three refresh events into one scheduled reload. Events that
   // arrive in the same tick share a single reload; a reload already in flight is
-  // reused instead of starting a duplicate decoded-sessions fetch.
+  // reused instead of starting a duplicate decoded-sessions fetch. While the app
+  // is hidden the reload is deferred and coalesced into exactly one catch-up when
+  // visibility returns.
   const reloadQueuedRef = useRef(false);
   const reloadInFlightRef = useRef<Promise<void> | null>(null);
+  const catchUpPendingRef = useRef(false);
+  const appVisible = useAppVisibility();
 
   const scheduleReload = useCallback(() => {
+    if (!isAppVisible()) {
+      catchUpPendingRef.current = true;
+      return;
+    }
     if (reloadQueuedRef.current) return;
     reloadQueuedRef.current = true;
     queueMicrotask(() => {
@@ -65,6 +74,12 @@ export function useWorkspaceCollection(args: {
       reloadInFlightRef.current = run;
     });
   }, [loadWorkspaces, onRefreshActiveWorkspace]);
+
+  useEffect(() => {
+    if (!isVisible || !appVisible || !catchUpPendingRef.current) return;
+    catchUpPendingRef.current = false;
+    scheduleReload();
+  }, [appVisible, isVisible, scheduleReload]);
 
   useEffect(() => {
     if (!isVisible) return;

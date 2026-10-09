@@ -1,12 +1,13 @@
-import { act, fireEvent, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProtocolRouterTool } from "@/components/ProtocolRouterTool";
 import type {
   ProtocolRoute,
   ProtocolRouterStatsSummary,
 } from "@/lib/protocolRouter";
+import { setNativeWindowVisible } from "@/lib/runtimeStatus";
 import { renderWithProviders } from "@/test/mocks/render";
-import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
+import { invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
 
 const route: ProtocolRoute = {
   id: "route-1",
@@ -61,6 +62,7 @@ describe("ProtocolRouterTool", () => {
 
   afterEach(() => {
     restoreTauriInternals();
+    setNativeWindowVisible(true);
   });
 
   it("在 Tauri 之外仍渲染视图且不调用路由测试命令", async () => {
@@ -152,5 +154,72 @@ describe("ProtocolRouterTool", () => {
       "protocol_router_test_connection",
       { input: { route_id: route.id, model: route.default_model } },
     );
+  });
+
+  it("隐藏时推迟路由状态事件刷新并在显示后只追赶一次", async () => {
+    const handlers: Record<string, (event: { payload?: unknown }) => void> = {};
+    listenMock.mockImplementation(
+      async (eventName: string, handler: (event: { payload?: unknown }) => void) => {
+        handlers[eventName] = handler;
+        return vi.fn();
+      },
+    );
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "protocol_router_get_config") {
+        return {
+          enabled: true,
+          port: 17687,
+          token: "token",
+          retention_days: 30,
+          routes: [route],
+        };
+      }
+      if (command === "protocol_router_status") {
+        return { running: true, enabled: true, port: 17687, route_count: 1 };
+      }
+      if (command === "protocol_router_stats") {
+        return emptyStats;
+      }
+      return undefined;
+    });
+
+    renderWithProviders(<ProtocolRouterTool isVisible />);
+    await settle();
+    await waitFor(() => {
+      expect(handlers["protocol-router-status-update"]).toBeTruthy();
+      expect(
+        screen.getByRole("heading", {
+          level: 1,
+          name: /协议路由|Protocol Router/,
+        }),
+      ).toBeInTheDocument();
+    });
+
+    const configCalls = () =>
+      invokeMock.mock.calls.filter(
+        (call) => call[0] === "protocol_router_get_config",
+      ).length;
+    const configCallsBefore = configCalls();
+
+    // Hidden native window: status updates trigger no reload.
+    act(() => {
+      setNativeWindowVisible(false);
+    });
+    await act(async () => {
+      handlers["protocol-router-status-update"]({ payload: undefined });
+      handlers["protocol-router-status-update"]({ payload: undefined });
+      await Promise.resolve();
+    });
+    expect(configCalls()).toBe(configCallsBefore);
+
+    // Showing the window performs exactly one coalesced catch-up reload.
+    await act(async () => {
+      setNativeWindowVisible(true);
+    });
+    await waitFor(() => {
+      expect(configCalls()).toBe(configCallsBefore + 1);
+    });
+    await settle();
+    expect(configCalls()).toBe(configCallsBefore + 1);
   });
 });

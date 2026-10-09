@@ -9,7 +9,9 @@
 //! ignored set and deleting its provider-scoped price row) while leaving kept,
 //! manual and other-template mappings untouched.
 
-use crate::ai_gateway::commands::record_template_mappings_retired_messages;
+use crate::ai_gateway::commands::{
+    execute_template_sync, record_template_mappings_retired_messages, TEMPLATE_SYNC_MESSAGE_INPUTS,
+};
 use crate::ai_gateway::templates::{
     apply_create_provider_from_template, apply_delete_provider_model,
     apply_delete_provider_template, apply_restore_provider_model,
@@ -3883,4 +3885,300 @@ fn ac007_unrelated_save_keeps_explicit_values_and_does_not_guess() {
             "a template model must not borrow another provider's price row"
         );
     });
+}
+
+// ---------------------------------------------------------------------------
+// REQ-002/AC-002: additions-only `template_sync` message (S-2)
+//
+// The real sync path (`execute_template_sync`) fetches the model list from the
+// template's `models_url` through a local mock upstream. These tests read the
+// backend `TEMPLATE_SYNC_MESSAGE_INPUTS` test seam (cleared first) plus the
+// public persisted configuration outcome; they never inspect implementation
+// shape.
+// ---------------------------------------------------------------------------
+
+/// Snapshot the same-thread additions-only `template_sync` message-input seam.
+fn recorded_template_sync_inputs() -> Vec<crate::messages::MessageCreateInput> {
+    TEMPLATE_SYNC_MESSAGE_INPUTS.with(
+        |inputs: &RefCell<Vec<crate::messages::MessageCreateInput>>| inputs.borrow().clone(),
+    )
+}
+
+/// Clear the additions-only `template_sync` message-input seam.
+fn clear_template_sync_inputs() {
+    TEMPLATE_SYNC_MESSAGE_INPUTS.with(
+        |inputs: &RefCell<Vec<crate::messages::MessageCreateInput>>| inputs.borrow_mut().clear(),
+    );
+}
+
+/// Assert one recorded input matches the exact additions-only message contract.
+fn assert_template_sync_addition_input(
+    input: &crate::messages::MessageCreateInput,
+    template_name: &str,
+    provider_count: usize,
+    added_count: usize,
+    detail_lines: &[String],
+) {
+    assert_eq!(input.source, "ai_gateway");
+    assert_eq!(input.category, "template_sync");
+    assert_eq!(input.severity, "info");
+    assert_eq!(
+        input.title,
+        crate::messages::localized(
+            &format!("服务商模板 {template_name} 模型已变更"),
+            &format!("Provider template {template_name} models changed"),
+        )
+    );
+    let expected_summary = format!(
+        "{}; {}",
+        crate::messages::localized(
+            &format!("{provider_count} 个服务商受影响"),
+            &format!("{provider_count} provider(s) affected"),
+        ),
+        crate::messages::localized(
+            &format!("新增 {added_count}"),
+            &format!("{added_count} added"),
+        ),
+    );
+    assert_eq!(input.summary.as_deref(), Some(expected_summary.as_str()));
+    assert_eq!(
+        input.detail.as_deref(),
+        Some(detail_lines.join("\n").as_str())
+    );
+    let target = input.target.as_ref().expect("the input must target a tab");
+    assert_eq!(target.tab, "ai-gateway");
+    assert_eq!(target.section, None);
+    assert_eq!(target.entity_id, None);
+}
+
+/// One localized provider detail line exactly as the production helper builds it.
+fn addition_detail_line(provider_name: &str, models: &str) -> String {
+    crate::messages::localized(
+        &format!("{provider_name}：{models}"),
+        &format!("{provider_name}: {models}"),
+    )
+}
+
+/// Persist a freshly seeded config so the real sync path reads it back.
+fn seed_durable_config(config: &GatewayConfig) {
+    crate::ai_gateway::storage::write_config(config).expect("seed the durable gateway config");
+}
+
+/// Seed template `t` with `models` (its `models_url` is `url`) and return it.
+fn durable_template(url: &str, models: Vec<ProviderTemplateModel>) -> ProviderTemplate {
+    template_with_models(
+        "t",
+        Some(url),
+        UpstreamProtocol::ChatCompletions,
+        models,
+    )
+}
+
+/// AC-002 / REQ-002: a real sync that adds a model mapping records exactly one
+/// `template_sync` info message carrying the addition payload; the persisted
+/// configuration also gains the mapping.
+#[tokio::test]
+async fn template_sync_records_exactly_one_addition_message_for_added_mappings() {
+    clear_template_sync_inputs();
+    clear_template_retirement_inputs();
+    let _home = super::temp_home("template-sync-addition");
+    let (url, _log) = super::spawn_mock_upstream(|_| {
+        super::MockReply::Json(
+            200,
+            json!({"data": [{"id": "m1", "name": "M1"}, {"id": "m2", "name": "M2"}]}),
+        )
+    })
+    .await;
+
+    let initial_template =
+        durable_template(&url, vec![template_model("m1", Some("M1"), None, true)]);
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, initial_template.clone());
+    let mut provider = bound_provider("p1", "t");
+    provider.name = "Provider One".to_string();
+    provider.mappings = vec![mapping_for_template_model(&initial_template, "m1")];
+    config.providers.push(provider);
+    seed_durable_config(&config);
+
+    let view = execute_template_sync(None, "t")
+        .await
+        .expect("the real sync must succeed");
+    assert!(
+        view.template
+            .models
+            .iter()
+            .any(|model| model.upstream_model == "m2"),
+        "the sync must publish the newly fetched model"
+    );
+
+    let persisted = crate::ai_gateway::storage::read_config().expect("read the persisted config");
+    let provider = persisted
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p1")
+        .expect("the bound provider must remain");
+    assert!(
+        provider
+            .mappings
+            .iter()
+            .any(|mapping| mapping.upstream_model == "m2"),
+        "the persisted provider must gain the new mapping"
+    );
+
+    let inputs = recorded_template_sync_inputs();
+    assert_eq!(
+        inputs.len(),
+        1,
+        "an additions-only sync must record exactly one message input"
+    );
+    assert_template_sync_addition_input(
+        &inputs[0],
+        "Test Template",
+        1,
+        1,
+        &[addition_detail_line("Provider One", "m2")],
+    );
+    assert!(
+        recorded_template_retirement_inputs().is_empty(),
+        "an additions-only sync must not record a retirement message"
+    );
+}
+
+/// AC-002 / REQ-002: a retirement-only sync (removes a mapping, adds none)
+/// records no `template_sync` addition message even though the qualifying
+/// retirement message is produced.
+#[tokio::test]
+async fn template_sync_retirement_only_records_no_addition_message() {
+    clear_template_sync_inputs();
+    clear_template_retirement_inputs();
+    let _home = super::temp_home("template-sync-retirement-only");
+    let (url, _log) = super::spawn_mock_upstream(|_| {
+        super::MockReply::Json(200, json!({"data": [{"id": "m1", "name": "M1"}]}))
+    })
+    .await;
+
+    let initial_template = durable_template(
+        &url,
+        vec![
+            template_model("m1", Some("M1"), None, true),
+            template_model("m2", Some("M2"), None, true),
+        ],
+    );
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, initial_template.clone());
+    let mut provider = bound_provider("p1", "t");
+    provider.name = "Provider One".to_string();
+    provider.mappings = vec![
+        mapping_for_template_model(&initial_template, "m1"),
+        mapping_for_template_model(&initial_template, "m2"),
+    ];
+    config.providers.push(provider);
+    seed_durable_config(&config);
+
+    let view = execute_template_sync(None, "t")
+        .await
+        .expect("the retirement-only sync must succeed");
+    assert!(
+        view.template
+            .models
+            .iter()
+            .all(|model| model.upstream_model != "m2"),
+        "the sync must drop the retired model"
+    );
+
+    assert!(
+        recorded_template_sync_inputs().is_empty(),
+        "a retirement-only sync must not record an addition message"
+    );
+    assert_eq!(
+        recorded_template_retirement_inputs().len(),
+        1,
+        "the qualifying retirement message must still be produced"
+    );
+}
+
+/// AC-002 / REQ-002: a no-change sync records neither an addition nor a
+/// retirement message.
+#[tokio::test]
+async fn template_sync_no_change_records_no_addition_message() {
+    clear_template_sync_inputs();
+    clear_template_retirement_inputs();
+    let _home = super::temp_home("template-sync-no-change");
+    let (url, _log) = super::spawn_mock_upstream(|_| {
+        super::MockReply::Json(200, json!({"data": [{"id": "m1", "name": "M1"}]}))
+    })
+    .await;
+
+    let initial_template =
+        durable_template(&url, vec![template_model("m1", Some("M1"), None, true)]);
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, initial_template.clone());
+    let mut provider = bound_provider("p1", "t");
+    provider.name = "Provider One".to_string();
+    provider.mappings = vec![mapping_for_template_model(&initial_template, "m1")];
+    config.providers.push(provider);
+    seed_durable_config(&config);
+
+    execute_template_sync(None, "t")
+        .await
+        .expect("the no-change sync must succeed");
+
+    assert!(
+        recorded_template_sync_inputs().is_empty(),
+        "a no-change sync must not record an addition message"
+    );
+    assert!(
+        recorded_template_retirement_inputs().is_empty(),
+        "a no-change sync must not record a retirement message"
+    );
+}
+
+/// AC-002 / REQ-002: additions across multiple bound providers aggregate into
+/// exactly one message listing each provider's added models in configuration
+/// order.
+#[tokio::test]
+async fn template_sync_multi_provider_additions_aggregate_in_one_message() {
+    clear_template_sync_inputs();
+    clear_template_retirement_inputs();
+    let _home = super::temp_home("template-sync-multi-provider");
+    let (url, _log) = super::spawn_mock_upstream(|_| {
+        super::MockReply::Json(
+            200,
+            json!({"data": [{"id": "m1", "name": "M1"}, {"id": "m2", "name": "M2"}]}),
+        )
+    })
+    .await;
+
+    let initial_template =
+        durable_template(&url, vec![template_model("m1", Some("M1"), None, true)]);
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, initial_template.clone());
+    for (id, name) in [("p1", "Provider One"), ("p2", "Provider Two")] {
+        let mut provider = bound_provider(id, "t");
+        provider.name = name.to_string();
+        provider.mappings = vec![mapping_for_template_model(&initial_template, "m1")];
+        config.providers.push(provider);
+    }
+    seed_durable_config(&config);
+
+    execute_template_sync(None, "t")
+        .await
+        .expect("the multi-provider sync must succeed");
+
+    let inputs = recorded_template_sync_inputs();
+    assert_eq!(
+        inputs.len(),
+        1,
+        "both providers' additions must aggregate in one message input"
+    );
+    assert_template_sync_addition_input(
+        &inputs[0],
+        "Test Template",
+        2,
+        2,
+        &[
+            addition_detail_line("Provider One", "m2"),
+            addition_detail_line("Provider Two", "m2"),
+        ],
+    );
 }

@@ -1,7 +1,8 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Workspaces } from "@/components/Workspaces";
+import { setNativeWindowVisible } from "@/lib/runtimeStatus";
 import { renderWithProviders } from "@/test/mocks/render";
 import { emitMock, invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
 import { resetMessageMocks } from "@/test/mocks/messages";
@@ -59,6 +60,10 @@ describe("Workspaces", () => {
     resetTauriMocks();
     resetMessageMocks();
     mockWorkspacesState();
+  });
+
+  afterEach(() => {
+    setNativeWindowVisible(true);
   });
 
   it("filters workspace list by tag and loads detail/sessions", async () => {
@@ -195,6 +200,52 @@ describe("Workspaces", () => {
     });
 
     // The coalesced reload keeps the counts rendered from the shared snapshot.
+    expect(screen.getByText(/1 sessions|1 个会话/)).toBeInTheDocument();
+    expect(screen.getByText(/0 sessions|0 个会话/)).toBeInTheDocument();
+  });
+
+  it("defers event-driven reloads while hidden and coalesces one catch-up on show", async () => {
+    const handlers: Record<string, (event: { payload?: unknown }) => void> = {};
+    listenMock.mockImplementation(
+      async (eventName: string, handler: (event: { payload?: unknown }) => void) => {
+        handlers[eventName] = handler;
+        return vi.fn();
+      },
+    );
+
+    renderWithProviders(<Workspaces isVisible />);
+    expect(await screen.findByText("Workspace A")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(handlers["refresh-counts"]).toBeTruthy();
+      expect(handlers["sessions-updated"]).toBeTruthy();
+      expect(handlers["workspaces-updated"]).toBeTruthy();
+    });
+
+    const listCalls = () =>
+      invokeMock.mock.calls.filter((call) => call[0] === "workspaces_list").length;
+    const listCallsBefore = listCalls();
+
+    // Hidden native window: an event burst triggers no reload.
+    act(() => {
+      setNativeWindowVisible(false);
+    });
+    await act(async () => {
+      handlers["refresh-counts"]({});
+      handlers["sessions-updated"]({});
+      handlers["workspaces-updated"]({});
+      await Promise.resolve();
+    });
+    expect(listCalls()).toBe(listCallsBefore);
+
+    // Showing the window performs exactly one coalesced catch-up reload.
+    await act(async () => {
+      setNativeWindowVisible(true);
+    });
+    await waitFor(() => {
+      expect(listCalls()).toBe(listCallsBefore + 1);
+    });
+
+    // The shared snapshot still feeds the correct counts.
     expect(screen.getByText(/1 sessions|1 个会话/)).toBeInTheDocument();
     expect(screen.getByText(/0 sessions|0 个会话/)).toBeInTheDocument();
   });

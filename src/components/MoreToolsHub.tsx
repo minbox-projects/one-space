@@ -147,15 +147,13 @@ export function MoreToolsHub({
     i18n.language === "zh" ? "不在启动台展示" : "Hide from Launcher";
 
   if (activeTool) {
-    const loadingLabel =
-      i18n.language === "zh" ? "正在加载工具…" : "Loading tool…";
-    const loadErrorTitle =
-      i18n.language === "zh" ? "工具加载失败" : "Failed to load tool";
-    const loadErrorHint =
-      i18n.language === "zh"
-        ? "请重试；若仍然失败，请查看控制台日志。"
-        : "Try again; if it still fails, check the console log.";
-    const retryLabel = i18n.language === "zh" ? "重试" : "Retry";
+    const loadingLabel = t("toolLoading", "Loading tool…");
+    const loadErrorTitle = t("toolLoadFailed", "Failed to load tool");
+    const loadErrorHint = t(
+      "toolLoadFailedHint",
+      "Try again; if it still fails, check the console log.",
+    );
+    const retryLabel = t("toolLoadRetry", "Retry");
 
     let toolContent: ReactNode = null;
     if (activeDescriptor && toolLoad.status === "ready") {

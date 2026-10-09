@@ -33,7 +33,7 @@ import {
   type ProtocolRouterStatsSummary,
   type ProtocolRouterStatus,
 } from "@/lib/protocolRouter";
-import { refreshRuntimeStatus, useRuntimeStatus } from "@/lib/runtimeStatus";
+import { isAppVisible, refreshRuntimeStatus, useAppVisibility, useRuntimeStatus } from "@/lib/runtimeStatus";
 
 const RECENT_REQUESTS_PAGE_SIZE = 20;
 
@@ -359,6 +359,8 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [message, setMessage] = useState<MessageState>({ type: "", text: "" });
   const pendingCopyKeyRef = useRef<string | null>(null);
+  const routerCatchUpPendingRef = useRef(false);
+  const appVisible = useAppVisibility();
 
   const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -415,9 +417,20 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
   }, [config, selectedRouteId]);
 
   const handleRouterRefresh = useEffectEvent(() => {
-    if (!isVisible) return;
+    if (!isVisible || !isAppVisible()) {
+      routerCatchUpPendingRef.current = true;
+      return;
+    }
     void load();
   });
+
+  // Event-driven reloads are deferred while the native window (or document) is
+  // hidden and coalesced into exactly one refresh when visibility returns.
+  useEffect(() => {
+    if (!isVisible || !appVisible || !routerCatchUpPendingRef.current) return;
+    routerCatchUpPendingRef.current = false;
+    void load();
+  }, [appVisible, isVisible, load]);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -426,11 +439,14 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
     let countsTeardown: (() => void | Promise<void>) | null = null;
 
     listen("protocol-router-status-update", () => {
-      if (!disposed) {
-        void refreshRuntimeStatus<ProtocolRouterStatus>("router", {
-          force: true,
-        });
+      if (disposed) return;
+      if (!isAppVisible()) {
+        routerCatchUpPendingRef.current = true;
+        return;
       }
+      void refreshRuntimeStatus<ProtocolRouterStatus>("router", {
+        force: true,
+      });
     })
       .then((unlisten) => {
         if (disposed) {

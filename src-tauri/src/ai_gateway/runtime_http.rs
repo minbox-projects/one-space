@@ -370,23 +370,32 @@ pub(in crate::ai_gateway) async fn run_server(
     // Release the listening socket before publishing the stopped transition, so
     // a same-port restart that observes `running == false` can bind immediately.
     drop(listener);
-    retire_listener(generation);
+    retire_listener(generation).await;
 }
 
 /// Retire this listener's slot after `run_server` exits, but only while the slot
 /// still holds this exact generation: an old exiting task must never clear a
 /// replacement listener. A genuine transition publishes the stopped status so a
 /// faulted listener reads as not running and can be restarted on the same port.
-fn retire_listener(generation: u64) {
-    let retired = match state_lock().try_lock() {
-        Ok(mut guard) => match guard.as_ref() {
+///
+/// Retirement runs in async context and awaits the state lock instead of
+/// `try_lock`, so it can never be silently skipped while a concurrent
+/// `start_server`/`stop_server` holds the lock (for example across
+/// `start_server`'s `bind().await`). The lock guard is scoped so it is released
+/// before the stopped-status event is emitted, and no other await is taken while
+/// it is held, so waiting on the lock cannot deadlock.
+async fn retire_listener(generation: u64) {
+    #[cfg(test)]
+    RETIRE_EPOCH.fetch_add(1, Ordering::SeqCst);
+    let retired = {
+        let mut guard = state_lock().lock().await;
+        match guard.as_ref() {
             Some(running) if running.generation == generation => {
                 *guard = None;
                 true
             }
             _ => false,
-        },
-        Err(_) => false,
+        }
     };
     if retired {
         if let Some(handle) = captured_app_handle() {
@@ -419,6 +428,22 @@ fn fault_notify() -> &'static tokio::sync::Notify {
 #[allow(dead_code)]
 pub(in crate::ai_gateway) fn force_next_accept_failure() {
     fault_notify().notify_one();
+}
+
+/// Monotonic count of listener tasks that have entered retirement. Test seam: a
+/// test that holds the state lock can poll this until it advances, proving a
+/// retirement is genuinely in flight (and therefore blocked awaiting the lock)
+/// before it releases the lock — making the lock-contention retirement path
+/// deterministic without production effect.
+#[cfg(test)]
+static RETIRE_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// Test seam: read [`RETIRE_EPOCH`]. See its documentation for the deterministic
+/// contention pattern.
+#[cfg(test)]
+#[allow(dead_code)]
+pub(in crate::ai_gateway) fn retire_listener_epoch() -> u64 {
+    RETIRE_EPOCH.load(Ordering::SeqCst)
 }
 
 #[derive(Debug)]

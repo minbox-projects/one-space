@@ -6,7 +6,7 @@ Status: implemented
 
 ## Problem
 
-GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入口，已各自演化为不同实现。安装的 CLI 会改写会话名（空格与点号转为下划线）、自行拼装启动命令、写明文会话 JSON，并伪造原生会话 ID；GUI 则走另一套新终端适配器。`resume` 分支在 Shell 脚本里硬编码各工具恢复命令，忽略共享的 provider 与 runtime 环境。服务商激活与 `onespace env use` 同样分叉，而 OpenCode 的活动服务商被表示为单个槽位，而非其真实的多活动集合。本记录描述计划 `20261009-core-workflows-cleanup-and-optimization` 已交付的事实；当前正文覆盖前七步，该计划的后续步骤不在此描述。
+GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入口，已各自演化为不同实现。安装的 CLI 会改写会话名（空格与点号转为下划线）、自行拼装启动命令、写明文会话 JSON，并伪造原生会话 ID；GUI 则走另一套新终端适配器。`resume` 分支在 Shell 脚本里硬编码各工具恢复命令，忽略共享的 provider 与 runtime 环境。服务商激活与 `onespace env use` 同样分叉，而 OpenCode 的活动服务商被表示为单个槽位，而非其真实的多活动集合。本记录描述计划 `20261009-core-workflows-cleanup-and-optimization` 已交付的事实；当前正文覆盖该计划全部八个已交付步骤。
 
 ## Decision
 
@@ -89,18 +89,20 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - Step 2 已验证证据：`cargo test --lib ai_gateway` 通过 627，其中 `tests/auto_refresh.rs`（启动恰好一次、仅合格模板、串行、tick 跳过、自动忙碌跳过并手动 follower 复用、失败快照事件、reset/re-arm）与 `tests/runtime_lifecycle.rs`（故障状态/重启，旧任务不能清理替换后的监听器）；`app_runtime` 通过 14、3 ignored；前端 Step 2 门禁通过 19 文件 513 测试，含 `AiGateway` 67、`ProviderTemplateSection` 18、hook 适配器 4 与 `App.runtimeOwnership` 1；`npm run build` 退出 0。
 - Step 2 诚实限制：生产 `start_scheduler` 的 Wry 路径仅通过受控执行器的测试接缝覆盖；Windows 分支未在本 macOS 主机上做运行时测试；本次未重跑 release-profile 运行时 smoke。
 - Step 3 已验证证据：`cargo test --lib ai_env` 通过 10、`ai_sessions` 通过 82/2 ignored、`app_store` 通过 123/2 ignored、`claude_profiles` 通过 34；前端 Step 3 门禁通过 9 文件 101 测试，`shortLinkHistory` 与 `ShortLinkTool` 通过 48 个未修改测试，`npm run build` 退出 0。
-- Step 3 诚实限制：`loadShortLinkHistory` 内的 `dedupeHistoryRecords` 行为已实现但未被直接特征化（不同 URL 行为已覆盖）；未对先前偏离的文件应用 rustfmt；Step 4–8 尚未开始。
+- Step 3 诚实限制：`loadShortLinkHistory` 内的 `dedupeHistoryRecords` 行为已实现但未被直接特征化（不同 URL 行为已覆盖）；未对先前偏离的文件应用 rustfmt；Step 4–8 此后已交付。
 - Step 3 部分取代：[Toolbox Plugin Registry Replaces Hand-Maintained Tool Lists](../architecture/2026-09-25-toolbox-plugin-registry.md) 被部分取代。其注册表、共享 invoke/事件/轮询/复制与移除决策继续有效，而其 `readLocalJson`/`createHistoryStore` 共享运行时事实由本步骤替换；该记录保留并交叉链接，不归档。没有其他活动记录被改动。
 - Step 4 已验证证据：`cargo test --lib ssh_tunnels` 通过 68，含 5 个缓存测试；`workspaces` 通过 2，含共享快照测试；`app_store` 通过 127、2 ignored、4 个缓存测试；前端 Step 4 门禁通过 16 文件 266 测试，含新增 `runtimeStatus.test.ts` 与三个先前 RED 用例；`npm run build` 退出 0；聚焦缓存子集通过 44。
-- Step 4 诚实限制：FileSharingTool 页面数据尚未从 store 渲染（已记录边界）；请求序列守卫经 store API 而非真实事件顺序在挂载组件上验证；完整单进程套件交错推迟到 Step 8 集成；Windows 未测试，Step 5–8 尚未开始。
+- Step 4 诚实限制：FileSharingTool 页面数据尚未从 store 渲染（已记录边界）；请求序列守卫经 store API 而非真实事件顺序在挂载组件上验证；完整单进程套件交错推迟到 Step 8 集成；Windows 未测试；Step 5–8 此后已交付。
 - Step 5 已验证证据：`cargo test --lib ai_sessions` 通过 83、3 ignored；`app_store` 通过 127、2 ignored；`ai_gateway` 通过 631、2 ignored（含 4 个新原子性测试与 1 个 ignored 计数器测试）；前端 AiUsageStats 23 个未修改通过；`npm run build` 退出 0；最终测量 harness 验证退出 0。同数据集基线 vs 最终（Apple M1 Max、rustc 1.93.1）：usage 暖 source_reads 稳定 3001 且每次 +4 cache_hits（约 207ms → 25ms）；gateway cold db_opens 10000 → 1（约 18.2s → 4.4s）、warm 约 14–18s → 4.4s，每请求 transactions/rows/batches 不变；ssh cold 52ms、warm 约 0.13ms；两次独立 final 运行一致。
 - Step 5 诚实限制：OpenCode 历史未按文件复用；被替换的用量来源在 TTL 到期或显式刷新前保持过期；计数器精确相等断言位于序列化的 ignored 测试，因为接缝为进程全局；WAL 可见性依赖 freshness/refresh 契约；测试不含绝对计时阈值。
 - Step 6 已验证证据：注册表惰性契约测试与 MoreToolsHub 异步/REQ-006 测试通过；新增 `src/entrypoints.test.tsx` 覆盖 `resolveEntryKind`、QuickAiApp 在不含主 shell 标记下的 quick-bar 渲染与 App shell 渲染；完整 Step 6 门禁通过 11 文件 240 测试；`npm run build` 退出 0。原生 macOS smoke（工具箱别名、快速窗口、草稿隐藏/显示）未执行，按 AC-006 措辞如实记录为 blocked/unexecuted。
 - Step 6 诚实限制：原生 smoke 仍属未执行；目录中的逐工具 chunk 列表与 Notes/Snippets 留在 App chunk 的例外是实测产物图，而非 mock 测试。
-- Step 7 已验证证据：两个过时启发式测试被替换为显式保留断言；新增 `tests/attempt_policy.rs` 15 个行为测试；未修改的 RED `tests/templates.rs::ac007_unrelated_save_keeps_explicit_values_and_does_not_guess` 为 GREEN；`cargo test --lib ai_gateway` 通过 647、2 ignored；`tools/check-ai-gateway-redaction.sh` 以零凭据字面量退出 0；前端 AiGateway+lib 17 文件 495 测试通过；`npm run build` 退出 0。
-- Step 7 诚实限制：更广的 AC-007 条款（HTTP/SSE 等价、取消与首字节、历史计价、并发编辑保留、模板退役）由既有特征化套件覆盖，而非新撰写；Windows 未测试；Step 8 尚未开始。
+- Step 7 已验证证据：两个过时启发式测试被替换为显式保留断言；新增 `tests/attempt_policy.rs` 15 个行为测试；本步新增的 `tests/templates.rs::ac007_unrelated_save_keeps_explicit_values_and_does_not_guess` 在实现前为 RED、实现后为 GREEN；`cargo test --lib ai_gateway` 通过 647、2 ignored；`tools/check-ai-gateway-redaction.sh` 以零凭据字面量退出 0；前端 AiGateway+lib 17 文件 495 测试通过；`npm run build` 退出 0。
+- Step 7 诚实限制：更广的 AC-007 条款（HTTP/SSE 等价、取消与首字节、历史计价、并发编辑保留、模板退役）由既有特征化套件覆盖，而非新撰写；Windows 未测试；Step 8 此后已交付。
 - Step 8 — 最终收口：七个步骤已提交（`1da5814`、`753ad8f`、`e231ff9`、`abdeb4c`、`1b76460`、`f45b0b7`、`4c14be5`），本次文档步骤在 [Core Workflows Optimization](../../../../docs/core-workflows-optimization.md) 中补充交付的 REQ-001..007 / AC-001..007 映射与逐步证据、移除/保留符号账本、数据兼容与回滚说明、基准基线/最终表以及真实验证状态。
 - Step 8 已验证最终状态：`npm test` 95 文件 / 1479 通过（重跑）、`npm run lint` 0 error / 409 warning、`npm run build` 退出 0、`cargo test --manifest-path src-tauri/Cargo.toml` 1211 通过 / 0 失败 / 11 ignored（重跑）、`tools/check-ai-gateway-redaction.sh` PASS、CLI-matrix stub PASS、`context`/`notes` valid、测量 harness 两次 final 运行一致。已记录的首次运行 flakiness（Vitest 卸载后 `App.headerToolsStatus` 的 `window is not defined`、`retry_policy_zero_retry_after_ms_retries_immediately`，以及本计划范围外的既有 `mcp_runtime legacy_sse_transport`）均在隔离或重跑中通过。原生 macOS GUI smoke 仍为 blocked/未执行（无 GUI runner），Windows 未测试。
 - Step 8 是对已记录 Step 1–7 事实的文档收口，未新取代任何活动记录。
+- Step 8 复审修复——已记录的有界扩展：移除孤儿 `sync_import.rs` 测试、`workspaces.rs` 的测试小节、SSH 隧道性能测试、`config.rs` 的 `SAFE_FIXTURE_partial-failure-key` 字面量、`ToolIcon` 抽取（`AiEnvironments` barrel 再导出不变、`QuickAiSessionBar` 导入路径）、以及 `provider_types.rs`/`antigravity_opencode.rs` 的闭包（`AppSnapshot`/`build_projection_diff`）。
+- Step 8 复审修复——新增验证：三消费方隐藏窗口门控测试、模板消息测试、来源失效测试、retire 争用修复与其测试、草稿测试、`File::set_modified` 测试卫生，以及 i18n 键。更新计数：`ai_gateway` 652 通过 / 0 失败 / 2 ignored、`ai_sessions` 85 / 0 / 3 ignored、`ssh_tunnels` 68 / 0 / 1 ignored、前端 7 文件 216 测试、`npm run build` 退出 0。
 
-- 诚实的限制：release-profile 的权限行为未独立测试；`--permission-mode` 的缺值/非法值路径已实现但只有单测覆盖；显示名无法通过真实二进制 smoke 观测，由共享服务特征化覆盖；Windows `LockFile` 分支未在本次 macOS-only 验证中做运行时测试。该计划后续步骤尚未开始，且刻意不在此描述。
+- 诚实的限制：release-profile 的权限行为未独立测试；`--permission-mode` 的缺值/非法值路径已实现但只有单测覆盖；显示名无法通过真实二进制 smoke 观测，由共享服务特征化覆盖；Windows `LockFile` 分支未在本次 macOS-only 验证中做运行时测试。该计划后续全部步骤均已交付并在各自小节描述。

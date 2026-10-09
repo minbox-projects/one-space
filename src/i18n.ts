@@ -313,6 +313,11 @@ const resources = {
       launcherInternalToolsDesc:
         "Keep internal utilities close at hand without expanding the sidebar.",
       launcherDragToReorderHint: "Drag cards to reorder",
+      toolLoading: "Loading tool…",
+      toolLoadFailed: "Failed to load tool",
+      toolLoadFailedHint:
+        "Try again; if it still fails, check the console log.",
+      toolLoadRetry: "Retry",
       launcherSshServersDesc:
         "Open saved SSH hosts, history, and custom connections quickly.",
       launcherSshTunnelsDesc:
@@ -3782,6 +3787,10 @@ const resources = {
       launcherInternalToolsDesc:
         "把低频入口从左侧收拢后，仍保留一跳可达的内部工具。",
       launcherDragToReorderHint: "可拖拽调整顺序",
+      toolLoading: "正在加载工具…",
+      toolLoadFailed: "工具加载失败",
+      toolLoadFailedHint: "请重试；若仍然失败，请查看控制台日志。",
+      toolLoadRetry: "重试",
       launcherSshServersDesc:
         "集中管理 SSH 配置、历史连接和自定义连接。",
       launcherSshTunnelsDesc:

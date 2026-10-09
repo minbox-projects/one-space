@@ -22,6 +22,7 @@ import {
   type UsageStats,
 } from "@/lib/aiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
+import { setNativeWindowVisible } from "@/lib/runtimeStatus";
 import { emitMock, invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
 import {
   recordMessageMock,
@@ -2878,6 +2879,7 @@ describe("AiGateway 配置更新事件实时刷新", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    setNativeWindowVisible(true);
   });
 
   it("ai_gateway_config_updated_event_triggers_a_configuration_reload_and_shows_the_new_state", async () => {
@@ -3068,6 +3070,56 @@ describe("AiGateway 配置更新事件实时刷新", () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
     expect(invokeCount("ai_gateway_usage_stats")).toBeGreaterThan(usageBeforePoll);
+  });
+
+  it("pauses today-usage polling while hidden and catches up exactly once on show", async () => {
+    vi.useFakeTimers();
+    const store: Store = {
+      config: makeConfig(),
+      status: makeStatus({ running: true }),
+      targets: [],
+    };
+    mockStore(store);
+
+    const flushAsyncWork = async () => {
+      await act(async () => {
+        for (let index = 0; index < 12; index += 1) {
+          await Promise.resolve();
+        }
+      });
+    };
+
+    renderWithProviders(<AiGateway />);
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    const invokeCount = (command: string) =>
+      invokeMock.mock.calls.filter((call) => call[0] === command).length;
+    const usageBefore = invokeCount("ai_gateway_usage_stats");
+
+    // Hidden native window: no poll across two intervals.
+    await act(async () => {
+      setNativeWindowVisible(false);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(invokeCount("ai_gateway_usage_stats")).toBe(usageBefore);
+
+    // Showing the window catches up exactly once.
+    await act(async () => {
+      setNativeWindowVisible(true);
+    });
+    expect(invokeCount("ai_gateway_usage_stats")).toBe(usageBefore + 1);
+
+    // The interval then resumes normally.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(invokeCount("ai_gateway_usage_stats")).toBe(usageBefore + 2);
   });
 
   it("ai_gateway_page_releases_the_config_update_listener_on_unmount", async () => {

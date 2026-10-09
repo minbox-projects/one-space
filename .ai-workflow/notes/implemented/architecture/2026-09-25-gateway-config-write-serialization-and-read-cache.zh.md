@@ -22,6 +22,8 @@ Status: implemented
 
 懒迁移在同一把锁下保持原子且一次性。当 `read_config_locked` 报告存储版本更旧时，`read_config_file` 获取 `CONFIG_WRITE_LOCK`，在锁内重读文件并重新确认版本，之后才盖上当前版本并经 `write_config` 重写；若期间已有并发写入者发布当前版本配置，读取者直接服务该配置且不写入。迁移重写失败保留磁盘上此前的完整字节，下一次读取重试。
 
+持久化层不再自行发明值：普通读取或写入除 `normalize_stored_config` 规范化外原样返回存储配置，写入路径仍应用 `scope_model_prices` 裁剪。显式存储值——包括空 `reasoning_efforts` 列表、显式或零价格、已存 `local_model` 以及全部持久化 schema 字段——均被保留；推理强度绝不自动生成，价格行绝不跨服务商借用。此前的隐式查询 `query_model_reasoning_efforts` 与 `normalize_template_prices_and_efforts` 连同两处调用由 [Core Workflows Cleanup and Optimization](2026-10-09-core-workflows-cleanup-and-optimization.md) Step 7 移除；运行态（结算与 key 标记）写入不再触发模板或价格重算。
+
 ## Alternatives considered
 
 - 保留每次变更的整文件读取加原子 rename：未采纳，因为并发写入者仍互相丢失变更，无操作结算也仍会重写加密文件；串行化必须覆盖整个读改写，而不只是 rename。
