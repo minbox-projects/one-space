@@ -1,10 +1,15 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import i18n from "@/i18n";
 import {
-  clearTemplateAutoRefreshFailures,
-  setTemplateAutoRefreshFailure,
-} from "./useTemplateAutoRefresh";
+  act,
+  fireEvent,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
+import { useTemplateAutoRefresh } from "./useTemplateAutoRefresh";
+import { invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
 import {
   ProviderTemplateSection,
   type ProviderTemplateSectionProps,
@@ -79,6 +84,7 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
   let writeText: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
+    resetTauriMocks();
     await i18n.changeLanguage("en");
     writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
@@ -87,9 +93,30 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
     });
   });
 
-  afterEach(() => {
-    clearTemplateAutoRefreshFailures();
-  });
+  /**
+   * Seed the inline-failure store through its real owner: mount the App-level
+   * read/subscription adapter and answer the backend status command with the
+   * given snapshot. The removed local setters are gone, so the backend snapshot
+   * is the only supported seed path.
+   */
+  function seedBackendFailures(
+    failures: { template_id: string; reason: string }[],
+  ) {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "ai_gateway_template_auto_refresh_status") {
+        return { failures };
+      }
+      return undefined;
+    });
+    return renderHook(() => useTemplateAutoRefresh());
+  }
+
+  /** Registered adapter handler for the backend failure-snapshot event. */
+  function backendSnapshotHandler() {
+    return listenMock.mock.calls.find(
+      ([event]) => event === "ai-gateway-template-auto-refresh-updated",
+    )?.[1];
+  }
 
   it("rendersTemplateCardsWithMetadataAndNoSnapshotBadges", () => {
     const syncedAt = 1_700_000_000;
@@ -494,7 +521,7 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
     expect(within(card).getByTestId("provider-icon-commandcode")).toBeInTheDocument();
   });
 
-  it("rendersAutoRefreshFailureInlineOnMatchingCardAndKeepsSyncedAt", () => {
+  it("rendersAutoRefreshFailureInlineOnMatchingCardAndKeepsSyncedAt", async () => {
     const syncedAt = 1_700_000_000;
     const syncedText = formatGatewayTimestamp(syncedAt)!;
     const view1 = makeView({
@@ -506,10 +533,12 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
       synced_at: syncedAt,
     });
 
-    setTemplateAutoRefreshFailure("t1", "network down");
+    const adapter = seedBackendFailures([
+      { template_id: "t1", reason: "network down" },
+    ]);
     renderSection({ templates: [view1, view2] });
 
-    const failure = screen.getByTestId(
+    const failure = await screen.findByTestId(
       "ai-gateway-template-auto-refresh-failure-t1",
     );
     expect(failure).toHaveTextContent("Auto refresh failed: network down");
@@ -525,17 +554,25 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
       syncedText,
     );
 
-    act(() => setTemplateAutoRefreshFailure("t1", null));
-    expect(
-      screen.queryByTestId("ai-gateway-template-auto-refresh-failure-t1"),
-    ).not.toBeInTheDocument();
+    // 清除同样来自后端快照事件：整个失败映射被替换。
+    const handler = backendSnapshotHandler();
+    expect(handler).toBeTypeOf("function");
+    act(() => {
+      handler?.({ payload: { failures: [] } });
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("ai-gateway-template-auto-refresh-failure-t1"),
+      ).not.toBeInTheDocument(),
+    );
     expect(screen.getByTestId("ai-gateway-template-synced-t1")).toHaveTextContent(
       syncedText,
     );
+    adapter.unmount();
   });
 
   it("localizesAutoRefreshFailureWithInterpolatedReason", async () => {
-    setTemplateAutoRefreshFailure("t1", "boom");
+    const adapter = seedBackendFailures([{ template_id: "t1", reason: "boom" }]);
     renderSection({ templates: [makeView()] });
 
     await i18n.changeLanguage("en");
@@ -562,5 +599,11 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
     expect(zhText).toContain("boom");
     expect(zhText).not.toContain("{{reason}}");
     expect(zhText).not.toContain("aiGatewayTemplateAutoRefreshFailed");
+
+    const handler = backendSnapshotHandler();
+    act(() => {
+      handler?.({ payload: { failures: [] } });
+    });
+    adapter.unmount();
   });
 });

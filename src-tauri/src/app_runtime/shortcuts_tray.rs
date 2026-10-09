@@ -166,6 +166,10 @@ pub(super) fn get_fallback_tray_label(lang: &str, id: &str) -> &'static str {
 pub(super) fn shutdown_runtime_services() {
     crate::file_sharing::request_shutdown();
     let _ = crate::ssh_tunnels::shutdown_runtime();
+    // Stop the process-owned background services too: the gateway listener
+    // (signal + clear, idempotent) and the template auto-refresh schedule.
+    crate::ai_gateway::stop_gateway_for_shutdown();
+    crate::ai_gateway::stop_template_auto_refresh_scheduler();
 }
 
 #[tauri::command]

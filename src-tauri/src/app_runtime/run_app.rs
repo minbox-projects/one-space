@@ -113,6 +113,9 @@ pub fn run() {
                 let _ = app_handle.emit("ai-gateway-status-update", ());
             });
             setup_sessions_history_sync_service(app.handle());
+            // Process-owned template scheduler: start once per process, after
+            // gateway autostart, independent of WebViews and the listener.
+            ai_gateway::start_template_auto_refresh_scheduler(app.handle().clone());
             ssh_tunnels::start_system_wake_observer();
             ssh_tunnels::start_sleep_resume_monitor();
             ssh_tunnels::start_tunnel_watchdog(app.handle().clone());
@@ -297,6 +300,7 @@ pub fn run() {
             ai_gateway::ai_gateway_delete_provider_template,
             ai_gateway::ai_gateway_template_auto_refresh_get,
             ai_gateway::ai_gateway_template_auto_refresh_save,
+            ai_gateway::ai_gateway_template_auto_refresh_status,
             ai_gateway::ai_gateway_provider_quota,
             ai_gateway::ai_gateway_provider_go_usage,
             // New service_providers domain (replaces providers_*)

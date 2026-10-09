@@ -1,48 +1,21 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
-import i18n from "@/i18n";
+import { useEffect, useSyncExternalStore } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
-  aiGatewayGetConfig,
-  aiGatewayProviderTemplates,
-  aiGatewaySyncProviderTemplate,
-  aiGatewayTemplateAutoRefreshGet,
-  subscribeTemplateAutoRefreshIntervalChanged,
-  type GatewayConfig,
-  type GatewayProviderTemplateView,
+  AI_GATEWAY_TEMPLATE_AUTO_REFRESH_UPDATED_EVENT,
+  aiGatewayTemplateAutoRefreshStatus,
+  type TemplateAutoRefreshFailure,
 } from "@/lib/aiGateway";
-import { safeRecordMessage, type MessageCreateInput } from "@/lib/messages";
 
 // ---------------------------------------------------------------------------
-// Manual-sync in-flight registry
+// Read/subscription adapter for the backend-owned template auto-refresh.
+//
+// The process scheduler owns timing, syncing, messages and failure state. This
+// module only mirrors the backend failure snapshot so template cards can render
+// inline failures: one status read on mount plus a subscription to the backend
+// snapshot event. It never schedules, lists or syncs templates itself.
 // ---------------------------------------------------------------------------
 
-const templateSyncInFlightIds = new Set<string>();
-
-/** Mark whether a template currently has a manual sync running. */
-export function setTemplateSyncInFlight(
-  templateId: string,
-  inFlight: boolean,
-): void {
-  if (inFlight) {
-    templateSyncInFlightIds.add(templateId);
-  } else {
-    templateSyncInFlightIds.delete(templateId);
-  }
-}
-
-/** Whether the given template has a manual sync in flight. */
-export function isTemplateSyncInFlight(templateId: string): boolean {
-  return templateSyncInFlightIds.has(templateId);
-}
-
-/** Drop every manual-sync in-flight marker. */
-export function clearTemplateSyncInFlight(): void {
-  templateSyncInFlightIds.clear();
-}
-
-// ---------------------------------------------------------------------------
-// Automatic-refresh failure store (in-memory, snapshot-stable)
-// ---------------------------------------------------------------------------
-
+// In-memory, snapshot-stable failure store (template id -> reason).
 let templateAutoRefreshFailures: Record<string, string> = {};
 const templateAutoRefreshFailureListeners = new Set<() => void>();
 
@@ -52,33 +25,18 @@ function emitTemplateAutoRefreshFailures(): void {
   }
 }
 
-/**
- * Record the inline failure reason for one template. A `null` reason clears it;
- * a missing template with a `null` reason is a no-op.
- */
-export function setTemplateAutoRefreshFailure(
-  templateId: string,
-  reason: string | null,
+/** Replace the whole failure map from one backend snapshot. */
+function replaceTemplateAutoRefreshFailures(
+  failures: readonly TemplateAutoRefreshFailure[],
 ): void {
-  if (reason === null) {
-    if (!(templateId in templateAutoRefreshFailures)) return;
-    const next = { ...templateAutoRefreshFailures };
-    delete next[templateId];
-    templateAutoRefreshFailures = next;
-  } else {
-    if (templateAutoRefreshFailures[templateId] === reason) return;
-    templateAutoRefreshFailures = {
-      ...templateAutoRefreshFailures,
-      [templateId]: reason,
-    };
+  const next: Record<string, string> = {};
+  for (const failure of failures) {
+    const templateId = failure?.template_id;
+    if (typeof templateId !== "string" || templateId === "") continue;
+    next[templateId] =
+      typeof failure.reason === "string" ? failure.reason : String(failure.reason);
   }
-  emitTemplateAutoRefreshFailures();
-}
-
-/** Clear every automatic-refresh failure reason. */
-export function clearTemplateAutoRefreshFailures(): void {
-  if (Object.keys(templateAutoRefreshFailures).length === 0) return;
-  templateAutoRefreshFailures = {};
+  templateAutoRefreshFailures = next;
   emitTemplateAutoRefreshFailures();
 }
 
@@ -102,245 +60,67 @@ export function useTemplateAutoRefreshFailures(): Record<string, string> {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Scheduler
-// ---------------------------------------------------------------------------
-
-/** Only a positive integer interval enables the schedule. */
-function normalizeTemplateAutoRefreshInterval(value: unknown): number | null {
-  if (typeof value !== "number") return null;
-  if (!Number.isFinite(value) || !Number.isInteger(value)) return null;
-  if (value <= 0) return null;
-  return value;
-}
-
-function describeAutoRefreshFailure(value: unknown): string {
-  if (value instanceof Error) return value.message;
-  return String(value);
-}
-
-/** Aggregated qualifying changes for one template's bound providers. */
-interface TemplateSyncChange {
-  affectedProviderCount: number;
-  addedCount: number;
-  detail: string;
+/** Extract a failure array from an IPC payload; `null` when malformed. */
+function readFailureSnapshot(
+  payload: unknown,
+): TemplateAutoRefreshFailure[] | null {
+  if (
+    payload !== null &&
+    typeof payload === "object" &&
+    Array.isArray((payload as { failures?: unknown }).failures)
+  ) {
+    return (payload as { failures: TemplateAutoRefreshFailure[] }).failures;
+  }
+  return null;
 }
 
 /**
- * Diff the providers bound to one template between two gateway configurations.
- *
- * Only model-mapping additions (an `upstream_model` absent before) qualify.
- * A mapping that already existed and merely flipped `enabled` true -> false or
- * changed any other field produces nothing, as do providers not bound to the
- * template. Returns `null` when no provider qualified.
- */
-function computeTemplateSyncChange(
-  previous: GatewayConfig,
-  current: GatewayConfig,
-  templateId: string,
-): TemplateSyncChange | null {
-  const affected: Array<{ name: string; identifiers: string[] }> = [];
-  let addedCount = 0;
-
-  for (const provider of current.providers) {
-    if (provider.template_id !== templateId) continue;
-    const previousProvider = previous.providers.find(
-      (candidate) => candidate.id === provider.id,
-    );
-    const previousByUpstream = new Set(
-      (previousProvider?.mappings ?? []).map(
-        (mapping) => mapping.upstream_model,
-      ),
-    );
-
-    const identifiers: string[] = [];
-    for (const mapping of provider.mappings) {
-      if (previousByUpstream.has(mapping.upstream_model)) continue;
-      addedCount += 1;
-      const localModel = mapping.local_model.trim();
-      identifiers.push(localModel !== "" ? localModel : mapping.upstream_model);
-    }
-
-    if (identifiers.length > 0) {
-      affected.push({ name: provider.name, identifiers });
-    }
-  }
-
-  if (affected.length === 0) return null;
-
-  return {
-    affectedProviderCount: affected.length,
-    addedCount,
-    detail: affected
-      .map(({ name, identifiers }) =>
-        i18n.t("aiGatewayTemplateSyncNotificationDetailProvider", {
-          provider: name,
-          models: identifiers.join(", "),
-        }),
-      )
-      .join("\n"),
-  };
-}
-
-/** Build the single message-center payload for one changed template. */
-function buildTemplateSyncMessage(
-  view: GatewayProviderTemplateView,
-  change: TemplateSyncChange,
-): MessageCreateInput {
-  const parts = [
-    i18n.t("aiGatewayTemplateSyncNotificationProviderCount", {
-      count: change.affectedProviderCount,
-    }),
-  ];
-  if (change.addedCount > 0) {
-    parts.push(
-      i18n.t("aiGatewayTemplateSyncNotificationAddedCount", {
-        count: change.addedCount,
-      }),
-    );
-  }
-
-  return {
-    source: "ai_gateway",
-    category: "template_sync",
-    severity: "info",
-    title: i18n.t("aiGatewayTemplateSyncNotificationTitle", {
-      template: view.template.name,
-    }),
-    summary: parts.join("; "),
-    detail: change.detail,
-    target: { tab: "ai-gateway" },
-  };
-}
-
-/**
- * App-mounted scheduler that refreshes every URL-backed provider template on
- * the persisted interval. It reads the interval once on mount, recomputes the
- * timer whenever the persisted value changes, skips overlapping ticks, defers
- * templates with an in-flight manual sync and records per-template failure
- * reasons in memory without toasting.
+ * App-mounted read/subscription adapter. On mount it reads the backend failure
+ * snapshot once and subscribes to the backend snapshot event, replacing the
+ * whole map each time so cleared reasons disappear. Non-Tauri or failing calls
+ * degrade to an empty map without breaking App.
  */
 export function useTemplateAutoRefresh(): void {
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const batchInFlightRef = useRef(false);
-
-  const clearTimer = useCallback(() => {
-    if (timerRef.current !== null) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-  }, []);
-
-  const runBatch = useCallback(async () => {
-    if (batchInFlightRef.current) return;
-    batchInFlightRef.current = true;
-    try {
-      let views;
-      try {
-        views = await aiGatewayProviderTemplates();
-      } catch {
-        // A list failure is swallowed: no toast, no partial batch.
-        return;
-      }
-      if (!Array.isArray(views)) return;
-
-      // Snapshot the gateway configuration once before the per-template loop so
-      // each successful sync can be compared against the pre-batch state. A
-      // failure here suppresses every notification in the batch but never
-      // blocks the syncs themselves.
-      let previous: GatewayConfig | null = null;
-      try {
-        previous = await aiGatewayGetConfig();
-      } catch {
-        previous = null;
-      }
-
-      for (const view of views) {
-        const templateId = view?.template?.id;
-        if (!templateId) continue;
-        if (!view.template.models_url?.trim()) continue;
-        if (isTemplateSyncInFlight(templateId)) continue;
-
-        try {
-          await aiGatewaySyncProviderTemplate(templateId);
-          setTemplateAutoRefreshFailure(templateId, null);
-        } catch (error) {
-          setTemplateAutoRefreshFailure(
-            templateId,
-            describeAutoRefreshFailure(error),
-          );
-          continue;
-        }
-
-        // No usable pre-batch baseline: keep syncing, never notify this batch.
-        if (previous === null) continue;
-
-        let current: GatewayConfig;
-        try {
-          current = await aiGatewayGetConfig();
-        } catch {
-          // A read failure suppresses only this template's notification and
-          // leaves the baseline untouched for the next template.
-          continue;
-        }
-
-        const change = computeTemplateSyncChange(previous, current, templateId);
-        previous = current;
-        if (!change) continue;
-
-        try {
-          await safeRecordMessage(buildTemplateSyncMessage(view, change));
-        } catch {
-          // A message-store failure suppresses only this template's message.
-        }
-      }
-    } finally {
-      batchInFlightRef.current = false;
-    }
-  }, []);
-
-  const applyInterval = useCallback(
-    (value: unknown, runOnce = false) => {
-      clearTimer();
-      const minutes = normalizeTemplateAutoRefreshInterval(value);
-      if (minutes === null) return;
-      timerRef.current = setInterval(() => {
-        void runBatch();
-      }, minutes * 60_000);
-      // The startup read treats a valid interval as an already-elapsed cycle:
-      // run exactly one batch now, then keep the interval schedule above. The
-      // in-flight guard dedupes the StrictMode double-mount.
-      if (runOnce) void runBatch();
-    },
-    [clearTimer, runBatch],
-  );
-
   useEffect(() => {
-    let cancelled = false;
+    let disposed = false;
+    let unlisten: UnlistenFn | null = null;
 
-    const readAndApplyInterval = async (runOnce = false) => {
+    const readStatus = async () => {
       try {
-        const minutes = await aiGatewayTemplateAutoRefreshGet();
-        if (cancelled) return;
-        applyInterval(minutes, runOnce);
+        const status = await aiGatewayTemplateAutoRefreshStatus();
+        if (disposed) return;
+        replaceTemplateAutoRefreshFailures(status?.failures ?? []);
       } catch {
-        // A read failure leaves the schedule stopped.
-        if (!cancelled) applyInterval(0);
+        // A missing/failing command leaves the adapter at an empty map.
+        if (!disposed) replaceTemplateAutoRefreshFailures([]);
       }
     };
 
-    void readAndApplyInterval(true);
+    void readStatus();
 
-    const unsubscribe = subscribeTemplateAutoRefreshIntervalChanged(() => {
-      // A persisted-interval change only re-reads and re-applies the schedule;
-      // it never starts an immediate batch.
-      void readAndApplyInterval();
-    });
+    void listen(AI_GATEWAY_TEMPLATE_AUTO_REFRESH_UPDATED_EVENT, (event) => {
+      const failures = readFailureSnapshot(event.payload);
+      // Malformed payloads keep the last good snapshot.
+      if (failures === null) return;
+      replaceTemplateAutoRefreshFailures(failures);
+    })
+      .then((stop) => {
+        if (disposed) {
+          stop();
+          return;
+        }
+        unlisten = stop;
+      })
+      .catch(() => {
+        // Non-Tauri runtime: the status read already handles degradation.
+      });
 
     return () => {
-      cancelled = true;
-      unsubscribe();
-      clearTimer();
+      disposed = true;
+      if (unlisten) {
+        unlisten();
+        unlisten = null;
+      }
     };
-  }, [applyInterval, clearTimer]);
+  }, []);
 }

@@ -12,7 +12,8 @@ use super::templates::{
     apply_create_provider_from_template, apply_delete_provider_model,
     apply_delete_provider_template, apply_restore_provider_model,
     apply_template_sync_from_body, apply_upsert_provider_template, effective_template,
-    fetch_template_models, provider_template_views, ProviderRetirementNotice, ProviderTemplateView,
+    fetch_template_models, provider_template_views, template_sync_addition_notices,
+    ProviderRetirementNotice, ProviderTemplateView, TemplateAdditionNotice,
 };
 #[cfg(test)]
 use super::templates::apply_template_sync_with;
@@ -23,8 +24,8 @@ use super::usage_log::{
 use super::{
     normalize_template_auto_refresh_minutes, now_ts, validate_template_auto_refresh_minutes,
     GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, ModelPrice,
-    ProviderTemplate, TerminalSyncRecord, UpstreamProtocol, UsageResult, MAX_PROVIDER_WEIGHT,
-    MIN_PROVIDER_WEIGHT,
+    ProviderTemplate, TemplateAutoRefreshStatus, TerminalSyncRecord, UpstreamProtocol,
+    UsageResult, MAX_PROVIDER_WEIGHT, MIN_PROVIDER_WEIGHT,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -32,6 +33,9 @@ use serde_json::{Map, Value};
 #[cfg(test)]
 thread_local! {
     pub(in crate::ai_gateway) static TEMPLATE_MAPPINGS_RETIRED_MESSAGE_INPUTS:
+        std::cell::RefCell<Vec<crate::messages::MessageCreateInput>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    pub(in crate::ai_gateway) static TEMPLATE_SYNC_MESSAGE_INPUTS:
         std::cell::RefCell<Vec<crate::messages::MessageCreateInput>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -1179,7 +1183,8 @@ pub fn ai_gateway_template_auto_refresh_get() -> Result<u32, String> {
 
 /// Replace only the automatic provider-template refresh interval; values other
 /// than `0` (disabled) or 10-1440 minutes are rejected with an actionable error
-/// and are never persisted.
+/// and are never persisted. A successful save re-arms the process scheduler
+/// without starting an immediate batch.
 #[tauri::command]
 pub fn ai_gateway_template_auto_refresh_save(minutes: i64) -> Result<u32, String> {
     let validated = validate_template_auto_refresh_minutes(minutes)?;
@@ -1187,7 +1192,33 @@ pub fn ai_gateway_template_auto_refresh_save(minutes: i64) -> Result<u32, String
         config.template_auto_refresh_minutes = validated;
         Ok((true, ()))
     })?;
+    super::auto_refresh::request_rearm();
     Ok(read_config()?.template_auto_refresh_minutes)
+}
+
+/// The process-memory automatic-refresh failure snapshot, so opening a page
+/// receives existing inline errors without starting another schedule.
+#[tauri::command]
+pub fn ai_gateway_template_auto_refresh_status() -> Result<TemplateAutoRefreshStatus, String> {
+    Ok(super::auto_refresh::failure_snapshot())
+}
+
+/// Start the process-owned template scheduler exactly once. Called from the app
+/// setup after gateway autostart; a second call is a no-op.
+pub fn start_template_auto_refresh_scheduler(app: tauri::AppHandle) {
+    super::auto_refresh::start_scheduler(app);
+}
+
+/// Stop the process-owned template scheduler. Idempotent and safe when no
+/// scheduler runs.
+pub fn stop_template_auto_refresh_scheduler() {
+    super::auto_refresh::stop_scheduler();
+}
+
+/// Stop the gateway listener from a synchronous shutdown path: signal the
+/// running listener and clear the slot. Idempotent and safe when nothing runs.
+pub fn stop_gateway_for_shutdown() {
+    super::runtime_http::stop_server_now();
 }
 
 // ---------------------------------------------------------------------------
@@ -1261,20 +1292,97 @@ pub(in crate::ai_gateway) fn record_template_mappings_retired_messages(
     }
 }
 
-/// Refresh one template from its public source, merge it under the
-/// "source fields win, untouched template fields kept" rule, propagate the
-/// update incrementally to every derived provider, and persist atomically. Any
-/// fatal source problem (network, non-JSON, invalid structure, empty model set)
-/// leaves the configuration unchanged.
-#[tauri::command]
-pub async fn ai_gateway_sync_provider_template(
-    app: tauri::AppHandle,
-    template_id: String,
+/// Build the message-center input for one template sync that actually added
+/// model mappings. The title names the template, the summary carries the
+/// affected-provider and added-model counts, and the detail lists each
+/// provider's added models. Only provider and model names appear; no key value
+/// is ever carried (REQ-002/AC-002).
+fn template_sync_message_input(
+    view: &ProviderTemplateView,
+    additions: &[TemplateAdditionNotice],
+) -> crate::messages::MessageCreateInput {
+    let provider_count = additions.len();
+    let added_count: usize = additions
+        .iter()
+        .map(|notice| notice.added_models.len())
+        .sum();
+    let detail = additions
+        .iter()
+        .map(|notice| {
+            let models = notice.added_models.join(", ");
+            crate::messages::localized(
+                &format!("{}：{}", notice.provider_name, models),
+                &format!("{}: {}", notice.provider_name, models),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let summary = format!(
+        "{}; {}",
+        crate::messages::localized(
+            &format!("{provider_count} 个服务商受影响"),
+            &format!("{provider_count} provider(s) affected"),
+        ),
+        crate::messages::localized(
+            &format!("新增 {added_count}"),
+            &format!("{added_count} added"),
+        ),
+    );
+    crate::messages::MessageCreateInput {
+        source: "ai_gateway".to_string(),
+        category: "template_sync".to_string(),
+        severity: "info".to_string(),
+        title: crate::messages::localized(
+            &format!("服务商模板 {} 模型已变更", view.template.name),
+            &format!("Provider template {} models changed", view.template.name),
+        ),
+        summary: Some(summary),
+        detail: Some(detail),
+        dedupe_key: None,
+        target: Some(crate::messages::MessageTarget {
+            tab: "ai-gateway".to_string(),
+            section: None,
+            entity_id: None,
+        }),
+        metadata: None,
+    }
+}
+
+/// Record one additions-only `template_sync` info message when the sync added at
+/// least one model mapping. A sync without additions records nothing. The write
+/// is best-effort and never fails the sync: the literal input is pushed onto the
+/// test seam and persisted through the supplied handle if one is present
+/// (REQ-002/AC-002).
+pub(in crate::ai_gateway) fn record_template_sync_addition_message(
+    app: Option<&tauri::AppHandle>,
+    view: &ProviderTemplateView,
+    additions: &[TemplateAdditionNotice],
+) {
+    if additions.is_empty() {
+        return;
+    }
+    let input = template_sync_message_input(view, additions);
+    #[cfg(test)]
+    TEMPLATE_SYNC_MESSAGE_INPUTS.with(|inputs| inputs.borrow_mut().push(input.clone()));
+    if let Some(handle) = app {
+        crate::messages::record_message_silent(handle, input);
+    }
+}
+
+/// Perform one provider-template sync with all of its production side effects:
+/// fetch the model list outside the configuration write lock, merge it under the
+/// "source fields win, untouched template fields kept" rule, record the
+/// additions-only and retirement messages after the write stands, then run the
+/// best-effort terminal refresh. Any fatal source problem (network, non-JSON,
+/// invalid structure, empty model set) leaves the configuration unchanged.
+pub(in crate::ai_gateway) async fn execute_template_sync(
+    app: Option<tauri::AppHandle>,
+    template_id: &str,
 ) -> Result<ProviderTemplateView, String> {
     // Resolve the template and fetch its model list outside the configuration
     // write lock: the lock is never held across an upstream network wait.
     let initial = read_config()?;
-    let template = effective_template(&initial, &template_id)?;
+    let template = effective_template(&initial, template_id)?;
     let raw = fetch_template_models(&template).await?;
     // The service-provider payload only decides which tools were previously
     // synced: a read failure degrades to an empty payload (refresh skipped)
@@ -1284,28 +1392,45 @@ pub async fn ai_gateway_sync_provider_template(
         .unwrap_or(Value::Null);
     // The read, staging and persistence all happen inside the serialized
     // mutation, so a concurrent configuration write cannot be lost.
-    let (view, tools, notices) = modify_config(|config| {
-        let (view, notices) = apply_template_sync_from_body(config, &template_id, &raw)?;
+    let (view, tools, notices, additions) = modify_config(|config| {
+        let before = config.clone();
+        let (view, notices) = apply_template_sync_from_body(config, template_id, &raw)?;
+        let additions = template_sync_addition_notices(&before, config, template_id);
         let bound = config
             .providers
             .iter()
-            .any(|provider| provider.template_id.as_deref() == Some(template_id.as_str()));
+            .any(|provider| provider.template_id.as_deref() == Some(template_id));
         let tools = if bound {
             previously_synced_terminal_tools(config, &providers_data, TerminalSyncProfile::current())
         } else {
             Vec::new()
         };
-        Ok((true, (view, tools, notices)))
+        Ok((true, (view, tools, notices, additions)))
     })?;
-    // The retirement warning is recorded only after the configuration write
-    // stood; a failed write returned before this point, so no notice escapes.
-    record_template_mappings_retired_messages(Some(&app), &notices);
+    // The additions and retirement messages are recorded only after the
+    // configuration write stood; a failed write returned before this point, so
+    // no message escapes. Terminal resync stays after the template sync as today.
+    record_template_sync_addition_message(app.as_ref(), &view, &additions);
+    record_template_mappings_retired_messages(app.as_ref(), &notices);
     // The terminal refresh performs its own network upserts and serialized
     // ledger write after the template sync stands, so a failure is swallowed.
     if !tools.is_empty() {
-        let _ = apply_terminal_sync(app, tools).await;
+        if let Some(handle) = app {
+            let _ = apply_terminal_sync(handle, tools).await;
+        }
     }
     Ok(view)
+}
+
+/// Refresh one template from its public source through the shared same-template
+/// operation guard. An in-flight manual or automatic refresh of the same
+/// template is reused instead of fetched again; the owner performs the sync.
+#[tauri::command]
+pub async fn ai_gateway_sync_provider_template(
+    app: tauri::AppHandle,
+    template_id: String,
+) -> Result<ProviderTemplateView, String> {
+    super::auto_refresh::sync_template_manual(Some(app), &template_id).await
 }
 
 /// Create an upstream provider from a template, carrying one enabled mapping per

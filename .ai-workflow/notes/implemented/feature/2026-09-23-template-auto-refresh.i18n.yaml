@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-09-23-template-auto-refresh.md
-2026-09-23-template-auto-refresh.md: 387e4e88985eee5f016bef2de7c37f4f77444fd7
-2026-09-23-template-auto-refresh.zh.md: cd2bbf3227febfc4554f63f64a4eb9071b2cda54
+2026-09-23-template-auto-refresh.md: 953731407f5c5c0ddc8738ae61a56417218e626c
+2026-09-23-template-auto-refresh.zh.md: 162773d47e867416ea4292c2627dd676cc83fa23

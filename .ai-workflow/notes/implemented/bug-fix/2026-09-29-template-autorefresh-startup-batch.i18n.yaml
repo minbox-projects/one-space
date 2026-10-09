@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/bug-fix/2026-09-29-template-autorefresh-startup-batch.md
-2026-09-29-template-autorefresh-startup-batch.md: dd74d371cc86c323f42f49aef67bb4779f7ba655
-2026-09-29-template-autorefresh-startup-batch.zh.md: 8c0e5c1f301438a78706b908476721e006037866
+2026-09-29-template-autorefresh-startup-batch.md: 1914ba2b11cfebc01c37cca0ddd599f50a68f374
+2026-09-29-template-autorefresh-startup-batch.zh.md: dcd996dd6754eb6fb9ab30a1a385c6681ac413da

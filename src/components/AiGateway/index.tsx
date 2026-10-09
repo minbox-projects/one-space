@@ -84,10 +84,6 @@ import { LocalKeyList } from "./LocalKeyList";
 import { TerminalSyncPanel } from "./TerminalSyncPanel";
 import { UsageStatsPanel } from "./UsageStatsPanel";
 import { UsageLogsPanel } from "./UsageLogsPanel";
-import {
-  setTemplateAutoRefreshFailure,
-  setTemplateSyncInFlight,
-} from "./useTemplateAutoRefresh";
 
 type AiGatewayTab =
   | "providers"
@@ -810,7 +806,6 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         templates.find((view) => view.template.id === templateId)?.template.name ??
         templateId;
       setSyncingTemplates((prev) => ({ ...prev, [templateId]: true }));
-      setTemplateSyncInFlight(templateId, true);
       void (async () => {
         try {
           const updated = await aiGatewaySyncProviderTemplate(templateId);
@@ -819,8 +814,6 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
               view.template.id === templateId ? updated : view,
             ),
           );
-          // A manual success clears any prior automatic-refresh failure.
-          setTemplateAutoRefreshFailure(templateId, null);
           await applyConfig(await aiGatewayGetConfig());
           pushToast({
             title: t(
@@ -841,7 +834,6 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
             kind: "error",
           });
         } finally {
-          setTemplateSyncInFlight(templateId, false);
           setSyncingTemplates((prev) => {
             const next = { ...prev };
             delete next[templateId];

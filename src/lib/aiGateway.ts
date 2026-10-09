@@ -1085,6 +1085,34 @@ export function subscribeTemplateAutoRefreshIntervalChanged(
   };
 }
 
+/** One template whose latest backend automatic refresh failed, with its reason. */
+export interface TemplateAutoRefreshFailure {
+  template_id: string;
+  reason: string;
+}
+
+/** Backend-owned automatic-refresh failure snapshot. */
+export interface TemplateAutoRefreshStatus {
+  failures: TemplateAutoRefreshFailure[];
+}
+
+/**
+ * Tauri event literal emitted after the backend automatic-refresh failure set
+ * changes; its payload is a {@link TemplateAutoRefreshStatus}.
+ */
+export const AI_GATEWAY_TEMPLATE_AUTO_REFRESH_UPDATED_EVENT =
+  "ai-gateway-template-auto-refresh-updated";
+
+/**
+ * Read the backend automatic-refresh failure snapshot without starting any
+ * schedule; the process scheduler owns all template timing and syncing.
+ */
+export function aiGatewayTemplateAutoRefreshStatus() {
+  return invoke<TemplateAutoRefreshStatus>(
+    "ai_gateway_template_auto_refresh_status",
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Provider templates
 // ---------------------------------------------------------------------------

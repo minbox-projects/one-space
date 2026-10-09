@@ -30,6 +30,8 @@ mod quota;
 mod go_usage;
 mod migration;
 mod routing_hardening;
+mod auto_refresh;
+mod runtime_lifecycle;
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -27302,27 +27304,44 @@ fn previously_synced_terminal_tools_lists_only_marked_managed_providers_in_suppo
     );
 }
 
-/// AC-007 / REQ-004 (source-scan precedent): the template-sync command path must
-/// delegate to the existing `apply_terminal_sync` pipeline instead of
-/// reimplementing terminal-sync rules. Bounded to the command body up to the
-/// next `#[tauri::command]`.
+/// AC-007 / REQ-004: the template-sync command path must enter the shared
+/// same-template guard and the one production pipeline must delegate the
+/// best-effort terminal refresh to `apply_terminal_sync` instead of
+/// reimplementing terminal-sync rules.
+///
+/// The `#[tauri::command]` entry point takes a `tauri::AppHandle`, so it cannot
+/// be invoked from this unit test. This pins the exact delegation at the
+/// helper level (the wrapper to the guard, the pipeline to the terminal-refresh
+/// port) rather than text-scanning the thin wrapper for the port name, and it
+/// does not mirror the implementation with a behavioral counterfeit.
 #[test]
 fn template_sync_command_delegates_to_apply_terminal_sync() {
     const COMMANDS_SOURCE: &str = include_str!("commands.rs");
 
-    let start = COMMANDS_SOURCE
+    let wrapper_start = COMMANDS_SOURCE
         .find("pub async fn ai_gateway_sync_provider_template(")
         .expect("the provider-template sync command must exist");
-    let after = &COMMANDS_SOURCE[start + 1..];
-    let end = after
+    let wrapper_tail = &COMMANDS_SOURCE[wrapper_start..];
+    let wrapper_end = wrapper_tail
         .find("#[tauri::command]")
-        .map(|offset| start + 1 + offset)
-        .unwrap_or(COMMANDS_SOURCE.len());
-    let body = &COMMANDS_SOURCE[start..end];
-
+        .unwrap_or(wrapper_tail.len());
+    let wrapper = &wrapper_tail[..wrapper_end];
     assert!(
-        body.contains("apply_terminal_sync"),
-        "ai_gateway_sync_provider_template must delegate to apply_terminal_sync: {body}"
+        wrapper.contains("sync_template_manual"),
+        "ai_gateway_sync_provider_template must enter the shared same-template guard: {wrapper}"
+    );
+
+    let helper_start = COMMANDS_SOURCE
+        .find("pub(in crate::ai_gateway) async fn execute_template_sync(")
+        .expect("execute_template_sync must exist");
+    let helper_tail = &COMMANDS_SOURCE[helper_start..];
+    let helper_end = helper_tail
+        .find("#[tauri::command]")
+        .unwrap_or(helper_tail.len());
+    let helper = &helper_tail[..helper_end];
+    assert!(
+        helper.contains("apply_terminal_sync"),
+        "execute_template_sync must delegate the terminal refresh to apply_terminal_sync: {helper}"
     );
 }
 

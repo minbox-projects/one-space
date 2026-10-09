@@ -6,7 +6,7 @@ Status: implemented
 
 ## Problem
 
-GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入口，已各自演化为不同实现。安装的 CLI 会改写会话名（空格与点号转为下划线）、自行拼装启动命令、写明文会话 JSON，并伪造原生会话 ID；GUI 则走另一套新终端适配器。`resume` 分支在 Shell 脚本里硬编码各工具恢复命令，忽略共享的 provider 与 runtime 环境。服务商激活与 `onespace env use` 同样分叉，而 OpenCode 的活动服务商被表示为单个槽位，而非其真实的多活动集合。本记录描述计划 `20261009-core-workflows-cleanup-and-optimization` 已交付的事实；当前正文覆盖第一步，该计划的后续步骤不在此描述。
+GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入口，已各自演化为不同实现。安装的 CLI 会改写会话名（空格与点号转为下划线）、自行拼装启动命令、写明文会话 JSON，并伪造原生会话 ID；GUI 则走另一套新终端适配器。`resume` 分支在 Shell 脚本里硬编码各工具恢复命令，忽略共享的 provider 与 runtime 环境。服务商激活与 `onespace env use` 同样分叉，而 OpenCode 的活动服务商被表示为单个槽位，而非其真实的多活动集合。本记录描述计划 `20261009-core-workflows-cleanup-and-optimization` 已交付的事实；当前正文覆盖前两步，该计划的后续步骤不在此描述。
 
 ## Decision
 
@@ -22,6 +22,12 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - provider 配置目录完全按后端解析结果传递。此前自行创建的 `resolve_path_with_home_spelling` helper 已移除，测试改用 `canonicalize` 校验返回配置目录的身份，而不再做 home 拼写改写。
 - 统一前端会话与服务商契约。`src/lib/aiSessions.ts` 承载 `AiSession`、`AiSessionListItem`、`SessionInput`、`AiModelLaunchCommands`、`AiSessionStorageConfig` 以及 `getAiSessionStorageConfig`、`sessionsList`、`sessionsCreate`、`sessionsUpdate`、`sessionsLaunch`、`sessionsDelete`、`sessionsSetFavorite`、`checkCliInstalled`、`installCli`、`hideQuickAiWindow` 与 `resizeQuickAiWindow` 封装。`src/lib/serviceProviders.ts` 承载 provider DTO、`CliTool`、`getActiveProviderIds` 与 `serviceProviders*` 命令封装。`AiSessions`、`AiSessionsList`、`QuickAiSessionBar` 与 `AiEnvironments` 使用这些类型化封装，并继续为既有导入再导出既有 DTO 类型。New Session 的 provider 摘要按所选工具列出每一个活动 provider，而非只显示单槽，OpenCode 空集合时不显示任何条目。
 
+- Step 2 — 由进程拥有自动模板刷新：`src-tauri/src/ai_gateway/auto_refresh.rs` 为整个应用进程拥有计划。`start_scheduler` 由 `app_runtime/run_app.rs` 在网关 autostart 后恰好安装一次；安装时读取持久化间隔：正值武装计划并运行恰好一个启动批次，`0` 安装停放的控制环，后续 `request_rearm` 可在不运行批次的情况下武装它。`ai_gateway_template_auto_refresh_save` 只重新武装、绝不立即运行批次。同一时刻只运行一个批次（批次期间到达的 tick 被跳过），按模板顺序串行迭代 `models_url` 经 trim 后非空的模板。间隔契约不变：`DEFAULT 60`、`MIN 10`、`MAX 1440`。
+- Step 2 — 暴露每模板失败并共享同模板工作：每模板失败只存进程内存，失败时写入、成功时清除、重启即空。它经 `ai_gateway_template_auto_refresh_status() -> TemplateAutoRefreshStatus { failures: [{ template_id, reason }] }` 与事件 `AI_GATEWAY_TEMPLATE_AUTO_REFRESH_UPDATED_EVENT = "ai-gateway-template-auto-refresh-updated"` 暴露，仅在失败集合真正变化时发出；自动失败绝不弹 toast。手动 `ai_gateway_sync_provider_template` 与自动批次共享 `start_template_op` / `TemplateOpOwner` / `TemplateOpFollower`：自动竞争者在忙时跳过，手动竞争者等待并复用 owner 的在途结果而不重复拉取，且仅在条目仍指向完成中的操作时才移除。
+- Step 2 — 由后端产生 additions-only 消息：在配置写入成立的成功同步之后，`templates::template_sync_addition_notices` 只统计同一服务商同步前不存在的 `upstream_model` 映射，`commands` 以事件时语言为每个发生变化的模板恰好记录一条 `template_sync` info 消息。退役通知、忽略模型处理、退役价格与默认模型清理以及 best-effort 终端刷新保持既有顺序与语义。
+- Step 2 — 让监听器状态绑定任务身份并干净停止：`RunningServer` 携带单调 `generation`；`run_server` 仅在槽位仍持有同一 generation 时退休槽位并发布 `running=false`（既有 `ai-gateway-status-update` 事件），因此出错的旧任务绝不清除替换后的监听器，同一端口可重启。`shutdown_runtime_services` 幂等地停止网关监听器与模板计划，并由托盘退出、`quit_app` 与 `RunEvent::Exit` 调用。
+- Step 2 — 将前端降级为只读/订阅适配器：挂载在 `src/App.tsx` 的 `useTemplateAutoRefresh` 现在只在挂载时执行一次 `ai_gateway_template_auto_refresh_status` 读取，并订阅 `ai-gateway-template-auto-refresh-updated` 一次。它不保留计时器、不发起同步调用、没有 in-flight 注册表、不构建消息，`useTemplateAutoRefreshFailures` 保持其 map 形状。`src/lib/aiGateway.ts` 新增 `aiGatewayTemplateAutoRefreshStatus`、`TemplateAutoRefreshFailure` / `TemplateAutoRefreshStatus` 类型与事件字面量；AI Gateway 手动同步保留本地 spinner 并依赖后端 guard 与快照。
+
 ## Alternatives considered
 
 - 保留 Shell 脚本写明文会话 JSON，只修补名称或 ID。拒绝原因：它无法与 GUI 共享 canonical 注册、写者协调、pending 绑定或 spawn 失败回滚。
@@ -31,6 +37,8 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - 允许 `--permission-mode full_access` 提升配置为 `default` 的工具。拒绝原因：那样任何调用方都能绕过配置的权限边界。
 - 把 OpenCode 激活表示为替换单个活动服务商。拒绝原因：OpenCode 支持多个活动服务商，GUI 与 CLI 必须呈现同一集合。
 - 让 `env use` 像 `Apply to CLI` 一样投影 CLI 配置。拒绝原因：`env use` 的文档语义是无投影的绑定更新，投影是另一个显式动作。
+- Step 2 — 保留前端调度器，只为隐藏窗口增加后端循环。拒绝原因：两个 owner 必须协调计时、失败状态与通知；单一进程调度器消除重复所有权，而不是协调它。
+- Step 2 — 让自动竞争者等待忙碌的同模板手动同步。拒绝原因：定时批次不应阻塞在操作者工作上；自动竞争者跳过，而手动竞争者复用进行中的结果。
 
 ## Consequences
 
@@ -42,4 +50,8 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - OpenCode 在 GUI 与 CLI 列表中都可持有多个活动服务商；空集合保持为空，不回退到遗留单槽，而其他工具仍为单活动。
 - provider 与会话 DTO 及命令封装现位于 `src/lib/`，因此被触及的组件调用类型化封装，而非动态 `any` 解释。
 - 本已交付步骤未完整或部分取代任何活动记录。[OpenCode Session Storage Compatibility](../bug-fix/2026-09-20-opencode-session-storage-compatibility.md) 仍约束历史来源选择，该行为未变；[AI Terminal Session Workflow Presets and Runs Are Removed Full-Stack](../simplification/2026-09-29-ai-session-workflow-presets-removal.md) 仍约束更早的预设移除。
+- Step 2 部分取代：[Provider Templates Refresh Automatically on a Persisted Interval](../feature/2026-09-23-template-auto-refresh.md)、[Template Auto Refresh Runs One Batch at App Start](../bug-fix/2026-09-29-template-autorefresh-startup-batch.md) 与 [Automatic Template Sync Notifies the Message Center on Real Mapping Changes](../feature/2026-09-24-ai-gateway-template-auto-sync-notification.md) 保留并交叉链接。它们的间隔、启动批次与 additions-only 决策继续有效，而本步骤替换了前端调度器所有权、前端消息生成以及通知记录中已被拒绝的后端替代方案。没有记录被完整取代，因此没有任何记录被归档。
+- Step 2 已验证证据：`cargo test --lib ai_gateway` 通过 627，其中 `tests/auto_refresh.rs`（启动恰好一次、仅合格模板、串行、tick 跳过、自动忙碌跳过并手动 follower 复用、失败快照事件、reset/re-arm）与 `tests/runtime_lifecycle.rs`（故障状态/重启，旧任务不能清理替换后的监听器）；`app_runtime` 通过 14、3 ignored；前端 Step 2 门禁通过 19 文件 513 测试，含 `AiGateway` 67、`ProviderTemplateSection` 18、hook 适配器 4 与 `App.runtimeOwnership` 1；`npm run build` 退出 0。
+- Step 2 诚实限制：生产 `start_scheduler` 的 Wry 路径仅通过受控执行器的测试接缝覆盖；Windows 分支未在本 macOS 主机上做运行时测试；本次未重跑 release-profile 运行时 smoke。
+
 - 诚实的限制：release-profile 的权限行为未独立测试；`--permission-mode` 的缺值/非法值路径已实现但只有单测覆盖；显示名无法通过真实二进制 smoke 观测，由共享服务特征化覆盖；Windows `LockFile` 分支未在本次 macOS-only 验证中做运行时测试。该计划后续步骤尚未开始，且刻意不在此描述。

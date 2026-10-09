@@ -209,6 +209,72 @@ pub(in crate::ai_gateway) struct ProviderRetirementNotice {
     pub retired_models: Vec<String>,
 }
 
+/// One provider whose template sync added model mappings: the added models in
+/// mapping row order without duplicates, named by their trimmed `local_model`
+/// when non-empty, otherwise by their `upstream_model`. A provider with no
+/// addition yields no notice; no key value is ever carried.
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::ai_gateway) struct TemplateAdditionNotice {
+    pub provider_name: String,
+    pub added_models: Vec<String>,
+}
+
+/// Diff the providers bound to `template_id` between the pre-sync `before` and
+/// the post-sync `after` configuration, returning one notice per provider that
+/// gained at least one mapping. Only a mapping whose `upstream_model` was absent
+/// from the same provider before the sync qualifies; a provider not bound to the
+/// template is ignored. The provider list and mapping order of `after` define
+/// the output order.
+pub(in crate::ai_gateway) fn template_sync_addition_notices(
+    before: &GatewayConfig,
+    after: &GatewayConfig,
+    template_id: &str,
+) -> Vec<TemplateAdditionNotice> {
+    let mut notices = Vec::new();
+    for provider in after
+        .providers
+        .iter()
+        .filter(|provider| provider.template_id.as_deref() == Some(template_id))
+    {
+        let previous_upstream: Vec<&str> = before
+            .providers
+            .iter()
+            .find(|candidate| candidate.id == provider.id)
+            .map(|previous| {
+                previous
+                    .mappings
+                    .iter()
+                    .map(|mapping| mapping.upstream_model.as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut added_models: Vec<String> = Vec::new();
+        for mapping in &provider.mappings {
+            if previous_upstream
+                .iter()
+                .any(|upstream| *upstream == mapping.upstream_model)
+            {
+                continue;
+            }
+            let local_model = mapping.local_model.trim();
+            added_models.push(if local_model.is_empty() {
+                mapping.upstream_model.clone()
+            } else {
+                local_model.to_string()
+            });
+        }
+
+        if !added_models.is_empty() {
+            notices.push(TemplateAdditionNotice {
+                provider_name: provider.name.clone(),
+                added_models,
+            });
+        }
+    }
+    notices
+}
+
 /// Resolve the effective template data for `template_id`: the last persisted
 /// sync result when present, else the built-in snapshot. An unknown id is an
 /// actionable error naming the id.

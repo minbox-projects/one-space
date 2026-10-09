@@ -28,13 +28,7 @@ import {
   resetMessageMocks,
   safeRecordMessageMock,
 } from "@/test/mocks/messages";
-import {
-  clearTemplateAutoRefreshFailures,
-  clearTemplateSyncInFlight,
-  isTemplateSyncInFlight,
-  setTemplateAutoRefreshFailure,
-  useTemplateAutoRefreshFailures,
-} from "./useTemplateAutoRefresh";
+import { useTemplateAutoRefresh } from "./useTemplateAutoRefresh";
 
 type Store = {
   config: GatewayConfig;
@@ -1982,10 +1976,7 @@ describe("AiGateway", () => {
     );
   });
 
-  it("marks a template as manually syncing and clears a prior automatic failure on success", async () => {
-    clearTemplateSyncInFlight();
-    clearTemplateAutoRefreshFailures();
-
+  it("manual sync keeps the spinner and leaves the backend-owned failure snapshot until the update event clears it", async () => {
     const store: Store = {
       config: makeConfig(),
       status: makeStatus(),
@@ -2006,6 +1997,8 @@ describe("AiGateway", () => {
           return store.targets;
         case "ai_gateway_provider_templates":
           return templates;
+        case "ai_gateway_template_auto_refresh_status":
+          return { failures: [{ template_id: "t1", reason: "old reason" }] };
         case "ai_gateway_sync_provider_template":
           return sync.promise;
         default:
@@ -2013,7 +2006,8 @@ describe("AiGateway", () => {
       }
     });
 
-    const failures = renderHook(() => useTemplateAutoRefreshFailures());
+    // The App-level adapter is the only writer of the frontend failure map.
+    const adapter = renderHook(() => useTemplateAutoRefresh());
     renderWithProviders(<AiGateway />);
 
     const manageButton = (
@@ -2022,8 +2016,14 @@ describe("AiGateway", () => {
       })
     )[0];
     fireEvent.click(manageButton);
-    fireEvent.click(await screen.findByTestId("ai-gateway-template-sync-t1"));
 
+    // The inline failure comes from the backend snapshot, not a local setter.
+    const failure = await screen.findByTestId(
+      "ai-gateway-template-auto-refresh-failure-t1",
+    );
+    expect(failure).toHaveTextContent("old reason");
+
+    fireEvent.click(await screen.findByTestId("ai-gateway-template-sync-t1"));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith(
         "ai_gateway_sync_provider_template",
@@ -2031,11 +2031,8 @@ describe("AiGateway", () => {
       ),
     );
 
-    // 手动同步挂起期间，该模板必须被标记为进行中，自动批次才能推迟它。
-    expect(isTemplateSyncInFlight("t1")).toBe(true);
-
-    act(() => setTemplateAutoRefreshFailure("t1", "old reason"));
-    expect(failures.result.current.t1).toBe("old reason");
+    // 手动同步挂起期间，该模板的同步按钮保持禁用。
+    expect(screen.getByTestId("ai-gateway-template-sync-t1")).toBeDisabled();
 
     await act(async () => {
       sync.resolve({
@@ -2046,18 +2043,32 @@ describe("AiGateway", () => {
       await sync.promise;
     });
 
-    await waitFor(() => expect(isTemplateSyncInFlight("t1")).toBe(false));
-    // 手动同步成功后，之前记录的自动刷新失败必须被清除。
-    await waitFor(() => expect(failures.result.current.t1).toBeUndefined());
+    // 同步结束后按钮恢复，但手动路径不得改动后端拥有的失败快照。
+    await waitFor(() =>
+      expect(screen.getByTestId("ai-gateway-template-sync-t1")).toBeEnabled(),
+    );
+    expect(
+      screen.getByTestId("ai-gateway-template-auto-refresh-failure-t1"),
+    ).toHaveTextContent("old reason");
 
-    clearTemplateSyncInFlight();
-    clearTemplateAutoRefreshFailures();
+    // 只有后端快照事件才会清除失败原因。
+    const handler = listenMock.mock.calls.find(
+      ([event]) => event === "ai-gateway-template-auto-refresh-updated",
+    )?.[1];
+    expect(handler).toBeTypeOf("function");
+    act(() => {
+      handler?.({ payload: { failures: [] } });
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("ai-gateway-template-auto-refresh-failure-t1"),
+      ).not.toBeInTheDocument(),
+    );
+
+    adapter.unmount();
   });
 
-  it("keeps a prior automatic failure when a manual sync rejects and still clears the in-flight marker", async () => {
-    clearTemplateSyncInFlight();
-    clearTemplateAutoRefreshFailures();
-
+  it("manual sync rejection keeps the backend-owned failure snapshot and clears the spinner", async () => {
     const store: Store = {
       config: makeConfig(),
       status: makeStatus(),
@@ -2078,6 +2089,8 @@ describe("AiGateway", () => {
           return store.targets;
         case "ai_gateway_provider_templates":
           return templates;
+        case "ai_gateway_template_auto_refresh_status":
+          return { failures: [{ template_id: "t1", reason: "old reason" }] };
         case "ai_gateway_sync_provider_template":
           return sync.promise;
         default:
@@ -2085,7 +2098,7 @@ describe("AiGateway", () => {
       }
     });
 
-    const failures = renderHook(() => useTemplateAutoRefreshFailures());
+    const adapter = renderHook(() => useTemplateAutoRefresh());
     renderWithProviders(<AiGateway />);
 
     const manageButton = (
@@ -2094,31 +2107,39 @@ describe("AiGateway", () => {
       })
     )[0];
     fireEvent.click(manageButton);
-    fireEvent.click(await screen.findByTestId("ai-gateway-template-sync-t1"));
 
+    await screen.findByTestId("ai-gateway-template-auto-refresh-failure-t1");
+
+    fireEvent.click(await screen.findByTestId("ai-gateway-template-sync-t1"));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith(
         "ai_gateway_sync_provider_template",
         { templateId: "t1" },
       ),
     );
-
-    expect(isTemplateSyncInFlight("t1")).toBe(true);
-
-    act(() => setTemplateAutoRefreshFailure("t1", "old reason"));
-    expect(failures.result.current.t1).toBe("old reason");
+    expect(screen.getByTestId("ai-gateway-template-sync-t1")).toBeDisabled();
 
     await act(async () => {
       sync.reject(new Error("manual sync failed"));
       await sync.promise.catch(() => undefined);
     });
 
-    await waitFor(() => expect(isTemplateSyncInFlight("t1")).toBe(false));
-    // 手动同步失败不得清除已记录的自动刷新失败原因。
-    expect(failures.result.current.t1).toBe("old reason");
+    await waitFor(() =>
+      expect(screen.getByTestId("ai-gateway-template-sync-t1")).toBeEnabled(),
+    );
+    // 手动同步失败不得清除已记录的后端自动刷新失败原因。
+    expect(
+      screen.getByTestId("ai-gateway-template-auto-refresh-failure-t1"),
+    ).toHaveTextContent("old reason");
 
-    clearTemplateSyncInFlight();
-    clearTemplateAutoRefreshFailures();
+    // 通过后端快照事件清理共享 store，避免影响后续用例。
+    const handler = listenMock.mock.calls.find(
+      ([event]) => event === "ai-gateway-template-auto-refresh-updated",
+    )?.[1];
+    act(() => {
+      handler?.({ payload: { failures: [] } });
+    });
+    adapter.unmount();
   });
 
   it("createFromTemplateOpensNewProviderDetail", async () => {

@@ -25,6 +25,7 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 use tauri::Emitter;
@@ -36,7 +37,14 @@ use tokio::time::{sleep, Instant};
 pub(in crate::ai_gateway) struct RunningServer {
     pub(in crate::ai_gateway) port: u16,
     pub(in crate::ai_gateway) shutdown: Option<oneshot::Sender<()>>,
+    /// Monotonic identity of this listener task. An exiting task retires the
+    /// slot only while it still holds this generation, so it can never clear a
+    /// replacement listener.
+    pub(in crate::ai_gateway) generation: u64,
 }
+
+/// Process-monotonic listener generation; never reused within a process.
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub(in crate::ai_gateway) static RUNNING_SERVER: OnceLock<Mutex<Option<RunningServer>>> =
     OnceLock::new();
@@ -354,10 +362,12 @@ pub(in crate::ai_gateway) async fn start_server(
         })?;
     let (tx, rx) = oneshot::channel();
     let port = config.port;
-    tauri::async_runtime::spawn(run_server(listener, rx));
+    let generation = NEXT_GENERATION.fetch_add(1, Ordering::SeqCst);
+    tauri::async_runtime::spawn(run_server(listener, rx, generation));
     *guard = Some(RunningServer {
         port,
         shutdown: Some(tx),
+        generation,
     });
     Ok(status_from_config(&config, true))
 }
@@ -371,6 +381,20 @@ pub(in crate::ai_gateway) async fn stop_server() -> Result<GatewayStatus, String
         }
     }
     Ok(status_from_config(&config, false))
+}
+
+/// Synchronous best-effort stop for the shutdown path: signal the running
+/// listener (if one is registered) and clear the slot. The listener's exit path
+/// then sees a slot that no longer holds its generation and publishes nothing.
+/// Idempotent and safe when nothing runs or the lock is momentarily contended.
+pub(in crate::ai_gateway) fn stop_server_now() {
+    if let Ok(mut guard) = state_lock().try_lock() {
+        if let Some(mut running) = guard.take() {
+            if let Some(tx) = running.shutdown.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
 }
 
 pub(in crate::ai_gateway) fn server_status() -> Result<GatewayStatus, String> {
@@ -396,6 +420,7 @@ pub(in crate::ai_gateway) async fn autostart(
 pub(in crate::ai_gateway) async fn run_server(
     listener: TcpListener,
     mut shutdown: oneshot::Receiver<()>,
+    generation: u64,
 ) {
     loop {
         tokio::select! {
@@ -411,8 +436,61 @@ pub(in crate::ai_gateway) async fn run_server(
                     Err(_) => break,
                 }
             }
+            _ = fault_future() => break,
         }
     }
+    // Release the listening socket before publishing the stopped transition, so
+    // a same-port restart that observes `running == false` can bind immediately.
+    drop(listener);
+    retire_listener(generation);
+}
+
+/// Retire this listener's slot after `run_server` exits, but only while the slot
+/// still holds this exact generation: an old exiting task must never clear a
+/// replacement listener. A genuine transition publishes the stopped status so a
+/// faulted listener reads as not running and can be restarted on the same port.
+fn retire_listener(generation: u64) {
+    let retired = match state_lock().try_lock() {
+        Ok(mut guard) => match guard.as_ref() {
+            Some(running) if running.generation == generation => {
+                *guard = None;
+                true
+            }
+            _ => false,
+        },
+        Err(_) => false,
+    };
+    if retired {
+        if let Some(handle) = captured_app_handle() {
+            let _ = handle.emit("ai-gateway-status-update", ());
+        }
+    }
+}
+
+/// A future that never resolves in production; the fault-injection branch only
+/// exists under `cfg(test)`.
+#[cfg(not(test))]
+async fn fault_future() {
+    std::future::pending::<()>().await;
+}
+
+#[cfg(test)]
+async fn fault_future() {
+    fault_notify().notified().await;
+}
+
+#[cfg(test)]
+fn fault_notify() -> &'static tokio::sync::Notify {
+    static FAULT_NOTIFY: OnceLock<tokio::sync::Notify> = OnceLock::new();
+    FAULT_NOTIFY.get_or_init(|| tokio::sync::Notify::new())
+}
+
+/// Test seam: force the next accept loop to exit as an abnormal (non-shutdown)
+/// failure so a fault/restart race can be driven deterministically.
+#[cfg(test)]
+#[allow(dead_code)]
+pub(in crate::ai_gateway) fn force_next_accept_failure() {
+    fault_notify().notify_one();
 }
 
 #[derive(Debug)]
