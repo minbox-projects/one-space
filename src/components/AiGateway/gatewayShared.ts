@@ -113,6 +113,19 @@ export const RANGE_LABEL_FALLBACKS: Record<UsageRangeKey, string> = {
 };
 
 /**
+ * Format a timestamp (milliseconds or Date) as `YYYY-MM-DD HH:mm:ss`.
+ */
+export function formatDateTime(ts: number | Date | null | undefined): string | null {
+  if (ts === null || ts === undefined) return null;
+  const d = typeof ts === "number" ? new Date(ts) : ts;
+  if (Number.isNaN(d.getTime())) return null;
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
+    d.getHours(),
+  )}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/**
  * Format a timestamp (milliseconds or Date) as `HH:mm:ss`.
  */
 export function formatTimeHms(ts: number | Date | null | undefined): string | null {
