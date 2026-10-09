@@ -1,33 +1,13 @@
 use super::{
-    api_error, api_ok, apply_projection, build_projection_diff, enqueue_sync_event, get_meta,
-    load_migration_state, load_outbox_state, load_service_providers_state, load_sessions_state,
+    api_error, api_ok, apply_projection, enqueue_sync_event, get_meta, load_migration_state,
+    load_outbox_state, load_service_providers_state, load_sessions_state,
     lock_sessions_state_write, materialize_isolated_claude_profile_async, now_ts,
     process_sync_queue, process_sync_queue_impl, rollback_from_backup, run_migration_impl,
     save_migration_state, save_sessions_state, session_to_legacy, ApiErr, ApiMeta, ApiOk,
-    MigrationState, OutboxState, SessionRecord, SessionsState, SCHEMA_VERSION,
+    OutboxState, SessionRecord, SessionsState, SCHEMA_VERSION,
 };
 use serde_json::{json, Value};
 use tauri::Emitter;
-
-#[tauri::command]
-pub fn projection_dry_run(tool: String, provider_id: String) -> Result<ApiOk<Value>, ApiErr> {
-    if let Err(e) = run_migration_impl() {
-        return Err(api_error("migration_failed", e));
-    }
-
-    let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    let service_provider = state
-        .providers
-        .iter()
-        .find(|p| p.id == provider_id && p.tool == tool)
-        .ok_or_else(|| api_error("not_found", "provider not found"))?;
-    let diffs =
-        build_projection_diff(service_provider).map_err(|e| api_error("projection_failed", e))?;
-    api_ok(
-        json!({ "changes": diffs }),
-        get_meta().map_err(|e| api_error("io_error", e))?,
-    )
-}
 
 #[tauri::command]
 pub async fn projection_apply(
@@ -95,24 +75,6 @@ pub async fn sync_run_now(app: tauri::AppHandle) -> Result<ApiOk<Value>, ApiErr>
 pub fn sync_status() -> Result<ApiOk<OutboxState>, ApiErr> {
     let outbox = load_outbox_state().map_err(|e| api_error("io_error", e))?;
     api_ok(outbox, get_meta().map_err(|e| api_error("io_error", e))?)
-}
-
-#[tauri::command]
-pub fn migration_status() -> Result<ApiOk<MigrationState>, ApiErr> {
-    let state = load_migration_state().map_err(|e| api_error("io_error", e))?;
-    api_ok(
-        state,
-        get_meta().unwrap_or(ApiMeta {
-            schema_version: SCHEMA_VERSION,
-            revision: 0,
-        }),
-    )
-}
-
-#[tauri::command]
-pub fn migration_run() -> Result<ApiOk<MigrationState>, ApiErr> {
-    let state = run_migration_impl().map_err(|e| api_error("migration_failed", e))?;
-    api_ok(state, get_meta().map_err(|e| api_error("io_error", e))?)
 }
 
 #[tauri::command]

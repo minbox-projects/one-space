@@ -157,13 +157,6 @@ pub(crate) fn migrate_providers_to_service_providers(old: ProvidersState) -> Ser
     }
 }
 
-pub(in crate::app_store) fn restore_missing_service_provider_api_keys_from_legacy(
-    state: &mut ServiceProvidersState,
-) -> Result<bool, String> {
-    let _ = state;
-    Ok(false)
-}
-
 fn service_providers_state_from_value(value: Value) -> Result<LoadedServiceProvidersState, String> {
     if let Ok(state) = serde_json::from_value::<ServiceProvidersState>(value.clone()) {
         return Ok(LoadedServiceProvidersState {

@@ -65,12 +65,6 @@ pub struct SessionUsageToolStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SessionUsageStatsResponse {
-    pub days: u16,
-    pub tools: Vec<SessionUsageToolStats>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionUsageDayBreakdown {
     pub tool: String,
     pub total_tokens: u64,
@@ -274,12 +268,6 @@ fn add_record_to_bucket(bucket: &mut UsageBucket, record: &UsageRecord) {
         .cache_read_tokens
         .saturating_add(record.cache_read_tokens);
     bucket.sessions.insert(record.session_id.clone());
-}
-
-#[tauri::command]
-pub fn sessions_usage_stats(days: Option<u16>) -> Result<SessionUsageStatsResponse, String> {
-    let days = normalize_usage_days(days);
-    Ok(build_sessions_usage_stats(days))
 }
 
 #[tauri::command]
@@ -554,15 +542,6 @@ fn truncate_for_error(text: &str) -> String {
     } else {
         out
     }
-}
-
-pub fn build_sessions_usage_stats(days: u16) -> SessionUsageStatsResponse {
-    let window = usage_window(days);
-    let tools = USAGE_TOOLS
-        .iter()
-        .map(|tool| build_sessions_usage_tool_stats_for_window(tool, &window, false))
-        .collect();
-    SessionUsageStatsResponse { days, tools }
 }
 
 pub fn build_sessions_usage_tool_stats(tool: &str, days: u16) -> SessionUsageToolStats {

@@ -1,6 +1,6 @@
 use crate::{
     ai_env, ai_news, ai_sessions, ai_workflow_profiles, ai_gateway, app_store, backup, cli_updates,
-    config, config_conflict, file_sharing, mcp_export,
+    config, file_sharing, mcp_export,
     mcp_servers, mcp_templates, messages, protocol_router, proxy, secrets, short_link, skills,
     ssh_tunnels, storage, subagents, version_detect, workspaces,
 };
@@ -247,9 +247,6 @@ pub fn run() {
             // CLI Updates
             cli_updates::check_cli_update,
             cli_updates::apply_cli_update,
-            // Config Conflict
-            config_conflict::check_config_conflicts,
-            config_conflict::apply_ai_environment_force,
             // Proxy
             proxy::get_proxy_config,
             proxy::save_proxy_config,
@@ -309,9 +306,7 @@ pub fn run() {
             app_store::service_providers_upsert,
             app_store::service_providers_delete,
             app_store::service_providers_set_active,
-            app_store::service_providers_set_inactive,
             app_store::service_providers_set_favorite,
-            app_store::service_providers_set_env_managed,
             app_store::service_providers_export,
             app_store::service_providers_import_preview,
             app_store::service_providers_import_apply,
@@ -322,7 +317,6 @@ pub fn run() {
             app_store::service_provider_presets_delete,
             ai_env::service_provider_fetch_models,
             // New storage/domain/projection/sync/migration API
-            app_store::storage_get_snapshot,
             app_store::dashboard_counts,
             app_store::cli_env_probe,
             app_store::launcher_list,
@@ -340,9 +334,7 @@ pub fn run() {
             app_store::sessions_update,
             app_store::sessions_delete,
             app_store::sessions_launch,
-            app_store::sessions_launch_with_prompt,
             app_store::sessions_set_favorite,
-            ai_sessions::sessions_usage_stats,
             ai_sessions::sessions_usage_clear_cache,
             ai_sessions::sessions_usage_tool_stats,
             ai_sessions::sessions_usage_day_stats,
@@ -353,12 +345,9 @@ pub fn run() {
             app_store::get_claude_config_dir,
             app_store::claude_profile_materialize,
             app_store::projection_apply,
-            app_store::projection_dry_run,
             app_store::sync_enqueue,
             app_store::sync_run_now,
             app_store::sync_status,
-            app_store::migration_status,
-            app_store::migration_run,
             app_store::migration_rollback,
             workspaces::workspaces_list,
             workspaces::workspace_get,

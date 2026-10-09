@@ -1,8 +1,7 @@
 use super::{
     load_service_providers_state, load_sessions_state, lock_sessions_state_write,
-    normalize_service_provider_record, restore_missing_service_provider_api_keys_from_legacy,
-    save_sessions_state, shared_profile_path, CryptoService, EncryptedBlob, ServiceProvidersState,
-    StorageEngine,
+    normalize_service_provider_record, save_sessions_state, shared_profile_path, CryptoService,
+    EncryptedBlob, ServiceProvidersState, StorageEngine,
 };
 use crate::config;
 use serde_json::{Map, Value};
@@ -155,18 +154,11 @@ pub(in crate::app_store) fn normalize_service_provider_ids(
 pub(in crate::app_store) fn normalize_loaded_service_providers_state(
     state: &mut ServiceProvidersState,
 ) -> Result<(HashMap<String, String>, bool), String> {
-    let mut changed = false;
     for provider in state.providers.iter_mut() {
         normalize_service_provider_record(provider);
     }
-    if restore_missing_service_provider_api_keys_from_legacy(state)? {
-        changed = true;
-    }
     let (id_map, changed_ids) = normalize_service_provider_ids(state);
-    if changed_ids {
-        changed = true;
-    }
-    Ok((id_map, changed))
+    Ok((id_map, changed_ids))
 }
 
 pub(in crate::app_store) fn apply_provider_id_map_to_sessions(

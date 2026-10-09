@@ -9,11 +9,6 @@ pub(crate) fn get_claude_profiles_dir() -> Result<PathBuf, String> {
     Ok(config::get_app_dir()?.join("claude_profiles"))
 }
 
-#[allow(dead_code)]
-pub(crate) fn claude_profile_dir(profile_id_or_name: &str) -> Result<PathBuf, String> {
-    Ok(get_claude_profiles_dir()?.join(safe_dir_name(profile_id_or_name)))
-}
-
 pub(crate) fn safe_dir_name(raw: &str) -> String {
     if raw.is_empty() {
         return "profile".to_string();
@@ -420,16 +415,10 @@ pub(crate) fn list_claude_profiles_sp(state: &ServiceProvidersState) -> Vec<Clau
         .collect()
 }
 
-#[allow(dead_code)]
-pub(crate) fn get_claude_config_dir(profile_id: &str) -> Result<String, String> {
-    let dir = claude_profile_dir(profile_id)?;
-    Ok(dir.to_string_lossy().to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        claude_profile_dir, get_claude_config_dir, get_claude_profiles_dir,
+        get_claude_profiles_dir,
         list_claude_profiles_sp, materialize_claude_settings_sp, read_claude_settings,
         resolve_claude_dir_name_sp, resolve_claude_profile_sp, safe_dir_name,
     };
@@ -468,14 +457,6 @@ mod tests {
         let dir = get_claude_profiles_dir().unwrap();
         assert!(dir.ends_with("claude_profiles"));
         assert!(dir.to_string_lossy().contains(".config/onespace"));
-    }
-
-    #[test]
-    fn test_claude_profile_dir() {
-        let dir = claude_profile_dir("work").unwrap();
-        let name = dir.file_name().unwrap().to_string_lossy().to_string();
-        assert_eq!(name, "work");
-        assert!(dir.to_string_lossy().contains("claude_profiles"));
     }
 
     #[test]
@@ -1025,13 +1006,6 @@ mod tests {
         let profiles = list_claude_profiles_sp(&state);
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].id, "work-claude");
-    }
-
-    #[test]
-    fn test_get_claude_config_dir() {
-        let dir = get_claude_config_dir("work").unwrap();
-        assert!(dir.contains("claude_profiles"));
-        assert!(dir.contains("work"));
     }
 
     #[test]

@@ -9,7 +9,6 @@ mod claude_profiles;
 mod cli_probe;
 mod cli_updates;
 mod config;
-mod config_conflict;
 mod crypto;
 mod file_sharing;
 mod git;

@@ -52,8 +52,3 @@ export function setLauncherToolVisible(
   current[toolId] = visible;
   writeLauncherToolVisibility(current);
 }
-
-export function isLauncherToolVisible(toolId: LauncherToolId): boolean {
-  const visibility = readLauncherToolVisibility();
-  return visibility[toolId] ?? DEFAULT_VISIBILITY[toolId] ?? false;
-}

@@ -2,7 +2,7 @@ use crate::app_store::{
     provider_env_managed, read_json_object, render_claude, render_claude_reset_to_unmanaged,
     render_codex, render_codex_reset_to_unmanaged, ServiceProviderRecord, StorageEngine,
 };
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use std::fs::{self};
 use std::path::PathBuf;
 
@@ -312,28 +312,4 @@ pub(in crate::app_store) fn apply_opencode_remove_projection(
         StorageEngine::atomic_write(&path, &content)?;
     }
     Ok(())
-}
-
-pub(in crate::app_store) fn build_projection_diff(
-    provider: &ServiceProviderRecord,
-) -> Result<Vec<Value>, String> {
-    let renders = render_projection(provider)?;
-    let mut diffs = Vec::new();
-
-    for (path, desired) in renders {
-        let current = if path.exists() {
-            fs::read_to_string(&path).unwrap_or_default()
-        } else {
-            String::new()
-        };
-        if current != desired {
-            diffs.push(json!({
-                "path": path.to_string_lossy(),
-                "current": current,
-                "desired": desired
-            }));
-        }
-    }
-
-    Ok(diffs)
 }

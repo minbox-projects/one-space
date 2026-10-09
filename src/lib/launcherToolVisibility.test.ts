@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   LAUNCHER_TOOL_VISIBILITY_KEY,
-  isLauncherToolVisible,
   readLauncherToolVisibility,
   setLauncherToolVisible,
 } from "@/lib/launcherToolVisibility";
@@ -33,7 +32,6 @@ describe("launcherToolVisibility", () => {
 
   it("新安装默认显示短链接工具", () => {
     expect(readLauncherToolVisibility()["short-link"]).toBe(true);
-    expect(isLauncherToolVisible("short-link")).toBe(true);
   });
 
   it("以完整默认值补充旧对象中的新增字段并保留有效显式偏好", async () => {
@@ -77,28 +75,26 @@ describe("launcherToolVisibility", () => {
 
   it("允许显式隐藏并重新显示短链接工具", () => {
     setLauncherToolVisible("short-link", false);
-    expect(isLauncherToolVisible("short-link")).toBe(false);
+    expect(readLauncherToolVisibility()["short-link"]).toBe(false);
 
     setLauncherToolVisible("short-link", true);
-    expect(isLauncherToolVisible("short-link")).toBe(true);
+    expect(readLauncherToolVisibility()["short-link"]).toBe(true);
   });
 
   it("新安装默认显示 JT/T 数据解析工具", () => {
     expect(readLauncherToolVisibility()["jtt-data-parser"]).toBe(true);
-    expect(isLauncherToolVisible("jtt-data-parser")).toBe(true);
   });
 
   it("新安装默认显示协议路由工具", () => {
     expect(readLauncherToolVisibility()["protocol-router"]).toBe(true);
-    expect(isLauncherToolVisible("protocol-router")).toBe(true);
   });
 
   it("允许显式隐藏并重新显示协议路由工具", () => {
     setLauncherToolVisible("protocol-router", false);
-    expect(isLauncherToolVisible("protocol-router")).toBe(false);
+    expect(readLauncherToolVisibility()["protocol-router"]).toBe(false);
 
     setLauncherToolVisible("protocol-router", true);
-    expect(isLauncherToolVisible("protocol-router")).toBe(true);
+    expect(readLauncherToolVisibility()["protocol-router"]).toBe(true);
   });
 
   it("以默认值补充缺失 JT/T 键的旧可见性记录", () => {
@@ -125,10 +121,10 @@ describe("launcherToolVisibility", () => {
 
   it("允许显式隐藏并重新显示 JT/T 数据解析工具", () => {
     setLauncherToolVisible("jtt-data-parser", false);
-    expect(isLauncherToolVisible("jtt-data-parser")).toBe(false);
+    expect(readLauncherToolVisibility()["jtt-data-parser"]).toBe(false);
 
     setLauncherToolVisible("jtt-data-parser", true);
-    expect(isLauncherToolVisible("jtt-data-parser")).toBe(true);
+    expect(readLauncherToolVisibility()["jtt-data-parser"]).toBe(true);
   });
 
   it.each([
@@ -154,20 +150,17 @@ describe("launcherToolVisibility", () => {
     expect(
       readLauncherToolVisibility()["ai-workflow-model-switcher"],
     ).toBe(true);
-    expect(
-      isLauncherToolVisible("ai-workflow-model-switcher"),
-    ).toBe(true);
   });
 
   it("允许显式隐藏并重新显示 AI Workflow 模型切换工具", () => {
     setLauncherToolVisible("ai-workflow-model-switcher", false);
     expect(
-      isLauncherToolVisible("ai-workflow-model-switcher"),
+      readLauncherToolVisibility()["ai-workflow-model-switcher"],
     ).toBe(false);
 
     setLauncherToolVisible("ai-workflow-model-switcher", true);
     expect(
-      isLauncherToolVisible("ai-workflow-model-switcher"),
+      readLauncherToolVisibility()["ai-workflow-model-switcher"],
     ).toBe(true);
   });
 
@@ -214,11 +207,6 @@ describe("registry-derived visibility defaults", () => {
     >;
     for (const tool of quickTools) {
       expect(visibility[tool.id]).toBe(tool.defaultVisible);
-      expect(
-        isLauncherToolVisible(
-          tool.id as unknown as Parameters<typeof isLauncherToolVisible>[0],
-        ),
-      ).toBe(tool.defaultVisible);
     }
   });
 

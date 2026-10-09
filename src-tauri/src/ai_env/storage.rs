@@ -1,6 +1,5 @@
 use super::{AiProvider, AiProvidersState};
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs::{self};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -516,31 +515,4 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
     }
 
     Ok(state)
-}
-
-#[allow(dead_code)]
-pub(in crate::ai_env) fn save_ai_providers_internal(
-    state: &AiProvidersState,
-) -> Result<(), String> {
-    let path = get_providers_path()?;
-    let mut state_to_save = state.clone();
-
-    // Always encrypt when saving to file
-    process_providers_sensitive_data(&mut state_to_save, true)?;
-
-    let json = serde_json::to_string_pretty(&state_to_save).map_err(|e| e.to_string())?;
-    let mut file = File::create(&path).map_err(|e| e.to_string())?;
-    file.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[allow(dead_code)]
-pub async fn save_ai_providers(
-    app: tauri::AppHandle,
-    state: AiProvidersState,
-) -> Result<(), String> {
-    save_ai_providers_internal(&state)?;
-    let _ = crate::app_store::sync_enqueue(app, "ai_env_save_providers".to_string()).await;
-
-    Ok(())
 }

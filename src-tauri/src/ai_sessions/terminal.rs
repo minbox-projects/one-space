@@ -2,7 +2,7 @@ use super::{
     antigravity_continue_command, antigravity_new_command, antigravity_resume_command,
     build_create_seed_session_id, claude_new_command, claude_resume_command, codex_new_command,
     codex_resume_command, configured_create_command, now_epoch_millis, opencode_new_command,
-    resolve_native_session_id_after_create, save_ai_session, AiSession,
+    resolve_native_session_id_after_create,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -719,21 +719,6 @@ pub fn launch_native_session_with_options(
     )
 }
 
-#[allow(dead_code)]
-pub fn launch_native_session(
-    working_dir: &str,
-    model_type: &str,
-    session_id: &str,
-) -> Result<(), String> {
-    launch_native_session_with_options(
-        working_dir,
-        model_type,
-        session_id,
-        TerminalPermissionMode::Default,
-        &LaunchOptions::default(),
-    )
-}
-
 pub fn launch_native_session_for_create_with_options(
     working_dir: &str,
     model_type: &str,
@@ -764,47 +749,4 @@ pub fn launch_native_session_for_create_with_options(
         prepared.started_at_ms,
         launch_env_ref,
     ))
-}
-
-pub fn launch_native_session_for_create(
-    working_dir: &str,
-    model_type: &str,
-    requested_session_id: Option<&str>,
-) -> Result<Option<String>, String> {
-    launch_native_session_for_create_with_options(
-        working_dir,
-        model_type,
-        requested_session_id,
-        TerminalPermissionMode::Default,
-        &LaunchOptions::default(),
-    )
-}
-
-#[allow(dead_code)]
-pub fn create_native_session(
-    name: String,
-    working_dir: String,
-    model_type: String,
-    tool_session_id: String,
-) -> Result<AiSession, String> {
-    let id = uuid::Uuid::new_v4().to_string();
-    let created_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_secs();
-
-    let session = AiSession {
-        id,
-        name,
-        working_dir: working_dir.clone(),
-        model_type: model_type.clone(),
-        tool_session_id: tool_session_id.clone(),
-        created_at,
-    };
-
-    save_ai_session(session.clone())?;
-
-    let _ = launch_native_session_for_create(&working_dir, &model_type, Some(&tool_session_id))?;
-
-    Ok(session)
 }

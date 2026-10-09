@@ -122,7 +122,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "工具箱唯一注册表与共享运行时：每个工具一个描述符（`ToolboxToolDescriptor`），Hub 卡片来自 `hub` surface 且绝不因启动台可见性隐藏，Hub 详情、Launcher 快速工具与内部工具箱目标（Notes/Snippets，经 `launcher-internal`）、导航别名解析、启动台可见性默认值、`listToolboxTools` 按 `defaultOrder` 的排序、Notes/Snippets 侧边栏条目以及 App 活动工具面包屑由注册表派生；托盘菜单结构仍为手工维护，仅 Notes/Snippets 标签经注册表解析（缺失时回退 `tray.notes` / `tray.snippets`）；另提供共享 invoke（`invokeToolboxCommand` / `ToolboxInvokeError` / `isToolboxInvokeAvailable`）、localStorage（`readLocalJson` / `writeLocalJson`）、历史（`createHistoryStore`）、复制反馈（`useCopyToClipboard`，`COPIED_FEEDBACK_RESET_MS = 1600`）、Tauri 事件（`useTauriEvent`）、可见性轮询（`useVisibleInterval`）与 ToolShell、ToolErrorBanner、ToolStatusBadge、ToolStatusDot、ToolEmptyState",
+      "responsibility": "工具箱唯一注册表与共享运行时：每个工具一个描述符（`ToolboxToolDescriptor`），Hub 卡片来自 `hub` surface 且绝不因启动台可见性隐藏，Hub 详情、Launcher 快速工具与内部工具箱目标（Notes/Snippets，经 `launcher-internal`）、导航别名解析、启动台可见性默认值、`listToolboxTools` 按 `defaultOrder` 的排序、Notes/Snippets 侧边栏条目以及 App 活动工具面包屑由注册表派生；托盘菜单结构仍为手工维护，仅 Notes/Snippets 标签经注册表解析（缺失时回退 `tray.notes` / `tray.snippets`）；另提供共享 invoke（`invokeToolboxCommand` / `ToolboxInvokeError` / `isToolboxInvokeAvailable`）、localStorage 写入（`writeLocalJson`）、复制反馈（`useCopyToClipboard`，`COPIED_FEEDBACK_RESET_MS = 1600`）、Tauri 事件（`useTauriEvent`）、可见性轮询（`useVisibleInterval`）与 ToolShell、ToolErrorBanner、ToolStatusBadge、ToolStatusDot、ToolEmptyState",
       "entries": [
         "src/toolbox/registry.ts"
       ],
@@ -143,7 +143,6 @@
         "src/toolbox/plugins/ssh-tunnels.ts",
         "src/toolbox/invoke.ts",
         "src/toolbox/localStore.ts",
-        "src/toolbox/historyStore.ts",
         "src/toolbox/useCopyToClipboard.ts",
         "src/toolbox/useTauriEvent.ts",
         "src/toolbox/useVisibleInterval.ts",
@@ -157,7 +156,6 @@
         "src/toolbox/registry.test.ts",
         "src/toolbox/invoke.test.ts",
         "src/toolbox/localStore.test.ts",
-        "src/toolbox/historyStore.test.ts",
         "src/toolbox/useCopyToClipboard.test.tsx",
         "src/toolbox/useTauriEvent.test.tsx",
         "src/toolbox/useVisibleInterval.test.tsx",
@@ -258,19 +256,7 @@
         },
         {
           "file": "src/toolbox/localStore.ts",
-          "name": "readLocalJson",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/toolbox/localStore.ts",
           "name": "writeLocalJson",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/toolbox/historyStore.ts",
-          "name": "createHistoryStore",
           "kind": "function",
           "visibility": "public"
         },
@@ -348,7 +334,6 @@
         "src/toolbox/plugins/ssh-tunnels.ts",
         "src/toolbox/invoke.ts",
         "src/toolbox/localStore.ts",
-        "src/toolbox/historyStore.ts",
         "src/toolbox/useCopyToClipboard.ts",
         "src/toolbox/useTauriEvent.ts",
         "src/toolbox/useVisibleInterval.ts",
@@ -360,7 +345,6 @@
         "src/toolbox/registry.test.ts",
         "src/toolbox/invoke.test.ts",
         "src/toolbox/localStore.test.ts",
-        "src/toolbox/historyStore.test.ts",
         "src/toolbox/useCopyToClipboard.test.tsx",
         "src/toolbox/useTauriEvent.test.tsx",
         "src/toolbox/useVisibleInterval.test.tsx",
@@ -2884,7 +2868,6 @@
       "related_files": [
         "src-tauri/src/runtime_profiles.rs",
         "src-tauri/src/claude_profiles.rs",
-        "src-tauri/src/config_conflict.rs",
         "src-tauri/src/secrets.rs",
         "src-tauri/src/crypto.rs",
         "src-tauri/src/storage.rs"
@@ -2933,7 +2916,6 @@
         "src-tauri/src/config.rs",
         "src-tauri/src/runtime_profiles.rs",
         "src-tauri/src/claude_profiles.rs",
-        "src-tauri/src/config_conflict.rs",
         "src-tauri/src/secrets.rs",
         "src-tauri/src/crypto.rs",
         "src-tauri/src/storage.rs"

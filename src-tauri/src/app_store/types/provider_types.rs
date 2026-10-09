@@ -1,4 +1,4 @@
-use crate::app_store::{default_session_name_source, SchemaMeta};
+use crate::app_store::default_session_name_source;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeSet, HashMap};
@@ -251,15 +251,6 @@ impl Default for OutboxState {
             last_error: None,
         }
     }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AppSnapshot {
-    pub providers: Value,
-    pub sessions: Value,
-    pub config: Value,
-    pub schema: SchemaMeta,
-    pub outbox: OutboxState,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

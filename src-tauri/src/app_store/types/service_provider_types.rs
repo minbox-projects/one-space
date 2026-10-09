@@ -167,60 +167,6 @@ pub struct ServiceProvidersState {
     pub providers: Vec<ServiceProviderRecord>,
 }
 
-/// Input for creating/updating a service provider — replaces ProviderInput.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct ServiceProviderInput {
-    pub id: String,
-    pub name: String,
-    pub tool: String,
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default)]
-    pub code: Option<String>,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub icon: Option<String>,
-    #[serde(default)]
-    pub claude_api_format: Option<String>,
-    #[serde(default)]
-    pub claude_connection_mode: Option<String>,
-    #[serde(default)]
-    pub protocol_router_upstream_provider_id: Option<String>,
-    #[serde(default)]
-    pub protocol_router_wire_api: Option<String>,
-    #[serde(default)]
-    pub claude_auth_env_key: Option<String>,
-    #[serde(default)]
-    pub claude_model_mappings: Option<Vec<ClaudeModelMapping>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_enable_tool_search: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_auto_memory_enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_always_thinking_enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_away_summary_enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_include_git_instructions: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_enable_attribution: Option<bool>,
-    #[serde(default)]
-    pub is_enabled: Option<bool>,
-    #[serde(default)]
-    pub provider_key: Option<String>,
-    #[serde(default)]
-    pub favorite_at: Option<u64>,
-    #[serde(default)]
-    pub fields: Map<String, Value>,
-    /// Cached models from upstream fetch (optional, for draft support)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fetched_models: Option<Vec<String>>,
-}
-
 pub(in crate::app_store) fn default_claude_api_format() -> String {
     "anthropic_messages".to_string()
 }

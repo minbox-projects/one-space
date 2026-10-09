@@ -2,46 +2,17 @@ use super::{
     api_error, api_ok, cli_has_system_config, detect_cli_installation,
     extract_active_map_from_snapshot, extract_providers_from_snapshot,
     filter_sessions_by_history_window, get_meta, install_guide_for, is_managed_tool,
-    load_launcher_state, load_outbox_state, load_service_providers_state, load_sessions_state,
-    normalize_device_label, parse_json_array_len, provider_snapshot_candidates,
-    provider_snapshot_quality_score, read_provider_snapshot_value,
-    resolve_claude_config_dir_for_provider_id, run_migration_impl, save_service_providers_internal,
-    service_providers_to_legacy_view, session_to_legacy, validate_provider_uuid_param, ApiErr,
-    ApiMeta, ApiOk, AppSnapshot, CliEnvProbeResult, DashboardCounts, ServiceProviderRecord,
-    StorageEngine, SyncedDeviceProvidersView,
+    load_launcher_state, load_service_providers_state, load_sessions_state, normalize_device_label,
+    parse_json_array_len, provider_snapshot_candidates, provider_snapshot_quality_score,
+    read_provider_snapshot_value, resolve_claude_config_dir_for_provider_id, run_migration_impl,
+    save_service_providers_internal, validate_provider_uuid_param, ApiErr, ApiMeta, ApiOk,
+    CliEnvProbeResult, DashboardCounts, ServiceProviderRecord, SyncedDeviceProvidersView,
 };
 use crate::{config, storage, workspaces};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs::{self};
 use std::path::PathBuf;
-
-#[tauri::command]
-pub fn storage_get_snapshot() -> Result<ApiOk<AppSnapshot>, ApiErr> {
-    if let Err(e) = run_migration_impl() {
-        return Err(api_error("migration_failed", e));
-    }
-    let providers = service_providers_to_legacy_view(
-        &load_service_providers_state().map_err(|e| api_error("io_error", e))?,
-    );
-    let sessions = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-    let cfg = config::get_storage_config().map_err(|e| api_error("config_error", e))?;
-    let schema = StorageEngine::load_schema().map_err(|e| api_error("io_error", e))?;
-    let outbox = load_outbox_state().map_err(|e| api_error("io_error", e))?;
-
-    api_ok(
-        AppSnapshot {
-            providers: serde_json::to_value(providers)
-                .map_err(|e| api_error("serialize_error", e.to_string()))?,
-            sessions: Value::Array(sessions.sessions.iter().map(session_to_legacy).collect()),
-            config: serde_json::to_value(cfg)
-                .map_err(|e| api_error("serialize_error", e.to_string()))?,
-            schema,
-            outbox,
-        },
-        get_meta().map_err(|e| api_error("io_error", e))?,
-    )
-}
 
 pub fn list_synced_device_providers() -> Result<Vec<SyncedDeviceProvidersView>, ApiErr> {
     if let Err(e) = run_migration_impl() {

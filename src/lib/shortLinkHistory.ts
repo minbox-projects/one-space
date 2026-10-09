@@ -1,4 +1,3 @@
-import { createHistoryStore } from "@/toolbox/historyStore";
 import { writeLocalJson } from "@/toolbox/localStore";
 
 export const SHORT_LINK_HISTORY_KEY = "onespace:short-link-history";
@@ -67,14 +66,19 @@ function isHistoryRecord(value: unknown): value is ShortLinkHistoryRecord {
   );
 }
 
-const historyStore = createHistoryStore<ShortLinkHistoryRecord>({
-  storageKey: SHORT_LINK_HISTORY_KEY,
-  // The store normalizes and de-duplicates; the load-time sort and the 50-entry
-  // cap are applied by `newestFirst` so out-of-order records are ordered before
-  // truncation. No limit here so the full valid set reaches that sort.
-  limit: Number.MAX_SAFE_INTEGER,
-  isValidEntry: isHistoryRecord,
-});
+function dedupeHistoryRecords(
+  records: ShortLinkHistoryRecord[],
+): ShortLinkHistoryRecord[] {
+  const result: ShortLinkHistoryRecord[] = [];
+  const seen = new Set<string>();
+  for (const record of records) {
+    const key = JSON.stringify(record);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(record);
+  }
+  return result;
+}
 
 function newestFirst(records: ShortLinkHistoryRecord[]): ShortLinkHistoryRecord[] {
   return [...records]
@@ -139,9 +143,10 @@ export function loadShortLinkHistory(): ShortLinkHistoryResult {
     return recoverInvalidHistory();
   }
 
-  // The shared store performs the safe read and entry normalization; the
-  // history contract additionally guarantees newest-first order and the cap.
-  return { status: "success", records: newestFirst(historyStore.read()) };
+  const parsedRecords: ShortLinkHistoryRecord[] = parsed;
+  // The single parsed read is validated above; de-duplicate identical entries as
+  // the former store did, then apply the newest-first guarantee and the cap.
+  return { status: "success", records: newestFirst(dedupeHistoryRecords(parsedRecords)) };
 }
 
 export function addShortLinkHistory(longUrl: string, shortUrl: string): ShortLinkHistoryResult {

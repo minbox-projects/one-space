@@ -754,69 +754,6 @@ pub async fn service_providers_set_active(
     Ok(response)
 }
 
-#[tauri::command]
-pub async fn service_providers_set_inactive(
-    app: tauri::AppHandle,
-    provider_id: String,
-) -> Result<ApiOk<Value>, ApiErr> {
-    validate_provider_uuid_param(&provider_id).map_err(|e| api_error("invalid_payload", e))?;
-    let _operation = lock_service_provider_operation().map_err(|e| api_error("io_error", e))?;
-    let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    let provider = state
-        .providers
-        .iter()
-        .find(|p| p.id == provider_id && p.tool == "opencode")
-        .cloned()
-        .ok_or_else(|| api_error("not_found", "opencode provider not found"))?;
-    state.active_opencode.retain(|id| id != &provider_id);
-    let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
-
-    apply_opencode_remove_projection(&provider).map_err(|e| api_error("projection_failed", e))?;
-
-    enqueue_sync_event("service_providers", "service_providers_set_inactive")
-        .map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
-    api_ok(
-        json!({ "provider_id": provider_id, "inactive": true }),
-        ApiMeta {
-            schema_version: schema.schema_version,
-            revision: schema.revision,
-        },
-    )
-}
-
-#[tauri::command]
-pub async fn service_providers_set_env_managed(
-    app: tauri::AppHandle,
-    provider_id: String,
-    env_managed: bool,
-) -> Result<ApiOk<Value>, ApiErr> {
-    validate_provider_uuid_param(&provider_id).map_err(|e| api_error("invalid_payload", e))?;
-    let _operation = lock_service_provider_operation().map_err(|e| api_error("io_error", e))?;
-    let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    let p = state
-        .providers
-        .iter_mut()
-        .find(|p| p.id == provider_id)
-        .ok_or_else(|| api_error("not_found", "service provider not found"))?;
-    p.env_managed = Some(env_managed);
-    let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
-    enqueue_sync_event("service_providers", "service_providers_set_env_managed")
-        .map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
-    api_ok(
-        json!({ "provider_id": provider_id, "env_managed": env_managed }),
-        ApiMeta {
-            schema_version: schema.schema_version,
-            revision: schema.revision,
-        },
-    )
-}
-
 pub(in crate::app_store) fn set_service_provider_favorite_impl(
     state: &mut ServiceProvidersState,
     provider_id: &str,

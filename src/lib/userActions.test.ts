@@ -1,8 +1,7 @@
 import type { TFunction } from "i18next";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   buildMessageInput,
-  confirmSensitiveAction,
   notifySystemEvent,
   notifyActionResult,
   runUserAction,
@@ -106,20 +105,6 @@ describe("userActions", () => {
     expect(context.recordMessage).toHaveBeenCalledTimes(1);
     expect(context.pushToast).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "error" }),
-    );
-  });
-
-  it("uses sensitive action presets with overrides", async () => {
-    const confirm = vi.fn(async () => true);
-    await confirmSensitiveAction(
-      { confirm },
-      "delete",
-      { message: "Delete this provider?" },
-    );
-
-    expect(confirm).toHaveBeenCalledWith(
-      "Delete this provider?",
-      expect.objectContaining({ okLabel: "Delete", kind: "error" }),
     );
   });
 

@@ -449,16 +449,6 @@ pub async fn sessions_launch(
     sessions_launch_impl(app, session_id, permission_mode, None).await
 }
 
-#[tauri::command]
-pub async fn sessions_launch_with_prompt(
-    app: tauri::AppHandle,
-    session_id: String,
-    permission_mode: Option<String>,
-    initial_prompt: Option<String>,
-) -> Result<ApiOk<Value>, ApiErr> {
-    sessions_launch_impl(app, session_id, permission_mode, initial_prompt).await
-}
-
 pub(crate) async fn sessions_launch_impl(
     app: tauri::AppHandle,
     session_id: String,

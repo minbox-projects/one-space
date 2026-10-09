@@ -3,20 +3,6 @@ import type { TFunction } from "i18next";
 import type { MessageCreateInput, MessageSeverity, MessageTarget } from "@/lib/messages";
 
 export type ToastKind = "info" | "success" | "warning" | "error" | "loading";
-export type SensitiveActionKind =
-  | "delete"
-  | "restore"
-  | "import"
-  | "export"
-  | "activate"
-  | "apply"
-  | "sync"
-  | "cli_update"
-  | "backup"
-  | "security_change"
-  | "rotate_token"
-  | "external_launch"
-  | "open";
 
 export interface ActionContext {
   t: TFunction;
@@ -88,103 +74,6 @@ export interface SystemEventDescriptor {
   durationMs?: number;
 }
 
-const SENSITIVE_ACTION_PRESETS: Record<
-  SensitiveActionKind,
-  Required<NonNullable<ActionDescriptor["confirm"]>>
-> = {
-  delete: {
-    message: "Delete this item?",
-    title: "Delete",
-    okLabel: "Delete",
-    cancelLabel: "Cancel",
-    kind: "error",
-  },
-  restore: {
-    message: "Restore this item?",
-    title: "Restore",
-    okLabel: "Restore",
-    cancelLabel: "Cancel",
-    kind: "warning",
-  },
-  import: {
-    message: "Import and overwrite current data if needed?",
-    title: "Import",
-    okLabel: "Import",
-    cancelLabel: "Cancel",
-    kind: "warning",
-  },
-  export: {
-    message: "Export current data?",
-    title: "Export",
-    okLabel: "Export",
-    cancelLabel: "Cancel",
-    kind: "warning",
-  },
-  activate: {
-    message: "Activate this item now?",
-    title: "Activate",
-    okLabel: "Activate",
-    cancelLabel: "Cancel",
-    kind: "warning",
-  },
-  apply: {
-    message: "Apply this change now?",
-    title: "Apply",
-    okLabel: "Apply",
-    cancelLabel: "Cancel",
-    kind: "warning",
-  },
-  sync: {
-    message: "Run sync now?",
-    title: "Sync",
-    okLabel: "Sync",
-    cancelLabel: "Cancel",
-    kind: "warning",
-  },
-  cli_update: {
-    message: "Apply this CLI update now?",
-    title: "CLI Update",
-    okLabel: "Update",
-    cancelLabel: "Cancel",
-    kind: "warning",
-  },
-  backup: {
-    message: "Create or modify backup data now?",
-    title: "Backup",
-    okLabel: "Continue",
-    cancelLabel: "Cancel",
-    kind: "warning",
-  },
-  security_change: {
-    message: "Apply this security-related change?",
-    title: "Security Change",
-    okLabel: "Apply",
-    cancelLabel: "Cancel",
-    kind: "warning",
-  },
-  rotate_token: {
-    message: "Rotate this token now?",
-    title: "Rotate Token",
-    okLabel: "Rotate",
-    cancelLabel: "Cancel",
-    kind: "warning",
-  },
-  external_launch: {
-    message: "Open this external target?",
-    title: "Open External Target",
-    okLabel: "Open",
-    cancelLabel: "Cancel",
-    kind: "warning",
-  },
-  open: {
-    message: "Open this target?",
-    title: "Open",
-    okLabel: "Open",
-    cancelLabel: "Cancel",
-    kind: "warning",
-  },
-};
-
 function defaultSuccessTitle(t: TFunction) {
   return t("actionSucceeded", "Action completed");
 }
@@ -222,20 +111,6 @@ export function buildMessageInput(
           : {}),
     },
   };
-}
-
-export async function confirmSensitiveAction(
-  context: Pick<ActionContext, "confirm">,
-  kind: SensitiveActionKind,
-  overrides?: Partial<NonNullable<ActionDescriptor["confirm"]>>,
-) {
-  const preset = SENSITIVE_ACTION_PRESETS[kind];
-  return context.confirm(overrides?.message || preset.message, {
-    title: overrides?.title || preset.title,
-    okLabel: overrides?.okLabel || preset.okLabel,
-    cancelLabel: overrides?.cancelLabel || preset.cancelLabel,
-    kind: overrides?.kind || preset.kind,
-  });
 }
 
 export async function notifyActionResult(

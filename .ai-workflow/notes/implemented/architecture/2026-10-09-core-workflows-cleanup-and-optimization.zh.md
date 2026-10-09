@@ -6,7 +6,7 @@ Status: implemented
 
 ## Problem
 
-GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入口，已各自演化为不同实现。安装的 CLI 会改写会话名（空格与点号转为下划线）、自行拼装启动命令、写明文会话 JSON，并伪造原生会话 ID；GUI 则走另一套新终端适配器。`resume` 分支在 Shell 脚本里硬编码各工具恢复命令，忽略共享的 provider 与 runtime 环境。服务商激活与 `onespace env use` 同样分叉，而 OpenCode 的活动服务商被表示为单个槽位，而非其真实的多活动集合。本记录描述计划 `20261009-core-workflows-cleanup-and-optimization` 已交付的事实；当前正文覆盖前两步，该计划的后续步骤不在此描述。
+GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入口，已各自演化为不同实现。安装的 CLI 会改写会话名（空格与点号转为下划线）、自行拼装启动命令、写明文会话 JSON，并伪造原生会话 ID；GUI 则走另一套新终端适配器。`resume` 分支在 Shell 脚本里硬编码各工具恢复命令，忽略共享的 provider 与 runtime 环境。服务商激活与 `onespace env use` 同样分叉，而 OpenCode 的活动服务商被表示为单个槽位，而非其真实的多活动集合。本记录描述计划 `20261009-core-workflows-cleanup-and-optimization` 已交付的事实；当前正文覆盖前三步，该计划的后续步骤不在此描述。
 
 ## Decision
 
@@ -28,6 +28,11 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - Step 2 — 让监听器状态绑定任务身份并干净停止：`RunningServer` 携带单调 `generation`；`run_server` 仅在槽位仍持有同一 generation 时退休槽位并发布 `running=false`（既有 `ai-gateway-status-update` 事件），因此出错的旧任务绝不清除替换后的监听器，同一端口可重启。`shutdown_runtime_services` 幂等地停止网关监听器与模板计划，并由托盘退出、`quit_app` 与 `RunEvent::Exit` 调用。
 - Step 2 — 将前端降级为只读/订阅适配器：挂载在 `src/App.tsx` 的 `useTemplateAutoRefresh` 现在只在挂载时执行一次 `ai_gateway_template_auto_refresh_status` 读取，并订阅 `ai-gateway-template-auto-refresh-updated` 一次。它不保留计时器、不发起同步调用、没有 in-flight 注册表、不构建消息，`useTemplateAutoRefreshFailures` 保持其 map 形状。`src/lib/aiGateway.ts` 新增 `aiGatewayTemplateAutoRefreshStatus`、`TemplateAutoRefreshFailure` / `TemplateAutoRefreshStatus` 类型与事件字面量；AI Gateway 手动同步保留本地 spinner 并依赖后端 guard 与快照。
 
+- Step 3 — 移除已审计的 Rust 孤儿闭包：`save_ai_providers`/`save_ai_providers_internal`（`ai_env/storage.rs`）；`save_ai_session`/`delete_ai_session`（`ai_sessions/types_store.rs`，保留仍在使用的 `get_ai_sessions`/`AiSession` 迁移读取器）；`create_native_session`/`launch_native_session`/`launch_native_session_for_create`（`ai_sessions/terminal.rs`，保留 `*_with_options` 变体）；no-op 的 `restore_missing_service_provider_api_keys_from_legacy` 及其在 `normalize_loaded_service_providers_state` 中的惰性调用；`runtime_profile_exists`/`materialize_strict_profile`/`cleanup_stale_runtime_profiles`（`runtime_profiles.rs`，保留 `runtime_env_for_profile`）；`ServiceProviderInput`；`claude_profiles::claude_profile_dir`/`get_claude_config_dir`（保留 `get_claude_profiles_dir` 与 `app_store::get_claude_config_dir` 命令）；`AppSnapshot`；以及 `build_projection_diff`。
+- Step 3 — 连同封装退役十个未使用命令：`check_config_conflicts`（并删除整个 `config_conflict.rs` 模块）、`apply_ai_environment_force`、`storage_get_snapshot`、`sessions_launch_with_prompt`、`sessions_usage_stats`（以及仅被其消费的 `build_sessions_usage_stats`/`SessionUsageStatsResponse`）、`projection_dry_run`、`migration_status`、`migration_run`、`service_providers_set_inactive` 与 `service_providers_set_env_managed`。永久迁移读取器、活动的 action descriptor 与共享通知函数全部保留。
+- Step 3 — 移除已审计的前端 helper：`readLocalJson`（`localStore.ts` 保留 `writeLocalJson`）；`isLauncherToolVisible`（`launcherToolVisibility` 的其余导出保留）；`confirmSensitiveAction`/`SensitiveActionKind`/`SENSITIVE_ACTION_PRESETS`（`runUserAction` 与其余 user-action helper 保留）；以及 `src/toolbox/historyStore.ts` 模块（`createHistoryStore` 成为孤儿）。`shortLinkHistory.ts` 简化为单次原始读取与解析，内置 `dedupeHistoryRecords`，保留全有或全无的无效历史恢复、50 条上限前的按时间倒序以及可观测的错误结果。
+- Step 3 — 包清理：移除 npm 包 `ssh2`、`ssh2-promise`、`base-64`、`filesize`、`@types/base-64`、`@types/filesize` 与 `@types/uuid`，保留运行时 `uuid` 与 Rust `ssh2`/`base64` crate；锁文件用 `--package-lock-only` 重新生成，移除 18 个包条目并把根/锁元数据归一化到 `0.1.44` 以匹配 `package.json`。该归一化仅限锁元数据；三个应用版本文件不变。
+
 ## Alternatives considered
 
 - 保留 Shell 脚本写明文会话 JSON，只修补名称或 ID。拒绝原因：它无法与 GUI 共享 canonical 注册、写者协调、pending 绑定或 spawn 失败回滚。
@@ -39,6 +44,7 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - 让 `env use` 像 `Apply to CLI` 一样投影 CLI 配置。拒绝原因：`env use` 的文档语义是无投影的绑定更新，投影是另一个显式动作。
 - Step 2 — 保留前端调度器，只为隐藏窗口增加后端循环。拒绝原因：两个 owner 必须协调计时、失败状态与通知；单一进程调度器消除重复所有权，而不是协调它。
 - Step 2 — 让自动竞争者等待忙碌的同模板手动同步。拒绝原因：定时批次不应阻塞在操作者工作上；自动竞争者跳过，而手动竞争者复用进行中的结果。
+- Step 3 — 保留已审计符号并加 `#[allow(dead_code)]`，或为兼容保留已退役命令。拒绝原因：最终静态、动态、原生与 CLI 调用方检查证明没有剩余生产消费者，已退役命令未有文档，且永久迁移读取器与活动功能路径均保留。
 
 ## Consequences
 
@@ -53,5 +59,8 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - Step 2 部分取代：[Provider Templates Refresh Automatically on a Persisted Interval](../feature/2026-09-23-template-auto-refresh.md)、[Template Auto Refresh Runs One Batch at App Start](../bug-fix/2026-09-29-template-autorefresh-startup-batch.md) 与 [Automatic Template Sync Notifies the Message Center on Real Mapping Changes](../feature/2026-09-24-ai-gateway-template-auto-sync-notification.md) 保留并交叉链接。它们的间隔、启动批次与 additions-only 决策继续有效，而本步骤替换了前端调度器所有权、前端消息生成以及通知记录中已被拒绝的后端替代方案。没有记录被完整取代，因此没有任何记录被归档。
 - Step 2 已验证证据：`cargo test --lib ai_gateway` 通过 627，其中 `tests/auto_refresh.rs`（启动恰好一次、仅合格模板、串行、tick 跳过、自动忙碌跳过并手动 follower 复用、失败快照事件、reset/re-arm）与 `tests/runtime_lifecycle.rs`（故障状态/重启，旧任务不能清理替换后的监听器）；`app_runtime` 通过 14、3 ignored；前端 Step 2 门禁通过 19 文件 513 测试，含 `AiGateway` 67、`ProviderTemplateSection` 18、hook 适配器 4 与 `App.runtimeOwnership` 1；`npm run build` 退出 0。
 - Step 2 诚实限制：生产 `start_scheduler` 的 Wry 路径仅通过受控执行器的测试接缝覆盖；Windows 分支未在本 macOS 主机上做运行时测试；本次未重跑 release-profile 运行时 smoke。
+- Step 3 已验证证据：`cargo test --lib ai_env` 通过 10、`ai_sessions` 通过 82/2 ignored、`app_store` 通过 123/2 ignored、`claude_profiles` 通过 34；前端 Step 3 门禁通过 9 文件 101 测试，`shortLinkHistory` 与 `ShortLinkTool` 通过 48 个未修改测试，`npm run build` 退出 0。
+- Step 3 诚实限制：`loadShortLinkHistory` 内的 `dedupeHistoryRecords` 行为已实现但未被直接特征化（不同 URL 行为已覆盖）；未对先前偏离的文件应用 rustfmt；Step 4–8 尚未开始。
+- Step 3 部分取代：[Toolbox Plugin Registry Replaces Hand-Maintained Tool Lists](../architecture/2026-09-25-toolbox-plugin-registry.md) 被部分取代。其注册表、共享 invoke/事件/轮询/复制与移除决策继续有效，而其 `readLocalJson`/`createHistoryStore` 共享运行时事实由本步骤替换；该记录保留并交叉链接，不归档。没有其他活动记录被改动。
 
 - 诚实的限制：release-profile 的权限行为未独立测试；`--permission-mode` 的缺值/非法值路径已实现但只有单测覆盖；显示名无法通过真实二进制 smoke 观测，由共享服务特征化覆盖；Windows `LockFile` 分支未在本次 macOS-only 验证中做运行时测试。该计划后续步骤尚未开始，且刻意不在此描述。

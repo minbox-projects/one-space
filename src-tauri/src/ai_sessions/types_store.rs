@@ -160,29 +160,3 @@ pub fn get_ai_sessions() -> Result<Vec<AiSession>, String> {
 
     Ok(sessions)
 }
-
-#[allow(dead_code)]
-pub fn save_ai_session(session: AiSession) -> Result<(), String> {
-    let mut sessions = get_ai_sessions()?;
-    if let Some(pos) = sessions.iter().position(|s| s.id == session.id) {
-        sessions[pos] = session;
-    } else {
-        sessions.push(session);
-    }
-
-    let path = get_sessions_path()?;
-    let content = serde_json::to_string_pretty(&sessions).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[allow(dead_code)]
-pub fn delete_ai_session(id: String) -> Result<(), String> {
-    let mut sessions = get_ai_sessions()?;
-    sessions.retain(|s| s.id != id);
-
-    let path = get_sessions_path()?;
-    let content = serde_json::to_string_pretty(&sessions).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| e.to_string())?;
-    Ok(())
-}
