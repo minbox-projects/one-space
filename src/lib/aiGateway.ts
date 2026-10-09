@@ -624,6 +624,17 @@ export interface UsageStats extends UsageMetrics {
 
 export type UsageLogResult = "success" | "failure";
 
+export interface UsageCostBreakdown {
+  input_price: number;
+  output_price: number;
+  cache_read_price: number;
+  cache_write_price: number;
+  input_cost: number;
+  output_cost: number;
+  cache_read_cost: number;
+  cache_write_cost: number;
+}
+
 export interface UsageLogRecord {
   timestamp_ms: number;
   local_model: string;
@@ -638,6 +649,8 @@ export interface UsageLogRecord {
   output_tokens: number;
   total_tokens: number;
   amount: number | null;
+  /** Record-time pricing details; absent for legacy or unpriced rows. */
+  cost_breakdown?: UsageCostBreakdown | null;
   duration_ms: number;
   /** Sanitized upstream error text of a failed attempt; `null`/absent when none was recorded. */
   error_message?: string | null;
