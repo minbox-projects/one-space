@@ -4266,6 +4266,7 @@
         "docs/ai-provider-refactor.md",
         "docs/ai-terminal-env-refactor.md",
         "docs/claude-multi-profile.md",
+        "docs/core-workflows-optimization.md",
         "README.md",
         "src/components/Documentation.tsx"
       ],
@@ -4280,6 +4281,7 @@
         "docs/ai-provider-refactor.md",
         "docs/ai-terminal-env-refactor.md",
         "docs/claude-multi-profile.md",
+        "docs/core-workflows-optimization.md",
         "README.md",
         "src/components/Documentation.tsx"
       ],

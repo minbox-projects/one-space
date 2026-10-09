@@ -134,6 +134,7 @@ OneSpace 是一个面向开发者的 macOS 优先桌面工作台（Tauri 2 + Rea
 - CLI 文档：[`docs/CLI.md`](./docs/CLI.md)
 - Skills 与 Subagents 文档：[`docs/SKILLS.md`](./docs/SKILLS.md)
 - MCP 文档：[`docs/MCP.md`](./docs/MCP.md)
+- 核心工作流清理与优化交付记录：[`docs/core-workflows-optimization.md`](./docs/core-workflows-optimization.md)
 
 ## 技术栈
 

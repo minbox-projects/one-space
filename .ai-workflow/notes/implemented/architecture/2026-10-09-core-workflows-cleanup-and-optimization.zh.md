@@ -99,5 +99,8 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - Step 6 诚实限制：原生 smoke 仍属未执行；目录中的逐工具 chunk 列表与 Notes/Snippets 留在 App chunk 的例外是实测产物图，而非 mock 测试。
 - Step 7 已验证证据：两个过时启发式测试被替换为显式保留断言；新增 `tests/attempt_policy.rs` 15 个行为测试；未修改的 RED `tests/templates.rs::ac007_unrelated_save_keeps_explicit_values_and_does_not_guess` 为 GREEN；`cargo test --lib ai_gateway` 通过 647、2 ignored；`tools/check-ai-gateway-redaction.sh` 以零凭据字面量退出 0；前端 AiGateway+lib 17 文件 495 测试通过；`npm run build` 退出 0。
 - Step 7 诚实限制：更广的 AC-007 条款（HTTP/SSE 等价、取消与首字节、历史计价、并发编辑保留、模板退役）由既有特征化套件覆盖，而非新撰写；Windows 未测试；Step 8 尚未开始。
+- Step 8 — 最终收口：七个步骤已提交（`1da5814`、`753ad8f`、`e231ff9`、`abdeb4c`、`1b76460`、`f45b0b7`、`4c14be5`），本次文档步骤在 [Core Workflows Optimization](../../../../docs/core-workflows-optimization.md) 中补充交付的 REQ-001..007 / AC-001..007 映射与逐步证据、移除/保留符号账本、数据兼容与回滚说明、基准基线/最终表以及真实验证状态。
+- Step 8 已验证最终状态：`npm test` 95 文件 / 1479 通过（重跑）、`npm run lint` 0 error / 409 warning、`npm run build` 退出 0、`cargo test --manifest-path src-tauri/Cargo.toml` 1211 通过 / 0 失败 / 11 ignored（重跑）、`tools/check-ai-gateway-redaction.sh` PASS、CLI-matrix stub PASS、`context`/`notes` valid、测量 harness 两次 final 运行一致。已记录的首次运行 flakiness（Vitest 卸载后 `App.headerToolsStatus` 的 `window is not defined`、`retry_policy_zero_retry_after_ms_retries_immediately`，以及本计划范围外的既有 `mcp_runtime legacy_sse_transport`）均在隔离或重跑中通过。原生 macOS GUI smoke 仍为 blocked/未执行（无 GUI runner），Windows 未测试。
+- Step 8 是对已记录 Step 1–7 事实的文档收口，未新取代任何活动记录。
 
 - 诚实的限制：release-profile 的权限行为未独立测试；`--permission-mode` 的缺值/非法值路径已实现但只有单测覆盖；显示名无法通过真实二进制 smoke 观测，由共享服务特征化覆盖；Windows `LockFile` 分支未在本次 macOS-only 验证中做运行时测试。该计划后续步骤尚未开始，且刻意不在此描述。

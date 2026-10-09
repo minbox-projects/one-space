@@ -125,6 +125,10 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 - 前端行为测试使用 vitest + @testing-library，测试文件与被测文件同目录；后端测试位于对应域的 `tests.rs` 或 `tests/` 子目录。
 - 保持 `navigation.json` 与 `navigation.md` 同步，并确保 `ai-workflow context validate` 通过。
 
+## 核心工作流清理与优化（计划 20261009）
+
+- 20261009 计划已交付并收口：REQ-001..007 / AC-001..007 的七个步骤（提交 `1da5814`、`753ad8f`、`e231ff9`、`abdeb4c`、`1b76460`、`f45b0b7`、`4c14be5`）统一了会话与服务商入口、把模板刷新交给进程、移除已审计的孤儿代码与依赖、共享运行时快照并让隐藏页面停止刷新、缓存用量采集并将网关日志事务化、惰性加载工具实现并隔离快速入口、抽取共享网关尝试策略且停止隐式配置猜测。完整 REQ/AC 映射、移除/保留账本、数据兼容与回滚、性能基准与验证状态见 [核心工作流清理与优化交付记录](docs/core-workflows-optimization.md) 与 [Note](.ai-workflow/notes/implemented/architecture/2026-10-09-core-workflows-cleanup-and-optimization.md)。
+
 ## 工作流约束
 
 - Planning 逐条澄清业务影响问题并冻结 `spec.md` / `plan.md`；Plan-to-tasks 生成不可变任务文件。
