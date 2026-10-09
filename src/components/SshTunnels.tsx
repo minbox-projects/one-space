@@ -667,14 +667,19 @@ export function SshTunnels({
     void loadData();
   }, []);
 
-  useTauriEvent("ssh-tunnels-updated", (payload) => {
-    if (isTunnelsSnapshot(payload)) {
-      applySnapshot(payload);
-      setLoading(false);
-      return;
-    }
-    void loadData();
-  });
+  useTauriEvent(
+    "ssh-tunnels-updated",
+    (payload) => {
+      if (isTunnelsSnapshot(payload)) {
+        applySnapshot(payload);
+        setLoading(false);
+        return;
+      }
+      void loadData();
+    },
+    isTauri,
+    { respectVisibility: true },
+  );
 
   useVisibleInterval(
     () => {

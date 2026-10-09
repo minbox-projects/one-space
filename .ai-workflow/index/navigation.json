@@ -55,7 +55,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "应用外壳、侧边栏/更多工具导航解析（工具别名经工具箱注册表解析，无旧标签归一化）、全局 Provider、i18n 与错误边界",
+      "responsibility": "应用外壳、侧边栏/更多工具导航解析（工具别名经工具箱注册表解析，无旧标签归一化）、全局 Provider、i18n 与错误边界；`src/lib/runtimeStatus.ts` 为每个 WebView 提供 gateway/router/ssh-tunnels/file-sharing 的共享运行时状态 store（有效快照零查询消费、每个服务至多一次合并回退拉取、单飞与序列守卫拒绝过期响应）、App 级每服务一个事件桥，以及 document + 原生主窗口合并可见性（`setNativeWindowVisible`/`isAppVisible`/`useAppVisibility`）",
       "entries": [
         "src/App.tsx"
       ],
@@ -63,6 +63,7 @@
         "src/main.tsx",
         "src/i18n.ts",
         "src/lib/navigation.ts",
+        "src/lib/runtimeStatus.ts",
         "src/toolbox/registry.ts",
         "src/components/MoreToolsHub.tsx",
         "src/components/MessageCenter.tsx",
@@ -76,6 +77,7 @@
       "tests": [
         "src/App.moreToolsNavigation.test.tsx",
         "src/App.headerToolsStatus.test.tsx",
+        "src/lib/runtimeStatus.test.ts",
         "src/i18n.test.ts",
         "src/lib/navigation.test.ts",
         "src/components/MoreToolsHub.test.tsx"
@@ -86,6 +88,54 @@
           "name": "resolveNavigationTarget",
           "kind": "function",
           "visibility": "public"
+        },
+        {
+          "file": "src/lib/runtimeStatus.ts",
+          "name": "RuntimeService",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/runtimeStatus.ts",
+          "name": "RuntimeStatusSnapshot",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/runtimeStatus.ts",
+          "name": "publishRuntimeStatus",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/runtimeStatus.ts",
+          "name": "refreshRuntimeStatus",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/runtimeStatus.ts",
+          "name": "useRuntimeStatus",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/runtimeStatus.ts",
+          "name": "setNativeWindowVisible",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/runtimeStatus.ts",
+          "name": "isAppVisible",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/runtimeStatus.ts",
+          "name": "useAppVisibility",
+          "kind": "function",
+          "visibility": "public"
         }
       ],
       "depends_on": [],
@@ -94,6 +144,7 @@
         "src/main.tsx",
         "src/i18n.ts",
         "src/lib/navigation.ts",
+        "src/lib/runtimeStatus.ts",
         "src/toolbox/registry.ts",
         "src/components/MoreToolsHub.tsx",
         "src/components/MessageCenter.tsx",
@@ -105,6 +156,7 @@
         "src/components/Documentation.tsx",
         "src/App.moreToolsNavigation.test.tsx",
         "src/App.headerToolsStatus.test.tsx",
+        "src/lib/runtimeStatus.test.ts",
         "src/i18n.test.ts",
         "src/lib/navigation.test.ts",
         "src/components/MoreToolsHub.test.tsx"
@@ -122,7 +174,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "工具箱唯一注册表与共享运行时：每个工具一个描述符（`ToolboxToolDescriptor`），Hub 卡片来自 `hub` surface 且绝不因启动台可见性隐藏，Hub 详情、Launcher 快速工具与内部工具箱目标（Notes/Snippets，经 `launcher-internal`）、导航别名解析、启动台可见性默认值、`listToolboxTools` 按 `defaultOrder` 的排序、Notes/Snippets 侧边栏条目以及 App 活动工具面包屑由注册表派生；托盘菜单结构仍为手工维护，仅 Notes/Snippets 标签经注册表解析（缺失时回退 `tray.notes` / `tray.snippets`）；另提供共享 invoke（`invokeToolboxCommand` / `ToolboxInvokeError` / `isToolboxInvokeAvailable`）、localStorage 写入（`writeLocalJson`）、复制反馈（`useCopyToClipboard`，`COPIED_FEEDBACK_RESET_MS = 1600`）、Tauri 事件（`useTauriEvent`）、可见性轮询（`useVisibleInterval`）与 ToolShell、ToolErrorBanner、ToolStatusBadge、ToolStatusDot、ToolEmptyState",
+      "responsibility": "工具箱唯一注册表与共享运行时：每个工具一个描述符（`ToolboxToolDescriptor`），Hub 卡片来自 `hub` surface 且绝不因启动台可见性隐藏，Hub 详情、Launcher 快速工具与内部工具箱目标（Notes/Snippets，经 `launcher-internal`）、导航别名解析、启动台可见性默认值、`listToolboxTools` 按 `defaultOrder` 的排序、Notes/Snippets 侧边栏条目以及 App 活动工具面包屑由注册表派生；托盘菜单结构仍为手工维护，仅 Notes/Snippets 标签经注册表解析（缺失时回退 `tray.notes` / `tray.snippets`）；另提供共享 invoke（`invokeToolboxCommand` / `ToolboxInvokeError` / `isToolboxInvokeAvailable`）、localStorage 写入（`writeLocalJson`）、复制反馈（`useCopyToClipboard`，`COPIED_FEEDBACK_RESET_MS = 1600`）、Tauri 事件（`useTauriEvent`，可选 `respectVisibility` 让页面消费者在隐藏时跳过处理）、可见性门控轮询（`useVisibleInterval`，document 或原生窗口隐藏时暂停、hidden→visible 时恰好一次追赶、启用时不回调）与 ToolShell、ToolErrorBanner、ToolStatusBadge、ToolStatusDot、ToolEmptyState",
       "entries": [
         "src/toolbox/registry.ts"
       ],
@@ -276,6 +328,12 @@
           "file": "src/toolbox/useTauriEvent.ts",
           "name": "useTauriEvent",
           "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/useTauriEvent.ts",
+          "name": "UseTauriEventOptions",
+          "kind": "type",
           "visibility": "public"
         },
         {
@@ -755,7 +813,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "按项目目录组织会话、MCP、Skills 与 Subagents，并提供能力面板",
+      "responsibility": "按项目目录组织会话、MCP、Skills 与 Subagents，并提供能力面板；集合/详情刷新共享同一份 `load_sessions_state` 解码快照，多个刷新事件合并为一次 reload 并把详情刷新放在同一任务内",
       "entries": [
         "src/components/Workspaces/index.tsx"
       ],
@@ -1106,7 +1164,9 @@
         "src/components/SshServers.tsx"
       ],
       "related_files": [],
-      "tests": [],
+      "tests": [
+        "src/components/SshServers.test.tsx"
+      ],
       "symbols": [
         {
           "file": "src/components/SshServers.tsx",
@@ -1117,7 +1177,8 @@
       ],
       "depends_on": [],
       "read_scope": [
-        "src/components/SshServers.tsx"
+        "src/components/SshServers.tsx",
+        "src/components/SshServers.test.tsx"
       ],
       "relations": [],
       "shared_entry": false
@@ -1191,7 +1252,9 @@
         "src/lib/protocolRouter.ts",
         "src/lib/networkCircuitBreaker.ts"
       ],
-      "tests": [],
+      "tests": [
+        "src/components/ProtocolRouterTool.test.tsx"
+      ],
       "symbols": [
         {
           "file": "src/components/ProtocolRouterTool.tsx",
@@ -1206,7 +1269,8 @@
       "read_scope": [
         "src/components/ProtocolRouterTool.tsx",
         "src/lib/protocolRouter.ts",
-        "src/lib/networkCircuitBreaker.ts"
+        "src/lib/networkCircuitBreaker.ts",
+        "src/components/ProtocolRouterTool.test.tsx"
       ],
       "relations": [],
       "shared_entry": false
@@ -2700,7 +2764,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "统一存储引擎、迁移、provider 投影、会话与 launcher 命令；`storage_engine` 的 `CanonicalStateWriteLease` 是 providers/sessions 及其元数据的单一跨进程事务门（`canonical-state.lock` 的 OS 文件锁 + 进程线程互斥 + 可重入线程租约，loaders/migration/写入均加入），`session_service` 与 `provider_activation` 提供 GUI 与内部 CLI 共享的 AppHandle-free canonical 会话/服务商入口；`session_service` 覆盖 create 与 resume 两套入口（`create_cli_session`/`resume_cli_session` 解析可选 `--permission-mode default|full_access` 并经 `validate_and_resolve_permission_mode` 校验）",
+      "responsibility": "统一存储引擎、迁移、provider 投影、会话与 launcher 命令；`storage_engine` 的 `CanonicalStateWriteLease` 是 providers/sessions 及其元数据的单一跨进程事务门（`canonical-state.lock` 的 OS 文件锁 + 进程线程互斥 + 可重入线程租约，loaders/migration/写入均加入），`session_service` 与 `provider_activation` 提供 GUI 与内部 CLI 共享的 AppHandle-free canonical 会话/服务商入口；`session_service` 覆盖 create 与 resume 两套入口（`create_cli_session`/`resume_cli_session` 解析可选 `--permission-mode default|full_access` 并经 `validate_and_resolve_permission_mode` 校验）；`providers_storage.rs` 另按会话文件身份缓存解码后的 sessions 快照，`save_sessions_state` 成功即刷新、元数据或解密失败即失效且绝不回退旧值，`workspaces_list`/`workspace_sessions_query_by_root`/dashboard counts 共享同一份解码（测试接缝 `sessions_cache_stats`/`reset_sessions_cache`）",
       "entries": [
         "src-tauri/src/app_store.rs"
       ],
@@ -3136,7 +3200,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "工作区数据读写与能力关联",
+      "responsibility": "工作区数据读写与能力关联；会话查询复用 `app_store` 的共享解码 sessions 快照，不重复解密整个会话状态",
       "entries": [
         "src-tauri/src/workspaces.rs"
       ],
@@ -3159,7 +3223,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "SSH 转发配置、常用端口管理、运行时桥接与持久监管（持久重试监管循环、类型化终态分类、双步往返健康探测、desired-running 看门狗与启动认领、唤醒/窗口显示重试 poke）、配置校验与全量隧道批量连接/断开（批次标识 `all` / `All Tunnels`）",
+      "responsibility": "SSH 转发配置、常用端口管理、运行时桥接与持久监管（持久重试监管循环、类型化终态分类、双步往返健康探测、desired-running 看门狗与启动认领、唤醒/窗口显示重试 poke）、配置校验与全量隧道批量连接/断开（批次标识 `all` / `All Tunnels`）；解码后的 SSH 隧道状态按状态文件身份（路径+字节长度+mtime）与 `.local_key` 身份（key generation）缓存于 `types_state.rs`，成功写入刷新缓存、元数据或 key 变化即失效、解密失败清缓存并返回错误绝不回退旧值，`ssh_tunnels_refresh_status` 因此不再每次调用都重新解密（测试接缝 `ssh_state_cache_stats`/`reset_ssh_state_cache`）",
       "entries": [
         "src-tauri/src/ssh_tunnels.rs"
       ],

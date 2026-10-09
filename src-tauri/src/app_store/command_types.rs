@@ -6,6 +6,35 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+/// Test-only decoded-sessions cache counters: `fills` counts stored snapshots,
+/// `misses` counts loads that had to read the file, and `decrypts` counts
+/// ciphertext decryptions. Reachable crate-wide for the workspace and app-store
+/// test scopes.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SessionsCacheStats {
+    pub(crate) fills: usize,
+    pub(crate) misses: usize,
+    pub(crate) decrypts: usize,
+}
+
+/// Test-only hook that drops the decoded-sessions cache and zeroes the counters.
+#[cfg(test)]
+pub(crate) fn reset_sessions_cache() {
+    super::reset_sessions_cache_for_test();
+}
+
+/// Test-only snapshot of the decoded-sessions cache counters.
+#[cfg(test)]
+pub(crate) fn sessions_cache_stats() -> SessionsCacheStats {
+    let (fills, misses, decrypts) = super::sessions_cache_counters();
+    SessionsCacheStats {
+        fills,
+        misses,
+        decrypts,
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LegacyProvidersView {
     pub(in crate::app_store) active_claude: Option<String>,

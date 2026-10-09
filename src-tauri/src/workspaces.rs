@@ -921,3 +921,172 @@ pub async fn workspace_copy(
     let detail = workspace_detail_from_state(&latest_state, &target_workspace.id)?;
     api_ok(detail, latest_state.revision)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_store::{
+        reset_sessions_cache, sessions_cache_stats, workspace_sessions_query_by_root, SessionRecord,
+        SessionsState,
+    };
+
+    fn workspace_record(id: &str, name: &str, root_path: &str) -> WorkspaceRecord {
+        WorkspaceRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            root_path: root_path.to_string(),
+            description: None,
+            tags: Vec::new(),
+            source: SOURCE_MANUAL.to_string(),
+            created_at: 1,
+            updated_at: 1,
+            last_activity_at: 1,
+        }
+    }
+
+    fn session_record_for(id: &str, working_dir: &str, timestamp: u64) -> SessionRecord {
+        SessionRecord {
+            id: id.to_string(),
+            name: String::new(),
+            working_dir: working_dir.to_string(),
+            tool: "claude".to_string(),
+            tool_session_id: String::new(),
+            model_name: None,
+            name_source: "history".to_string(),
+            runtime_mode: "shared".to_string(),
+            runtime_profile_id: None,
+            preset_id: None,
+            created_at: timestamp,
+            last_used_at: timestamp,
+            status: "active".to_string(),
+            favorited_at: None,
+            provider_id: None,
+        }
+    }
+
+    /// The canonical encrypted sessions file written by the app store.
+    fn write_encrypted_sessions(state: &SessionsState) {
+        let path = crate::config::get_app_dir()
+            .expect("app dir")
+            .join("data")
+            .join("data")
+            .join("sessions")
+            .join("state.json");
+        fs::create_dir_all(path.parent().expect("sessions parent")).expect("create sessions dir");
+        let password = crate::crypto::get_or_init_master_password().expect("master password");
+        let plain = serde_json::to_string(state).expect("encode sessions");
+        let cipher = crate::crypto::encrypt(&plain, &password).expect("encrypt sessions");
+        let blob = serde_json::json!({ "is_encrypted": true, "data": cipher });
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&blob).expect("serialize sessions blob"),
+        )
+        .expect("write sessions state");
+    }
+
+    /// Isolates HOME for one scenario while serializing on the shared HOME lock
+    /// that the app-store fixtures also hold.
+    fn with_isolated_home<T>(name: &str, f: impl FnOnce(&std::path::Path) -> T) -> T {
+        let _guard = crate::lock_test_home_env();
+        let home = std::env::temp_dir().join(format!(
+            "onespace-workspaces-{}-{}",
+            name,
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&home).expect("create temp home");
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &home);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&home)));
+        match original_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = fs::remove_dir_all(&home);
+        match result {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    #[test]
+    fn workspace_counts_and_session_queries_share_one_decoded_sessions_snapshot() {
+        with_isolated_home("shared-session-snapshot", |home| {
+            let root_a = home.join("projects").join("alpha");
+            let root_b = home.join("projects").join("beta");
+            fs::create_dir_all(&root_a).expect("create alpha root");
+            fs::create_dir_all(&root_b).expect("create beta root");
+            let root_a = normalize_root_path(&root_a.to_string_lossy());
+            let root_b = normalize_root_path(&root_b.to_string_lossy());
+
+            // Run the migration/dashboard path once before seeding so a later
+            // dashboard call takes its migrated fast path instead of rewriting
+            // the seeded canonical sessions file.
+            tauri::async_runtime::block_on(crate::app_store::dashboard_counts())
+                .expect("initial dashboard pass");
+
+            let now = now_ts();
+            let mut sessions = SessionsState::default();
+            sessions.sessions.push(session_record_for("a-1", &root_a, now));
+            sessions.sessions.push(session_record_for("a-2", &root_a, now));
+            sessions.sessions.push(session_record_for("b-1", &root_b, now));
+            write_encrypted_sessions(&sessions);
+
+            let mut state = WorkspacesState::default();
+            state
+                .workspaces
+                .push(workspace_record("ws-a", "Alpha", &root_a));
+            state
+                .workspaces
+                .push(workspace_record("ws-b", "Beta", &root_b));
+            save_state(state).expect("seed workspaces state");
+
+            reset_sessions_cache();
+
+            let listed = workspaces_list_impl(None).expect("list workspaces");
+            let alpha = listed
+                .data
+                .iter()
+                .find(|view| view.workspace.id == "ws-a")
+                .expect("alpha view");
+            let beta = listed
+                .data
+                .iter()
+                .find(|view| view.workspace.id == "ws-b")
+                .expect("beta view");
+            assert_eq!(alpha.session_count, 2);
+            assert_eq!(beta.session_count, 1);
+            assert_eq!(
+                sessions_cache_stats().decrypts,
+                1,
+                "the first workspace list decrypts the sessions snapshot once"
+            );
+
+            let listed_again = workspaces_list_impl(None).expect("list workspaces again");
+            assert_eq!(listed_again.data.len(), 2);
+            assert_eq!(
+                sessions_cache_stats().decrypts,
+                1,
+                "a repeated list at the same revision reuses the snapshot"
+            );
+
+            let query =
+                workspace_sessions_query_by_root(&root_a, None, None, None).expect("query sessions");
+            assert_eq!(query.total, 2);
+            assert_eq!(
+                sessions_cache_stats().decrypts,
+                1,
+                "the session query shares the same decoded snapshot"
+            );
+
+            let counts = tauri::async_runtime::block_on(crate::app_store::dashboard_counts())
+                .expect("dashboard counts");
+            assert_eq!(counts.data.workspaces, 2);
+            assert_eq!(counts.data.sessions, 3);
+            assert_eq!(
+                sessions_cache_stats().decrypts,
+                1,
+                "dashboard counts reuse the same decoded snapshot"
+            );
+        });
+    }
+}

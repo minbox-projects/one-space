@@ -1,8 +1,9 @@
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import type { SshTunnelsSnapshot } from "@/components/sshTunnels/types";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
 
@@ -269,6 +270,95 @@ describe("App 窗口顶部右侧各工具状态图标", () => {
       const detail = await screen.findByTestId("mock-more-tools-ssh-tunnels");
       expect(detail).toBeInTheDocument();
       expect(detail).toHaveAttribute("data-ssh-tunnel-tab", "__connected__");
+    });
+
+    it("消费有效快照事件不再查询，缺省载荷在所有消费者间只合并回退一次", async () => {
+      const validSnapshot: SshTunnelsSnapshot = {
+        groups: [
+          {
+            id: "default",
+            name: "Default",
+            created_at: 0,
+            updated_at: 0,
+            is_default: true,
+          },
+        ],
+        tunnels: [
+          {
+            id: "tunnel-1",
+            name: "Tunnel 1",
+            group_id: "default",
+            source_kind: "saved_host",
+            saved_host_name: "host",
+            custom: null,
+            forward: {
+              mode: "local",
+              local_bind_host: "127.0.0.1",
+              local_port: 5432,
+              target_host: "127.0.0.1",
+              target_port: 5432,
+            },
+            auto_connect: false,
+            auto_reconnect: true,
+            created_at: 0,
+            updated_at: 0,
+            last_connected_at: null,
+            last_error: null,
+          },
+        ],
+        runtime: [
+          {
+            id: "tunnel-1",
+            status: "connected",
+            active_client_count: 1,
+            mode: "local",
+            summary: "listening 127.0.0.1:5432",
+            resolved_server_host: "127.0.0.1",
+            listening_addr: "127.0.0.1:5432",
+            last_error: null,
+          },
+        ],
+        common_ports: [],
+      };
+      setupInvokeMock({ tunnels: validSnapshot });
+      renderWithProviders(
+        <ThemeProvider>
+          <App />
+        </ThemeProvider>,
+      );
+
+      await screen.findByTestId("header-ssh-tunnels-status");
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const snapshotInvokeCount = () =>
+        invokeMock.mock.calls.filter(
+          (call) => call[0] === "ssh_tunnels_snapshot",
+        ).length;
+
+      const baseline = snapshotInvokeCount();
+      const handlers = eventHandlers["ssh-tunnels-updated"] ?? [];
+      expect(handlers.length).toBeGreaterThan(0);
+
+      // 有效快照：所有消费者直接消费事件载荷，不得再触发任何查询。
+      await act(async () => {
+        for (const handler of handlers) {
+          handler({ payload: validSnapshot });
+        }
+        await Promise.resolve();
+      });
+      expect(snapshotInvokeCount()).toBe(baseline);
+
+      // 缺失/无效载荷：所有消费者合并为至多一次回退拉取（不是每个消费者一次）。
+      await act(async () => {
+        for (const handler of handlers) {
+          handler({ payload: {} });
+        }
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(snapshotInvokeCount()).toBe(baseline + 1);
     });
   });
 

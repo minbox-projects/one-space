@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { collectWorkspaceTags, filterWorkspacesByTags, normalizeWorkspaceView } from "../helpers/workspaceHelpers";
 import type { ApiResp, WorkspaceView } from "../types";
@@ -43,6 +43,29 @@ export function useWorkspaceCollection(args: {
     }
   }, [activeWorkspaceId, isTauri, onActiveWorkspaceRemoved, t]);
 
+  // Coalesce the three refresh events into one scheduled reload. Events that
+  // arrive in the same tick share a single reload; a reload already in flight is
+  // reused instead of starting a duplicate decoded-sessions fetch.
+  const reloadQueuedRef = useRef(false);
+  const reloadInFlightRef = useRef<Promise<void> | null>(null);
+
+  const scheduleReload = useCallback(() => {
+    if (reloadQueuedRef.current) return;
+    reloadQueuedRef.current = true;
+    queueMicrotask(() => {
+      reloadQueuedRef.current = false;
+      if (reloadInFlightRef.current) return;
+      const run = Promise.resolve()
+        .then(() => loadWorkspaces())
+        .then(() => onRefreshActiveWorkspace())
+        .catch(() => {})
+        .finally(() => {
+          reloadInFlightRef.current = null;
+        });
+      reloadInFlightRef.current = run;
+    });
+  }, [loadWorkspaces, onRefreshActiveWorkspace]);
+
   useEffect(() => {
     if (!isVisible) return;
     void loadWorkspaces();
@@ -55,18 +78,9 @@ export function useWorkspaceCollection(args: {
     let unlistenWorkspaces: (() => void) | undefined;
 
     const register = async () => {
-      unlistenRefresh = await listen("refresh-counts", () => {
-        void loadWorkspaces();
-        void onRefreshActiveWorkspace();
-      });
-      unlistenSessions = await listen("sessions-updated", () => {
-        void loadWorkspaces();
-        void onRefreshActiveWorkspace();
-      });
-      unlistenWorkspaces = await listen("workspaces-updated", () => {
-        void loadWorkspaces();
-        void onRefreshActiveWorkspace();
-      });
+      unlistenRefresh = await listen("refresh-counts", scheduleReload);
+      unlistenSessions = await listen("sessions-updated", scheduleReload);
+      unlistenWorkspaces = await listen("workspaces-updated", scheduleReload);
     };
 
     void register();
@@ -76,7 +90,7 @@ export function useWorkspaceCollection(args: {
       unlistenSessions?.();
       unlistenWorkspaces?.();
     };
-  }, [isVisible, loadWorkspaces, onRefreshActiveWorkspace]);
+  }, [isVisible, scheduleReload]);
 
   const visibleWorkspaces = useMemo(
     () => filterWorkspacesByTags(workspaces, selectedTags),

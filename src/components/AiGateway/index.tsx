@@ -16,6 +16,7 @@ import {
 import { useToast } from "@/components/ToastProvider";
 import { useConfirmDialog } from "@/components/ConfirmDialogProvider";
 import { errorToMessage } from "@/lib/messages";
+import { publishRuntimeStatus } from "@/lib/runtimeStatus";
 import {
   AI_GATEWAY_CONFIG_UPDATED_EVENT,
   AI_GATEWAY_DEFAULT_PORT,
@@ -233,6 +234,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       ]);
       setConfig(nextConfig);
       setStatus(nextStatus);
+      publishRuntimeStatus("gateway", nextStatus);
       setTargets(nextTargets ?? []);
       setTodayStats(nextTodayStats);
       const failedCount = (nextTodayLogs?.groups ?? []).reduce(
@@ -258,19 +260,54 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
     }
   }, [isTauri, pushToast, t]);
 
+  // Configuration-update broadcast (REQ-004 / AC-004): refresh only the data the
+  // configuration change can affect — config, runtime status counters, terminal
+  // targets and templates. Usage stats/logs are intentionally left untouched so
+  // the visible freshness poll stays authoritative.
+  const loadConfigScoped = useCallback(async () => {
+    if (!isTauri) return;
+    setLoadError(null);
+    setTemplatesLoadError(null);
+    try {
+      const templatesPromise = aiGatewayProviderTemplates()
+        .then((value) => ({ ok: true as const, value: value ?? [] }))
+        .catch((err: unknown) => ({ ok: false as const, error: err }));
+      const [nextConfig, nextStatus, nextTargets, templatesResult] =
+        await Promise.all([
+          aiGatewayGetConfig(),
+          aiGatewayStatus(),
+          aiGatewayTerminalTargets(),
+          templatesPromise,
+        ]);
+      setConfig(nextConfig);
+      setStatus(nextStatus);
+      publishRuntimeStatus("gateway", nextStatus);
+      setTargets(nextTargets ?? []);
+      if (templatesResult.ok) {
+        setTemplates(templatesResult.value);
+      } else {
+        setTemplates([]);
+        setTemplatesLoadError(errorToMessage(templatesResult.error));
+      }
+    } catch (err) {
+      setLoadError(errorToMessage(err));
+    }
+  }, [isTauri]);
+
   useEffect(() => {
     if (!isVisible) return;
     void load();
   }, [isVisible, load]);
 
-  // 订阅后端的运行时状态广播：结算翻转 auto_disabled 后刷新配置，使服务商卡片、
-  // 模型列表与运行时状态卡无需切页或重启即可反映新状态。非 Tauri 环境跳过。
+  // 订阅后端的运行时状态广播：结算翻转 auto_disabled 后刷新受影响的配置数据，使
+  // 服务商卡片、模型列表与运行时状态卡无需切页或重启即可反映新状态。用量统计与
+  // 请求日志不走此路径，由可见时的轮询维护新鲜度。非 Tauri 环境跳过。
   useEffect(() => {
     if (!isTauri) return;
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void listen(AI_GATEWAY_CONFIG_UPDATED_EVENT, () => {
-      void load();
+      void loadConfigScoped();
     })
       .then((release) => {
         if (disposed) {
@@ -285,7 +322,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       disposed = true;
       unlisten?.();
     };
-  }, [isTauri, load]);
+  }, [isTauri, loadConfigScoped]);
 
   // 订阅密钥鉴权失败广播：同一服务商在聚合窗口内到达多次只推送一条带计数的
   // warning toast，窗口过期后再次到达则开新窗口并推送新 toast；事件不含密钥值。
@@ -371,6 +408,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         setTodayFailedRequests(failedCount);
         if (nextStatus) {
           setStatus(nextStatus);
+          publishRuntimeStatus("gateway", nextStatus);
         }
       } catch {
         // 静默刷新异常不干扰用户体验

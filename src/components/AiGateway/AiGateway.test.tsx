@@ -2876,6 +2876,10 @@ describe("AiGateway 配置更新事件实时刷新", () => {
     await i18n.changeLanguage("en");
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("ai_gateway_config_updated_event_triggers_a_configuration_reload_and_shows_the_new_state", async () => {
     const store: Store = {
       config: makeConfig({
@@ -2989,6 +2993,81 @@ describe("AiGateway 配置更新事件实时刷新", () => {
         screen.getByTestId("ai-gateway-auto-disabled-count"),
       ).toHaveTextContent("1"),
     );
+  });
+
+  it("配置更新事件只刷新受影响数据并保留可见时的用量轮询", async () => {
+    vi.useFakeTimers();
+    const store: Store = {
+      config: makeConfig({
+        providers: [makeProvider({ id: "p1", name: "Upstream A" })],
+      }),
+      status: makeStatus({ running: true }),
+      targets: [],
+    };
+    mockStore(store);
+
+    const configUpdateHandlers: Array<(event: unknown) => void> = [];
+    (
+      listenMock as unknown as {
+        mockImplementation: (
+          fn: (
+            eventName: string,
+            handler: (event: unknown) => void,
+          ) => Promise<() => void>,
+        ) => void;
+      }
+    ).mockImplementation(
+      async (eventName: string, handler: (event: unknown) => void) => {
+        if (eventName === AI_GATEWAY_CONFIG_UPDATED_EVENT) {
+          configUpdateHandlers.push(handler);
+        }
+        return vi.fn();
+      },
+    );
+
+    const flushAsyncWork = async () => {
+      await act(async () => {
+        for (let index = 0; index < 12; index += 1) {
+          await Promise.resolve();
+        }
+      });
+    };
+
+    renderWithProviders(<AiGateway />);
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(
+      within(screen.getByTestId("ai-gateway-providers")).getByText("Upstream A"),
+    ).toBeInTheDocument();
+    expect(configUpdateHandlers.length).toBeGreaterThan(0);
+
+    const invokeCount = (command: string) =>
+      invokeMock.mock.calls.filter((call) => call[0] === command).length;
+
+    const configBefore = invokeCount("ai_gateway_get_config");
+    const usageBefore = invokeCount("ai_gateway_usage_stats");
+    const logsBefore = invokeCount("ai_gateway_request_logs");
+
+    // 配置更新广播：只重新读取受影响的配置，不重复拉取用量统计与请求日志。
+    await act(async () => {
+      for (const handler of configUpdateHandlers) {
+        handler({ payload: undefined });
+      }
+      await Promise.resolve();
+    });
+    await flushAsyncWork();
+
+    expect(invokeCount("ai_gateway_get_config")).toBeGreaterThan(configBefore);
+    expect(invokeCount("ai_gateway_usage_stats")).toBe(usageBefore);
+    expect(invokeCount("ai_gateway_request_logs")).toBe(logsBefore);
+
+    // 可见且运行时，用量新鲜度轮询必须保留：推进一个间隔触发一次刷新。
+    const usageBeforePoll = invokeCount("ai_gateway_usage_stats");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(invokeCount("ai_gateway_usage_stats")).toBeGreaterThan(usageBeforePoll);
   });
 
   it("ai_gateway_page_releases_the_config_update_listener_on_unmount", async () => {

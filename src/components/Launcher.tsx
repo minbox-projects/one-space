@@ -1,16 +1,14 @@
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   deriveSshTunnelLauncherSummary,
   type LauncherSshTunnelSummary,
 } from "../lib/sshTunnelSummary";
-import {
-  protocolRouterStatus,
-  type ProtocolRouterStatus,
-} from "@/lib/protocolRouter";
+import { type ProtocolRouterStatus } from "@/lib/protocolRouter";
+import { useRuntimeStatus } from "@/lib/runtimeStatus";
 import {
   Rocket,
   Plus,
@@ -146,16 +144,6 @@ const INTERNAL_TARGETS: InternalTarget[] = [
   },
 ];
 
-async function safelyUnlisten(
-  label: string,
-  unlisten: () => void | Promise<void>,
-) {
-  try {
-    await Promise.resolve(unlisten());
-  } catch (error) {
-    console.warn(`Failed to unlisten ${label}`, error);
-  }
-}
 const LAUNCHER_TYPE_ORDER: LauncherItem["type"][] = [
   "app",
   "script",
@@ -197,16 +185,6 @@ function formatInvokeError(err: unknown): string {
   return String(err);
 }
 
-function isSshTunnelsSnapshot(payload: unknown): payload is SshTunnelsSnapshot {
-  if (!payload || typeof payload !== "object") return false;
-  const snapshot = payload as Partial<SshTunnelsSnapshot>;
-  return (
-    Array.isArray(snapshot.groups) &&
-    Array.isArray(snapshot.tunnels) &&
-    Array.isArray(snapshot.runtime)
-  );
-}
-
 type LauncherWindowBindings = typeof window & {
   setActiveTab?: (tab: string) => void;
   setSettingsTab?: (tab: string) => void;
@@ -233,19 +211,33 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   const [appIconCache, setAppIconCache] = useState<
     Record<string, string | null>
   >({});
-  const [sshTunnelSummary, setSshTunnelSummary] =
-    useState<LauncherSshTunnelSummary | null>(null);
-  const [protocolRouterStatusState, setProtocolRouterStatusState] =
-    useState<ProtocolRouterStatus | null>(null);
+
+  const isTauri = "__TAURI_INTERNALS__" in window;
+
+  // Status cards read the shared runtime-status store; the App-level event
+  // bridge publishes snapshots, so the launcher never pulls per event.
+  const tunnelsRuntime = useRuntimeStatus<SshTunnelsSnapshot>("ssh-tunnels", {
+    enabled: isVisible && isTauri,
+  });
+  const routerRuntime = useRuntimeStatus<ProtocolRouterStatus>("router", {
+    enabled: isVisible && isTauri,
+  });
+  const sshTunnelSummary = useMemo(
+    () =>
+      tunnelsRuntime.data
+        ? deriveSshTunnelLauncherSummary(tunnelsRuntime.data)
+        : null,
+    [tunnelsRuntime.data],
+  );
+  const protocolRouterStatusState = routerRuntime.data;
+
   const [toolVisibility, setToolVisibility] = useState(
     readLauncherToolVisibility,
   );
   const [internalToolsOrder, setInternalToolsOrder] = useState<string[]>(
     () => readSavedOrder(LAUNCHER_INTERNAL_TOOLS_ORDER_KEY),
   );
-  const sshTunnelSummaryVersionRef = useRef(0);
 
-  const isTauri = "__TAURI_INTERNALS__" in window;
   const appIconCacheKey = (target: string) => target.trim().toLowerCase();
   const actionContext = useMemo(
     () => ({
@@ -256,43 +248,6 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     }),
     [confirmDialog, pushToast, t],
   );
-
-  const applySshTunnelSummary = useCallback(
-    (snapshot: SshTunnelsSnapshot, _source: string, version: number) => {
-      if (version !== sshTunnelSummaryVersionRef.current) {
-        return;
-      }
-      const summary = deriveSshTunnelLauncherSummary(snapshot);
-      setSshTunnelSummary(summary);
-    },
-    [],
-  );
-
-  const loadSshTunnelSummary = useCallback(async () => {
-    if (!isTauri) return;
-    const version = sshTunnelSummaryVersionRef.current + 1;
-    sshTunnelSummaryVersionRef.current = version;
-    try {
-      const snapshot = await invoke<SshTunnelsSnapshot>("ssh_tunnels_snapshot");
-      applySshTunnelSummary(snapshot, `load#${version}`, version);
-    } catch (err) {
-      if (version !== sshTunnelSummaryVersionRef.current) {
-        return;
-      }
-      console.error("Failed to load SSH tunnel launcher summary", err);
-      setSshTunnelSummary(null);
-    }
-  }, [applySshTunnelSummary, isTauri]);
-
-  const loadProtocolRouterStatus = useCallback(async () => {
-    if (!isTauri) return;
-    try {
-      setProtocolRouterStatusState(await protocolRouterStatus());
-    } catch (err) {
-      console.error("Failed to load protocol router launcher status", err);
-      setProtocolRouterStatusState(null);
-    }
-  }, [isTauri]);
 
   const openInternalTarget = useCallback((target: string) => {
     const appWindow = window as LauncherWindowBindings;
@@ -414,89 +369,6 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       cancelled = true;
     };
   }, [items, isTauri, appIconCache]);
-
-  useEffect(() => {
-    if (!isTauri) return;
-
-    let disposed = false;
-    let teardown: (() => void) | null = null;
-
-    void loadSshTunnelSummary();
-
-    listen<SshTunnelsSnapshot | null>("ssh-tunnels-updated", (event) => {
-      if (disposed) return;
-      if (isSshTunnelsSnapshot(event.payload)) {
-        const version = sshTunnelSummaryVersionRef.current + 1;
-        sshTunnelSummaryVersionRef.current = version;
-        applySshTunnelSummary(event.payload, `event#${version}`, version);
-        return;
-      }
-      void loadSshTunnelSummary();
-    })
-      .then((unlisten) => {
-        if (disposed) {
-          void safelyUnlisten("ssh-tunnels-updated", unlisten);
-          return;
-        }
-        teardown = unlisten;
-        void loadSshTunnelSummary();
-      })
-      .catch((err) => {
-        console.error("Failed to subscribe to ssh-tunnels-updated", err);
-      });
-
-    return () => {
-      disposed = true;
-      if (teardown) {
-        const currentTeardown = teardown;
-        teardown = null;
-        void safelyUnlisten("ssh-tunnels-updated", currentTeardown);
-      }
-    };
-  }, [applySshTunnelSummary, isTauri, loadSshTunnelSummary]);
-
-  useEffect(() => {
-    if (!isTauri || !isVisible) return;
-    void loadSshTunnelSummary();
-  }, [isTauri, isVisible, loadSshTunnelSummary]);
-
-  useEffect(() => {
-    if (!isTauri) return;
-
-    let disposed = false;
-    let teardown: (() => void) | null = null;
-
-    void loadProtocolRouterStatus();
-
-    listen("protocol-router-status-update", () => {
-      if (disposed) return;
-      void loadProtocolRouterStatus();
-    })
-      .then((unlisten) => {
-        if (disposed) {
-          void safelyUnlisten("protocol-router-status-update", unlisten);
-          return;
-        }
-        teardown = unlisten;
-      })
-      .catch((err) => {
-        console.error("Failed to subscribe to protocol-router-status-update", err);
-      });
-
-    return () => {
-      disposed = true;
-      if (teardown) {
-        const currentTeardown = teardown;
-        teardown = null;
-        void safelyUnlisten("protocol-router-status-update", currentTeardown);
-      }
-    };
-  }, [isTauri, loadProtocolRouterStatus]);
-
-  useEffect(() => {
-    if (!isTauri || !isVisible) return;
-    void loadProtocolRouterStatus();
-  }, [isTauri, isVisible, loadProtocolRouterStatus]);
 
   const typeLabelMap: Record<LauncherItem["type"], string> = {
     app: t("macApp", "Mac Application (open -a)"),

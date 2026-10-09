@@ -6,7 +6,7 @@ Status: implemented
 
 ## Problem
 
-GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入口，已各自演化为不同实现。安装的 CLI 会改写会话名（空格与点号转为下划线）、自行拼装启动命令、写明文会话 JSON，并伪造原生会话 ID；GUI 则走另一套新终端适配器。`resume` 分支在 Shell 脚本里硬编码各工具恢复命令，忽略共享的 provider 与 runtime 环境。服务商激活与 `onespace env use` 同样分叉，而 OpenCode 的活动服务商被表示为单个槽位，而非其真实的多活动集合。本记录描述计划 `20261009-core-workflows-cleanup-and-optimization` 已交付的事实；当前正文覆盖前三步，该计划的后续步骤不在此描述。
+GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入口，已各自演化为不同实现。安装的 CLI 会改写会话名（空格与点号转为下划线）、自行拼装启动命令、写明文会话 JSON，并伪造原生会话 ID；GUI 则走另一套新终端适配器。`resume` 分支在 Shell 脚本里硬编码各工具恢复命令，忽略共享的 provider 与 runtime 环境。服务商激活与 `onespace env use` 同样分叉，而 OpenCode 的活动服务商被表示为单个槽位，而非其真实的多活动集合。本记录描述计划 `20261009-core-workflows-cleanup-and-optimization` 已交付的事实；当前正文覆盖前四步，该计划的后续步骤不在此描述。
 
 ## Decision
 
@@ -33,6 +33,11 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - Step 3 — 移除已审计的前端 helper：`readLocalJson`（`localStore.ts` 保留 `writeLocalJson`）；`isLauncherToolVisible`（`launcherToolVisibility` 的其余导出保留）；`confirmSensitiveAction`/`SensitiveActionKind`/`SENSITIVE_ACTION_PRESETS`（`runUserAction` 与其余 user-action helper 保留）；以及 `src/toolbox/historyStore.ts` 模块（`createHistoryStore` 成为孤儿）。`shortLinkHistory.ts` 简化为单次原始读取与解析，内置 `dedupeHistoryRecords`，保留全有或全无的无效历史恢复、50 条上限前的按时间倒序以及可观测的错误结果。
 - Step 3 — 包清理：移除 npm 包 `ssh2`、`ssh2-promise`、`base-64`、`filesize`、`@types/base-64`、`@types/filesize` 与 `@types/uuid`，保留运行时 `uuid` 与 Rust `ssh2`/`base64` crate；锁文件用 `--package-lock-only` 重新生成，移除 18 个包条目并把根/锁元数据归一化到 `0.1.44` 以匹配 `package.json`。该归一化仅限锁元数据；三个应用版本文件不变。
 
+- Step 4 — 每个 WebView 共享运行时状态：`src/lib/runtimeStatus.ts` 为每个服务（gateway、router、ssh-tunnels、file-sharing）提供一个 store。`publishRuntimeStatus(service, payload)` 对有效后端快照零查询消费，否则为每个服务调度至多一次合并回退拉取；`refreshRuntimeStatus` 为单飞并以请求序列守卫拒绝过期响应；`useRuntimeStatus` 为订阅入口。校验要求 gateway 的 `running` 布尔、router 的 `running` + `enabled` 布尔、ssh-tunnels 的 `tunnels` 数组与 file-sharing 的 `running` + `files`；错误绝不弹 toast 且保留最后一次好数据。`setNativeWindowVisible` / `isAppVisible` / `useAppVisibility` 合并 document 与原生主窗口可见性。
+- Step 4 — 以合并可见性门控轮询与事件：`useVisibleInterval` 在 document 或原生窗口任一隐藏时暂停，并在 hidden→visible 转换时恰好执行一次追赶回调、启用时不触发；`useTauriEvent` 新增可选 `respectVisibility`，让页面消费者在隐藏时跳过处理。App 持有每服务一个事件桥，把 `main-window-visibility-changed` 喂给 `setNativeWindowVisible`，托盘与顶栏订阅 store，因此每个事件/启动只有一次查询。
+- Step 4 — 迁移消费方：SshTunnels 在可见性门控下订阅与轮询并保留草稿；Launcher 与 ProtocolRouterTool 经 store 读取状态；FileSharingTool 用 `respectVisibility` 门控事件并把结果发布到 store，而其页面数据仍直接调用 `fileSharingStatus`（已记录边界）；AiGateway 配置事件只刷新受配置影响的数据（config、terminal targets 与 templates），不再执行完整六次调用加载、也不再重取 usage/logs，5 秒用量轮询保留；Workspaces 集合把刷新事件合并为一次 reload，并在同一任务内包含活动详情刷新。
+- Step 4 — 复用后端已解码状态：`ssh_tunnels/types_state.rs` 按状态文件身份（路径+字节长度+mtime）与 `.local_key` 身份（key generation）缓存解码后的隧道状态；成功写入刷新缓存、元数据或 key 变化即失效、解密失败清缓存并返回错误而非旧值，因此 `ssh_tunnels_refresh_status` 不再每次调用重新解密（接缝 `ssh_state_cache_stats` / `reset_ssh_state_cache`）。`app_store/providers_storage.rs` 按文件身份缓存解码后的会话快照，由 `save_sessions_state` 刷新，元数据或解密失败即失效且不回退旧值，并被 `workspaces_list`、`workspace_sessions_query_by_root` 与 dashboard counts 共享（接缝 `sessions_cache_stats` / `reset_sessions_cache`）。
+
 ## Alternatives considered
 
 - 保留 Shell 脚本写明文会话 JSON，只修补名称或 ID。拒绝原因：它无法与 GUI 共享 canonical 注册、写者协调、pending 绑定或 spawn 失败回滚。
@@ -45,6 +50,8 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - Step 2 — 保留前端调度器，只为隐藏窗口增加后端循环。拒绝原因：两个 owner 必须协调计时、失败状态与通知；单一进程调度器消除重复所有权，而不是协调它。
 - Step 2 — 让自动竞争者等待忙碌的同模板手动同步。拒绝原因：定时批次不应阻塞在操作者工作上；自动竞争者跳过，而手动竞争者复用进行中的结果。
 - Step 3 — 保留已审计符号并加 `#[allow(dead_code)]`，或为兼容保留已退役命令。拒绝原因：最终静态、动态、原生与 CLI 调用方检查证明没有剩余生产消费者，已退役命令未有文档，且永久迁移读取器与活动功能路径均保留。
+- Step 4 — 保留每消费方状态查询与每页面隐藏检查。拒绝原因：它会在每个事件、每个挂载消费方上放大重复拉取；一个 WebView store 与一个合并可见性来源消除重复工作并保持单一回退。
+- Step 4 — 用内容哈希而非文件元数据缓存加密配置。拒绝原因：元数据身份（路径+长度+mtime）加 key generation 已能在真实变化时失效，无需对密钥做哈希或弱化密码学。
 
 ## Consequences
 
@@ -62,5 +69,7 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - Step 3 已验证证据：`cargo test --lib ai_env` 通过 10、`ai_sessions` 通过 82/2 ignored、`app_store` 通过 123/2 ignored、`claude_profiles` 通过 34；前端 Step 3 门禁通过 9 文件 101 测试，`shortLinkHistory` 与 `ShortLinkTool` 通过 48 个未修改测试，`npm run build` 退出 0。
 - Step 3 诚实限制：`loadShortLinkHistory` 内的 `dedupeHistoryRecords` 行为已实现但未被直接特征化（不同 URL 行为已覆盖）；未对先前偏离的文件应用 rustfmt；Step 4–8 尚未开始。
 - Step 3 部分取代：[Toolbox Plugin Registry Replaces Hand-Maintained Tool Lists](../architecture/2026-09-25-toolbox-plugin-registry.md) 被部分取代。其注册表、共享 invoke/事件/轮询/复制与移除决策继续有效，而其 `readLocalJson`/`createHistoryStore` 共享运行时事实由本步骤替换；该记录保留并交叉链接，不归档。没有其他活动记录被改动。
+- Step 4 已验证证据：`cargo test --lib ssh_tunnels` 通过 68，含 5 个缓存测试；`workspaces` 通过 2，含共享快照测试；`app_store` 通过 127、2 ignored、4 个缓存测试；前端 Step 4 门禁通过 16 文件 266 测试，含新增 `runtimeStatus.test.ts` 与三个先前 RED 用例；`npm run build` 退出 0；聚焦缓存子集通过 44。
+- Step 4 诚实限制：FileSharingTool 页面数据尚未从 store 渲染（已记录边界）；请求序列守卫经 store API 而非真实事件顺序在挂载组件上验证；完整单进程套件交错推迟到 Step 8 集成；Windows 未测试，Step 5–8 尚未开始。
 
 - 诚实的限制：release-profile 的权限行为未独立测试；`--permission-mode` 的缺值/非法值路径已实现但只有单测覆盖；显示名无法通过真实二进制 smoke 观测，由共享服务特征化覆盖；Windows `LockFile` 分支未在本次 macOS-only 验证中做运行时测试。该计划后续步骤尚未开始，且刻意不在此描述。

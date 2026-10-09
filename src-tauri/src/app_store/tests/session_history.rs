@@ -397,3 +397,151 @@ fn refavorite_keeps_original_timestamp() {
     set_session_favorite_impl(&mut state, "s1", true).unwrap();
     assert_eq!(state.sessions[0].favorited_at, Some(first_ts));
 }
+
+#[test]
+fn sessions_cache_reuses_decoded_snapshot_across_repeated_loads() {
+    with_temp_dir("sessions-cache-reuse", |_dir| {
+        let mut state = SessionsState::default();
+        state.sessions.push(session_record(
+            "cache-a",
+            "claude",
+            "/tmp/sessions-cache-reuse",
+            1_700_000_000,
+            "active",
+        ));
+        save_sessions_state(&state).expect("seed sessions");
+        reset_sessions_cache();
+
+        let first = load_sessions_state().expect("first load");
+        assert_eq!(first.sessions.len(), 1);
+        assert_eq!(
+            sessions_cache_stats().decrypts,
+            1,
+            "the first read of an encrypted file decrypts once"
+        );
+
+        let second = load_sessions_state().expect("second load");
+        assert_eq!(second.sessions.len(), 1);
+        assert_eq!(
+            sessions_cache_stats().decrypts,
+            1,
+            "an unchanged file reuses the decoded snapshot"
+        );
+    });
+}
+
+#[test]
+fn sessions_cache_serves_written_state_without_extra_decrypt() {
+    with_temp_dir("sessions-cache-save", |_dir| {
+        let mut first = SessionsState::default();
+        first.sessions.push(session_record(
+            "first",
+            "claude",
+            "/tmp/sessions-cache-save",
+            1_700_000_000,
+            "active",
+        ));
+        save_sessions_state(&first).expect("first save");
+        reset_sessions_cache();
+
+        let mut second = SessionsState::default();
+        second.sessions.push(session_record(
+            "second",
+            "codex",
+            "/tmp/sessions-cache-save",
+            1_700_000_001,
+            "active",
+        ));
+        save_sessions_state(&second).expect("second save");
+        assert_eq!(
+            sessions_cache_stats().decrypts,
+            0,
+            "a save refreshes the snapshot without decrypting"
+        );
+
+        let loaded = load_sessions_state().expect("load after save");
+        assert_eq!(loaded.sessions.len(), 1);
+        assert_eq!(loaded.sessions[0].id, "second");
+        assert_eq!(
+            sessions_cache_stats().decrypts,
+            0,
+            "the write leaves the cache warm for the next load"
+        );
+    });
+}
+
+#[test]
+fn sessions_cache_decrypts_again_after_external_metadata_change() {
+    with_temp_dir("sessions-cache-external", |_dir| {
+        let mut state = SessionsState::default();
+        state.sessions.push(session_record(
+            "cached",
+            "claude",
+            "/tmp/sessions-cache-external",
+            1_700_000_000,
+            "active",
+        ));
+        save_sessions_state(&state).expect("seed sessions");
+        reset_sessions_cache();
+        assert_eq!(load_sessions_state().expect("warm load").sessions.len(), 1);
+        assert_eq!(sessions_cache_stats().decrypts, 1);
+
+        // External rewrite with a different encrypted snapshot: the file
+        // identity changes, so the cache must miss and decrypt the new bytes.
+        let path = StorageEngine::sessions_path().expect("sessions path");
+        let mut replacement = SessionsState::default();
+        replacement.sessions.push(session_record(
+            "external",
+            "codex",
+            "/tmp/sessions-cache-external",
+            1_700_000_002,
+            "active",
+        ));
+        let value = serde_json::to_value(&replacement).expect("encode replacement");
+        let blob = CryptoService::encrypt_json(&value).expect("encrypt replacement");
+        write_test_file(&path, &serde_json::to_string_pretty(&blob).expect("serialize blob"));
+
+        let reloaded = load_sessions_state().expect("reload");
+        assert_eq!(reloaded.sessions.len(), 1);
+        assert_eq!(reloaded.sessions[0].id, "external");
+        assert_eq!(
+            sessions_cache_stats().decrypts,
+            2,
+            "an externally changed file decrypts again"
+        );
+    });
+}
+
+#[test]
+fn sessions_cache_returns_error_and_no_stale_value_on_decrypt_failure() {
+    with_temp_dir("sessions-cache-bad-key", |_dir| {
+        let mut state = SessionsState::default();
+        state.sessions.push(session_record(
+            "cached",
+            "claude",
+            "/tmp/sessions-cache-bad-key",
+            1_700_000_000,
+            "active",
+        ));
+        save_sessions_state(&state).expect("seed sessions");
+        reset_sessions_cache();
+        assert_eq!(load_sessions_state().expect("warm load").sessions.len(), 1);
+        assert_eq!(sessions_cache_stats().decrypts, 1);
+
+        // Change the file identity so the cache misses, then rotate the master
+        // key so the existing ciphertext can no longer be decrypted.
+        let path = StorageEngine::sessions_path().expect("sessions path");
+        let ciphertext = fs::read_to_string(&path).expect("read ciphertext");
+        write_test_file(&path, &format!("{ciphertext} "));
+        crate::crypto::set_master_password("rotated-test-key").expect("rotate key");
+
+        assert!(
+            load_sessions_state().is_err(),
+            "a failed decrypt must surface an error"
+        );
+        assert!(
+            load_sessions_state().is_err(),
+            "a failed decrypt must not fall back to the stale cached snapshot"
+        );
+    });
+}

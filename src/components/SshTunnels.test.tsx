@@ -155,6 +155,55 @@ describe("SshTunnels", () => {
     expect(refreshCallCount()).toBe(0);
   });
 
+  it("原生窗口隐藏时暂停页面轮询，重新可见只做一次追赶刷新", async () => {
+    vi.useFakeTimers();
+    mockSnapshotInvokes(connectedSnapshot);
+
+    const refreshCallCount = () =>
+      invokeMock.mock.calls.filter(
+        (call) => call[0] === "ssh_tunnels_refresh_status",
+      ).length;
+
+    const visibility = { state: "visible" as DocumentVisibilityState };
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibility.state,
+    });
+
+    try {
+      renderTunnels(<SshTunnels isVisible />);
+      await settle();
+
+      // 前置条件：isVisible 与原生窗口均可见时，一个轮询间隔产生一次刷新。
+      invokeMock.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(refreshCallCount()).toBe(1);
+
+      // 原生窗口（document）隐藏后，两个轮询间隔内不得再刷新。
+      visibility.state = "hidden";
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      invokeMock.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(refreshCallCount()).toBe(0);
+
+      // 重新可见：不推进计时器也应有且仅有一次合并的追赶刷新。
+      invokeMock.mockClear();
+      visibility.state = "visible";
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(refreshCallCount()).toBe(1);
+    } finally {
+      delete (document as { visibilityState?: unknown }).visibilityState;
+    }
+  });
+
   it("过期的保存探测不再覆盖运行时错误", async () => {
     vi.useFakeTimers();
     invokeMock.mockImplementation(async (command: string) => {

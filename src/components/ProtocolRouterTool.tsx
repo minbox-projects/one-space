@@ -26,7 +26,6 @@ import {
   protocolRouterGetConfig,
   protocolRouterSaveConfig,
   protocolRouterStats,
-  protocolRouterStatus,
   protocolRouterTestConnection,
   type ProtocolRoute,
   type ProtocolRouterCallRecord,
@@ -34,6 +33,7 @@ import {
   type ProtocolRouterStatsSummary,
   type ProtocolRouterStatus,
 } from "@/lib/protocolRouter";
+import { refreshRuntimeStatus, useRuntimeStatus } from "@/lib/runtimeStatus";
 
 const RECENT_REQUESTS_PAGE_SIZE = 20;
 
@@ -348,7 +348,6 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
   const { t } = useTranslation();
   const { icon: ToolIcon, iconClassName } = getToolboxTool("protocol-router")!;
   const [config, setConfig] = useState<ProtocolRouterConfig | null>(null);
-  const [status, setStatus] = useState<ProtocolRouterStatus | null>(null);
   const [stats, setStats] = useState<ProtocolRouterStatsSummary | null>(null);
   const [statsDays, setStatsDays] = useState(7);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
@@ -362,6 +361,13 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
   const pendingCopyKeyRef = useRef<string | null>(null);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
+
+  // Router status is served by the shared runtime-status store; config/stats
+  // stay on this component's direct calls.
+  const routerRuntime = useRuntimeStatus<ProtocolRouterStatus>("router", {
+    enabled: isVisible && isTauri,
+  });
+  const status = routerRuntime.data;
 
   const clipboard = useCopyToClipboard({
     onSuccess: () => {
@@ -380,14 +386,15 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
     if (!isTauri) return;
     setRefreshing(true);
     try {
-      const [nextConfig, nextStatus, nextStats] = await Promise.all([
+      const [nextConfig, nextStats] = await Promise.all([
         protocolRouterGetConfig(),
-        protocolRouterStatus(),
         protocolRouterStats(statsDays),
       ]);
       setConfig(nextConfig);
-      setStatus(nextStatus);
       setStats(nextStats);
+      void refreshRuntimeStatus<ProtocolRouterStatus>("router", {
+        force: true,
+      });
     } catch (err) {
       setMessage({ type: "error", text: errorToMessage(err) });
     } finally {
@@ -420,7 +427,9 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
 
     listen("protocol-router-status-update", () => {
       if (!disposed) {
-        handleRouterRefresh();
+        void refreshRuntimeStatus<ProtocolRouterStatus>("router", {
+          force: true,
+        });
       }
     })
       .then((unlisten) => {
@@ -526,13 +535,12 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
     try {
       const latest = await protocolRouterGetConfig();
       const saved = await protocolRouterSaveConfig({ ...latest, enabled });
-      const [nextStatus, nextStats] = await Promise.all([
-        protocolRouterStatus(),
-        protocolRouterStats(statsDays),
-      ]);
+      const nextStats = await protocolRouterStats(statsDays);
       setConfig(saved);
-      setStatus(nextStatus);
       setStats(nextStats);
+      await refreshRuntimeStatus<ProtocolRouterStatus>("router", {
+        force: true,
+      });
       await emit("protocol-router-status-update").catch(() => {});
     } catch (err) {
       setMessage({ type: "error", text: errorToMessage(err) });

@@ -65,23 +65,30 @@ import { OnboardingWizard } from "./components/OnboardingWizard";
 import { FishPond } from "./components/FishPond";
 import {
   protocolRouterStart,
-  protocolRouterStatus,
   protocolRouterStop,
   type ProtocolRouterStatus,
 } from "./lib/protocolRouter";
 import {
   aiGatewayStart,
-  aiGatewayStatus,
   aiGatewayStop,
   AI_GATEWAY_DEFAULT_PORT,
   AI_GATEWAY_STATUS_UPDATED_EVENT,
   type GatewayStatus,
 } from "./lib/aiGateway";
-import { fileSharingStatus, fileSharingStop } from "./lib/fileSharing";
+import {
+  fileSharingStop,
+  type FileSharingSnapshot,
+} from "./lib/fileSharing";
 import {
   sshTunnelsConnectAll,
   sshTunnelsDisconnectAll,
 } from "./lib/sshTunnels";
+import {
+  publishRuntimeStatus,
+  refreshRuntimeStatus,
+  setNativeWindowVisible,
+  useRuntimeStatus,
+} from "./lib/runtimeStatus";
 import {
   applyTrayMenu,
   buildTrayMenuModel,
@@ -441,6 +448,91 @@ function App() {
   const countsRefreshTimerRef = useRef<number | null>(null);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
+
+  // Shared runtime-status store: one coalesced query per service per WebView.
+  // The App event bridge below only publishes backend payloads; header and tray
+  // derive from this single subscription instead of pulling on every event.
+  const runtimeEnabled = isTauri && !isQuickAiView;
+  const gatewayRuntime = useRuntimeStatus<GatewayStatus>("gateway", {
+    enabled: runtimeEnabled,
+  });
+  const routerRuntime = useRuntimeStatus<ProtocolRouterStatus>("router", {
+    enabled: runtimeEnabled,
+  });
+  const tunnelsRuntime = useRuntimeStatus<SshTunnelsSnapshot>("ssh-tunnels", {
+    enabled: runtimeEnabled,
+  });
+  const sharingRuntime = useRuntimeStatus<FileSharingSnapshot>("file-sharing", {
+    enabled: runtimeEnabled,
+  });
+
+  useEffect(() => {
+    const status = gatewayRuntime.data;
+    if (!status) return;
+    gatewayBaseUrlRef.current = status.local_base_url;
+    setAiGatewayHeaderStatus(status);
+    setTrayState((prev) =>
+      prev.gateway.running === status.running && prev.gateway.port === status.port
+        ? prev
+        : { ...prev, gateway: { running: status.running, port: status.port } },
+    );
+  }, [gatewayRuntime.data]);
+
+  useEffect(() => {
+    const status = routerRuntime.data;
+    if (!status) return;
+    setProtocolRouterHeaderStatus(status);
+    setTrayState((prev) =>
+      prev.router.running === status.running && prev.router.port === status.port
+        ? prev
+        : { ...prev, router: { running: status.running, port: status.port } },
+    );
+  }, [routerRuntime.data]);
+
+  useEffect(() => {
+    const snapshot = tunnelsRuntime.data;
+    if (!snapshot) return;
+    const summary = deriveSshTunnelHeaderSummary(snapshot);
+    const previousErrors = sshTunnelSummaryRef.current?.errorTunnelNames ?? [];
+    const newErrors = summary.errorTunnelNames.filter(
+      (name) => !previousErrors.includes(name),
+    );
+    for (const name of newErrors) {
+      void notifySystemEvent(
+        { pushToast, recordMessage },
+        buildSshUnexpectedDisconnectEvent(t, name),
+      );
+    }
+    sshTunnelSummaryRef.current = summary;
+    setSshTunnelSummary(summary);
+    const runtimeEntries = Array.isArray(snapshot.runtime) ? snapshot.runtime : [];
+    const total = Array.isArray(snapshot.tunnels) ? snapshot.tunnels.length : 0;
+    const connected = runtimeEntries.filter(
+      (entry) => entry.status === "connected",
+    ).length;
+    setTrayState((prev) =>
+      prev.tunnels.connected === connected && prev.tunnels.total === total
+        ? prev
+        : { ...prev, tunnels: { connected, total } },
+    );
+  }, [tunnelsRuntime.data, pushToast, recordMessage, t]);
+
+  useEffect(() => {
+    const snapshot = sharingRuntime.data;
+    if (!snapshot) return;
+    const sharing = {
+      running: snapshot.running,
+      fileCount: (snapshot.files ?? []).length,
+    };
+    setFileSharingHeaderStatus(sharing);
+    setTrayState((prev) =>
+      prev.sharing.running === sharing.running &&
+      prev.sharing.fileCount === sharing.fileCount
+        ? prev
+        : { ...prev, sharing },
+    );
+  }, [sharingRuntime.data]);
+
   const moreToolsLabel =
     i18n.language === "zh" ? "更多工具" : "More Tools";
   const moreToolsSectionTitle = useMemo(() => {
@@ -534,70 +626,30 @@ function App() {
   }, [applyTrayModel, trayState]);
 
   const refreshTrayGateway = useCallback(async () => {
-    try {
-      const status = await aiGatewayStatus();
-      if (!status) return;
-      gatewayBaseUrlRef.current = status.local_base_url;
-      setTrayState((prev) => ({
-        ...prev,
-        gateway: { running: status.running, port: status.port },
-      }));
-    } catch {
-      // Keep the last known state when the status query fails.
-    }
+    await refreshRuntimeStatus<GatewayStatus>("gateway", { force: true });
   }, []);
 
   const refreshTrayRouter = useCallback(async () => {
-    try {
-      const status = await protocolRouterStatus();
-      if (!status) return;
-      setTrayState((prev) => ({
-        ...prev,
-        router: { running: status.running, port: status.port },
-      }));
-    } catch {
-      // Keep the last known state when the status query fails.
-    }
+    await refreshRuntimeStatus<ProtocolRouterStatus>("router", { force: true });
   }, []);
 
   const refreshTrayTunnels = useCallback(async () => {
-    try {
-      const snapshot = await invoke<SshTunnelsSnapshot>("ssh_tunnels_snapshot");
-      if (!snapshot) return;
-      const connected = (snapshot.runtime ?? []).filter(
-        (entry) => entry.status === "connected",
-      ).length;
-      setTrayState((prev) => ({
-        ...prev,
-        tunnels: { connected, total: (snapshot.tunnels ?? []).length },
-      }));
-    } catch {
-      // Keep the last known state when the snapshot query fails.
-    }
+    await refreshRuntimeStatus<SshTunnelsSnapshot>("ssh-tunnels", {
+      force: true,
+    });
   }, []);
 
   const refreshTraySharing = useCallback(async () => {
-    try {
-      const snapshot = await fileSharingStatus();
-      if (!snapshot) return;
-      const sharing = {
-        running: snapshot.running,
-        fileCount: (snapshot.files ?? []).length,
-      };
-      setFileSharingHeaderStatus(sharing);
-      setTrayState((prev) => ({
-        ...prev,
-        sharing,
-      }));
-    } catch {
-      // Keep the last known state when the status query fails.
-    }
+    await refreshRuntimeStatus<FileSharingSnapshot>("file-sharing", {
+      force: true,
+    });
   }, []);
 
   const refreshTrayVisibility = useCallback(async () => {
     try {
       const visible = await getCurrentWindow().isVisible();
       if (typeof visible !== "boolean") return;
+      setNativeWindowVisible(visible);
       setTrayState((prev) =>
         prev.windowVisible === visible
           ? prev
@@ -810,6 +862,7 @@ function App() {
       void refreshTrayAiWorkflow();
       const payload = event.payload;
       if (typeof payload === "boolean") {
+        setNativeWindowVisible(payload);
         setTrayState((prev) =>
           prev.windowVisible === payload
             ? prev
@@ -819,17 +872,20 @@ function App() {
         void refreshTrayVisibility();
       }
     });
-    addListener(AI_GATEWAY_STATUS_UPDATED_EVENT, () => {
-      void refreshTrayGateway();
+    // One shared event bridge per service: publish the backend payload into the
+    // runtime-status store. Valid snapshots are consumed with zero queries; the
+    // store coalesces one fallback pull for missing/unit payloads.
+    addListener(AI_GATEWAY_STATUS_UPDATED_EVENT, (event) => {
+      publishRuntimeStatus("gateway", event.payload);
     });
-    addListener("protocol-router-status-update", () => {
-      void refreshTrayRouter();
+    addListener("protocol-router-status-update", (event) => {
+      publishRuntimeStatus("router", event.payload);
     });
-    addListener("ssh-tunnels-updated", () => {
-      void refreshTrayTunnels();
+    addListener("ssh-tunnels-updated", (event) => {
+      publishRuntimeStatus("ssh-tunnels", event.payload);
     });
-    addListener("file-sharing-updated", () => {
-      void refreshTraySharing();
+    addListener("file-sharing-updated", (event) => {
+      publishRuntimeStatus("file-sharing", event.payload);
     });
     addListener("tray-shortcuts-updated", (event) => {
       const payload = (event.payload ?? {}) as {
@@ -850,10 +906,6 @@ function App() {
     window.addEventListener(AI_WORKFLOW_PROFILE_UPDATED_EVENT, refreshTrayAiWorkflow);
     const aiWorkflowTimer = window.setInterval(refreshTrayAiWorkflow, 60_000);
     void refreshTrayAiWorkflow();
-    void refreshTrayGateway();
-    void refreshTrayRouter();
-    void refreshTrayTunnels();
-    void refreshTraySharing();
     void refreshTrayVisibility();
     invoke<TrayShortcutConfig>("get_storage_config")
       .then((cfg) => {
@@ -1227,44 +1279,6 @@ function App() {
         );
       });
 
-      addListener("ssh-tunnels-updated", () => {
-        const previousErrors = sshTunnelSummaryRef.current?.errorTunnelNames ?? [];
-        void invoke<import("./components/sshTunnels/types").SshTunnelsSnapshot>(
-          "ssh_tunnels_snapshot",
-        )
-          .then((snapshot) => {
-            const summary = deriveSshTunnelHeaderSummary(snapshot);
-            const newErrors = summary.errorTunnelNames.filter(
-              (name) => !previousErrors.includes(name),
-            );
-            for (const name of newErrors) {
-              void notifySystemEvent(
-                { pushToast, recordMessage },
-                buildSshUnexpectedDisconnectEvent(t, name),
-              );
-            }
-            sshTunnelSummaryRef.current = summary;
-            setSshTunnelSummary(summary);
-          })
-          .catch(() => {});
-      });
-
-      const refreshProtocolRouterStatus = () => {
-        void protocolRouterStatus()
-          .then(setProtocolRouterHeaderStatus)
-          .catch(() => setProtocolRouterHeaderStatus(null));
-      };
-      addListener("protocol-router-status-update", refreshProtocolRouterStatus);
-      refreshProtocolRouterStatus();
-
-      const refreshAiGatewayStatus = () => {
-        void aiGatewayStatus()
-          .then(setAiGatewayHeaderStatus)
-          .catch(() => setAiGatewayHeaderStatus(null));
-      };
-      addListener(AI_GATEWAY_STATUS_UPDATED_EVENT, refreshAiGatewayStatus);
-      refreshAiGatewayStatus();
-
       addListener("ssh-tunnel-window-reconnect-start", (event) => {
         const payload = (event.payload ?? {}) as { total?: number };
         const total = payload.total ?? 0;
@@ -1296,16 +1310,6 @@ function App() {
         }
         void notifySystemEvent({ pushToast, recordMessage }, descriptor);
       });
-
-      void invoke<import("./components/sshTunnels/types").SshTunnelsSnapshot>(
-        "ssh_tunnels_snapshot",
-      )
-        .then((snapshot) => {
-          const summary = deriveSshTunnelHeaderSummary(snapshot);
-          sshTunnelSummaryRef.current = summary;
-          setSshTunnelSummary(summary);
-        })
-        .catch(() => {});
 
       addListener("refresh-mail-count", () => {
         getUnreadEmailCount()

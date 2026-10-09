@@ -16,8 +16,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::sync::Mutex;
+use std::time::SystemTime;
 use tauri::Emitter;
 
 struct LoadedServiceProvidersState {
@@ -245,29 +247,177 @@ pub(crate) fn save_service_providers_internal(
     StorageEngine::bump_revision()
 }
 
+/// One process-memory decoded sessions snapshot keyed by the sessions file
+/// identity — path plus byte length and modification time. A metadata change,
+/// a direct external rewrite or a profile switch that resolves a different path
+/// all miss. The cache holds the already-normalized snapshot, so the several
+/// callers of [`load_sessions_state`] (workspace list, workspace session query,
+/// dashboard counts) share one decryption per file revision.
+struct CachedSessionsState {
+    path: PathBuf,
+    len: u64,
+    modified: Option<SystemTime>,
+    state: SessionsState,
+}
+
+static SESSIONS_READ_CACHE: Mutex<Option<CachedSessionsState>> = Mutex::new(None);
+
+fn sessions_file_identity(path: &Path) -> Option<(u64, Option<SystemTime>)> {
+    let metadata = fs::metadata(path).ok()?;
+    Some((metadata.len(), metadata.modified().ok()))
+}
+
+fn cached_sessions_state(path: &Path) -> Option<SessionsState> {
+    let (len, modified) = sessions_file_identity(path)?;
+    let cache = SESSIONS_READ_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache
+        .as_ref()
+        .filter(|entry| entry.path == path && entry.len == len && entry.modified == modified)
+        .map(|entry| entry.state.clone())
+}
+
+fn store_sessions_cache_at(
+    path: &Path,
+    identity: (u64, Option<SystemTime>),
+    state: &SessionsState,
+) {
+    let (len, modified) = identity;
+    {
+        let mut cache = SESSIONS_READ_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *cache = Some(CachedSessionsState {
+            path: path.to_path_buf(),
+            len,
+            modified,
+            state: state.clone(),
+        });
+    }
+    record_sessions_cache_fill();
+}
+
+/// Refresh the cache with `state` under the file's current identity. A missing
+/// file or failed metadata read clears the entry instead of pinning state that
+/// no longer matches disk.
+fn store_sessions_cache(path: &Path, state: &SessionsState) {
+    match sessions_file_identity(path) {
+        Some(identity) => store_sessions_cache_at(path, identity, state),
+        None => invalidate_sessions_cache(),
+    }
+}
+
+fn invalidate_sessions_cache() {
+    let mut cache = SESSIONS_READ_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *cache = None;
+}
+
+#[cfg(test)]
+static SESSIONS_CACHE_FILLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static SESSIONS_CACHE_MISSES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static SESSIONS_CACHE_DECRYPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn record_sessions_cache_fill() {
+    SESSIONS_CACHE_FILLS.fetch_add(1, Ordering::Relaxed);
+}
+#[cfg(not(test))]
+fn record_sessions_cache_fill() {}
+
+#[cfg(test)]
+fn record_sessions_cache_miss() {
+    SESSIONS_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+}
+#[cfg(not(test))]
+fn record_sessions_cache_miss() {}
+
+#[cfg(test)]
+fn record_sessions_cache_decrypt() {
+    SESSIONS_CACHE_DECRYPTS.fetch_add(1, Ordering::Relaxed);
+}
+#[cfg(not(test))]
+fn record_sessions_cache_decrypt() {}
+
+/// Test-only counter accessor (fills, misses, decrypts). The crate-visible
+/// wrappers live in [`super::command_types`].
+#[cfg(test)]
+pub(in crate::app_store) fn sessions_cache_counters() -> (usize, usize, usize) {
+    (
+        SESSIONS_CACHE_FILLS.load(Ordering::Relaxed),
+        SESSIONS_CACHE_MISSES.load(Ordering::Relaxed),
+        SESSIONS_CACHE_DECRYPTS.load(Ordering::Relaxed),
+    )
+}
+
+/// Test-only hook that drops the decoded-sessions cache and zeroes the counters.
+#[cfg(test)]
+pub(in crate::app_store) fn reset_sessions_cache_for_test() {
+    invalidate_sessions_cache();
+    SESSIONS_CACHE_FILLS.store(0, Ordering::Relaxed);
+    SESSIONS_CACHE_MISSES.store(0, Ordering::Relaxed);
+    SESSIONS_CACHE_DECRYPTS.store(0, Ordering::Relaxed);
+}
+
 pub(in crate::app_store) fn load_sessions_state() -> Result<SessionsState, String> {
     let _operation = lock_sessions_state_write()?;
     let path = StorageEngine::sessions_path()?;
     let _ = migrate_sessions_to_local_if_needed(&path);
+    if let Some(state) = cached_sessions_state(&path) {
+        return Ok(state);
+    }
     if !path.exists() {
+        invalidate_sessions_cache();
         return Ok(SessionsState::default());
     }
+    record_sessions_cache_miss();
+    // Capture the identity of the bytes this read is about to parse, before
+    // reading them, so a concurrent publication cannot pin stale state under the
+    // newer identity.
+    let read_identity = sessions_file_identity(&path);
     let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
     if content.trim().is_empty() {
+        invalidate_sessions_cache();
         return Ok(SessionsState::default());
     }
 
     if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
-        if let Ok(value) = CryptoService::decrypt_json(&blob) {
-            if let Ok(mut state) = serde_json::from_value::<SessionsState>(value) {
-                let _ = normalize_sessions_state(&mut state);
-                return Ok(state);
+        let is_encrypted = blob.is_encrypted;
+        if is_encrypted {
+            record_sessions_cache_decrypt();
+        }
+        match CryptoService::decrypt_json(&blob) {
+            Ok(value) => {
+                if let Ok(mut state) = serde_json::from_value::<SessionsState>(value) {
+                    let _ = normalize_sessions_state(&mut state);
+                    if let Some(identity) = read_identity {
+                        store_sessions_cache_at(&path, identity, &state);
+                    }
+                    return Ok(state);
+                }
             }
+            Err(error) if is_encrypted => {
+                // Wrong password (or a rotated key): never fall back to a stale
+                // snapshot or silently decode the wrapper; clear and surface it.
+                invalidate_sessions_cache();
+                return Err(error);
+            }
+            Err(_) => {}
         }
     }
 
     let mut state = serde_json::from_str::<SessionsState>(&content).map_err(|e| e.to_string())?;
     let _ = normalize_sessions_state(&mut state);
+    if let Some(identity) = read_identity {
+        store_sessions_cache_at(&path, identity, &state);
+    }
     Ok(state)
 }
 
@@ -277,7 +427,15 @@ pub(in crate::app_store) fn save_sessions_state(
     let _operation = lock_sessions_state_write()?;
     let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
     let blob = CryptoService::encrypt_json(&value)?;
-    StorageEngine::write_json(&StorageEngine::sessions_path()?, &blob)?;
+    let path = StorageEngine::sessions_path()?;
+    StorageEngine::write_json(&path, &blob)?;
+    // Refresh with the snapshot a subsequent read would decode (normalized),
+    // keyed by the identity of the bytes just written so the next load needs no
+    // decrypt. The cache is only touched after a successful write under the same
+    // canonical gate.
+    let mut cached = state.clone();
+    let _ = normalize_sessions_state(&mut cached);
+    store_sessions_cache(&path, &cached);
     StorageEngine::bump_revision()
 }
 

@@ -13,6 +13,7 @@ import {
   type FileSharingNetwork,
   type FileSharingSnapshot,
 } from "@/lib/fileSharing";
+import { publishRuntimeStatus } from "@/lib/runtimeStatus";
 import { getToolboxTool } from "@/toolbox/registry";
 import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 import { useTauriEvent } from "@/toolbox/useTauriEvent";
@@ -91,6 +92,7 @@ export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
       void refreshStatus();
     },
     isVisible,
+    { respectVisibility: true },
   );
 
   const chooseFiles = async () => {
@@ -107,7 +109,9 @@ export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
     setLoading(true);
     setError(null);
     try {
-      setSnapshot(await fileSharingStart({ networkId, paths }));
+      const next = await fileSharingStart({ networkId, paths });
+      setSnapshot(next);
+      publishRuntimeStatus("file-sharing", next);
     } catch (nextError) {
       setError(messageFor(nextError));
     } finally {
@@ -119,7 +123,9 @@ export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
     requestVersion.current += 1;
     setLoading(true);
     try {
-      setSnapshot(await fileSharingStop());
+      const next = await fileSharingStop();
+      setSnapshot(next);
+      publishRuntimeStatus("file-sharing", next);
     } catch (nextError) {
       setError(messageFor(nextError));
     } finally {

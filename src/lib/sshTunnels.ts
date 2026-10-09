@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+
 import { invokeTyped } from "@/lib/userActions";
 
 export function sshHostsList<T>() {
@@ -5,7 +7,7 @@ export function sshHostsList<T>() {
 }
 
 export function sshTunnelsSnapshot<T>() {
-  return invokeTyped<T>("ssh_tunnels_snapshot");
+  return invoke<T>("ssh_tunnels_snapshot");
 }
 
 export function sshTunnelsRefreshStatus<T>() {

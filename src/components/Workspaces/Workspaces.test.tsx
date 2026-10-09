@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Workspaces } from "@/components/Workspaces";
 import { renderWithProviders } from "@/test/mocks/render";
-import { emitMock, invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
+import { emitMock, invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
 import { resetMessageMocks } from "@/test/mocks/messages";
 
 function mockWorkspacesState() {
@@ -156,5 +156,46 @@ describe("Workspaces", () => {
     ).toBeInTheDocument();
     expect(await screen.findByText(/\.agents\//)).toBeInTheDocument();
     expect(screen.getByText(/~\/\.gemini\/config\//)).toBeInTheDocument();
+  });
+
+  it("coalesces a refresh event burst into one reload and keeps correct counts", async () => {
+    const handlers: Record<string, (event: { payload?: unknown }) => void> = {};
+    listenMock.mockImplementation(
+      async (eventName: string, handler: (event: { payload?: unknown }) => void) => {
+        handlers[eventName] = handler;
+        return vi.fn();
+      },
+    );
+
+    renderWithProviders(<Workspaces isVisible />);
+    expect(await screen.findByText("Workspace A")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(handlers["refresh-counts"]).toBeTruthy();
+      expect(handlers["sessions-updated"]).toBeTruthy();
+      expect(handlers["workspaces-updated"]).toBeTruthy();
+    });
+    expect(screen.getByText(/1 sessions|1 个会话/)).toBeInTheDocument();
+    expect(screen.getByText(/0 sessions|0 个会话/)).toBeInTheDocument();
+
+    const listCallsBefore = invokeMock.mock.calls.filter(
+      (call) => call[0] === "workspaces_list",
+    ).length;
+
+    act(() => {
+      handlers["refresh-counts"]({});
+      handlers["sessions-updated"]({});
+      handlers["workspaces-updated"]({});
+    });
+
+    await waitFor(() => {
+      const listCalls = invokeMock.mock.calls.filter(
+        (call) => call[0] === "workspaces_list",
+      ).length;
+      expect(listCalls).toBe(listCallsBefore + 1);
+    });
+
+    // The coalesced reload keeps the counts rendered from the shared snapshot.
+    expect(screen.getByText(/1 sessions|1 个会话/)).toBeInTheDocument();
+    expect(screen.getByText(/0 sessions|0 个会话/)).toBeInTheDocument();
   });
 });

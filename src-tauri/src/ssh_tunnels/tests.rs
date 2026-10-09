@@ -837,7 +837,11 @@ fn supervisor_user_stop_during_backoff_ends_in_disconnected() {
 
 struct TempHome {
     path: PathBuf,
-    _guard: TestHomeGuard,
+    _home_guard: TestHomeGuard,
+    // Decoded-state cache counters are process-global, so cache-sensitive tests
+    // hold the shared HOME lock for the whole scenario and serialize with the
+    // other state-touching fixtures.
+    _serial: std::sync::MutexGuard<'static, ()>,
 }
 
 impl Drop for TempHome {
@@ -847,6 +851,7 @@ impl Drop for TempHome {
 }
 
 fn isolated_temp_home(name: &str) -> TempHome {
+    let serial = crate::lock_test_home_env();
     let path = std::env::temp_dir().join(format!(
         "onespace-ssh-tunnels-{}-{}",
         name,
@@ -856,7 +861,8 @@ fn isolated_temp_home(name: &str) -> TempHome {
     let guard = TestHomeGuard::set(&path);
     TempHome {
         path,
-        _guard: guard,
+        _home_guard: guard,
+        _serial: serial,
     }
 }
 
@@ -1735,4 +1741,152 @@ fn default_common_ports_contain_standard_services() {
     assert!(ports.iter().any(|p| p.local_port == 3306 && p.remote_port == 3306 && p.name == "MySQL"));
     assert!(ports.iter().any(|p| p.local_port == 5432 && p.remote_port == 5432 && p.name == "PostgreSQL"));
     assert!(ports.iter().any(|p| p.local_port == 6379 && p.remote_port == 6379 && p.name == "Redis"));
+}
+
+#[test]
+fn ssh_state_cache_reuses_decoded_state_for_repeated_reads() {
+    let _home = isolated_temp_home("cache-reuse");
+    mutate_records(|records| {
+        records.push(record_with_id("cache-reuse-a", "A"));
+        Ok(())
+    })
+    .expect("seed state");
+    reset_ssh_state_cache();
+
+    let first = load_records().expect("first read");
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        ssh_state_cache_stats().decrypts,
+        1,
+        "the first read of the encrypted file decrypts exactly once"
+    );
+
+    let second = load_records().expect("second read");
+    assert_eq!(second.len(), 1);
+    assert_eq!(
+        ssh_state_cache_stats().decrypts,
+        1,
+        "an unchanged file reuses the decoded state"
+    );
+}
+
+#[test]
+fn ssh_state_cache_serves_new_state_after_write_without_extra_decrypt() {
+    let _home = isolated_temp_home("cache-write");
+    mutate_records(|records| {
+        records.push(record_with_id("cache-write-a", "A"));
+        Ok(())
+    })
+    .expect("seed state");
+    reset_ssh_state_cache();
+
+    mutate_records(|records| {
+        records.push(record_with_id("cache-write-b", "B"));
+        Ok(())
+    })
+    .expect("second write");
+    assert_eq!(
+        ssh_state_cache_stats().decrypts,
+        1,
+        "the read-modify-write decrypts the current state once"
+    );
+
+    let records = load_records().expect("read after write");
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().any(|record| record.id == "cache-write-b"));
+    assert_eq!(
+        ssh_state_cache_stats().decrypts,
+        1,
+        "the write refreshes the cache so the next read decrypts nothing"
+    );
+}
+
+#[test]
+fn ssh_state_cache_decrypts_again_after_external_file_change() {
+    let _home = isolated_temp_home("cache-external");
+    mutate_records(|records| {
+        records.push(record_with_id("cache-external-a", "A"));
+        Ok(())
+    })
+    .expect("seed state");
+    reset_ssh_state_cache();
+    assert_eq!(load_records().expect("warm read").len(), 1);
+    assert_eq!(ssh_state_cache_stats().decrypts, 1);
+
+    let path = get_tunnels_path().expect("tunnels path");
+    let password = crate::crypto::get_or_init_master_password().expect("master password");
+    let mut replacement = SshTunnelState {
+        groups: vec![default_group_record()],
+        tunnels: vec![record_with_id("cache-external-b", "External")],
+        common_ports: default_common_ports(),
+    };
+    normalize_state(&mut replacement);
+    let plain = serde_json::to_string(&replacement).expect("encode replacement");
+    let cipher = crate::crypto::encrypt(&plain, &password).expect("encrypt replacement");
+    let blob = serde_json::json!({ "is_encrypted": true, "data": cipher });
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&blob).expect("serialize replacement blob"),
+    )
+    .expect("write replacement state");
+
+    let reloaded = load_records().expect("reload after external change");
+    assert_eq!(reloaded.len(), 1);
+    assert_eq!(reloaded[0].id, "cache-external-b");
+    assert_eq!(
+        ssh_state_cache_stats().decrypts,
+        2,
+        "an externally changed file must decrypt again"
+    );
+}
+
+#[test]
+fn ssh_state_cache_decrypts_again_after_key_file_identity_change() {
+    let _home = isolated_temp_home("cache-key-change");
+    mutate_records(|records| {
+        records.push(record_with_id("cache-key-a", "A"));
+        Ok(())
+    })
+    .expect("seed state");
+    reset_ssh_state_cache();
+    assert_eq!(load_records().expect("warm read").len(), 1);
+    assert_eq!(ssh_state_cache_stats().decrypts, 1);
+
+    // Rewrite the same key bytes after a pause so the key file identity changes
+    // while the key material (and therefore decryption) stays valid.
+    let key_path = crate::crypto::get_local_key_path().expect("key path");
+    let password = crate::crypto::get_or_init_master_password().expect("master password");
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(&key_path, &password).expect("rewrite key file");
+
+    let reloaded = load_records().expect("reload after key identity change");
+    assert_eq!(reloaded.len(), 1);
+    assert_eq!(
+        ssh_state_cache_stats().decrypts,
+        2,
+        "a changed key file must invalidate the decoded-state cache"
+    );
+}
+
+#[test]
+fn ssh_state_cache_error_after_rotated_key_never_returns_stale_state() {
+    let _home = isolated_temp_home("cache-rotated-key");
+    mutate_records(|records| {
+        records.push(record_with_id("cache-rotated-a", "A"));
+        Ok(())
+    })
+    .expect("seed state");
+    reset_ssh_state_cache();
+    assert_eq!(load_records().expect("warm read").len(), 1);
+
+    crate::crypto::set_master_password("rotated-wrong-key").expect("rotate key");
+
+    assert!(
+        load_records().is_err(),
+        "a rotated key must surface a decrypt error"
+    );
+    assert!(
+        load_records().is_err(),
+        "a failed decrypt must not return the stale cached state"
+    );
 }
