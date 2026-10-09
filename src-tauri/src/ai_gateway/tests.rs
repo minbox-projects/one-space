@@ -10,10 +10,10 @@ use super::selection::{
 };
 use super::storage::{config_path, resolve_default_key_id};
 use super::{
-    canonical_usage_from_value, compute_cost, compute_cost_at_time, extract_upstream_error_text, is_off_peak, match_price_for_provider, normalize_retention_days, resolve_range, usage_tokens_from_value,
+    canonical_usage_from_value, compute_cost, compute_cost_at_time, compute_cost_at_time_with_breakdown, extract_upstream_error_text, is_off_peak, match_price_for_provider, normalize_retention_days, resolve_range, usage_tokens_from_value,
     sanitize_error_text, validate_retention_days, GatewayConfig, GatewayKey, GatewayUpstreamProvider, LogFilter,
     ModelMapping, ModelPrice, OffPeakPrice, SseUsageAccumulator, TerminalSyncRecord, TimeRange, UpstreamProtocol,
-    UsageLogRecord, UsageLogStore, UsageResult, UsageTokens, DEFAULT_USAGE_RETENTION_DAYS,
+    UsageCostBreakdown, UsageLogRecord, UsageLogStore, UsageResult, UsageTokens, DEFAULT_USAGE_RETENTION_DAYS,
     USAGE_LOG_PAGE_SIZE,
 };
 use serde_json::{json, Value};
@@ -10896,6 +10896,7 @@ fn sample_attempt_record(
         error_message: error_message.map(str::to_string),
         terminal,
         reasoning_effort: None,
+        cost_breakdown: None,
     }
 }
 
@@ -33663,4 +33664,1068 @@ async fn ac005_failed_config_write_records_no_mapping_auto_disabled_message() {
 
     clear_mapping_auto_disabled_message_inputs();
     clear_config_update_events();
+}
+
+// ---------------------------------------------------------------------------
+// 20261009-gateway-request-cost-breakdown Step 1 (RED): frozen per-row cost
+// snapshots. These behavior tests exercise the planned public pricing helper
+// (`compute_cost_at_time_with_breakdown`), the `UsageCostBreakdown` payload and
+// the public usage-log store/command path. All dollar values are calculated
+// independently of the implementation; no private row builder or collaborator
+// is used.
+// ---------------------------------------------------------------------------
+
+/// Independent field view of one breakdown so assertions never depend on the
+/// type's own equality or `Debug` derives. Order:
+/// `[input_price, output_price, cache_read_price, cache_write_price,
+///   input_cost, output_cost, cache_read_cost, cache_write_cost]`.
+fn breakdown_fields(breakdown: &UsageCostBreakdown) -> [f64; 8] {
+    [
+        breakdown.input_price,
+        breakdown.output_price,
+        breakdown.cache_read_price,
+        breakdown.cache_write_price,
+        breakdown.input_cost,
+        breakdown.output_cost,
+        breakdown.cache_read_cost,
+        breakdown.cache_write_cost,
+    ]
+}
+
+/// Assert one breakdown against independently calculated component values.
+fn assert_breakdown(actual: &UsageCostBreakdown, expected: [f64; 8], context: &str) {
+    let actual = breakdown_fields(actual);
+    for (index, (actual, expected)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (*actual - *expected).abs() < 1e-9,
+            "{context}: component {index} expected {expected}, got {actual}"
+        );
+    }
+}
+
+/// The sum of the four stored fee components must match the stored total within
+/// ordinary floating-point tolerance (display rounding is not persisted).
+fn assert_breakdown_sums_to(breakdown: &UsageCostBreakdown, total: f64, context: &str) {
+    let sum = breakdown.input_cost
+        + breakdown.output_cost
+        + breakdown.cache_read_cost
+        + breakdown.cache_write_cost;
+    assert!(
+        (sum - total).abs() < 1e-12,
+        "{context}: fee components sum to {sum}, expected the total {total}"
+    );
+}
+
+/// AC-002 fixture: standard prices 1/4/0.5/2 with the AC-001/AC-002 token mix.
+fn usage_cost_breakdown_fixture() -> UsageCostBreakdown {
+    UsageCostBreakdown {
+        input_price: 1.0,
+        output_price: 4.0,
+        cache_read_price: 0.5,
+        cache_write_price: 2.0,
+        input_cost: 1.0,
+        output_cost: 4.0,
+        cache_read_cost: 1.0,
+        cache_write_cost: 1.0,
+    }
+}
+
+/// AC-001 / AC-002 / AC-003: the standard tier resolves the frozen fee and rate
+/// components for the required seven values, cache-write fees appear only with
+/// cache-write tokens, and the component sum matches the existing total.
+#[test]
+fn gateway_cost_breakdown_standard_and_cache_write_fees_match_independently_calculated_amounts() {
+    let price = ModelPrice {
+        provider_id: Some("prov-a".to_string()),
+        upstream_model: "remote-ac".to_string(),
+        input: 1.0,
+        cache_read: 0.5,
+        cache_write: 2.0,
+        output: 4.0,
+        off_peaks: Vec::new(),
+        ..ModelPrice::default()
+    };
+    let timestamp = utc8_timestamp_ms(2026, 9, 18, 14, 0);
+
+    // AC-001 fixture: input 1M, cache-read 2M, cache-write 0, output 1M at 1/4/0.5.
+    let no_write = tokens(1_000_000, 2_000_000, 0, 1_000_000);
+    let (total, breakdown) = compute_cost_at_time_with_breakdown(&price, &no_write, timestamp);
+    assert!(
+        (total - 6.0).abs() < 1e-9,
+        "AC-001 must total $6.0000, got {total}"
+    );
+    assert_breakdown(
+        &breakdown,
+        [1.0, 4.0, 0.5, 2.0, 1.0, 4.0, 1.0, 0.0],
+        "AC-001 standard breakdown",
+    );
+    assert_breakdown_sums_to(&breakdown, total, "AC-001");
+
+    // AC-002 fixture: add 500K cache-write tokens at $2 per million.
+    let with_write = tokens(1_000_000, 2_000_000, 500_000, 1_000_000);
+    let (total, breakdown) = compute_cost_at_time_with_breakdown(&price, &with_write, timestamp);
+    assert!(
+        (total - 7.0).abs() < 1e-9,
+        "AC-002 must total $7.0000, got {total}"
+    );
+    assert_breakdown(
+        &breakdown,
+        [1.0, 4.0, 0.5, 2.0, 1.0, 4.0, 1.0, 1.0],
+        "AC-002 cache-write breakdown",
+    );
+    assert_breakdown_sums_to(&breakdown, total, "AC-002");
+
+    // The new boundary and the existing total entry point resolve one tier.
+    let existing_total = compute_cost_at_time(&price, &with_write, timestamp);
+    assert!(
+        (total - existing_total).abs() < 1e-12,
+        "the snapshot total {total} must equal the existing compute_cost_at_time total {existing_total}"
+    );
+    assert!((compute_cost(&price, &with_write) - 7.0).abs() < 1e-12);
+}
+
+/// AC-003: the first active UTC+8 off-peak window determines every component,
+/// the start boundary is included and the end boundary excluded, overlapping
+/// windows keep the first match, and a day-limited window never prices a
+/// non-matching weekday.
+#[test]
+fn gateway_cost_breakdown_uses_first_active_window_and_excludes_end_boundary() {
+    let ac002_tokens = tokens(1_000_000, 2_000_000, 500_000, 1_000_000);
+    let price = ModelPrice {
+        provider_id: Some("prov-a".to_string()),
+        upstream_model: "remote-ac".to_string(),
+        input: 1.0,
+        cache_read: 0.5,
+        cache_write: 2.0,
+        output: 4.0,
+        off_peaks: vec![
+            // First window [03:00, 06:00): a half-price tier.
+            OffPeakPrice {
+                start_time: "03:00".to_string(),
+                end_time: "06:00".to_string(),
+                input: 0.5,
+                cache_read: 0.25,
+                cache_write: 1.0,
+                output: 2.0,
+                days: None,
+            },
+            // Overlaps the first window but is listed later, so it never wins.
+            OffPeakPrice {
+                start_time: "04:00".to_string(),
+                end_time: "05:00".to_string(),
+                input: 9.0,
+                cache_read: 9.0,
+                cache_write: 9.0,
+                output: 9.0,
+                days: None,
+            },
+        ],
+        ..ModelPrice::default()
+    };
+
+    // Start boundary included.
+    let start = utc8_timestamp_ms(2026, 9, 18, 3, 0);
+    let (total, breakdown) = compute_cost_at_time_with_breakdown(&price, &ac002_tokens, start);
+    assert!(
+        (total - 3.5).abs() < 1e-9,
+        "the first active window must price $3.5000 at its start boundary, got {total}"
+    );
+    assert_breakdown(
+        &breakdown,
+        [0.5, 2.0, 0.25, 1.0, 0.5, 2.0, 0.5, 0.5],
+        "first active off-peak window",
+    );
+    assert_breakdown_sums_to(&breakdown, total, "first window");
+
+    // 04:00 falls inside both overlapping windows; the first listed one wins.
+    let overlap = utc8_timestamp_ms(2026, 9, 18, 4, 0);
+    let (overlap_total, overlap_breakdown) =
+        compute_cost_at_time_with_breakdown(&price, &ac002_tokens, overlap);
+    assert!(
+        (overlap_total - 3.5).abs() < 1e-9,
+        "the earlier window must win inside the overlap, got {overlap_total}"
+    );
+    assert_breakdown(
+        &overlap_breakdown,
+        [0.5, 2.0, 0.25, 1.0, 0.5, 2.0, 0.5, 0.5],
+        "first window wins the overlap",
+    );
+
+    // End boundary excluded: 06:00 uses the standard tier.
+    let end = utc8_timestamp_ms(2026, 9, 18, 6, 0);
+    let (total, breakdown) = compute_cost_at_time_with_breakdown(&price, &ac002_tokens, end);
+    assert!(
+        (total - 7.0).abs() < 1e-9,
+        "the window end boundary must be excluded and use standard pricing, got {total}"
+    );
+    assert_breakdown(
+        &breakdown,
+        [1.0, 4.0, 0.5, 2.0, 1.0, 4.0, 1.0, 1.0],
+        "standard tier after the window",
+    );
+
+    // A Sunday-only window must never price a Friday, but must price a Sunday.
+    let sunday_only = ModelPrice {
+        provider_id: Some("prov-a".to_string()),
+        upstream_model: "remote-ac".to_string(),
+        input: 1.0,
+        cache_read: 0.5,
+        cache_write: 2.0,
+        output: 4.0,
+        off_peaks: vec![OffPeakPrice {
+            start_time: "03:00".to_string(),
+            end_time: "06:00".to_string(),
+            input: 8.0,
+            cache_read: 8.0,
+            cache_write: 8.0,
+            output: 8.0,
+            days: Some(vec![0]),
+        }],
+        ..ModelPrice::default()
+    };
+    let friday = utc8_timestamp_ms(2026, 9, 18, 4, 0);
+    assert_utc8_weekday(friday, 5);
+    let (total, breakdown) =
+        compute_cost_at_time_with_breakdown(&sunday_only, &ac002_tokens, friday);
+    assert!(
+        (total - 7.0).abs() < 1e-9,
+        "a Sunday-only window must not price a Friday, got {total}"
+    );
+    assert_breakdown(
+        &breakdown,
+        [1.0, 4.0, 0.5, 2.0, 1.0, 4.0, 1.0, 1.0],
+        "standard tier on a non-matching weekday",
+    );
+
+    let sunday = utc8_timestamp_ms(2026, 9, 20, 4, 0);
+    assert_utc8_weekday(sunday, 0);
+    let (total, breakdown) =
+        compute_cost_at_time_with_breakdown(&sunday_only, &ac002_tokens, sunday);
+    assert!(
+        (total - 36.0).abs() < 1e-9,
+        "the Sunday window must price 8/8/8/8 tokens, got {total}"
+    );
+    assert_breakdown(
+        &breakdown,
+        [8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 16.0, 4.0],
+        "Sunday-only window",
+    );
+}
+
+/// AC-003 / AC-006: only the exact provider/model row prices a request (no
+/// global, foreign, unknown-provider or case-mismatched fallback), and a matched
+/// zero-usage tier keeps its real rates with zero fees and zero total.
+#[test]
+fn gateway_cost_breakdown_never_borrows_other_provider_rows_and_zero_usage_keeps_rates() {
+    let global = ModelPrice {
+        provider_id: None,
+        upstream_model: "remote-x".to_string(),
+        input: 9.0,
+        cache_read: 9.0,
+        cache_write: 9.0,
+        output: 9.0,
+        off_peaks: Vec::new(),
+        ..ModelPrice::default()
+    };
+    let prov_a = ModelPrice {
+        provider_id: Some("prov-a".to_string()),
+        upstream_model: "remote-x".to_string(),
+        input: 1.0,
+        cache_read: 0.5,
+        cache_write: 2.0,
+        output: 4.0,
+        off_peaks: Vec::new(),
+        ..ModelPrice::default()
+    };
+    let prov_b = ModelPrice {
+        provider_id: Some("prov-b".to_string()),
+        upstream_model: "remote-x".to_string(),
+        input: 3.0,
+        cache_read: 1.5,
+        cache_write: 3.0,
+        output: 12.0,
+        off_peaks: Vec::new(),
+        ..ModelPrice::default()
+    };
+    let prices = vec![global, prov_a, prov_b];
+    let timestamp = utc8_timestamp_ms(2026, 9, 18, 14, 0);
+    let one_each = tokens(1_000_000, 1_000_000, 1_000_000, 1_000_000);
+
+    let matched_a =
+        match_price_for_provider("prov-a", "remote-x", &prices).expect("prov-a owns its row");
+    let (total_a, breakdown_a) =
+        compute_cost_at_time_with_breakdown(matched_a, &one_each, timestamp);
+    assert!((total_a - 7.5).abs() < 1e-9, "prov-a total, got {total_a}");
+    assert_breakdown(
+        &breakdown_a,
+        [1.0, 4.0, 0.5, 2.0, 1.0, 4.0, 0.5, 2.0],
+        "prov-a exact row",
+    );
+
+    let matched_b =
+        match_price_for_provider("prov-b", "remote-x", &prices).expect("prov-b owns its row");
+    let (total_b, breakdown_b) =
+        compute_cost_at_time_with_breakdown(matched_b, &one_each, timestamp);
+    assert!((total_b - 19.5).abs() < 1e-9, "prov-b total, got {total_b}");
+    assert_breakdown(
+        &breakdown_b,
+        [3.0, 12.0, 1.5, 3.0, 3.0, 12.0, 1.5, 3.0],
+        "prov-b exact row",
+    );
+
+    // No global row, foreign row, unknown provider or case variant ever matches.
+    assert!(
+        match_price_for_provider("prov-c", "remote-x", &prices).is_none(),
+        "an unknown provider must never borrow the global row"
+    );
+    assert!(
+        match_price_for_provider("prov-a", "Remote-X", &prices).is_none(),
+        "model matching must stay case-sensitive"
+    );
+    assert!(
+        match_price_for_provider("", "remote-x", &prices).is_none(),
+        "the empty provider id must never match"
+    );
+
+    // AC-006: a matched zero-usage row keeps actual nonzero rates and zero fees.
+    let zero = UsageTokens::default();
+    let (total, breakdown) = compute_cost_at_time_with_breakdown(matched_a, &zero, timestamp);
+    assert_eq!(total, 0.0, "zero usage costs zero");
+    assert_breakdown(
+        &breakdown,
+        [1.0, 4.0, 0.5, 2.0, 0.0, 0.0, 0.0, 0.0],
+        "matched zero usage keeps actual rates with zero fees",
+    );
+}
+
+/// AC-004: a priced snapshot survives single-insert, batch-insert, reopen and
+/// repeated queries without touching the row's original tokens or amount.
+#[test]
+fn gateway_cost_breakdown_single_and_batch_round_trip_survive_reopen() {
+    let dir = make_temp_dir("cost-breakdown-round-trip");
+    let db_path = dir.join("ai_gateway_usage.db");
+    let store = UsageLogStore::at(&db_path);
+
+    let mut single = sample_record(
+        rfc3339_millis("2026-09-18T10:00:00+08:00"),
+        "local-single",
+        "remote-ac",
+        "p1",
+        "Provider One",
+        UsageResult::Success,
+        Some(7.0),
+        tokens(1_000_000, 2_000_000, 500_000, 1_000_000),
+    );
+    single.cost_breakdown = Some(usage_cost_breakdown_fixture());
+    store.append(&single, 365).expect("append the single snapshot row");
+
+    let mut batch_failure = sample_record(
+        rfc3339_millis("2026-09-18T10:00:01+08:00"),
+        "local-batch-fail",
+        "remote-ac",
+        "p1",
+        "Provider One",
+        UsageResult::Failure,
+        None,
+        UsageTokens::default(),
+    );
+    batch_failure.terminal = false;
+    batch_failure.cost_breakdown = None;
+    let mut batch_success = sample_record(
+        rfc3339_millis("2026-09-18T10:00:02+08:00"),
+        "local-batch-ok",
+        "remote-ac",
+        "p1",
+        "Provider One",
+        UsageResult::Success,
+        Some(7.0),
+        tokens(1_000_000, 2_000_000, 500_000, 1_000_000),
+    );
+    batch_success.cost_breakdown = Some(usage_cost_breakdown_fixture());
+    store
+        .append_batch(&[batch_failure, batch_success], 365)
+        .expect("append the batch snapshot rows");
+
+    // A fresh connection sees every row and the exact snapshot.
+    let reopened = UsageLogStore::at(&db_path);
+    let records = reopened.all_records().expect("read after reopen");
+    assert_eq!(records.len(), 3);
+    let single_row = records
+        .iter()
+        .find(|record| record.local_model == "local-single")
+        .expect("single row");
+    assert_eq!(single_row.amount, Some(7.0));
+    assert_eq!(single_row.input_tokens, 1_000_000);
+    assert_eq!(single_row.cache_read_tokens, 2_000_000);
+    assert_eq!(single_row.cache_write_tokens, 500_000);
+    assert_eq!(single_row.output_tokens, 1_000_000);
+    assert_eq!(single_row.total_tokens, 4_500_000);
+    assert_breakdown(
+        single_row
+            .cost_breakdown
+            .as_ref()
+            .expect("the single priced row must carry its snapshot"),
+        [1.0, 4.0, 0.5, 2.0, 1.0, 4.0, 1.0, 1.0],
+        "single round trip",
+    );
+
+    let batch_row = records
+        .iter()
+        .find(|record| record.local_model == "local-batch-ok")
+        .expect("batch success row");
+    assert_eq!(batch_row.amount, Some(7.0));
+    assert_breakdown(
+        batch_row
+            .cost_breakdown
+            .as_ref()
+            .expect("the batch priced row must carry its snapshot"),
+        [1.0, 4.0, 0.5, 2.0, 1.0, 4.0, 1.0, 1.0],
+        "batch round trip",
+    );
+
+    let failure_row = records
+        .iter()
+        .find(|record| record.local_model == "local-batch-fail")
+        .expect("batch failure row");
+    assert!(
+        failure_row.cost_breakdown.is_none(),
+        "an unpriced row must stay without a snapshot"
+    );
+    assert_eq!(failure_row.amount, None);
+
+    // The public page query returns the same snapshot; a second reopen is stable.
+    let page = reopened
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .expect("page query");
+    let page_single = page
+        .records
+        .iter()
+        .find(|record| record.local_model == "local-single")
+        .expect("single row on the page");
+    assert_breakdown(
+        page_single
+            .cost_breakdown
+            .as_ref()
+            .expect("page snapshot"),
+        [1.0, 4.0, 0.5, 2.0, 1.0, 4.0, 1.0, 1.0],
+        "page round trip",
+    );
+    let second_open = UsageLogStore::at(&db_path);
+    let again = second_open.all_records().expect("second reopen");
+    assert_eq!(again.len(), 3);
+    assert_breakdown(
+        again
+            .iter()
+            .find(|record| record.local_model == "local-single")
+            .and_then(|record| record.cost_breakdown.as_ref())
+            .expect("snapshot after second reopen"),
+        [1.0, 4.0, 0.5, 2.0, 1.0, 4.0, 1.0, 1.0],
+        "second reopen stability",
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-005 / REQ-003: an old payload without the snapshot reads as unavailable
+/// (not zero), and a new payload round-trips all eight component fields.
+#[test]
+fn gateway_cost_breakdown_payload_defaults_to_unavailable_and_round_trips() {
+    let older = json!({
+        "timestamp_ms": 1_789_000_000_000i64,
+        "local_model": "local-a",
+        "upstream_model": "remote-a",
+        "provider_id": "p1",
+        "provider_name": "Provider One",
+        "result": "success",
+        "status": 200,
+        "input_tokens": 1,
+        "cache_read_tokens": 2,
+        "cache_write_tokens": 3,
+        "output_tokens": 4,
+        "total_tokens": 10,
+        "amount": 0.5,
+        "duration_ms": 5
+    });
+    let record: UsageLogRecord = serde_json::from_value(older).expect("older payload parses");
+    assert!(
+        record.cost_breakdown.is_none(),
+        "a payload without the snapshot field must read as unavailable, not zero"
+    );
+
+    let mut newer = sample_record(
+        3_000,
+        "local-a",
+        "remote-a",
+        "p1",
+        "Provider One",
+        UsageResult::Success,
+        Some(7.0),
+        tokens(1_000_000, 2_000_000, 500_000, 1_000_000),
+    );
+    newer.cost_breakdown = Some(usage_cost_breakdown_fixture());
+    let value = serde_json::to_value(&newer).expect("serialize the new payload");
+    let snapshot = &value["cost_breakdown"];
+    assert_eq!(snapshot["input_price"], json!(1.0));
+    assert_eq!(snapshot["output_price"], json!(4.0));
+    assert_eq!(snapshot["cache_read_price"], json!(0.5));
+    assert_eq!(snapshot["cache_write_price"], json!(2.0));
+    assert_eq!(snapshot["input_cost"], json!(1.0));
+    assert_eq!(snapshot["output_cost"], json!(4.0));
+    assert_eq!(snapshot["cache_read_cost"], json!(1.0));
+    assert_eq!(snapshot["cache_write_cost"], json!(1.0));
+
+    let decoded: UsageLogRecord =
+        serde_json::from_value(value).expect("the new payload round trips");
+    assert_breakdown(
+        decoded
+            .cost_breakdown
+            .as_ref()
+            .expect("round-tripped snapshot"),
+        [1.0, 4.0, 0.5, 2.0, 1.0, 4.0, 1.0, 1.0],
+        "payload round trip",
+    );
+
+    // An unpriced row still serializes the field as null (or omits it), never as
+    // a zero-valued snapshot.
+    let unpriced = sample_record(
+        4_000,
+        "local-b",
+        "remote-b",
+        "p2",
+        "Provider Two",
+        UsageResult::Success,
+        None,
+        UsageTokens::default(),
+    );
+    let unpriced_value = serde_json::to_value(&unpriced).expect("serialize the unpriced payload");
+    assert!(
+        unpriced_value["cost_breakdown"].is_null(),
+        "an unpriced row must not invent a zero snapshot: {unpriced_value}"
+    );
+}
+
+/// AC-005 / REQ-003: a pre-upgrade usage database gains the nullable snapshot
+/// column exactly once, keeps old rows readable with no snapshot and unchanged
+/// fields, and stays compatible with explicit-column inserts that omit it.
+#[test]
+fn gateway_cost_breakdown_pre_upgrade_db_gains_nullable_column_once() {
+    let dir = make_temp_dir("cost-breakdown-migration");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let db_path = dir.join("ai_gateway_usage.db");
+
+    // The previous release's table, without the snapshot column.
+    let legacy = rusqlite::Connection::open(&db_path).expect("create pre-upgrade db");
+    legacy
+        .execute_batch(
+            "CREATE TABLE usage_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_ms INTEGER NOT NULL,
+                local_model TEXT NOT NULL,
+                upstream_model TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                result TEXT NOT NULL,
+                status INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL,
+                cache_write_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                amount REAL,
+                duration_ms INTEGER NOT NULL
+            );
+            CREATE INDEX idx_usage_logs_timestamp ON usage_logs(timestamp_ms);
+            CREATE INDEX idx_usage_logs_local_model ON usage_logs(local_model);",
+        )
+        .expect("create the pre-upgrade schema");
+    legacy
+        .execute(
+            "INSERT INTO usage_logs (
+                timestamp_ms, local_model, upstream_model, provider_id, provider_name,
+                result, status, input_tokens, cache_read_tokens, cache_write_tokens,
+                output_tokens, total_tokens, amount, duration_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![
+                rfc3339_millis("2026-09-15T10:00:00+08:00"),
+                "local-legacy",
+                "remote-legacy",
+                "p-legacy",
+                "Legacy Provider",
+                "success",
+                200i64,
+                10i64,
+                0i64,
+                0i64,
+                5i64,
+                15i64,
+                Some(0.5f64),
+                5i64
+            ],
+        )
+        .expect("insert the pre-upgrade row");
+    drop(legacy);
+
+    let store = UsageLogStore::at(&db_path);
+    let migrated = store.all_records().expect("read the migrated rows");
+    assert_eq!(migrated.len(), 1, "migration must not duplicate rows");
+    assert!(
+        migrated[0].cost_breakdown.is_none(),
+        "a pre-upgrade row has no snapshot and must stay unavailable"
+    );
+    assert_eq!(migrated[0].input_tokens, 10);
+    assert_eq!(migrated[0].cache_read_tokens, 0);
+    assert_eq!(migrated[0].output_tokens, 5);
+    assert_eq!(migrated[0].total_tokens, 15);
+    assert_eq!(migrated[0].amount, Some(0.5));
+
+    let columns = usage_log_table_columns(&db_path);
+    assert_eq!(
+        columns
+            .iter()
+            .filter(|name| name.as_str() == "cost_breakdown")
+            .count(),
+        1,
+        "cost_breakdown must be added exactly once: {columns:?}"
+    );
+    assert!(
+        columns.iter().any(|name| name == "cost_breakdown"),
+        "the snapshot column must exist after migration: {columns:?}"
+    );
+    let distinct: HashSet<&String> = columns.iter().collect();
+    assert_eq!(
+        columns.len(),
+        distinct.len(),
+        "the migration must not duplicate columns: {columns:?}"
+    );
+
+    // An older explicit-column insert that omits the snapshot still succeeds.
+    let raw = rusqlite::Connection::open(&db_path).expect("reopen raw db");
+    raw.execute(
+        "INSERT INTO usage_logs (
+            timestamp_ms, local_model, upstream_model, provider_id, provider_name,
+            result, status, input_tokens, cache_read_tokens, cache_write_tokens,
+            output_tokens, total_tokens, amount, duration_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        rusqlite::params![
+            rfc3339_millis("2026-09-15T11:00:00+08:00"),
+            "local-explicit",
+            "remote-explicit",
+            "p-explicit",
+            "Explicit Provider",
+            "success",
+            200i64,
+            1i64,
+            0i64,
+            0i64,
+            1i64,
+            2i64,
+            Some(0.1f64),
+            3i64
+        ],
+    )
+    .expect("an explicit-column insert without the snapshot must succeed");
+
+    let after_insert = store.all_records().expect("read after explicit insert");
+    assert_eq!(after_insert.len(), 2);
+    assert!(
+        after_insert.iter().all(|record| record.cost_breakdown.is_none()),
+        "rows written without a snapshot must query as unavailable"
+    );
+
+    // A second open must neither duplicate the column nor change the rows.
+    let second = UsageLogStore::at(&db_path);
+    let _ = second
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .expect("query through a second open");
+    assert_eq!(
+        usage_log_table_columns(&db_path),
+        columns,
+        "a second open must not change the schema"
+    );
+    assert_eq!(second.count().expect("count after the second open"), 2);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-004 / AC-007: a real priced non-streaming success persists one terminal
+/// snapshot through the public command path, and editing/removing the price and
+/// provider cannot rewrite the frozen row.
+#[tokio::test]
+async fn gateway_cost_breakdown_records_snapshot_for_priced_success_and_freezes_it() {
+    let home = temp_home("cost-breakdown-forward-success");
+    let port = free_port().await;
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "chatcmpl",
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                // Anthropic-style flat split so the stored tiers are exactly the
+                // AC-001 mix: input 1M, cache-read 2M, cache-write 500K, output 1M.
+                "usage": {
+                    "input_tokens": 1_000_000,
+                    "output_tokens": 1_000_000,
+                    "cache_read_input_tokens": 2_000_000,
+                    "cache_creation_input_tokens": 500_000
+                }
+            }),
+        )
+    })
+    .await;
+
+    let mut config = config_with_key(port);
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    config.model_prices = vec![priced_with_provider("p1", "remote-a", 1.0, 0.5, 2.0, 4.0)];
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(status, 200, "the priced success must be served: {text}");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert!(record.terminal);
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(record.provider_id, "p1");
+    assert_eq!(record.upstream_model, "remote-a");
+    assert_eq!(record.input_tokens, 1_000_000);
+    assert_eq!(record.cache_read_tokens, 2_000_000);
+    assert_eq!(record.cache_write_tokens, 500_000);
+    assert_eq!(record.output_tokens, 1_000_000);
+    assert_eq!(record.total_tokens, 4_500_000);
+    assert_eq!(record.amount, Some(7.0));
+    assert_breakdown(
+        record
+            .cost_breakdown
+            .as_ref()
+            .expect("a priced success must persist its snapshot"),
+        [1.0, 4.0, 0.5, 2.0, 1.0, 4.0, 1.0, 1.0],
+        "priced success snapshot",
+    );
+    assert_breakdown_sums_to(
+        record.cost_breakdown.as_ref().expect("snapshot"),
+        record.amount.expect("priced amount"),
+        "priced success",
+    );
+
+    // The public request-log command payload carries the snapshot.
+    let page = super::commands::ai_gateway_request_logs(None, None, None, None, None, None)
+        .expect("request-log command");
+    let payload = serde_json::to_value(page).expect("serialize the request-log command payload");
+    let row = &payload["records"][0];
+    assert_eq!(row["amount"], json!(7.0));
+    assert_eq!(row["cost_breakdown"]["input_cost"], json!(1.0));
+    assert_eq!(row["cost_breakdown"]["cache_write_cost"], json!(1.0));
+
+    super::runtime_http::stop_server().await.unwrap();
+
+    // Remove the price and the provider entirely; the frozen row is unchanged.
+    let mut stripped = config.clone();
+    stripped.model_prices.clear();
+    stripped.providers.clear();
+    super::storage::write_config(&stripped).unwrap();
+    assert!(
+        super::storage::read_config()
+            .expect("read stripped config")
+            .model_prices
+            .is_empty(),
+        "the price row must really be gone before re-querying"
+    );
+
+    let reopened = UsageLogStore::default_store().expect("default usage store");
+    let frozen = reopened.all_records().expect("read the frozen row");
+    assert_eq!(frozen.len(), 1);
+    assert_eq!(frozen[0].amount, Some(7.0), "removing the price must not reprice");
+    assert_breakdown(
+        frozen[0]
+            .cost_breakdown
+            .as_ref()
+            .expect("the frozen row keeps its snapshot"),
+        [1.0, 4.0, 0.5, 2.0, 1.0, 4.0, 1.0, 1.0],
+        "frozen snapshot after price/provider removal",
+    );
+
+    drop(home);
+}
+
+/// AC-006 / AC-007: a priced failure without captured usage keeps the actual
+/// matched rates but zero fees and a zero total; an unpriced success stays
+/// unavailable (`None`) rather than an invented zero snapshot.
+#[tokio::test]
+async fn gateway_cost_breakdown_priced_zero_usage_failure_has_zero_fees_and_actual_rates() {
+    let home = temp_home("cost-breakdown-zero-usage-failure");
+    let port = free_port().await;
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(400, json!({"error": {"message": "bad request"}}))
+    })
+    .await;
+
+    let mut config = config_with_key(port);
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    config.model_prices = vec![priced_with_provider("p1", "remote-a", 1.0, 0.5, 2.0, 4.0)];
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
+
+    let (status, _content_type, _text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(status, 400);
+
+    let records = wait_for_usage_logs(1).await;
+    let record = &records[0];
+    assert!(record.terminal);
+    assert_eq!(record.result, UsageResult::Failure);
+    assert_eq!(record.status, 400);
+    assert_eq!(record.total_tokens, 0);
+    assert_eq!(record.amount, Some(0.0), "a matched zero-usage failure costs $0");
+    assert_breakdown(
+        record
+            .cost_breakdown
+            .as_ref()
+            .expect("a matched-price zero-usage failure still snapshots the real rates"),
+        [1.0, 4.0, 0.5, 2.0, 0.0, 0.0, 0.0, 0.0],
+        "zero-usage failure snapshot",
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-006 / AC-007: a priced response whose upstream model has no matching price
+/// row stays unpriced with no snapshot at the public row boundary.
+#[tokio::test]
+async fn gateway_cost_breakdown_unpriced_row_stays_unavailable() {
+    let home = temp_home("cost-breakdown-unpriced");
+    let port = free_port().await;
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "chatcmpl",
+                "choices": [],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+            }),
+        )
+    })
+    .await;
+
+    let mut config = config_with_key(port);
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    // No model price row at all.
+    config.model_prices.clear();
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
+
+    let (status, _content_type, _text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let records = wait_for_usage_logs(1).await;
+    let record = &records[0];
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(record.total_tokens, 15);
+    assert_eq!(record.amount, None, "an unpriced row stays unpriced");
+    assert!(
+        record.cost_breakdown.is_none(),
+        "an unpriced row must not invent a zero snapshot"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-007: a mid-stream failure keeps the usage captured before the failure and
+/// freezes its existing usage-based fees in the snapshot.
+#[tokio::test]
+async fn gateway_cost_breakdown_stream_failure_keeps_captured_usage_fees() {
+    let home = temp_home("cost-breakdown-mid-stream");
+    let port = free_port().await;
+    // Captured usage before the truncation: prompt 7, cached 2, completion 3.
+    let partial = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}],",
+        "\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,",
+        "\"prompt_tokens_details\":{\"cached_tokens\":2}}}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"tail\"}}]}",
+    )
+    .to_string();
+    let declared = partial.len() + 500;
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::PartialStream(partial.clone(), declared)).await;
+
+    let mut config = config_with_key(port);
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    config.model_prices = vec![priced_with_provider("p1", "remote-a", 1.0, 0.5, 2.0, 4.0)];
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
+
+    let (status, _content_type, _text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a", "stream": true})),
+    )
+    .await;
+    assert_eq!(status, 200, "the SSE status is committed before the failure");
+
+    let records = wait_for_usage_logs(1).await;
+    let record = &records[0];
+    assert!(record.terminal);
+    assert_eq!(record.result, UsageResult::Failure);
+    assert_eq!(record.status, 502);
+    assert_eq!(record.input_tokens, 5);
+    assert_eq!(record.cache_read_tokens, 2);
+    assert_eq!(record.cache_write_tokens, 0);
+    assert_eq!(record.output_tokens, 3);
+    assert_eq!(record.total_tokens, 10);
+    // 5*1 + 2*0.5 + 0*2 + 3*4 = 18 -> $0.000018.
+    let expected_amount = 18.0 / 1_000_000.0;
+    assert!(
+        (record.amount.expect("priced") - expected_amount).abs() < 1e-12,
+        "the streamed failure keeps its usage-based amount, got {:?}",
+        record.amount
+    );
+    assert_breakdown(
+        record
+            .cost_breakdown
+            .as_ref()
+            .expect("the priced streamed failure must carry its snapshot"),
+        [
+            1.0,
+            4.0,
+            0.5,
+            2.0,
+            5.0 / 1_000_000.0,
+            12.0 / 1_000_000.0,
+            1.0 / 1_000_000.0,
+            0.0,
+        ],
+        "streamed failure snapshot",
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
+/// AC-007: a transient priced failure followed by a priced success writes one
+/// non-terminal attempt snapshot and one terminal success snapshot, preserving
+/// the exactly-one-terminal rule and the per-row amounts.
+#[tokio::test]
+async fn gateway_cost_breakdown_retry_records_failed_attempt_then_priced_success() {
+    let home = temp_home("cost-breakdown-retry-success");
+    let port = free_port().await;
+    // One provider: the first upstream call fails, the immediate retry succeeds.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_for_mock = Arc::clone(&calls);
+    let (upstream_url, _log) = spawn_mock_upstream(move |_| {
+        if calls_for_mock.fetch_add(1, Ordering::SeqCst) == 0 {
+            MockReply::Json(500, json!({"error": {"message": "transient"}}))
+        } else {
+            MockReply::Json(
+                200,
+                json!({
+                    "id": "recovered",
+                    "choices": [],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+                }),
+            )
+        }
+    })
+    .await;
+
+    let mut config = config_with_key(port);
+    let mut provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
+    provider.mappings = vec![mapping("local-a", "remote-a", None)];
+    config.providers.push(provider);
+    config.model_prices = vec![priced_with_provider("p1", "remote-a", 1.0, 0.5, 2.0, 4.0)];
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-a"})),
+    )
+    .await;
+    assert_eq!(status, 200, "the retry must recover: {text}");
+
+    let records = wait_for_exact_usage_logs(2).await;
+    assert_eq!(
+        records.iter().filter(|record| record.terminal).count(),
+        1,
+        "exactly one terminal row per request"
+    );
+    let success = records
+        .iter()
+        .find(|record| record.terminal)
+        .expect("terminal success row");
+    assert_eq!(success.result, UsageResult::Success);
+    assert_eq!(success.amount, Some(30.0 / 1_000_000.0));
+    assert_breakdown(
+        success
+            .cost_breakdown
+            .as_ref()
+            .expect("the terminal success must carry its snapshot"),
+        [
+            1.0,
+            4.0,
+            0.5,
+            2.0,
+            10.0 / 1_000_000.0,
+            20.0 / 1_000_000.0,
+            0.0,
+            0.0,
+        ],
+        "retry terminal success snapshot",
+    );
+
+    let failure = records
+        .iter()
+        .find(|record| !record.terminal)
+        .expect("the superseded failed attempt row");
+    assert_eq!(failure.result, UsageResult::Failure);
+    assert_eq!(failure.status, 500);
+    assert_eq!(failure.error_message.as_deref(), Some("transient"));
+    assert_eq!(failure.total_tokens, 0);
+    assert_eq!(failure.amount, Some(0.0));
+    assert_breakdown(
+        failure
+            .cost_breakdown
+            .as_ref()
+            .expect("the priced failed attempt must carry its snapshot"),
+        [1.0, 4.0, 0.5, 2.0, 0.0, 0.0, 0.0, 0.0],
+        "retry failed attempt snapshot",
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
 }

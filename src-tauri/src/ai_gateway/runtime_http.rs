@@ -12,7 +12,7 @@ use super::selection::{
 };
 use super::storage::{local_base_url, modify_config, read_config};
 use super::usage_log::{
-    compute_cost_at_time, extract_upstream_error_text, match_price_for_provider,
+    compute_cost_at_time_with_breakdown, extract_upstream_error_text, match_price_for_provider,
     normalize_retention_days, now_millis, parse_usage_from_response, sanitize_error_text,
     CanonicalUsage, SseUsageAccumulator, UsageAccounting, UsageLogEntry, UsageLogRecord,
     UsageLogStore, UsageResult, UsageTokens,
@@ -3351,8 +3351,18 @@ fn build_usage_log_row(
 ) -> UsageLogRecord {
     let timestamp_ms = now_millis();
     let tokens = usage.unwrap_or_default();
-    let amount = match_price_for_provider(provider_id, upstream_model, &config.model_prices)
-        .map(|price| compute_cost_at_time(price, &tokens, timestamp_ms));
+    let (amount, cost_breakdown) = match match_price_for_provider(
+        provider_id,
+        upstream_model,
+        &config.model_prices,
+    ) {
+        Some(price) => {
+            let (amount, breakdown) =
+                compute_cost_at_time_with_breakdown(price, &tokens, timestamp_ms);
+            (Some(amount), Some(breakdown))
+        }
+        None => (None, None),
+    };
     UsageLogRecord {
         timestamp_ms,
         local_model: local_model.to_string(),
@@ -3367,6 +3377,7 @@ fn build_usage_log_row(
         output_tokens: tokens.output_tokens,
         total_tokens: tokens.total(),
         amount,
+        cost_breakdown,
         duration_ms,
         error_message,
         terminal,
