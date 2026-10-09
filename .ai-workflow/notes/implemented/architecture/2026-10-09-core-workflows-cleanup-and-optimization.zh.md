@@ -6,7 +6,7 @@ Status: implemented
 
 ## Problem
 
-GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入口，已各自演化为不同实现。安装的 CLI 会改写会话名（空格与点号转为下划线）、自行拼装启动命令、写明文会话 JSON，并伪造原生会话 ID；GUI 则走另一套新终端适配器。`resume` 分支在 Shell 脚本里硬编码各工具恢复命令，忽略共享的 provider 与 runtime 环境。服务商激活与 `onespace env use` 同样分叉，而 OpenCode 的活动服务商被表示为单个槽位，而非其真实的多活动集合。本记录描述计划 `20261009-core-workflows-cleanup-and-optimization` 已交付的事实；当前正文覆盖前六步，该计划的后续步骤不在此描述。
+GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入口，已各自演化为不同实现。安装的 CLI 会改写会话名（空格与点号转为下划线）、自行拼装启动命令、写明文会话 JSON，并伪造原生会话 ID；GUI 则走另一套新终端适配器。`resume` 分支在 Shell 脚本里硬编码各工具恢复命令，忽略共享的 provider 与 runtime 环境。服务商激活与 `onespace env use` 同样分叉，而 OpenCode 的活动服务商被表示为单个槽位，而非其真实的多活动集合。本记录描述计划 `20261009-core-workflows-cleanup-and-optimization` 已交付的事实；当前正文覆盖前七步，该计划的后续步骤不在此描述。
 
 ## Decision
 
@@ -49,6 +49,10 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - Step 6 — 隔离快速入口：`src/main.tsx` 导出 `resolveEntryKind(search)`，并在渲染前动态导入 `QuickAiApp` 或 `App`。新的 `src/QuickAiApp.tsx` 只渲染 quick UI 与 `ThemeProvider`（不含 App、toolbox 或 AiEnvironments）；App 无用的 quick-view 早退被移除，而 `isQuickAiView` 守卫、keepalive 与 Notes/Snippets/草稿保留；`ToolIcon` 抽到 `src/components/AiEnvironments/ToolIcon.tsx`，barrel 再导出不变且 QuickAiSessionBar 导入该轻量模块。
 - Step 6 — 真实 `npm run build` 的产物图证据：入口 `index-*.js` 为 312.80 kB（gzip 95.91），静态导入仅 i18n 与 vendor，动态导入 App/QuickAiApp/providers，且不含任何工具 chunk；`App-*.js` 为 1217.40 kB 动态；`QuickAiApp-*.js` 为 5.26 kB（gzip 2.16），静态导入仅 aiSessions/i18n/icons/tauri/ThemeProvider/vendor，不含 App/AiEnvironments/工具 chunk；每个工具各自产出 chunk（Bookmarks 10.03、FileSharingTool 10.05、JsonParserTool 3.03、JttDataParserTool 44.79、Md5EncryptionTool 7.18、ProtocolRouterTool 23.52、RandomPasswordTool 9.58、ShortLinkTool 17.86、SshServers 17.91、SshTunnels 70.48、AiWorkflowModelSwitcher 34.09 kB）。Notes/Snippets 因 App 为 keepalive 静态导入而留在 App chunk；工具 chunk 为共享注册表模块携带指回 App 的静态边，而 App 本身是动态的，因此启动闭包中不含任何工具实现。
 
+- Step 7 — 停止隐式配置猜测：删除 `storage::query_model_reasoning_efforts` 与 `storage::normalize_template_prices_and_efforts` 及在读路径（`normalize_config`）与写路径（`write_config_through_temp`）的两处调用，因此普通读取或写入不再自动生成推理强度、借用其他服务商的 `local_model`、跨服务商复制价格行或填充模板模型字段。显式存储值（含空 effort 列表、显式/零价格与已存本地模型）、`normalize_stored_config` 规范化、`scope_model_prices` 写路径裁剪、迁移版本门控、全部 schema 字段与旧值，以及模板同步/退役/终端重同步的显式规则全部保留。运行态（结算与 key 标记）写入不再触发模板或价格重算，配置锁上的串行与持久标记不变。
+- Step 7 — 抽取共享尝试策略：`src-tauri/src/ai_gateway/attempt_policy.rs` 拥有与传输无关的每次请求决策——`RetryCandidate` 在 120 秒等待预算下的重试调度、按有序池与最新持久标记及 TTL 过期的 `select_attempt_key`、`key_failure_kind` 分类与 `settle_key_failure`/探测变体（持久运行态）、`RequestHealth` 映射健康（阈值、成功、传输抑制）、半开探测结算，以及耗尽组合（`all_unavailable_message`、`excluded_key_summary` 固定顺序）。缓冲与流式传输把首字节边界、SSE 回放与取消留在 `runtime_http.rs`；尝试之间经配置缓存重读标记（绝不冻结），结算对最新配置串行。搬移体逐字节相同，未新增命令或 schema。
+- Step 7 — 修正脱敏 fixture：`src-tauri/src/config.rs` 的测试字面量按脚本 `SAFE_FIXTURE_` 允许清单约定改名为 `SAFE_FIXTURE_partial-failure-key`，消除 main 上既有的脱敏 FAIL，因此 `tools/check-ai-gateway-redaction.sh` 现以零凭据字面量通过。
+
 ## Alternatives considered
 
 - 保留 Shell 脚本写明文会话 JSON，只修补名称或 ID。拒绝原因：它无法与 GUI 共享 canonical 注册、写者协调、pending 绑定或 spawn 失败回滚。
@@ -68,6 +72,8 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - Step 5 — 引入通用数据库连接池。拒绝原因：每个数据库路径一条写连接、在池锁下借出整个操作已足够，并避免池调优。
 - Step 6 — 保留急切 `component` 并在调用点用 `React.lazy`。拒绝原因：描述符仍会把实现静态导入注册表与启动闭包。
 - Step 6 — 在 `App.tsx` 内选择快速入口。拒绝原因：App 仍会在决策前被导入并加载，因此快速窗口会拉入主 UI。
+- Step 7 — 用 feature flag 保留启发式推断。拒绝原因：没有受支持的工作流依赖被猜测的推理强度或借用的价格，flag 只会让含糊路径继续存在。
+- Step 7 — 在每个传输里复制决策核心，而不是抽取。拒绝原因：缓冲与流式路径必须保持等价，一个共享模块比两份副本更安全。
 
 ## Consequences
 
@@ -91,5 +97,7 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - Step 5 诚实限制：OpenCode 历史未按文件复用；被替换的用量来源在 TTL 到期或显式刷新前保持过期；计数器精确相等断言位于序列化的 ignored 测试，因为接缝为进程全局；WAL 可见性依赖 freshness/refresh 契约；测试不含绝对计时阈值。
 - Step 6 已验证证据：注册表惰性契约测试与 MoreToolsHub 异步/REQ-006 测试通过；新增 `src/entrypoints.test.tsx` 覆盖 `resolveEntryKind`、QuickAiApp 在不含主 shell 标记下的 quick-bar 渲染与 App shell 渲染；完整 Step 6 门禁通过 11 文件 240 测试；`npm run build` 退出 0。原生 macOS smoke（工具箱别名、快速窗口、草稿隐藏/显示）未执行，按 AC-006 措辞如实记录为 blocked/unexecuted。
 - Step 6 诚实限制：原生 smoke 仍属未执行；目录中的逐工具 chunk 列表与 Notes/Snippets 留在 App chunk 的例外是实测产物图，而非 mock 测试。
+- Step 7 已验证证据：两个过时启发式测试被替换为显式保留断言；新增 `tests/attempt_policy.rs` 15 个行为测试；未修改的 RED `tests/templates.rs::ac007_unrelated_save_keeps_explicit_values_and_does_not_guess` 为 GREEN；`cargo test --lib ai_gateway` 通过 647、2 ignored；`tools/check-ai-gateway-redaction.sh` 以零凭据字面量退出 0；前端 AiGateway+lib 17 文件 495 测试通过；`npm run build` 退出 0。
+- Step 7 诚实限制：更广的 AC-007 条款（HTTP/SSE 等价、取消与首字节、历史计价、并发编辑保留、模板退役）由既有特征化套件覆盖，而非新撰写；Windows 未测试；Step 8 尚未开始。
 
 - 诚实的限制：release-profile 的权限行为未独立测试；`--permission-mode` 的缺值/非法值路径已实现但只有单测覆盖；显示名无法通过真实二进制 smoke 观测，由共享服务特征化覆盖；Windows `LockFile` 分支未在本次 macOS-only 验证中做运行时测试。该计划后续步骤尚未开始，且刻意不在此描述。

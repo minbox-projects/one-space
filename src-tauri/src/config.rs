@@ -1958,7 +1958,7 @@ mod tests {
         fs::create_dir_all(&release).expect("create release dir");
         fs::create_dir_all(&dev).expect("create dev dir");
 
-        let password = "partial-failure-key";
+        let password = "SAFE_FIXTURE_partial-failure-key";
         fs::write(release.join(".local_key"), password).expect("write release key");
         fs::write(release.join("ai_gateway.json"), b"partial-failure-gateway-bytes")
             .expect("write release gateway");

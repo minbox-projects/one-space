@@ -34,6 +34,7 @@ mod auto_refresh;
 mod performance;
 mod runtime_lifecycle;
 mod usage_store;
+mod attempt_policy;
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -16550,224 +16551,259 @@ fn provider_disable_and_reenable_preserves_mapping_enabled_state() {
     });
 }
 
+/// REQ-007 / AC-007: read-path normalization canonicalizes only stored fields.
+/// It must never fabricate reasoning efforts, prices or local-model names: a
+/// recognized model name with an explicitly cleared (empty) effort list stays
+/// empty, an explicit effort list and price row survive unchanged, and a
+/// template model that stored nothing gains nothing.
 #[test]
-fn query_model_reasoning_efforts_matches_families_and_ignores_prefixes() {
-    use super::storage::query_model_reasoning_efforts;
-
-    // GPT-5.6 / GPT-5.5
-    assert_eq!(
-        query_model_reasoning_efforts("gpt-5.6-luna"),
-        vec!["low", "medium", "high", "xhigh", "max"]
-    );
-    assert_eq!(
-        query_model_reasoning_efforts("gpt-5.5"),
-        vec!["low", "medium", "high", "xhigh", "max"]
-    );
-
-    // GPT-5.4 / GPT-5.3
-    assert_eq!(
-        query_model_reasoning_efforts("gpt-5.4-mini"),
-        vec!["low", "medium", "high", "xhigh"]
-    );
-    assert_eq!(
-        query_model_reasoning_efforts("gpt-5.3-codex"),
-        vec!["low", "medium", "high", "xhigh"]
-    );
-
-    // DeepSeek V4
-    assert_eq!(
-        query_model_reasoning_efforts("deepseek/deepseek-v4-flash"),
-        vec!["low", "high", "max"]
-    );
-    assert_eq!(
-        query_model_reasoning_efforts("deepseek-v4-flash-free"),
-        vec!["low", "high", "max"]
-    );
-
-    // Gemini
-    assert_eq!(
-        query_model_reasoning_efforts("google/gemini-3.7-flash"),
-        vec!["low", "medium", "high"]
-    );
-
-    // Kimi
-    assert_eq!(
-        query_model_reasoning_efforts("moonshotai/Kimi-K3"),
-        vec!["low", "high", "max"]
-    );
-    assert_eq!(
-        query_model_reasoning_efforts("kimi-k2.7-code"),
-        vec!["low", "high", "max"]
-    );
-
-    // GLM
-    assert_eq!(
-        query_model_reasoning_efforts("zai-org/GLM-5.3"),
-        vec!["low", "high", "max"]
-    );
-    assert_eq!(
-        query_model_reasoning_efforts("glm-5.2"),
-        vec!["low", "medium", "high", "xhigh", "max"]
-    );
-
-    // Qwen Max
-    assert_eq!(
-        query_model_reasoning_efforts("Qwen/Qwen3.8-Max"),
-        vec!["low", "medium", "xhigh"]
-    );
-
-    // Non-reasoning models
-    assert!(query_model_reasoning_efforts("mimo-v2.5").is_empty());
-    assert!(query_model_reasoning_efforts("hy3").is_empty());
-    assert!(query_model_reasoning_efforts("big-pickle").is_empty());
-}
-
-#[test]
-fn normalize_template_prices_and_efforts_populates_prices_and_efforts_and_is_idempotent() {
+fn normalize_config_leaves_explicit_values_and_does_not_guess() {
     use super::types_config::{ProviderTemplate, ProviderTemplateModel, ProviderTemplateState};
+
     let mut config = GatewayConfig::default();
 
-    // 1. Setup a provider
     let mut p = provider("p1");
     p.template_id = Some("tpl-test".to_string());
     p.mappings = vec![
         ModelMapping {
             local_model: "my-ds".to_string(),
             upstream_model: "deepseek-v4-flash".to_string(),
-            enabled: true,
-            protocol: None,
-            display_name: None,
-            reasoning_efforts: Vec::new(),
-            auto_disabled: false,
-            disabled_reason: None,
-            disabled_at: None,
-            consecutive_failures: 0,
-            last_error_at: None,
+            reasoning_efforts: vec!["low".to_string(), "high".to_string(), "max".to_string()],
+            ..ModelMapping::default()
         },
         ModelMapping {
-            local_model: "my-plain".to_string(),
-            upstream_model: "plain-model".to_string(),
-            enabled: true,
-            protocol: None,
-            display_name: None,
+            // This name matched the removed implicit-effort heuristic.
+            local_model: "my-cleared".to_string(),
+            upstream_model: "gpt-5.6-luna".to_string(),
             reasoning_efforts: Vec::new(),
-            auto_disabled: false,
-            disabled_reason: None,
-            disabled_at: None,
-            consecutive_failures: 0,
-            last_error_at: None,
+            ..ModelMapping::default()
         },
     ];
     config.providers.push(p);
+    config.model_prices = vec![priced_with_provider(
+        "p1",
+        "deepseek-v4-flash",
+        0.3,
+        0.006,
+        0.0,
+        1.2,
+    )];
+    config
+        .provider_templates
+        .push(ProviderTemplateState {
+            template_id: "tpl-test".to_string(),
+            template: Some(ProviderTemplate {
+                id: "tpl-test".to_string(),
+                name: "Test Template".to_string(),
+                description: "Testing".to_string(),
+                base_url: "https://test.api".to_string(),
+                protocol: UpstreamProtocol::ChatCompletions,
+                source: "https://test.api/models".to_string(),
+                models_url: Some("https://test.api/models".to_string()),
+                models: vec![ProviderTemplateModel {
+                    upstream_model: "gpt-5.6-luna".to_string(),
+                    ..ProviderTemplateModel::default()
+                }],
+                icon: None,
+            }),
+            synced_at: Some(100),
+            source: None,
+        });
 
-    // 2. Setup model prices for p1
-    config.model_prices = vec![
-        priced_with_provider("p1", "deepseek-v4-flash", 0.3, 0.006, 0.0, 1.2),
-        priced_with_provider("p1", "plain-model", 0.1, 0.0, 0.0, 0.2),
-    ];
-
-    // 3. Setup a provider template
-    let template = ProviderTemplate {
-        id: "tpl-test".to_string(),
-        name: "Test Template".to_string(),
-        description: "Testing".to_string(),
-        base_url: "https://test.api".to_string(),
-        protocol: UpstreamProtocol::ChatCompletions,
-        source: "https://test.api/models".to_string(),
-        models_url: Some("https://test.api/models".to_string()),
-        models: vec![
-            ProviderTemplateModel {
-                upstream_model: "deepseek-v4-flash".to_string(),
-                local_model: None,
-                display_name: None,
-                protocol: None,
-                enabled: true,
-                input: 0.0,
-                cache_read: 0.0,
-                cache_write: 0.0,
-                output: 0.0,
-                off_peaks: Vec::new(),
-                reasoning_efforts: Vec::new(),
-            },
-            ProviderTemplateModel {
-                upstream_model: "gpt-5.6-luna".to_string(),
-                local_model: None,
-                display_name: None,
-                protocol: None,
-                enabled: true,
-                input: 0.0,
-                cache_read: 0.0,
-                cache_write: 0.0,
-                output: 0.0,
-                off_peaks: Vec::new(),
-                reasoning_efforts: Vec::new(),
-            },
-            ProviderTemplateModel {
-                upstream_model: "plain-model".to_string(),
-                local_model: None,
-                display_name: None,
-                protocol: None,
-                enabled: true,
-                input: 0.0,
-                cache_read: 0.0,
-                cache_write: 0.0,
-                output: 0.0,
-                off_peaks: Vec::new(),
-                reasoning_efforts: Vec::new(),
-            },
-        ],
-        icon: None,
-    };
-
-    config.provider_templates.push(ProviderTemplateState {
-        template_id: "tpl-test".to_string(),
-        template: Some(template),
-        synced_at: Some(100),
-        source: None,
-    });
-
-    // Run normalize_config
     super::storage::normalize_config(&mut config);
 
-    // Verify provider mappings reasoning efforts populated
     let prov = &config.providers[0];
-    let ds_mapping = prov.mappings.iter().find(|m| m.upstream_model == "deepseek-v4-flash").unwrap();
-    assert_eq!(ds_mapping.reasoning_efforts, vec!["low", "high", "max"]);
-    let plain_mapping = prov.mappings.iter().find(|m| m.upstream_model == "plain-model").unwrap();
-    assert!(plain_mapping.reasoning_efforts.is_empty());
+    let ds = prov
+        .mappings
+        .iter()
+        .find(|mapping| mapping.upstream_model == "deepseek-v4-flash")
+        .expect("the explicit mapping must remain");
+    assert_eq!(
+        ds.reasoning_efforts,
+        vec!["low", "high", "max"],
+        "an explicit reasoning-effort list must survive normalization unchanged"
+    );
+    let cleared = prov
+        .mappings
+        .iter()
+        .find(|mapping| mapping.upstream_model == "gpt-5.6-luna")
+        .expect("the cleared mapping must remain");
+    assert!(
+        cleared.reasoning_efforts.is_empty(),
+        "a cleared effort list must not be guessed from the model name"
+    );
 
-    // Verify template models
-    let tpl_state = &config.provider_templates[0];
-    let tpl = tpl_state.template.as_ref().unwrap();
+    assert_eq!(
+        config.model_prices,
+        vec![priced_with_provider(
+            "p1",
+            "deepseek-v4-flash",
+            0.3,
+            0.006,
+            0.0,
+            1.2
+        )],
+        "an explicit price row must survive normalization unchanged"
+    );
 
-    // 1) deepseek-v4-flash in template:
-    let tpl_ds = tpl.models.iter().find(|m| m.upstream_model == "deepseek-v4-flash").unwrap();
-    assert_eq!(tpl_ds.input, 0.3);
-    assert_eq!(tpl_ds.cache_read, 0.006);
-    assert_eq!(tpl_ds.output, 1.2);
-    assert_eq!(tpl_ds.local_model.as_deref(), Some("my-ds"));
-    assert_eq!(tpl_ds.reasoning_efforts, vec!["low", "high", "max"]);
+    let template = config.provider_templates[0]
+        .template
+        .as_ref()
+        .expect("the template must remain");
+    let model = template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "gpt-5.6-luna")
+        .expect("the template model must remain");
+    assert!(
+        model.reasoning_efforts.is_empty(),
+        "a template model that stored nothing must gain no inferred efforts"
+    );
+    assert_eq!(
+        model.local_model, None,
+        "a template model must gain no borrowed local model"
+    );
+    assert_eq!(
+        model.input, 0.0,
+        "a template model must gain no borrowed price"
+    );
 
-    // 2) gpt-5.6-luna in template (not in provider prices, but gets real reasoning efforts):
-    let tpl_luna = tpl.models.iter().find(|m| m.upstream_model == "gpt-5.6-luna").unwrap();
-    assert_eq!(tpl_luna.input, 0.0);
-    assert_eq!(tpl_luna.reasoning_efforts, vec!["low", "medium", "high", "xhigh", "max"]);
-
-    // 3) plain-model in template (gets price from provider, empty reasoning efforts):
-    let tpl_plain = tpl.models.iter().find(|m| m.upstream_model == "plain-model").unwrap();
-    assert_eq!(tpl_plain.input, 0.1);
-    assert_eq!(tpl_plain.output, 0.2);
-    assert_eq!(tpl_plain.local_model.as_deref(), Some("my-plain"));
-    assert!(tpl_plain.reasoning_efforts.is_empty());
-
-    // Verify idempotency
-    let before_tpl = config.provider_templates.clone();
+    // A second pass changes nothing further.
     let before_prices = config.model_prices.clone();
     let before_mappings = config.providers[0].mappings.clone();
     super::storage::normalize_config(&mut config);
-    assert_eq!(config.provider_templates, before_tpl, "templates must be unchanged on second normalize");
-    assert_eq!(config.model_prices, before_prices, "prices must be unchanged on second normalize");
-    assert_eq!(config.providers[0].mappings, before_mappings, "mappings must be unchanged on second normalize");
+    assert_eq!(
+        config.model_prices, before_prices,
+        "normalization must be idempotent for prices"
+    );
+    assert_eq!(
+        config.providers[0].mappings, before_mappings,
+        "normalization must be idempotent for mappings"
+    );
+}
+
+/// REQ-007 / AC-007: explicit efforts, prices and local-model names survive an
+/// encrypted write/read round trip, while a template model sharing an upstream
+/// name with a provider mapping never inherits that provider's values. This is
+/// the read/write boundary counterpart to the command-level unrelated-save test.
+#[test]
+fn written_config_round_trips_explicit_values_without_guessed_fields() {
+    use super::types_config::{ProviderTemplate, ProviderTemplateModel, ProviderTemplateState};
+
+    with_temp_home("ac007-explicit-roundtrip", |_home| {
+        let mut config = GatewayConfig::default();
+
+        let mut p = provider("p1");
+        p.template_id = Some("tpl-test".to_string());
+        p.mappings = vec![
+            ModelMapping {
+                local_model: "my-ds".to_string(),
+                upstream_model: "deepseek-v4-flash".to_string(),
+                reasoning_efforts: vec!["low".to_string(), "high".to_string(), "max".to_string()],
+                ..ModelMapping::default()
+            },
+            ModelMapping {
+                local_model: "my-cleared".to_string(),
+                upstream_model: "gpt-5.6-luna".to_string(),
+                reasoning_efforts: Vec::new(),
+                ..ModelMapping::default()
+            },
+        ];
+        config.providers.push(p);
+        config.model_prices = vec![priced_with_provider(
+            "p1",
+            "deepseek-v4-flash",
+            0.3,
+            0.006,
+            0.0,
+            1.2,
+        )];
+        config.provider_templates.push(ProviderTemplateState {
+            template_id: "tpl-test".to_string(),
+            template: Some(ProviderTemplate {
+                id: "tpl-test".to_string(),
+                name: "Test Template".to_string(),
+                description: "Testing".to_string(),
+                base_url: "https://test.api".to_string(),
+                protocol: UpstreamProtocol::ChatCompletions,
+                source: "https://test.api/models".to_string(),
+                models_url: Some("https://test.api/models".to_string()),
+                models: vec![
+                    ProviderTemplateModel {
+                        upstream_model: "deepseek-v4-flash".to_string(),
+                        local_model: Some("tpl-local".to_string()),
+                        reasoning_efforts: vec!["low".to_string()],
+                        ..ProviderTemplateModel::default()
+                    },
+                    ProviderTemplateModel {
+                        upstream_model: "gpt-5.6-luna".to_string(),
+                        ..ProviderTemplateModel::default()
+                    },
+                ],
+                icon: None,
+            }),
+            synced_at: Some(100),
+            source: None,
+        });
+
+        super::storage::write_config(&config).expect("write config");
+        let loaded = super::storage::read_config().expect("read config");
+
+        let prov = &loaded.providers[0];
+        let ds = prov
+            .mappings
+            .iter()
+            .find(|mapping| mapping.upstream_model == "deepseek-v4-flash")
+            .expect("the explicit mapping must round-trip");
+        assert_eq!(ds.local_model, "my-ds");
+        assert_eq!(ds.reasoning_efforts, vec!["low", "high", "max"]);
+        let cleared = prov
+            .mappings
+            .iter()
+            .find(|mapping| mapping.upstream_model == "gpt-5.6-luna")
+            .expect("the cleared mapping must round-trip");
+        assert!(
+            cleared.reasoning_efforts.is_empty(),
+            "a user-cleared effort list must round-trip empty"
+        );
+
+        assert_eq!(
+            loaded.model_prices,
+            vec![priced_with_provider(
+                "p1",
+                "deepseek-v4-flash",
+                0.3,
+                0.006,
+                0.0,
+                1.2
+            )],
+            "no price row must be fabricated and the explicit row must survive"
+        );
+
+        let template = loaded.provider_templates[0]
+            .template
+            .as_ref()
+            .expect("the template must round-trip");
+        let tpl_ds = template
+            .models
+            .iter()
+            .find(|model| model.upstream_model == "deepseek-v4-flash")
+            .expect("the explicit template model must round-trip");
+        assert_eq!(tpl_ds.local_model.as_deref(), Some("tpl-local"));
+        assert_eq!(tpl_ds.reasoning_efforts, vec!["low"]);
+        assert_eq!(
+            tpl_ds.input, 0.0,
+            "a template model must not inherit the provider price"
+        );
+        let tpl_luna = template
+            .models
+            .iter()
+            .find(|model| model.upstream_model == "gpt-5.6-luna")
+            .expect("the empty template model must round-trip");
+        assert_eq!(tpl_luna.local_model, None);
+        assert!(tpl_luna.reasoning_efforts.is_empty());
+        assert_eq!(tpl_luna.input, 0.0);
+    });
 }
 
 // ---------------------------------------------------------------------------

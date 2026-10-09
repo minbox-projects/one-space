@@ -3748,3 +3748,139 @@ fn ac006_retired_models_follow_configuration_row_order() {
         assert_template_retirement_input(&inputs[0], "p1", "Provider One", "m2, m1");
     });
 }
+
+// ---------------------------------------------------------------------------
+// REQ-007 / AC-007 (Step 7): explicit values survive, no implicit guessing
+// ---------------------------------------------------------------------------
+
+/// REQ-007 / AC-007: an ordinary unrelated save plus a config read must not
+/// fabricate values. Two providers share the upstream name `gpt-5.4` (a name
+/// the implicit effort heuristic recognizes). Provider A stores explicit
+/// reasoning efforts and an explicit scoped price row; provider B is
+/// user-cleared (empty effort list, no price row). Changing only B's name and
+/// weight must not guess B's efforts, must not create price rows for B, and
+/// must not let the template model for the shared name borrow A's local model
+/// name, effort list or price row. A's explicit values survive exactly.
+#[test]
+fn ac007_unrelated_save_keeps_explicit_values_and_does_not_guess() {
+    super::with_temp_home("ac007-explicit-values", |_home| {
+        let provider_a = GatewayUpstreamProvider {
+            id: "p-a".to_string(),
+            name: "Provider A".to_string(),
+            base_url: "https://a.example.com/v1".to_string(),
+            mappings: vec![ModelMapping {
+                local_model: "a-local".to_string(),
+                upstream_model: "gpt-5.4".to_string(),
+                reasoning_efforts: vec!["low".to_string(), "high".to_string()],
+                ..ModelMapping::default()
+            }],
+            ..GatewayUpstreamProvider::default()
+        };
+        let provider_b = GatewayUpstreamProvider {
+            id: "p-b".to_string(),
+            name: "Provider B".to_string(),
+            base_url: "https://b.example.com/v1".to_string(),
+            weight: 5,
+            mappings: vec![ModelMapping {
+                local_model: "b-local".to_string(),
+                upstream_model: "gpt-5.4".to_string(),
+                reasoning_efforts: Vec::new(),
+                ..ModelMapping::default()
+            }],
+            ..GatewayUpstreamProvider::default()
+        };
+
+        let mut config = GatewayConfig::default();
+        config.providers.push(provider_a);
+        config.providers.push(provider_b.clone());
+        config.model_prices.push(price_row("p-a", "gpt-5.4"));
+        seed_template(
+            &mut config,
+            template_with_models(
+                "tpl",
+                None,
+                UpstreamProtocol::ChatCompletions,
+                vec![template_model("gpt-5.4", None, None, true)],
+            ),
+        );
+        crate::ai_gateway::storage::write_config(&config).expect("seed the explicit config");
+
+        // Ordinary unrelated save: only provider B's name and weight change.
+        let mut renamed = provider_b;
+        renamed.name = "Provider B Renamed".to_string();
+        renamed.weight = 7;
+        crate::ai_gateway::commands::ai_gateway_upsert_provider(renamed, None)
+            .expect("an unrelated provider save must succeed");
+
+        let after =
+            crate::ai_gateway::commands::ai_gateway_get_config().expect("read the config back");
+
+        // Explicit stored values survive exactly.
+        let saved_a = after
+            .providers
+            .iter()
+            .find(|provider| provider.id == "p-a")
+            .expect("provider A must remain");
+        let mapping_a = find_mapping(saved_a, "gpt-5.4").expect("A's shared mapping");
+        assert_eq!(
+            mapping_a.reasoning_efforts,
+            vec!["low".to_string(), "high".to_string()],
+            "A's explicit reasoning efforts must survive exactly"
+        );
+
+        // A user-cleared empty effort list is not a missing default to guess.
+        let saved_b = after
+            .providers
+            .iter()
+            .find(|provider| provider.id == "p-b")
+            .expect("provider B must remain");
+        let mapping_b = find_mapping(saved_b, "gpt-5.4").expect("B's shared mapping");
+        assert!(
+            mapping_b.reasoning_efforts.is_empty(),
+            "a user-cleared empty effort list must stay empty, not guessed: {:?}",
+            mapping_b.reasoning_efforts
+        );
+
+        // An unrelated save must not fabricate provider-scoped price rows.
+        assert!(
+            after
+                .model_prices
+                .iter()
+                .all(|row| row.provider_id.as_deref() != Some("p-b")),
+            "an unrelated provider save must not create price rows for B: {:?}",
+            after.model_prices
+        );
+
+        // The template model must not borrow a value from an unrelated provider.
+        let state = after
+            .provider_templates
+            .iter()
+            .find(|state| state.template_id == "tpl")
+            .expect("the template state must remain");
+        let model = state
+            .template
+            .as_ref()
+            .expect("the template snapshot must remain")
+            .models
+            .iter()
+            .find(|model| model.upstream_model == "gpt-5.4")
+            .expect("the template model for the shared name");
+        assert_eq!(
+            model.local_model, None,
+            "a template model must not borrow another provider's local model name"
+        );
+        assert!(
+            model.reasoning_efforts.is_empty(),
+            "a template model must not borrow another provider's reasoning efforts: {:?}",
+            model.reasoning_efforts
+        );
+        assert_eq!(
+            model.input, 0.0,
+            "a template model must not borrow another provider's price row"
+        );
+        assert_eq!(
+            model.output, 0.0,
+            "a template model must not borrow another provider's price row"
+        );
+    });
+}
