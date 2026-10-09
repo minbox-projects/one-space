@@ -1954,10 +1954,19 @@ describe("UsageLogsPanel", () => {
       // No fabricated priced components from the current configuration.
       expect(detail).not.toHaveTextContent("$1.0000");
       expect(detail).not.toHaveTextContent("$4.0000");
+      // The exact localized unavailable explanation must be present, so the
+      // clause is genuinely evidenced rather than satisfied by row labels.
       expect(
-        /[A-Za-z]/.test(detail.textContent ?? ""),
-        "缺失明细应包含本地化不可用说明",
-      ).toBe(true);
+        within(detail).getByText(
+          "Recorded pricing details are unavailable; unknown fees and rates are shown as —.",
+        ),
+      ).toBeInTheDocument();
+      // Each unknown component fee and rate renders a dash (Input, Output and
+      // Cache read are always shown, i.e. at least three components).
+      expect(
+        (detail.textContent?.match(/—/g) ?? []).length,
+        "每个未知组件费用与单价都应显示 —",
+      ).toBeGreaterThanOrEqual(6);
     }
 
     const rowFor = (model: string) =>
@@ -1991,10 +2000,16 @@ describe("UsageLogsPanel", () => {
     expect(detail).toHaveTextContent("—");
     expect(detail).not.toHaveTextContent("$1.0000");
     expect(detail).not.toHaveTextContent("$4.0000");
+    // The exact delivered Chinese unavailable explanation must be present.
     expect(
-      /[\u4e00-\u9fff]/.test(detail.textContent ?? ""),
-      "中文缺失明细应包含中文不可用说明",
-    ).toBe(true);
+      within(detail).getByText(
+        "记录的价格明细不可用；未知费用与单价显示为 —。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      (detail.textContent?.match(/—/g) ?? []).length,
+      "每个未知组件费用与单价都应显示 —",
+    ).toBeGreaterThanOrEqual(6);
   });
 
   it("AC-001/AC-002 明细控件在普通行与表格末行均可通过键盘聚焦并与明细关联", async () => {
