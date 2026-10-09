@@ -1,25 +1,23 @@
 use super::{
-    acquire_session_create_lock, api_error, api_ok, filter_sessions_by_history_window, get_meta,
-    history_tombstone_key, load_service_providers_state, load_sessions_state,
-    lock_sessions_state_write, materialize_isolated_claude_profile,
-    materialize_isolated_claude_profile_async, normalize_runtime_mode, now_ts,
-    release_session_create_lock, run_migration_impl, save_sessions_state,
-    session_install_scope_and_root, session_to_legacy, validate_provider_uuid_option,
-    validate_provider_uuid_param, validate_service_provider_reference, ApiErr, ApiMeta, ApiOk,
-    SessionInput, SessionRecord,
+    api_error, api_ok, filter_sessions_by_history_window, get_meta, history_tombstone_key,
+    load_service_providers_state, load_sessions_state, lock_sessions_state_write,
+    materialize_isolated_claude_profile, materialize_isolated_claude_profile_async,
+    normalize_runtime_mode, now_ts, run_migration_impl, save_sessions_state,
+    session_to_legacy, validate_provider_uuid_param, ApiErr, ApiMeta, ApiOk, SessionInput,
+    SessionRecord,
 };
 use crate::{ai_sessions, workspaces};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[tauri::command]
 pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
+    let _sessions_state_guard =
+        lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
-    let _sessions_state_guard =
-        lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
     let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
     let mut normalized = false;
 
@@ -168,182 +166,22 @@ pub async fn sessions_create(
     app: tauri::AppHandle,
     session: SessionInput,
 ) -> Result<ApiOk<Value>, ApiErr> {
-    if let Err(e) = run_migration_impl() {
-        return Err(api_error("migration_failed", e));
-    }
-
-    let now = now_ts();
-    let id = session
-        .id
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-    let runtime_mode = normalize_runtime_mode(session.runtime_mode.as_deref());
-    let runtime_profile_id = if runtime_mode == "strict" {
-        session.runtime_profile_id.clone().and_then(|v| {
-            if v.trim().is_empty() {
-                None
-            } else {
-                Some(v.trim().to_string())
-            }
-        })
-    } else {
-        None
-    };
-
-    let resolved_working_dir = resolve_working_dir_for_session_create(&session);
-    let normalized_working_dir =
-        ai_sessions::normalize_working_dir_for_terminal(&resolved_working_dir);
-    validate_provider_uuid_option(session.provider_id.as_deref())
-        .map_err(|e| api_error("invalid_payload", e))?;
-    if let Some(provider_id) = session
-        .provider_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        validate_service_provider_reference(&session.tool, provider_id)
-            .map_err(|e| api_error("invalid_payload", e))?;
-    }
-
-    let record = SessionRecord {
-        id,
-        name: String::new(),
-        working_dir: normalized_working_dir.clone(),
-        tool: session.tool.clone(),
-        tool_session_id: session
-            .tool_session_id
-            .clone()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-            .unwrap_or_default(),
-        model_name: None,
-        name_source: "history".to_string(),
-        runtime_mode,
-        runtime_profile_id,
-        preset_id: session.preset_id.clone().and_then(|v| {
-            if v.trim().is_empty() {
-                None
-            } else {
-                Some(v.trim().to_string())
-            }
-        }),
-        created_at: now,
-        last_used_at: now,
-        status: "pending_bind".to_string(),
-        favorited_at: None,
-        provider_id: session.provider_id.clone().and_then(|v| {
-            if v.trim().is_empty() {
-                None
-            } else {
-                Some(v.trim().to_string())
-            }
-        }),
-    };
-
-    let mut launch_options = launch_options_for_session_async(&record)
-        .await
-        .map_err(|e| api_error("launch_failed", e))?;
-    launch_options.initial_prompt = session
-        .initial_prompt
-        .clone()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let create_lock_key = format!(
-        "{}|{}|{}|{}|{}",
-        record.tool.trim().to_lowercase(),
-        record.working_dir.as_str(),
-        record.runtime_mode.as_str(),
-        record.runtime_profile_id.as_deref().unwrap_or_default(),
-        record.preset_id.as_deref().unwrap_or_default()
-    );
-    let create_lock_key =
-        match acquire_session_create_lock(create_lock_key).map_err(|e| api_error("io_error", e))? {
-            Some(key) => key,
-            None => {
-                return Err(api_error(
-                    "SESSION_CREATE_DUPLICATED",
-                    "duplicate create request in progress",
-                ))
-            }
-        };
-    let config_perm_mode = resolve_permission_mode_for_tool(&record.tool);
-    let resolved_perm_mode =
-        validate_and_resolve_permission_mode(&config_perm_mode, session.permission_mode.as_deref())
-            .map_err(|e| e)?;
-
-    let create_result: Result<ApiOk<Value>, ApiErr> = (|| {
-        {
-            let _sessions_state_guard =
-                lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
-            let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-            state.sessions.push(record.clone());
-            save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
-        }
-
-        workspaces::apply_workspace_mcp_for_session(&normalized_working_dir, &session.tool)
-            .map_err(|e| api_error("workspace_mcp_apply_failed", e))?;
-
-        let resolved_tool_session_id =
-            match ai_sessions::launch_native_session_for_create_with_options(
-                &normalized_working_dir,
-                &session.tool,
-                session.tool_session_id.as_deref(),
-                resolved_perm_mode,
-                &launch_options,
-            ) {
-                Ok(tool_session_id) => tool_session_id,
-                Err(e) => {
-                    {
-                        let _sessions_state_guard = lock_sessions_state_write()
-                            .map_err(|err| api_error("io_error", err))?;
-                        let mut rollback =
-                            load_sessions_state().map_err(|err| api_error("io_error", err))?;
-                        rollback.sessions.retain(|s| s.id != record.id);
-                        let _ = save_sessions_state(&rollback);
-                    }
-                    return Err(api_error("launch_failed", e));
-                }
-            };
-
-        let (schema, final_record) = {
-            let _sessions_state_guard =
-                lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
-            let mut latest_state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-            let now = now_ts();
-            let mut final_record: Option<SessionRecord> = None;
-            for item in latest_state.sessions.iter_mut() {
-                if item.id != record.id {
-                    continue;
-                }
-                apply_resolved_session_id_after_create(
-                    item,
-                    resolved_tool_session_id.as_deref(),
-                    now,
-                );
-                final_record = Some(item.clone());
-                break;
-            }
-
-            let final_record = final_record
-                .ok_or_else(|| api_error("not_found", "session not found after create"))?;
-            let schema =
-                save_sessions_state(&latest_state).map_err(|e| api_error("io_error", e))?;
-            (schema, final_record)
-        };
-        workspaces::schedule_sync_from_sessions(app.clone());
-
-        api_ok(
-            session_to_legacy(&final_record),
-            ApiMeta {
-                schema_version: schema.schema_version,
-                revision: schema.revision,
-            },
-        )
-    })();
-
-    release_session_create_lock(&create_lock_key);
-    create_result
+    let (response, ()) = super::session_service::create_session(
+        session,
+        |record, requested_id, permission_mode, options| {
+            ai_sessions::launch_native_session_for_create_with_options(
+                &record.working_dir,
+                &record.tool,
+                requested_id,
+                permission_mode,
+                options,
+            )
+            .map(|id| (id, ()))
+        },
+    )
+    .await?;
+    workspaces::schedule_sync_from_sessions(app);
+    api_ok(session_to_legacy(&response.data), response.meta)
 }
 
 #[tauri::command]
@@ -351,6 +189,8 @@ pub async fn sessions_update(
     app: tauri::AppHandle,
     session: SessionInput,
 ) -> Result<ApiOk<Value>, ApiErr> {
+    let _sessions_state_guard =
+        lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
@@ -359,8 +199,6 @@ pub async fn sessions_update(
         .id
         .clone()
         .ok_or_else(|| api_error("invalid_payload", "session.id required"))?;
-    let _sessions_state_guard =
-        lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
 
     // Reload from disk right before saving to avoid overwriting concurrent changes
     // (e.g., history sync adding new sessions, concurrent favorite changes).
@@ -476,11 +314,11 @@ pub async fn sessions_delete(
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<ApiOk<Value>, ApiErr> {
+    let _sessions_state_guard =
+        lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
-    let _sessions_state_guard =
-        lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
 
     let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
     let tombstone_key = state
@@ -627,160 +465,21 @@ pub(crate) async fn sessions_launch_impl(
     permission_mode: Option<String>,
     initial_prompt: Option<String>,
 ) -> Result<ApiOk<Value>, ApiErr> {
-    if let Err(e) = run_migration_impl() {
-        return Err(api_error("migration_failed", e));
-    }
-    let mut target = {
-        let _sessions_state_guard =
-            lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
-        let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-        let now = now_ts();
-        let mut target: Option<SessionRecord> = None;
-
-        for s in state.sessions.iter_mut() {
-            if s.id == session_id {
-                s.last_used_at = now;
-                target = Some(s.clone());
-                break;
-            }
-        }
-
-        let target = target.ok_or_else(|| api_error("not_found", "session not found"))?;
-        let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
-        let _ = schema;
-        target
-    };
-
-    if target.status == "unbound"
-        || target.status == "pending_bind"
-        || target.tool_session_id.trim().is_empty()
-    {
-        let occupied_ids = {
-            let _sessions_state_guard =
-                lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
-            let state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-            let mut occupied_ids = HashSet::<String>::new();
-            for s in state.sessions.iter() {
-                if s.id == target.id || s.tool != target.tool {
-                    continue;
-                }
-                let existing_id = s.tool_session_id.trim();
-                if existing_id.is_empty() {
-                    continue;
-                }
-                occupied_ids.insert(existing_id.to_string());
-            }
-            occupied_ids
-        };
-
-        let lookup_env = lookup_env_for_session_async(&target)
-            .await
-            .map_err(|e| api_error("launch_failed", e))?;
-        if let Some(bound_id) = ai_sessions::resolve_native_session_id_for_existing(
-            &target.tool,
-            &target.working_dir,
-            lookup_env.as_ref(),
-            Some((target.created_at as i64) * 1000),
-            Some(&occupied_ids),
-            target.status == "pending_bind",
-        ) {
-            let _sessions_state_guard =
-                lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
-            let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-            for s in state.sessions.iter_mut() {
-                if s.id == target.id {
-                    s.tool_session_id = bound_id.clone();
-                    s.status = "active".to_string();
-                    s.last_used_at = now_ts();
-                    target.tool_session_id = bound_id.clone();
-                    target.status = "active".to_string();
-                    target.last_used_at = s.last_used_at;
-                    break;
-                }
-            }
-            save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
-        } else {
-            return Err(api_error(
-                "SESSION_ID_MISSING",
-                "session tool_session_id is empty; create a new session",
-            ));
-        }
-    }
-
-    {
-        let _sessions_state_guard =
-            lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
-        let state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-        if state.sessions.iter().any(|s| {
-            s.id != target.id
-                && s.tool == target.tool
-                && !s.tool_session_id.trim().is_empty()
-                && s.tool_session_id == target.tool_session_id
-        }) {
-            return Err(api_error(
-                "SESSION_ID_CONFLICT",
-                "tool_session_id is already bound to another session",
-            ));
-        }
-    }
-
-    // Resolve permission mode from config and validate caller's request
-    let config_perm_mode = resolve_permission_mode_for_tool(&target.tool);
-    let resolved_perm_mode =
-        validate_and_resolve_permission_mode(&config_perm_mode, permission_mode.as_deref())
-            .map_err(|e| e)?;
-
-    let (install_scope, install_project_root) = session_install_scope_and_root(&target);
-    crate::skills::skills_reconcile_for_tool(
-        &target.tool,
-        Some(install_scope.as_str()),
-        install_project_root.as_deref(),
-    )
-    .map_err(|e| api_error("skills_preflight_failed", e))?;
-    crate::subagents::subagents_reconcile_for_tool(
-        &target.tool,
-        Some(install_scope.as_str()),
-        install_project_root.as_deref(),
-    )
-    .map_err(|e| api_error("subagents_preflight_failed", e))?;
-    workspaces::apply_workspace_mcp_for_session(&target.working_dir, &target.tool)
-        .map_err(|e| api_error("workspace_mcp_apply_failed", e))?;
-
-    let mut launch_options = launch_options_for_session_async(&target)
-        .await
-        .map_err(|e| api_error("launch_failed", e))?;
-    launch_options.initial_prompt = initial_prompt
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-
-    ai_sessions::launch_native_session_with_options(
-        &target.working_dir,
-        &target.tool,
-        &target.tool_session_id,
-        resolved_perm_mode,
-        &launch_options,
-    )
-    .map_err(|e| {
-        if e.contains("Unsupported model type") {
-            api_error("CLI_UNSUPPORTED", e)
-        } else {
-            api_error("RESUME_FAILED", e)
-        }
-    })?;
-
-    let schema = {
-        let _sessions_state_guard =
-            lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
-        let state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-        save_sessions_state(&state).map_err(|e| api_error("io_error", e))?
-    };
-    workspaces::schedule_sync_from_sessions(app);
-
-    api_ok(
-        session_to_legacy(&target),
-        ApiMeta {
-            schema_version: schema.schema_version,
-            revision: schema.revision,
+    let (response, ()) = super::session_service::resume_session(
+        &session_id,
+        permission_mode.as_deref(),
+        initial_prompt.as_deref(),
+        |record, permission_mode, options| {
+            ai_sessions::launch_native_session_with_options(
+                &record.working_dir,
+                &record.tool,
+                &record.tool_session_id,
+                permission_mode,
+                options,
+            )
         },
     )
+    .await?;
+    workspaces::schedule_sync_from_sessions(app);
+    api_ok(session_to_legacy(&response.data), response.meta)
 }

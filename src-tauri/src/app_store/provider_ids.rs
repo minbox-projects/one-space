@@ -1,7 +1,8 @@
 use super::{
-    load_service_providers_state, load_sessions_state, normalize_service_provider_record,
-    restore_missing_service_provider_api_keys_from_legacy, save_sessions_state,
-    shared_profile_path, CryptoService, EncryptedBlob, ServiceProvidersState, StorageEngine,
+    load_service_providers_state, load_sessions_state, lock_sessions_state_write,
+    normalize_service_provider_record, restore_missing_service_provider_api_keys_from_legacy,
+    save_sessions_state, shared_profile_path, CryptoService, EncryptedBlob, ServiceProvidersState,
+    StorageEngine,
 };
 use crate::config;
 use serde_json::{Map, Value};
@@ -174,6 +175,7 @@ pub(in crate::app_store) fn apply_provider_id_map_to_sessions(
     if id_map.is_empty() {
         return Ok(false);
     }
+    let _operation = lock_sessions_state_write()?;
     let path = StorageEngine::sessions_path()?;
     if !path.exists() {
         return Ok(false);

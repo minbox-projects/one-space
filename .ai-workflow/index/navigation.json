@@ -475,7 +475,8 @@
         "src/components/AiEnvironments/ToolSectionHeader.tsx",
         "src/components/AiEnvironments/opencodeModelConfig.ts",
         "src/components/AiEnvironments/providerPresets.ts",
-        "src/lib/serviceProviders.ts"
+        "src/lib/serviceProviders.ts",
+        "src/lib/aiSessions.ts"
       ],
       "tests": [
         "src/components/AiEnvironments/AiEnvironments.test.tsx",
@@ -503,6 +504,54 @@
           "name": "getMissingRequiredProviderFields",
           "kind": "function",
           "visibility": "public"
+        },
+        {
+          "file": "src/lib/serviceProviders.ts",
+          "name": "CliTool",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serviceProviders.ts",
+          "name": "getActiveProviderIds",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serviceProviders.ts",
+          "name": "serviceProvidersList",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serviceProviders.ts",
+          "name": "serviceProvidersUpsert",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serviceProviders.ts",
+          "name": "serviceProvidersSetActive",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serviceProviders.ts",
+          "name": "serviceProvidersDelete",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serviceProviders.ts",
+          "name": "serviceProvidersSetFavorite",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serviceProviders.ts",
+          "name": "projectionApply",
+          "kind": "function",
+          "visibility": "public"
         }
       ],
       "depends_on": [],
@@ -523,6 +572,7 @@
         "src/components/AiEnvironments/opencodeModelConfig.ts",
         "src/components/AiEnvironments/providerPresets.ts",
         "src/lib/serviceProviders.ts",
+        "src/lib/aiSessions.ts",
         "src/components/AiEnvironments/AiEnvironments.test.tsx",
         "src/components/AiEnvironments/opencodeModelConfig.test.ts",
         "src/components/AiEnvironments/providerPresets.test.ts",
@@ -542,14 +592,17 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "从工作目录创建、恢复与列出原生终端 AI 会话",
+      "responsibility": "从工作目录创建、恢复与列出原生终端 AI 会话：`sessionsCreate`/`sessionsLaunch` 等经 `src/lib/aiSessions.ts` 类型化封装调用后端共享 canonical 会话服务；New Session 摘要经 `getActiveProviderIds` 展示活动 provider（OpenCode 可多活动、空集合不回退单槽）",
       "entries": [
         "src/components/AiSessions.tsx"
       ],
       "related_files": [
-        "src/components/AiSessionsList.tsx"
+        "src/components/AiSessionsList.tsx",
+        "src/lib/aiSessions.ts"
       ],
-      "tests": [],
+      "tests": [
+        "src/components/AiSessions.test.tsx"
+      ],
       "symbols": [
         {
           "file": "src/components/AiSessions.tsx",
@@ -562,12 +615,110 @@
           "name": "AiSessionsList",
           "kind": "function",
           "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "AiSession",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "AiSessionListItem",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "SessionInput",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "AiModelLaunchCommands",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "AiSessionStorageConfig",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "getAiSessionStorageConfig",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "sessionsList",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "sessionsCreate",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "sessionsUpdate",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "sessionsLaunch",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "sessionsDelete",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "sessionsSetFavorite",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "checkCliInstalled",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "installCli",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "hideQuickAiWindow",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiSessions.ts",
+          "name": "resizeQuickAiWindow",
+          "kind": "function",
+          "visibility": "public"
         }
       ],
       "depends_on": [],
       "read_scope": [
         "src/components/AiSessions.tsx",
-        "src/components/AiSessionsList.tsx"
+        "src/components/AiSessionsList.tsx",
+        "src/lib/aiSessions.ts",
+        "src/components/AiSessions.test.tsx"
       ],
       "relations": [],
       "shared_entry": false
@@ -584,8 +735,13 @@
       "entries": [
         "src/components/QuickAiSessionBar.tsx"
       ],
-      "related_files": [],
-      "tests": [],
+      "related_files": [
+        "src/lib/aiSessions.ts",
+        "src/lib/serviceProviders.ts"
+      ],
+      "tests": [
+        "src/components/QuickAiSessionBar.test.tsx"
+      ],
       "symbols": [
         {
           "file": "src/components/QuickAiSessionBar.tsx",
@@ -598,7 +754,10 @@
         "ai-sessions"
       ],
       "read_scope": [
-        "src/components/QuickAiSessionBar.tsx"
+        "src/components/QuickAiSessionBar.tsx",
+        "src/lib/aiSessions.ts",
+        "src/lib/serviceProviders.ts",
+        "src/components/QuickAiSessionBar.test.tsx"
       ],
       "relations": [],
       "shared_entry": false
@@ -2517,6 +2676,24 @@
           "name": "sessions_antigravity_quota",
           "kind": "command",
           "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_sessions/terminal.rs",
+          "name": "LaunchOptions",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_sessions/terminal.rs",
+          "name": "launch_create_in_current_terminal",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_sessions/terminal.rs",
+          "name": "launch_resume_in_current_terminal",
+          "kind": "function",
+          "visibility": "public"
         }
       ],
       "depends_on": [],
@@ -2543,7 +2720,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "统一存储引擎、迁移、provider 投影、会话与 launcher 命令",
+      "responsibility": "统一存储引擎、迁移、provider 投影、会话与 launcher 命令；`storage_engine` 的 `CanonicalStateWriteLease` 是 providers/sessions 及其元数据的单一跨进程事务门（`canonical-state.lock` 的 OS 文件锁 + 进程线程互斥 + 可重入线程租约，loaders/migration/写入均加入），`session_service` 与 `provider_activation` 提供 GUI 与内部 CLI 共享的 AppHandle-free canonical 会话/服务商入口；`session_service` 覆盖 create 与 resume 两套入口（`create_cli_session`/`resume_cli_session` 解析可选 `--permission-mode default|full_access` 并经 `validate_and_resolve_permission_mode` 校验）",
       "entries": [
         "src-tauri/src/app_store.rs"
       ],
@@ -2554,6 +2731,7 @@
         "src-tauri/src/app_store/legacy_providers.rs",
         "src-tauri/src/app_store/migration.rs",
         "src-tauri/src/app_store/projection_sync_commands.rs",
+        "src-tauri/src/app_store/provider_activation.rs",
         "src-tauri/src/app_store/provider_ids.rs",
         "src-tauri/src/app_store/provider_presets.rs",
         "src-tauri/src/app_store/provider_projection.rs",
@@ -2564,6 +2742,7 @@
         "src-tauri/src/app_store/providers_storage.rs",
         "src-tauri/src/app_store/service_provider_commands.rs",
         "src-tauri/src/app_store/session_commands.rs",
+        "src-tauri/src/app_store/session_service.rs",
         "src-tauri/src/app_store/sessions_state.rs",
         "src-tauri/src/app_store/storage_commands.rs",
         "src-tauri/src/app_store/storage_engine.rs",
@@ -2577,6 +2756,7 @@
         "src-tauri/src/app_store/tests.rs",
         "src-tauri/src/app_store/tests/claude_profiles.rs",
         "src-tauri/src/app_store/tests/claude_projection.rs",
+        "src-tauri/src/app_store/tests/cli_workflows.rs",
         "src-tauri/src/app_store/tests/codex_projection.rs",
         "src-tauri/src/app_store/tests/favorites_permissions.rs",
         "src-tauri/src/app_store/tests/helpers.rs",
@@ -2588,7 +2768,62 @@
         "src-tauri/src/app_store/tests/session_history.rs",
         "src-tauri/src/app_store/tests/sync_import.rs"
       ],
-      "symbols": [],
+      "symbols": [
+        {
+          "file": "src-tauri/src/app_store/session_service.rs",
+          "name": "create_session",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/app_store/session_service.rs",
+          "name": "create_session_in_current_terminal",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/app_store/session_service.rs",
+          "name": "create_cli_session",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/app_store/session_service.rs",
+          "name": "resume_session",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/app_store/session_service.rs",
+          "name": "resume_session_in_current_terminal",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/app_store/session_service.rs",
+          "name": "resume_cli_session",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/app_store/provider_activation.rs",
+          "name": "activate_provider",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/app_store/provider_activation.rs",
+          "name": "use_cli_environment",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/app_store/provider_activation.rs",
+          "name": "cli_environment_listing",
+          "kind": "function",
+          "visibility": "public"
+        }
+      ],
       "depends_on": [],
       "read_scope": [
         "src-tauri/src/app_store.rs",
@@ -2598,6 +2833,7 @@
         "src-tauri/src/app_store/legacy_providers.rs",
         "src-tauri/src/app_store/migration.rs",
         "src-tauri/src/app_store/projection_sync_commands.rs",
+        "src-tauri/src/app_store/provider_activation.rs",
         "src-tauri/src/app_store/provider_ids.rs",
         "src-tauri/src/app_store/provider_presets.rs",
         "src-tauri/src/app_store/provider_projection.rs",
@@ -2608,6 +2844,7 @@
         "src-tauri/src/app_store/providers_storage.rs",
         "src-tauri/src/app_store/service_provider_commands.rs",
         "src-tauri/src/app_store/session_commands.rs",
+        "src-tauri/src/app_store/session_service.rs",
         "src-tauri/src/app_store/sessions_state.rs",
         "src-tauri/src/app_store/storage_commands.rs",
         "src-tauri/src/app_store/storage_engine.rs",
@@ -2619,6 +2856,7 @@
         "src-tauri/src/app_store/tests.rs",
         "src-tauri/src/app_store/tests/claude_profiles.rs",
         "src-tauri/src/app_store/tests/claude_projection.rs",
+        "src-tauri/src/app_store/tests/cli_workflows.rs",
         "src-tauri/src/app_store/tests/codex_projection.rs",
         "src-tauri/src/app_store/tests/favorites_permissions.rs",
         "src-tauri/src/app_store/tests/helpers.rs",
@@ -3687,7 +3925,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "Tauri 应用启动、CLI 入口、运行时服务（含进程级系统恢复信号：`SYSTEM_RESUME_GRACE_SECS = 60` 的 `mark_system_resume` / `system_resume_grace_active(now)`，仅进程内存，供 AI 网关在恢复后的宽限窗口内抑制网络类传输失败计数）、托盘（Rust 侧创建、左键切换主窗口、右键原生菜单、双语启动兜底菜单、`main-window-visibility-changed` 事件与 `toggle_quick_ai_window` 命令）、全局快捷键、OAuth 打开与统一退出清理；`run()` 在 CLI 处理前先调用 `config::seed_dev_gateway_files_on_start()`，debug 构建据此按条件播种 dev 网关文件；同样在 CLI 处理前执行 `cleanup_removed_ai_workspace_files()`：经当前 profile 本地数据目录 best-effort 清理被删应用内助手的两个功能自有文件、幂等、失败记录并在下次启动重试、不阻塞启动、不触碰共享 MCP 列表",
+      "responsibility": "Tauri 应用启动、CLI 入口、运行时服务（含进程级系统恢复信号：`SYSTEM_RESUME_GRACE_SECS = 60` 的 `mark_system_resume` / `system_resume_grace_active(now)`，仅进程内存，供 AI 网关在恢复后的宽限窗口内抑制网络类传输失败计数）、托盘（Rust 侧创建、左键切换主窗口、右键原生菜单、双语启动兜底菜单、`main-window-visibility-changed` 事件与 `toggle_quick_ai_window` 命令）、全局快捷键、OAuth 打开与统一退出清理；`run()` 在 CLI 处理前先调用 `config::seed_dev_gateway_files_on_start()`，debug 构建据此按条件播种 dev 网关文件；同样在 CLI 处理前执行 `cleanup_removed_ai_workspace_files()`：经当前 profile 本地数据目录 best-effort 清理被删应用内助手的两个功能自有文件、幂等、失败记录并在下次启动重试、不阻塞启动、不触碰共享 MCP 列表；生成的 `onespace` 脚本 `ai` 子命令 `exec` 转发到内部命令 `__onespace_cli_create_session`（经 `app_store::session_service` 创建 canonical 会话），不再由脚本写明文会话 JSON；`resume` 子命令同样 `exec` 转发到内部命令 `__onespace_cli_resume_session`（经 `app_store::session_service` 恢复 canonical 会话），不再硬编码各工具恢复命令",
       "entries": [
         "src-tauri/src/lib.rs"
       ],

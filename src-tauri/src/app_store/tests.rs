@@ -1,5 +1,6 @@
 mod claude_profiles;
 mod claude_projection;
+mod cli_workflows;
 mod codex_projection;
 mod favorites_permissions;
 mod helpers;

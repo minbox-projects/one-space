@@ -1,11 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
 import { Terminal, Box, ChevronDown, ChevronUp, FolderOpen, Send } from 'lucide-react';
 import { ToolIcon } from './AiEnvironments';
 import { open } from '@tauri-apps/plugin-dialog';
+import {
+  getAiSessionStorageConfig,
+  hideQuickAiWindow,
+  resizeQuickAiWindow,
+  sessionsCreate,
+} from '@/lib/aiSessions';
+import type { CliTool } from '@/lib/serviceProviders';
 
 const QUICK_MODELS = [
   { id: 'claude', name: 'Claude Code', cmd: 'claude code' },
@@ -16,15 +22,10 @@ const QUICK_MODELS = [
 
 const QUICK_MODEL_IDS = new Set(QUICK_MODELS.map(m => m.id));
 
-interface StorageConfig {
-  default_ai_dir?: string;
-  default_ai_model?: 'claude' | 'codex' | 'antigravity' | 'opencode';
-}
-
 export function QuickAiSessionBar() {
   const { t } = useTranslation();
   const isTauri = '__TAURI_INTERNALS__' in window;
-  const [model, setModel] = useState('claude');
+  const [model, setModel] = useState<CliTool>('claude');
   const [path, setPath] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -35,7 +36,7 @@ export function QuickAiSessionBar() {
 
     launchingRef.current = true;
     if (closeImmediately) {
-      invoke('hide_quick_ai_window').catch(err =>
+      hideQuickAiWindow().catch(err =>
         console.error('Hide quick-ai window failed:', err)
       );
     }
@@ -44,7 +45,7 @@ export function QuickAiSessionBar() {
       let targetPath = path.trim();
       if (!targetPath) {
         try {
-          const cfg = await invoke<StorageConfig>('get_storage_config');
+          const cfg = await getAiSessionStorageConfig();
           targetPath = cfg.default_ai_dir?.trim() || '';
           if (targetPath) {
             setPath(targetPath);
@@ -57,13 +58,11 @@ export function QuickAiSessionBar() {
         targetPath = './';
       }
 
-      await invoke('sessions_create', {
-        session: {
-          name: '',
-          working_dir: targetPath,
-          tool: model,
-          status: 'active'
-        }
+      await sessionsCreate({
+        name: '',
+        working_dir: targetPath,
+        tool: model,
+        status: 'active'
       });
       
       // Emit events and clear state
@@ -77,7 +76,7 @@ export function QuickAiSessionBar() {
         const hideDelay = shouldDelayHide ? 2000 : 0;
 
         setTimeout(async () => {
-          await invoke('hide_quick_ai_window').catch(err => console.error('Hide quick-ai window failed:', err));
+          await hideQuickAiWindow().catch(err => console.error('Hide quick-ai window failed:', err));
         }, hideDelay);
       }
     } catch (e) {
@@ -90,7 +89,7 @@ export function QuickAiSessionBar() {
 
   const applyQuickDefaults = useCallback(async () => {
     try {
-      const cfg = await invoke<StorageConfig>('get_storage_config');
+      const cfg = await getAiSessionStorageConfig();
       if (cfg.default_ai_model && QUICK_MODEL_IDS.has(cfg.default_ai_model)) {
         setModel(cfg.default_ai_model);
       }
@@ -131,7 +130,7 @@ export function QuickAiSessionBar() {
       );
       if (isEditableTarget) return;
       if (e.key === 'Escape') {
-        await invoke('hide_quick_ai_window').catch(() => {});
+        await hideQuickAiWindow().catch(() => {});
       } else if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
         if (!loading) {
           await handleLaunch({ closeImmediately: true });
@@ -150,7 +149,7 @@ export function QuickAiSessionBar() {
     const syncWindowSize = async () => {
       try {
         const height = expanded ? 260 : 70;
-        await invoke('resize_window', { height });
+        await resizeQuickAiWindow(height);
       } catch (err) {
         console.error('Failed to resize window:', err);
       }
@@ -203,7 +202,7 @@ export function QuickAiSessionBar() {
             <select 
               value={model}
               onChange={e => {
-                setModel(e.target.value);
+                setModel(e.target.value as CliTool);
               }}
               className="bg-transparent text-sm font-medium pr-6 focus:ring-0 cursor-pointer appearance-none outline-none"
             >

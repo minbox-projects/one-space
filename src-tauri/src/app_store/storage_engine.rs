@@ -1,10 +1,110 @@
-use super::{now_ts, EncryptedBlob, SchemaMeta};
+use super::{now_ts, sessions_state_write_lock, EncryptedBlob, SchemaMeta};
 use crate::config;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fs::{self, File};
+use std::cell::RefCell;
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::MutexGuard;
+
+static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct CanonicalStateWriteLease {
+    // Closing the file releases the OS lock before the thread mutex is released.
+    _file: File,
+    _thread: MutexGuard<'static, ()>,
+    path: PathBuf,
+}
+
+thread_local! {
+    static CANONICAL_STATE_WRITE_LEASE: RefCell<Weak<CanonicalStateWriteLease>> =
+        RefCell::new(Weak::new());
+}
+
+pub(crate) struct CanonicalStateWriteGuard {
+    _lease: Rc<CanonicalStateWriteLease>,
+}
+
+/// One app-store transaction gate for providers, sessions and their metadata.
+/// Nested loaders/migration helpers join the current thread's lease instead of
+/// acquiring a second file lock or taking provider/session locks in reverse order.
+pub(in crate::app_store) fn lock_canonical_state_write() -> Result<CanonicalStateWriteGuard, String>
+{
+    let path = config::get_app_dir()?.join("canonical-state.lock");
+    if let Some(lease) = CANONICAL_STATE_WRITE_LEASE.with(|current| current.borrow().upgrade()) {
+        if lease.path != path {
+            return Err("cannot change app-store profile during a write transaction".to_string());
+        }
+        return Ok(CanonicalStateWriteGuard { _lease: lease });
+    }
+    let thread = sessions_state_write_lock()
+        .lock()
+        .map_err(|_| "sessions state write lock poisoned".to_string())?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| format!("failed to open {}: {e}", path.display()))?;
+    lock_canonical_file(&file).map_err(|e| format!("failed to lock {}: {e}", path.display()))?;
+    let lease = Rc::new(CanonicalStateWriteLease {
+        _file: file,
+        _thread: thread,
+        path,
+    });
+    CANONICAL_STATE_WRITE_LEASE.with(|current| *current.borrow_mut() = Rc::downgrade(&lease));
+    Ok(CanonicalStateWriteGuard { _lease: lease })
+}
+
+#[cfg(unix)]
+fn lock_canonical_file(file: &File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    extern "C" {
+        fn flock(fd: std::os::raw::c_int, operation: std::os::raw::c_int) -> std::os::raw::c_int;
+    }
+    loop {
+        // LOCK_EX is 2 on the supported Unix platforms. The descriptor remains
+        // owned by the lease; its last close releases the lock, even on process exit.
+        if unsafe { flock(file.as_raw_fd(), 2) } == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn lock_canonical_file(file: &File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LockFile(
+            handle: *mut std::ffi::c_void,
+            offset_low: u32,
+            offset_high: u32,
+            bytes_low: u32,
+            bytes_high: u32,
+        ) -> i32;
+    }
+    loop {
+        // Lock a byte in the persistent sidecar, not the atomically replaced state.
+        if unsafe { LockFile(file.as_raw_handle(), 0, 0, 1, 0) } != 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(33) {
+            // ERROR_LOCK_VIOLATION
+            return Err(error);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
 
 pub(in crate::app_store) struct StorageEngine;
 
@@ -112,14 +212,27 @@ impl StorageEngine {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let temp = path.with_extension("tmp");
-        let mut file = File::create(&temp).map_err(|e| e.to_string())?;
-        file.write_all(content.as_bytes())
+        let temp = path.with_extension(format!(
+            "tmp-{}-{}",
+            std::process::id(),
+            ATOMIC_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
             .map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        drop(file);
-        fs::rename(&temp, path).map_err(|e| e.to_string())?;
-        Ok(())
+        let result = (|| {
+            file.write_all(content.as_bytes())
+                .map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
+            drop(file);
+            fs::rename(&temp, path).map_err(|e| e.to_string())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        result
     }
 
     pub(in crate::app_store) fn read_json<T: for<'de> Deserialize<'de> + Default>(
@@ -144,6 +257,7 @@ impl StorageEngine {
     }
 
     pub(in crate::app_store) fn load_schema() -> Result<SchemaMeta, String> {
+        let _operation = lock_canonical_state_write()?;
         let path = Self::schema_path()?;
         if !path.exists() {
             let schema = SchemaMeta::default();
@@ -154,6 +268,7 @@ impl StorageEngine {
     }
 
     pub(in crate::app_store) fn bump_revision() -> Result<SchemaMeta, String> {
+        let _operation = lock_canonical_state_write()?;
         let mut schema = Self::load_schema()?;
         schema.revision = schema.revision.saturating_add(1);
         schema.last_migrated_at = now_ts();

@@ -21,10 +21,37 @@ import { safeRecordMessage } from '@/lib/messages';
 import { openLocalPath } from '@/lib/externalActions';
 import { runUserAction } from '@/lib/userActions';
 import {
+  claudeProfileList,
+  claudeProfileMaterialize,
+  getActiveProviderIds,
+  getClaudeConfigDir,
+  projectionApply,
+  serviceProviderFetchModels,
   serviceProviderReadOpenCodeConfig,
+  serviceProvidersAutoImportFromSystem,
+  serviceProvidersDelete,
+  serviceProvidersExport,
+  serviceProvidersImportApply,
+  serviceProvidersImportPreview,
+  serviceProvidersList,
+  serviceProvidersListSyncedOtherDevices,
+  serviceProvidersSetActive,
+  serviceProvidersSetFavorite,
+  serviceProvidersUpsert,
+  type AiProvider,
+  type AiProvidersState,
   type ApiResp,
+  type AutoImportResult,
+  type ClaudeProfileSummary,
+  type CliTool,
+  type HistoryEntry,
   type OpenCodeProviderConfig,
+  type ProviderImportDecision,
+  type ProvidersImportPreview,
+  type SyncedDeviceProvider,
+  type SyncedDeviceProvidersView,
 } from '@/lib/serviceProviders';
+import { getAiSessionStorageConfig, sessionsCreate } from '@/lib/aiSessions';
 import type { TerminalPermissionMode } from '@/lib/terminalPermissions';
 import {
   applyProviderPresetToDraft,
@@ -43,9 +70,10 @@ import {
   type OpenCodeModelsFormValue,
 } from './opencodeModelConfig';
 
+export type { AiProvider, AiProvidersState, ClaudeProfileSummary, HistoryEntry } from '@/lib/serviceProviders';
+
 const TOOLS = ['claude', 'codex', 'antigravity', 'opencode'] as const;
 const MANAGED_TOOLS = ['claude', 'codex', 'antigravity'] as const;
-type CliTool = (typeof TOOLS)[number];
 type EnvManagedState = 'enabled' | 'disabled' | 'unsupported';
 type CliVersionState = { version: string; isInstalled: boolean };
 type DetectCliVersionResult = { version: string; is_installed: boolean };
@@ -77,61 +105,6 @@ type CliUpdateApplyResult = {
   success: boolean;
   terminal_launched: boolean;
   error?: string;
-};
-type AutoImportResult = {
-  imported: boolean;
-  reason?: string;
-  provider_id?: string;
-  tool?: string;
-  activated?: boolean;
-  missing_fields?: string[];
-};
-type ProvidersExportResult = {
-  path: string;
-  count: number;
-};
-type ProviderImportPreviewItem = {
-  import_key: string;
-  id: string;
-  name: string;
-  tool: string;
-  model?: string;
-  conflict: boolean;
-  conflict_reason?: 'id' | 'name';
-  existing_id?: string;
-  existing_name?: string;
-};
-type ProvidersImportPreview = {
-  active: Record<string, string>;
-  total: number;
-  conflicts: number;
-  items: ProviderImportPreviewItem[];
-};
-type ProviderImportDecision = {
-  import_key: string;
-  action: 'overwrite' | 'new';
-};
-type ProvidersImportApplyResult = {
-  imported: number;
-  overwritten: number;
-  created: number;
-  active_restored: number;
-  total: number;
-};
-type SyncedDeviceProvider = {
-  id: string;
-  name: string;
-  tool: string;
-  api_key: string;
-  base_url?: string;
-  model?: string;
-  provider_key?: string;
-  is_enabled?: boolean;
-};
-type SyncedDeviceProvidersView = {
-  device_id: string;
-  active?: Record<string, string>;
-  providers: SyncedDeviceProvider[];
 };
 type PresetDialogDraft = {
   id: string;
@@ -196,7 +169,7 @@ export function buildSyncedProviderActivationPayload(
   provider: SyncedDeviceProvider,
   targetId: string = uuidv4(),
   now: () => number = Date.now,
-): { targetId: string; targetTool: CliTool; payload: Record<string, any> } | null {
+): { targetId: string; targetTool: CliTool; payload: AiProvider } | null {
   const deviceSlug = String(deviceId || '')
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, '-')
@@ -206,7 +179,7 @@ export function buildSyncedProviderActivationPayload(
     return null;
   }
 
-  const payload: Record<string, any> = {
+  const payload: AiProvider = {
     id: targetId,
     name: `${provider.name} (${deviceId})`,
     tool: targetTool,
@@ -223,102 +196,6 @@ export function buildSyncedProviderActivationPayload(
   }
 
   return { targetId, targetTool: targetTool as CliTool, payload };
-}
-
-export interface HistoryEntry {
-  timestamp: number;
-  ts?: number;
-  content?: string;
-  snapshot?: AiProvider;
-  action?: string;
-  summary?: string;
-}
-
-export interface AiProvider {
-  id: string;
-  name: string;
-  tool: string;
-  api_key: string;
-  base_url?: string;
-  model?: string;
-  favorite_at?: number | null;
-  tool_config?: Record<string, any>;
-  
-  // Claude 专属模型路由
-  claude_api_format?: string;
-  claude_connection_mode?: string;
-  claude_default_model?: string; // ANTHROPIC_MODEL - 通用默认模型
-  claude_reasoning_effort?: string;
-  
-  // Claude 高级配置
-  dangerously_skip_permissions?: boolean;
-  enable_all_memory_features?: boolean;
-  enable_mcp?: boolean;
-  allowed_tools?: string[];
-  blocked_tools?: string[];
-  max_session_turns?: number;
-  
-  // Codex 高级配置
-  disable_response_storage?: boolean;
-  personality?: string;
-  wire_api?: string;
-  
-  // Codex 新增配置参数
-  model_reasoning_effort?: string;  // "minimal" | "low" | "medium" | "high" | "xhigh"
-  model_reasoning_summary?: string; // "auto" | "concise" | "detailed" | "none"
-  approval_policy?: string;         // "untrusted" | "on-failure" | "on-request" | "never"
-  sandbox_mode?: string;            // "read-only" | "workspace-write"
-  
-  // Antigravity 高级配置
-  antigravity_auth_type?: string;
-  
-  // Antigravity 新增配置参数
-  theme?: string;                   // "Default" | "GitHub Dark" | "Light"
-  vim_mode?: boolean;               // Vim 键盘绑定
-  default_approval_mode?: string;   // "default" | "auto_edit" | "plan"
-  
-  // OpenCode 全局配置
-  opencode_default_model?: string;
-  opencode_default_agent?: string;
-  opencode_sessions_dir?: string;
-  
-  // OpenCode 新增配置参数
-  small_model?: string;             // 轻量任务模型
-  timeout?: number;                 // 请求超时 (毫秒)
-  share_mode?: string;              // "manual" | "auto" | "disabled"
-  env_managed?: boolean;
-  
-  is_enabled?: boolean;
-  provider_key?: string;
-  code?: string;
-  history?: HistoryEntry[];
-  [key: string]: any;
-}
-
-export interface ClaudeProfileSummary {
-  id: string;
-  name: string;
-  icon?: string | null;
-  code: string | null;
-  config_dir: string;
-  is_default: boolean;
-  is_global: boolean;
-  favorite_at?: number | null;
-  auth_type: string;
-  model: string | null;
-  claude_api_format?: string;
-  claude_connection_mode?: string;
-  tool_config: Record<string, any>;
-  raw_api_key?: string;
-  raw_base_url?: string | null;
-  tilde_config_dir?: string;
-  claude_model_mappings?: Array<{
-    family?: string;
-    display_name?: string;
-    upstream_model?: string;
-    supports_1m?: boolean;
-    supported_capabilities?: string[];
-  }>;
 }
 
 type ClaudeModelMappingDraft = {
@@ -388,15 +265,6 @@ const buildPresetClaudeMappings = (
         : undefined,
     };
   });
-
-export interface AiProvidersState {
-  active_claude: string | null;
-  active_codex: string | null;
-  active_antigravity: string | null;
-  active_opencode: string[];
-  providers: AiProvider[];
-  is_encrypted?: boolean;
-}
 
 type FavoriteSortableItem = {
   isActiveForSort: boolean;
@@ -568,7 +436,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     (MANAGED_TOOLS as readonly string[]).includes(tool);
   const getManagedStateForTool = (tool: CliTool): EnvManagedState => {
     if (!isManagedTool(tool)) return 'unsupported';
-    const toolActiveProviderId = state[`active_${tool}` as keyof AiProvidersState] as string | null;
+    const [toolActiveProviderId] = getActiveProviderIds(state, tool);
     if (!toolActiveProviderId) return 'disabled';
     const toolActiveProvider =
       state.providers.find(p => p.id === toolActiveProviderId && p.tool === tool) || null;
@@ -577,10 +445,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   };
 
   const getIsGlobalForTool = (tool: string, id: string) => {
-    if (tool === 'opencode') {
-      return state.active_opencode.includes(id);
-    }
-    return (state[`active_${tool}` as keyof AiProvidersState] as string | null) === id;
+    return getActiveProviderIds(state, tool).includes(id);
   };
 
   const uniqueProviderCode = (toolName: string, presetName?: string) => {
@@ -725,8 +590,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     claude_model_mappings: buildClaudeModelMappings(provider),
   })};
 
-  const normalizeProviderForSave = (provider: Partial<AiProvider>) => {
-    const next: Record<string, any> = { ...provider };
+  const normalizeProviderForSave = (provider: AiProvider): AiProvider => {
+    const next = { ...provider };
     const nextToolConfig = { ...(provider.tool_config || {}) };
     const remark = typeof provider.remark === 'string' ? provider.remark : '';
 
@@ -860,7 +725,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     if (!isTauri) return;
     if (!silent) setLoading(true);
     try {
-      const res = await invoke<ApiResp<AiProvidersState>>('service_providers_list');
+      const res = await serviceProvidersList();
       if (silent && !isVisibleRef.current) return;
 
       if (res.data.providers && res.data.providers.length > 0) {
@@ -879,7 +744,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       }
       setUnsavedNewProviderIds(new Set());
       try {
-        const syncedRes = await invoke<ApiResp<SyncedDeviceProvidersView[]>>('service_providers_list_synced_other_devices');
+        const syncedRes = await serviceProvidersListSyncedOtherDevices();
         if (silent && !isVisibleRef.current) return;
         setSyncedOtherDeviceProviders(syncedRes.data || []);
       } catch (syncErr) {
@@ -964,7 +829,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const loadClaudeProfiles = async () => {
     if (!isTauri) return;
     try {
-      const res = await invoke<ApiResp<ClaudeProfileSummary[]>>('claude_profile_list');
+      const res = await claudeProfileList();
       if (res.data) {
         setClaudeProfiles(res.data);
       }
@@ -983,7 +848,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     if (!isTauri) return;
     (async () => {
       try {
-        const cfg = await invoke<any>('get_storage_config');
+        const cfg = await getAiSessionStorageConfig();
         if (cfg.ai_model_launch_commands?.claude) {
           setClaudeLaunchCommand(cfg.ai_model_launch_commands.claude);
         }
@@ -1099,7 +964,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       const autoImportResults = await Promise.all(
         MANAGED_TOOLS.map(async tool => {
           try {
-            const res = await invoke<ApiResp<AutoImportResult>>('service_providers_auto_import_from_system', { tool });
+            const res = await serviceProvidersAutoImportFromSystem(tool);
             return { tool, data: res.data };
           } catch (e) {
             console.error(`Auto import failed for ${tool}:`, e);
@@ -1213,9 +1078,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           },
         },
         async () => {
-          await invoke('service_providers_set_active', { tool, providerId });
+          await serviceProvidersSetActive(tool, providerId);
           await loadProviders(true);
-          await invoke('projection_apply', { tool, providerId });
+          await projectionApply(tool, providerId);
           return true;
         },
       );
@@ -1298,9 +1163,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         return { ok: false };
       }
       const savedData = unwrapApiResp(
-        await invoke<ApiResp<AiProvider>>('service_providers_upsert', {
-          provider: normalizeProviderForSave(finalProvider),
-        }),
+        await serviceProvidersUpsert(normalizeProviderForSave(finalProvider)),
         t('saveFailed', 'Save failed'),
       );
       const savedProvider = { ...finalProvider, ...savedData } as AiProvider;
@@ -1323,7 +1186,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         setOriginalJson(rawJson);
         if (state.active_opencode.includes(savedProvider.id)) {
           try {
-            await invoke('projection_apply', { tool: 'opencode', providerId: savedProvider.id });
+            await projectionApply('opencode', savedProvider.id);
           } catch (e) {
             console.error('Failed to sync opencode.json after save:', e);
           }
@@ -1554,13 +1417,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         ? claudeProfiles.find((p) => p.id === targetId)
         : state.providers.find((p) => p.id === targetId && p.tool === targetTool);
     if (!providerToDelete) return;
-    const activeProviderIdForTool = (state as any)[`active_${targetTool}`] as string | null;
+    const isProviderActive = getActiveProviderIds(state, targetTool).includes(providerToDelete.id);
     const isDefaultImportedForTool =
       isManagedTool(targetTool) && providerToDelete.code === `default-${targetTool}`;
     const isDeletingActiveDefaultImported =
-      isDefaultImportedForTool && activeProviderIdForTool === providerToDelete.id;
+      isDefaultImportedForTool && isProviderActive;
     const isDeletingInactiveDefaultImported =
-      isDefaultImportedForTool && activeProviderIdForTool !== providerToDelete.id;
+      isDefaultImportedForTool && !isProviderActive;
     if (isDeletingActiveDefaultImported) return;
     if (
       !isUnsavedNewProvider &&
@@ -1636,7 +1499,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             title: t('deleteFailed', 'Delete failed'),
           },
         },
-        () => invoke('service_providers_delete', { providerId: targetId }),
+        () => serviceProvidersDelete(targetId),
       );
       if (result === null) return;
       await loadProviders(true);
@@ -1755,7 +1618,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const handleClaudeOpenDir = async (profileId: string) => {
     if (!isTauri) return;
     try {
-      const configDir = await invoke<string>('get_claude_config_dir', { providerId: profileId });
+      const configDir = await getClaudeConfigDir(profileId);
       if (!configDir) throw new Error(t('configDirNotFound', 'Config directory not found'));
       await openLocalPath(configDir);
     } catch (e: any) {
@@ -1798,8 +1661,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           },
         },
         async () => {
-          await invoke('service_providers_set_active', { tool: 'claude', providerId: profileId });
-          await invoke('projection_apply', { tool: 'claude', providerId: profileId });
+          await serviceProvidersSetActive('claude', profileId);
+          await projectionApply('claude', profileId);
         },
       );
       if (result === null) return;
@@ -1820,18 +1683,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     profileId: string,
     permissionMode?: TerminalPermissionMode,
   ) => {
-    const response = await invoke<{
-      ok: boolean;
-      data: { id?: string; provider_id?: string; model_type?: string };
-    }>('sessions_create', {
-      session: {
-        name: '',
-        working_dir: '',
-        tool: 'claude',
-        provider_id: profileId,
-        status: 'active',
-        ...(permissionMode ? { permission_mode: permissionMode } : {}),
-      },
+    const response = await sessionsCreate({
+      name: '',
+      working_dir: '',
+      tool: 'claude',
+      provider_id: profileId,
+      status: 'active',
+      ...(permissionMode ? { permission_mode: permissionMode } : {}),
     });
 
     if (response.ok) {
@@ -1891,7 +1749,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     if (!isTauri) return;
     setFavoritePendingIds(prev => new Set(prev).add(providerId));
     try {
-      await invoke('service_providers_set_favorite', { providerId, favorite });
+      await serviceProvidersSetFavorite(providerId, favorite);
       await loadProviders(true);
       if (activeTool === 'claude') {
         await loadClaudeProfiles();
@@ -1935,7 +1793,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setLoading(true);
       setActivatingSyncedKey(actionKey);
       const savedData = unwrapApiResp(
-        await invoke<ApiResp<{ id?: string } & Record<string, any>>>('service_providers_upsert', { provider: payload }),
+        await serviceProvidersUpsert(payload),
         t('saveFailed', 'Save failed'),
       );
       const savedProviderId = String(savedData?.id || targetId);
@@ -1967,8 +1825,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           },
         },
         async () => {
-          await invoke('service_providers_set_active', { tool: targetTool, providerId: savedProviderId });
-          await invoke('projection_apply', { tool: targetTool, providerId: savedProviderId });
+          await serviceProvidersSetActive(targetTool, savedProviderId);
+          await projectionApply(targetTool, savedProviderId);
           return true;
         },
       );
@@ -2030,9 +1888,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             title: t('providersExportFailedTitle', 'Failed to export Service Providers'),
           },
         },
-        () => invoke<ApiResp<ProvidersExportResult>>('service_providers_export', {
-          outputPath,
-        }),
+        () => serviceProvidersExport(outputPath),
       );
       if (res === null) return;
       const successText = t('providersExportSuccess', {
@@ -2065,9 +1921,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
       setPreviewingImport(true);
       const selectedPath = selected as string;
-      const res = await invoke<ApiResp<ProvidersImportPreview>>('service_providers_import_preview', {
-        importPath: selectedPath,
-      });
+      const res = await serviceProvidersImportPreview(selectedPath);
       if (!res.data?.items?.length) {
         const emptyText = t('providersImportEmpty', 'No Service Providers found in the selected file.');
         await safeRecordMessage({
@@ -2174,10 +2028,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             title: t('providersImportApplyFailedTitle', 'Failed to import Service Providers'),
           },
         },
-        () => invoke<ApiResp<ProvidersImportApplyResult>>('service_providers_import_apply', {
-          importPath,
-          decisions,
-        }),
+        () => serviceProvidersImportApply(importPath, decisions),
       );
       if (res === null) return;
 
@@ -2495,10 +2346,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const renderServiceProviderDetail = () => {
     if (viewMode !== 'detail' || !detailProvider) return null;
     const isDetailActive =
-      (detailProvider?.tool === 'claude' && state.active_claude === detailProvider?.id) ||
-      (detailProvider?.tool === 'codex' && state.active_codex === detailProvider?.id) ||
-      (detailProvider?.tool === 'antigravity' && state.active_antigravity === detailProvider?.id) ||
-      (detailProvider?.tool === 'opencode' && state.active_opencode.includes(detailProvider?.id));
+      getActiveProviderIds(state, detailProvider.tool).includes(detailProvider.id);
 
     const isManagedImportedDetail =
       !!detailProvider &&
@@ -2565,14 +2413,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           onActivate={async () => {
             if (!isTauri || !detailProvider || savingDetail) return;
             try {
-              await invoke('service_providers_set_active', {
-                tool: detailProvider.tool,
-                providerId: detailProvider.id,
-              });
+              await serviceProvidersSetActive(detailProvider.tool, detailProvider.id);
               if (detailProvider.tool === 'claude') {
-                await invoke('claude_profile_materialize', { providerId: detailProvider.id });
+                await claudeProfileMaterialize(detailProvider.id);
               }
-              await invoke('projection_apply', { tool: detailProvider.tool, providerId: detailProvider.id });
+              await projectionApply(detailProvider.tool, detailProvider.id);
               setMessage({ type: 'success', text: t('activated', 'Activated') });
               pushToast({ title: t('activated', 'Activated'), kind: 'success' });
               await loadProviders(true);
@@ -2594,9 +2439,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           onBack={() => { returnToProviderList({ preserveScroll: true }); }}
           isActive={isDetailActive}
           t={(key: string, fallback: string, options?: Record<string, any>) => String(t(key, fallback, options))}
-          onFetchModels={async (provider: any) => {
+          onFetchModels={async (provider: Partial<AiProvider>) => {
             if (!isTauri) return [];
-            return invoke<string[]>('service_provider_fetch_models', { provider });
+            return serviceProviderFetchModels(provider);
           }}
           jsonMode={
             detailProvider.tool === 'claude'

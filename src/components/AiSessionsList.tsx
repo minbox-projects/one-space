@@ -14,27 +14,16 @@ import {
   X,
 } from 'lucide-react';
 import { ToolIcon } from './AiEnvironments';
+import type { AiSessionListItem } from '@/lib/aiSessions';
+import type { CliTool as AiModelId } from '@/lib/serviceProviders';
 
-export interface AiSessionListItem {
-  id: string;
-  name: string;
-  working_dir: string;
-  model_type: string;
-  model_name?: string | null;
-  tool_session_id: string;
-  status?: string;
-  created_at: number;
-  last_used_at?: number;
-  favorited_at?: number | null;
-}
+export type { AiSessionListItem } from '@/lib/aiSessions';
 
 export interface AiSessionsQueryState {
   toolFilter: string;
   modelFilter: string;
   nameFilter: string;
 }
-
-type AiModelId = 'claude' | 'antigravity' | 'codex' | 'opencode';
 
 const AI_MODEL_OPTIONS: Array<{ id: AiModelId; name: string }> = [
   { id: 'claude', name: 'Claude Code' },

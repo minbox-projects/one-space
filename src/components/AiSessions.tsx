@@ -1,10 +1,27 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Terminal, Plus, FolderOpen, Loader2, AlertCircle, Settings2 } from 'lucide-react';
-import type { AiProvidersState } from './AiEnvironments';
+import {
+  getActiveProviderIds,
+  serviceProvidersList,
+  type AiProvidersState,
+  type CliTool as AiModelId,
+} from '@/lib/serviceProviders';
+import {
+  checkCliInstalled,
+  getAiSessionStorageConfig,
+  installCli,
+  sessionsCreate,
+  sessionsDelete,
+  sessionsLaunch,
+  sessionsList,
+  sessionsSetFavorite,
+  sessionsUpdate,
+  type AiModelLaunchCommands,
+  type AiSession,
+} from '@/lib/aiSessions';
 import { ToolIcon } from './AiEnvironments';
 import { AiSessionsList } from './AiSessionsList';
 import { TerminalPermissionConfirmDialog } from './TerminalPermissionConfirmDialog';
@@ -12,34 +29,6 @@ import { useToast } from './ToastProvider';
 import {
   type TerminalPermissionMode,
 } from '@/lib/terminalPermissions';
-
-interface AiSession {
-  id: string;
-  name: string;
-  working_dir: string;
-  model_type: string;
-  model_name?: string | null;
-  tool_session_id: string;
-  status?: string;
-  created_at: number;
-  last_used_at?: number;
-  favorited_at?: number | null;
-}
-
-interface ApiResp<T> {
-  ok: boolean;
-  data: T;
-  meta: { schema_version: number; revision: number };
-}
-
-type AiModelId = 'claude' | 'antigravity' | 'codex' | 'opencode';
-
-type AiModelLaunchCommands = Record<AiModelId, string>;
-
-interface SessionStorageConfig {
-  default_ai_dir?: string;
-  ai_model_launch_commands?: Partial<AiModelLaunchCommands>;
-}
 
 const AI_MODEL_OPTIONS: Array<{ id: AiModelId; name: string }> = [
   { id: 'claude', name: 'Claude Code' },
@@ -148,7 +137,7 @@ export function AiSessions({
   const checkCli = useCallback(async () => {
     if (!isTauri) return;
     try {
-      const installed = await invoke<boolean>('check_cli_installed');
+      const installed = await checkCliInstalled();
       setCliInstalled(installed);
     } catch (e) {
       console.error("Failed to check CLI", e);
@@ -158,7 +147,7 @@ export function AiSessions({
   const loadAiSessionConfig = useCallback(async () => {
     if (!isTauri) return;
     try {
-      const cfg = await invoke<SessionStorageConfig & { ai_model_permission_modes?: Record<string, string> }>('get_storage_config');
+      const cfg = await getAiSessionStorageConfig();
       if (cfg.default_ai_dir) {
         setNewSessionDir(cfg.default_ai_dir);
       }
@@ -171,7 +160,7 @@ export function AiSessions({
   const loadProvidersState = useCallback(async () => {
     if (!isTauri) return;
     try {
-      const res: ApiResp<AiProvidersState> = await invoke('service_providers_list');
+      const res = await serviceProvidersList();
       setProvidersState(res.data);
     } catch (e) {
       console.error(e);
@@ -195,11 +184,11 @@ export function AiSessions({
         setLoading(true);
       }
       setError(null);
-      const res: ApiResp<AiSession[]> = await invoke('sessions_list');
+      const res = await sessionsList();
       setSessions(res.data);
       sessionsLoadedRef.current = true;
       pendingRefreshRef.current = false;
-    } catch (err: any) {
+    } catch (err: unknown) {
       setError(formatInvokeError(err));
     } finally {
       sessionsLoadingRef.current = false;
@@ -302,13 +291,11 @@ export function AiSessions({
         setError(t('provideDirOnly', 'Please provide a working directory.'));
         return;
       }
-      await invoke('sessions_create', {
-        session: {
-          name: '',
-          working_dir: newSessionDir,
-          tool: selectedCommandId,
-          status: 'active'
-        }
+      await sessionsCreate({
+        name: '',
+        working_dir: newSessionDir,
+        tool: selectedCommandId,
+        status: 'active'
       });
       
       emit('refresh-counts').catch(console.error);
@@ -316,7 +303,7 @@ export function AiSessions({
       setIsCreating(false);
       setNewSessionDir('');
       await loadSessions();
-    } catch (err: any) {
+    } catch (err: unknown) {
       setError(formatInvokeError(err));
     } finally {
       creatingRef.current = false;
@@ -328,7 +315,7 @@ export function AiSessions({
     if (!isTauri) return;
     // Always call without permissionMode first; backend will enforce confirmation if needed
     try {
-      await invoke('sessions_launch', { sessionId: session.id });
+      await sessionsLaunch(session.id);
       await loadSessions();
     } catch (err: unknown) {
       const code = getErrorCode(err);
@@ -347,9 +334,9 @@ export function AiSessions({
     const session = permissionDialogSession;
     setPermissionDialogSession(null);
     try {
-      await invoke('sessions_launch', { sessionId: session.id, permissionMode: mode });
+      await sessionsLaunch(session.id, mode);
       await loadSessions();
-    } catch (err: any) {
+    } catch (err: unknown) {
       setError(formatInvokeError(err));
     }
   };
@@ -363,10 +350,10 @@ export function AiSessions({
     if (!isTauri) return;
     try {
       setLoading(true);
-      await invoke('sessions_delete', { sessionId });
+      await sessionsDelete(sessionId);
       emit('refresh-counts').catch(console.error);
       await loadSessions();
-    } catch (err: any) {
+    } catch (err: unknown) {
       setError(formatInvokeError(err));
     } finally {
       setLoading(false);
@@ -382,16 +369,14 @@ export function AiSessions({
 
     try {
       setLoading(true);
-      await invoke('sessions_update', {
-        session: {
-          id: session.id,
-          name: normalizedName,
-          working_dir: session.working_dir,
-          tool: session.model_type,
-        },
+      await sessionsUpdate({
+        id: session.id,
+        name: normalizedName,
+        working_dir: session.working_dir,
+        tool: session.model_type,
       });
       await loadSessions();
-    } catch (err: any) {
+    } catch (err: unknown) {
       setError(formatInvokeError(err));
     } finally {
       setLoading(false);
@@ -401,7 +386,7 @@ export function AiSessions({
   const handleFavoriteChange = async (session: AiSession, favorite: boolean) => {
     if (!isTauri) return;
     try {
-      await invoke('sessions_set_favorite', { sessionId: session.id, favorite });
+      await sessionsSetFavorite(session.id, favorite);
       await loadSessions({ silent: true });
     } catch (err: unknown) {
       setError(formatInvokeError(err));
@@ -411,13 +396,13 @@ export function AiSessions({
   const handleInstallCli = async () => {
     try {
       setLoading(true);
-      await invoke('install_cli');
+      await installCli();
       checkCli();
       pushToast({
         title: t('cliInstalled', 'CLI tool installed to ~/.local/bin/onespace'),
         kind: 'success',
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       setError(formatInvokeError(err));
     } finally {
       setLoading(false);
@@ -443,18 +428,18 @@ export function AiSessions({
 
     const toolType = selectedCommandId;
 
-    const activeId = (providersState as any)[`active_${toolType}`];
-    if (!activeId) return null;
-
-    const provider = providersState.providers.find(p => p.id === activeId);
-    if (!provider) return null;
+    const activeIds = getActiveProviderIds(providersState, toolType);
+    const activeProviders = providersState.providers.filter(p => activeIds.includes(p.id));
+    if (activeProviders.length === 0) return null;
 
     return (
-      <div className="pt-1">
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border animate-in fade-in slide-in-from-top-1 duration-200">
-          <ToolIcon tool={toolType} className="w-3.5 h-3.5 text-primary" />
-          <span>{t('toolEnvironment', { tool: toolType.charAt(0).toUpperCase() + toolType.slice(1) })}: <span className="font-medium text-foreground">{provider.name}</span></span>
-        </div>
+      <div className="pt-1 space-y-1">
+        {activeProviders.map(provider => (
+          <div key={provider.id} className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border animate-in fade-in slide-in-from-top-1 duration-200">
+            <ToolIcon tool={toolType} className="w-3.5 h-3.5 text-primary" />
+            <span>{t('toolEnvironment', { tool: toolType.charAt(0).toUpperCase() + toolType.slice(1) })}: <span className="font-medium text-foreground">{provider.name}</span></span>
+          </div>
+        ))}
       </div>
     );
   };

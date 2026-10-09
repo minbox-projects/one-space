@@ -455,6 +455,38 @@ describe("AiEnvironments provider preset editor", () => {
     }
   });
 
+  it("marks every provider in a multiple OpenCode active set as Activated", async () => {
+    const user = userEvent.setup();
+    providerState.providers = [
+      { ...opencodeProvider, id: "opencode-a", name: "Alpha", provider_key: "AlphaProvider" },
+      { ...opencodeProvider, id: "opencode-b", name: "Beta", provider_key: "BetaProvider" },
+    ];
+    providerState.active_opencode = ["opencode-a", "opencode-b"];
+    mockAiEnvironmentCommands();
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+
+    expect(await screen.findByText("Alpha")).toBeInTheDocument();
+    expect(screen.getByText("Beta")).toBeInTheDocument();
+    expect(screen.getAllByText(/Activated|已激活/)).toHaveLength(2);
+  });
+
+  it("shows no Activated badge when the OpenCode active set is empty", async () => {
+    const user = userEvent.setup();
+    providerState.providers = [
+      { ...opencodeProvider, id: "opencode-a", name: "Alpha", provider_key: "AlphaProvider" },
+    ];
+    providerState.active_opencode = [];
+    mockAiEnvironmentCommands();
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+
+    expect(await screen.findByText("Alpha")).toBeInTheDocument();
+    expect(screen.queryByText(/Activated|已激活/)).not.toBeInTheDocument();
+  });
+
   it("loads the clicked OpenCode provider's latest runtime config into the detail editor", async () => {
     const user = userEvent.setup();
     const latestConfig = {

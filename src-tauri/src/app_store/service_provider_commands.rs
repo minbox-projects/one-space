@@ -3,12 +3,12 @@ use super::{
     auto_import_system_provider_into_service_state, cli_has_system_config, detect_cli_installation,
     enqueue_sync_event, expand_home_dir_path, generate_provider_uuid, get_meta,
     infer_claude_api_format, infer_protocol_router_wire_api, is_managed_tool, is_uuid_v4,
-    list_synced_device_providers, load_service_providers_state,
+    list_synced_device_providers, load_service_providers_state, lock_canonical_state_write,
     materialize_isolated_claude_profile_async, normalize_protocol_router_wire_api,
     normalize_service_provider_ids, normalize_service_provider_record, now_ts, process_sync_queue,
     provider_import_key, read_system_provider, run_migration_impl, save_service_providers_internal,
     service_provider_matches_system_default, service_provider_to_legacy,
-    validate_provider_uuid_param, validate_service_provider_reference, ApiErr, ApiMeta, ApiOk,
+    validate_provider_uuid_param, ApiErr, ApiMeta, ApiOk, CanonicalStateWriteGuard,
     ProviderHistoryEntry, ProviderImportDecision, ProviderImportPreviewItem,
     ProvidersImportPreview, ServiceProviderRecord, ServiceProvidersState, StorageEngine,
     PROVIDERS_EXPORT_VERSION, PROVIDER_HISTORY_LIMIT,
@@ -17,17 +17,11 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self};
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard, OnceLock};
 
 // ─── Service Providers commands (new unified domain) ───────────────────────────
 
-static SERVICE_PROVIDER_OPERATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-pub(crate) fn lock_service_provider_operation() -> Result<MutexGuard<'static, ()>, String> {
-    SERVICE_PROVIDER_OPERATION_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .map_err(|_| "service_provider_operation_unavailable".to_string())
+pub(crate) fn lock_service_provider_operation() -> Result<CanonicalStateWriteGuard, String> {
+    lock_canonical_state_write()
 }
 
 pub(in crate::app_store) fn service_provider_to_value(sp: &ServiceProviderRecord) -> Value {
@@ -751,30 +745,13 @@ pub async fn service_providers_set_active(
     tool: String,
     provider_id: String,
 ) -> Result<ApiOk<Value>, ApiErr> {
-    validate_service_provider_reference(&tool, &provider_id)
-        .map_err(|e| api_error("invalid_payload", e))?;
-    let _operation = lock_service_provider_operation().map_err(|e| api_error("io_error", e))?;
-    let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    if tool == "opencode" {
-        if !state.active_opencode.contains(&provider_id) {
-            state.active_opencode.push(provider_id.clone());
-        }
-    } else {
-        state.active.insert(tool.clone(), provider_id.clone());
-    }
-    let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
+    let response = super::provider_activation::activate_provider(&tool, &provider_id)?;
     enqueue_sync_event("service_providers", "service_providers_set_active")
         .map_err(|e| api_error("sync_error", e))?;
     tauri::async_runtime::spawn(async move {
         let _ = process_sync_queue(app).await;
     });
-    api_ok(
-        json!({ "tool": tool, "provider_id": provider_id }),
-        ApiMeta {
-            schema_version: schema.schema_version,
-            revision: schema.revision,
-        },
-    )
+    Ok(response)
 }
 
 #[tauri::command]
@@ -1205,8 +1182,11 @@ pub async fn service_providers_auto_import_from_system(
     app: tauri::AppHandle,
     tool: String,
 ) -> Result<ApiOk<Value>, ApiErr> {
-    if let Err(e) = run_migration_impl() {
-        return Err(api_error("migration_failed", e));
+    {
+        let _migration_guard = lock_service_provider_operation().map_err(|e| api_error("io_error", e))?;
+        if let Err(e) = run_migration_impl() {
+            return Err(api_error("migration_failed", e));
+        }
     }
     if !is_managed_tool(&tool) {
         return Err(api_error(

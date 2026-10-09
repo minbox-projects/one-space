@@ -1,4 +1,4 @@
-use crate::app_store::SessionRecord;
+use crate::app_store::{lock_canonical_state_write, CanonicalStateWriteGuard, SessionRecord};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -201,11 +201,9 @@ pub(in crate::app_store) fn sessions_state_write_lock() -> &'static Mutex<()> {
     SESSIONS_STATE_WRITE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-pub(in crate::app_store) fn lock_sessions_state_write(
-) -> Result<std::sync::MutexGuard<'static, ()>, String> {
-    sessions_state_write_lock()
-        .lock()
-        .map_err(|_| "sessions state write lock poisoned".to_string())
+pub(in crate::app_store) fn lock_sessions_state_write() -> Result<CanonicalStateWriteGuard, String>
+{
+    lock_canonical_state_write()
 }
 
 pub(in crate::app_store) fn acquire_session_create_lock(

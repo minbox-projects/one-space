@@ -1,14 +1,15 @@
 use super::{
     apply_provider_id_map_to_dependent_state, infer_claude_api_format,
-    infer_claude_connection_mode, infer_protocol_router_wire_api, lock_sessions_state_write,
-    migrate_launcher_to_local_if_needed, migrate_sessions_to_local_if_needed,
-    normalize_loaded_service_providers_state, normalize_service_provider_record,
-    normalize_sessions_state, now_ts, parse_first_json_value, required_history_parser_version,
-    resolved_claude_model_mappings, sort_sessions_for_display, strip_legacy_claude_model_keys,
-    ApiMeta, ClaudeModelMapping, CliSessionLookup, CryptoService, EncryptedBlob, LauncherState,
-    MigrationState, OutboxState, ProvidersState, SchemaMeta, ServiceProviderRecord,
-    ServiceProvidersState, SessionRecord, SessionsHistoryToolState, SessionsState, StorageEngine,
-    HISTORY_BIND_WINDOW_SECS, HISTORY_SYNC_TOOLS, SESSIONS_HISTORY_SYNC_RUNNING,
+    infer_claude_connection_mode, infer_protocol_router_wire_api, lock_canonical_state_write,
+    lock_sessions_state_write, migrate_launcher_to_local_if_needed,
+    migrate_sessions_to_local_if_needed, normalize_loaded_service_providers_state,
+    normalize_service_provider_record, normalize_sessions_state, now_ts, parse_first_json_value,
+    required_history_parser_version, resolved_claude_model_mappings, sort_sessions_for_display,
+    strip_legacy_claude_model_keys, ApiMeta, ClaudeModelMapping, CliSessionLookup, CryptoService,
+    EncryptedBlob, LauncherState, MigrationState, OutboxState, ProvidersState, SchemaMeta,
+    ServiceProviderRecord, ServiceProvidersState, SessionRecord, SessionsHistoryToolState,
+    SessionsState, StorageEngine, HISTORY_BIND_WINDOW_SECS, HISTORY_SYNC_TOOLS,
+    SESSIONS_HISTORY_SYNC_RUNNING,
 };
 use crate::{ai_sessions, workspaces};
 use serde_json::Value;
@@ -205,6 +206,7 @@ fn read_service_providers_state_from_path(
 
 /// Load service providers state from the canonical data/providers/state.json path.
 pub(crate) fn load_service_providers_state() -> Result<ServiceProvidersState, String> {
+    let _operation = lock_canonical_state_write()?;
     let (state, id_map) = load_service_providers_state_with_id_map()?;
     if !id_map.is_empty() {
         apply_provider_id_map_to_dependent_state(&id_map)?;
@@ -214,6 +216,7 @@ pub(crate) fn load_service_providers_state() -> Result<ServiceProvidersState, St
 
 pub(in crate::app_store) fn load_service_providers_state_with_id_map(
 ) -> Result<(ServiceProvidersState, HashMap<String, String>), String> {
+    let _operation = lock_canonical_state_write()?;
     let path = StorageEngine::providers_path()?;
     if let Some(loaded) = read_service_providers_state_from_path(&path)? {
         let mut state = loaded.state;
@@ -235,10 +238,13 @@ pub(in crate::app_store) fn load_service_providers_state_with_id_map(
     Ok((ServiceProvidersState::default(), HashMap::new()))
 }
 
-/// Save service providers state (internal, no side effects).
+/// Save service providers state (internal, no side effects). Mutating callers
+/// retain the operation guard across the preceding load and this save; nested
+/// I/O guards alone cannot protect a caller's read-modify-write transaction.
 pub(crate) fn save_service_providers_internal(
     state: &ServiceProvidersState,
 ) -> Result<SchemaMeta, String> {
+    let _operation = lock_canonical_state_write()?;
     let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
     let blob = CryptoService::encrypt_json(&value)?;
     StorageEngine::write_json(&StorageEngine::providers_path()?, &blob)?;
@@ -247,6 +253,7 @@ pub(crate) fn save_service_providers_internal(
 }
 
 pub(in crate::app_store) fn load_sessions_state() -> Result<SessionsState, String> {
+    let _operation = lock_sessions_state_write()?;
     let path = StorageEngine::sessions_path()?;
     let _ = migrate_sessions_to_local_if_needed(&path);
     if !path.exists() {
@@ -274,6 +281,7 @@ pub(in crate::app_store) fn load_sessions_state() -> Result<SessionsState, Strin
 pub(in crate::app_store) fn save_sessions_state(
     state: &SessionsState,
 ) -> Result<SchemaMeta, String> {
+    let _operation = lock_sessions_state_write()?;
     let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
     let blob = CryptoService::encrypt_json(&value)?;
     StorageEngine::write_json(&StorageEngine::sessions_path()?, &blob)?;

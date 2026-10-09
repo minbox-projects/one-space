@@ -7,7 +7,7 @@ use super::{
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
 
 /// Managed environment variables injected into the Antigravity (`agy`) process.
 pub(in crate::ai_sessions) const ANTIGRAVITY_API_KEY_ENV: &str = "GEMINI_API_KEY";
@@ -407,6 +407,299 @@ pub struct LaunchOptions {
     pub initial_prompt: Option<String>,
 }
 
+struct PreparedCreateLaunch {
+    command: String,
+    env: HashMap<String, String>,
+    seed_session_id: Option<String>,
+    started_at_ms: i64,
+}
+
+fn prepare_create_launch(
+    model_type: &str,
+    requested_session_id: Option<&str>,
+    permission_mode: TerminalPermissionMode,
+    options: &LaunchOptions,
+) -> Result<PreparedCreateLaunch, String> {
+    let started_at_ms = now_epoch_millis();
+    let seed_session_id = build_create_seed_session_id(model_type, requested_session_id);
+    let mut command = build_create_command(model_type, seed_session_id.as_deref())?;
+    let permission_flag = match model_type.to_lowercase().as_str() {
+        "claude" | "antigravity" => Some("--dangerously-skip-permissions"),
+        "codex" => Some("--dangerously-bypass-approvals-and-sandbox"),
+        _ => None,
+    };
+    if permission_mode == TerminalPermissionMode::FullAccess {
+        if let Some(flag) = permission_flag {
+            if !command.contains(flag) {
+                command.push(' ');
+                command.push_str(flag);
+            }
+        }
+    }
+    let env = merge_antigravity_managed_env(model_type, options.env.as_ref());
+    Ok(PreparedCreateLaunch {
+        command,
+        env,
+        seed_session_id,
+        started_at_ms,
+    })
+}
+
+// A literal executable/argv can be spawned directly, allowing an actual exec
+// failure to roll registration back without confusing it with exit 126/127.
+// Shell expressions retain the configured shell language instead of being
+// reinterpreted as argv (expansions, pipelines, assignments and compound commands).
+fn literal_command_words(command: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut started = false;
+    let mut quote = None;
+    let mut chars = command.chars();
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some('\'') => {
+                if ch == '\'' {
+                    quote = None;
+                } else {
+                    word.push(ch);
+                }
+            }
+            Some('"') => match ch {
+                '"' => quote = None,
+                '$' | '`' => return None,
+                '\\' => {
+                    let next = chars.next()?;
+                    if !matches!(next, '"' | '$' | '`' | '\\' | '\n') {
+                        word.push('\\');
+                    }
+                    if next != '\n' {
+                        word.push(next);
+                    }
+                }
+                _ => word.push(ch),
+            },
+            _ => match ch {
+                '\'' | '"' => {
+                    quote = Some(ch);
+                    started = true;
+                }
+                '\\' => {
+                    let next = chars.next()?;
+                    if next != '\n' {
+                        word.push(next);
+                        started = true;
+                    }
+                }
+                '\n' | '$' | '`' | ';' | '&' | '|' | '<' | '>' | '(' | ')' | '{' | '}' | '~'
+                | '*' | '?' | '[' | ']' => return None,
+                '#' if !started => return None,
+                ' ' | '\t' => {
+                    if started {
+                        words.push(std::mem::take(&mut word));
+                        started = false;
+                    }
+                }
+                _ => {
+                    word.push(ch);
+                    started = true;
+                }
+            },
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if started {
+        words.push(word);
+    }
+    if words
+        .first()
+        .map(|word| word.is_empty() || word.contains('='))
+        .unwrap_or(true)
+    {
+        return None;
+    }
+    // Reserved words and builtins must be interpreted by the shell, not exec'd
+    // as external programs. Configured launch commands can legitimately use them.
+    if matches!(
+        words[0].as_str(),
+        "!" | "if"
+            | "then"
+            | "else"
+            | "elif"
+            | "fi"
+            | "case"
+            | "esac"
+            | "for"
+            | "select"
+            | "while"
+            | "until"
+            | "do"
+            | "done"
+            | "in"
+            | "function"
+            | "time"
+            | ":"
+            | "."
+            | "alias"
+            | "bg"
+            | "bind"
+            | "break"
+            | "builtin"
+            | "caller"
+            | "cd"
+            | "command"
+            | "compgen"
+            | "complete"
+            | "compopt"
+            | "continue"
+            | "declare"
+            | "dirs"
+            | "disown"
+            | "echo"
+            | "enable"
+            | "eval"
+            | "exec"
+            | "exit"
+            | "export"
+            | "false"
+            | "fc"
+            | "fg"
+            | "getopts"
+            | "hash"
+            | "help"
+            | "history"
+            | "jobs"
+            | "kill"
+            | "let"
+            | "local"
+            | "logout"
+            | "mapfile"
+            | "popd"
+            | "printf"
+            | "pushd"
+            | "pwd"
+            | "read"
+            | "readarray"
+            | "readonly"
+            | "return"
+            | "set"
+            | "shift"
+            | "shopt"
+            | "source"
+            | "suspend"
+            | "test"
+            | "times"
+            | "trap"
+            | "true"
+            | "type"
+            | "typeset"
+            | "ulimit"
+            | "umask"
+            | "unalias"
+            | "unset"
+            | "wait"
+    ) {
+        return None;
+    }
+    Some(words)
+}
+
+fn prepare_resume_launch(
+    model_type: &str,
+    session_id: &str,
+    permission_mode: TerminalPermissionMode,
+    options: &LaunchOptions,
+) -> Result<ResumeCommandResult, String> {
+    let mut result = build_resume_command(model_type, session_id, permission_mode)
+        .ok_or_else(|| "Unsupported model type for native session".to_string())?;
+    let mut env = options.env.clone().unwrap_or_default();
+    if let Some(permission_env) = result.env.take() {
+        env.extend(permission_env);
+    }
+    let env = merge_antigravity_managed_env(model_type, Some(&env));
+    result.env = if env.is_empty() { None } else { Some(env) };
+    Ok(result)
+}
+
+impl LaunchOptions {
+    /// Resume in the invoking terminal, retaining provider/runtime/permission
+    /// environment and distinguishing exec failure from a nonzero child exit.
+    pub fn launch_resume_in_current_terminal(
+        &self,
+        working_dir: &str,
+        model_type: &str,
+        session_id: &str,
+        permission_mode: TerminalPermissionMode,
+    ) -> Result<ExitStatus, String> {
+        let prepared = prepare_resume_launch(model_type, session_id, permission_mode, self)?;
+        let words = literal_command_words(&prepared.command)
+            .ok_or_else(|| "invalid native resume command".to_string())?;
+        Command::new(&words[0])
+            .args(&words[1..])
+            .current_dir(working_dir)
+            .envs(prepared.env.as_ref().into_iter().flatten())
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| e.to_string())?
+            .wait()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Current-terminal create adapter. Native I/O and the child's exit status
+    /// are inherited/preserved; only spawn errors fail canonical creation.
+    pub fn launch_create_in_current_terminal(
+        &self,
+        working_dir: &str,
+        model_type: &str,
+        requested_session_id: Option<&str>,
+        permission_mode: TerminalPermissionMode,
+        args: &[String],
+    ) -> Result<(Option<String>, ExitStatus), String> {
+        let prepared =
+            prepare_create_launch(model_type, requested_session_id, permission_mode, self)?;
+        let mut child = if let Some(words) = literal_command_words(&prepared.command) {
+            let mut child = Command::new(&words[0]);
+            child.args(&words[1..]).args(args);
+            child
+        } else {
+            let mut child = Command::new("/bin/bash");
+            child
+                .arg("-c")
+                .arg(format!("{} \"$@\"", prepared.command))
+                .arg("onespace-native")
+                .args(args);
+            child
+        };
+        let status = child
+            .current_dir(working_dir)
+            .envs(&prepared.env)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| e.to_string())?
+            .wait()
+            .map_err(|e| e.to_string())?;
+        // Unlike a launch seed, a persisted native ID must be observed in native
+        // history. If history is not available yet the canonical record stays pending.
+        let id = resolve_native_session_id_after_create(
+            model_type,
+            working_dir,
+            None,
+            prepared.started_at_ms,
+            if prepared.env.is_empty() {
+                None
+            } else {
+                Some(&prepared.env)
+            },
+        );
+        Ok((id, status))
+    }
+}
+
 pub fn launch_native_session_with_options(
     working_dir: &str,
     model_type: &str,
@@ -414,29 +707,13 @@ pub fn launch_native_session_with_options(
     permission_mode: TerminalPermissionMode,
     options: &LaunchOptions,
 ) -> Result<(), String> {
-    let result = build_resume_command(model_type, session_id, permission_mode)
-        .ok_or_else(|| "Unsupported model type for native session".to_string())?;
-    // Merge env: caller env, permission env, then the managed Antigravity environment.
-    let mut merged_env = options.env.clone().unwrap_or_default();
-    if let Some(cmd_env) = result.env {
-        for (k, v) in cmd_env {
-            merged_env.insert(k.clone(), v.clone());
-        }
-    }
-    for (k, v) in merge_antigravity_managed_env(model_type, Some(&merged_env)) {
-        merged_env.insert(k, v);
-    }
-    let env_ref = if merged_env.is_empty() {
-        None
-    } else {
-        Some(&merged_env)
-    };
+    let result = prepare_resume_launch(model_type, session_id, permission_mode, options)?;
     let terminal_app = resolve_terminal_app_name();
     run_native_terminal_command_for_app_with_executor(
         &terminal_app,
         working_dir,
         &result.command,
-        env_ref,
+        result.env.as_ref(),
         options.initial_prompt.as_deref(),
         |script| execute_applescript(&script),
     )
@@ -464,41 +741,18 @@ pub fn launch_native_session_for_create_with_options(
     permission_mode: TerminalPermissionMode,
     options: &LaunchOptions,
 ) -> Result<Option<String>, String> {
-    let launch_started_at_ms = now_epoch_millis();
-    let seed_session_id = build_create_seed_session_id(model_type, requested_session_id);
-    let mut command = build_create_command(model_type, seed_session_id.as_deref())?;
-    match model_type.to_lowercase().as_str() {
-        "claude" if permission_mode == TerminalPermissionMode::FullAccess => {
-            if !command.contains("--dangerously-skip-permissions") {
-                command.push_str(" --dangerously-skip-permissions");
-            }
-        }
-        "codex" if permission_mode == TerminalPermissionMode::FullAccess => {
-            if !command.contains("--dangerously-bypass-approvals-and-sandbox") {
-                command.push_str(" --dangerously-bypass-approvals-and-sandbox");
-            }
-        }
-        "antigravity" if permission_mode == TerminalPermissionMode::FullAccess => {
-            if !command.contains("--dangerously-skip-permissions") {
-                command.push_str(" --dangerously-skip-permissions");
-            }
-        }
-        _ => {}
-    }
-    let mut launch_env = options.env.clone().unwrap_or_default();
-    for (k, v) in merge_antigravity_managed_env(model_type, Some(&launch_env)) {
-        launch_env.insert(k, v);
-    }
-    let launch_env_ref = if launch_env.is_empty() {
+    let prepared =
+        prepare_create_launch(model_type, requested_session_id, permission_mode, options)?;
+    let launch_env_ref = if prepared.env.is_empty() {
         None
     } else {
-        Some(&launch_env)
+        Some(&prepared.env)
     };
     let terminal_app = resolve_terminal_app_name();
     run_native_terminal_command_for_app_with_executor(
         &terminal_app,
         working_dir,
-        &command,
+        &prepared.command,
         launch_env_ref,
         options.initial_prompt.as_deref(),
         |script| execute_applescript(&script),
@@ -506,8 +760,8 @@ pub fn launch_native_session_for_create_with_options(
     Ok(resolve_native_session_id_after_create(
         model_type,
         working_dir,
-        seed_session_id.as_deref(),
-        launch_started_at_ms,
+        prepared.seed_session_id.as_deref(),
+        prepared.started_at_ms,
         launch_env_ref,
     ))
 }

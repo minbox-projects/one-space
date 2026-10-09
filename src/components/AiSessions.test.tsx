@@ -108,4 +108,49 @@ describe("AiSessions workflow removal", () => {
 
     expect(workflowCalls()).toEqual([]);
   });
+
+  it("AC-001 create dialog shows every OpenCode active provider from the canonical multiset", async () => {
+    const user = userEvent.setup();
+    const fallbackInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "service_providers_list") {
+        return {
+          ok: true,
+          data: {
+            active_claude: null,
+            active_codex: null,
+            active_antigravity: null,
+            active_opencode: ["opencode-a", "opencode-b"],
+            providers: [
+              { id: "opencode-a", name: "Alpha Provider", tool: "opencode", api_key: "" },
+              { id: "opencode-b", name: "Beta Provider", tool: "opencode", api_key: "" },
+            ],
+          },
+          meta: apiMeta,
+        };
+      }
+      return fallbackInvoke(command, args);
+    });
+
+    renderWithProviders(<AiSessions isVisible />);
+    await user.click(await screen.findByRole("button", { name: "New Session" }));
+    await screen.findByRole("button", { name: "Launch" });
+
+    // The session list filters add their own selects; scope to the create
+    // dialog's AI Command select by its tool option values.
+    const toolSelect = screen
+      .getAllByRole("combobox")
+      .find((element) =>
+        Array.from(element.querySelectorAll("option")).some(
+          (option) => (option as HTMLOptionElement).value === "opencode",
+        ),
+      );
+    expect(toolSelect).toBeDefined();
+    await user.selectOptions(toolSelect!, "opencode");
+
+    // The create-dialog environment summary must reflect the whole canonical
+    // OpenCode active set, not a single id or a fallback default.
+    expect(await screen.findByText("Alpha Provider")).toBeInTheDocument();
+    expect(screen.getByText("Beta Provider")).toBeInTheDocument();
+  });
 });
