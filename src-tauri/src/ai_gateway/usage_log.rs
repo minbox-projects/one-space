@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS usage_logs (
     duration_ms INTEGER NOT NULL,
     error_message TEXT,
     terminal INTEGER NOT NULL DEFAULT 1,
-    reasoning_effort TEXT
+    reasoning_effort TEXT,
+    cost_breakdown TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_usage_logs_timestamp ON usage_logs(timestamp_ms);
 CREATE INDEX IF NOT EXISTS idx_usage_logs_local_model ON usage_logs(local_model);
@@ -120,6 +121,20 @@ impl UsageResult {
     }
 }
 
+/// Effective USD-per-million rates and unrounded USD fees frozen for one row.
+/// The total remains exclusively in [`UsageLogRecord::amount`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct UsageCostBreakdown {
+    pub input_price: f64,
+    pub output_price: f64,
+    pub cache_read_price: f64,
+    pub cache_write_price: f64,
+    pub input_cost: f64,
+    pub output_cost: f64,
+    pub cache_read_cost: f64,
+    pub cache_write_cost: f64,
+}
+
 /// One persisted request-log row. Contains no bodies, headers or credentials.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageLogRecord {
@@ -137,6 +152,9 @@ pub struct UsageLogRecord {
     pub total_tokens: u64,
     /// `None` when the upstream model had no matching price row at record time.
     pub amount: Option<f64>,
+    /// Record-time pricing details; absent for legacy or unmatched-price rows.
+    #[serde(default)]
+    pub cost_breakdown: Option<UsageCostBreakdown>,
     pub duration_ms: u64,
     /// Sanitized, bounded and redacted upstream error text; `None` for a
     /// success or a failure without readable error information (REQ-003/REQ-004).
@@ -267,22 +285,46 @@ pub fn compute_cost_at_time(
     tokens: &UsageTokens,
     timestamp_ms: i64,
 ) -> f64 {
-    for window in &price.off_peaks {
-        if is_off_peak_with_days(
+    compute_cost_at_time_with_breakdown(price, tokens, timestamp_ms).0
+}
+
+/// Cost and frozen pricing details for the effective UTC+8 tier.
+pub fn compute_cost_at_time_with_breakdown(
+    price: &ModelPrice,
+    tokens: &UsageTokens,
+    timestamp_ms: i64,
+) -> (f64, UsageCostBreakdown) {
+    let window = price.off_peaks.iter().find(|window| {
+        is_off_peak_with_days(
             timestamp_ms,
             &window.start_time,
             &window.end_time,
             window.days.as_deref(),
-        ) {
-            return (window.input * tokens.input_tokens as f64
-                + window.cache_read * tokens.cache_read_tokens as f64
-                + window.cache_write * tokens.cache_write_tokens as f64
-                + window.output * tokens.output_tokens as f64)
-                / 1_000_000.0;
-        }
-    }
-
-    compute_cost(price, tokens)
+        )
+    });
+    let (input_price, cache_read_price, cache_write_price, output_price) = match window {
+        Some(window) => (window.input, window.cache_read, window.cache_write, window.output),
+        None => (price.input, price.cache_read, price.cache_write, price.output),
+    };
+    let input = input_price * tokens.input_tokens as f64;
+    let cache_read = cache_read_price * tokens.cache_read_tokens as f64;
+    let cache_write = cache_write_price * tokens.cache_write_tokens as f64;
+    let output = output_price * tokens.output_tokens as f64;
+    // Keep the existing total's sum-before-division arithmetic and tier order.
+    let total = (input + cache_read + cache_write + output) / 1_000_000.0;
+    (
+        total,
+        UsageCostBreakdown {
+            input_price,
+            output_price,
+            cache_read_price,
+            cache_write_price,
+            input_cost: input / 1_000_000.0,
+            output_cost: output / 1_000_000.0,
+            cache_read_cost: cache_read / 1_000_000.0,
+            cache_write_cost: cache_write / 1_000_000.0,
+        },
+    )
 }
 
 /// Match a price row scoped to the forwarded provider and upstream model.
@@ -915,15 +957,16 @@ INSERT INTO usage_logs (
     timestamp_ms, local_model, upstream_model, provider_id, provider_name,
     result, status, input_tokens, cache_read_tokens, cache_write_tokens,
     output_tokens, total_tokens, amount, duration_ms, error_message, terminal,
-    reasoning_effort, usage_semantics, usage_present, cache_accounting_valid
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    reasoning_effort, usage_semantics, usage_present, cache_accounting_valid,
+    cost_breakdown
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ";
 
 /// Semantics marker persisted for every newly written row (REQ-004).
 const CANONICAL_USAGE_SEMANTICS: &str = "canonical_v1";
 
 /// Column list of every record-producing `SELECT`, in [`record_from_row`] order.
-const RECORD_COLUMNS: &str = "timestamp_ms, local_model, upstream_model, provider_id, provider_name, result, status, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, total_tokens, amount, duration_ms, error_message, terminal, reasoning_effort";
+const RECORD_COLUMNS: &str = "timestamp_ms, local_model, upstream_model, provider_id, provider_name, result, status, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, total_tokens, amount, duration_ms, error_message, terminal, reasoning_effort, cost_breakdown";
 
 fn metrics_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<UsageMetrics> {
     let cache_hit_tokens = row.get::<_, i64>(offset + 9)? as u64;
@@ -952,6 +995,17 @@ fn metrics_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<UsageMetri
 
 fn record_from_row(row: &Row<'_>) -> rusqlite::Result<UsageLogRecord> {
     let result: String = row.get(5)?;
+    let cost_breakdown = row
+        .get::<_, Option<String>>(17)?
+        .map(|value| serde_json::from_str(&value))
+        .transpose()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                17,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
     Ok(UsageLogRecord {
         timestamp_ms: row.get(0)?,
         local_model: row.get(1)?,
@@ -966,6 +1020,7 @@ fn record_from_row(row: &Row<'_>) -> rusqlite::Result<UsageLogRecord> {
         output_tokens: row.get::<_, i64>(10)? as u64,
         total_tokens: row.get::<_, i64>(11)? as u64,
         amount: row.get::<_, Option<f64>>(12)?,
+        cost_breakdown,
         duration_ms: row.get::<_, i64>(13)? as u64,
         error_message: row.get::<_, Option<String>>(14)?,
         terminal: row.get::<_, i64>(15)? != 0,
@@ -1066,6 +1121,10 @@ fn migrate_usage_logs(connection: &Connection) -> Result<(), String> {
             "ALTER TABLE usage_logs ADD COLUMN reasoning_effort TEXT",
         )?;
     }
+    // Nullable and never backfilled: historical rates cannot be reconstructed.
+    if !has_column("cost_breakdown") {
+        add_usage_log_column(connection, "ALTER TABLE usage_logs ADD COLUMN cost_breakdown TEXT")?;
+    }
     // Additive usage-accounting columns (REQ-004). Pre-existing rows default to
     // legacy semantics with no present/valid usage and stay excluded from the
     // new cache numerator/denominator; original tokens, totals, amounts and log
@@ -1105,6 +1164,12 @@ fn insert_record(
     record: &UsageLogRecord,
     accounting: UsageAccounting,
 ) -> Result<(), String> {
+    let cost_breakdown = record
+        .cost_breakdown
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| error.to_string())?;
     statement
         .execute(rusqlite::params![
             record.timestamp_ms,
@@ -1127,6 +1192,7 @@ fn insert_record(
             CANONICAL_USAGE_SEMANTICS,
             accounting.present as i64,
             accounting.valid as i64,
+            cost_breakdown,
         ])
         .map(|_| ())
         .map_err(|error| error.to_string())
