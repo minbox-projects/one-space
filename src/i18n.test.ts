@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import i18n from "@/i18n";
 
 const FILE_SHARING_KEYS = [
@@ -980,5 +982,82 @@ describe("蓝牙锁国际化键", () => {
       onlyEn: enPaths.filter((path) => !zhSet.has(path)),
       onlyZh: zhPaths.filter((path) => !enSet.has(path)),
     }).toEqual({ onlyEn: [], onlyZh: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 2: provider-template binding, strategy and broken-binding bilingual
+// copy (REQ-008 / AC-023). The new keys must exist in both dictionaries and in
+// en_keys.txt / zh_keys.txt with parity.
+// ---------------------------------------------------------------------------
+
+const TEMPLATE_POLICY_BINDING_I18N_KEYS = [
+  "aiGatewayTemplateSyncStrategy",
+  "aiGatewayTemplateQuotaStrategy",
+  "aiGatewayTemplateErrorStrategy",
+  "aiGatewayTemplateSyncStrategyGeneric",
+  "aiGatewayTemplateSyncStrategyOpencodeGo",
+  "aiGatewayTemplateQuotaStrategyNone",
+  "aiGatewayTemplateQuotaStrategyCommandcode",
+  "aiGatewayTemplateQuotaStrategyOpencodeGo",
+  "aiGatewayTemplateErrorStrategyGeneric",
+  "aiGatewayProviderTemplateBinding",
+  "aiGatewayProviderTemplateUnbound",
+  "aiGatewayProviderTemplateBrokenBinding",
+  "aiGatewayProviderEffectiveStrategy",
+] as const;
+
+function readKeyListFile(fileName: string): Set<string> {
+  const contents = readFileSync(resolve(process.cwd(), fileName), "utf8");
+  return new Set(
+    contents
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line !== ""),
+  );
+}
+
+describe("AI 网关服务商模板策略与绑定国际化键", () => {
+  it.each(["en", "zh"] as const)(
+    "为 %s 提供全部模板策略与绑定真实文案",
+    (language) => {
+      for (const key of TEMPLATE_POLICY_BINDING_I18N_KEYS) {
+        const translation = i18n.getResource(language, "translation", key);
+        expect(typeof translation, `${language}:${key} 应为字符串`).toBe(
+          "string",
+        );
+        expect(
+          (translation as string).trim(),
+          `${language}:${key} 不应为空`,
+        ).not.toBe("");
+        expect(translation, `${language}:${key} 不应回退为键名`).not.toBe(key);
+      }
+    },
+  );
+
+  it("新增策略与绑定键后 en 与 zh 的键路径集合仍完全一致", () => {
+    const enPaths = collectKeyPaths(resourceBundle("en"));
+    const zhPaths = collectKeyPaths(resourceBundle("zh"));
+    const enSet = new Set(enPaths);
+    const zhSet = new Set(zhPaths);
+    expect({
+      onlyEn: enPaths.filter((path) => !zhSet.has(path)),
+      onlyZh: zhPaths.filter((path) => !enSet.has(path)),
+    }).toEqual({ onlyEn: [], onlyZh: [] });
+  });
+
+  it("en_keys.txt 与 zh_keys.txt 收录全部新增键且键集合保持一致", () => {
+    const enKeys = readKeyListFile("en_keys.txt");
+    const zhKeys = readKeyListFile("zh_keys.txt");
+
+    expect({
+      onlyEn: [...enKeys].filter((key) => !zhKeys.has(key)),
+      onlyZh: [...zhKeys].filter((key) => !enKeys.has(key)),
+    }).toEqual({ onlyEn: [], onlyZh: [] });
+
+    for (const key of TEMPLATE_POLICY_BINDING_I18N_KEYS) {
+      expect(enKeys.has(key), `en_keys.txt 缺少 ${key}`).toBe(true);
+      expect(zhKeys.has(key), `zh_keys.txt 缺少 ${key}`).toBe(true);
+    }
   });
 });

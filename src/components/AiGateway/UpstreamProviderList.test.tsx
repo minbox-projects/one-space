@@ -124,6 +124,30 @@ function makeTemplateView(
   };
 }
 
+function policyTemplateView(
+  overrides: Partial<GatewayProviderTemplateView["template"]> = {},
+): GatewayProviderTemplateView {
+  return {
+    template: {
+      id: "tpl-cc",
+      name: "CommandCode",
+      description: "CommandCode provider template",
+      base_url: "https://api.commandcode.ai/provider/v1",
+      protocol: "chat_completions",
+      source: "https://api.commandcode.ai/provider/v1/models",
+      models_url: "https://api.commandcode.ai/provider/v1/models",
+      models: [],
+      sync_strategy: "generic",
+      quota_strategy: "commandcode",
+      error_strategy: "generic",
+      ...overrides,
+    },
+    synced_at: null,
+    source: "snapshot",
+    from_snapshot: true,
+  };
+}
+
 describe("UpstreamProviderList 状态展示与过滤", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("en");
@@ -886,11 +910,13 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
     provider: GatewayUpstreamProvider,
     overrides: {
       onToggleEnabled?: (provider: GatewayUpstreamProvider, enabled: boolean) => void;
+      templates?: GatewayProviderTemplateView[];
     } = {},
   ) {
     return renderWithProviders(
       <UpstreamProviderList
         providers={[provider]}
+        templates={overrides.templates ?? [policyTemplateView()]}
         selectedProviderId={null}
         busy={false}
         onSelect={vi.fn()}
@@ -917,11 +943,12 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
     );
   });
 
-  it("REQ-001 renders the quota block for a CommandCode base URL", async () => {
+  it("REQ-001 renders the quota block for a provider bound to the CommandCode template", async () => {
     renderProviderList(
       makeProvider({
         id: "commandcode-provider",
         base_url: "https://api.commandcode.ai/provider/v1",
+        template_id: "tpl-cc",
       }),
     );
 
@@ -936,19 +963,25 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
     });
   });
 
-  it("detects the CommandCode hostname without case sensitivity", async () => {
+  it("AC-005 does not infer a quota block from an unbound CommandCode-like URL", () => {
     renderProviderList(
       makeProvider({
         id: "mixed-case-commandcode",
         base_url: "https://API.CommandCode.AI/provider/v1",
+        template_id: null,
       }),
     );
 
     expect(
-      await screen.findByTestId(
-        "ai-gateway-provider-quota-mixed-case-commandcode",
-      ),
+      screen.getByTestId("ai-gateway-provider-placeholder-mixed-case-commandcode"),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("ai-gateway-provider-quota-mixed-case-commandcode"),
+    ).not.toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "ai_gateway_provider_quota",
+      expect.anything(),
+    );
   });
 
   it("renders quota credits compactly inside the provider quota block, leaving provider header uncrowded", async () => {
@@ -957,6 +990,7 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
         id: "cc-provider",
         name: "CommandCode Main Production",
         base_url: "https://api.commandcode.ai/provider/v1",
+        template_id: "tpl-cc",
       }),
     );
 
@@ -988,6 +1022,7 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
       id: "commandcode-error",
       name: "CommandCode",
       base_url: "https://api.commandcode.ai/provider/v1",
+      template_id: "tpl-cc",
     });
     renderProviderList(provider, { onToggleEnabled });
 
@@ -1061,6 +1096,7 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
         id: "p-cmd",
         name: "CommandCode",
         base_url: "https://api.commandcode.ai/provider/v1",
+        template_id: "tpl-cc",
         mappings: [],
       }),
     ];
@@ -1068,6 +1104,7 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
     renderWithProviders(
       <UpstreamProviderList
         providers={providers}
+        templates={[policyTemplateView()]}
         selectedProviderId={null}
         busy={false}
         onSelect={vi.fn()}
@@ -1102,6 +1139,7 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
         id: "p-cmd-zero",
         name: "CommandCode Zero",
         base_url: "https://api.commandcode.ai/provider/v1",
+        template_id: "tpl-cc",
       }),
     ];
 
@@ -1122,6 +1160,7 @@ describe("UpstreamProviderList CommandCode 配额区块集成", () => {
     renderWithProviders(
       <UpstreamProviderList
         providers={providers}
+        templates={[policyTemplateView()]}
         selectedProviderId={null}
         busy={false}
         onSelect={vi.fn()}
@@ -1305,6 +1344,14 @@ describe("UpstreamProviderList 批量刷新当前筛选结果额度", () => {
     return renderWithProviders(
       <UpstreamProviderList
         providers={providers}
+        templates={[
+          policyTemplateView(),
+          policyTemplateView({
+            id: "tpl-go",
+            name: "OpenCode Go",
+            quota_strategy: "opencode_go",
+          }),
+        ]}
         selectedProviderId={null}
         busy={false}
         onSelect={vi.fn()}
@@ -1329,24 +1376,28 @@ describe("UpstreamProviderList 批量刷新当前筛选结果额度", () => {
         id: "cc-visible",
         name: "CC Visible",
         base_url: "https://api.commandcode.ai/provider/v1",
+        template_id: "tpl-cc",
         tags: ["prod"],
       }),
       makeProvider({
         id: "go-visible",
         name: "Go Visible",
         base_url: "https://opencode.ai/zen/go",
+        template_id: "tpl-go",
         tags: ["prod"],
       }),
       makeProvider({
         id: "plain-visible",
         name: "Plain Visible",
         base_url: "https://api.openai.com/v1",
+        template_id: null,
         tags: ["prod"],
       }),
       makeProvider({
         id: "cc-nokey",
         name: "CC No Key",
         base_url: "https://api.commandcode.ai/provider/v1",
+        template_id: "tpl-cc",
         keys: [],
         tags: ["prod"],
       }),
@@ -1354,6 +1405,7 @@ describe("UpstreamProviderList 批量刷新当前筛选结果额度", () => {
         id: "go-nokey",
         name: "Go No Key",
         base_url: "https://opencode.ai/zen/go",
+        template_id: "tpl-go",
         keys: [],
         tags: ["prod"],
       }),
@@ -1361,6 +1413,7 @@ describe("UpstreamProviderList 批量刷新当前筛选结果额度", () => {
         id: "cc-hidden",
         name: "CC Hidden",
         base_url: "https://api.commandcode.ai/provider/v1",
+        template_id: "tpl-cc",
         tags: ["dev"],
       }),
     ];
@@ -1440,6 +1493,7 @@ describe("UpstreamProviderList 批量刷新当前筛选结果额度", () => {
         id: "cc-nokey-only",
         name: "CC No Key Only",
         base_url: "https://api.commandcode.ai/provider/v1",
+        template_id: "tpl-cc",
         keys: [],
       }),
     ]);
@@ -1454,12 +1508,14 @@ describe("UpstreamProviderList 批量刷新当前筛选结果额度", () => {
         id: "cc-visible",
         name: "CC Visible",
         base_url: "https://api.commandcode.ai/provider/v1",
+        template_id: "tpl-cc",
         tags: ["prod"],
       }),
       makeProvider({
         id: "cc-hidden",
         name: "CC Hidden",
         base_url: "https://api.commandcode.ai/provider/v1",
+        template_id: "tpl-cc",
         tags: ["dev"],
       }),
     ]);
@@ -1498,6 +1554,7 @@ describe("UpstreamProviderList 批量刷新当前筛选结果额度", () => {
         id: "cc-auto",
         name: "CC Auto",
         base_url: "https://api.commandcode.ai/provider/v1",
+        template_id: "tpl-cc",
       }),
     ]);
 
@@ -1533,6 +1590,7 @@ describe("UpstreamProviderList 批量刷新当前筛选结果额度", () => {
         id: "cc-layout",
         name: "CC Layout",
         base_url: "https://api.commandcode.ai/provider/v1",
+        template_id: "tpl-cc",
       }),
     ]);
 
@@ -2199,5 +2257,215 @@ describe("UpstreamProviderList 可关闭的告警标签 (Step 3)", () => {
     getItemSpy.mockRestore();
     setItemSpy.mockRestore();
     consoleError.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 2: provider cards select their monitor block from the effective template
+// quota strategy rather than the base URL (REQ-008 / AC-005 / AC-006 / AC-012 /
+// AC-013 / AC-024). RED tests for the frozen interface contract.
+// ---------------------------------------------------------------------------
+
+describe("UpstreamProviderList 模板策略监控选择（Step 2）", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "ai_gateway_provider_quota") {
+        return COMMANDCODE_QUOTA_FIXTURE;
+      }
+      if (command === "ai_gateway_provider_go_usage") {
+        return GO_USAGE_FIXTURE;
+      }
+      return undefined;
+    });
+    await i18n.changeLanguage("en");
+  });
+
+  function renderPolicyList(
+    providers: GatewayUpstreamProvider[],
+    templates: GatewayProviderTemplateView[],
+  ) {
+    return renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        templates={templates}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+  }
+
+  function monitorCalls(command: string, providerId: string, force?: boolean) {
+    return invokeMock.mock.calls.filter(([cmd, args]) => {
+      const payload = args as
+        | { providerId?: string; forceRefresh?: boolean }
+        | undefined;
+      return (
+        cmd === command &&
+        payload?.providerId === providerId &&
+        (force === undefined || payload?.forceRefresh === force)
+      );
+    });
+  }
+
+  it("按有效额度策略选择监控区块，未绑定服务商绝不因 URL 获得专用区块", async () => {
+    const templates = [
+      policyTemplateView({ id: "tpl-cc", name: "CommandCode", quota_strategy: "commandcode" }),
+      policyTemplateView({ id: "tpl-go", name: "OpenCode Go", quota_strategy: "opencode_go" }),
+      policyTemplateView({ id: "tpl-none", name: "Generic", quota_strategy: "none" }),
+    ];
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({
+        id: "cc-bound",
+        template_id: "tpl-cc",
+        base_url: "https://api.commandcode.ai/provider/v1",
+      }),
+      makeProvider({
+        id: "go-bound",
+        template_id: "tpl-go",
+        base_url: "https://opencode.ai/zen/go",
+      }),
+      makeProvider({
+        id: "none-bound",
+        template_id: "tpl-none",
+        base_url: "https://api.commandcode.ai/provider/v1",
+      }),
+      makeProvider({
+        id: "unbound-cc-like",
+        template_id: null,
+        base_url: "https://api.commandcode.ai/provider/v1",
+      }),
+      makeProvider({
+        id: "unbound-go-like",
+        template_id: null,
+        base_url: "https://opencode.ai/zen/go",
+      }),
+    ];
+
+    renderPolicyList(providers, templates);
+
+    // commandcode => CommandCode 额度区块
+    expect(
+      await screen.findByTestId("ai-gateway-provider-quota-cc-bound"),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(monitorCalls("ai_gateway_provider_quota", "cc-bound")).toHaveLength(1));
+    expect(
+      screen.queryByTestId("ai-gateway-provider-go-usage-cc-bound"),
+    ).not.toBeInTheDocument();
+
+    // opencode_go => Go 用量区块
+    expect(
+      await screen.findByTestId("ai-gateway-provider-go-usage-go-bound"),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(monitorCalls("ai_gateway_provider_go_usage", "go-bound")).toHaveLength(1));
+    expect(
+      screen.queryByTestId("ai-gateway-provider-quota-go-bound"),
+    ).not.toBeInTheDocument();
+
+    // none => 占位，无专用区块、无监控请求
+    expect(
+      screen.getByTestId("ai-gateway-provider-placeholder-none-bound"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("ai-gateway-provider-quota-none-bound"),
+    ).not.toBeInTheDocument();
+    expect(monitorCalls("ai_gateway_provider_quota", "none-bound")).toHaveLength(0);
+
+    // 未绑定但 URL 形似 CommandCode / Go 的服务商也只得到占位
+    expect(
+      screen.getByTestId("ai-gateway-provider-placeholder-unbound-cc-like"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("ai-gateway-provider-placeholder-unbound-go-like"),
+    ).toBeInTheDocument();
+    expect(monitorCalls("ai_gateway_provider_quota", "unbound-cc-like")).toHaveLength(0);
+    expect(monitorCalls("ai_gateway_provider_go_usage", "unbound-go-like")).toHaveLength(0);
+  });
+
+  it("损坏绑定回退 generic 且绝不发起监控请求", async () => {
+    renderPolicyList(
+      [makeProvider({ id: "broken", template_id: "deleted-tpl" })],
+      [policyTemplateView({ id: "tpl-cc", quota_strategy: "commandcode" })],
+    );
+
+    expect(
+      await screen.findByTestId("ai-gateway-provider-broken-binding-broken"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("ai-gateway-provider-placeholder-broken"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("ai-gateway-provider-quota-broken"),
+    ).not.toBeInTheDocument();
+    expect(monitorCalls("ai_gateway_provider_quota", "broken")).toHaveLength(0);
+    expect(monitorCalls("ai_gateway_provider_go_usage", "broken")).toHaveLength(0);
+  });
+
+  it("卡片展示绑定模板与有效策略", () => {
+    renderPolicyList(
+      [makeProvider({ id: "bound", template_id: "tpl-go" })],
+      [
+        policyTemplateView({
+          id: "tpl-go",
+          name: "OpenCode Go",
+          sync_strategy: "opencode_go",
+          quota_strategy: "opencode_go",
+        }),
+      ],
+    );
+
+    const binding = screen.getByTestId(
+      "ai-gateway-provider-template-binding-bound",
+    );
+    expect(binding).toHaveTextContent("OpenCode Go");
+
+    const strategy = screen.getByTestId(
+      "ai-gateway-provider-effective-strategy-bound",
+    );
+    expect(strategy).toHaveAttribute("data-sync-strategy", "opencode_go");
+    expect(strategy).toHaveAttribute("data-quota-strategy", "opencode_go");
+    expect(strategy).toHaveAttribute("data-error-strategy", "generic");
+  });
+
+  it("批量刷新资格按有效额度策略与密钥池判定而非 URL", async () => {
+    const user = userEvent.setup();
+    const templates = [
+      policyTemplateView({ id: "tpl-cc", quota_strategy: "commandcode" }),
+      policyTemplateView({ id: "tpl-none", quota_strategy: "none" }),
+    ];
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({ id: "cc-bound", template_id: "tpl-cc" }),
+      makeProvider({
+        id: "unbound-cc-like",
+        template_id: null,
+        base_url: "https://api.commandcode.ai/provider/v1",
+      }),
+      makeProvider({
+        id: "none-bound",
+        template_id: "tpl-none",
+        base_url: "https://api.commandcode.ai/provider/v1",
+      }),
+    ];
+
+    renderPolicyList(providers, templates);
+
+    const refreshButton = screen.getByTestId("ai-gateway-providers-refresh");
+    expect(refreshButton).toBeEnabled();
+    await user.click(refreshButton);
+
+    await waitFor(() =>
+      expect(
+        monitorCalls("ai_gateway_provider_quota", "cc-bound", true),
+      ).toHaveLength(1),
+    );
+    expect(
+      monitorCalls("ai_gateway_provider_quota", "unbound-cc-like", true),
+    ).toHaveLength(0);
+    expect(
+      monitorCalls("ai_gateway_provider_quota", "none-bound", true),
+    ).toHaveLength(0);
   });
 });

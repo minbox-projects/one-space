@@ -25,6 +25,9 @@ import {
   type GatewayPriceDraft,
   type GatewayProviderTemplate,
   type GatewayProviderTemplateModel,
+  type GatewayTemplateErrorStrategy,
+  type GatewayTemplateQuotaStrategy,
+  type GatewayTemplateSyncStrategy,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
   type ModelPrice,
@@ -68,6 +71,12 @@ export function ProviderTemplateEditDialog({
     useState<GatewayUpstreamProtocol>("chat_completions");
   const [modelsUrl, setModelsUrl] = useState("");
   const [description, setDescription] = useState("");
+  const [syncStrategy, setSyncStrategy] =
+    useState<GatewayTemplateSyncStrategy>("generic");
+  const [quotaStrategy, setQuotaStrategy] =
+    useState<GatewayTemplateQuotaStrategy>("none");
+  const [errorStrategy, setErrorStrategy] =
+    useState<GatewayTemplateErrorStrategy>("generic");
   const [models, setModels] = useState<GatewayProviderTemplateModel[]>([]);
   const [priceDrafts, setPriceDrafts] = useState<GatewayPriceDraft[]>([]);
   const [expandedModels, setExpandedModels] = useState<Record<number, boolean>>(
@@ -99,6 +108,9 @@ export function ProviderTemplateEditDialog({
       setProtocol(template.protocol);
       setModelsUrl(template.models_url || "");
       setDescription(template.description);
+      setSyncStrategy(template.sync_strategy ?? "generic");
+      setQuotaStrategy(template.quota_strategy ?? "none");
+      setErrorStrategy(template.error_strategy ?? "generic");
       const nextModels = template.models
         ? template.models.map((model) => ({
             ...model,
@@ -133,6 +145,9 @@ export function ProviderTemplateEditDialog({
       setProtocol("chat_completions");
       setModelsUrl("");
       setDescription("");
+      setSyncStrategy("generic");
+      setQuotaStrategy("none");
+      setErrorStrategy("generic");
       setModels([]);
       setPriceDrafts([]);
       setSource("");
@@ -296,6 +311,9 @@ export function ProviderTemplateEditDialog({
       description: description.trim(),
       base_url: trimmedUrl,
       protocol,
+      sync_strategy: syncStrategy,
+      quota_strategy: quotaStrategy,
+      error_strategy: errorStrategy,
       source: source.trim(),
       models_url: modelsUrl.trim() ? modelsUrl.trim() : null,
       models: savedModels,
@@ -479,6 +497,67 @@ export function ProviderTemplateEditDialog({
                 placeholder={t("description", "Description")}
                 aria-label={t("description", "Description")}
               />
+            </div>
+
+            {/* 第 5 行：闭合策略选择器（同步 / 额度 / 错误） */}
+            <div className="field">
+              <label>{t("aiGatewayTemplateSyncStrategy", "Model sync strategy")}</label>
+              <select
+                data-testid="template-edit-sync-strategy"
+                value={syncStrategy}
+                onChange={(e) =>
+                  setSyncStrategy(e.target.value as GatewayTemplateSyncStrategy)
+                }
+                disabled={disabled}
+                aria-label={t("aiGatewayTemplateSyncStrategy", "Model sync strategy")}
+              >
+                <option value="generic">
+                  {t("aiGatewayTemplateSyncStrategyGeneric", "Generic")}
+                </option>
+                <option value="opencode_go">
+                  {t("aiGatewayTemplateSyncStrategyOpencodeGo", "OpenCode Go")}
+                </option>
+              </select>
+            </div>
+
+            <div className="field">
+              <label>{t("aiGatewayTemplateQuotaStrategy", "Quota strategy")}</label>
+              <select
+                data-testid="template-edit-quota-strategy"
+                value={quotaStrategy}
+                onChange={(e) =>
+                  setQuotaStrategy(e.target.value as GatewayTemplateQuotaStrategy)
+                }
+                disabled={disabled}
+                aria-label={t("aiGatewayTemplateQuotaStrategy", "Quota strategy")}
+              >
+                <option value="none">
+                  {t("aiGatewayTemplateQuotaStrategyNone", "None")}
+                </option>
+                <option value="commandcode">
+                  {t("aiGatewayTemplateQuotaStrategyCommandcode", "CommandCode")}
+                </option>
+                <option value="opencode_go">
+                  {t("aiGatewayTemplateQuotaStrategyOpencodeGo", "OpenCode Go")}
+                </option>
+              </select>
+            </div>
+
+            <div className="field">
+              <label>{t("aiGatewayTemplateErrorStrategy", "Error strategy")}</label>
+              <select
+                data-testid="template-edit-error-strategy"
+                value={errorStrategy}
+                onChange={(e) =>
+                  setErrorStrategy(e.target.value as GatewayTemplateErrorStrategy)
+                }
+                disabled={disabled}
+                aria-label={t("aiGatewayTemplateErrorStrategy", "Error strategy")}
+              >
+                <option value="generic">
+                  {t("aiGatewayTemplateErrorStrategyGeneric", "Generic")}
+                </option>
+              </select>
             </div>
           </div>
 

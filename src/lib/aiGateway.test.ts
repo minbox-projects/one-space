@@ -2044,3 +2044,138 @@ describe("providerMarkedKeys 已标记密钥筛选", () => {
     ).toEqual(["quota", "authentication"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 2: provider-template policy DTOs and effective-policy helpers.
+// RED tests for the frozen interface contract. Only this test file is touched.
+// The helpers resolve from `template_id` only and must never infer a strategy
+// from URL, name or icon (REQ-008 / AC-005 / AC-006 / AC-012).
+// ---------------------------------------------------------------------------
+
+import {
+  isProviderTemplateBindingBroken,
+  resolveEffectiveTemplatePolicy,
+  resolveProviderTemplate,
+  type GatewayEffectiveTemplatePolicy,
+  type GatewayTemplateErrorStrategy,
+  type GatewayTemplateQuotaStrategy,
+  type GatewayTemplateSyncStrategy,
+} from "@/lib/aiGateway";
+
+const GENERIC_TEMPLATE_POLICY: GatewayEffectiveTemplatePolicy = {
+  sync_strategy: "generic",
+  quota_strategy: "none",
+  error_strategy: "generic",
+};
+
+function policyTemplateView(
+  overrides: Partial<GatewayProviderTemplate> = {},
+): GatewayProviderTemplateView {
+  return {
+    template: {
+      id: "tpl-cc",
+      name: "CommandCode",
+      description: "CommandCode provider template",
+      base_url: "https://api.commandcode.ai/provider/v1",
+      protocol: "chat_completions",
+      source: "https://api.commandcode.ai/provider/v1/models",
+      models_url: "https://api.commandcode.ai/provider/v1/models",
+      models: [],
+      sync_strategy: "generic",
+      quota_strategy: "commandcode",
+      error_strategy: "generic",
+      ...overrides,
+    },
+    synced_at: null,
+    source: "snapshot",
+    from_snapshot: true,
+  };
+}
+
+describe("AI Gateway 模板策略 DTO 与有效策略解析", () => {
+  it("模板 DTO 携带闭合的同步/额度/错误策略字段", () => {
+    const template = policyTemplateView({
+      id: "tpl-custom",
+      sync_strategy: "opencode_go",
+      quota_strategy: "opencode_go",
+      error_strategy: "generic",
+    }).template;
+
+    const sync: GatewayTemplateSyncStrategy = template.sync_strategy!;
+    const quota: GatewayTemplateQuotaStrategy = template.quota_strategy!;
+    const error: GatewayTemplateErrorStrategy = template.error_strategy!;
+
+    expect(sync).toBe("opencode_go");
+    expect(quota).toBe("opencode_go");
+    expect(error).toBe("generic");
+  });
+
+  it("绑定服务商从其模板解析同步/额度/错误策略", () => {
+    const views = [policyTemplateView()];
+    const bound = { template_id: "tpl-cc" };
+
+    expect(resolveProviderTemplate(views, bound)?.template.id).toBe("tpl-cc");
+    expect(resolveEffectiveTemplatePolicy(views, bound)).toEqual({
+      sync_strategy: "generic",
+      quota_strategy: "commandcode",
+      error_strategy: "generic",
+    });
+    expect(isProviderTemplateBindingBroken(views, bound)).toBe(false);
+  });
+
+  it("模板策略字段缺失时按 generic/none/generic 容错解析", () => {
+    const legacyView = policyTemplateView({
+      id: "tpl-legacy",
+      sync_strategy: undefined,
+      quota_strategy: undefined,
+      error_strategy: undefined,
+    });
+
+    expect(
+      resolveEffectiveTemplatePolicy([legacyView], { template_id: "tpl-legacy" }),
+    ).toEqual(GENERIC_TEMPLATE_POLICY);
+  });
+
+  it("未绑定服务商解析为 generic 策略且绝不按 URL/名称推断", () => {
+    const views = [policyTemplateView()];
+    const commandCodeLike = {
+      name: "CommandCode",
+      base_url: "https://api.commandcode.ai/provider/v1",
+      template_id: null,
+    };
+    const goLike = {
+      name: "OpenCode Go",
+      base_url: "https://opencode.ai/zen/go",
+    };
+
+    expect(resolveProviderTemplate(views, commandCodeLike)).toBeNull();
+    expect(resolveEffectiveTemplatePolicy(views, commandCodeLike)).toEqual(
+      GENERIC_TEMPLATE_POLICY,
+    );
+    expect(resolveEffectiveTemplatePolicy(views, goLike)).toEqual(
+      GENERIC_TEMPLATE_POLICY,
+    );
+    expect(isProviderTemplateBindingBroken(views, commandCodeLike)).toBe(false);
+    expect(isProviderTemplateBindingBroken(views, goLike)).toBe(false);
+  });
+
+  it("未知或已删除模板 id 回退 generic 并标记为损坏绑定", () => {
+    const views = [policyTemplateView()];
+    const unknown = { template_id: "deleted-or-unknown" };
+
+    expect(resolveProviderTemplate(views, unknown)).toBeNull();
+    expect(resolveEffectiveTemplatePolicy(views, unknown)).toEqual(
+      GENERIC_TEMPLATE_POLICY,
+    );
+    expect(isProviderTemplateBindingBroken(views, unknown)).toBe(true);
+  });
+
+  it("空模板列表与空服务商都安全解析为 generic", () => {
+    expect(resolveProviderTemplate(undefined, { template_id: "x" })).toBeNull();
+    expect(resolveEffectiveTemplatePolicy(null, { template_id: "x" })).toEqual(
+      GENERIC_TEMPLATE_POLICY,
+    );
+    expect(isProviderTemplateBindingBroken([], { template_id: "x" })).toBe(true);
+    expect(isProviderTemplateBindingBroken([], null)).toBe(false);
+  });
+});

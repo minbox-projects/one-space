@@ -29,13 +29,13 @@ import {
 import {
   AI_GATEWAY_ALERT_AUTO_DISMISS_MS,
   formatGatewayTimestamp,
-  isCommandCodeProvider,
-  isOpencodeGoProvider,
+  isProviderTemplateBindingBroken,
   isMappingDeprecated,
   providerKeyPool,
   providerKeyState,
   providerMarkedKeys,
   PROVIDER_KEY_STATE_TRANSLATION_KEYS,
+  resolveEffectiveTemplatePolicy,
   type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
 } from "@/lib/aiGateway";
@@ -105,6 +105,8 @@ function UpstreamProviderCardItem({
         (view) => view.template.id === provider.template_id,
       )
     : undefined;
+  const effectivePolicy = resolveEffectiveTemplatePolicy(templates, provider);
+  const bindingBroken = isProviderTemplateBindingBroken(templates, provider);
 
   const autoDisabledInstances = useMemo(
     () =>
@@ -348,14 +350,58 @@ function UpstreamProviderCardItem({
           </div>
         </div>
 
-        {isCommandCodeProvider(provider) ? (
+        {/* 绑定模板与有效策略（策略严格来自 template_id 解析） */}
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          {provider.template_id ? (
+            <span
+              data-testid={`ai-gateway-provider-template-binding-${provider.id}`}
+              className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+            >
+              <Sparkles className="h-3 w-3 opacity-70" />
+              <span className="truncate">
+                {templateView?.template.name ?? provider.template_id}
+              </span>
+            </span>
+          ) : null}
+          <span
+            data-testid={`ai-gateway-provider-effective-strategy-${provider.id}`}
+            data-sync-strategy={effectivePolicy.sync_strategy}
+            data-quota-strategy={effectivePolicy.quota_strategy}
+            data-error-strategy={effectivePolicy.error_strategy}
+            className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+          >
+            <span>
+              {t("aiGatewayProviderEffectiveStrategy", "Effective strategy")}:
+            </span>
+            <span className="font-mono">
+              {effectivePolicy.sync_strategy} / {effectivePolicy.quota_strategy} /{" "}
+              {effectivePolicy.error_strategy}
+            </span>
+          </span>
+          {bindingBroken ? (
+            <span
+              data-testid={`ai-gateway-provider-broken-binding-${provider.id}`}
+              className="inline-flex items-center gap-1 rounded-md border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive"
+            >
+              <AlertTriangle className="h-3 w-3 shrink-0" />
+              <span>
+                {t(
+                  "aiGatewayProviderTemplateBrokenBinding",
+                  "The bound template no longer exists.",
+                )}
+              </span>
+            </span>
+          ) : null}
+        </div>
+
+        {effectivePolicy.quota_strategy === "commandcode" ? (
           <ProviderQuotaBlock
             provider={provider}
             baseNow={baseNow}
             refreshToken={quotaRefreshToken}
             onRefreshed={handleCardRefreshed}
           />
-        ) : isOpencodeGoProvider(provider) ? (
+        ) : effectivePolicy.quota_strategy === "opencode_go" ? (
           <ProviderGoUsageBlock
             provider={provider}
             baseNow={baseNow}
@@ -682,15 +728,15 @@ export function UpstreamProviderList({
   const refreshableProviderIds = useMemo(() => {
     const ids = new Set<string>();
     for (const p of filteredProviders) {
-      if (
-        (isCommandCodeProvider(p) || isOpencodeGoProvider(p)) &&
-        providerKeyPool(p).length > 0
-      ) {
+      const { quota_strategy } = resolveEffectiveTemplatePolicy(templates, p);
+      const hasMonitor =
+        quota_strategy === "commandcode" || quota_strategy === "opencode_go";
+      if (hasMonitor && providerKeyPool(p).length > 0) {
         ids.add(p.id);
       }
     }
     return ids;
-  }, [filteredProviders]);
+  }, [filteredProviders, templates]);
 
   const canRefreshQuota = refreshableProviderIds.size > 0;
   const [lastRefreshedAt, setLastRefreshedAt] = useState<number | null>(null);

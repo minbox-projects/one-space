@@ -3700,3 +3700,150 @@ describe("AiGateway 鉴权失败 toast 按服务商聚合 (AC-013)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Step 2: provider-template binding flows through the existing provider upsert
+// wrapper and failed persistence keeps the dialog open (REQ-008 / AC-004 /
+// AC-025). RED tests for the frozen interface contract.
+// ---------------------------------------------------------------------------
+
+describe("AiGateway 服务商模板绑定接线（Step 2）", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    resetMessageMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  function bindingTemplateView(
+    overrides: Partial<GatewayProviderTemplate> = {},
+  ): GatewayProviderTemplateView {
+    return {
+      template: {
+        id: "tpl-cc",
+        name: "CommandCode",
+        description: "CommandCode provider template",
+        base_url: "https://api.commandcode.ai/provider/v1",
+        protocol: "chat_completions",
+        source: "https://api.commandcode.ai/provider/v1/models",
+        models_url: "https://api.commandcode.ai/provider/v1/models",
+        models: [],
+        sync_strategy: "generic",
+        quota_strategy: "commandcode",
+        error_strategy: "generic",
+        ...overrides,
+      },
+      synced_at: null,
+      source: "snapshot",
+      from_snapshot: true,
+    };
+  }
+
+  function mockBindingStore(options: { failUpsert?: boolean } = {}) {
+    const store: Store = {
+      config: makeConfig({
+        providers: [
+          makeProvider({
+            id: "p-bind",
+            name: "Bindable Provider",
+            base_url: "https://bindable.example/v1",
+            template_id: null,
+          }),
+        ],
+      }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [],
+    };
+    const templates = [bindingTemplateView({ id: "tpl-cc" })];
+
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      switch (command) {
+        case "ai_gateway_get_config":
+          return store.config;
+        case "ai_gateway_status":
+          return store.status;
+        case "ai_gateway_terminal_targets":
+          return store.targets;
+        case "ai_gateway_provider_templates":
+          return templates;
+        case "ai_gateway_upsert_provider": {
+          if (options.failUpsert) {
+            throw new Error("upsert rejected");
+          }
+          store.config = {
+            ...store.config,
+            providers: [
+              ...store.config.providers.filter(
+                (entry) => entry.id !== args.provider.id,
+              ),
+              args.provider,
+            ],
+          };
+          return store.config;
+        }
+        default:
+          throw new Error(`Unhandled command: ${command}`);
+      }
+    });
+  }
+
+  it("通过既有 upsert 包装器提交所选模板 template_id 并保留实例字段", async () => {
+    mockBindingStore();
+    renderWithProviders(<AiGateway />);
+    await screen.findByTestId("ai-gateway-providers");
+
+    fireEvent.click(
+      within(screen.getByTestId("ai-gateway-provider-p-bind")).getByText(
+        "Bindable Provider",
+      ),
+    );
+    await screen.findByTestId("ai-gateway-provider-detail");
+
+    fireEvent.change(
+      screen.getByTestId("ai-gateway-provider-template-select"),
+      { target: { value: "tpl-cc" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "ai_gateway_upsert_provider",
+        expect.objectContaining({
+          provider: expect.objectContaining({
+            id: "p-bind",
+            name: "Bindable Provider",
+            base_url: "https://bindable.example/v1",
+            template_id: "tpl-cc",
+          }),
+          prices: expect.any(Array),
+        }),
+      ),
+    );
+  });
+
+  it("upsert 失败时绑定弹窗保持打开且不报告成功", async () => {
+    mockBindingStore({ failUpsert: true });
+    renderWithProviders(<AiGateway />);
+    await screen.findByTestId("ai-gateway-providers");
+
+    fireEvent.click(
+      within(screen.getByTestId("ai-gateway-provider-p-bind")).getByText(
+        "Bindable Provider",
+      ),
+    );
+    await screen.findByTestId("ai-gateway-provider-detail");
+
+    fireEvent.change(
+      screen.getByTestId("ai-gateway-provider-template-select"),
+      { target: { value: "tpl-cc" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "ai_gateway_upsert_provider",
+        expect.anything(),
+      ),
+    );
+    expect(screen.getByTestId("ai-gateway-provider-detail")).toBeInTheDocument();
+  });
+});
+

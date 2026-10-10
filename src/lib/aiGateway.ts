@@ -1145,6 +1145,32 @@ export interface GatewayProviderTemplateModel {
   reasoning_efforts?: string[];
 }
 
+/** Model-synchronization strategy a provider template declares (closed set). */
+export type GatewayTemplateSyncStrategy = "generic" | "opencode_go";
+
+/** Quota/usage monitoring strategy a provider template declares (closed set). */
+export type GatewayTemplateQuotaStrategy = "none" | "commandcode" | "opencode_go";
+
+/** Error-handling strategy a provider template declares (closed set). */
+export type GatewayTemplateErrorStrategy = "generic";
+
+/**
+ * The effective policy a provider resolves from its bound template, or the
+ * generic fallback when it is unbound or its binding cannot be resolved.
+ */
+export interface GatewayEffectiveTemplatePolicy {
+  sync_strategy: GatewayTemplateSyncStrategy;
+  quota_strategy: GatewayTemplateQuotaStrategy;
+  error_strategy: GatewayTemplateErrorStrategy;
+}
+
+/** The generic fallback used by every unbound or unresolved provider binding. */
+export const GATEWAY_GENERIC_TEMPLATE_POLICY: GatewayEffectiveTemplatePolicy = {
+  sync_strategy: "generic",
+  quota_strategy: "none",
+  error_strategy: "generic",
+};
+
 /** A built-in provider template catalog entry. */
 export interface GatewayProviderTemplate {
   id: string;
@@ -1152,6 +1178,12 @@ export interface GatewayProviderTemplate {
   description: string;
   base_url: string;
   protocol: GatewayUpstreamProtocol;
+  /** Model-synchronization strategy; a missing/unknown value reads as `generic`. */
+  sync_strategy?: GatewayTemplateSyncStrategy;
+  /** Quota/usage monitoring strategy; a missing/unknown value reads as `none`. */
+  quota_strategy?: GatewayTemplateQuotaStrategy;
+  /** Error-handling strategy; a missing/unknown value reads as `generic`. */
+  error_strategy?: GatewayTemplateErrorStrategy;
   source: string;
   models_url?: string | null;
   models: GatewayProviderTemplateModel[];
@@ -1164,6 +1196,89 @@ export interface GatewayProviderTemplateView {
   synced_at: number | null;
   source: string;
   from_snapshot: boolean;
+}
+
+/** A provider reference whose binding is resolved strictly from `template_id`. */
+export interface GatewayTemplateBoundProvider {
+  template_id?: string | null;
+}
+
+/**
+ * A provider argument accepted by the binding helpers: the typed reference, any
+ * other object (whose `template_id` is read when present) or `null`/`undefined`.
+ * The wider shape keeps callers that pass partial provider fixtures assignable.
+ */
+export type GatewayTemplateProviderRef =
+  | GatewayTemplateBoundProvider
+  | Record<string, unknown>
+  | null
+  | undefined;
+
+/** Read a non-blank `template_id` from a loosely typed provider reference. */
+function boundTemplateId(provider: GatewayTemplateProviderRef): string | null {
+  if (!provider || typeof provider !== "object") return null;
+  const raw = (provider as { template_id?: unknown }).template_id;
+  return typeof raw === "string" && raw !== "" ? raw : null;
+}
+
+function normalizeTemplateSyncStrategy(value: unknown): GatewayTemplateSyncStrategy {
+  return value === "opencode_go" ? "opencode_go" : "generic";
+}
+
+function normalizeTemplateQuotaStrategy(value: unknown): GatewayTemplateQuotaStrategy {
+  if (value === "commandcode") return "commandcode";
+  if (value === "opencode_go") return "opencode_go";
+  return "none";
+}
+
+function normalizeTemplateErrorStrategy(): GatewayTemplateErrorStrategy {
+  return "generic";
+}
+
+/**
+ * Resolve the template a provider is bound to, strictly from its `template_id`.
+ *
+ * An unbound provider, an unknown or deleted id and an empty template list all
+ * resolve to `null`; URL, name and icon are never consulted (AC-005 / AC-006).
+ */
+export function resolveProviderTemplate(
+  templates: GatewayProviderTemplateView[] | null | undefined,
+  provider: GatewayTemplateProviderRef,
+): GatewayProviderTemplateView | null {
+  const templateId = boundTemplateId(provider);
+  if (!templateId) return null;
+  return (templates ?? []).find((view) => view.template.id === templateId) ?? null;
+}
+
+/**
+ * Resolve a provider's effective policy from its bound template, falling back to
+ * the generic policy for an unbound, unknown or deleted binding. Missing or
+ * unknown stored strategy values resolve to `generic`/`none`/`generic`.
+ */
+export function resolveEffectiveTemplatePolicy(
+  templates: GatewayProviderTemplateView[] | null | undefined,
+  provider: GatewayTemplateProviderRef,
+): GatewayEffectiveTemplatePolicy {
+  const view = resolveProviderTemplate(templates, provider);
+  if (!view) return { ...GATEWAY_GENERIC_TEMPLATE_POLICY };
+  return {
+    sync_strategy: normalizeTemplateSyncStrategy(view.template.sync_strategy),
+    quota_strategy: normalizeTemplateQuotaStrategy(view.template.quota_strategy),
+    error_strategy: normalizeTemplateErrorStrategy(),
+  };
+}
+
+/**
+ * Whether a provider carries a `template_id` that no longer resolves. An unbound
+ * provider is never broken.
+ */
+export function isProviderTemplateBindingBroken(
+  templates: GatewayProviderTemplateView[] | null | undefined,
+  provider: GatewayTemplateProviderRef,
+): boolean {
+  const templateId = boundTemplateId(provider);
+  if (!templateId) return false;
+  return !(templates ?? []).some((view) => view.template.id === templateId);
 }
 
 /** Payload for creating one upstream provider from a template. */
