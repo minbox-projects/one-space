@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-25-toolbox-plugin-registry.md
-2026-09-25-toolbox-plugin-registry.md: 5b61677cb7aa591220552dac0e4df3ce6e7fa297
-2026-09-25-toolbox-plugin-registry.zh.md: 25a331e216c9d0cf440da263599b9a69fea2b75e
+2026-09-25-toolbox-plugin-registry.md: c30f933b67ae7934eefb246588b5d36aafadf2e0
+2026-09-25-toolbox-plugin-registry.zh.md: 2b16c0352460b669189175f1a291d9df2b313918

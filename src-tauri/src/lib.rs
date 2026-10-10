@@ -5,6 +5,7 @@ mod ai_workflow_profiles;
 mod ai_gateway;
 mod app_store;
 mod backup;
+pub mod ble_lock;
 mod claude_profiles;
 mod cli_probe;
 mod cli_updates;
@@ -54,5 +55,14 @@ pub use ai_workflow_profiles::{
     ai_workflow_get_model_sources, ai_workflow_get_profile_matrix, ai_workflow_list_profiles,
     ai_workflow_rename_profile, ai_workflow_save_profile,
 };
+
+// Test-only discovery hook for the delegated `ble_lock` contract tests. The
+// product `ble_lock` module is added by the backend implementation step; this
+// include exists only so `cargo test ... ble_lock --lib` compiles and discovers
+// the RED behavior tests before that module exists. It declares no product
+// symbol and is absent from non-test builds.
+#[cfg(test)]
+#[path = "ble_lock/tests.rs"]
+mod ble_lock_contract_tests;
 
 

@@ -18,6 +18,7 @@ import {
   Route,
   Server, 
   Share2,
+  Bluetooth,
   Sparkles,
   Download, 
   Info,
@@ -232,6 +233,14 @@ export function Documentation() {
           icon: Share2,
           docId: 'usage',
           anchor: '132-file-sharing',
+        },
+        {
+          id: 'ble-lock',
+          name: t('bleLock', 'BLE Lock'),
+          summary: t('bleLockDesc', 'Monitor one Bluetooth device and lock or unlock by proximity.'),
+          icon: Bluetooth,
+          docId: 'usage',
+          anchor: '23-ble-lock',
         },
         {
           id: 'snippets-bookmarks-notes',

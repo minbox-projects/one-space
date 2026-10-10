@@ -29,6 +29,7 @@ const CANONICAL_HUB_IDS = [
   "file-sharing",
   "jtt-data-parser",
   "ai-workflow-model-switcher",
+  "ble-lock",
 ] as const;
 
 const NON_HUB_IDS = ["notes", "snippets"] as const;
@@ -175,6 +176,41 @@ describe("canonical MD5 id", () => {
     for (const id of CANONICAL_HUB_IDS) {
       expect(id).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
     }
+  });
+});
+
+describe("ble-lock toolbox entry", () => {
+  it("registers ble-lock on the hub and launcher-quick surfaces with the canonical alias", () => {
+    const tool = getToolboxTool("ble-lock");
+    expect(tool).toBeDefined();
+    expect(tool!.surfaces).toEqual(
+      expect.arrayContaining(["hub", "launcher-quick"]),
+    );
+    expect(listToolboxTools("hub").map((entry) => entry.id)).toContain(
+      "ble-lock",
+    );
+    expect(listToolboxTools("launcher-quick").map((entry) => entry.id)).toContain(
+      "ble-lock",
+    );
+  });
+
+  it("resolves the ble-lock alias to its own more-tools section", () => {
+    expect(resolveToolboxNavigationAlias("ble-lock")).toEqual({
+      toolId: "ble-lock",
+      tab: "more-tools",
+      moreToolsSection: "ble-lock",
+    });
+  });
+
+  it("lazily loads the BleLockTool component through the descriptor loader", async () => {
+    const tool = getToolboxTool("ble-lock");
+    expect(tool).toBeDefined();
+    expect(tool).not.toHaveProperty("component");
+    expect(typeof tool!.loadComponent).toBe("function");
+
+    const resolved = await tool!.loadComponent();
+    expect(resolved).toBeTruthy();
+    expect(["function", "object"]).toContain(typeof resolved.default);
   });
 });
 

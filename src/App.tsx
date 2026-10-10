@@ -89,6 +89,14 @@ import {
   useRuntimeStatus,
 } from "./lib/runtimeStatus";
 import {
+  BLE_LOCK_STATUS_EVENT,
+  BleLockCommandError,
+  bleLockLockNow,
+  bleLockSaveConfig,
+  type BleLockConfig,
+  type BleLockStatus,
+} from "./lib/bleLock";
+import {
   applyTrayMenu,
   buildTrayMenuModel,
   type TrayMenuState,
@@ -219,6 +227,21 @@ type DashboardCounts = {
   subagents: number;
   mcp_servers: number;
   storage_type?: "local" | "git" | "icloud";
+};
+
+const BLE_LOCK_TRAY_TOGGLES: Record<
+  string,
+  | "wake_on_proximity"
+  | "wake_without_unlocking"
+  | "pause_now_playing"
+  | "use_screensaver_to_lock"
+  | "sleep_display"
+> = {
+  "ble-lock-wake-on-proximity": "wake_on_proximity",
+  "ble-lock-wake-without-unlocking": "wake_without_unlocking",
+  "ble-lock-pause-while-locked": "pause_now_playing",
+  "ble-lock-use-screensaver": "use_screensaver_to_lock",
+  "ble-lock-turn-off-display": "sleep_display",
 };
 
 const TRAY_NAVIGATION_IDS = new Set([
@@ -461,6 +484,9 @@ function App() {
   const sharingRuntime = useRuntimeStatus<FileSharingSnapshot>("file-sharing", {
     enabled: runtimeEnabled,
   });
+  const bleLockRuntime = useRuntimeStatus<BleLockStatus>("ble-lock", {
+    enabled: runtimeEnabled,
+  });
 
   useEffect(() => {
     const status = gatewayRuntime.data;
@@ -528,6 +554,14 @@ function App() {
         : { ...prev, sharing },
     );
   }, [sharingRuntime.data]);
+
+  useEffect(() => {
+    const status = bleLockRuntime.data;
+    if (!status) return;
+    setTrayState((prev) =>
+      prev.bleLock === status ? prev : { ...prev, bleLock: status },
+    );
+  }, [bleLockRuntime.data]);
 
   const moreToolsLabel =
     i18n.language === "zh" ? "更多工具" : "More Tools";
@@ -782,6 +816,71 @@ function App() {
         navigateFromTray("settings");
         return;
       }
+      if (id === "ble-lock-set-device") {
+        await invoke("show_main_window");
+        navigateFromTray("ble-lock");
+        return;
+      }
+      if (id === "ble-lock-lock-now") {
+        try {
+          const result = await bleLockLockNow();
+          publishRuntimeStatus("ble-lock", result);
+        } catch (error) {
+          const title =
+            error instanceof BleLockCommandError && error.code
+              ? t(`bleLockError_${error.code}`)
+              : errorToMessage(error);
+          pushToast({ title, kind: "error" });
+        }
+        return;
+      }
+      if (id.startsWith("ble-lock-")) {
+        const config = trayStateRef.current.bleLock?.config;
+        if (!config) return;
+
+        const applyBleLockConfig = async (next: BleLockConfig) => {
+          try {
+            const result = await bleLockSaveConfig(next);
+            publishRuntimeStatus("ble-lock", result);
+          } catch (error) {
+            const title =
+              error instanceof BleLockCommandError && error.code
+                ? t(`bleLockError_${error.code}`)
+                : errorToMessage(error);
+            pushToast({ title, kind: "error" });
+          }
+        };
+
+        if (
+          id.startsWith("ble-lock-unlock-rssi") ||
+          id.startsWith("ble-lock-lock-rssi")
+        ) {
+          const prefix = id.startsWith("ble-lock-unlock-rssi")
+            ? "ble-lock-unlock-rssi"
+            : "ble-lock-lock-rssi";
+          const raw = id.slice(prefix.length + 1);
+          const value = raw === "disable" ? null : Number(raw);
+          if (value !== null && !Number.isInteger(value)) return;
+          const field =
+            prefix === "ble-lock-unlock-rssi" ? "unlock_rssi" : "lock_rssi";
+          await applyBleLockConfig({ ...config, [field]: value });
+          return;
+        }
+
+        const toggle = BLE_LOCK_TRAY_TOGGLES[id];
+        if (toggle) {
+          const next: BleLockConfig = { ...config, [toggle]: !config[toggle] };
+          // Screensaver lock and display-off are mutually exclusive.
+          if (toggle === "use_screensaver_to_lock" && next.use_screensaver_to_lock) {
+            next.sleep_display = false;
+          }
+          if (toggle === "sleep_display" && next.sleep_display) {
+            next.use_screensaver_to_lock = false;
+          }
+          await applyBleLockConfig(next);
+        }
+        return;
+      }
       if (TRAY_NAVIGATION_IDS.has(id)) {
         await invoke("show_main_window");
         navigateFromTray(id);
@@ -882,6 +981,9 @@ function App() {
     });
     addListener("file-sharing-updated", (event) => {
       publishRuntimeStatus("file-sharing", event.payload);
+    });
+    addListener(BLE_LOCK_STATUS_EVENT, (event) => {
+      publishRuntimeStatus("ble-lock", event.payload);
     });
     addListener("tray-shortcuts-updated", (event) => {
       const payload = (event.payload ?? {}) as {

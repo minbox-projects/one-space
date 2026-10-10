@@ -55,7 +55,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "应用外壳、侧边栏/更多工具导航解析（工具别名经工具箱注册表解析，无旧标签归一化）、全局 Provider、i18n 与错误边界；`src/lib/runtimeStatus.ts` 为每个 WebView 提供 gateway/router/ssh-tunnels/file-sharing 的共享运行时状态 store（有效快照零查询消费、每个服务至多一次合并回退拉取、单飞与序列守卫拒绝过期响应）、App 级每服务一个事件桥，以及 document + 原生主窗口合并可见性（`setNativeWindowVisible`/`isAppVisible`/`useAppVisibility`）",
+      "responsibility": "应用外壳、侧边栏/更多工具导航解析（工具别名经工具箱注册表解析，无旧标签归一化）、全局 Provider、i18n 与错误边界；`src/lib/runtimeStatus.ts` 为每个 WebView 提供 gateway/router/ssh-tunnels/file-sharing/ble-lock 的共享运行时状态 store（有效快照零查询消费、每个服务至多一次合并回退拉取、单飞与序列守卫拒绝过期响应）、App 级每服务一个事件桥，以及 document + 原生主窗口合并可见性（`setNativeWindowVisible`/`isAppVisible`/`useAppVisibility`）",
       "entries": [
         "src/App.tsx"
       ],
@@ -67,6 +67,7 @@
         "src/lib/navigation.ts",
         "src/lib/runtimeStatus.ts",
         "src/toolbox/registry.ts",
+        "src/lib/bleLock.ts",
         "src/components/MoreToolsHub.tsx",
         "src/components/MessageCenter.tsx",
         "src/components/AboutModal.tsx",
@@ -163,6 +164,7 @@
         "src/lib/navigation.ts",
         "src/lib/runtimeStatus.ts",
         "src/toolbox/registry.ts",
+        "src/lib/bleLock.ts",
         "src/components/MoreToolsHub.tsx",
         "src/components/MessageCenter.tsx",
         "src/components/AboutModal.tsx",
@@ -199,6 +201,7 @@
       "related_files": [
         "src/toolbox/types.ts",
         "src/toolbox/plugins/ai-workflow-model-switcher.ts",
+        "src/toolbox/plugins/ble-lock.ts",
         "src/toolbox/plugins/bookmarks.ts",
         "src/toolbox/plugins/file-sharing.ts",
         "src/toolbox/plugins/json-parser.ts",
@@ -408,6 +411,7 @@
         "src/toolbox/registry.ts",
         "src/toolbox/types.ts",
         "src/toolbox/plugins/ai-workflow-model-switcher.ts",
+        "src/toolbox/plugins/ble-lock.ts",
         "src/toolbox/plugins/bookmarks.ts",
         "src/toolbox/plugins/file-sharing.ts",
         "src/toolbox/plugins/json-parser.ts",
@@ -452,7 +456,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "托盘原生菜单所有权：`buildTrayMenuModel` 结构/标签/启用勾选/快捷键提示（遵循已注册快捷键的语义，`Meta` 不是修饰键，非法或未命名值省略）、`applyTrayMenu` 原生应用（单条目 accelerator 被拒时降级重试），Notes / Snippets 条目按工具 id 经工具箱注册表描述符解析标签（缺失时回退 `tray.notes` / `tray.snippets`），`src/App.tsx` 控制器按窗口可见性、服务状态、`tray-shortcuts-updated`（Settings 保存快捷键后发出）与 i18n 语言变化重建并执行全部动作；顶层 AI WorkFlow 子菜单位于 ai-usage 与 more-pages 之间，以禁用态 profile 头、9 个角色子菜单（各含 codex/claude/opencode 三个禁用 host 行，展示完整 model 与 reasoning effort）呈现 `ai_workflow_get_active_models` 的当前已安装快照，并有双语的加载/未激活/不可用/未设置文案",
+      "responsibility": "托盘原生菜单所有权：`buildTrayMenuModel` 结构/标签/启用勾选/快捷键提示（遵循已注册快捷键的语义，`Meta` 不是修饰键，非法或未命名值省略）、`applyTrayMenu` 原生应用（单条目 accelerator 被拒时降级重试），Notes / Snippets 条目按工具 id 经工具箱注册表描述符解析标签（缺失时回退 `tray.notes` / `tray.snippets`），`src/App.tsx` 控制器按窗口可见性、服务状态、`tray-shortcuts-updated`（Settings 保存快捷键后发出）与 i18n 语言变化重建并执行全部动作；顶层 AI WorkFlow 子菜单位于 ai-usage 与 more-pages 之间，以禁用态 profile 头、9 个角色子菜单（各含 codex/claude/opencode 三个禁用 host 行，展示完整 model 与 reasoning effort）呈现 `ai_workflow_get_active_models` 的当前已安装快照，并有双语的加载/未激活/不可用/未设置文案；前端所有权的新增 `ble-lock-controls` 子菜单（`buildBleLockMenu`）提供 status、Lock Now、Set Device、Unlock RSSI、Lock RSSI、Wake on Proximity、Wake without Unlocking、Pause while Locked、Use Screensaver 与 Turn Off Display，勾选/阈值选择来自与工具页相同的 `bleLock` 快照，`use_screensaver_to_lock` 与 `sleep_display` 在 App 动作处理器中互斥，`Set Device` 显示主窗口并导航到 `ble-lock`",
       "entries": [
         "src/lib/trayMenu.ts"
       ],
@@ -460,7 +464,8 @@
         "src/App.tsx",
         "src/i18n.ts",
         "src/toolbox/registry.ts",
-        "src/lib/aiWorkflowProfiles.ts"
+        "src/lib/aiWorkflowProfiles.ts",
+        "src/lib/bleLock.ts"
       ],
       "tests": [
         "src/App.trayMenu.test.tsx",
@@ -514,7 +519,8 @@
         "src/toolbox/registry.ts",
         "src/lib/trayMenu.test.ts",
         "src/lib/trayMenu.ts",
-        "src/lib/aiWorkflowProfiles.ts"
+        "src/lib/aiWorkflowProfiles.ts",
+        "src/lib/bleLock.ts"
       ],
       "relations": [],
       "shared_entry": false
@@ -4194,7 +4200,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "Tauri 应用启动、CLI 入口、运行时服务（含进程级系统恢复信号：`SYSTEM_RESUME_GRACE_SECS = 60` 的 `mark_system_resume` / `system_resume_grace_active(now)`，仅进程内存，供 AI 网关在恢复后的宽限窗口内抑制网络类传输失败计数）、托盘（Rust 侧创建、左键切换主窗口、右键原生菜单、双语启动兜底菜单、`main-window-visibility-changed` 事件与 `toggle_quick_ai_window` 命令）、全局快捷键、OAuth 打开与统一退出清理；`run()` 在 CLI 处理前先调用 `config::seed_dev_gateway_files_on_start()`，debug 构建据此按条件播种 dev 网关文件；同样在 CLI 处理前执行 `cleanup_removed_ai_workspace_files()`：经当前 profile 本地数据目录 best-effort 清理被删应用内助手的两个功能自有文件、幂等、失败记录并在下次启动重试、不阻塞启动、不触碰共享 MCP 列表；生成的 `onespace` 脚本 `ai` 子命令 `exec` 转发到内部命令 `__onespace_cli_create_session`（经 `app_store::session_service` 创建 canonical 会话），不再由脚本写明文会话 JSON；`resume` 子命令同样 `exec` 转发到内部命令 `__onespace_cli_resume_session`（经 `app_store::session_service` 恢复 canonical 会话），不再硬编码各工具恢复命令",
+      "responsibility": "Tauri 应用启动、CLI 入口、运行时服务（含进程级系统恢复信号：`SYSTEM_RESUME_GRACE_SECS = 60` 的 `mark_system_resume` / `system_resume_grace_active(now)`，仅进程内存，供 AI 网关在恢复后的宽限窗口内抑制网络类传输失败计数）、托盘（Rust 侧创建、左键切换主窗口、右键原生菜单、双语启动兜底菜单、`main-window-visibility-changed` 事件与 `toggle_quick_ai_window` 命令）、全局快捷键、OAuth 打开与统一退出清理；`run()` 在 CLI 处理前先调用 `config::seed_dev_gateway_files_on_start()`，debug 构建据此按条件播种 dev 网关文件；同样在 CLI 处理前执行 `cleanup_removed_ai_workspace_files()`：经当前 profile 本地数据目录 best-effort 清理被删应用内助手的两个功能自有文件、幂等、失败记录并在下次启动重试、不阻塞启动、不触碰共享 MCP 列表；生成的 `onespace` 脚本 `ai` 子命令 `exec` 转发到内部命令 `__onespace_cli_create_session`（经 `app_store::session_service` 创建 canonical 会话），不再由脚本写明文会话 JSON；`resume` 子命令同样 `exec` 转发到内部命令 `__onespace_cli_resume_session`（经 `app_store::session_service` 恢复 canonical 会话），不再硬编码各工具恢复命令；setup 通过 `#[path = \"../ble_lock/native.rs\"] pub(crate) mod ble_lock_native;` 注册 BLE 原生模块并调用 `ble_lock_native::install`，系统唤醒接缝重建监视/连接/扫描，`shutdown_runtime_services` 调用 `ble_lock_native::shutdown_runtime()` 做幂等清理",
       "entries": [
         "src-tauri/src/lib.rs"
       ],
@@ -4205,6 +4211,7 @@
         "src-tauri/src/app_runtime/cli.rs",
         "src-tauri/src/app_runtime/runtime_services.rs",
         "src-tauri/src/app_runtime/shortcuts_tray.rs",
+        "src-tauri/src/ble_lock/native.rs",
         "src-tauri/src/app_runtime/oauth_open.rs",
         "src-tauri/src/app_runtime/ssh_oauth.rs",
         "src-tauri/src/app_runtime/windows_data.rs"
@@ -4245,6 +4252,7 @@
         "src-tauri/src/app_runtime/cli.rs",
         "src-tauri/src/app_runtime/runtime_services.rs",
         "src-tauri/src/app_runtime/shortcuts_tray.rs",
+        "src-tauri/src/ble_lock/native.rs",
         "src-tauri/src/app_runtime/oauth_open.rs",
         "src-tauri/src/app_runtime/ssh_oauth.rs",
         "src-tauri/src/app_runtime/windows_data.rs"
@@ -4320,6 +4328,501 @@
         "tools/check-cli-matrix.test.sh",
         "tools/check-ai-gateway-redaction.sh",
         "tools/measure-core-workflows.mjs"
+      ],
+      "relations": [],
+      "shared_entry": false
+    },
+    {
+      "id": "ble-lock",
+      "name": "BLE Lock",
+      "aliases": [
+        "ble-lock-tool"
+      ],
+      "module_root": "frontend",
+      "owner_role": "frontend",
+      "responsibility": "低功耗蓝牙（BLE）锁屏工具箱（id `ble-lock`，别名 `ble-lock`）：只监测一个以 CoreBluetooth UUID 标识的设备（不解码 MAC、不推断距离），主动连接读 RSSI（默认）或被动广播两种模式；以解锁/锁定阈值（各自可 Disable，或 `-95..-30` dBm 的 `5` dBm 步进，两者都启用时解锁 >= 锁定）、锁定延时、无信号超时与全部可选开关（默认关闭）驱动自动锁定/唤醒/受保护解锁；`src/lib/bleLock.ts` 提供 `BleLockConfig`/`BleLockStatus`/`BleDevice`/`BleLockError`/`BleLockCommandError` 等 DTO、`ble_lock_*` 十个命令封装与 `BLE_LOCK_STATUS_EVENT`/`BLE_LOCK_DEVICES_EVENT` 常量，`isBleLockPlatformAvailable`/`bleLockUnavailableStatus` 在非 macOS 或非 Tauri 运行时返回不可用快照且绝不调用原生命令；`BleLockTool` 懒加载，文案中英双语；托盘控制是该工具的前端所有权有界扩展（见 tray-menu 与 .ai-workflow/notes/implemented/feature/2026-10-10-ble-lock-tool.md）",
+      "entries": [
+        "src/components/BleLockTool.tsx"
+      ],
+      "related_files": [
+        "src/lib/bleLock.ts",
+        "src/toolbox/plugins/ble-lock.ts",
+        "src/toolbox/registry.ts",
+        "src/lib/navigation.ts",
+        "src/lib/runtimeStatus.ts",
+        "src/lib/trayMenu.ts",
+        "src/App.tsx",
+        "src/i18n.ts",
+        "src/components/Documentation.tsx",
+        "en_keys.txt",
+        "zh_keys.txt"
+      ],
+      "tests": [
+        "src/components/BleLockTool.test.tsx",
+        "src/lib/bleLock.test.ts"
+      ],
+      "symbols": [
+        {
+          "file": "src/components/BleLockTool.tsx",
+          "name": "BleLockTool",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "BLE_LOCK_STATUS_EVENT",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "BLE_LOCK_DEVICES_EVENT",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "BleBluetoothState",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "BleLockMode",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "BlePresence",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "BleDevice",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "BleLockConfig",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "BleLockError",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "BleLockStatus",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "BleLockCommandError",
+          "kind": "class",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "isBleLockPlatformAvailable",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "bleLockUnavailableStatus",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "bleLockGetStatus",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "bleLockSaveConfig",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "bleLockScanStart",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "bleLockScanStop",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "bleLockSelectDevice",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "bleLockClearDevice",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "bleLockSetPassword",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "bleLockDeletePassword",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "bleLockRequestAccessibility",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/bleLock.ts",
+          "name": "bleLockLockNow",
+          "kind": "function",
+          "visibility": "public"
+        }
+      ],
+      "depends_on": [
+        "ble-lock-backend"
+      ],
+      "read_scope": [
+        "src/components/BleLockTool.tsx",
+        "src/lib/bleLock.ts",
+        "src/toolbox/plugins/ble-lock.ts",
+        "src/toolbox/registry.ts",
+        "src/lib/navigation.ts",
+        "src/lib/runtimeStatus.ts",
+        "src/lib/trayMenu.ts",
+        "src/App.tsx",
+        "src/i18n.ts",
+        "src/components/Documentation.tsx",
+        "en_keys.txt",
+        "zh_keys.txt",
+        "src/components/BleLockTool.test.tsx",
+        "src/lib/bleLock.test.ts"
+      ],
+      "relations": [],
+      "shared_entry": false
+    },
+    {
+      "id": "ble-lock-backend",
+      "name": "BLE Lock Backend",
+      "aliases": [
+        "ble-lock-rust",
+        "corebluetooth"
+      ],
+      "module_root": "tauri-backend",
+      "owner_role": "backend",
+      "responsibility": "BLE 锁屏后端（Rust）：`src-tauri/src/ble_lock.rs` 只声明 `mod config/state/central` 并 re-export 三个子模块公共类型；`config.rs` 严格校验并原子落盘当前 profile 应用目录下的独立、不同步 `ble_lock.json`（不属于 `StorageConfig` 或同步、无密码字段）；`state.rs` 为无硬件依赖的纯存在状态机（至多 5 条有效读数均值、锁定延时 away、无信号超时 lost、每片段至多一次锁定、away/lost 后 near 才武装解锁、手动优先）；`central.rs` 为 macOS CoreBluetooth 桥（一个 UUID、主动连接读 RSSI/被动广播不连接、替换或清除时取消/断开、丢弃过时回调，非 macOS 返回 `platform_unavailable`）；`native.rs` 承载 `BleLockPlatform` OS 接缝、控制器、真实 macOS 能力（锁定/解锁/唤醒/媒体/屏保/息屏）、Keychain（Release `com.onespace.desktop.ble-lock` / Debug `com.onespace.desktop.ble-lock.dev`、当前用户普通密码、不可同步）与进程级运行时，暴露 `ble_lock_get_status`/`ble_lock_save_config`/`ble_lock_scan_start`/`ble_lock_scan_stop`/`ble_lock_select_device`/`ble_lock_clear_device`/`ble_lock_set_password`/`ble_lock_delete_password`/`ble_lock_request_accessibility`/`ble_lock_lock_now` 十个命令与 `ble-lock-status-updated`/`ble-lock-devices-updated` 两个事件；`run_app.rs` 以 `#[path = \"../ble_lock/native.rs\"] pub(crate) mod ble_lock_native;` 注册（模块路径不是 `ble_lock::native`）并在 setup 安装、唤醒重建、`shutdown_runtime_services` 幂等清理；`src-tauri/Info.plist` 新增 `NSBluetoothAlwaysUsageDescription`，`StorageConfig`/同步/Entitlements/capabilities 不变。原因与取舍见 .ai-workflow/notes/implemented/feature/2026-10-10-ble-lock-tool.md",
+      "entries": [
+        "src-tauri/src/ble_lock.rs"
+      ],
+      "related_files": [
+        "src-tauri/src/ble_lock/config.rs",
+        "src-tauri/src/ble_lock/state.rs",
+        "src-tauri/src/ble_lock/central.rs",
+        "src-tauri/src/ble_lock/native.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/app_runtime/run_app.rs",
+        "src-tauri/src/app_runtime/shortcuts_tray.rs",
+        "src-tauri/Info.plist"
+      ],
+      "tests": [
+        "src-tauri/src/ble_lock/tests.rs",
+        "src-tauri/src/ble_lock/tests/native.rs"
+      ],
+      "symbols": [
+        {
+          "file": "src-tauri/src/ble_lock/config.rs",
+          "name": "BleLockConfig",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/config.rs",
+          "name": "BleLockConfigStore",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/config.rs",
+          "name": "BleLockError",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/config.rs",
+          "name": "BleLockMode",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/config.rs",
+          "name": "BLE_LOCK_CONFIG_SCHEMA_VERSION",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/config.rs",
+          "name": "MIN_RSSI_DBM",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/config.rs",
+          "name": "MAX_RSSI_DBM",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/config.rs",
+          "name": "RSSI_STEP_DBM",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/config.rs",
+          "name": "MIN_LOCK_DELAY_SECS",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/config.rs",
+          "name": "MAX_LOCK_DELAY_SECS",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/config.rs",
+          "name": "MIN_NO_SIGNAL_TIMEOUT_SECS",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/config.rs",
+          "name": "MAX_NO_SIGNAL_TIMEOUT_SECS",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/state.rs",
+          "name": "BleLockMonitor",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/state.rs",
+          "name": "BleLockStatus",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/state.rs",
+          "name": "BleDevice",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/state.rs",
+          "name": "BlePresence",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/state.rs",
+          "name": "BleLockEvent",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/state.rs",
+          "name": "BleLockEffect",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/state.rs",
+          "name": "BleBluetoothState",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/state.rs",
+          "name": "MAX_SMOOTHING_READINGS",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/state.rs",
+          "name": "INVALID_RSSI_SENTINEL",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/central.rs",
+          "name": "BleCentral",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/central.rs",
+          "name": "BleCentralEvent",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/central.rs",
+          "name": "BleBluetoothAuthorization",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "BleLockKeychainProfile",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "BleLockKeychainItem",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "BleLockNativeController",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "BleLockNativeSnapshot",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "BleLockNativeOutcome",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "current_account_name",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "observe_bluetooth_state",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "ble_lock_get_status",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "ble_lock_save_config",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "ble_lock_scan_start",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "ble_lock_scan_stop",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "ble_lock_select_device",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "ble_lock_clear_device",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "ble_lock_set_password",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "ble_lock_delete_password",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "ble_lock_request_accessibility",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "ble_lock_lock_now",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "install",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "shutdown_runtime",
+          "kind": "function",
+          "visibility": "public"
+        }
+      ],
+      "depends_on": [],
+      "read_scope": [
+        "src-tauri/src/ble_lock.rs",
+        "src-tauri/src/ble_lock/config.rs",
+        "src-tauri/src/ble_lock/state.rs",
+        "src-tauri/src/ble_lock/central.rs",
+        "src-tauri/src/ble_lock/native.rs",
+        "src-tauri/src/ble_lock/tests.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/app_runtime/run_app.rs",
+        "src-tauri/src/app_runtime/shortcuts_tray.rs",
+        "src-tauri/Info.plist",
+        "src-tauri/src/ble_lock/tests/native.rs"
       ],
       "relations": [],
       "shared_entry": false

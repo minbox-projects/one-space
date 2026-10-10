@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
+import { invokeMock, bleLockGetStatusMock, resetTauriMocks } from "@/test/mocks/tauri";
 import {
   isAppVisible,
   publishRuntimeStatus,
@@ -26,11 +26,27 @@ function deferred<T>() {
 
 const SSH_SNAPSHOT = { tunnels: [{ id: "tunnel-1", name: "Local tunnel" }] };
 
+/**
+ * The ble-lock fallback pulls a native command, which the platform guard only
+ * permits on macOS. jsdom defaults to a non-macOS platform, so pin macOS for
+ * the suite and restore the original afterwards.
+ */
+const originalPlatform = window.navigator.platform;
+
+function setNavigatorPlatform(platform: string) {
+  Object.defineProperty(window.navigator, "platform", {
+    value: platform,
+    configurable: true,
+  });
+}
+
 beforeEach(() => {
   resetTauriMocks();
+  setNavigatorPlatform("MacIntel");
 });
 
 afterEach(() => {
+  setNavigatorPlatform(originalPlatform);
   act(() => {
     setNativeWindowVisible(true);
   });
@@ -208,5 +224,79 @@ describe("runtimeStatus store", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ble-lock service: the shared store must consume a full backend snapshot with
+// zero follow-up query and coalesce invalid payloads into one fallback pull.
+// The snapshot literal is an independent DTO fixture from the frozen contract.
+// ---------------------------------------------------------------------------
+
+const BLE_LOCK_STATUS = {
+  platform_available: true,
+  bluetooth_state: "powered_on",
+  monitoring: true,
+  scanning: false,
+  selected_device: { id: "uuid-a", name: "Key Fob", rssi: -55 },
+  presence: "near",
+  averaged_rssi: -55,
+  screen_locked: false,
+  password_configured: false,
+  accessibility_trusted: true,
+  config: {
+    schema_version: 1,
+    device_id: "uuid-a",
+    device_name: "Key Fob",
+    mode: "active",
+    unlock_rssi: -60,
+    lock_rssi: null,
+    lock_delay_secs: 10,
+    no_signal_timeout_secs: 30,
+    wake_on_proximity: false,
+    wake_without_unlocking: false,
+    pause_now_playing: false,
+    use_screensaver_to_lock: false,
+    sleep_display: false,
+  },
+  last_error: null,
+};
+
+describe("ble-lock runtime status", () => {
+  it("stores a valid ble-lock snapshot for two subscribers with zero fallback invokes", async () => {
+    const first = renderHook(() =>
+      useRuntimeStatus<typeof BLE_LOCK_STATUS>("ble-lock", { enabled: false }),
+    );
+    const second = renderHook(() =>
+      useRuntimeStatus<typeof BLE_LOCK_STATUS>("ble-lock", { enabled: false }),
+    );
+    invokeMock.mockClear();
+
+    act(() => {
+      publishRuntimeStatus("ble-lock", BLE_LOCK_STATUS);
+    });
+
+    expect(first.result.current.data).toEqual(BLE_LOCK_STATUS);
+    expect(second.result.current.data).toEqual(BLE_LOCK_STATUS);
+    expect(invokeCountFor("ble_lock_get_status")).toBe(0);
+  });
+
+  it("coalesces invalid ble-lock payloads into exactly one ble_lock_get_status fallback", async () => {
+    bleLockGetStatusMock.mockResolvedValue(BLE_LOCK_STATUS);
+    renderHook(() => useRuntimeStatus("ble-lock", { enabled: false }));
+    renderHook(() => useRuntimeStatus("ble-lock", { enabled: false }));
+    invokeMock.mockClear();
+
+    act(() => {
+      publishRuntimeStatus("ble-lock", undefined);
+      publishRuntimeStatus("ble-lock", { unexpected: true });
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(invokeCountFor("ble_lock_get_status")).toBe(1);
   });
 });
