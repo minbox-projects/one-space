@@ -481,11 +481,60 @@ pub struct ProviderTemplate {
     pub icon: Option<String>,
 }
 
+/// Drop one closed strategy field from a persisted template object unless it
+/// holds a value this build recognizes. Removing it lets the field's
+/// `#[serde(default)]` supply the documented default (`generic`/`none`/
+/// `generic`), so a missing, `null` or unknown stored value never fails the
+/// whole configuration while a future known value still round-trips.
+fn normalize_persisted_template_strategy(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) {
+    let known = object.get(field).is_some_and(|value| match field {
+        "sync_strategy" => serde_json::from_value::<SyncStrategy>(value.clone()).is_ok(),
+        "quota_strategy" => serde_json::from_value::<QuotaStrategy>(value.clone()).is_ok(),
+        "error_strategy" => serde_json::from_value::<ErrorStrategy>(value.clone()).is_ok(),
+        _ => false,
+    });
+    if !known {
+        object.remove(field);
+    }
+}
+
+/// Tolerant read of a persisted [`ProviderTemplate`] nested in
+/// [`ProviderTemplateState`]. The strict `ProviderTemplate` `Deserialize`
+/// remains the new-save boundary; only the persisted wrapping state normalizes
+/// the three closed strategy fields, so a configuration written by another
+/// build with a not-yet-known strategy still loads as a whole.
+fn deserialize_persisted_provider_template<'de, D>(
+    deserializer: D,
+) -> Result<Option<ProviderTemplate>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(mut value) = raw else {
+        return Ok(None);
+    };
+    if let serde_json::Value::Object(object) = &mut value {
+        normalize_persisted_template_strategy(object, "sync_strategy");
+        normalize_persisted_template_strategy(object, "quota_strategy");
+        normalize_persisted_template_strategy(object, "error_strategy");
+    }
+    serde_json::from_value(value)
+        .map(Some)
+        .map_err(|error| <D::Error as serde::de::Error>::custom(error))
+}
+
 /// Persisted template state: the last parsed snapshot plus sync metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderTemplateState {
     pub template_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_persisted_provider_template"
+    )]
     pub template: Option<ProviderTemplate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub synced_at: Option<u64>,

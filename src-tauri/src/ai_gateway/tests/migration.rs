@@ -1445,6 +1445,125 @@ fn deleted_zen_template_state_maps_deterministically_to_go() {
     assert_eq!(provider.template_id.as_deref(), Some("opencode-go"));
 }
 
+/// A schema-2 configuration that already carries both an `opencode-zen` and an
+/// `opencode-go` template state, with one provider bound to `opencode-zen`.
+fn zen_and_go_duplicate_state_fixture() -> Value {
+    json!({
+        "schema_version": 2,
+        "enabled": true,
+        "providers": [{
+            "id": "zen-bound",
+            "name": "Dual Bound",
+            "base_url": "https://opencode.ai/zen/v1",
+            "keys": [super::pool_key("key-default", "Default", "sk-dual", true)],
+            "protocol": "chat_completions",
+            "template_id": "opencode-zen",
+            "mappings": []
+        }],
+        "provider_templates": [
+            {
+                "template_id": "opencode-zen",
+                "synced_at": 111,
+                "source": "https://opencode.ai/zen/v1/models",
+                "template": {
+                    "id": "opencode-zen",
+                    "name": "OpenCode Zen",
+                    "base_url": "https://opencode.ai/zen/v1",
+                    "protocol": "chat_completions",
+                    "source": "https://opencode.ai/zen/v1/models",
+                    "models_url": "https://opencode.ai/zen/v1/models",
+                    "models": []
+                }
+            },
+            {
+                "template_id": "opencode-go",
+                "synced_at": 222,
+                "source": "https://opencode.ai/zen/go/v1/models",
+                "template": {
+                    "id": "opencode-go",
+                    "name": "OpenCode Go",
+                    "base_url": "https://opencode.ai/zen/go/v1",
+                    "protocol": "chat_completions",
+                    "source": "https://opencode.ai/zen/go/v1/models",
+                    "models_url": "https://opencode.ai/zen/go/v1/models",
+                    "models": []
+                }
+            }
+        ]
+    })
+}
+
+/// AC-020: when a schema-2 config already carries an `opencode-go` state, the
+/// migration drops the stale `opencode-zen` duplicate instead of producing two
+/// Go identities, rebinds the Zen-bound provider to Go with the Go base URL, and
+/// a second read is byte-stable.
+#[test]
+fn existing_go_state_drops_stale_zen_duplicate_and_rebinds_provider() {
+    let _home = isolated_temp_home("migration-zen-duplicate-go");
+    write_encrypted_config(&zen_and_go_duplicate_state_fixture());
+
+    let loaded = read_config().expect("the schema-2 duplicate-state config must migrate and read");
+
+    let go_state_count = loaded
+        .provider_templates
+        .iter()
+        .filter(|state| state.template_id == "opencode-go")
+        .count();
+    assert_eq!(
+        go_state_count, 1,
+        "exactly one opencode-go state must remain after the migration"
+    );
+    assert!(
+        !loaded
+            .provider_templates
+            .iter()
+            .any(|state| state.template_id == "opencode-zen"),
+        "the stale Zen duplicate must be dropped"
+    );
+
+    let provider = loaded
+        .providers
+        .iter()
+        .find(|provider| provider.id == "zen-bound")
+        .expect("the bound provider must be preserved");
+    assert_eq!(
+        provider.template_id.as_deref(),
+        Some("opencode-go"),
+        "the Zen-bound provider must be rebound to Go"
+    );
+    assert_eq!(
+        provider.base_url, "https://opencode.ai/zen/go/v1",
+        "the rebound provider must use the Go base URL"
+    );
+
+    // The rewrite persists the current version with exactly one Go state.
+    let on_disk = decrypted_config_json();
+    assert_eq!(
+        on_disk.get("schema_version").and_then(Value::as_u64),
+        Some(u64::from(ZEN_TO_GO_SCHEMA_VERSION)),
+        "the migration must stamp schema version 3: {on_disk}"
+    );
+    let on_disk_go_states = on_disk["provider_templates"]
+        .as_array()
+        .expect("provider_templates array")
+        .iter()
+        .filter(|state| state["template_id"] == json!("opencode-go"))
+        .count();
+    assert_eq!(
+        on_disk_go_states, 1,
+        "the persisted configuration must carry exactly one Go state: {on_disk}"
+    );
+
+    // Idempotent: the second read writes nothing.
+    let bytes_after_first = raw_config_bytes();
+    let _second = read_config().expect("the second read must succeed");
+    assert_eq!(
+        raw_config_bytes(),
+        bytes_after_first,
+        "a second read must not rewrite the migrated bytes"
+    );
+}
+
 /// AC-021: a failed migration rewrite returns the migrated in-memory view, keeps
 /// the previous complete bytes on disk and completes on a later read.
 #[cfg(unix)]
@@ -1593,6 +1712,135 @@ fn older_config_missing_policy_fields_reads_with_generic_defaults() {
     assert!(
         loaded.providers.iter().any(|provider| provider.id == "p"),
         "unrelated supported data must remain readable"
+    );
+}
+
+/// A schema-3 configuration whose `provider_templates` mixes one template with
+/// unknown strategy values and one with valid values, plus unrelated provider
+/// and price data that must all survive the tolerant read.
+fn unknown_strategy_config_fixture() -> Value {
+    json!({
+        "schema_version": 3,
+        "enabled": true,
+        "providers": [{
+            "id": "p-keep",
+            "name": "Keep Provider",
+            "base_url": "https://keep.example.com/v1",
+            "keys": [super::pool_key("key-default", "Default", "sk-keep", true)],
+            "protocol": "chat_completions",
+            "mappings": [{"local_model": "m", "upstream_model": "m", "enabled": true}]
+        }],
+        "model_prices": [{"provider_id": "p-keep", "upstream_model": "m", "input": 1.0}],
+        "provider_templates": [
+            {
+                "template_id": "future-policy",
+                "synced_at": null,
+                "template": {
+                    "id": "future-policy",
+                    "name": "Future Policy",
+                    "base_url": "https://future.example.com/v1",
+                    "protocol": "chat_completions",
+                    "sync_strategy": "future_mode",
+                    "quota_strategy": "future_monitor",
+                    "error_strategy": "future_policy",
+                    "source": "",
+                    "models_url": null,
+                    "models": []
+                }
+            },
+            {
+                "template_id": "valid-policy",
+                "synced_at": null,
+                "template": {
+                    "id": "valid-policy",
+                    "name": "Valid Policy",
+                    "base_url": "https://valid.example.com/v1",
+                    "protocol": "chat_completions",
+                    "sync_strategy": "opencode_go",
+                    "quota_strategy": "commandcode",
+                    "error_strategy": "generic",
+                    "source": "",
+                    "models_url": null,
+                    "models": []
+                }
+            }
+        ]
+    })
+}
+
+/// REQ-001 / AC-001: a persisted configuration whose template carries unknown
+/// strategy values must still read as a whole; the unknown values resolve to
+/// `generic`/`none`/`generic` while a sibling template's valid values survive
+/// and unrelated configuration data is untouched.
+#[test]
+fn persisted_config_with_unknown_strategy_values_reads_with_generic_defaults() {
+    let _home = isolated_temp_home("migration-unknown-strategy");
+    write_encrypted_config(&unknown_strategy_config_fixture());
+
+    let loaded = read_config().expect(
+        "a persisted config whose template carries unknown strategy values must still read",
+    );
+
+    let template_for = |id: &str| {
+        loaded
+            .provider_templates
+            .iter()
+            .find(|state| state.template_id == id)
+            .and_then(|state| state.template.clone())
+            .unwrap_or_else(|| panic!("the {id} template state must survive"))
+    };
+
+    let unknown = template_for("future-policy");
+    assert_eq!(
+        unknown.sync_strategy,
+        crate::ai_gateway::SyncStrategy::Generic,
+        "an unknown sync strategy must resolve to generic"
+    );
+    assert_eq!(
+        unknown.quota_strategy,
+        crate::ai_gateway::QuotaStrategy::NoQuota,
+        "an unknown quota strategy must resolve to none"
+    );
+    assert_eq!(
+        unknown.error_strategy,
+        crate::ai_gateway::ErrorStrategy::Generic,
+        "an unknown error strategy must resolve to generic"
+    );
+
+    let valid = template_for("valid-policy");
+    assert_eq!(
+        valid.sync_strategy,
+        crate::ai_gateway::SyncStrategy::OpencodeGo,
+        "a valid sync strategy must survive the tolerant read"
+    );
+    assert_eq!(
+        valid.quota_strategy,
+        crate::ai_gateway::QuotaStrategy::Commandcode,
+        "a valid quota strategy must survive the tolerant read"
+    );
+    assert_eq!(
+        valid.error_strategy,
+        crate::ai_gateway::ErrorStrategy::Generic,
+        "a valid error strategy must survive the tolerant read"
+    );
+
+    let provider = loaded
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p-keep")
+        .expect("unrelated provider data must survive the tolerant read");
+    assert_eq!(provider.name, "Keep Provider");
+    assert_eq!(provider.base_url, "https://keep.example.com/v1");
+    assert!(
+        loaded.model_prices.iter().any(|row| {
+            row.provider_id.as_deref() == Some("p-keep") && row.upstream_model == "m"
+        }),
+        "unrelated price rows must survive the tolerant read"
+    );
+    assert_eq!(
+        loaded.schema_version,
+        crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION,
+        "the stored current schema version must be preserved"
     );
 }
 

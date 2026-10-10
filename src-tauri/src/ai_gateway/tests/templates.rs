@@ -4627,6 +4627,108 @@ fn go_sync_accepts_only_declared_chat_and_responses_ids() {
         !mapping_ids.contains(&"go-no-metadata"),
         "an id without declared metadata must not inherit the Chat default"
     );
+
+    // The derived mappings must resolve the declared protocol (not only the id):
+    // the declared Chat model stays on the provider's Chat protocol while the
+    // declared Responses model carries an explicit Responses protocol.
+    let chat_mapping = provider
+        .mappings
+        .iter()
+        .find(|mapping| mapping.upstream_model == "go-chat-a")
+        .expect("the declared Chat mapping must be derived");
+    assert_eq!(
+        chat_mapping.effective_protocol(provider.protocol),
+        UpstreamProtocol::ChatCompletions,
+        "the declared Chat mapping must resolve to Chat Completions"
+    );
+    let responses_mapping = provider
+        .mappings
+        .iter()
+        .find(|mapping| mapping.upstream_model == "go-resp-b")
+        .expect("the declared Responses mapping must be derived");
+    assert_eq!(
+        responses_mapping.protocol,
+        Some(UpstreamProtocol::Responses),
+        "the declared Responses mapping must carry an explicit Responses protocol"
+    );
+    assert_eq!(
+        responses_mapping.effective_protocol(provider.protocol),
+        UpstreamProtocol::Responses,
+        "the declared Responses mapping must resolve to Responses"
+    );
+}
+
+/// AC-007 / AC-008: a Go source entry that explicitly declares only the
+/// `/responses` endpoint is accepted with an explicit Responses protocol even
+/// though the template never declared it, while a `/messages`-only entry is
+/// dropped and never guessed as Chat Completions.
+#[test]
+fn go_sync_accepts_endpoint_declared_responses_and_drops_messages_only() {
+    let mut config = go_bound_config(&[("go-chat-a", "chat_completions")]);
+    let body = json!({"data": [
+        {"id": "go-chat-a", "name": "Go Chat A"},
+        {"id": "endpoint-resp", "name": "Endpoint Responses", "supported_endpoints": ["/responses"]},
+        {"id": "messages-only", "name": "Messages Only", "supported_endpoints": ["/messages"]}
+    ]});
+
+    let (view, _notices) =
+        apply_template_sync_from_body(&mut config, "opencode-go", &body.to_string())
+            .expect("the endpoint-declared Go sync must succeed");
+
+    let ids: Vec<&str> = view
+        .template
+        .models
+        .iter()
+        .map(|model| model.upstream_model.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["go-chat-a", "endpoint-resp"],
+        "an endpoint-declared Responses id may enter the Go set while a Messages-only id is dropped"
+    );
+    let endpoint_resp = view
+        .template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "endpoint-resp")
+        .expect("the endpoint-declared Responses id must be present");
+    assert_eq!(
+        endpoint_resp.protocol,
+        Some(UpstreamProtocol::Responses),
+        "an endpoint-declared Responses id must carry an explicit Responses protocol"
+    );
+    assert!(
+        !ids.contains(&"messages-only"),
+        "a Messages-only id must never enter the Go model set"
+    );
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == "go-p")
+        .expect("the bound provider must exist");
+    let derived_resp = provider
+        .mappings
+        .iter()
+        .find(|mapping| mapping.upstream_model == "endpoint-resp")
+        .expect("the endpoint-declared Responses id must be derived as a mapping");
+    assert_eq!(
+        derived_resp.protocol,
+        Some(UpstreamProtocol::Responses),
+        "the derived endpoint-declared mapping must carry the Responses protocol"
+    );
+    assert_eq!(
+        derived_resp.effective_protocol(provider.protocol),
+        UpstreamProtocol::Responses,
+        "the derived endpoint-declared mapping must resolve to Responses"
+    );
+    assert!(
+        provider
+            .mappings
+            .iter()
+            .all(|mapping| mapping.upstream_model != "messages-only"),
+        "a Messages-only id must never be guessed as Chat and derived as a mapping"
+    );
 }
 
 /// AC-011: a Go sync whose source carries no compatible declared model is fatal,
