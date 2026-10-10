@@ -1,3 +1,4 @@
+#[cfg(test)]
 use super::AiProvider;
 use std::fs::{self, File};
 use std::io::Write;
@@ -18,6 +19,9 @@ pub(in crate::ai_env) fn atomic_write(path: &Path, content: &str) -> Result<(), 
     Ok(())
 }
 
+/// Test-only; production CLI configuration is written by the app-store
+/// provider projection.
+#[cfg(test)]
 pub fn remove_ai_environment(provider: AiProvider) -> Result<(), String> {
     if provider.tool != "opencode" {
         return Ok(());
@@ -47,6 +51,9 @@ pub fn remove_ai_environment(provider: AiProvider) -> Result<(), String> {
     Ok(())
 }
 
+/// Test-only; production CLI configuration is written by the app-store
+/// provider projection.
+#[cfg(test)]
 pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     if provider.tool == "opencode" && provider.is_enabled == Some(false) {

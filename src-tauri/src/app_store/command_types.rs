@@ -35,6 +35,8 @@ pub(crate) fn sessions_cache_stats() -> SessionsCacheStats {
     }
 }
 
+/// Test-only shape asserted by the app-store favorites tests.
+#[cfg(test)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LegacyProvidersView {
     pub(in crate::app_store) active_claude: Option<String>,

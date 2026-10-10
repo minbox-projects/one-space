@@ -1,8 +1,10 @@
 use super::{
     generate_provider_uuid, is_managed_tool, is_placeholder_string,
     normalize_service_provider_record, service_provider_to_value, CryptoService, EncryptedBlob,
-    LegacyProvidersView, ServiceProviderRecord, ServiceProvidersState, SyncedDeviceProviderLite,
+    ServiceProviderRecord, ServiceProvidersState, SyncedDeviceProviderLite,
 };
+#[cfg(test)]
+use super::LegacyProvidersView;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self};
@@ -48,6 +50,8 @@ pub(in crate::app_store) fn service_provider_to_legacy(sp: &ServiceProviderRecor
     Value::Object(map)
 }
 
+/// Test-only legacy snapshot projection used by the app-store tests.
+#[cfg(test)]
 pub(in crate::app_store) fn service_providers_to_legacy_view(
     state: &ServiceProvidersState,
 ) -> LegacyProvidersView {

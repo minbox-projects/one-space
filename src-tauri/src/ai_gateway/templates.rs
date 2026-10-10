@@ -915,8 +915,10 @@ pub(in crate::ai_gateway) fn apply_template_sync_with_notices(
 /// Apply one template sync with injectable fetch and persistence seams, dropping
 /// the retirement notices.
 ///
-/// This is the backwards-compatible entry point; [`apply_template_sync_with_notices`]
-/// carries the same behavior plus the notices.
+/// Test-only wrapper; production syncs go through
+/// [`apply_template_sync_with_notices`], which carries the same behavior plus
+/// the notices.
+#[cfg(test)]
 pub fn apply_template_sync_with(
     config: &mut GatewayConfig,
     template_id: &str,

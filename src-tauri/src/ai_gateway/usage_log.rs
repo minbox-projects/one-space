@@ -192,6 +192,10 @@ pub(in crate::ai_gateway) fn normalize_retention_days(days: u32) -> u32 {
 }
 
 /// Cost in US dollars for the four token tiers, prices are per million tokens.
+///
+/// Test-only reference arithmetic; production billing goes through
+/// [`compute_cost_at_time_with_breakdown`].
+#[cfg(test)]
 pub fn compute_cost(price: &ModelPrice, tokens: &UsageTokens) -> f64 {
     (price.input * tokens.input_tokens as f64
         + price.cache_read * tokens.cache_read_tokens as f64
@@ -280,6 +284,10 @@ fn matches_off_peak_days(days: Option<&[u8]>, weekday: u32) -> bool {
 ///
 /// If off-peak pricing configurations are present and `timestamp_ms` falls within an off-peak
 /// window in UTC+8, the first matching off-peak pricing tier is used; otherwise, the standard pricing tier is used.
+///
+/// Test-only wrapper; production billing goes through
+/// [`compute_cost_at_time_with_breakdown`].
+#[cfg(test)]
 pub fn compute_cost_at_time(
     price: &ModelPrice,
     tokens: &UsageTokens,
@@ -414,7 +422,7 @@ impl UsageAccounting {
 ///   wins over `prompt_tokens`) with the cached subset nested under
 ///   `prompt_tokens_details` / `input_tokens_details`. The stored ordinary
 ///   tier is the checked remainder `reported - read - write`; each tier is
-///   billed exactly once by `total()` and `compute_cost`.
+///   billed exactly once by `total()` and `compute_cost_at_time_with_breakdown`.
 /// - Anthropic-style split has no nested cache details: the top-level input
 ///   is already ordinary and the flat `cache_read_input_tokens` /
 ///   `cache_creation_input_tokens` tiers are independent.
