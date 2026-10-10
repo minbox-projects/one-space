@@ -14,8 +14,8 @@
 //! observed ordinary-session lock, Accessibility, display, one-shot CGEvent
 //! injection and explicit MediaRemote control) and the process-owned runtime with
 //! its 10 IPC commands and two events — are the top-level items of this file,
-//! above the delegated `#[cfg(test)]` behavior tests. The file is compiled into
-//! both product and test builds.
+//! with delegated behavior tests loaded from `tests/native.rs` in test builds.
+//! The product code is compiled into both product and test builds.
 //!
 //! The controller types are resolved from this file's own module boundary
 //! (`super::`), not a fixed `crate::ble_lock::native` path, because the native
@@ -344,8 +344,11 @@ impl<P: BleLockPlatform> BleLockNativeController<P> {
         self.last_error = Some(BleLockError::new("system_sleep", None));
     }
 
-    /// Record an observed system wake: rebuild intent until a fresh away/lost.
-    pub fn note_system_wake(&mut self) {
+    /// Record an observed system wake, permitting a rebuild only while running.
+    pub fn note_system_wake(&mut self) -> bool {
+        if self.stopped {
+            return false;
+        }
         self.system_sleeping = false;
         self.unlock_armed = false;
         self.injection_done_this_episode = true;
@@ -358,6 +361,35 @@ impl<P: BleLockPlatform> BleLockNativeController<P> {
         {
             self.last_error = None;
         }
+        true
+    }
+
+    /// Report radio capability failures and clear only radio errors on recovery.
+    pub fn observe_bluetooth_state(&mut self, state: BleBluetoothState) {
+        match state {
+            BleBluetoothState::Unsupported => {
+                self.last_error = Some(BleLockError::new("bluetooth_unsupported", None));
+            }
+            BleBluetoothState::PoweredOff => {
+                self.last_error = Some(BleLockError::bluetooth_powered_off());
+            }
+            BleBluetoothState::Unauthorized => {
+                self.last_error = Some(BleLockError::bluetooth_unauthorized());
+            }
+            BleBluetoothState::PoweredOn => {
+                if self.last_error.as_ref().is_some_and(|error| {
+                    matches!(
+                        error.code.as_str(),
+                        "bluetooth_unsupported"
+                            | "bluetooth_powered_off"
+                            | "bluetooth_unauthorized"
+                    )
+                }) {
+                    self.last_error = None;
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Stop the controller. Idempotent; issues no further native actions.
@@ -367,15 +399,28 @@ impl<P: BleLockPlatform> BleLockNativeController<P> {
 
     /// Snapshot the current controller state (never contains a password).
     pub fn snapshot(&self) -> BleLockNativeSnapshot {
+        // Query once per snapshot: a read fault is not the same as an absent
+        // password. Never propagate the platform's error detail or credentials.
+        let (password_configured, last_error) =
+            match self.platform.keychain_read(&self.keychain_item()) {
+                Ok(password) => (
+                    password.is_some(),
+                    self.last_error
+                        .as_ref()
+                        .filter(|error| error.code != "keychain_unavailable")
+                        .cloned(),
+                ),
+                Err(_) => (false, Some(BleLockError::new("keychain_unavailable", None))),
+            };
         BleLockNativeSnapshot {
             stopped: self.stopped,
             monitoring: self.config.device_id.is_some(),
             screen_locked: self.platform.is_session_locked(),
-            password_configured: self.password_configured(),
+            password_configured,
             accessibility_trusted: self.platform.accessibility_trusted(),
             system_sleeping: self.system_sleeping,
             media_paused_this_cycle: self.media_paused_this_cycle,
-            last_error: self.last_error.clone(),
+            last_error,
         }
     }
 
@@ -541,7 +586,6 @@ impl<P: BleLockPlatform> BleLockNativeController<P> {
 mod mac {
     use super::{BleLockKeychainItem, BleLockPlatform};
     use crate::ble_lock::BleLockError;
-    use std::ffi::CStr;
     use std::os::raw::{c_char, c_int, c_void};
     use std::ptr;
     use std::sync::OnceLock;
@@ -610,25 +654,11 @@ mod mac {
         fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
         fn dispatch_queue_create(label: *const c_char, attr: *const c_void) -> *mut c_void;
         fn getuid() -> u32;
-        fn getpwuid_r(
-            uid: u32,
-            pwd: *mut Passwd,
-            buf: *mut c_char,
-            buflen: usize,
-            result: *mut *mut Passwd,
-        ) -> c_int;
     }
 
-    /// Minimal `struct passwd` prefix sufficient for `pw_name`.
-    #[repr(C)]
-    struct Passwd {
-        pw_name: *mut c_char,
-        pw_passwd: *mut c_char,
-        pw_uid: u32,
-        pw_gid: u32,
-        pw_gecos: *mut c_char,
-        pw_dir: *mut c_char,
-        pw_shell: *mut c_char,
+    #[link(name = "Foundation", kind = "framework")]
+    extern "C" {
+        fn NSUserName() -> *const objc2_foundation::NSString;
     }
 
     #[link(name = "Security", kind = "framework")]
@@ -952,30 +982,18 @@ mod mac {
     }
 
     /// The real OS user account name for this process (never `$USER`).
-    fn current_user_account_name() -> String {
-        unsafe {
-            let uid = getuid();
-            let mut passwd: Passwd = std::mem::zeroed();
-            let mut buffer = [0 as c_char; 1024];
-            let mut result: *mut Passwd = ptr::null_mut();
-            if getpwuid_r(
-                uid,
-                &mut passwd,
-                buffer.as_mut_ptr(),
-                buffer.len(),
-                &mut result,
-            ) == 0
-                && !result.is_null()
-                && !passwd.pw_name.is_null()
-            {
-                if let Ok(text) = CStr::from_ptr(passwd.pw_name).to_str() {
-                    if !text.is_empty() {
-                        return text.to_string();
-                    }
-                }
+    fn current_user_account_name() -> Result<String, BleLockError> {
+        objc2::rc::autoreleasepool(|_| {
+            // Foundation returns an NSString, not a caller-sized passwd struct.
+            // Copy its checked non-null result before the autorelease pool ends.
+            let account = unsafe { NSUserName().as_ref() }.ok_or_else(keychain_error)?;
+            let name = account.to_string();
+            if name.is_empty() {
+                Err(keychain_error())
+            } else {
+                Ok(name)
             }
-            "unknown".to_string()
-        }
+        })
     }
 
     /// Observed lock of the *current ordinary logged-in console* session.
@@ -1177,15 +1195,27 @@ mod mac {
     #[derive(Clone, Copy, Debug)]
     pub struct MacPlatform;
 
+    impl MacPlatform {
+        /// Query the current OS account without a handwritten Darwin ABI.
+        pub fn current_account_name() -> Result<String, BleLockError> {
+            current_user_account_name()
+        }
+    }
+
     impl BleLockPlatform for MacPlatform {
         fn current_user_account(&self) -> String {
-            current_user_account_name()
+            // The trait exposes a String; an unavailable name produces no usable
+            // item account, and the item operations below return a stable error.
+            Self::current_account_name().unwrap_or_default()
         }
 
         fn keychain_read(
             &self,
             item: &BleLockKeychainItem,
         ) -> Result<Option<String>, BleLockError> {
+            if item.account.is_empty() {
+                return Err(keychain_error());
+            }
             keychain_read(item)
         }
 
@@ -1194,10 +1224,16 @@ mod mac {
             item: &BleLockKeychainItem,
             password: &str,
         ) -> Result<(), BleLockError> {
+            if item.account.is_empty() {
+                return Err(keychain_error());
+            }
             keychain_write(item, password)
         }
 
         fn keychain_delete(&self, item: &BleLockKeychainItem) -> Result<(), BleLockError> {
+            if item.account.is_empty() {
+                return Err(keychain_error());
+            }
             keychain_delete(item)
         }
 
@@ -1301,12 +1337,15 @@ mod mac {
         BleLockError::platform_unavailable()
     }
 
+    impl MacPlatform {
+        pub fn current_account_name() -> Result<String, BleLockError> {
+            Err(unavailable())
+        }
+    }
+
     impl BleLockPlatform for MacPlatform {
         fn current_user_account(&self) -> String {
-            std::env::var("USER")
-                .ok()
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "unknown".to_string())
+            Self::current_account_name().unwrap_or_default()
         }
 
         fn keychain_read(
@@ -1577,7 +1616,11 @@ fn on_system_wake() {
             Some(guard) => guard,
             None => return,
         };
-        guard.controller.note_system_wake();
+        // A stopped controller must never rebuild monitor/device state, so a
+        // queued wake after exit cannot resurrect the runtime (REQ-011/R4).
+        if !guard.controller.note_system_wake() {
+            return;
+        }
         // Drop the old manager, then rebuild monitor history and selection so no
         // pre-sleep reading, timer, arming or callback can survive.
         let previous_rssi = guard
@@ -1706,36 +1749,15 @@ fn handle_central_event(app: &AppHandle, event: BleCentralEvent) {
         match event {
             BleCentralEvent::State(state) => {
                 guard.monitor.set_bluetooth_state(state);
+                // One radio-feedback adapter owns the stable error taxonomy
+                // (including the `bluetooth_unsupported` code the old inline
+                // match missed) and clears only stale radio errors on recovery.
+                guard.controller.observe_bluetooth_state(state);
                 match state {
-                    BleBluetoothState::PoweredOff => {
-                        guard
-                            .monitor
-                            .set_last_error(BleLockError::bluetooth_powered_off());
-                        guard.monitor.set_scanning(false);
-                    }
-                    BleBluetoothState::Unauthorized => {
-                        guard
-                            .monitor
-                            .set_last_error(BleLockError::bluetooth_unauthorized());
-                    }
+                    BleBluetoothState::PoweredOff => guard.monitor.set_scanning(false),
                     BleBluetoothState::PoweredOn => {
-                        // Recovery: drop the stale power/auth error and re-apply
-                        // the desired hardware plan now that the radio is ready.
-                        let stale = guard
-                            .monitor
-                            .status()
-                            .last_error
-                            .as_ref()
-                            .map(|error| {
-                                matches!(
-                                    error.code.as_str(),
-                                    "bluetooth_powered_off" | "bluetooth_unauthorized"
-                                )
-                            })
-                            .unwrap_or(false);
-                        if stale {
-                            guard.monitor.clear_last_error();
-                        }
+                        // Re-apply the desired hardware plan now that the radio
+                        // is ready; the adapter already cleared a stale error.
                         reapply = true;
                     }
                     _ => {}
@@ -1747,9 +1769,11 @@ fn handle_central_event(app: &AppHandle, event: BleCentralEvent) {
                     authorization,
                     BleBluetoothAuthorization::Denied | BleBluetoothAuthorization::Restricted
                 ) {
+                    // Route the denied/restricted case through the same adapter
+                    // so a later PoweredOn recovery clears it consistently.
                     guard
-                        .monitor
-                        .set_last_error(BleLockError::bluetooth_unauthorized());
+                        .controller
+                        .observe_bluetooth_state(BleBluetoothState::Unauthorized);
                 }
                 guard.last_status = None;
             }
@@ -1907,6 +1931,16 @@ fn dispatch_sync_central(
 ) {
     let handler_app = app.clone();
     let _ = app.run_on_main_thread(move || {
+        // After shutdown the bridge must stay released: a queued dispatch can
+        // never allocate and resurrect a central (REQ-011/R4). The runtime mutex
+        // is taken only for this boolean check and is never held across the
+        // main-thread dispatch that follows.
+        let stopped = runtime_guard()
+            .map(|guard| guard.controller.snapshot().stopped)
+            .unwrap_or(true);
+        if stopped {
+            return;
+        }
         MAIN_CENTRAL.with(|cell| {
             if rebuild {
                 if let Some(central) = cell.borrow_mut().take() {
@@ -2224,1159 +2258,5 @@ pub fn ble_lock_lock_now() -> Result<BleLockStatus, BleLockError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::rc::Rc;
-
-    use crate::ble_lock::{BleLockConfig, BleLockError, BlePresence};
-    // Resolve the controller types from this file's own module boundary so the
-    // single registration path stays the `#[path]` include in
-    // `app_runtime/run_app.rs` (`pub(crate) mod ble_lock_native;`). The native
-    // Rust module path is not frozen and no `ble_lock.rs` change is required.
-    use super::{
-        BleLockKeychainItem, BleLockKeychainProfile, BleLockNativeController, BleLockNativeOutcome,
-        BleLockPlatform,
-    };
-
-    // -----------------------------------------------------------------------
-    // Independent fake OS seam
-    // -----------------------------------------------------------------------
-
-    /// Every OS-level command the controller is observed to issue.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    enum OsCommand {
-        LockSession,
-        LaunchScreensaver,
-        SleepDisplay,
-        WakeDisplay,
-        InjectPassword(String),
-        MediaPause,
-        MediaPlay,
-        KeychainWrite {
-            service: String,
-            account: String,
-            synchronizable: bool,
-        },
-        KeychainDelete {
-            service: String,
-            account: String,
-        },
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum MediaState {
-        Playing,
-        NotPlaying,
-        Unavailable,
-    }
-
-    #[derive(Clone, Debug)]
-    struct FakeOs {
-        session_locked: bool,
-        display_asleep: bool,
-        accessibility_trusted: bool,
-        keychain_available: bool,
-        keychain: HashMap<(String, String), String>,
-        media: MediaState,
-        /// Whether an injected password is accepted (the real login password).
-        inject_succeeds: bool,
-        /// Whether a lock/screensaver request is observed to actually lock.
-        lock_observes_locked: bool,
-        account: String,
-        commands: Vec<OsCommand>,
-    }
-
-    /// Shared-handle fake: the controller owns a clone, the test keeps a clone to
-    /// configure the observed OS state and inspect the captured command log.
-    #[derive(Clone)]
-    struct FakePlatform {
-        os: Rc<RefCell<FakeOs>>,
-    }
-
-    impl FakePlatform {
-        fn new() -> Self {
-            Self {
-                os: Rc::new(RefCell::new(FakeOs {
-                    session_locked: false,
-                    display_asleep: false,
-                    accessibility_trusted: true,
-                    keychain_available: true,
-                    keychain: HashMap::new(),
-                    media: MediaState::NotPlaying,
-                    inject_succeeds: true,
-                    lock_observes_locked: true,
-                    account: "testuser".to_string(),
-                    commands: Vec::new(),
-                })),
-            }
-        }
-
-        fn configure(&self, change: impl FnOnce(&mut FakeOs)) {
-            change(&mut self.os.borrow_mut());
-        }
-
-        fn commands(&self) -> Vec<OsCommand> {
-            self.os.borrow().commands.clone()
-        }
-
-        fn command_count(&self, predicate: impl Fn(&OsCommand) -> bool) -> usize {
-            self.os.borrow().commands.iter().filter(|c| predicate(c)).count()
-        }
-    }
-
-    impl BleLockPlatform for FakePlatform {
-        fn current_user_account(&self) -> String {
-            self.os.borrow().account.clone()
-        }
-
-        fn keychain_read(&self, item: &BleLockKeychainItem) -> Result<Option<String>, BleLockError> {
-            let os = self.os.borrow();
-            if !os.keychain_available {
-                return Err(BleLockError::new("keychain_unavailable", None));
-            }
-            Ok(os
-                .keychain
-                .get(&(item.service.clone(), item.account.clone()))
-                .cloned())
-        }
-
-        fn keychain_write(
-            &self,
-            item: &BleLockKeychainItem,
-            password: &str,
-        ) -> Result<(), BleLockError> {
-            let mut os = self.os.borrow_mut();
-            if !os.keychain_available {
-                return Err(BleLockError::new("keychain_unavailable", None));
-            }
-            os.commands.push(OsCommand::KeychainWrite {
-                service: item.service.clone(),
-                account: item.account.clone(),
-                synchronizable: item.synchronizable,
-            });
-            os.keychain
-                .insert((item.service.clone(), item.account.clone()), password.to_string());
-            Ok(())
-        }
-
-        fn keychain_delete(&self, item: &BleLockKeychainItem) -> Result<(), BleLockError> {
-            let mut os = self.os.borrow_mut();
-            if !os.keychain_available {
-                return Err(BleLockError::new("keychain_unavailable", None));
-            }
-            os.commands.push(OsCommand::KeychainDelete {
-                service: item.service.clone(),
-                account: item.account.clone(),
-            });
-            os.keychain
-                .remove(&(item.service.clone(), item.account.clone()));
-            Ok(())
-        }
-
-        fn accessibility_trusted(&self) -> bool {
-            self.os.borrow().accessibility_trusted
-        }
-
-        // Contract: "observed CURRENT ORDINARY user session locked". Production
-        // must return false at loginwindow / pre-boot / any non-current session,
-        // and the controller treats false as ineligible for automatic unlock.
-        fn is_session_locked(&self) -> bool {
-            self.os.borrow().session_locked
-        }
-
-        fn lock_session(&self) -> Result<(), BleLockError> {
-            let mut os = self.os.borrow_mut();
-            os.commands.push(OsCommand::LockSession);
-            if os.lock_observes_locked {
-                os.session_locked = true;
-            }
-            Ok(())
-        }
-
-        fn launch_screensaver(&self) -> Result<(), BleLockError> {
-            let mut os = self.os.borrow_mut();
-            os.commands.push(OsCommand::LaunchScreensaver);
-            if os.lock_observes_locked {
-                os.session_locked = true;
-            }
-            Ok(())
-        }
-
-        fn sleep_display(&self) -> Result<(), BleLockError> {
-            let mut os = self.os.borrow_mut();
-            os.commands.push(OsCommand::SleepDisplay);
-            os.display_asleep = true;
-            Ok(())
-        }
-
-        fn wake_display(&self) -> Result<(), BleLockError> {
-            let mut os = self.os.borrow_mut();
-            os.commands.push(OsCommand::WakeDisplay);
-            os.display_asleep = false;
-            Ok(())
-        }
-
-        fn inject_password(&self, password: &str) -> Result<(), BleLockError> {
-            let mut os = self.os.borrow_mut();
-            os.commands.push(OsCommand::InjectPassword(password.to_string()));
-            if os.inject_succeeds {
-                os.session_locked = false;
-            }
-            Ok(())
-        }
-
-        fn media_playing(&self) -> Result<bool, BleLockError> {
-            match self.os.borrow().media {
-                MediaState::Playing => Ok(true),
-                MediaState::NotPlaying => Ok(false),
-                MediaState::Unavailable => Err(BleLockError::new("media_control_unavailable", None)),
-            }
-        }
-
-        fn media_pause(&self) -> Result<(), BleLockError> {
-            self.os.borrow_mut().commands.push(OsCommand::MediaPause);
-            Ok(())
-        }
-
-        fn media_play(&self) -> Result<(), BleLockError> {
-            self.os.borrow_mut().commands.push(OsCommand::MediaPlay);
-            Ok(())
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Fixtures / helpers
-    // -----------------------------------------------------------------------
-
-    /// Configuration that enables automatic unlock and proximity wake so the
-    /// proximity path is fully exercisable.
-    fn unlock_ready_config() -> BleLockConfig {
-        BleLockConfig {
-            unlock_rssi: Some(-50),
-            lock_rssi: Some(-70),
-            wake_on_proximity: true,
-            ..BleLockConfig::default()
-        }
-    }
-
-    fn injection_count(fake: &FakePlatform) -> usize {
-        fake.command_count(|c| matches!(c, OsCommand::InjectPassword(_)))
-    }
-
-    fn media_pause_count(fake: &FakePlatform) -> usize {
-        fake.command_count(|c| matches!(c, OsCommand::MediaPause))
-    }
-
-    fn media_play_count(fake: &FakePlatform) -> usize {
-        fake.command_count(|c| matches!(c, OsCommand::MediaPlay))
-    }
-
-    fn error_code(outcome: &BleLockNativeOutcome) -> Option<&str> {
-        outcome.last_error.as_ref().map(|error| error.code.as_str())
-    }
-
-    fn make_controller(
-        config: BleLockConfig,
-        profile: BleLockKeychainProfile,
-        fake: &FakePlatform,
-    ) -> BleLockNativeController<FakePlatform> {
-        BleLockNativeController::new(config, profile, fake.clone())
-    }
-
-    // -----------------------------------------------------------------------
-    // REQ-006 / AC-008: password is present/absent only, Keychain profile
-    // separation, current-user non-synchronizable generic password
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn password_state_is_a_boolean_and_the_secret_never_serializes() {
-        let fake = FakePlatform::new();
-        let mut controller = make_controller(
-            BleLockConfig::default(),
-            BleLockKeychainProfile::Release,
-            &fake,
-        );
-
-        assert!(
-            !controller.password_configured(),
-            "a fresh controller reports no configured password"
-        );
-
-        controller
-            .set_password("s3cr3t-login-value")
-            .expect("the password is stored in the Keychain stem");
-        assert!(
-            controller.password_configured(),
-            "storing the password flips only the configured flag"
-        );
-
-        let snapshot = controller.snapshot();
-        let json = serde_json::to_string(&snapshot).expect("snapshot serializes");
-        assert!(
-            !json.contains("s3cr3t-login-value"),
-            "the serializable snapshot must never expose the password"
-        );
-
-        controller
-            .delete_password()
-            .expect("delete the Keychain password");
-        assert!(
-            !controller.password_configured(),
-            "deleting the password clears the configured flag"
-        );
-    }
-
-    #[test]
-    fn release_and_debug_keychain_services_cannot_cross_read() {
-        let fake = FakePlatform::new();
-        let mut release = make_controller(
-            BleLockConfig::default(),
-            BleLockKeychainProfile::Release,
-            &fake,
-        );
-        let mut debug = make_controller(
-            BleLockConfig::default(),
-            BleLockKeychainProfile::Debug,
-            &fake,
-        );
-
-        release.set_password("release-secret").expect("release write");
-        debug.set_password("debug-secret").expect("debug write");
-
-        let services: Vec<String> = fake
-            .commands()
-            .into_iter()
-            .filter_map(|command| match command {
-                OsCommand::KeychainWrite { service, .. } => Some(service),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            services.contains(&"com.onespace.desktop.ble-lock".to_string()),
-            "the Release profile must use the frozen Release service name"
-        );
-        assert!(
-            services.contains(&"com.onespace.desktop.ble-lock.dev".to_string()),
-            "the Debug profile must use the frozen Debug service name"
-        );
-
-        // Isolation: a profile only observes its own generic-password item.
-        let isolated = FakePlatform::new();
-        let mut release = make_controller(
-            BleLockConfig::default(),
-            BleLockKeychainProfile::Release,
-            &isolated,
-        );
-        let debug = make_controller(
-            BleLockConfig::default(),
-            BleLockKeychainProfile::Debug,
-            &isolated,
-        );
-        release.set_password("only-release").expect("release write");
-        assert!(release.password_configured());
-        assert!(
-            !debug.password_configured(),
-            "the Debug service must not read the Release item"
-        );
-    }
-
-    #[test]
-    fn keychain_item_targets_the_current_user_and_is_not_synchronized() {
-        let fake = FakePlatform::new();
-        let controller = make_controller(
-            BleLockConfig::default(),
-            BleLockKeychainProfile::Release,
-            &fake,
-        );
-
-        let item = controller.keychain_item();
-        assert_eq!(
-            item.account,
-            fake.current_user_account(),
-            "the Keychain account must be the current user"
-        );
-        assert!(
-            !item.synchronizable,
-            "the login password must never be synchronizable"
-        );
-
-        let mut controller = controller;
-        controller.set_password("pw").expect("write the password");
-        let writes: Vec<OsCommand> = fake
-            .commands()
-            .into_iter()
-            .filter(|command| matches!(command, OsCommand::KeychainWrite { .. }))
-            .collect();
-        assert_eq!(writes.len(), 1, "exactly one Keychain write is observed");
-        match &writes[0] {
-            OsCommand::KeychainWrite {
-                account,
-                synchronizable,
-                ..
-            } => {
-                assert_eq!(account, &fake.current_user_account());
-                assert!(!*synchronizable);
-            }
-            other => panic!("expected a Keychain write, got {other:?}"),
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // REQ-006 / AC-009: one guarded unlock attempt
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn near_after_away_injects_the_password_exactly_once() {
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.session_locked = true;
-            os.accessibility_trusted = true;
-        });
-        let mut controller = make_controller(unlock_ready_config(), BleLockKeychainProfile::Release, &fake);
-        controller
-            .set_password("login-pw")
-            .expect("configure a password");
-
-        controller.note_away_or_lost();
-        let outcome = controller.note_near();
-
-        assert!(
-            outcome.password_injected,
-            "a fully qualified away/lost -> near transition attempts one injection"
-        );
-        assert_eq!(injection_count(&fake), 1);
-        assert!(
-            fake.commands()
-                .contains(&OsCommand::InjectPassword("login-pw".to_string())),
-            "the configured password is what reaches the OS seam"
-        );
-
-        // Further near readings in the same episode must not retry.
-        controller.note_near();
-        controller.note_near();
-        assert_eq!(
-            injection_count(&fake),
-            1,
-            "at most one injection attempt per qualifying transition"
-        );
-    }
-
-    #[test]
-    fn missing_gates_prevent_injection() {
-        // (a) Keychain unavailable.
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.session_locked = true;
-            os.accessibility_trusted = true;
-        });
-        let mut controller = make_controller(unlock_ready_config(), BleLockKeychainProfile::Release, &fake);
-        controller.set_password("pw").expect("configure");
-        fake.configure(|os| os.keychain_available = false);
-        controller.note_away_or_lost();
-        let outcome = controller.note_near();
-        assert!(!outcome.password_injected);
-        assert_eq!(injection_count(&fake), 0);
-        assert_eq!(error_code(&outcome), Some("keychain_unavailable"));
-
-        // (b) Accessibility not trusted.
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.session_locked = true;
-            os.accessibility_trusted = false;
-        });
-        let mut controller = make_controller(unlock_ready_config(), BleLockKeychainProfile::Release, &fake);
-        controller.set_password("pw").expect("configure");
-        controller.note_away_or_lost();
-        let outcome = controller.note_near();
-        assert!(!outcome.password_injected);
-        assert_eq!(injection_count(&fake), 0);
-
-        // (c) No current ordinary locked session (already unlocked).
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.session_locked = false;
-            os.accessibility_trusted = true;
-        });
-        let mut controller = make_controller(unlock_ready_config(), BleLockKeychainProfile::Release, &fake);
-        controller.set_password("pw").expect("configure");
-        controller.note_away_or_lost();
-        let outcome = controller.note_near();
-        assert!(!outcome.password_injected);
-        assert_eq!(injection_count(&fake), 0);
-
-        // (d) Automatic unlock disabled.
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.session_locked = true;
-            os.accessibility_trusted = true;
-        });
-        let mut config = unlock_ready_config();
-        config.unlock_rssi = None;
-        let mut controller = make_controller(config, BleLockKeychainProfile::Release, &fake);
-        controller.set_password("pw").expect("configure");
-        controller.note_away_or_lost();
-        let outcome = controller.note_near();
-        assert!(!outcome.password_injected);
-        assert_eq!(injection_count(&fake), 0);
-
-        // (e) No password configured.
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.session_locked = true;
-            os.accessibility_trusted = true;
-        });
-        let mut controller = make_controller(unlock_ready_config(), BleLockKeychainProfile::Release, &fake);
-        controller.note_away_or_lost();
-        let outcome = controller.note_near();
-        assert!(!outcome.password_injected);
-        assert_eq!(injection_count(&fake), 0);
-    }
-
-    #[test]
-    fn a_wrong_password_still_locked_is_never_retried_in_the_same_episode() {
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.session_locked = true;
-            os.inject_succeeds = false;
-            os.accessibility_trusted = true;
-        });
-        let mut controller = make_controller(unlock_ready_config(), BleLockKeychainProfile::Release, &fake);
-        controller.set_password("wrong-pw").expect("configure");
-
-        controller.note_away_or_lost();
-        let first = controller.note_near();
-        assert!(first.password_injected);
-        assert!(
-            fake.is_session_locked(),
-            "the wrong password leaves the session observed locked"
-        );
-
-        for _ in 0..5 {
-            controller.note_near();
-        }
-        assert_eq!(
-            injection_count(&fake),
-            1,
-            "an observed locked session must not create a retry loop"
-        );
-
-        // A genuinely new away/lost -> near transition restores eligibility.
-        controller.note_away_or_lost();
-        controller.note_near();
-        assert_eq!(injection_count(&fake), 2);
-    }
-
-    #[test]
-    fn wake_without_unlocking_wakes_the_display_but_never_injects() {
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.session_locked = true;
-            os.display_asleep = true;
-            os.accessibility_trusted = true;
-        });
-        let mut config = unlock_ready_config();
-        config.wake_without_unlocking = true;
-        let mut controller = make_controller(config, BleLockKeychainProfile::Release, &fake);
-        controller.set_password("pw").expect("configure");
-
-        controller.note_away_or_lost();
-        let outcome = controller.note_near();
-
-        assert!(outcome.display_woke, "the display wake is preserved");
-        assert!(
-            !outcome.password_injected,
-            "Wake without unlocking must suppress injection"
-        );
-        assert_eq!(injection_count(&fake), 0);
-        assert!(fake.commands().contains(&OsCommand::WakeDisplay));
-    }
-
-    // -----------------------------------------------------------------------
-    // REQ-007 / AC-010: manual-lock priority
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn lock_now_is_independent_of_proximity() {
-        let fake = FakePlatform::new();
-        let mut controller = make_controller(BleLockConfig::default(), BleLockKeychainProfile::Release, &fake);
-
-        // No device selection or presence has ever been observed.
-        let outcome = controller.lock_now();
-
-        assert!(outcome.lock_requested, "Lock Now never waits for RSSI");
-        assert!(
-            fake.commands().contains(&OsCommand::LockSession),
-            "Lock Now requests an ordinary lock"
-        );
-    }
-
-    #[test]
-    fn a_manual_lock_while_still_near_cannot_unlock_until_away_then_near() {
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.session_locked = false;
-            os.accessibility_trusted = true;
-            os.lock_observes_locked = true;
-        });
-        let mut controller = make_controller(unlock_ready_config(), BleLockKeychainProfile::Release, &fake);
-        controller.set_password("pw").expect("configure");
-
-        let outcome = controller.lock_now();
-        assert!(outcome.lock_requested);
-        assert!(outcome.locked);
-        assert!(fake.is_session_locked());
-
-        // Still near after the manual lock: no proximity unlock may fire.
-        let near = controller.note_near();
-        assert!(!near.password_injected);
-        assert_eq!(injection_count(&fake), 0);
-
-        // Only a later away/lost followed by near restores eligibility.
-        controller.note_away_or_lost();
-        let resumed = controller.note_near();
-        assert!(resumed.password_injected);
-        assert_eq!(injection_count(&fake), 1);
-    }
-
-    // -----------------------------------------------------------------------
-    // REQ-008 / AC-011: wake display, system sleep suppression, wake rebuild
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn system_sleep_suppresses_proximity_and_wake_rebuilds_intent() {
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.session_locked = true;
-            os.display_asleep = true;
-            os.accessibility_trusted = true;
-        });
-        let mut controller = make_controller(unlock_ready_config(), BleLockKeychainProfile::Release, &fake);
-        controller.set_password("pw").expect("configure");
-
-        controller.note_away_or_lost();
-        controller.note_system_sleep();
-        let during_sleep = controller.note_near();
-        assert!(
-            !during_sleep.display_woke,
-            "system sleep pauses the proximity display decision"
-        );
-        assert!(!during_sleep.password_injected);
-        assert_eq!(injection_count(&fake), 0);
-        assert!(!fake.commands().contains(&OsCommand::WakeDisplay));
-
-        controller.note_system_wake();
-        // Wake rebuilds intent: a near without a fresh away/lost must not unlock.
-        let after_wake = controller.note_near();
-        assert!(
-            !after_wake.password_injected,
-            "wake resets the unlock intent until a new away/lost -> near transition"
-        );
-
-        controller.note_away_or_lost();
-        let resumed = controller.note_near();
-        assert!(resumed.password_injected);
-        assert_eq!(injection_count(&fake), 1);
-    }
-
-    // -----------------------------------------------------------------------
-    // REQ-009 / AC-012: media pause/resume
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn lock_pauses_only_confirmed_playing_media_with_an_explicit_pause() {
-        // Confirmed playing -> one explicit pause, never a toggle.
-        let fake = FakePlatform::new();
-        fake.configure(|os| os.media = MediaState::Playing);
-        let config = BleLockConfig {
-            pause_now_playing: true,
-            ..BleLockConfig::default()
-        };
-        let mut controller = make_controller(config.clone(), BleLockKeychainProfile::Release, &fake);
-        let outcome = controller.lock_now();
-        assert!(outcome.media_paused);
-        assert_eq!(media_pause_count(&fake), 1);
-        assert_eq!(
-            media_play_count(&fake),
-            0,
-            "a lock must not toggle media playback"
-        );
-
-        // Not playing -> no pause at all.
-        let fake = FakePlatform::new();
-        fake.configure(|os| os.media = MediaState::NotPlaying);
-        let mut controller = make_controller(config, BleLockKeychainProfile::Release, &fake);
-        let outcome = controller.lock_now();
-        assert!(!outcome.media_paused);
-        assert_eq!(media_pause_count(&fake), 0);
-    }
-
-    #[test]
-    fn unavailable_media_reports_the_warning_but_still_locks() {
-        let fake = FakePlatform::new();
-        fake.configure(|os| os.media = MediaState::Unavailable);
-        let config = BleLockConfig {
-            pause_now_playing: true,
-            ..BleLockConfig::default()
-        };
-        let mut controller = make_controller(config, BleLockKeychainProfile::Release, &fake);
-
-        let outcome = controller.lock_now();
-
-        assert!(outcome.lock_requested, "media failure must not block locking");
-        assert_eq!(error_code(&outcome), Some("media_control_unavailable"));
-        assert!(!outcome.media_paused, "no pause may be claimed");
-        assert_eq!(media_pause_count(&fake), 0);
-    }
-
-    #[test]
-    fn unlock_resumes_only_the_media_paused_in_the_current_cycle_exactly_once() {
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.media = MediaState::Playing;
-            os.session_locked = false;
-            os.inject_succeeds = true;
-            os.accessibility_trusted = true;
-        });
-        let mut config = unlock_ready_config();
-        config.pause_now_playing = true;
-        let mut controller = make_controller(config, BleLockKeychainProfile::Release, &fake);
-        controller.set_password("pw").expect("configure");
-
-        controller.lock_now();
-        assert_eq!(media_pause_count(&fake), 1, "the lock cycle pauses media");
-
-        controller.note_away_or_lost();
-        let outcome = controller.note_near();
-        assert!(outcome.password_injected);
-        assert!(outcome.media_resumed);
-        assert_eq!(
-            media_play_count(&fake),
-            1,
-            "the recorded current-cycle pause resumes exactly once after an observed unlock"
-        );
-
-        // A later transition must not replay the already-consumed pause.
-        controller.note_away_or_lost();
-        controller.note_near();
-        assert_eq!(media_play_count(&fake), 1);
-    }
-
-    #[test]
-    fn unlock_without_a_recorded_cycle_pause_does_not_play() {
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.media = MediaState::NotPlaying;
-            os.session_locked = true;
-            os.inject_succeeds = true;
-            os.accessibility_trusted = true;
-        });
-        let mut config = unlock_ready_config();
-        config.pause_now_playing = true;
-        let mut controller = make_controller(config, BleLockKeychainProfile::Release, &fake);
-        controller.set_password("pw").expect("configure");
-
-        // No lock cycle ever paused anything.
-        controller.note_away_or_lost();
-        let outcome = controller.note_near();
-
-        assert!(outcome.password_injected);
-        assert!(!outcome.media_resumed);
-        assert_eq!(media_play_count(&fake), 0);
-    }
-
-    // -----------------------------------------------------------------------
-    // REQ-010 / AC-013: screensaver, lock and display-off outcomes
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn a_screensaver_lock_succeeds_only_when_the_session_is_observed_locked() {
-        let screensaver_config = BleLockConfig {
-            use_screensaver_to_lock: true,
-            ..BleLockConfig::default()
-        };
-
-        // Observed locked -> success.
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.lock_observes_locked = true;
-            os.session_locked = false;
-        });
-        let mut controller = make_controller(screensaver_config.clone(), BleLockKeychainProfile::Release, &fake);
-        let outcome = controller.lock_now();
-        assert!(outcome.lock_requested);
-        assert!(outcome.locked);
-        assert!(fake.commands().contains(&OsCommand::LaunchScreensaver));
-
-        // Screensaver launched but the session is not observed locked -> no claim.
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.lock_observes_locked = false;
-            os.session_locked = false;
-        });
-        let mut controller = make_controller(screensaver_config, BleLockKeychainProfile::Release, &fake);
-        let outcome = controller.lock_now();
-        assert!(
-            !outcome.locked,
-            "an unobserved screensaver lock must never be reported as success"
-        );
-        assert!(fake.commands().contains(&OsCommand::LaunchScreensaver));
-    }
-
-    #[test]
-    fn screensaver_mode_never_turns_off_the_display() {
-        let fake = FakePlatform::new();
-        fake.configure(|os| os.lock_observes_locked = true);
-        let config = BleLockConfig {
-            use_screensaver_to_lock: true,
-            sleep_display: true,
-            ..BleLockConfig::default()
-        };
-        let mut controller = make_controller(config, BleLockKeychainProfile::Release, &fake);
-
-        controller.lock_now();
-
-        assert!(fake.commands().contains(&OsCommand::LaunchScreensaver));
-        assert_eq!(
-            fake.command_count(|c| matches!(c, OsCommand::SleepDisplay)),
-            0,
-            "screensaver lock and display-off are mutually exclusive"
-        );
-    }
-
-    #[test]
-    fn an_ordinary_lock_sleeps_the_display_only_after_an_observed_lock() {
-        let display_config = BleLockConfig {
-            sleep_display: true,
-            ..BleLockConfig::default()
-        };
-
-        // Observed lock -> display off strictly after the lock.
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.lock_observes_locked = true;
-            os.session_locked = false;
-        });
-        let mut controller = make_controller(display_config.clone(), BleLockKeychainProfile::Release, &fake);
-        controller.lock_now();
-        let commands = fake.commands();
-        let lock_index = commands
-            .iter()
-            .position(|c| matches!(c, OsCommand::LockSession))
-            .expect("an ordinary lock is requested");
-        let sleep_index = commands
-            .iter()
-            .position(|c| matches!(c, OsCommand::SleepDisplay))
-            .expect("the display is turned off after the lock");
-        assert!(
-            lock_index < sleep_index,
-            "ordinary display-off must follow the lock"
-        );
-
-        // Unobserved lock -> no display off.
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.lock_observes_locked = false;
-            os.session_locked = false;
-        });
-        let mut controller = make_controller(display_config, BleLockKeychainProfile::Release, &fake);
-        let outcome = controller.lock_now();
-        assert!(!outcome.locked);
-        assert!(!outcome.display_slept);
-        assert_eq!(
-            fake.command_count(|c| matches!(c, OsCommand::SleepDisplay)),
-            0,
-            "display-off must not happen without an observed lock"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // REQ-011 / AC-014: resource lifecycle and idempotent cleanup
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn shutdown_is_idempotent_and_stops_further_native_actions() {
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.session_locked = true;
-            os.display_asleep = true;
-            os.accessibility_trusted = true;
-        });
-        let mut controller = make_controller(unlock_ready_config(), BleLockKeychainProfile::Release, &fake);
-        controller.set_password("pw").expect("configure");
-
-        controller.shutdown();
-        controller.shutdown(); // repeated cleanup must be safe
-        assert!(controller.snapshot().stopped, "shutdown marks the runtime stopped");
-
-        let before = fake.commands().len();
-        controller.note_away_or_lost();
-        let near = controller.note_near();
-        let lock = controller.lock_now();
-        assert!(!near.password_injected);
-        assert!(!lock.lock_requested);
-        assert_eq!(
-            fake.commands().len(),
-            before,
-            "stopped resources must issue no further native actions"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // REQ-013 / AC-017: stable, non-secret error taxonomy
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn keychain_errors_use_a_stable_code_and_never_echo_the_password() {
-        let secret = "S3cr3t-P@ssw0rd";
-        let fake = FakePlatform::new();
-        fake.configure(|os| os.keychain_available = false);
-        let mut controller = make_controller(BleLockConfig::default(), BleLockKeychainProfile::Release, &fake);
-
-        let error = controller
-            .set_password(secret)
-            .expect_err("a Keychain failure must surface");
-
-        assert_eq!(error.code, "keychain_unavailable");
-        assert!(
-            !format!("{error:?}").contains(secret),
-            "an error must never echo the supplied password"
-        );
-        if let Some(detail) = &error.detail {
-            assert!(!detail.contains(secret));
-        }
-    }
-
-    #[test]
-    fn native_outcomes_serialize_errors_without_a_password() {
-        let secret = "another-top-secret";
-        let fake = FakePlatform::new();
-        fake.configure(|os| os.media = MediaState::Unavailable);
-        let config = BleLockConfig {
-            pause_now_playing: true,
-            ..BleLockConfig::default()
-        };
-        let mut controller = make_controller(config, BleLockKeychainProfile::Release, &fake);
-        controller.set_password(secret).expect("configure a password");
-
-        let outcome = controller.lock_now();
-        let json = serde_json::to_string(&outcome).expect("outcome serializes");
-
-        assert_eq!(error_code(&outcome), Some("media_control_unavailable"));
-        assert!(
-            !json.contains(secret),
-            "a serialized native outcome must never carry the password"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Production composition: presence adapter, config replacement, sleep gate,
-    // async observed-unlock polling and AC-017 gate feedback
-    // -----------------------------------------------------------------------
-
-    /// Active selected configuration whose lock/unlock thresholds are -70/-50,
-    /// so an averaged RSSI of -65 sits between them and -45 clears unlock.
-    fn selected_active_config() -> BleLockConfig {
-        let mut config = unlock_ready_config();
-        config.device_id = Some("uuid-a".to_string());
-        config
-    }
-
-    #[test]
-    fn observe_presence_injects_only_at_the_unlock_threshold_and_only_once() {
-        // The production adapter must translate observed presence + averaged RSSI
-        // into native policy. In production, `update_presence` is called while the
-        // monitor presence stays `Near`, so a plain `note_near` on the first near
-        // reading would inject before the unlock threshold and consume the only
-        // attempt.
-        let fake = FakePlatform::new();
-        fake.configure(|os| os.session_locked = true);
-        let mut controller = make_controller(
-            selected_active_config(),
-            BleLockKeychainProfile::Release,
-            &fake,
-        );
-        controller.set_password("login-pw").expect("configure a password");
-
-        // Away at -85 arms exactly one eligibility.
-        let away = controller.observe_presence(BlePresence::Away, Some(-85));
-        assert!(!away.password_injected);
-        assert_eq!(injection_count(&fake), 0);
-
-        // Near but between lock (-70) and unlock (-50): no injection yet.
-        let between = controller.observe_presence(BlePresence::Near, Some(-65));
-        assert!(
-            !between.password_injected,
-            "an RSSI below the unlock threshold must not inject"
-        );
-        assert_eq!(injection_count(&fake), 0);
-
-        // Near at/above unlock (-50): exactly one injection.
-        let eligible = controller.observe_presence(BlePresence::Near, Some(-45));
-        assert!(
-            eligible.password_injected,
-            "an RSSI at/above unlock injects once"
-        );
-        assert_eq!(injection_count(&fake), 1);
-
-        // A repeated near reading must not inject again.
-        let repeated = controller.observe_presence(BlePresence::Near, Some(-45));
-        assert!(!repeated.password_injected);
-        assert_eq!(
-            injection_count(&fake),
-            1,
-            "a repeated near reading must not re-inject"
-        );
-    }
-
-    #[test]
-    fn replacing_the_selected_device_clears_old_eligibility() {
-        let fake = FakePlatform::new();
-        fake.configure(|os| os.session_locked = true);
-        let mut controller = make_controller(
-            selected_active_config(),
-            BleLockKeychainProfile::Release,
-            &fake,
-        );
-        controller.set_password("pw").expect("configure");
-
-        // Arm for the old device while it is still selected.
-        controller.note_away_or_lost();
-
-        // Selecting a different UUID must clear the old arming/cycle state.
-        let mut replacement = selected_active_config();
-        replacement.device_id = Some("uuid-b".to_string());
-        controller.set_config(replacement);
-
-        let stale = controller.note_near();
-        assert!(
-            !stale.password_injected,
-            "a device replacement must clear the previous arming"
-        );
-        assert_eq!(injection_count(&fake), 0);
-
-        // A fresh away/lost under the new device restores exactly one attempt.
-        controller.note_away_or_lost();
-        let fresh = controller.note_near();
-        assert!(fresh.password_injected);
-        assert_eq!(injection_count(&fake), 1);
-    }
-
-    #[test]
-    fn a_presence_lock_is_suppressed_during_system_sleep_and_resumes_after_wake() {
-        let fake = FakePlatform::new();
-        fake.configure(|os| os.lock_observes_locked = true);
-        let mut controller = make_controller(
-            selected_active_config(),
-            BleLockKeychainProfile::Release,
-            &fake,
-        );
-
-        controller.note_system_sleep();
-        let during_sleep = controller.lock_for_presence();
-        assert!(
-            !during_sleep.lock_requested,
-            "an observed presence lock must be suppressed while the system sleeps"
-        );
-        assert!(!during_sleep.locked);
-        assert_eq!(
-            fake.commands().len(),
-            0,
-            "no native lock action may run during system sleep"
-        );
-
-        controller.note_system_wake();
-        let after_wake = controller.lock_for_presence();
-        assert!(
-            after_wake.lock_requested,
-            "a presence lock resumes after system wake"
-        );
-        assert!(fake.commands().contains(&OsCommand::LockSession));
-    }
-
-    #[test]
-    fn poll_native_state_resumes_recorded_media_once_on_an_observed_async_unlock() {
-        // A user/manual unlock is observed asynchronously (no password injection),
-        // so the recorded current-cycle pause must be resumed by polling the
-        // observed native state, not only by the synchronous injection path.
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.media = MediaState::Playing;
-            os.session_locked = false;
-            os.lock_observes_locked = true;
-        });
-        let config = BleLockConfig {
-            pause_now_playing: true,
-            ..BleLockConfig::default()
-        };
-        let mut controller = make_controller(config, BleLockKeychainProfile::Release, &fake);
-
-        controller.lock_now();
-        assert_eq!(media_pause_count(&fake), 1, "the lock cycle pauses media");
-
-        // Poll while the session is still locked: nothing resumes.
-        let locked_poll = controller.poll_native_state();
-        assert!(!locked_poll.media_resumed);
-        assert_eq!(media_play_count(&fake), 0);
-
-        // The user unlocks asynchronously; the next poll resumes exactly once.
-        fake.configure(|os| os.session_locked = false);
-        let resumed = controller.poll_native_state();
-        assert!(
-            resumed.media_resumed,
-            "an observed async unlock must resume the recorded pause"
-        );
-        assert_eq!(media_play_count(&fake), 1);
-
-        // Further polls must not replay the consumed resume.
-        let again = controller.poll_native_state();
-        assert!(!again.media_resumed);
-        assert_eq!(media_play_count(&fake), 1);
-    }
-
-    #[test]
-    fn unlock_gate_feedback_reports_accessibility_and_missing_password() {
-        // Missing Accessibility trust: no injection and stable feedback.
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.session_locked = true;
-            os.accessibility_trusted = false;
-        });
-        let mut controller = make_controller(
-            selected_active_config(),
-            BleLockKeychainProfile::Release,
-            &fake,
-        );
-        controller.set_password("pw").expect("configure a password");
-        controller.note_away_or_lost();
-        let untrusted = controller.note_near();
-        assert!(!untrusted.password_injected);
-        assert_eq!(injection_count(&fake), 0);
-        assert_eq!(
-            error_code(&untrusted),
-            Some("accessibility_required"),
-            "an untrusted Accessibility gate must surface actionable feedback"
-        );
-
-        // No password configured: no injection and stable feedback.
-        let fake = FakePlatform::new();
-        fake.configure(|os| {
-            os.session_locked = true;
-            os.accessibility_trusted = true;
-        });
-        let mut controller = make_controller(
-            selected_active_config(),
-            BleLockKeychainProfile::Release,
-            &fake,
-        );
-        controller.note_away_or_lost();
-        let unconfigured = controller.note_near();
-        assert!(!unconfigured.password_injected);
-        assert_eq!(injection_count(&fake), 0);
-        assert_eq!(
-            error_code(&unconfigured),
-            Some("password_not_configured"),
-            "a missing Keychain password must surface actionable feedback"
-        );
-    }
-}
+#[path = "tests/native.rs"]
+mod tests;
