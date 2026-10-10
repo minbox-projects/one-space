@@ -495,18 +495,6 @@ export function aiGatewayStatus() {
   return invoke<GatewayStatus>("ai_gateway_status");
 }
 
-/** CommandCode is identified by the configured endpoint host, independent of path or port. */
-export function isCommandCodeProvider(provider: {
-  base_url?: string | null;
-}): boolean {
-  if (!provider.base_url?.trim()) return false;
-  try {
-    return new URL(provider.base_url).hostname.toLowerCase() === "api.commandcode.ai";
-  } catch {
-    return false;
-  }
-}
-
 export function aiGatewayProviderQuota(
   providerId: string,
   forceRefresh = false,
@@ -515,20 +503,6 @@ export function aiGatewayProviderQuota(
     providerId,
     forceRefresh,
   });
-}
-
-/** OpenCode Go is identified by its endpoint host and the `/zen/go` path. */
-export function isOpencodeGoProvider(provider: {
-  base_url?: string | null;
-}): boolean {
-  if (!provider.base_url?.trim()) return false;
-  try {
-    const url = new URL(provider.base_url);
-    return url.hostname.toLowerCase() === "opencode.ai" &&
-      url.pathname.toLowerCase().includes("/zen/go");
-  } catch {
-    return false;
-  }
 }
 
 export function aiGatewayProviderGoUsage(
