@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-17-ai-gateway-usage-logs.md
-2026-09-17-ai-gateway-usage-logs.md: e54a5a4cc074e0488b90ea52e7c4f2f7b140f493
-2026-09-17-ai-gateway-usage-logs.zh.md: 6b08ad15e27a5aa69528c75cd412dfb16af80342
+2026-09-17-ai-gateway-usage-logs.md: 6f2b4617b2556bcb506a50c473ea09938ca96cca
+2026-09-17-ai-gateway-usage-logs.zh.md: 4c6faf5ce89ec8db67c026b14391896b6e16fff1

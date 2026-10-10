@@ -1507,7 +1507,9 @@ describe("UpstreamProviderList 批量刷新当前筛选结果额度", () => {
     );
     expect(lastRefreshedEl).toBeInTheDocument();
     // 英文环境下包含 "Last refreshed:"
-    expect(lastRefreshedEl.textContent).toMatch(/Last refreshed:\s*\d{2}:\d{2}:\d{2}/i);
+    expect(lastRefreshedEl.textContent).toMatch(
+      /Last refreshed:\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/i,
+    );
 
     // 2. 点击手动刷新
     const refreshBtn = screen.getByTestId("ai-gateway-providers-refresh");
@@ -1521,7 +1523,7 @@ describe("UpstreamProviderList 批量刷新当前筛选结果额度", () => {
 
     // 手动刷新后时间元素依然存在并展示有效时间
     expect(screen.getByTestId("ai-gateway-providers-last-refreshed").textContent).toMatch(
-      /Last refreshed:\s*\d{2}:\d{2}:\d{2}/i,
+      /Last refreshed:\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/i,
     );
   });
 

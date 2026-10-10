@@ -55,6 +55,7 @@ fn attempt_record(request: usize, attempt: usize, base_ms: i64) -> UsageLogRecor
         output_tokens: 5,
         total_tokens: 15,
         amount: Some(0.001),
+        cost_breakdown: None,
         duration_ms: 5,
         error_message: None,
         terminal: attempt + 1 == ATTEMPTS_PER_REQUEST,

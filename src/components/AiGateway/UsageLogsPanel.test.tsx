@@ -10,7 +10,37 @@ import type {
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
-function record(overrides: Partial<UsageLogRecord> = {}): UsageLogRecord {
+type CostBreakdown = {
+  input_price: number;
+  output_price: number;
+  cache_read_price: number;
+  cache_write_price: number;
+  input_cost: number;
+  output_cost: number;
+  cache_read_cost: number;
+  cache_write_cost: number;
+};
+
+/** Independent fixed snapshot fixture: 1/4/0.5/2 USD per million tokens. */
+function costBreakdown(overrides: Partial<CostBreakdown> = {}): CostBreakdown {
+  return {
+    input_price: 1,
+    output_price: 4,
+    cache_read_price: 0.5,
+    cache_write_price: 2,
+    input_cost: 1,
+    output_cost: 4,
+    cache_read_cost: 1,
+    cache_write_cost: 0,
+    ...overrides,
+  };
+}
+
+function record(
+  overrides: Partial<UsageLogRecord> & {
+    cost_breakdown?: CostBreakdown | null;
+  } = {},
+): UsageLogRecord {
   return {
     timestamp_ms: Date.UTC(2026, 8, 17, 2, 30),
     local_model: "gpt-4o",
@@ -41,6 +71,38 @@ function page(overrides: Partial<UsageLogsPage> = {}): UsageLogsPage {
     groups: [],
     ...overrides,
   };
+}
+
+/** The ungrouped row's cost cell is the last public table cell. */
+function rowCostCell(row: HTMLElement): HTMLElement {
+  const cells = row.querySelectorAll("td");
+  return cells[cells.length - 1] as HTMLElement;
+}
+
+/** The keyboard-accessible cost-detail control rendered next to the cost. */
+function costDetailControl(row: HTMLElement): HTMLElement {
+  return within(rowCostCell(row)).getByRole("button");
+}
+
+/**
+ * The detail content the cost control reveals. Mirrors the public Tokens
+ * hover/focus boundary: a `role="tooltip"` element inside the same cell.
+ */
+function costDetailContent(row: HTMLElement): HTMLElement {
+  return within(rowCostCell(row)).getByRole("tooltip");
+}
+
+/** The control must be tied to detail content within its own cost cell. */
+function expectCostDetailAssociated(control: HTMLElement, detail: HTMLElement) {
+  const cell = control.closest("td");
+  expect(
+    cell,
+    "cost 明细控件应位于该行的花费单元格内",
+  ).not.toBeNull();
+  expect(
+    cell === detail || cell?.contains(detail),
+    "cost 明细内容应与花费控件在同一单元格内关联",
+  ).toBe(true);
 }
 
 const STORED_UPSTREAM_MESSAGE =
@@ -1667,6 +1729,329 @@ describe("UsageLogsPanel", () => {
         .map((button) => button.textContent?.trim()),
     ).toEqual(["全部服务商"]);
   });
+
+  // -------------------------------------------------------------------------
+  // AC-001 / AC-002 / AC-006: stored cost breakdown is inspectable per row.
+  // -------------------------------------------------------------------------
+
+  const pricedRecord = (overrides: Partial<UsageLogRecord> = {}) =>
+    record({
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_read_tokens: 2_000_000,
+      cache_write_tokens: 0,
+      total_tokens: 4_000_000,
+      amount: 6,
+      cost_breakdown: costBreakdown(),
+      ...overrides,
+    });
+
+  it("AC-001 英文价目行的花费单元格提供可聚焦明细控件并展示七项费用、单价与总额", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({ total: 1, records: [pricedRecord()] });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const table = await screen.findByTestId("ai-gateway-logs-ungrouped");
+    const row = within(table).getAllByTestId("ai-gateway-logs-row")[0];
+
+    const control = costDetailControl(row);
+    expect(control).toHaveAccessibleName();
+    control.focus();
+    expect(control).toHaveFocus();
+
+    const detail = costDetailContent(row);
+    expectCostDetailAssociated(control, detail);
+
+    expect(detail).toHaveTextContent("Input");
+    expect(detail).toHaveTextContent("$1.0000");
+    expect(detail).toHaveTextContent("Output");
+    expect(detail).toHaveTextContent("$4.0000");
+    expect(detail).toHaveTextContent("Cache read");
+    expect(detail).toHaveTextContent("$1.0000");
+    expect(detail).toHaveTextContent("Total");
+    expect(detail).toHaveTextContent("$6.0000");
+
+    // Unit rates are USD per million tokens and keep their numeric value.
+    expect(detail).toHaveTextContent("USD / million tokens");
+    expect(detail).toHaveTextContent(/\$1(?![\d.])/);
+    expect(detail).toHaveTextContent(/\$4(?![\d.])/);
+    expect(detail).toHaveTextContent(/\$0\.5(?![\d])/);
+
+    // cache_write_tokens = 0 hides the optional cache-write detail.
+    expect(detail).not.toHaveTextContent("Cache write");
+  });
+
+  it("AC-001 中文价目行展示本地化标签并保留相同费用与单价", async () => {
+    await i18n.changeLanguage("zh");
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({ total: 1, records: [pricedRecord()] });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const table = await screen.findByTestId("ai-gateway-logs-ungrouped");
+    const row = within(table).getAllByTestId("ai-gateway-logs-row")[0];
+
+    const control = costDetailControl(row);
+    expect(control).toHaveAccessibleName();
+    const detail = costDetailContent(row);
+    expectCostDetailAssociated(control, detail);
+
+    expect(detail).toHaveTextContent("输入");
+    expect(detail).toHaveTextContent("$1.0000");
+    expect(detail).toHaveTextContent("输出");
+    expect(detail).toHaveTextContent("$4.0000");
+    expect(detail).toHaveTextContent("缓存");
+    expect(detail).toHaveTextContent("$1.0000");
+    expect(detail).toHaveTextContent("总");
+    expect(detail).toHaveTextContent("$6.0000");
+    expect(detail).toHaveTextContent("美元 / 百万 tokens");
+  });
+
+  it("AC-002 存在缓存写入 token 时额外展示 cache-write 费用与单价，总额为 $7.0000", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 1,
+        records: [
+          pricedRecord({
+            cache_write_tokens: 500_000,
+            total_tokens: 4_500_000,
+            amount: 7,
+            cost_breakdown: costBreakdown({ cache_write_cost: 1 }),
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const table = await screen.findByTestId("ai-gateway-logs-ungrouped");
+    const row = within(table).getAllByTestId("ai-gateway-logs-row")[0];
+
+    const detail = costDetailContent(row);
+    expect(detail).toHaveTextContent("Cache write");
+    expect(detail).toHaveTextContent("$1.0000");
+    expect(detail).toHaveTextContent(/\$2(?![\d.])/);
+    expect(detail).toHaveTextContent("$7.0000");
+  });
+
+  it("AC-002 无缓存写入 token 时隐藏写入项，但仍保留零用量的 cache-read 费用与单价", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 1,
+        records: [
+          pricedRecord({
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            amount: 5,
+            cost_breakdown: costBreakdown({
+              input_cost: 1,
+              output_cost: 4,
+              cache_read_cost: 0,
+              cache_write_cost: 0,
+            }),
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const table = await screen.findByTestId("ai-gateway-logs-ungrouped");
+    const row = within(table).getAllByTestId("ai-gateway-logs-row")[0];
+
+    const detail = costDetailContent(row);
+    expect(detail).toHaveTextContent("Cache read");
+    expect(detail).toHaveTextContent("$0.0000");
+    expect(detail).toHaveTextContent(/\$0\.5(?![\d])/);
+    expect(detail).not.toHaveTextContent("Cache write");
+  });
+
+  it("AC-006 零用量价目行展示真实单价与全部 $0.0000 费用", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 1,
+        records: [
+          pricedRecord({
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            total_tokens: 0,
+            amount: 0,
+            cost_breakdown: costBreakdown({
+              input_cost: 0,
+              output_cost: 0,
+              cache_read_cost: 0,
+              cache_write_cost: 0,
+            }),
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const table = await screen.findByTestId("ai-gateway-logs-ungrouped");
+    const row = within(table).getAllByTestId("ai-gateway-logs-row")[0];
+
+    const detail = costDetailContent(row);
+    // Zero token counts still show the real effective rates.
+    expect(detail).toHaveTextContent(/\$1(?![\d.])/);
+    expect(detail).toHaveTextContent(/\$4(?![\d.])/);
+    expect(detail).toHaveTextContent(/\$0\.5(?![\d])/);
+    // Every fee rounds to $0.0000 and the total is an explicit zero.
+    expect(detail).toHaveTextContent("$0.0000");
+    expect(detail).not.toHaveTextContent("—");
+  });
+
+  it("AC-006 旧行缺失快照与未计价行显示 — 和本地化不可用说明，且不按当前价格回退", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 3,
+        records: [
+          record({ local_model: "unpriced", amount: null, cost_breakdown: null }),
+          record({
+            local_model: "legacy-null-snapshot",
+            amount: 0.5,
+            cost_breakdown: null,
+          }),
+          // Snapshot field omitted entirely, mirroring an old payload.
+          record({ local_model: "legacy-missing-field", amount: 0.5 }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const table = await screen.findByTestId("ai-gateway-logs-ungrouped");
+    const rows = within(table).getAllByTestId("ai-gateway-logs-row");
+    expect(rows).toHaveLength(3);
+
+    for (const row of rows) {
+      const control = costDetailControl(row);
+      expect(control).toHaveAccessibleName();
+      const detail = costDetailContent(row);
+      // Unknown component fees/rates render as dashes. REQ-001/REQ-003 keep the
+      // recorded total, so the known legacy amount may remain a currency value.
+      expect(detail).toHaveTextContent("—");
+      // No fabricated priced components from the current configuration.
+      expect(detail).not.toHaveTextContent("$1.0000");
+      expect(detail).not.toHaveTextContent("$4.0000");
+      // The exact localized unavailable explanation must be present, so the
+      // clause is genuinely evidenced rather than satisfied by row labels.
+      expect(
+        within(detail).getByText(
+          "Recorded pricing details are unavailable; unknown fees and rates are shown as —.",
+        ),
+      ).toBeInTheDocument();
+      // Each unknown component fee and rate renders a dash (Input, Output and
+      // Cache read are always shown, i.e. at least three components).
+      expect(
+        (detail.textContent?.match(/—/g) ?? []).length,
+        "每个未知组件费用与单价都应显示 —",
+      ).toBeGreaterThanOrEqual(6);
+    }
+
+    const rowFor = (model: string) =>
+      rows.find((row) => within(row).queryByText(model) !== null) as HTMLElement;
+    // The existing amount stays authoritative for priced legacy rows; the
+    // unpriced row keeps its existing dash.
+    expect(rowCostCell(rowFor("legacy-null-snapshot"))).toHaveTextContent("0.5000");
+    expect(rowCostCell(rowFor("legacy-missing-field"))).toHaveTextContent("0.5000");
+    expect(rowCostCell(rowFor("unpriced"))).toHaveTextContent("—");
+  });
+
+  it("AC-006 中文环境下缺失快照行给出中文不可用说明且不展示虚构金额", async () => {
+    await i18n.changeLanguage("zh");
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 1,
+        records: [record({ amount: 0.5, cost_breakdown: null })],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const table = await screen.findByTestId("ai-gateway-logs-ungrouped");
+    const row = within(table).getAllByTestId("ai-gateway-logs-row")[0];
+
+    const detail = costDetailContent(row);
+    // Unknown component fees/rates render as dashes; the recorded total may
+    // stay as `$0.5000` or any localized currency formatting.
+    expect(detail).toHaveTextContent("—");
+    expect(detail).not.toHaveTextContent("$1.0000");
+    expect(detail).not.toHaveTextContent("$4.0000");
+    // The exact delivered Chinese unavailable explanation must be present.
+    expect(
+      within(detail).getByText(
+        "记录的价格明细不可用；未知费用与单价显示为 —。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      (detail.textContent?.match(/—/g) ?? []).length,
+      "每个未知组件费用与单价都应显示 —",
+    ).toBeGreaterThanOrEqual(6);
+  });
+
+  it("AC-001/AC-002 明细控件在普通行与表格末行均可通过键盘聚焦并与明细关联", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 5,
+        records: Array.from({ length: 5 }, (_, index) =>
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, index, 0),
+            local_model: `priced-${index}`,
+            upstream_model: `priced-${index}`,
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            cache_read_tokens: 2_000_000,
+            cache_write_tokens: 0,
+            total_tokens: 4_000_000,
+            amount: 6,
+            cost_breakdown: costBreakdown(),
+          }),
+        ),
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const table = await screen.findByTestId("ai-gateway-logs-ungrouped");
+    const rows = within(table).getAllByTestId("ai-gateway-logs-row");
+    expect(rows).toHaveLength(5);
+
+    // A normal row and the end-of-table row both expose a keyboard-focusable,
+    // associated control. Positioning is left to the bounded real-render smoke.
+    for (const row of [rows[0], rows[rows.length - 1]]) {
+      const control = costDetailControl(row);
+      expect(control).toHaveAccessibleName();
+      control.focus();
+      expect(control).toHaveFocus();
+      expectCostDetailAssociated(control, costDetailContent(row));
+    }
+  });
 });
+
 
 

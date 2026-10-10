@@ -24,7 +24,7 @@ import {
   resolveEffectiveProviderIcon,
 } from "./ProviderTemplateIcon";
 import {
-  formatTimeHms,
+  formatDateTime,
 } from "./gatewayShared";
 import {
   AI_GATEWAY_ALERT_AUTO_DISMISS_MS,
@@ -932,7 +932,7 @@ export function UpstreamProviderList({
                 className="text-[11px] text-muted-foreground"
               >
                 {t("aiGatewayProvidersLastRefreshed", "最后刷新：{{time}}", {
-                  time: formatTimeHms(lastRefreshedAt),
+                  time: formatDateTime(lastRefreshedAt),
                 })}
               </span>
             ) : null}
