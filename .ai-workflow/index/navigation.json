@@ -1472,12 +1472,6 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
-          "name": "isCommandCodeProvider",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/aiGateway.ts",
           "name": "aiGatewayProviderQuota",
           "kind": "function",
           "visibility": "public"
@@ -1515,12 +1509,6 @@
         {
           "file": "src/components/AiGateway/ProviderQuotaBlock.tsx",
           "name": "ProviderQuotaBlock",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/aiGateway.ts",
-          "name": "isOpencodeGoProvider",
           "kind": "function",
           "visibility": "public"
         },
