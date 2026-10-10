@@ -88,6 +88,7 @@ OneSpace 是一个面向开发者的 macOS 优先桌面工作台（Tauri 2 + Rea
 - **SSH 隧道（SSH Tunnels）**：维护 Local / Remote / Dynamic 三种端口转发，支持连接测试、自动连接、断线重连（网络恢复或系统唤醒后自动重试）、常用端口管理与环境分组
 - **协议路由（Protocol Router）**：为 AI provider 暴露可复用的本地 endpoint，查看 route 状态、连接测试与近期请求用量；运行参数在设置页维护
 - **文件共享（File Sharing）**：在可信局域网内通过临时 HTTP 链接或二维码分享本地文件，接收方只读下载；共享状态仅存在于当前进程，停止或退出后链接立即失效
+- **蓝牙锁屏（BLE Lock）**：只监测一个自选 BLE 设备，按 RSSI 阈值在设备远离时锁定、靠近时唤醒屏幕或执行一次受保护解锁；主动连接读取（默认）与被动广播两种模式，全部阈值、延时与开关默认关闭，密码仅存于本机 Keychain，配置存于不同步的 `ble_lock.json`；仅 macOS 可用，其他平台显示不可用
 - **生成短链接（Short Link）**：通过 TinyURL 生成短链（需在工具内填写 API Token），带本地历史记录
 - **JSON 解析**、**MD5 加密**、**随机密码**、**JT/T 数据解析**（JT/T 808 / 809 / 1078 报文）
 - **备忘录（Notes）**、**代码片段（Snippets）**、**收藏夹（Bookmarks）**：本地内容工具，参与侧边栏计数、OmniSearch 与内容同步

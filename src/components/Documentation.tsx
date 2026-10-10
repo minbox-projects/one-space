@@ -240,7 +240,7 @@ export function Documentation() {
           summary: t('bleLockDesc', 'Monitor one Bluetooth device and lock or unlock by proximity.'),
           icon: Bluetooth,
           docId: 'usage',
-          anchor: '21-ble-lock',
+          anchor: '23-ble-lock',
         },
         {
           id: 'snippets-bookmarks-notes',
