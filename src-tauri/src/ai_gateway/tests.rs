@@ -8703,6 +8703,79 @@ async fn protocol_mismatch_error_names_the_required_endpoint() {
     drop(home);
 }
 
+/// A model only served through the opposite endpoint must produce a 502 that
+/// leads with the endpoint mismatch and its remedy instead of opening with the
+/// misleading `all providers unavailable` claim, while still naming the serving
+/// provider and the other enabled providers that cannot serve the model.
+#[tokio::test]
+async fn protocol_mismatch_502_leads_with_the_remedy_not_all_providers_unavailable() {
+    let home = temp_home("per-model-endpoint-remedy");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "should-not-run"}))).await;
+
+    let config: GatewayConfig = serde_json::from_value(json_config_with_key(
+        port,
+        vec![
+            json_provider(
+                "p1",
+                "白白中转",
+                &upstream_url,
+                "responses",
+                None,
+                vec![json_mapping("gpt-6.1-sol", "gpt-6.1-sol", None)],
+            ),
+            json_provider("p2", "hengboy@justnets.xyz", &upstream_url, "chat_completions", None, vec![]),
+            json_provider("p3", "liutian@justnets.xyz", &upstream_url, "chat_completions", None, vec![]),
+        ],
+    ))
+    .expect("decode config with one responses-only model");
+    super::storage::write_config(&config).unwrap();
+    super::runtime_http::start_server(None).await.unwrap();
+
+    let (status, _, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "gpt-6.1-sol", "messages": [{"role": "user", "content": "hi"}]})),
+    )
+    .await;
+
+    let summary = format!("status={status}, body={text}");
+    assert_eq!(status, 502, "{summary}");
+    let body = assert_standard_error_envelope(&text);
+    assert_eq!(
+        body["error"]["code"], "all_providers_unavailable",
+        "{summary}"
+    );
+    let message = body["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        !message.starts_with("all providers unavailable"),
+        "the mismatch message must not claim every provider is unavailable: {summary}"
+    );
+    assert!(
+        message.starts_with("model 'gpt-6.1-sol' is served via /responses by 白白中转, not via /chat/completions"),
+        "the message must lead with the served endpoint and the serving provider: {summary}"
+    );
+    assert!(
+        message.contains("call this model through the /responses endpoint"),
+        "the message must carry the actionable remedy: {summary}"
+    );
+    assert!(
+        message.contains("Other enabled providers:") && message.contains("hengboy@justnets.xyz")
+            && message.contains("liutian@justnets.xyz"),
+        "the other enabled providers must stay listed as evidence: {summary}"
+    );
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "a protocol mismatch must not contact upstream: {summary}"
+    );
+
+    super::runtime_http::stop_server().await.unwrap();
+    drop(home);
+}
+
 /// AC-007: a mapping without a protocol field (the shape of existing encrypted
 /// configs) inherits the provider protocol instead of defaulting to
 /// `chat_completions`.

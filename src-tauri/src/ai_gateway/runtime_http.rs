@@ -767,35 +767,48 @@ fn no_candidate_message(
 ) -> String {
     let model = requested.unwrap_or("<none>");
     let endpoint = protocol.endpoint_path();
-    let enabled: Vec<String> = config
-        .providers
-        .iter()
-        .filter(|provider| provider.enabled)
-        .map(|provider| match resolve_model_for_protocol(provider, requested, protocol) {
-            ModelResolution::ProtocolMismatch(configured) => format!(
-                "{} serves model '{}' via {}",
-                provider.name,
-                model,
-                configured.endpoint_path()
-            ),
-            _ if provider.protocol != protocol => format!(
+    // Enabled providers that serve the requested model through the opposite
+    // endpoint, plus the diagnostics of every other enabled provider. The two
+    // protocols are exclusive, so every mismatch names the same other endpoint.
+    let mut mismatched_names: Vec<&str> = Vec::new();
+    let mut served_via: Option<&'static str> = None;
+    let mut others: Vec<String> = Vec::new();
+    for provider in config.providers.iter().filter(|provider| provider.enabled) {
+        match resolve_model_for_protocol(provider, requested, protocol) {
+            ModelResolution::ProtocolMismatch(configured) => {
+                let configured = configured.endpoint_path();
+                served_via.get_or_insert(configured);
+                mismatched_names.push(provider.name.as_str());
+            }
+            _ if provider.protocol != protocol => others.push(format!(
                 "{} is configured for {}",
                 provider.name,
                 provider.protocol.endpoint_path()
-            ),
-            _ => format!("{} cannot serve model '{}'", provider.name, model),
-        })
-        .collect();
-    if enabled.is_empty() {
-        format!(
-            "all providers unavailable: no enabled provider can serve model '{model}' via {endpoint}"
-        )
-    } else {
-        format!(
-            "all providers unavailable: no enabled provider can serve model '{model}' via {endpoint}; {}",
-            enabled.join("; ")
-        )
+            )),
+            _ => others.push(format!("{} cannot serve model '{}'", provider.name, model)),
+        }
     }
+    // The model is reachable — just not over the endpoint this request used —
+    // so lead with the remedy instead of claiming every provider is unavailable.
+    if let Some(other) = served_via {
+        let mut message = format!(
+            "model '{model}' is served via {other} by {}, not via {endpoint}; call this model through the {other} endpoint [提示: 该模型仅支持 {other} 端点，请将客户端请求改用 {other} 调用]",
+            mismatched_names.join(", ")
+        );
+        if !others.is_empty() {
+            message.push_str(&format!(". Other enabled providers: {}", others.join("; ")));
+        }
+        return message;
+    }
+    if others.is_empty() {
+        return format!(
+            "no enabled provider can serve model '{model}' via {endpoint} (no enabled upstream providers)"
+        );
+    }
+    format!(
+        "no enabled provider can serve model '{model}' via {endpoint}; {}",
+        others.join("; ")
+    )
 }
 
 pub(in crate::ai_gateway) fn format_network_error_reason(error: &str) -> String {
