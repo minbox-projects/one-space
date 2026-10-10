@@ -119,6 +119,9 @@ pub fn run() {
             ssh_tunnels::start_system_wake_observer();
             ssh_tunnels::start_sleep_resume_monitor();
             ssh_tunnels::start_tunnel_watchdog(app.handle().clone());
+            // Process-owned `ble-lock` runtime (frozen plan Step 2); installs
+            // exactly once, independent of WebViews and the tool page.
+            ble_lock_native::install(app.handle().clone());
             // Avoid running heavy migration work before first-run onboarding.
             // Otherwise startup may create default data and suppress onboarding.
             let should_show_onboarding = config::should_show_onboarding().unwrap_or(false);
@@ -435,8 +438,18 @@ pub fn run() {
             ai_workflow_profiles::ai_workflow_save_profile,
             ai_workflow_profiles::ai_workflow_create_profile,
             ai_workflow_profiles::ai_workflow_delete_profile,
-            ai_workflow_profiles::ai_workflow_rename_profile
-
+            ai_workflow_profiles::ai_workflow_rename_profile,
+            // BLE lock (frozen plan Step 2)
+            ble_lock_native::ble_lock_get_status,
+            ble_lock_native::ble_lock_save_config,
+            ble_lock_native::ble_lock_scan_start,
+            ble_lock_native::ble_lock_scan_stop,
+            ble_lock_native::ble_lock_select_device,
+            ble_lock_native::ble_lock_clear_device,
+            ble_lock_native::ble_lock_set_password,
+            ble_lock_native::ble_lock_delete_password,
+            ble_lock_native::ble_lock_request_accessibility,
+            ble_lock_native::ble_lock_lock_now
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -853,3 +866,13 @@ mod tests {
         );
     }
 }
+
+// Process-owned `ble-lock` native-controller module (frozen plan Step 2).
+//
+// The native Rust module path is not frozen: this `#[path]` include is the sole
+// registration path for `src-tauri/src/ble_lock/native.rs`, so the module is
+// loaded here for both product and test builds. The file keeps the delegated
+// `#[cfg(test)]` behavior tests unchanged and adds the product controller and
+// macOS platform above them.
+#[path = "../ble_lock/native.rs"]
+pub(crate) mod ble_lock_native;
