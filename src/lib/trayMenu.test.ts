@@ -8,6 +8,7 @@ import {
   type TrayMenuState,
 } from "@/lib/trayMenu";
 import * as trayMenuModule from "@/lib/trayMenu";
+import type { BleLockConfig, BleLockStatus } from "@/lib/bleLock";
 
 type ItemNode = Extract<TrayMenuNode, { kind: "item" }>;
 
@@ -138,6 +139,7 @@ describe("tray menu structure", () => {
       "ai-usage",
       "ai-workflow",
       "more-pages",
+      "ble-lock-controls",
       "separator",
       "services",
       "separator",
@@ -764,6 +766,179 @@ describe("AI WorkFlow tray submenu", () => {
     expect(itemById(zhModel, "ai-workflow-unavailable").label).toBe(
       "无法读取当前模型",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BLE Lock tray submenu: one shared snapshot drives the status line, the manual
+// lock, the Set Device navigation target, two independent RSSI threshold lists
+// and five optional behavior check marks. Ids, the threshold range and the
+// checked semantics are the frozen contract for the implementation.
+// ---------------------------------------------------------------------------
+
+const BLE_LOCK_THRESHOLDS = [
+  -95, -90, -85, -80, -75, -70, -65, -60, -55, -50, -45, -40, -35, -30,
+] as const;
+
+const BLE_LOCK_CONTROL_IDS = [
+  "ble-lock-status",
+  "ble-lock-lock-now",
+  "ble-lock-set-device",
+  "ble-lock-unlock-rssi",
+  "ble-lock-lock-rssi",
+  "ble-lock-wake-on-proximity",
+  "ble-lock-wake-without-unlocking",
+  "ble-lock-pause-while-locked",
+  "ble-lock-use-screensaver",
+  "ble-lock-turn-off-display",
+] as const;
+
+function bleLockConfig(overrides: Partial<BleLockConfig> = {}): BleLockConfig {
+  return {
+    schema_version: 1,
+    device_id: null,
+    device_name: null,
+    mode: "active",
+    unlock_rssi: null,
+    lock_rssi: null,
+    lock_delay_secs: 10,
+    no_signal_timeout_secs: 30,
+    wake_on_proximity: false,
+    wake_without_unlocking: false,
+    pause_now_playing: false,
+    use_screensaver_to_lock: false,
+    sleep_display: false,
+    ...overrides,
+  };
+}
+
+function bleLockStatus(overrides: Partial<BleLockStatus> = {}): BleLockStatus {
+  return {
+    platform_available: true,
+    bluetooth_state: "powered_on",
+    monitoring: true,
+    scanning: false,
+    selected_device: { id: "uuid-a", name: "Key Fob", rssi: -55 },
+    presence: "near",
+    averaged_rssi: -55,
+    screen_locked: false,
+    password_configured: true,
+    accessibility_trusted: true,
+    config: bleLockConfig(),
+    last_error: null,
+    ...overrides,
+  };
+}
+
+function itemIds(nodes: TrayMenuNode[]): string[] {
+  return nodes
+    .filter((node): node is ItemNode => node.kind === "item")
+    .map((node) => node.id);
+}
+
+function checkedIds(nodes: TrayMenuNode[]): string[] {
+  return nodes
+    .filter(
+      (node): node is ItemNode =>
+        node.kind === "item" && node.checked === true,
+    )
+    .map((node) => node.id);
+}
+
+function submenuItemIds(model: TrayMenuNode[], id: string): string[] {
+  return itemIds(submenuOf(model, id));
+}
+
+describe("BLE Lock tray submenu", () => {
+  it("adds the exact ble-lock-controls submenu with the ten frozen entries", () => {
+    const model = build({ bleLock: bleLockStatus() });
+    expect(submenuItemIds(model, "ble-lock-controls")).toEqual([
+      ...BLE_LOCK_CONTROL_IDS,
+    ]);
+  });
+
+  it("keeps the status line disabled and every actionable entry enabled", () => {
+    const model = build({ bleLock: bleLockStatus() });
+    expect(itemById(model, "ble-lock-status").enabled).toBe(false);
+    for (const id of BLE_LOCK_CONTROL_IDS) {
+      if (id === "ble-lock-status") continue;
+      expect(itemById(model, id).enabled, `${id} should be enabled`).toBe(true);
+    }
+  });
+
+  it("renders a status line from the tray.bleLock.status key", () => {
+    const model = build({ bleLock: bleLockStatus({ presence: "away" }) }, OPTIONS_TRANSLATOR);
+    const status = itemById(model, "ble-lock-status");
+    expect(status.enabled).toBe(false);
+    expect(status.label).toContain("tray.bleLock.status");
+  });
+
+  it("lists Disable plus every 5 dBm threshold in both RSSI submenus", () => {
+    const model = build({ bleLock: bleLockStatus() });
+    for (const prefix of ["ble-lock-unlock-rssi", "ble-lock-lock-rssi"]) {
+      expect(submenuItemIds(model, prefix)).toEqual([
+        `${prefix}-disable`,
+        ...BLE_LOCK_THRESHOLDS.map((value) => `${prefix}-${value}`),
+      ]);
+    }
+  });
+
+  it("checks only the configured unlock threshold independently of the lock threshold", () => {
+    const model = build({
+      bleLock: bleLockStatus({
+        config: bleLockConfig({ unlock_rssi: -60, lock_rssi: -80 }),
+      }),
+    });
+
+    expect(checkedIds(submenuOf(model, "ble-lock-unlock-rssi"))).toEqual([
+      "ble-lock-unlock-rssi--60",
+    ]);
+    expect(checkedIds(submenuOf(model, "ble-lock-lock-rssi"))).toEqual([
+      "ble-lock-lock-rssi--80",
+    ]);
+  });
+
+  it("checks Disable in each RSSI submenu when that action is disabled", () => {
+    const model = build({
+      bleLock: bleLockStatus({
+        config: bleLockConfig({ unlock_rssi: -60, lock_rssi: null }),
+      }),
+    });
+
+    expect(checkedIds(submenuOf(model, "ble-lock-unlock-rssi"))).toEqual([
+      "ble-lock-unlock-rssi--60",
+    ]);
+    expect(checkedIds(submenuOf(model, "ble-lock-lock-rssi"))).toEqual([
+      "ble-lock-lock-rssi-disable",
+    ]);
+  });
+
+  it("checks each optional behavior toggle from the shared snapshot", () => {
+    const model = build({
+      bleLock: bleLockStatus({
+        config: bleLockConfig({
+          wake_on_proximity: true,
+          wake_without_unlocking: false,
+          pause_now_playing: true,
+          use_screensaver_to_lock: true,
+          sleep_display: false,
+        }),
+      }),
+    });
+
+    expect(itemById(model, "ble-lock-wake-on-proximity").checked).toBe(true);
+    expect(itemById(model, "ble-lock-wake-without-unlocking").checked).toBe(false);
+    expect(itemById(model, "ble-lock-pause-while-locked").checked).toBe(true);
+    expect(itemById(model, "ble-lock-use-screensaver").checked).toBe(true);
+    expect(itemById(model, "ble-lock-turn-off-display").checked).toBe(false);
+  });
+
+  it("keeps the status line and Lock Now independent of a missing device", () => {
+    const model = build({
+      bleLock: bleLockStatus({ selected_device: null, monitoring: false }),
+    });
+    expect(itemById(model, "ble-lock-status").enabled).toBe(false);
+    expect(itemById(model, "ble-lock-lock-now").enabled).toBe(true);
   });
 });
 

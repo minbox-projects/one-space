@@ -1,5 +1,5 @@
 import { act, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import i18n from "@/i18n";
@@ -12,6 +12,21 @@ import {
 } from "@/test/mocks/tauri";
 import type { TrayMenuNode } from "@/lib/trayMenu";
 import * as aiWorkflowProfiles from "@/lib/aiWorkflowProfiles";
+
+/**
+ * The native-action fixtures model the macOS Tauri host. jsdom defaults to a
+ * non-macOS platform, which the platform guard treats as unavailable; the
+ * per-suite `beforeEach` pins macOS for positive native-call coverage and the
+ * `afterEach` restores the original value.
+ */
+const originalPlatform = window.navigator.platform;
+
+function setNavigatorPlatform(platform: string) {
+  Object.defineProperty(window.navigator, "platform", {
+    value: platform,
+    configurable: true,
+  });
+}
 
 type RegistryToolDescriptor = {
   id: string;
@@ -191,6 +206,8 @@ describe("App tray menu integration", () => {
     hosts: string[];
     installations: unknown[];
   };
+  let bleLockStatus: ReturnType<typeof bleLockStatusFixture>;
+  let bleLockLockNowError: unknown;
 
   function appActiveMatrix(name: string, backendModel: string) {
     return {
@@ -214,6 +231,37 @@ describe("App tray menu integration", () => {
       auto_disabled_count: 0,
       key_count: 1,
       default_key_id: "k1",
+    };
+  }
+
+  function bleLockStatusFixture() {
+    return {
+      platform_available: true,
+      bluetooth_state: "powered_on",
+      monitoring: true,
+      scanning: false,
+      selected_device: { id: "uuid-a", name: "Key Fob", rssi: -55 },
+      presence: "near",
+      averaged_rssi: -55,
+      screen_locked: false,
+      password_configured: true,
+      accessibility_trusted: true,
+      config: {
+        schema_version: 1,
+        device_id: "uuid-a",
+        device_name: "Key Fob",
+        mode: "active",
+        unlock_rssi: -60,
+        lock_rssi: -80,
+        lock_delay_secs: 10,
+        no_signal_timeout_secs: 30,
+        wake_on_proximity: false,
+        wake_without_unlocking: false,
+        pause_now_playing: false,
+        use_screensaver_to_lock: false,
+        sleep_display: false,
+      },
+      last_error: null,
     };
   }
 
@@ -316,6 +364,8 @@ describe("App tray menu integration", () => {
     activeModelsResult = null;
     activeModelsError = null;
     activationReport = { active_profile: "team-alpha", hosts: [], installations: [] };
+    bleLockStatus = bleLockStatusFixture();
+    bleLockLockNowError = null;
     aboutModalHarness.props.length = 0;
 
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
@@ -328,6 +378,8 @@ describe("App tray menu integration", () => {
       removeEventListener: vi.fn(),
     }) as unknown as typeof window.matchMedia;
 
+    setNavigatorPlatform("MacIntel");
+
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText: writeTextMock },
       configurable: true,
@@ -336,8 +388,9 @@ describe("App tray menu integration", () => {
 
     await i18n.changeLanguage("en");
 
-    invokeMock.mockImplementation(async (command: string) => {
-      switch (command) {
+    invokeMock.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        switch (command) {
         case "should_show_onboarding":
           return false;
         case "get_storage_config":
@@ -429,6 +482,25 @@ describe("App tray menu integration", () => {
           return activeModelsResult;
         case "ai_workflow_activate_profile":
           return activationReport;
+        case "ble_lock_get_status":
+          return bleLockStatus;
+        case "ble_lock_lock_now":
+          if (bleLockLockNowError) throw bleLockLockNowError;
+          bleLockStatus = { ...bleLockStatus, screen_locked: true };
+          return bleLockStatus;
+        case "ble_lock_save_config": {
+          const nextConfig = (args as { config?: unknown } | undefined)?.config;
+          bleLockStatus = {
+            ...bleLockStatus,
+            config: (nextConfig ?? bleLockStatus.config) as typeof bleLockStatus.config,
+          };
+          return bleLockStatus;
+        }
+        case "ble_lock_select_device":
+          return bleLockStatus;
+        case "ble_lock_request_accessibility":
+          bleLockStatus = { ...bleLockStatus, accessibility_trusted: true };
+          return bleLockStatus;
         default:
           return undefined;
       }
@@ -448,6 +520,10 @@ describe("App tray menu integration", () => {
         };
       },
     );
+  });
+
+  afterEach(() => {
+    setNavigatorPlatform(originalPlatform);
   });
 
   it("applies the tray menu on mount", async () => {
@@ -1085,5 +1161,161 @@ describe("App tray menu integration", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // BLE Lock tray controls: one shared snapshot drives the submenu, every
+  // action calls the same typed wrapper as the tool page, and failures are
+  // localized instead of leaking the raw error.
+  // -------------------------------------------------------------------------
+
+  const BLE_LOCK_TRAY_IDS = [
+    "ble-lock-status",
+    "ble-lock-lock-now",
+    "ble-lock-set-device",
+    "ble-lock-unlock-rssi",
+    "ble-lock-lock-rssi",
+    "ble-lock-wake-on-proximity",
+    "ble-lock-wake-without-unlocking",
+    "ble-lock-pause-while-locked",
+    "ble-lock-use-screensaver",
+    "ble-lock-turn-off-display",
+  ] as const;
+
+  it("includes the ble-lock controls submenu from the shared runtime snapshot", async () => {
+    renderApp();
+    await waitForAppliedMenu();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "ble-lock-controls")).toBeDefined(),
+    );
+    const model = latestModel();
+    for (const id of BLE_LOCK_TRAY_IDS) {
+      expect(findModelItem(model, id), `${id} should exist`).toBeDefined();
+    }
+    expect(findModelItem(model, "ble-lock-status")?.enabled).toBe(false);
+    expect(findModelItem(model, "ble-lock-wake-on-proximity")?.checked).toBe(
+      false,
+    );
+  });
+
+  it("locks now from the tray through the shared wrapper", async () => {
+    renderApp();
+
+    await fireActionAndExpectCommand("ble-lock-lock-now", "ble_lock_lock_now");
+  });
+
+  it("opens the ble-lock tool for Set Device", async () => {
+    renderApp();
+    await waitForAppliedMenu();
+    await waitForSetActiveTab();
+
+    const spy = installSetActiveTabSpy();
+    const beforeShow = commandCallCount("show_main_window");
+
+    await fireTrayAction("ble-lock-set-device");
+
+    await waitFor(() =>
+      expect(commandCallCount("show_main_window")).toBeGreaterThan(beforeShow),
+    );
+    expect(spy).toHaveBeenCalledWith("ble-lock");
+  });
+
+  it("saves a flipped toggle from the tray and refreshes the check mark", async () => {
+    renderApp();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "ble-lock-wake-on-proximity")?.checked).toBe(
+        false,
+      ),
+    );
+
+    await fireTrayAction("ble-lock-wake-on-proximity");
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "ble-lock-wake-on-proximity")?.checked).toBe(
+        true,
+      ),
+    );
+    expect(commandCallCount("ble_lock_save_config")).toBeGreaterThan(0);
+  });
+
+  it("reflects a ble-lock-status-updated event in the tray check marks", async () => {
+    renderApp();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "ble-lock-wake-on-proximity")?.checked).toBe(
+        false,
+      ),
+    );
+
+    await triggerEvent("ble-lock-status-updated", {
+      ...bleLockStatus,
+      config: { ...bleLockStatus.config, wake_on_proximity: true },
+    });
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "ble-lock-wake-on-proximity")?.checked).toBe(
+        true,
+      ),
+    );
+  });
+
+  it("surfaces a localized ble-lock failure instead of the raw error", async () => {
+    bleLockLockNowError = { code: "native_action_unavailable" };
+    renderApp();
+    await waitForAppliedMenu();
+
+    await fireTrayAction("ble-lock-lock-now");
+
+    const expected = String(i18n.t("bleLockError_native_action_unavailable"));
+    await waitFor(() =>
+      expect(document.body.textContent ?? "").toContain(expected),
+    );
+  });
+
+  it("keeps BLE Lock native tray actions disabled and invokes no command on a Windows Tauri host", async () => {
+    setNavigatorPlatform("Win32");
+    renderApp();
+    await waitForAppliedMenu();
+
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "ble-lock-controls")).toBeDefined(),
+    );
+
+    // The unavailable platform is surfaced through a localized label, not a
+    // raw enum or the generic running-status line.
+    const unavailableLabel = String(i18n.t("bleLockPlatformUnavailable"));
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "ble-lock-status")?.label).toBe(
+        unavailableLabel,
+      ),
+    );
+
+    // Every native action is disabled; navigation stays available.
+    for (const id of [
+      "ble-lock-lock-now",
+      "ble-lock-unlock-rssi",
+      "ble-lock-lock-rssi",
+      "ble-lock-wake-on-proximity",
+      "ble-lock-wake-without-unlocking",
+      "ble-lock-pause-while-locked",
+      "ble-lock-use-screensaver",
+      "ble-lock-turn-off-display",
+    ]) {
+      expect(findModelItem(latestModel(), id)?.enabled, `${id} disabled`).toBe(
+        false,
+      );
+    }
+    expect(findModelItem(latestModel(), "ble-lock-set-device")?.enabled).toBe(
+      true,
+    );
+
+    // No native invoke happens on the unsupported host.
+    expect(
+      invokeMock.mock.calls.filter(([name]) =>
+        String(name).startsWith("ble_lock_"),
+      ),
+    ).toHaveLength(0);
   });
 });

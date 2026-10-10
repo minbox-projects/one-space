@@ -821,3 +821,164 @@ describe("AI 网关告警标签关闭与自动禁用提示国际化键", () => {
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// BLE Lock tool: bilingual labels, error codes and the tray control copies.
+// RED assertions: Step 3 must add every key to both dictionaries.
+// ---------------------------------------------------------------------------
+
+const BLE_LOCK_LABEL_COPY: Record<string, Record<"en" | "zh", string>> = {
+  bleLock: { en: "BLE Lock", zh: "蓝牙锁" },
+  bleLockDesc: {
+    en: "Monitor one Bluetooth device and lock or unlock by proximity.",
+    zh: "监控一个蓝牙设备，并根据距离锁定或解锁。",
+  },
+  bleLockLauncherDesc: {
+    en: "Lock or unlock by Bluetooth proximity.",
+    zh: "根据蓝牙距离锁定或解锁。",
+  },
+  bleLockPlatformUnavailable: {
+    en: "Bluetooth lock is available only in the OneSpace macOS desktop app.",
+    zh: "蓝牙锁仅在 OneSpace macOS 桌面应用中可用。",
+  },
+  bleLockScan: { en: "Scan for devices", zh: "扫描设备" },
+  bleLockStopScan: { en: "Stop scanning", zh: "停止扫描" },
+  bleLockDevices: { en: "Nearby devices", zh: "附近设备" },
+  bleLockNoDevices: { en: "No devices found yet.", zh: "尚未发现设备。" },
+  bleLockSelectDevice: { en: "Select", zh: "选择" },
+  bleLockClearDevice: { en: "Clear device", zh: "清除设备" },
+  bleLockUnlockRssi: { en: "Unlock RSSI (dBm)", zh: "解锁 RSSI (dBm)" },
+  bleLockLockRssi: { en: "Lock RSSI (dBm)", zh: "锁定 RSSI (dBm)" },
+  bleLockDisable: { en: "Disable", zh: "禁用" },
+  bleLockLockDelay: { en: "Lock delay (seconds)", zh: "锁定延迟（秒）" },
+  bleLockNoSignalTimeout: {
+    en: "No-signal timeout (seconds)",
+    zh: "无信号超时（秒）",
+  },
+  bleLockWakeOnProximity: { en: "Wake on proximity", zh: "靠近时唤醒" },
+  bleLockWakeWithoutUnlocking: {
+    en: "Wake without unlocking",
+    zh: "只唤醒不解锁",
+  },
+  bleLockPauseWhileLocked: {
+    en: "Pause media while locked",
+    zh: "锁定时暂停媒体",
+  },
+  bleLockUseScreensaver: { en: "Use screensaver to lock", zh: "使用屏幕保护锁定" },
+  bleLockTurnOffDisplay: { en: "Turn off display", zh: "关闭显示器" },
+  bleLockLockNow: { en: "Lock now", zh: "立即锁定" },
+  bleLockPassword: { en: "Login password", zh: "登录密码" },
+  bleLockSetPassword: { en: "Save password", zh: "保存密码" },
+  bleLockDeletePassword: { en: "Delete password", zh: "删除密码" },
+  bleLockPasswordConfigured: { en: "Password saved", zh: "密码已保存" },
+  bleLockRequestAccessibility: {
+    en: "Request Accessibility",
+    zh: "请求辅助功能权限",
+  },
+};
+
+const BLE_LOCK_TRAY_COPY: Record<string, Record<"en" | "zh", string>> = {
+  "tray.bleLock.controls": { en: "BLE Lock", zh: "蓝牙锁" },
+  "tray.bleLock.status": { en: "Status: {{status}}", zh: "状态：{{status}}" },
+  "tray.bleLock.lockNow": { en: "Lock Now", zh: "立即锁定" },
+  "tray.bleLock.setDevice": { en: "Set Device", zh: "设置设备" },
+  "tray.bleLock.unlockRssi": { en: "Unlock RSSI", zh: "解锁 RSSI" },
+  "tray.bleLock.lockRssi": { en: "Lock RSSI", zh: "锁定 RSSI" },
+  "tray.bleLock.wakeOnProximity": { en: "Wake on Proximity", zh: "靠近时唤醒" },
+  "tray.bleLock.wakeWithoutUnlocking": {
+    en: "Wake without Unlocking",
+    zh: "只唤醒不解锁",
+  },
+  "tray.bleLock.pauseWhileLocked": {
+    en: "Pause while Locked",
+    zh: "锁定时暂停",
+  },
+  "tray.bleLock.useScreensaver": {
+    en: "Use Screensaver",
+    zh: "使用屏幕保护",
+  },
+  "tray.bleLock.turnOffDisplay": { en: "Turn Off Display", zh: "关闭显示器" },
+  "tray.bleLock.disable": { en: "Disable", zh: "禁用" },
+};
+
+const BLE_LOCK_ERROR_CODES = [
+  "platform_unavailable",
+  "bluetooth_powered_off",
+  "bluetooth_unauthorized",
+  "bluetooth_unsupported",
+  "device_not_selected",
+  "device_unavailable",
+  "invalid_config",
+  "keychain_unavailable",
+  "password_not_configured",
+  "accessibility_required",
+  "system_sleep",
+  "native_action_unavailable",
+  "media_control_unavailable",
+] as const;
+
+describe("蓝牙锁国际化键", () => {
+  it.each(["en", "zh"] as const)(
+    "为 %s 提供工具界面精确文案",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      for (const [key, copy] of Object.entries(BLE_LOCK_LABEL_COPY)) {
+        expect(i18n.t(key), `${language}:${key} 文案不匹配`).toBe(
+          copy[language],
+        );
+      }
+    },
+  );
+
+  it.each(["en", "zh"] as const)(
+    "为 %s 提供托盘控制精确文案",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      for (const [key, copy] of Object.entries(BLE_LOCK_TRAY_COPY)) {
+        expect(i18n.t(key), `${language}:${key} 文案不匹配`).toBe(
+          copy[language],
+        );
+      }
+    },
+  );
+
+  it.each(["en", "zh"] as const)(
+    "为 %s 的托盘状态行保留 {{status}} 并正常插值",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      const raw = resourceBundle(language)["tray.bleLock.status"];
+      expect(typeof raw, `${language}:tray.bleLock.status 应为字符串`).toBe(
+        "string",
+      );
+      expect(raw as string).toContain("{{status}}");
+      expect(i18n.t("tray.bleLock.status", { status: "near" })).toContain("near");
+      expect(i18n.t("tray.bleLock.status", { status: "near" })).not.toContain(
+        "{{",
+      );
+    },
+  );
+
+  it.each(["en", "zh"] as const)(
+    "为 %s 提供全部稳定错误码的真实文案",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      for (const code of BLE_LOCK_ERROR_CODES) {
+        const key = `bleLockError_${code}`;
+        const value = i18n.t(key);
+        expect(value, `${language}:${key} 应回退为键名`).not.toBe(key);
+        expect(value.trim(), `${language}:${key} 不应为空`).not.toBe("");
+      }
+    },
+  );
+
+  it("新增蓝牙锁键后 en 与 zh 的键路径集合仍完全一致", () => {
+    const enPaths = collectKeyPaths(resourceBundle("en"));
+    const zhPaths = collectKeyPaths(resourceBundle("zh"));
+    const enSet = new Set(enPaths);
+    const zhSet = new Set(zhPaths);
+    expect({
+      onlyEn: enPaths.filter((path) => !zhSet.has(path)),
+      onlyZh: zhPaths.filter((path) => !enSet.has(path)),
+    }).toEqual({ onlyEn: [], onlyZh: [] });
+  });
+});

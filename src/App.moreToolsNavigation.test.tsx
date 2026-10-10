@@ -62,6 +62,15 @@ vi.mock("@/components/Launcher", () => ({
       >
         从启动台打开短链接
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          (window as typeof window & { setActiveTab?: (tab: string) => void })
+            .setActiveTab?.("ble-lock")
+        }
+      >
+        从启动台打开蓝牙锁
+      </button>
     </div>
   ),
 }));
@@ -270,6 +279,34 @@ describe("App 更多工具详情导航", () => {
     expect(
       screen.getByRole("button", { name: "从更多工具打开短链接" }),
     ).toBeInTheDocument();
+  });
+
+  it("从启动台按稳定 ID 进入蓝牙锁详情，显示注册表标题并返回启动台", async () => {
+    const user = userEvent.setup();
+    const registry = await loadRegistry();
+    const descriptor = registry.getToolboxTool("ble-lock");
+    expect(descriptor).toBeDefined();
+    const expectedTitle = i18n.t(descriptor!.labelKey);
+
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "从启动台打开蓝牙锁" }),
+    );
+    expect(screen.getByTestId("active-tool")).toHaveTextContent("ble-lock");
+    expect(
+      screen.getByRole("navigation", { name: /Breadcrumb|面包屑/ }),
+    ).toHaveTextContent(expectedTitle);
+
+    await user.click(screen.getByRole("button", { name: "返回" }));
+    expect(screen.getByTestId("launcher")).toHaveAttribute(
+      "data-visible",
+      "true",
+    );
   });
 
   it("点击代码片段后显示代码片段页而非更多工具详情", async () => {

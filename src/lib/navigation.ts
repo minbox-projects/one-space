@@ -13,7 +13,8 @@ export type MoreToolsSection =
   | "short-link"
   | "file-sharing"
   | "jtt-data-parser"
-  | "ai-workflow-model-switcher";
+  | "ai-workflow-model-switcher"
+  | "ble-lock";
 
 export type ResolvedNavigationTarget = {
   tab: string;

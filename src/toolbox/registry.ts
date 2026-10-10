@@ -1,6 +1,7 @@
 import i18n from "@/i18n";
 
 import { aiWorkflowModelSwitcherTool } from "./plugins/ai-workflow-model-switcher";
+import { bleLockTool } from "./plugins/ble-lock";
 import { bookmarksTool } from "./plugins/bookmarks";
 import { fileSharingTool } from "./plugins/file-sharing";
 import { jsonParserTool } from "./plugins/json-parser";
@@ -22,6 +23,7 @@ import type {
 
 export const TOOLBOX_TOOLS: readonly ToolboxToolDescriptor[] = [
   bookmarksTool,
+  bleLockTool,
   sshServersTool,
   sshTunnelsTool,
   protocolRouterTool,

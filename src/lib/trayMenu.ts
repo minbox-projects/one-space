@@ -8,6 +8,7 @@ import {
 import { TrayIcon } from "@tauri-apps/api/tray";
 
 import { getToolboxTool, resolveToolboxText } from "@/toolbox/registry";
+import type { BleLockConfig, BleLockStatus } from "@/lib/bleLock";
 import {
   SUPPORTED_ROLES,
   SUPPORTED_TOOLS,
@@ -41,6 +42,7 @@ export interface TrayMenuState {
   sharing: { running: boolean; fileCount: number };
   shortcuts: { main: string | null | undefined; quick: string | null | undefined };
   aiWorkflow?: { profile: ProfileMatrix | null; unavailable?: boolean };
+  bleLock?: BleLockStatus;
 }
 
 export type TrayTranslate = (key: string, options?: Record<string, unknown>) => string;
@@ -218,6 +220,105 @@ function serviceLabel(
     : t(runningKey);
 }
 
+const BLE_LOCK_RSSI_THRESHOLDS: readonly number[] = [
+  -95, -90, -85, -80, -75, -70, -65, -60, -55, -50, -45, -40, -35, -30,
+];
+
+const DEFAULT_BLE_LOCK_UI_CONFIG: BleLockConfig = {
+  schema_version: 1,
+  device_id: null,
+  device_name: null,
+  mode: "active",
+  unlock_rssi: null,
+  lock_rssi: null,
+  lock_delay_secs: 10,
+  no_signal_timeout_secs: 30,
+  wake_on_proximity: false,
+  wake_without_unlocking: false,
+  pause_now_playing: false,
+  use_screensaver_to_lock: false,
+  sleep_display: false,
+};
+
+function buildBleLockRssiMenu(
+  prefix: string,
+  current: number | null,
+  nativeEnabled: boolean,
+  t: TrayTranslate,
+): TrayMenuNode[] {
+  return [
+    menuItem(`${prefix}-disable`, t("tray.bleLock.disable"), {
+      checked: current === null,
+      enabled: nativeEnabled,
+    }),
+    ...BLE_LOCK_RSSI_THRESHOLDS.map((value) =>
+      menuItem(`${prefix}-${value}`, `${value} dBm`, {
+        checked: current === value,
+        enabled: nativeEnabled,
+      }),
+    ),
+  ];
+}
+
+function buildBleLockMenu(
+  status: BleLockStatus | undefined,
+  t: TrayTranslate,
+): TrayMenuNode[] {
+  const config = status?.config ?? DEFAULT_BLE_LOCK_UI_CONFIG;
+  const nativeEnabled = status ? status.platform_available : true;
+  const statusLabel = status && !status.platform_available
+    ? t("bleLockPlatformUnavailable")
+    : t("tray.bleLock.status", {
+        status: t(`bleLockPresence_${status?.presence ?? "unknown"}`),
+      });
+  return [
+    menuItem("ble-lock-status", statusLabel, { enabled: false }),
+    menuItem("ble-lock-lock-now", t("tray.bleLock.lockNow"), {
+      enabled: nativeEnabled,
+    }),
+    menuItem("ble-lock-set-device", t("tray.bleLock.setDevice")),
+    menuItem("ble-lock-unlock-rssi", t("tray.bleLock.unlockRssi"), {
+      enabled: nativeEnabled,
+      submenu: buildBleLockRssiMenu(
+        "ble-lock-unlock-rssi",
+        config.unlock_rssi,
+        nativeEnabled,
+        t,
+      ),
+    }),
+    menuItem("ble-lock-lock-rssi", t("tray.bleLock.lockRssi"), {
+      enabled: nativeEnabled,
+      submenu: buildBleLockRssiMenu(
+        "ble-lock-lock-rssi",
+        config.lock_rssi,
+        nativeEnabled,
+        t,
+      ),
+    }),
+    menuItem("ble-lock-wake-on-proximity", t("tray.bleLock.wakeOnProximity"), {
+      checked: config.wake_on_proximity,
+      enabled: nativeEnabled,
+    }),
+    menuItem(
+      "ble-lock-wake-without-unlocking",
+      t("tray.bleLock.wakeWithoutUnlocking"),
+      { checked: config.wake_without_unlocking, enabled: nativeEnabled },
+    ),
+    menuItem("ble-lock-pause-while-locked", t("tray.bleLock.pauseWhileLocked"), {
+      checked: config.pause_now_playing,
+      enabled: nativeEnabled,
+    }),
+    menuItem("ble-lock-use-screensaver", t("tray.bleLock.useScreensaver"), {
+      checked: config.use_screensaver_to_lock,
+      enabled: nativeEnabled,
+    }),
+    menuItem("ble-lock-turn-off-display", t("tray.bleLock.turnOffDisplay"), {
+      checked: config.sleep_display,
+      enabled: nativeEnabled,
+    }),
+  ];
+}
+
 function buildServicesMenu(state: TrayMenuState, t: TrayTranslate): TrayMenuNode[] {
   const sharingLabel = state.sharing.running
     ? t("tray.services.sharing.running", { files: state.sharing.fileCount })
@@ -294,6 +395,9 @@ export function buildTrayMenuModel(state: TrayMenuState, t: TrayTranslate): Tray
     }),
     menuItem("more-pages", t("tray.morePages"), {
       submenu: buildMorePagesMenu(t),
+    }),
+    menuItem("ble-lock-controls", t("tray.bleLock.controls"), {
+      submenu: buildBleLockMenu(state.bleLock, t),
     }),
     separator(),
     menuItem("services", t("tray.services"), {

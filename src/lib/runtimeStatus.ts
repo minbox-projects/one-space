@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 
 import { aiGatewayStatus } from "@/lib/aiGateway";
+import { bleLockGetStatus } from "@/lib/bleLock";
 import { protocolRouterStatus } from "@/lib/protocolRouter";
 import { fileSharingStatus } from "@/lib/fileSharing";
 import { sshTunnelsSnapshot } from "@/lib/sshTunnels";
@@ -18,7 +19,8 @@ export type RuntimeService =
   | "gateway"
   | "router"
   | "ssh-tunnels"
-  | "file-sharing";
+  | "file-sharing"
+  | "ble-lock";
 
 export type RuntimeStatusSnapshot<T> = {
   data: T | null;
@@ -44,6 +46,7 @@ const COMMANDS: Record<RuntimeService, () => Promise<unknown>> = {
   router: () => protocolRouterStatus(),
   "ssh-tunnels": () => sshTunnelsSnapshot(),
   "file-sharing": () => fileSharingStatus(),
+  "ble-lock": () => bleLockGetStatus(),
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -62,6 +65,13 @@ const VALIDATORS: Record<RuntimeService, (payload: unknown) => boolean> = {
     isRecord(payload) &&
     typeof payload.running === "boolean" &&
     Array.isArray(payload.files),
+  // A ble-lock payload must carry the typed status, not a partial snapshot that
+  // only announces platform availability.
+  "ble-lock": (payload) =>
+    isRecord(payload) &&
+    typeof payload.platform_available === "boolean" &&
+    isRecord(payload.config) &&
+    typeof payload.config.mode === "string",
 };
 
 const entries = new Map<RuntimeService, ServiceEntry>();
