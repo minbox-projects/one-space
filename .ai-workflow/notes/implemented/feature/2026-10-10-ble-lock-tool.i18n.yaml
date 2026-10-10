@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-10-ble-lock-tool.md
-2026-10-10-ble-lock-tool.md: 4a5c6753c0854c70f08e8a3a9fbdd29492699be9
-2026-10-10-ble-lock-tool.zh.md: 1cc2679fa1624384bd710f847c7aab9efe080776
+2026-10-10-ble-lock-tool.md: 3c1e6f3224212b61dfe179fe3e12ff1c8e9f70bb
+2026-10-10-ble-lock-tool.zh.md: af1aaab4c05bbcd42d775724cd8e5005fba149e5
