@@ -4547,7 +4547,8 @@
         "src-tauri/Info.plist"
       ],
       "tests": [
-        "src-tauri/src/ble_lock/tests.rs"
+        "src-tauri/src/ble_lock/tests.rs",
+        "src-tauri/src/ble_lock/tests/native.rs"
       ],
       "symbols": [
         {
@@ -4726,6 +4727,18 @@
         },
         {
           "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "current_account_name",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
+          "name": "observe_bluetooth_state",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ble_lock/native.rs",
           "name": "ble_lock_get_status",
           "kind": "command",
           "visibility": "public"
@@ -4808,7 +4821,8 @@
         "src-tauri/src/lib.rs",
         "src-tauri/src/app_runtime/run_app.rs",
         "src-tauri/src/app_runtime/shortcuts_tray.rs",
-        "src-tauri/Info.plist"
+        "src-tauri/Info.plist",
+        "src-tauri/src/ble_lock/tests/native.rs"
       ],
       "relations": [],
       "shared_entry": false
