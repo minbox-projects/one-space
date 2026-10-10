@@ -64,8 +64,22 @@ tokio = { version = "1", features = ["test-util"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSWorkspace"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSNotification", "NSOperation", "NSString", "block2"] }
+objc2-core-bluetooth = "0.3.2"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "NSObject",
+    "NSNotification",
+    "NSOperation",
+    "NSString",
+    "NSUUID",
+    "NSArray",
+    "NSDictionary",
+    "NSValue",
+    "NSError",
+    "NSData",
+    "block2",
+] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
