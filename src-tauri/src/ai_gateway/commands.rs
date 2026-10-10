@@ -474,6 +474,17 @@ pub fn ai_gateway_upsert_provider(
                 "provider weight must be between {MIN_PROVIDER_WEIGHT} and {MAX_PROVIDER_WEIGHT}"
             ));
         }
+        // A submitted template binding must resolve against a known, non-deleted
+        // template before anything is staged; `None` (or a missing field)
+        // unbinds. An unknown or deleted id is rejected without a write, so a
+        // broken binding can never be persisted through the upsert.
+        if let Some(template_id) = provider.template_id.as_deref() {
+            let template_id = template_id.trim();
+            if template_id.is_empty() {
+                return Err("provider template id must not be blank".to_string());
+            }
+            effective_template(config, template_id)?;
+        }
         // A key name is required and may repeat; reject before anything is staged.
         for key in &provider.keys {
             if key.name.trim().is_empty() {

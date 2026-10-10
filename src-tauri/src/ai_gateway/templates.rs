@@ -8,8 +8,9 @@
 
 use super::storage::new_provider_id;
 use super::types_config::{
-    now_ts, GatewayConfig, GatewayUpstreamProvider, ModelMapping, ModelPrice, OffPeakPrice,
-    ProviderTemplate, ProviderTemplateModel, ProviderTemplateState, UpstreamKey, UpstreamProtocol,
+    now_ts, ErrorStrategy, GatewayConfig, GatewayUpstreamProvider, ModelMapping, ModelPrice,
+    OffPeakPrice, ProviderTemplate, ProviderTemplateModel, ProviderTemplateState, QuotaStrategy,
+    SyncStrategy, UpstreamKey, UpstreamProtocol,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -30,6 +31,12 @@ struct RawTemplate {
     base_url: String,
     #[serde(default)]
     protocol: Option<String>,
+    #[serde(default)]
+    sync_strategy: Option<String>,
+    #[serde(default)]
+    quota_strategy: Option<String>,
+    #[serde(default)]
+    error_strategy: Option<String>,
     #[serde(default)]
     pub source: String,
     #[serde(default)]
@@ -72,6 +79,31 @@ fn parse_protocol(raw: &str) -> Option<UpstreamProtocol> {
         "responses" => Some(UpstreamProtocol::Responses),
         _ => None,
     }
+}
+
+/// Tolerant read of a persisted sync strategy: only the closed known values are
+/// honored and anything else (missing, unknown, legacy) resolves to `generic`.
+fn parse_sync_strategy(raw: Option<&str>) -> SyncStrategy {
+    match raw {
+        Some("opencode_go") => SyncStrategy::OpencodeGo,
+        _ => SyncStrategy::Generic,
+    }
+}
+
+/// Tolerant read of a persisted quota strategy: only the closed known values are
+/// honored and anything else resolves to `none`.
+fn parse_quota_strategy(raw: Option<&str>) -> QuotaStrategy {
+    match raw {
+        Some("commandcode") => QuotaStrategy::Commandcode,
+        Some("opencode_go") => QuotaStrategy::OpencodeGo,
+        _ => QuotaStrategy::NoQuota,
+    }
+}
+
+/// Tolerant read of a persisted error strategy: only `generic` exists today and
+/// anything else resolves to it.
+fn parse_error_strategy(_raw: Option<&str>) -> ErrorStrategy {
+    ErrorStrategy::Generic
 }
 
 /// Parse a top-level JSON array of templates into the validated template model.
@@ -156,6 +188,9 @@ pub fn parse_template_snapshot(json: &str) -> Result<Vec<ProviderTemplate>, Stri
             description: item.description,
             base_url: item.base_url,
             protocol,
+            sync_strategy: parse_sync_strategy(item.sync_strategy.as_deref()),
+            quota_strategy: parse_quota_strategy(item.quota_strategy.as_deref()),
+            error_strategy: parse_error_strategy(item.error_strategy.as_deref()),
             source: item.source,
             models_url,
             models,
@@ -298,6 +333,31 @@ pub(in crate::ai_gateway) fn effective_template(
         return Ok(template);
     }
     find_builtin_template(template_id)
+}
+
+/// Resolve the effective template for a provider binding, or `None` when the
+/// provider is unbound or its stored `template_id` no longer resolves (unknown
+/// or deleted). A missing/broken binding yields the generic policy at runtime
+/// through the callers' defaults; no URL, name or icon is ever consulted.
+pub(in crate::ai_gateway) fn effective_provider_template(
+    config: &GatewayConfig,
+    provider: &GatewayUpstreamProvider,
+) -> Option<ProviderTemplate> {
+    provider
+        .template_id
+        .as_deref()
+        .and_then(|template_id| effective_template(config, template_id).ok())
+}
+
+/// The effective quota strategy for a provider: its bound template's declared
+/// strategy, else `none` for an unbound, unknown or deleted binding.
+pub(in crate::ai_gateway) fn effective_quota_strategy(
+    config: &GatewayConfig,
+    provider: &GatewayUpstreamProvider,
+) -> QuotaStrategy {
+    effective_provider_template(config, provider)
+        .map(|template| template.quota_strategy)
+        .unwrap_or_default()
 }
 
 /// Build the ordered view of provider templates: persisted sync/custom results
@@ -612,6 +672,35 @@ fn parse_model_list_source(
             off_peaks: previous_model.map(|model| model.off_peaks.clone()).unwrap_or_default(),
             reasoning_efforts: previous_model.map(|model| model.reasoning_efforts.clone()).unwrap_or_default(),
         });
+    }
+
+    if previous.sync_strategy == SyncStrategy::OpencodeGo {
+        // A Go sync is declaration-aware: only an id the effective template
+        // explicitly declares as Chat Completions/Responses — or one the source
+        // itself declares with a supported endpoint — is compatible. An
+        // undeclared, Messages-only or metadata-less id is never guessed as Chat.
+        let declared: Vec<(&str, UpstreamProtocol)> = previous
+            .models
+            .iter()
+            .filter_map(|model| {
+                model
+                    .protocol
+                    .map(|protocol| (model.upstream_model.as_str(), protocol))
+            })
+            .collect();
+        let mut compatible: Vec<ProviderTemplateModel> = Vec::with_capacity(merged.len());
+        for mut model in merged {
+            if let Some((_, declared_protocol)) = declared
+                .iter()
+                .find(|(identifier, _)| *identifier == model.upstream_model)
+            {
+                model.protocol = Some(*declared_protocol);
+                compatible.push(model);
+            } else if model.protocol.is_some() {
+                compatible.push(model);
+            }
+        }
+        merged = compatible;
     }
 
     if merged.is_empty() {

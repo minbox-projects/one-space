@@ -30,8 +30,10 @@ pub const MAX_PROVIDER_WEIGHT: u32 = 100;
 ///
 /// Version 2 replaces the provider-level single `api_key` with the ordered
 /// `keys` pool; version 1 and older files are converted once by
-/// [`super::migration::migrate_legacy_config`].
-pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 2;
+/// [`super::migration::migrate_legacy_config`]. Version 3 carries the
+/// `opencode-go` template identity and provider bindings, replacing the old
+/// `opencode-zen` built-in through the same version-gated migration.
+pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 3;
 
 pub(in crate::ai_gateway) fn default_port() -> u16 {
     if cfg!(debug_assertions) {
@@ -289,6 +291,46 @@ impl UpstreamProtocol {
     }
 }
 
+/// Model-synchronization strategy declared by a provider template.
+///
+/// `generic` keeps today's model-list parsing and protocol-inheritance
+/// fallback; `opencode_go` restricts a sync to model ids that the template
+/// explicitly declares as Chat Completions or Responses (or that a future
+/// source payload declares with a supported endpoint), never guessing a
+/// protocol for undeclared or Messages-only ids.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncStrategy {
+    #[default]
+    Generic,
+    OpencodeGo,
+}
+
+/// Quota/usage monitoring strategy declared by a provider template.
+///
+/// `none` performs no provider-specific monitor query, `commandcode` uses the
+/// fixed CommandCode credits endpoint and `opencode_go` uses the fixed OpenCode
+/// Go usage endpoint. The strategy is authoritative over any URL heuristic.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum QuotaStrategy {
+    #[serde(rename = "none")]
+    #[default]
+    NoQuota,
+    #[serde(rename = "commandcode")]
+    Commandcode,
+    #[serde(rename = "opencode_go")]
+    OpencodeGo,
+}
+
+/// Error-handling strategy declared by a provider template. Only the existing
+/// generic classification exists in this release.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorStrategy {
+    #[default]
+    Generic,
+}
+
 /// An upstream OpenAI-compatible provider used as a forwarding target.
 ///
 /// `enabled` carries the user's intent; runtime health lives on each mapping
@@ -408,7 +450,7 @@ impl Default for ProviderTemplateModel {
 }
 
 /// A built-in provider template shipped with the app.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ProviderTemplate {
     pub id: String,
     #[serde(default)]
@@ -419,6 +461,16 @@ pub struct ProviderTemplate {
     pub base_url: String,
     #[serde(default)]
     pub protocol: UpstreamProtocol,
+    /// Model-synchronization strategy; a missing value on an older template
+    /// reads as `generic`.
+    #[serde(default)]
+    pub sync_strategy: SyncStrategy,
+    /// Quota/usage monitoring strategy; a missing value reads as `none`.
+    #[serde(default)]
+    pub quota_strategy: QuotaStrategy,
+    /// Error-handling strategy; a missing value reads as `generic`.
+    #[serde(default)]
+    pub error_strategy: ErrorStrategy,
     #[serde(default)]
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

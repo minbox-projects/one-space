@@ -40,6 +40,7 @@ fn sample_template(id: &str, models_url: Option<&str>) -> ProviderTemplate {
         models_url: models_url.map(str::to_string),
         models: Vec::new(),
         icon: None,
+        ..ProviderTemplate::default()
     }
 }
 
