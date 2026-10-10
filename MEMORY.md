@@ -135,7 +135,7 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 - Coding 以 TDD 在项目内临时 worktree 实现单个已批准任务，完成后依次通过 Spec Review 与 Standards Review 才可合并。
 - 架构、归属、公共符号、路径或工作流规则变化时，必须同步更新 `MEMORY.md` 与 `navigation.json` 并重新生成、校验 `navigation.md`。
 - 架构、模块边界与归属、公共协议或 schema、跨领域标准、工作流或 agent 规则、难以回退的技术选型发生变更时，不再新增 ADR；决策原因与生命周期记录到 Agent Notes（`.ai-workflow/notes/`，以 `.ai-workflow/notes/README.md` 为格式与治理唯一来源）。每条 Note 均为英文正文加中文正文加 `.i18n.yaml` 一致性记录的三件套等权同体；仅自然语言正文做翻译，结构元素（`# Agent Note:` 前缀、标题、表格表头、`Status` 及其取值、字段名、路径、日期）保持英文，配对经 `ai-workflow notes pairing --write` 记录；`output_language` 只约束规划产物与会话表述，不约束 Note 语言。本文件记录当前标准（怎么做），与 Notes 不一致即为缺陷，须在同一变更内一起更新。
-<!-- ai-workflow:section workflow:begin -->
+
 ## Workflow
 
 Planning produces frozen `spec.md` and `plan.md`; plan-to-tasks produces immutable task documents. Coding implements direct changes without planning artifacts and planned work as split tasks or an approved unsplit frozen plan, with TDD, and creates no workflow runtime artifact other than the single implementation record at `<project>/.ai-workflow/plans/<planId>/implementation.yaml`, which holds `plan_id` with `status: in-progress` and an ISO 8601 `started_at` in the UTC+08:00 timezone before the first implementation step and after the final merge and owned cleanup becomes `status: completed` with an ISO 8601 `completed_at` in the UTC+08:00 timezone and the final commit SHA, except that a workspace root prefix delivery keeps the same record `in-progress` with `root_tasks_commit` until finalization; it is the only permitted run record.
@@ -147,18 +147,13 @@ Planning produces frozen `spec.md` and `plan.md`; plan-to-tasks produces immutab
 
 - Adopted projects run the shared native synchronization preflight at work boundaries to patch their managed workflow instruction files from the fixed upstream source; it is a narrow instruction-maintenance exception that writes only the actual project root or coding worktree, performs no Git and no product edit, and never claims freshness for a warning or unverified result.
 
-<!-- ai-workflow:section workflow:end -->
-<!-- ai-workflow:section host-role-agents:begin -->
 ## Host role agents
 
 - Installed role agents are native to each host: Codex uses TOML with `model`/`model_reasoning_effort`, Claude uses Markdown with `allowed-tools`, and OpenCode uses Markdown with `mode: subagent` and ordered `permissions` rules. The role's declared tools remain the single source, and only the primary orchestrator dispatches subagents.
 
-<!-- ai-workflow:section host-role-agents:end -->
-<!-- ai-workflow:section project-contract-and-notes:begin -->
 ## Project contract and Agent Notes
 
 - Explicitly read `.ai-workflow/AGENTS.md`; its workflow rules apply to the entire project and every participating agent.
 - Notes governance has one source: `.ai-workflow/notes/README.md`, reached through `.ai-workflow/notes/AGENTS.md`. Read those files before maintaining relevant notes within the task's authorized scope.
 - This file records current standards (how), while notes record why. Keep them consistent in the same change.
 - Navigation JSON is authoritative; regenerate and validate its Markdown view when navigation changes.
-<!-- ai-workflow:section project-contract-and-notes:end -->
