@@ -1,3 +1,5 @@
+use super::templates::effective_quota_strategy;
+use super::types_config::QuotaStrategy;
 use super::{storage, GatewayConfig, GatewayUpstreamProvider};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -66,31 +68,32 @@ pub(in crate::ai_gateway) struct GoUsageRequest {
     pub(in crate::ai_gateway) api_key: String,
 }
 
+/// Resolve the OpenCode Go usage request for a provider strictly from its
+/// effective template quota policy: a provider whose effective strategy is not
+/// `opencode_go` — including an unbound provider, a broken binding or a
+/// different specialized policy — is rejected before any key or base-URL is
+/// consulted, so no upstream fetch can happen. The fixed endpoint and pinned
+/// source key are otherwise resolved exactly as before.
 pub(in crate::ai_gateway) fn resolve_go_usage_request(
+    config: &GatewayConfig,
     provider: &GatewayUpstreamProvider,
 ) -> Result<GoUsageRequest, String> {
+    if effective_quota_strategy(config, provider) != QuotaStrategy::OpencodeGo {
+        return Err(
+            "provider is not bound to an OpenCode Go quota policy; bind the OpenCode Go template to monitor usage"
+                .to_string(),
+        );
+    }
+
     let api_key = super::selection::pinned_key_value(provider)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "no API key configured for this provider".to_string())?;
-
-    let base_url = provider.base_url.trim();
-    if base_url.is_empty() {
-        return Err("provider base URL is blank".to_string());
-    }
-    let parsed = url::Url::parse(base_url)
-        .map_err(|_| "provider base URL is invalid".to_string())?;
-    let is_opencode_go = parsed
-        .host_str()
-        .is_some_and(|host| host.eq_ignore_ascii_case("opencode.ai"))
-        && parsed.path().to_ascii_lowercase().contains("/zen/go");
-    if !is_opencode_go {
-        return Err("provider is not an OpenCode Go endpoint".to_string());
-    }
+        .ok_or_else(|| "no API key configured for this provider".to_string())?
+        .to_string();
 
     Ok(GoUsageRequest {
         url: GO_USAGE_URL.to_string(),
-        api_key: api_key.to_string(),
+        api_key,
     })
 }
 
@@ -172,7 +175,7 @@ where
         .iter()
         .find(|provider| provider.id == provider_id)
         .ok_or_else(|| format!("unknown provider: {provider_id}"))?;
-    let GoUsageRequest { url, api_key } = resolve_go_usage_request(provider)?;
+    let GoUsageRequest { url, api_key } = resolve_go_usage_request(config, provider)?;
 
     {
         let cache = cache

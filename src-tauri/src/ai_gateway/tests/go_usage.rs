@@ -95,27 +95,26 @@ fn missing_usage_is_rejected_and_missing_or_null_window_values_default() {
 }
 
 #[test]
-fn resolves_only_opencode_go_endpoints_without_leaking_credentials() {
-    for base_url in [
-        "https://opencode.ai/zen/go",
-        "https://OPENCODE.AI:8443/a/Zen/Go/custom",
-    ] {
-        let request = resolve_go_usage_request(&go_provider(SECRET_KEY, base_url))
-            .expect("OpenCode Go endpoint accepted");
-        assert_eq!(request.url, GO_USAGE_URL);
-        assert_eq!(request.api_key, SECRET_KEY);
-    }
+fn resolve_go_usage_request_follows_the_effective_opencode_go_policy() {
+    let bound = config_with_provider(bound_go_provider(
+        SECRET_KEY,
+        "https://any.example.com/v1",
+        "opencode-go",
+    ));
+    let request = resolve_go_usage_request(&bound, &bound.providers[0])
+        .expect("a Go-bound provider must be accepted");
+    assert_eq!(request.url, GO_USAGE_URL);
+    assert_eq!(request.api_key, SECRET_KEY);
 
-    for (api_key, base_url, expected_error) in [
-        ("", "https://opencode.ai/zen/go", "no API key configured for this provider"),
-        (SECRET_KEY, "  ", "provider base URL is blank"),
-        (SECRET_KEY, "not a url", "provider base URL is invalid"),
-        (SECRET_KEY, "https://example.com/zen/go", "provider is not an OpenCode Go endpoint"),
-        (SECRET_KEY, "https://opencode.ai/zen/v1", "provider is not an OpenCode Go endpoint"),
+    for provider in [
+        // An unbound Go-looking URL never resolves the policy.
+        go_provider(SECRET_KEY, "https://opencode.ai/zen/go"),
+        // A blank key on a bound provider is still rejected.
+        bound_go_provider("", "https://opencode.ai/zen/go", "opencode-go"),
     ] {
-        let error = resolve_go_usage_request(&go_provider(api_key, base_url))
-            .expect_err("invalid OpenCode Go endpoint must be rejected");
-        assert_eq!(error, expected_error);
+        let config = config_with_provider(provider);
+        let error = resolve_go_usage_request(&config, &config.providers[0])
+            .expect_err("invalid Go usage request must be rejected");
         assert!(!error.contains(SECRET_KEY), "error leaked the API key: {error}");
     }
 }
@@ -139,7 +138,11 @@ fn cache_freshness_ends_at_ttl_and_tracks_credentials_and_base_url() {
 
 #[tokio::test]
 async fn provider_fetches_on_miss_caches_success_and_forces_refresh() {
-    let config = config_with_provider(go_provider(SECRET_KEY, "https://opencode.ai/zen/go"));
+    let config = config_with_provider(bound_go_provider(
+        SECRET_KEY,
+        "https://opencode.ai/zen/go",
+        "opencode-go",
+    ));
     let cache = Mutex::new(GoUsageCache::new());
     let calls = Arc::new(AtomicUsize::new(0));
 
@@ -176,7 +179,11 @@ async fn provider_fetches_on_miss_caches_success_and_forces_refresh() {
 #[tokio::test]
 async fn failed_fetch_and_parse_are_not_cached() {
     for response in [Err("upstream HTTP 503".to_string()), Ok(r#"{"other":true}"#.to_string())] {
-        let config = config_with_provider(go_provider(SECRET_KEY, "https://opencode.ai/zen/go"));
+        let config = config_with_provider(bound_go_provider(
+            SECRET_KEY,
+            "https://opencode.ai/zen/go",
+            "opencode-go",
+        ));
         let cache = Mutex::new(GoUsageCache::new());
         let calls = AtomicUsize::new(0);
         for _ in 0..2 {
@@ -196,7 +203,11 @@ async fn failed_fetch_and_parse_are_not_cached() {
 #[tokio::test]
 async fn storage_command_path_reuses_cache_and_does_not_write_config_or_usage_logs() {
     let _home = super::isolated_temp_home("go-usage-read-only");
-    let config = config_with_provider(go_provider(SECRET_KEY, "https://opencode.ai/zen/go"));
+    let config = config_with_provider(bound_go_provider(
+        SECRET_KEY,
+        "https://opencode.ai/zen/go",
+        "opencode-go",
+    ));
     crate::ai_gateway::storage::write_config(&config).expect("write initial gateway config");
     let config_file = crate::ai_gateway::storage::config_path().expect("gateway config path");
     let bytes_before = fs::read(&config_file).expect("read config bytes");
@@ -235,9 +246,10 @@ async fn storage_command_path_reuses_cache_and_does_not_write_config_or_usage_lo
 #[tokio::test]
 async fn storage_command_path_rejects_empty_key_before_fetching() {
     let _home = super::isolated_temp_home("go-usage-empty-key");
-    crate::ai_gateway::storage::write_config(&config_with_provider(go_provider(
+    crate::ai_gateway::storage::write_config(&config_with_provider(bound_go_provider(
         "",
         "https://opencode.ai/zen/go",
+        "opencode-go",
     )))
     .expect("write empty-key gateway config");
     let calls = AtomicUsize::new(0);
@@ -285,6 +297,7 @@ fn write_go_pool(keys: Vec<serde_json::Value>) {
             "name": "Go Pool",
             "base_url": "https://opencode.ai/zen/go",
             "protocol": "chat_completions",
+            "template_id": "opencode-go",
             "keys": keys,
             "mappings": [],
         }],
@@ -560,5 +573,202 @@ async fn ac031_go_usage_source_cache_invalidates_on_a_mark_driven_source_change(
         calls.load(Ordering::SeqCst),
         2,
         "a changed source key must force a fresh fetch"
+    );
+}
+
+// ===========================================================================
+// 20261010-provider-template-bound-strategies — REQ-005 (AC-005, AC-006,
+// AC-012, AC-013): OpenCode Go usage dispatch resolves from the effective
+// template quota policy, never from the provider URL. An unbound Go-looking
+// provider stays generic, a broken binding falls back to generic, a mismatched
+// direct command is rejected before any fetch, and a policy/binding change does
+// not reuse an incompatible monitor snapshot.
+// ===========================================================================
+
+fn bound_go_provider(api_key: &str, base_url: &str, template_id: &str) -> GatewayUpstreamProvider {
+    let mut provider = go_provider(api_key, base_url);
+    provider.template_id = Some(template_id.to_string());
+    provider
+}
+
+/// AC-005 / AC-012 counterexample: an unbound provider whose URL looks like Go
+/// must use the generic (none) policy and never fetch Go usage.
+#[tokio::test]
+async fn unbound_go_looking_provider_never_fetches_go_usage() {
+    let config = config_with_provider(go_provider(SECRET_KEY, "https://opencode.ai/zen/go/v1"));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetch_calls = Arc::clone(&calls);
+
+    let result = provider_go_usage_with(
+        &config,
+        "go-provider",
+        false,
+        1_000,
+        &Mutex::new(GoUsageCache::new()),
+        move |_, _| {
+            fetch_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(FIXTURE.to_string()) }
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "an unbound provider must not receive Go usage from its URL"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "an unbound provider must be rejected before any fetch"
+    );
+}
+
+/// AC-005 / AC-012: a provider bound to OpenCode Go queries the Go usage
+/// endpoint even when its own base URL is not a Go endpoint.
+#[tokio::test]
+async fn provider_bound_to_opencode_go_uses_usage_regardless_of_base_url() {
+    let config = config_with_provider(bound_go_provider(
+        SECRET_KEY,
+        "https://my-gateway.example.com/v1",
+        "opencode-go",
+    ));
+
+    let result = provider_go_usage_with(
+        &config,
+        "go-provider",
+        false,
+        1_000,
+        &Mutex::new(GoUsageCache::new()),
+        |url, key| async move {
+            assert_eq!(
+                url, GO_USAGE_URL,
+                "the policy must select the Go usage endpoint"
+            );
+            assert_eq!(key, SECRET_KEY);
+            Ok(FIXTURE.to_string())
+        },
+    )
+    .await
+    .expect("a Go-bound provider must resolve the usage request");
+    assert_eq!(result, expected_fixture());
+}
+
+/// AC-006: a broken template binding falls back to generic and rejects the
+/// direct Go usage command before any fetch.
+#[tokio::test]
+async fn broken_template_binding_rejects_go_usage_before_fetch() {
+    let config = config_with_provider(bound_go_provider(
+        SECRET_KEY,
+        "https://opencode.ai/zen/go/v1",
+        "missing-template",
+    ));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetch_calls = Arc::clone(&calls);
+
+    let result = provider_go_usage_with(
+        &config,
+        "go-provider",
+        false,
+        1_000,
+        &Mutex::new(GoUsageCache::new()),
+        move |_, _| {
+            fetch_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(FIXTURE.to_string()) }
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "a broken binding must reject the Go usage command"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "a broken binding must be rejected before any fetch"
+    );
+}
+
+/// AC-006 counterexample: a provider whose effective policy is CommandCode must
+/// be rejected by the Go usage command before any fetch, even with a Go URL.
+#[tokio::test]
+async fn go_usage_command_rejects_a_commandcode_policy_before_fetch() {
+    let config = config_with_provider(bound_go_provider(
+        SECRET_KEY,
+        "https://opencode.ai/zen/go/v1",
+        "commandcode",
+    ));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetch_calls = Arc::clone(&calls);
+
+    let result = provider_go_usage_with(
+        &config,
+        "go-provider",
+        false,
+        1_000,
+        &Mutex::new(GoUsageCache::new()),
+        move |_, _| {
+            fetch_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(FIXTURE.to_string()) }
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "a CommandCode-policy provider must be rejected by the Go usage command"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "a strategy mismatch must be rejected before any fetch"
+    );
+}
+
+/// AC-013: a successful Go usage snapshot is not reused after the provider's
+/// binding changes, while the same-policy five-minute cache still works.
+#[tokio::test]
+async fn go_usage_cache_is_not_reused_across_a_binding_change() {
+    let mut config = config_with_provider(bound_go_provider(
+        SECRET_KEY,
+        "https://opencode.ai/zen/go/v1",
+        "opencode-go",
+    ));
+    let cache = Mutex::new(GoUsageCache::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+
+    let first_calls = Arc::clone(&calls);
+    let first =
+        provider_go_usage_with(&config, "go-provider", false, 1_000, &cache, move |_, _| {
+            first_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(FIXTURE.to_string()) }
+        })
+        .await
+        .expect("a Go-bound provider must fetch on a cache miss");
+    assert_eq!(first, expected_fixture());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    provider_go_usage_with(&config, "go-provider", false, 1_001, &cache, |_, _| async {
+        panic!("a same-policy fresh cache hit must not fetch")
+    })
+    .await
+    .expect("a same-policy cache hit must be reused");
+
+    config.providers[0].template_id = None;
+    let second_calls = Arc::clone(&calls);
+    let second =
+        provider_go_usage_with(&config, "go-provider", false, 1_002, &cache, move |_, _| {
+            second_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(FIXTURE.to_string()) }
+        })
+        .await;
+    assert!(
+        second.is_err(),
+        "an incompatible cached snapshot must not be reused after a binding change"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a binding change must neither reuse nor refetch the stale snapshot"
     );
 }

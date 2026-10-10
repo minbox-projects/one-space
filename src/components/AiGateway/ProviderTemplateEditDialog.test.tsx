@@ -453,3 +453,97 @@ describe("ProviderTemplateEditDialog", () => {
     expect(saved.icon).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 2: closed template strategy selectors (REQ-008 / AC-001 / AC-023).
+// RED tests for the frozen interface contract.
+// ---------------------------------------------------------------------------
+
+function strategyOptionValues(testId: string): string[] {
+  const select = screen.getByTestId(testId) as HTMLSelectElement;
+  return Array.from(select.options)
+    .map((option) => option.value)
+    .filter((value) => value !== "");
+}
+
+describe("ProviderTemplateEditDialog 策略选择器", () => {
+  it("exposes closed sync/quota/error strategy selectors with generic defaults", () => {
+    renderDialog();
+
+    const sync = screen.getByTestId("template-edit-sync-strategy");
+    const quota = screen.getByTestId("template-edit-quota-strategy");
+    const error = screen.getByTestId("template-edit-error-strategy");
+
+    expect(sync.tagName).toBe("SELECT");
+    expect(quota.tagName).toBe("SELECT");
+    expect(error.tagName).toBe("SELECT");
+    expect(sync).toHaveValue("generic");
+    expect(quota).toHaveValue("none");
+    expect(error).toHaveValue("generic");
+  });
+
+  it("offers only the closed strategy values and no free-form input", () => {
+    renderDialog();
+
+    expect(strategyOptionValues("template-edit-sync-strategy")).toEqual([
+      "generic",
+      "opencode_go",
+    ]);
+    expect(strategyOptionValues("template-edit-quota-strategy")).toEqual([
+      "none",
+      "commandcode",
+      "opencode_go",
+    ]);
+    expect(strategyOptionValues("template-edit-error-strategy")).toEqual([
+      "generic",
+    ]);
+
+    for (const testId of [
+      "template-edit-sync-strategy",
+      "template-edit-quota-strategy",
+      "template-edit-error-strategy",
+    ]) {
+      expect(
+        (screen.getByTestId(testId) as HTMLElement).tagName,
+        `${testId} 必须是闭合选择器而非自由文本输入`,
+      ).toBe("SELECT");
+    }
+  });
+
+  it("initializes selectors from the template and persists them through onSave", async () => {
+    const { onSave } = renderDialog({
+      template: {
+        ...baseTemplate,
+        sync_strategy: "opencode_go",
+        quota_strategy: "opencode_go",
+        error_strategy: "generic",
+      },
+    });
+
+    expect(screen.getByTestId("template-edit-sync-strategy")).toHaveValue(
+      "opencode_go",
+    );
+    expect(screen.getByTestId("template-edit-quota-strategy")).toHaveValue(
+      "opencode_go",
+    );
+    expect(screen.getByTestId("template-edit-error-strategy")).toHaveValue(
+      "generic",
+    );
+
+    fireEvent.change(screen.getByTestId("template-edit-quota-strategy"), {
+      target: { value: "commandcode" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("template-edit-save-btn"));
+    });
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sync_strategy: "opencode_go",
+        quota_strategy: "commandcode",
+        error_strategy: "generic",
+      }),
+    );
+  });
+});

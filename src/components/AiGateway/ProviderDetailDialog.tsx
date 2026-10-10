@@ -32,18 +32,23 @@ import {
   draftToPriceRow,
   formatGatewayTimestamp,
   isMappingDeprecated,
+  isProviderTemplateBindingBroken,
   mappedUpstreamModels,
   normalizeReasoningEfforts,
   priceRowToDraft,
   providerKeyPool,
   providerKeyState,
   PROVIDER_KEY_STATE_TRANSLATION_KEYS,
+  resolveEffectiveTemplatePolicy,
   resolveProviderPriceRow,
   type GatewayModelMapping,
   type GatewayPriceDraft,
   type GatewayProviderKey,
   type GatewayProviderKeyState,
   type GatewayProviderTemplateView,
+  type GatewayTemplateErrorStrategy,
+  type GatewayTemplateQuotaStrategy,
+  type GatewayTemplateSyncStrategy,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
   type GatewayUpstreamProviderWithKeys,
@@ -69,7 +74,10 @@ type ProviderDetailDialogProps = {
   runtimeProvider?: GatewayUpstreamProvider | null;
   prices?: ModelPrice[];
   busy: boolean;
-  onSave: (provider: GatewayUpstreamProvider, prices: ModelPrice[]) => void;
+  onSave: (
+    provider: GatewayUpstreamProvider,
+    prices: ModelPrice[],
+  ) => Promise<boolean | void>;
   onDelete?: (providerId: string) => Promise<boolean | void> | void;
   templates?: GatewayProviderTemplateView[];
   availableTags?: string[];
@@ -89,6 +97,21 @@ type ProviderDetailDialogProps = {
 
 const mappingInputClass =
   "h-[38px] rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/50";
+
+const SYNC_STRATEGY_LABEL_KEYS: Record<GatewayTemplateSyncStrategy, string> = {
+  generic: "aiGatewayTemplateSyncStrategyGeneric",
+  opencode_go: "aiGatewayTemplateSyncStrategyOpencodeGo",
+};
+
+const QUOTA_STRATEGY_LABEL_KEYS: Record<GatewayTemplateQuotaStrategy, string> = {
+  none: "aiGatewayTemplateQuotaStrategyNone",
+  commandcode: "aiGatewayTemplateQuotaStrategyCommandcode",
+  opencode_go: "aiGatewayTemplateQuotaStrategyOpencodeGo",
+};
+
+const ERROR_STRATEGY_LABEL_KEYS: Record<GatewayTemplateErrorStrategy, string> = {
+  generic: "aiGatewayTemplateErrorStrategyGeneric",
+};
 
 /** Stable identity for a mapping row's trimmed `(local_model, upstream_model)` key. */
 function runtimeMappingKey(localModel: string, upstreamModel: string): string {
@@ -166,6 +189,7 @@ export function ProviderDetailDialog({
   const [effortInputs, setEffortInputs] = useState<Record<number, string>>({});
   const [weight, setWeight] = useState<number | string>(provider?.weight ?? 1);
   const [icon, setIcon] = useState<string>("");
+  const [templateId, setTemplateId] = useState<string>("");
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState<string>("");
   const [confirmDeleting, setConfirmDeleting] = useState(false);
@@ -188,6 +212,7 @@ export function ProviderDetailDialog({
       setEffortInputs({});
       setWeight(1);
       setIcon("");
+      setTemplateId("");
       setTags([]);
       setTagInput("");
       setRevealedKeyIds({});
@@ -246,6 +271,7 @@ export function ProviderDetailDialog({
     setEffortInputs({});
     setWeight(provider.weight ?? 1);
     setIcon(provider.icon ?? "");
+    setTemplateId(provider.template_id ?? "");
     setTags(provider.tags ?? []);
     setTagInput("");
     setRevealedKeyIds({});
@@ -374,6 +400,12 @@ export function ProviderDetailDialog({
     ? templates?.find((view) => view.template.id === provider.template_id)
     : undefined;
   const boundTemplate = boundTemplateView?.template;
+  const effectivePolicy = resolveEffectiveTemplatePolicy(templates, {
+    template_id: templateId,
+  });
+  const bindingBroken = isProviderTemplateBindingBroken(templates, {
+    template_id: templateId,
+  });
   const lastSyncText = boundTemplateView?.synced_at
     ? formatGatewayTimestamp(boundTemplateView.synced_at)
     : t("aiGatewayTemplateNotSynced", "Not synced yet");
@@ -508,7 +540,7 @@ export function ProviderDetailDialog({
     }));
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     // A name is always required; a brand-new key additionally needs a value,
     // while a blank edit of an existing key keeps the stored value backend-side.
     if (keyDrafts.some((key) => key.name.trim() === "")) {
@@ -564,6 +596,7 @@ export function ProviderDetailDialog({
       keys: savedKeys,
       default_model: defaultModel.trim() ? defaultModel.trim() : null,
       protocol,
+      template_id: templateId.trim() ? templateId.trim() : null,
       mappings: savedMappings,
       weight:
         Number.isInteger(Number(weight)) &&
@@ -574,7 +607,15 @@ export function ProviderDetailDialog({
       icon: icon.trim() ? icon.trim() : null,
       tags: Array.from(new Set(tags.map((t) => t.trim()).filter(Boolean))),
     };
-    onSave(draft, submittedPrices);
+    // Persist through the existing provider upsert wrapper; only claim success
+    // and close once it resolves without an explicit failure. A rejected or
+    // `false` save keeps the local draft and the dialog unchanged (AC-025).
+    try {
+      const result = await onSave(draft, submittedPrices);
+      if (result === false) return;
+    } catch {
+      return;
+    }
     onOpenChange(false);
   };
 
@@ -743,6 +784,77 @@ export function ProviderDetailDialog({
               ) : null}
             </div>
           ) : null}
+
+          {/* 模板绑定与有效策略展示（无服务商级策略覆盖控件） */}
+          <div className="space-y-2 rounded-xl border border-border/70 bg-muted/20 px-3.5 py-2.5">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div className="field min-w-[220px] flex-1">
+                <label>
+                  {t("aiGatewayProviderTemplateBinding", "Provider template")}
+                </label>
+                <select
+                  data-testid="ai-gateway-provider-template-select"
+                  value={templateId}
+                  onChange={(event) => setTemplateId(event.target.value)}
+                  aria-label={t(
+                    "aiGatewayProviderTemplateBinding",
+                    "Provider template",
+                  )}
+                >
+                  <option value="">
+                    {t(
+                      "aiGatewayProviderTemplateUnbound",
+                      "No template (generic)",
+                    )}
+                  </option>
+                  {(templates ?? []).map((view) => (
+                    <option key={view.template.id} value={view.template.id}>
+                      {view.template.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div
+                data-testid="ai-gateway-provider-effective-strategy"
+                data-sync-strategy={effectivePolicy.sync_strategy}
+                data-quota-strategy={effectivePolicy.quota_strategy}
+                data-error-strategy={effectivePolicy.error_strategy}
+                className="rounded-lg border border-border/60 bg-background px-2.5 py-1.5 text-[11px] text-muted-foreground"
+              >
+                <span className="font-medium text-foreground">
+                  {t("aiGatewayProviderEffectiveStrategy", "Effective strategy")}:
+                </span>{" "}
+                <span>
+                  {t("aiGatewayTemplateSyncStrategy")}=
+                  {t(SYNC_STRATEGY_LABEL_KEYS[effectivePolicy.sync_strategy])}
+                </span>{" "}
+                <span>
+                  {t("aiGatewayTemplateQuotaStrategy")}=
+                  {t(QUOTA_STRATEGY_LABEL_KEYS[effectivePolicy.quota_strategy])}
+                </span>{" "}
+                <span>
+                  {t("aiGatewayTemplateErrorStrategy")}=
+                  {t(ERROR_STRATEGY_LABEL_KEYS[effectivePolicy.error_strategy])}
+                </span>
+              </div>
+            </div>
+            {bindingBroken ? (
+              <div
+                data-testid="ai-gateway-provider-broken-binding-warning"
+                role="alert"
+                className="flex items-center gap-1.5 rounded-lg border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-[11px] text-destructive"
+              >
+                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                <span>
+                  {t(
+                    "aiGatewayProviderTemplateBrokenBinding",
+                    "The bound template no longer exists; this provider uses the generic strategy until you rebind or unbind it.",
+                  )}
+                </span>
+              </div>
+            ) : null}
+          </div>
+
           {/* 基础配置两列网格（使用 AI 终端服务商统一的标准 field-grid 和 field） */}
           <div className="field-grid col-2 mb-0">
             {/* 第 1 行：名称与自定义图标并排 */}
@@ -1673,7 +1785,7 @@ export function ProviderDetailDialog({
             </button>
             <button
               type="button"
-              onClick={handleSave}
+              onClick={() => void handleSave()}
               disabled={busy || !name.trim() || !baseUrl.trim()}
               className="acc-panel-btn primary"
             >

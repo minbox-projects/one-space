@@ -223,27 +223,29 @@ fn quota_serialization_round_trip_uses_camel_case_json_keys() {
     assert_eq!(decoded, parsed);
 }
 
-// REQ-005 / AC-009: host matching ignores casing, path and port, while request
-// construction always targets the single fixed endpoint.
+// REQ-005 / AC-005 / AC-012: request resolution follows the effective template
+// quota policy, not the provider URL, and always targets the single fixed
+// endpoint for an accepted policy.
 #[test]
-fn resolves_quota_request_for_commandcode_host_only() {
-    for base_url in [
-        "https://api.commandcode.ai/provider/v1",
-        "https://API.CommandCode.AI:8443/a/path",
-    ] {
-        let request = resolve_quota_request(&quota_provider(SECRET_KEY, base_url))
-            .expect("CommandCode host must be accepted");
-        assert_eq!(request.url, COMMANDCODE_QUOTA_URL);
-        assert_eq!(request.api_key, SECRET_KEY);
-    }
+fn resolve_quota_request_follows_the_effective_commandcode_policy() {
+    let bound = config_with_provider(bound_quota_provider(
+        SECRET_KEY,
+        "https://any.example.com/v1",
+        "commandcode",
+    ));
+    let request = resolve_quota_request(&bound, &bound.providers[0])
+        .expect("a CommandCode-bound provider must be accepted");
+    assert_eq!(request.url, COMMANDCODE_QUOTA_URL);
+    assert_eq!(request.api_key, SECRET_KEY);
 
-    for (api_key, base_url) in [
-        ("   ", "https://api.commandcode.ai/v1"),
-        (SECRET_KEY, "https://api.openai.com/v1"),
-        (SECRET_KEY, "  "),
-        (SECRET_KEY, "not a url"),
+    for provider in [
+        // An unbound CommandCode-looking URL never resolves the policy.
+        quota_provider(SECRET_KEY, "https://API.CommandCode.AI:8443/a/path"),
+        // A blank key on a bound provider is still rejected.
+        bound_quota_provider("   ", "https://api.commandcode.ai/v1", "commandcode"),
     ] {
-        let error = resolve_quota_request(&quota_provider(api_key, base_url))
+        let config = config_with_provider(provider);
+        let error = resolve_quota_request(&config, &config.providers[0])
             .expect_err("invalid quota request must be rejected");
         assert!(
             !error.contains(SECRET_KEY),
@@ -338,9 +340,10 @@ fn quota_cache_requires_matching_provider_credentials_and_freshness() {
 // fetch exactly once more.
 #[tokio::test]
 async fn provider_quota_fetches_on_miss_caches_success_and_forces_refresh() {
-    let config = config_with_provider(quota_provider(
+    let config = config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://api.commandcode.ai/provider/v1",
+        "commandcode",
     ));
     let cache = Mutex::new(QuotaCache::new());
     let calls = Arc::new(AtomicUsize::new(0));
@@ -465,9 +468,10 @@ async fn fetch_and_parse_failures_are_not_cached_or_returned_with_the_key() {
     ];
 
     for (response, expected_error_fragment) in invalid_responses {
-        let config = config_with_provider(quota_provider(
+        let config = config_with_provider(bound_quota_provider(
             SECRET_KEY,
             "https://api.commandcode.ai/provider/v1",
+            "commandcode",
         ));
         let cache = Mutex::new(QuotaCache::new());
         let calls = Arc::new(AtomicUsize::new(0));
@@ -540,9 +544,10 @@ impl Drop for TempHome {
 #[tokio::test]
 async fn quota_queries_do_not_write_config_or_usage_logs() {
     let _home = TempHome::new();
-    let config = config_with_provider(quota_provider(
+    let config = config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://api.commandcode.ai/provider/v1",
+        "commandcode",
     ));
     crate::ai_gateway::storage::write_config(&config).expect("write initial gateway config");
     let config_file = crate::ai_gateway::storage::config_path().expect("gateway config path");
@@ -589,9 +594,10 @@ async fn quota_queries_do_not_write_config_or_usage_logs() {
 #[tokio::test]
 async fn quota_command_path_is_read_only_and_uses_the_shared_cache() {
     let _home = TempHome::new();
-    let config = config_with_provider(quota_provider(
+    let config = config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://api.commandcode.ai/provider/v1",
+        "commandcode",
     ));
     crate::ai_gateway::storage::write_config(&config).expect("write initial gateway config");
     let config_file = crate::ai_gateway::storage::config_path().expect("gateway config path");
@@ -722,6 +728,7 @@ fn write_quota_pool(keys: Vec<serde_json::Value>) {
             "name": "Quota Pool",
             "base_url": "https://api.commandcode.ai/provider/v1",
             "protocol": "chat_completions",
+            "template_id": "commandcode",
             "keys": keys,
             "mappings": [],
         }],
@@ -1002,5 +1009,230 @@ async fn ac031_quota_source_cache_invalidates_on_a_mark_driven_source_change() {
         calls.load(Ordering::SeqCst),
         2,
         "a changed source key must force a fresh fetch"
+    );
+}
+
+// ===========================================================================
+// 20261010-provider-template-bound-strategies — REQ-005 (AC-005, AC-006,
+// AC-012, AC-013): CommandCode quota dispatch resolves from the provider's
+// effective template policy, never from its URL. An unbound provider is generic
+// (no monitor), a broken binding falls back to generic and rejects a mismatched
+// direct command before any fetch, and a policy/binding change cannot reuse an
+// incompatible monitor snapshot.
+// ===========================================================================
+
+fn bound_quota_provider(
+    api_key: &str,
+    base_url: &str,
+    template_id: &str,
+) -> GatewayUpstreamProvider {
+    let mut provider = quota_provider(api_key, base_url);
+    provider.template_id = Some(template_id.to_string());
+    provider
+}
+
+/// AC-005 / AC-012 counterexample: an unbound provider whose URL looks like
+/// CommandCode must still use the generic (none) policy and never fetch.
+#[tokio::test]
+async fn unbound_commandcode_looking_provider_never_fetches_commandcode_quota() {
+    let config = config_with_provider(quota_provider(SECRET_KEY, "https://api.commandcode.ai/v1"));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetch_calls = Arc::clone(&calls);
+
+    let result = provider_quota_with(
+        &config,
+        "quota-provider",
+        false,
+        1_000,
+        &Mutex::new(QuotaCache::new()),
+        move |_, _| {
+            fetch_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(FIXTURE.to_string()) }
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "an unbound provider must not receive CommandCode quota from its URL"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "an unbound provider must be rejected before any fetch"
+    );
+}
+
+/// AC-005 / AC-012: a provider bound to the CommandCode template uses the
+/// CommandCode endpoint even when its own base URL is not CommandCode.
+#[tokio::test]
+async fn provider_bound_to_commandcode_uses_quota_regardless_of_base_url() {
+    let config = config_with_provider(bound_quota_provider(
+        SECRET_KEY,
+        "https://my-gateway.example.com/v1",
+        "commandcode",
+    ));
+
+    let result = provider_quota_with(
+        &config,
+        "quota-provider",
+        false,
+        1_000,
+        &Mutex::new(QuotaCache::new()),
+        |url, key| async move {
+            assert_eq!(
+                url, COMMANDCODE_QUOTA_URL,
+                "the policy must select the CommandCode credits endpoint"
+            );
+            assert_eq!(key, SECRET_KEY);
+            Ok(FIXTURE.to_string())
+        },
+    )
+    .await
+    .expect("a CommandCode-bound provider must resolve the quota request");
+    assert_eq!(result, expected_fixture());
+}
+
+/// AC-006: a broken template binding falls back to generic and rejects the
+/// direct quota command before any fetch, even with a CommandCode-looking URL.
+#[tokio::test]
+async fn broken_template_binding_rejects_commandcode_quota_before_fetch() {
+    let config = config_with_provider(bound_quota_provider(
+        SECRET_KEY,
+        "https://api.commandcode.ai/v1",
+        "missing-template",
+    ));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetch_calls = Arc::clone(&calls);
+
+    let result = provider_quota_with(
+        &config,
+        "quota-provider",
+        false,
+        1_000,
+        &Mutex::new(QuotaCache::new()),
+        move |_, _| {
+            fetch_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(FIXTURE.to_string()) }
+        },
+    )
+    .await;
+
+    assert!(
+        result
+            .expect_err("a broken binding must reject the CommandCode quota command")
+            .len()
+            > 0,
+        "the rejection must carry an actionable reason"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "a broken binding must be rejected before any fetch"
+    );
+}
+
+/// AC-006 counterexample: a provider whose effective policy is OpenCode Go must
+/// be rejected by the CommandCode quota command before any fetch, even when its
+/// URL is CommandCode-like.
+#[tokio::test]
+async fn commandcode_quota_command_rejects_a_non_commandcode_policy_before_fetch() {
+    let config = config_with_provider(bound_quota_provider(
+        SECRET_KEY,
+        "https://api.commandcode.ai/v1",
+        "opencode-go",
+    ));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetch_calls = Arc::clone(&calls);
+
+    let result = provider_quota_with(
+        &config,
+        "quota-provider",
+        false,
+        1_000,
+        &Mutex::new(QuotaCache::new()),
+        move |_, _| {
+            fetch_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(FIXTURE.to_string()) }
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "a Go-policy provider must be rejected by the CommandCode quota command"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "a strategy mismatch must be rejected before any fetch"
+    );
+}
+
+/// AC-013: a successful CommandCode snapshot is not reused after the provider's
+/// binding changes; the same-policy five-minute cache still works.
+#[tokio::test]
+async fn quota_cache_is_not_reused_across_a_binding_change() {
+    let mut config = config_with_provider(bound_quota_provider(
+        SECRET_KEY,
+        "https://api.commandcode.ai/v1",
+        "commandcode",
+    ));
+    let cache = Mutex::new(QuotaCache::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+
+    let first_calls = Arc::clone(&calls);
+    let first = provider_quota_with(
+        &config,
+        "quota-provider",
+        false,
+        1_000,
+        &cache,
+        move |_, _| {
+            first_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(FIXTURE.to_string()) }
+        },
+    )
+    .await
+    .expect("a CommandCode-bound provider must fetch on a cache miss");
+    assert_eq!(first, expected_fixture());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // Same policy, still fresh: the snapshot is served from cache.
+    provider_quota_with(
+        &config,
+        "quota-provider",
+        false,
+        1_001,
+        &cache,
+        |_, _| async { panic!("a same-policy fresh cache hit must not fetch") },
+    )
+    .await
+    .expect("a same-policy cache hit must be reused");
+
+    // Change the binding to the generic policy; the stale snapshot must not be
+    // returned and the mismatch must not trigger a fetch either.
+    config.providers[0].template_id = None;
+    let second_calls = Arc::clone(&calls);
+    let second = provider_quota_with(
+        &config,
+        "quota-provider",
+        false,
+        1_002,
+        &cache,
+        move |_, _| {
+            second_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(FIXTURE.to_string()) }
+        },
+    )
+    .await;
+    assert!(
+        second.is_err(),
+        "an incompatible cached snapshot must not be reused after a binding change"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a binding change must neither reuse nor refetch the stale snapshot"
     );
 }

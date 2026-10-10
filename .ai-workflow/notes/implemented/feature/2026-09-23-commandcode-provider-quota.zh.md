@@ -10,7 +10,7 @@ CommandCode 服务商卡片需要展示账户额度与已报告的使用窗口�
 
 ## Decision
 
-仅当前端谓词 `isCommandCodeProvider` 接受该服务商时，才在映射摘要下方渲染 `ProviderQuotaBlock`。该谓词解析 `base_url` 并以不区分大小写的方式匹配主机名 `api.commandcode.ai`；路径和端口不影响匹配。后端在发起请求前通过 `resolve_quota_request` 再次执行同一主机名规则，因此前后端检测与后端守卫共享相同的主机边界。
+当服务商的有效配额策略为 `commandcode`——由绑定模板经 generic 回退解析得到，绝不来自其 URL——时，才在映射摘要下方渲染 `ProviderQuotaBlock`。前端用 `resolveEffectiveTemplatePolicy` 解析该策略，后端在 `resolve_quota_request` 中重复同一策略检查：在读取任何 key 或 base URL 之前拒绝有效策略不是 `commandcode` 的服务商，因此前端渲染与后端守卫共享同一显式模板边界（[Provider Templates Own Closed Strategies and Bind Providers by Template Id](../architecture/2026-10-10-provider-template-bound-strategies.md)）。
 
 唯一数据源是 `GET https://api.commandcode.ai/alpha/billing/credits`。`ai_gateway_provider_quota` 命令使用该服务商固定的源 key——按列表顺序第一个启用且未被标记的 key，全部启用 key 都被标记时取第一个启用的 key，没有任何启用 key 时取第一个存储的 key；密钥池为空时沿用既有 no-key 错误——在 `Authorization: Bearer` 请求头中发送，并设置 15 秒超时。原始 Key 还仅由每服务商五分钟缓存保留在进程内存中，唯一用途是在该 key 的值或基础 URL 变化时使快照失效。该 Key 绝不持久化、记录日志、出现在错误文本或返回字段中。前端封装 `aiGatewayProviderQuota` 位于 `src/lib/aiGateway.ts`。
 
@@ -19,15 +19,15 @@ CommandCode 服务商卡片需要展示账户额度与已报告的使用窗口�
 ## Alternatives considered
 
 - 将 alpha 端点视为官方稳定的服务商契约：未采纳，因为该端点没有文档且可能变更或消失；把响应隔离在卡片内的查询中可以限制风险，而不让路由依赖它。
-- 按模板标识或 URL 路径识别 CommandCode：未采纳，因为服务商可以独立配置且未必来自模板，路径也可能变化；现有最稳定的区分依据是服务商端点主机名，比较时忽略大小写、路径与端口。
+- 按 URL 主机识别 CommandCode：当时未采纳，因为服务商可以独立配置且路径多变，端点主机名是当时唯一稳定的区分依据。[Provider Templates Own Closed Strategies and Bind Providers by Template Id](../architecture/2026-10-10-provider-template-bound-strategies.md) 后来用服务商的有效 `commandcode` 模板策略取代该主机匹配，作为唯一且显式的边界。
 - 禁用服务商或将故障显示为阻断整张卡片的错误：未采纳，因为额度仅供参考，端点故障不得阻止转发或服务商管理；失败只保留在额度区块内。
 - 持久化额度结果，或复用用量日志/终端同步流程：未采纳，因为结果是临时账户快照且与这些流程无关；只读请求与按服务商内存缓存避免配置、日志及终端副作用。
 
 ## Consequences
 
-- 服务商卡片只有一个额度数据源；不符合共享主机规则的服务商不会发起查询。命令守卫还会在创建请求前独立拒绝为空或全空白的固定源 key 或非 CommandCode 主机。
+- 服务商卡片只有一个额度数据源；有效策略不是 `commandcode` 的服务商不会发起查询。命令守卫还会在创建请求前独立拒绝为空或全空白的固定源 key 或非 `commandcode` 策略。
 - 五分钟缓存按服务商 ID 隔离，只有该服务商固定的源 key 与基础 URL 未变时才复用。强制刷新绕过缓存，失败的抓取或载荷解析结果不会缓存。
 - 端点变化或故障只影响内联额度消息；不会禁用或重写服务商，也不会影响转发。不写配置、用量日志或终端同步状态。
 - 请求使用 15 秒超时。固定的源 key 在 `Authorization: Bearer` 请求头中发送，并仅由每服务商五分钟缓存额外保留在进程内存中，唯一用途是在该 key 的值或基础 URL 变化时使快照失效；它绝不持久化、记录日志、出现在错误文本或返回字段中。
 - 验证由 `src-tauri/src/ai_gateway/tests/quota.rs` 中的额度命令、解析与缓存测试，`src/components/AiGateway/ProviderQuotaBlock.test.tsx` 中的渲染测试，以及服务商列表测试覆盖。
-- Supersession：部分取代。[Gateway Key Pool Rotation Is Ordered, Probe-Limited and Manual-Only for Auth](../architecture/2026-09-24-gateway-key-pool-rotation.md) 只取代本记录使用服务商单一保存 Key 的方式，改为固定查询第一个启用的 key；[Gateway Key Health Rotates Bare 429s, Recovers Quota Marks after a TTL, Retries a Single Candidate and Pins the Query Source Key](../architecture/2026-09-25-gateway-key-health-lifecycle.md) 把该来源细化为第一个启用且未标记的 key、其次第一个启用的 key、最后第一个存储的 key（空池沿用既有 no-key 错误）；端点、共享主机规则、五分钟缓存、只读边界与卡片形状继续有效。其余活动网关 feature 记录涉及模板刷新或终端同步，既不改变也不取代本额度决策。
+- Supersession：部分取代，共三条记录。[Gateway Key Pool Rotation Is Ordered, Probe-Limited and Manual-Only for Auth](../architecture/2026-09-24-gateway-key-pool-rotation.md) 只取代本记录使用服务商单一保存 Key 的方式，改为固定查询第一个启用的 key；[Gateway Key Health Rotates Bare 429s, Recovers Quota Marks after a TTL, Retries a Single Candidate and Pins the Query Source Key](../architecture/2026-09-25-gateway-key-health-lifecycle.md) 把该来源细化为第一个启用且未标记的 key、其次第一个启用的 key、最后第一个存储的 key（空池沿用既有 no-key 错误）。[Provider Templates Own Closed Strategies and Bind Providers by Template Id](../architecture/2026-10-10-provider-template-bound-strategies.md) 把本记录基于 URL 主机的派发替换为服务商的有效 `commandcode` 配额策略；端点、固定源 key、五分钟缓存、只读边界与卡片形状继续有效。其余活动网关 feature 记录涉及模板刷新或终端同步，既不改变也不取代本额度决策。

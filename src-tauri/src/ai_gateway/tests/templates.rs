@@ -60,6 +60,7 @@ fn template_with_models(
         models_url: models_url.map(str::to_string),
         models,
         icon: None,
+        ..ProviderTemplate::default()
     }
 }
 
@@ -173,56 +174,52 @@ fn find_price_row<'a>(
 // Built-in snapshot and template model shape (REQ-001, REQ-002)
 // ---------------------------------------------------------------------------
 
-/// AC-001 / REQ-001 / REQ-002: the built-in snapshot ships both templates with
-/// an empty model list, each declaring its official model-list URL as both
-/// `models_url` and `source`.
+/// AC-001 / REQ-001 / REQ-002: the built-in snapshot ships both templates, each
+/// declaring its official model-list URL as both `models_url` and `source`;
+/// CommandCode ships no models while OpenCode Go ships its declaration baseline.
 #[test]
-fn builtin_templates_are_model_free_and_declare_their_model_list_urls() {
+fn builtin_templates_declare_their_model_list_urls() {
     let templates = builtin_templates().expect("built-in templates must parse");
     assert_eq!(templates.len(), 2, "the snapshot must ship exactly two templates");
 
-    let opencode = templates
+    let go = templates
         .iter()
-        .find(|template| template.id == "opencode-zen")
-        .expect("the opencode-zen template must exist");
+        .find(|template| template.id == "opencode-go")
+        .expect("the opencode-go template must exist");
     let commandcode = templates
         .iter()
         .find(|template| template.id == "commandcode")
         .expect("the commandcode template must exist");
 
     assert!(
-        opencode.models.is_empty(),
-        "opencode-zen must ship no models"
-    );
-    assert!(
         commandcode.models.is_empty(),
         "commandcode must ship no models"
     );
 
     assert_eq!(
-        opencode.models_url.as_deref(),
-        Some("https://opencode.ai/zen/v1/models")
+        go.models_url.as_deref(),
+        Some("https://opencode.ai/zen/go/v1/models")
     );
     assert_eq!(
         commandcode.models_url.as_deref(),
         Some("https://api.commandcode.ai/provider/v1/models")
     );
     assert_eq!(
-        opencode.source, "https://opencode.ai/zen/v1/models",
+        go.source, "https://opencode.ai/zen/go/v1/models",
         "the source must equal the model-list URL"
     );
     assert_eq!(
         commandcode.source, "https://api.commandcode.ai/provider/v1/models",
         "the source must equal the model-list URL"
     );
-    assert_eq!(opencode.icon.as_deref(), Some("opencode"));
+    assert_eq!(go.icon.as_deref(), Some("opencode"));
     assert_eq!(commandcode.icon.as_deref(), Some("commandcode"));
 
     assert_eq!(
-        find_builtin_template("opencode-zen")
-            .expect("opencode-zen must resolve")
+        find_builtin_template("opencode-go")
+            .expect("opencode-go must resolve")
             .id,
-        "opencode-zen"
+        "opencode-go"
     );
     assert_eq!(
         find_builtin_template("commandcode")
@@ -233,25 +230,36 @@ fn builtin_templates_are_model_free_and_declare_their_model_list_urls() {
 }
 
 /// AC-001 / REQ-002: before any sync both built-in views fall back to the
-/// snapshot, expose no models, and carry a model-list URL equal to the source.
+/// snapshot and carry a model-list URL equal to the source; CommandCode exposes
+/// no models while OpenCode Go exposes its declaration baseline.
 #[test]
-fn provider_template_views_expose_the_empty_builtin_snapshot() {
+fn provider_template_views_expose_the_builtin_snapshot() {
     let config = GatewayConfig::default();
     let views = provider_template_views(&config).expect("built-in templates must resolve");
     assert_eq!(views.len(), 2, "both built-in templates must be returned");
-    assert_eq!(views[0].template.id, "opencode-zen");
-    assert_eq!(views[1].template.id, "commandcode");
 
-    for view in &views {
+    let commandcode = views
+        .iter()
+        .find(|view| view.template.id == "commandcode")
+        .expect("the commandcode view must exist");
+    let go = views
+        .iter()
+        .find(|view| view.template.id == "opencode-go")
+        .expect("the opencode-go view must exist");
+
+    for view in [commandcode, go] {
         assert!(view.from_snapshot, "an unsynced template reports the snapshot");
         assert_eq!(view.synced_at, None, "a snapshot view has no sync timestamp");
-        assert!(view.template.models.is_empty(), "the snapshot ships no models");
         assert_eq!(
             view.template.models_url.as_deref(),
             Some(view.template.source.as_str()),
             "the snapshot source must equal its model-list URL"
         );
     }
+    assert!(
+        commandcode.template.models.is_empty(),
+        "the CommandCode snapshot ships no models"
+    );
 }
 
 /// AC-002 / REQ-001: a template model serializes only its upstream name, an
@@ -459,8 +467,8 @@ fn find_builtin_template_unknown_id_reports_error() {
         "the error must name the requested id: {error}"
     );
 
-    let opencode = find_builtin_template("opencode-zen").expect("opencode-zen must resolve");
-    assert_eq!(opencode.id, "opencode-zen");
+    let opencode = find_builtin_template("opencode-go").expect("opencode-go must resolve");
+    assert_eq!(opencode.id, "opencode-go");
     let commandcode = find_builtin_template("commandcode").expect("commandcode must resolve");
     assert_eq!(commandcode.id, "commandcode");
 }
@@ -1931,12 +1939,12 @@ fn create_from_template_requires_api_key_and_writes_nothing() {
 /// the protocol argument still wins.
 #[test]
 fn create_from_template_blank_name_and_base_url_fall_back_to_template() {
-    let template = find_builtin_template("opencode-zen").expect("the snapshot must parse");
+    let template = find_builtin_template("opencode-go").expect("the snapshot must parse");
     let mut config = GatewayConfig::default();
 
     let provider = apply_create_provider_from_template(
         &mut config,
-        "opencode-zen",
+        "opencode-go",
         "",
         "   ",
         UpstreamProtocol::ChatCompletions,
@@ -2334,10 +2342,10 @@ fn test_template_upsert_edits_existing_and_creates_new() {
     let mut modified_builtin = builtin_templates()
         .expect("built-in templates")
         .into_iter()
-        .find(|template| template.id == "opencode-zen")
-        .expect("opencode-zen exists");
+        .find(|template| template.id == "opencode-go")
+        .expect("opencode-go exists");
 
-    modified_builtin.name = "OpenCode Zen Custom".to_string();
+    modified_builtin.name = "OpenCode Go Custom".to_string();
     modified_builtin.base_url = "https://custom.zen/v1".to_string();
 
     let views = apply_upsert_provider_template(&mut config, modified_builtin, |_| Ok(()))
@@ -2345,9 +2353,9 @@ fn test_template_upsert_edits_existing_and_creates_new() {
 
     let zen_view = views
         .iter()
-        .find(|view| view.template.id == "opencode-zen")
-        .expect("the opencode-zen view must exist");
-    assert_eq!(zen_view.template.name, "OpenCode Zen Custom");
+        .find(|view| view.template.id == "opencode-go")
+        .expect("the opencode-go view must exist");
+    assert_eq!(zen_view.template.name, "OpenCode Go Custom");
     assert_eq!(zen_view.template.base_url, "https://custom.zen/v1");
     assert!(!zen_view.from_snapshot);
 
@@ -2361,6 +2369,7 @@ fn test_template_upsert_edits_existing_and_creates_new() {
         models_url: None,
         models: vec![],
         icon: Some("openai".to_string()),
+        ..ProviderTemplate::default()
     };
 
     let views2 = apply_upsert_provider_template(&mut config, new_custom, |_| Ok(()))
@@ -4180,5 +4189,680 @@ async fn template_sync_multi_provider_additions_aggregate_in_one_message() {
             addition_detail_line("Provider One", "m2"),
             addition_detail_line("Provider Two", "m2"),
         ],
+    );
+}
+
+// ===========================================================================
+// 20261010-provider-template-bound-strategies — REQ-001..REQ-004.
+//
+// The template strategy wire contract: a template persists `sync_strategy`
+// (`generic` | `opencode_go`), `quota_strategy` (`none` | `commandcode` |
+// `opencode_go`) and `error_strategy` (`generic`). Missing values default to
+// generic/none/generic, stored snapshot payloads tolerate unknown values and
+// resolve to those defaults, and a new save with an invalid value is rejected.
+// The built-in catalog is exactly CommandCode and OpenCode Go; provider upsert
+// validates `template_id` (bind/rebind, `null` unbind, unknown/deleted reject).
+// ===========================================================================
+
+fn template_strategy_value(template: &ProviderTemplate) -> Value {
+    serde_json::to_value(template).expect("a provider template must serialize")
+}
+
+/// AC-001: the closed strategy values round-trip, a missing value defaults to
+/// generic/none/generic, and a stored snapshot payload with unknown values
+/// tolerates them to those defaults instead of failing the parse.
+#[test]
+fn template_strategy_fields_are_closed_with_tolerant_defaults_on_read() {
+    let snapshot = r#"[
+        {
+            "id": "valid",
+            "name": "Valid",
+            "base_url": "https://valid.example.com/v1",
+            "sync_strategy": "opencode_go",
+            "quota_strategy": "commandcode",
+            "error_strategy": "generic"
+        },
+        {
+            "id": "missing",
+            "name": "Missing",
+            "base_url": "https://missing.example.com/v1"
+        },
+        {
+            "id": "unknown",
+            "name": "Unknown",
+            "base_url": "https://unknown.example.com/v1",
+            "sync_strategy": "not_a_strategy",
+            "quota_strategy": "not_a_strategy",
+            "error_strategy": "not_a_strategy"
+        }
+    ]"#;
+    let templates = parse_template_snapshot(snapshot).expect("the snapshot must parse");
+    let values: Vec<Value> = templates.iter().map(template_strategy_value).collect();
+
+    assert_eq!(values[0]["sync_strategy"], json!("opencode_go"));
+    assert_eq!(values[0]["quota_strategy"], json!("commandcode"));
+    assert_eq!(values[0]["error_strategy"], json!("generic"));
+
+    for (index, label) in [(1usize, "a missing"), (2usize, "an unknown")] {
+        assert_eq!(
+            values[index]["sync_strategy"],
+            json!("generic"),
+            "{label} sync strategy must default to generic"
+        );
+        assert_eq!(
+            values[index]["quota_strategy"],
+            json!("none"),
+            "{label} quota strategy must default to none"
+        );
+        assert_eq!(
+            values[index]["error_strategy"],
+            json!("generic"),
+            "{label} error strategy must default to generic"
+        );
+    }
+}
+
+/// AC-001: a new save carrying an unknown strategy value is rejected by the
+/// typed template boundary, while every valid closed value is accepted.
+#[test]
+fn provider_template_new_save_rejects_an_unknown_strategy_value() {
+    for field in ["sync_strategy", "quota_strategy", "error_strategy"] {
+        let mut object = json!({
+            "id": "t",
+            "name": "T",
+            "base_url": "https://t.example.com/v1",
+        });
+        object[field] = json!("not_a_strategy");
+        let parsed: Result<ProviderTemplate, _> = serde_json::from_value(object);
+        assert!(
+            parsed.is_err(),
+            "a new save of an invalid {field} must be rejected"
+        );
+    }
+
+    let accepted: Result<ProviderTemplate, _> = serde_json::from_value(json!({
+        "id": "t",
+        "name": "T",
+        "base_url": "https://t.example.com/v1",
+        "sync_strategy": "opencode_go",
+        "quota_strategy": "opencode_go",
+        "error_strategy": "generic",
+    }));
+    assert!(
+        accepted.is_ok(),
+        "every valid closed strategy value must be accepted"
+    );
+}
+
+/// AC-001: valid strategy values survive an upsert and reload.
+#[test]
+fn valid_template_strategy_values_survive_upsert_and_reload() {
+    let template: ProviderTemplate = serde_json::from_value(json!({
+        "id": "custom-policy",
+        "name": "Custom Policy",
+        "base_url": "https://custom.example.com/v1",
+        "sync_strategy": "opencode_go",
+        "quota_strategy": "commandcode",
+        "error_strategy": "generic",
+    }))
+    .expect("the strategy fixture must deserialize");
+
+    let mut config = GatewayConfig::default();
+    let views = apply_upsert_provider_template(&mut config, template, |_| Ok(()))
+        .expect("the template upsert must succeed");
+    let reloaded = provider_template_views(&config).expect("views must reload");
+    let view = reloaded
+        .iter()
+        .find(|view| view.template.id == "custom-policy")
+        .expect("the upserted template must be present");
+
+    let value = template_strategy_value(&view.template);
+    assert_eq!(value["sync_strategy"], json!("opencode_go"));
+    assert_eq!(value["quota_strategy"], json!("commandcode"));
+    assert_eq!(value["error_strategy"], json!("generic"));
+    assert_eq!(views.len(), reloaded.len());
+}
+
+/// AC-002: the built-in catalog is exactly CommandCode and OpenCode Go; the
+/// OpenCode Zen built-in is gone and each built-in carries its approved
+/// strategies.
+#[test]
+fn builtin_catalog_ships_exactly_commandcode_and_opencode_go() {
+    let builtins = builtin_templates().expect("the built-in snapshot must parse");
+    let mut ids: Vec<String> = builtins.iter().map(|t| t.id.clone()).collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec!["commandcode".to_string(), "opencode-go".to_string()],
+        "the catalog must ship exactly CommandCode and OpenCode Go"
+    );
+    assert!(
+        !ids.iter().any(|id| id == "opencode-zen"),
+        "the OpenCode Zen built-in must be removed"
+    );
+
+    let values: Vec<Value> = builtins.iter().map(template_strategy_value).collect();
+    let by_id = |id: &str| {
+        values
+            .iter()
+            .find(|value| value["id"] == json!(id))
+            .unwrap_or_else(|| panic!("the {id} built-in must exist"))
+    };
+
+    let commandcode = by_id("commandcode");
+    assert_eq!(commandcode["sync_strategy"], json!("generic"));
+    assert_eq!(commandcode["quota_strategy"], json!("commandcode"));
+    assert_eq!(commandcode["error_strategy"], json!("generic"));
+
+    let go = by_id("opencode-go");
+    assert_eq!(go["sync_strategy"], json!("opencode_go"));
+    assert_eq!(go["quota_strategy"], json!("opencode_go"));
+    assert_eq!(go["error_strategy"], json!("generic"));
+    assert_eq!(
+        go["models_url"],
+        json!("https://opencode.ai/zen/go/v1/models"),
+        "the Go built-in must use the Go model-list URL"
+    );
+    assert_eq!(go["base_url"], json!("https://opencode.ai/zen/go/v1"));
+}
+
+/// AC-003: the Go baseline declares exactly the 20 Chat Completions and six
+/// Responses models with explicit protocols on the Go URL; Messages-only models
+/// are absent and the Zen URL is never used.
+#[test]
+fn opencode_go_baseline_declares_chat_and_responses_models_on_the_go_url() {
+    let go = find_builtin_template("opencode-go").expect("the Go built-in must exist");
+
+    assert_eq!(
+        go.models_url.as_deref(),
+        Some("https://opencode.ai/zen/go/v1/models"),
+        "the Go model-list URL must be /zen/go/v1/models"
+    );
+    assert_eq!(go.source, "https://opencode.ai/zen/go/v1/models");
+    assert_eq!(go.base_url, "https://opencode.ai/zen/go/v1");
+
+    let chat = go
+        .models
+        .iter()
+        .filter(|model| model.protocol == Some(UpstreamProtocol::ChatCompletions))
+        .count();
+    let responses = go
+        .models
+        .iter()
+        .filter(|model| model.protocol == Some(UpstreamProtocol::Responses))
+        .count();
+    assert_eq!(
+        chat, 20,
+        "the Go baseline must declare the 20 Chat Completions models"
+    );
+    assert_eq!(
+        responses, 6,
+        "the Go baseline must declare the six Responses models"
+    );
+    assert_eq!(
+        go.models.len(),
+        chat + responses,
+        "Messages-only models must be absent from the Go baseline"
+    );
+    assert!(
+        go.models.iter().all(|model| model.protocol.is_some()),
+        "every declared Go model must pin an explicit Chat/Responses protocol"
+    );
+    assert!(
+        !go.models_url
+            .as_deref()
+            .unwrap_or_default()
+            .contains("/zen/v1/models"),
+        "the Go baseline must never reference the Zen model-list URL"
+    );
+}
+
+/// AC-004: provider upsert binds a known template id, unbinds with `null`, and
+/// rejects an unknown or deleted template id without writing.
+#[test]
+fn provider_upsert_binds_and_unbinds_through_template_id() {
+    let _home = super::isolated_temp_home("provider-upsert-binding");
+
+    let mut config = GatewayConfig::default();
+    config.provider_templates.push(ProviderTemplateState {
+        template_id: "custom-1".to_string(),
+        template: Some(template_with_models(
+            "custom-1",
+            None,
+            UpstreamProtocol::ChatCompletions,
+            vec![],
+        )),
+        synced_at: None,
+        source: None,
+    });
+    crate::ai_gateway::storage::write_config(&config).expect("seed the custom template");
+
+    let mut bound = GatewayUpstreamProvider {
+        id: "p-bind".to_string(),
+        name: "P Bind".to_string(),
+        base_url: "https://p.example.com/v1".to_string(),
+        enabled: true,
+        ..GatewayUpstreamProvider::default()
+    };
+    bound.template_id = Some("custom-1".to_string());
+    let after_bind = crate::ai_gateway::commands::ai_gateway_upsert_provider(bound.clone(), None)
+        .expect("binding to a known template must succeed");
+    assert_eq!(
+        after_bind
+            .providers
+            .iter()
+            .find(|provider| provider.id == "p-bind")
+            .and_then(|provider| provider.template_id.as_deref()),
+        Some("custom-1"),
+        "the provider must be bound to the submitted template"
+    );
+
+    let mut unbound = bound;
+    unbound.template_id = None;
+    let after_unbind = crate::ai_gateway::commands::ai_gateway_upsert_provider(unbound, None)
+        .expect("unbinding must succeed");
+    assert_eq!(
+        after_unbind
+            .providers
+            .iter()
+            .find(|provider| provider.id == "p-bind")
+            .and_then(|provider| provider.template_id.clone()),
+        None,
+        "`template_id: null` must unbind the provider"
+    );
+}
+
+/// AC-004 / AC-006: a submitted unknown or deleted template id is rejected
+/// before anything is written.
+#[test]
+fn provider_upsert_rejects_unknown_or_deleted_template_without_writing() {
+    let _home = super::isolated_temp_home("provider-upsert-reject");
+
+    let mut config = GatewayConfig::default();
+    config.deleted_template_ids.push("opencode-zen".to_string());
+    crate::ai_gateway::storage::write_config(&config).expect("seed a deleted template id");
+    let before = crate::ai_gateway::storage::read_config().expect("read seeded config");
+
+    for rejected in ["does-not-exist", "opencode-zen"] {
+        let mut provider = GatewayUpstreamProvider {
+            id: format!("p-{rejected}"),
+            name: "P".to_string(),
+            base_url: "https://p.example.com/v1".to_string(),
+            enabled: true,
+            ..GatewayUpstreamProvider::default()
+        };
+        provider.template_id = Some(rejected.to_string());
+
+        let result = crate::ai_gateway::commands::ai_gateway_upsert_provider(provider, None);
+        assert!(
+            result.is_err(),
+            "binding to an unknown or deleted template id '{rejected}' must be rejected"
+        );
+        let after = crate::ai_gateway::storage::read_config().expect("read config after reject");
+        assert_eq!(
+            after.providers.len(),
+            before.providers.len(),
+            "a rejected binding must not write the configuration"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Go synchronization (REQ-004): declaration-aware reconciliation.
+// ---------------------------------------------------------------------------
+
+/// Build a persisted Go template from declarations via the snapshot parser, so
+/// the fixture carries `sync_strategy: opencode_go` on the wire and never relies
+/// on a `ProviderTemplate` struct literal.
+fn go_template_with_declarations(declarations: &[(&str, &str)]) -> ProviderTemplate {
+    let models: Vec<Value> = declarations
+        .iter()
+        .map(|(id, protocol)| json!({"upstream_model": id, "protocol": protocol, "enabled": true}))
+        .collect();
+    let snapshot = json!([{
+        "id": "opencode-go",
+        "name": "OpenCode Go",
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "protocol": "chat_completions",
+        "source": "https://opencode.ai/zen/go/v1/models",
+        "models_url": "https://opencode.ai/zen/go/v1/models",
+        "sync_strategy": "opencode_go",
+        "quota_strategy": "opencode_go",
+        "error_strategy": "generic",
+        "models": models,
+    }]);
+    parse_template_snapshot(&snapshot.to_string())
+        .expect("the Go template fixture must parse")
+        .remove(0)
+}
+
+/// A configuration seeded with one Go template and one provider bound to it.
+fn go_bound_config(declarations: &[(&str, &str)]) -> GatewayConfig {
+    let template = go_template_with_declarations(declarations);
+    let mut config = GatewayConfig::default();
+    config.provider_templates.push(ProviderTemplateState {
+        template_id: "opencode-go".to_string(),
+        template: Some(template),
+        synced_at: Some(123),
+        source: Some("https://opencode.ai/zen/go/v1/models".to_string()),
+    });
+    let provider = GatewayUpstreamProvider {
+        id: "go-p".to_string(),
+        name: "Go Provider".to_string(),
+        base_url: "https://opencode.ai/zen/go/v1".to_string(),
+        template_id: Some("opencode-go".to_string()),
+        protocol: UpstreamProtocol::ChatCompletions,
+        enabled: true,
+        ..GatewayUpstreamProvider::default()
+    };
+    config.providers.push(provider);
+    config
+}
+
+/// AC-007 / AC-008: a Go sync keeps only declared Chat/Responses ids with their
+/// declared protocols; undeclared, Messages-only and metadata-less ids are never
+/// added as mappings or guessed as Chat.
+#[test]
+fn go_sync_accepts_only_declared_chat_and_responses_ids() {
+    let mut config = go_bound_config(&[
+        ("go-chat-a", "chat_completions"),
+        ("go-resp-b", "responses"),
+    ]);
+    let body = json!({"data": [
+        {"id": "go-chat-a", "name": "Go Chat A"},
+        {"id": "go-resp-b", "name": "Go Resp B"},
+        {"id": "go-undeclared", "name": "Undeclared"},
+        {"id": "claude-messages-only", "name": "Messages Only"},
+        {"id": "go-no-metadata", "name": "No Metadata"}
+    ]});
+
+    let (view, _notices) =
+        apply_template_sync_from_body(&mut config, "opencode-go", &body.to_string())
+            .expect("the declared Go sync must succeed");
+
+    let ids: Vec<&str> = view
+        .template
+        .models
+        .iter()
+        .map(|model| model.upstream_model.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["go-chat-a", "go-resp-b"],
+        "only template-declared ids may enter the Go model set"
+    );
+    assert_eq!(
+        view.template.models[0].protocol,
+        Some(UpstreamProtocol::ChatCompletions)
+    );
+    assert_eq!(
+        view.template.models[1].protocol,
+        Some(UpstreamProtocol::Responses)
+    );
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == "go-p")
+        .expect("the bound provider must exist");
+    let mapping_ids: Vec<&str> = provider
+        .mappings
+        .iter()
+        .map(|mapping| mapping.upstream_model.as_str())
+        .collect();
+    assert_eq!(
+        mapping_ids,
+        vec!["go-chat-a", "go-resp-b"],
+        "only declared ids may be derived as provider mappings"
+    );
+    assert!(
+        !mapping_ids.contains(&"claude-messages-only"),
+        "a Messages-only id must never become a mapping"
+    );
+    assert!(
+        !mapping_ids.contains(&"go-undeclared"),
+        "an undeclared id must never be guessed as Chat"
+    );
+    assert!(
+        !mapping_ids.contains(&"go-no-metadata"),
+        "an id without declared metadata must not inherit the Chat default"
+    );
+
+    // The derived mappings must resolve the declared protocol (not only the id):
+    // the declared Chat model stays on the provider's Chat protocol while the
+    // declared Responses model carries an explicit Responses protocol.
+    let chat_mapping = provider
+        .mappings
+        .iter()
+        .find(|mapping| mapping.upstream_model == "go-chat-a")
+        .expect("the declared Chat mapping must be derived");
+    assert_eq!(
+        chat_mapping.effective_protocol(provider.protocol),
+        UpstreamProtocol::ChatCompletions,
+        "the declared Chat mapping must resolve to Chat Completions"
+    );
+    let responses_mapping = provider
+        .mappings
+        .iter()
+        .find(|mapping| mapping.upstream_model == "go-resp-b")
+        .expect("the declared Responses mapping must be derived");
+    assert_eq!(
+        responses_mapping.protocol,
+        Some(UpstreamProtocol::Responses),
+        "the declared Responses mapping must carry an explicit Responses protocol"
+    );
+    assert_eq!(
+        responses_mapping.effective_protocol(provider.protocol),
+        UpstreamProtocol::Responses,
+        "the declared Responses mapping must resolve to Responses"
+    );
+}
+
+/// AC-007 / AC-008: a Go source entry that explicitly declares only the
+/// `/responses` endpoint is accepted with an explicit Responses protocol even
+/// though the template never declared it, while a `/messages`-only entry is
+/// dropped and never guessed as Chat Completions.
+#[test]
+fn go_sync_accepts_endpoint_declared_responses_and_drops_messages_only() {
+    let mut config = go_bound_config(&[("go-chat-a", "chat_completions")]);
+    let body = json!({"data": [
+        {"id": "go-chat-a", "name": "Go Chat A"},
+        {"id": "endpoint-resp", "name": "Endpoint Responses", "supported_endpoints": ["/responses"]},
+        {"id": "messages-only", "name": "Messages Only", "supported_endpoints": ["/messages"]}
+    ]});
+
+    let (view, _notices) =
+        apply_template_sync_from_body(&mut config, "opencode-go", &body.to_string())
+            .expect("the endpoint-declared Go sync must succeed");
+
+    let ids: Vec<&str> = view
+        .template
+        .models
+        .iter()
+        .map(|model| model.upstream_model.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["go-chat-a", "endpoint-resp"],
+        "an endpoint-declared Responses id may enter the Go set while a Messages-only id is dropped"
+    );
+    let endpoint_resp = view
+        .template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "endpoint-resp")
+        .expect("the endpoint-declared Responses id must be present");
+    assert_eq!(
+        endpoint_resp.protocol,
+        Some(UpstreamProtocol::Responses),
+        "an endpoint-declared Responses id must carry an explicit Responses protocol"
+    );
+    assert!(
+        !ids.contains(&"messages-only"),
+        "a Messages-only id must never enter the Go model set"
+    );
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == "go-p")
+        .expect("the bound provider must exist");
+    let derived_resp = provider
+        .mappings
+        .iter()
+        .find(|mapping| mapping.upstream_model == "endpoint-resp")
+        .expect("the endpoint-declared Responses id must be derived as a mapping");
+    assert_eq!(
+        derived_resp.protocol,
+        Some(UpstreamProtocol::Responses),
+        "the derived endpoint-declared mapping must carry the Responses protocol"
+    );
+    assert_eq!(
+        derived_resp.effective_protocol(provider.protocol),
+        UpstreamProtocol::Responses,
+        "the derived endpoint-declared mapping must resolve to Responses"
+    );
+    assert!(
+        provider
+            .mappings
+            .iter()
+            .all(|mapping| mapping.upstream_model != "messages-only"),
+        "a Messages-only id must never be guessed as Chat and derived as a mapping"
+    );
+}
+
+/// AC-011: a Go sync whose source carries no compatible declared model is fatal,
+/// names the Go URL and reason, never names the Zen URL, and changes no bytes.
+#[test]
+fn go_sync_with_no_compatible_declared_model_is_atomic_and_names_the_go_url() {
+    let mut config = go_bound_config(&[("go-chat-a", "chat_completions")]);
+    let before = serde_json::to_value(&config).expect("snapshot the config");
+    let body = json!({"data": [
+        {"id": "go-undeclared"},
+        {"id": "claude-messages-only"}
+    ]});
+
+    let error = apply_template_sync_from_body(&mut config, "opencode-go", &body.to_string())
+        .expect_err("a Go sync with no compatible declared model must fail");
+    assert!(
+        error.contains("https://opencode.ai/zen/go/v1/models"),
+        "the Go sync failure must name the Go model-list URL: {error}"
+    );
+    assert!(
+        !error.contains("/zen/v1/models"),
+        "the Go sync must never name the Zen model-list URL: {error}"
+    );
+    assert_eq!(
+        serde_json::to_value(&config).expect("snapshot the config"),
+        before,
+        "a failed Go sync must leave the configuration unchanged"
+    );
+}
+
+/// AC-011: invalid JSON is a fatal no-write Go sync that names the Go URL.
+#[test]
+fn go_sync_invalid_json_is_atomic_and_names_the_go_url() {
+    let mut config = go_bound_config(&[("go-chat-a", "chat_completions")]);
+    let before = serde_json::to_value(&config).expect("snapshot the config");
+
+    let error = apply_template_sync_from_body(&mut config, "opencode-go", "{not json")
+        .expect_err("invalid JSON must fail the Go sync");
+    assert!(
+        error.contains("https://opencode.ai/zen/go/v1/models"),
+        "the invalid-JSON failure must name the Go model-list URL: {error}"
+    );
+    assert_eq!(
+        serde_json::to_value(&config).expect("snapshot the config"),
+        before,
+        "an invalid-JSON Go sync must leave the configuration unchanged"
+    );
+}
+
+/// AC-009: a declared Go model removed from the source applies the existing
+/// retirement, ignored-model, price-row and default-model cleanup atomically.
+#[test]
+fn go_sync_retires_a_removed_declared_model_with_the_existing_cleanup_rules() {
+    let mut config = go_bound_config(&[
+        ("go-chat-a", "chat_completions"),
+        ("go-resp-b", "responses"),
+    ]);
+    {
+        let provider = config
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == "go-p")
+            .expect("the bound provider must exist");
+        provider.default_model = Some("go-resp-b".to_string());
+        provider.mappings = vec![model_mapping("go-chat-a"), model_mapping("go-resp-b")];
+    }
+    config.model_prices.push(price_row("go-p", "go-resp-b"));
+
+    let keep = json!({"data": [{"id": "go-chat-a"}, {"id": "go-resp-b"}]});
+    apply_template_sync_from_body(&mut config, "opencode-go", &keep.to_string())
+        .expect("the first Go sync must keep both declared models");
+
+    let drop = json!({"data": [{"id": "go-chat-a"}]});
+    apply_template_sync_from_body(&mut config, "opencode-go", &drop.to_string())
+        .expect("the second Go sync must retire the removed declared model");
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == "go-p")
+        .expect("the bound provider must exist");
+    assert!(
+        !provider
+            .mappings
+            .iter()
+            .any(|mapping| mapping.upstream_model == "go-resp-b"),
+        "the removed declared model must be retired"
+    );
+    assert!(
+        provider
+            .ignored_models
+            .iter()
+            .any(|model| model == "go-resp-b"),
+        "the retired model must be recorded once in ignored_models"
+    );
+    assert!(
+        provider.default_model.is_none(),
+        "a default model naming the removed model must be cleared"
+    );
+    assert!(
+        !config.model_prices.iter().any(|row| {
+            row.provider_id.as_deref() == Some("go-p") && row.upstream_model == "go-resp-b"
+        }),
+        "the removed model's provider-scoped price row must be deleted"
+    );
+}
+
+/// AC-010: a non-Go template keeps today's protocol-inheritance fallback; a
+/// source entry without metadata still inherits the template protocol.
+#[test]
+fn generic_template_sync_keeps_the_protocol_inheritance_fallback() {
+    let mut config = seeded_config(UpstreamProtocol::Responses, vec![]);
+    let body = json!({"data": [{"id": "m1", "name": "M1"}]});
+
+    let view = apply_template_sync_with(&mut config, "t", |_| Ok(body.to_string()), |_| Ok(()))
+        .expect("a generic sync must accept a metadata-less entry");
+    assert_eq!(
+        view.template.models[0].protocol, None,
+        "a generic entry without metadata must keep inheriting the template protocol"
+    );
+
+    let provider = apply_create_provider_from_template(
+        &mut config,
+        "t",
+        "Generic Provider",
+        "",
+        UpstreamProtocol::ChatCompletions,
+        "sk-generic",
+        |_| Ok(()),
+    )
+    .expect("creating from the generic template must succeed");
+    assert_eq!(
+        provider.mappings[0].effective_protocol(provider.protocol),
+        UpstreamProtocol::Responses,
+        "the generic entry must inherit the template's Responses protocol"
     );
 }

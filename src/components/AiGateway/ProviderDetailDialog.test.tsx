@@ -2730,4 +2730,222 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Step 2: provider-template binding, effective-policy display and broken
+// binding handling (REQ-008 / AC-004 / AC-006 / AC-023 / AC-024 / AC-025).
+// RED tests for the frozen interface contract. Only this test file is touched.
+// ---------------------------------------------------------------------------
+
+function bindingTemplateView(
+  overrides: Partial<GatewayProviderTemplateView["template"]> = {},
+): GatewayProviderTemplateView {
+  return {
+    template: {
+      id: "tpl-cc",
+      name: "CommandCode",
+      description: "CommandCode provider template",
+      base_url: "https://api.commandcode.ai/provider/v1",
+      protocol: "chat_completions",
+      source: "https://api.commandcode.ai/provider/v1/models",
+      models_url: "https://api.commandcode.ai/provider/v1/models",
+      models: [],
+      sync_strategy: "generic",
+      quota_strategy: "commandcode",
+      error_strategy: "generic",
+      ...overrides,
+    },
+    synced_at: null,
+    source: "snapshot",
+    from_snapshot: true,
+  };
+}
+
+function renderBindingDialog({
+  provider,
+  templates,
+  onSave = vi.fn().mockResolvedValue(true),
+  onOpenChange = vi.fn(),
+}: {
+  provider: GatewayUpstreamProvider;
+  templates?: GatewayProviderTemplateView[];
+  onSave?: ReturnType<typeof vi.fn>;
+  onOpenChange?: ReturnType<typeof vi.fn>;
+}) {
+  const view = renderWithProviders(
+    <ProviderDetailDialog
+      open
+      provider={provider}
+      templates={templates}
+      busy={false}
+      onSave={onSave}
+      onDelete={vi.fn()}
+      onOpenChange={onOpenChange}
+    />,
+  );
+  return { ...view, onSave, onOpenChange };
+}
+
+describe("ProviderDetailDialog 模板绑定与有效策略（Step 2）", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("列出已有模板与未绑定选项，并通过 upsert 载荷提交 template_id 且保留实例字段", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(true);
+    const provider = makeProvider({
+      id: "p-bind",
+      name: "Binder",
+      base_url: "https://binder.example/v1",
+      default_model: "m-1",
+      weight: 3,
+      tags: ["prod"],
+      template_id: null,
+      mappings: [{ local_model: "l", upstream_model: "m-1" }],
+    });
+
+    renderBindingDialog({
+      provider,
+      templates: [
+        bindingTemplateView({ id: "tpl-cc", name: "CommandCode" }),
+        bindingTemplateView({ id: "tpl-go", name: "OpenCode Go" }),
+      ],
+      onSave,
+    });
+
+    const select = screen.getByTestId(
+      "ai-gateway-provider-template-select",
+    ) as HTMLSelectElement;
+    expect(select.tagName).toBe("SELECT");
+    expect(select).toHaveValue("");
+    const values = Array.from(select.options).map((option) => option.value);
+    expect(values).toContain("");
+    expect(values).toEqual(expect.arrayContaining(["tpl-cc", "tpl-go"]));
+
+    await user.selectOptions(select, "tpl-cc");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    const [saved] = onSave.mock.calls[0] as [
+      GatewayUpstreamProvider,
+      ModelPrice[],
+    ];
+    expect(saved).toMatchObject({
+      id: "p-bind",
+      name: "Binder",
+      base_url: "https://binder.example/v1",
+      template_id: "tpl-cc",
+      weight: 3,
+      tags: ["prod"],
+    });
+    expect(saved.mappings?.[0]).toMatchObject({
+      local_model: "l",
+      upstream_model: "m-1",
+    });
+  });
+
+  it("通过未绑定选项解绑为 template_id=null", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(true);
+    const provider = makeProvider({
+      id: "p-unbind",
+      template_id: "tpl-cc",
+    });
+
+    renderBindingDialog({
+      provider,
+      templates: [bindingTemplateView({ id: "tpl-cc" })],
+      onSave,
+    });
+
+    const select = screen.getByTestId("ai-gateway-provider-template-select");
+    expect(select).toHaveValue("tpl-cc");
+
+    await user.selectOptions(select, "");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    const [saved] = onSave.mock.calls[0] as [GatewayUpstreamProvider];
+    expect(saved.template_id).toBeNull();
+  });
+
+  it("不渲染任何服务商级策略覆盖控件", () => {
+    renderBindingDialog({
+      provider: makeProvider({ template_id: "tpl-cc" }),
+      templates: [bindingTemplateView({ id: "tpl-cc" })],
+    });
+
+    for (const testId of [
+      "ai-gateway-provider-sync-strategy",
+      "ai-gateway-provider-quota-strategy",
+      "ai-gateway-provider-error-strategy",
+    ]) {
+      expect(
+        screen.queryByTestId(testId),
+        `${testId} 不得作为服务商级覆盖控件存在`,
+      ).not.toBeInTheDocument();
+    }
+  });
+
+  it("展示绑定模板的有效策略，并在模板缺失时显示损坏绑定警告且保持可编辑", () => {
+    const { unmount } = renderBindingDialog({
+      provider: makeProvider({ template_id: "tpl-cc" }),
+      templates: [bindingTemplateView({ id: "tpl-cc" })],
+    });
+
+    const effective = screen.getByTestId("ai-gateway-provider-effective-strategy");
+    expect(effective).toHaveAttribute("data-sync-strategy", "generic");
+    expect(effective).toHaveAttribute("data-quota-strategy", "commandcode");
+    expect(effective).toHaveAttribute("data-error-strategy", "generic");
+    expect(
+      screen.queryByTestId("ai-gateway-provider-broken-binding-warning"),
+    ).not.toBeInTheDocument();
+    unmount();
+
+    renderBindingDialog({
+      provider: makeProvider({ id: "p-broken", template_id: "deleted-tpl" }),
+      templates: [bindingTemplateView({ id: "tpl-cc" })],
+    });
+
+    expect(
+      screen.getByTestId("ai-gateway-provider-broken-binding-warning"),
+    ).toBeInTheDocument();
+    const effectiveBroken = screen.getByTestId(
+      "ai-gateway-provider-effective-strategy",
+    );
+    expect(effectiveBroken).toHaveAttribute("data-quota-strategy", "none");
+
+    // 损坏绑定仍可编辑：名称输入与模板选择器保持可用以便重新绑定/解绑。
+    expect(screen.getByLabelText("Name")).toBeEnabled();
+    expect(
+      screen.getByTestId("ai-gateway-provider-template-select"),
+    ).toBeEnabled();
+  });
+
+  it("upsert 失败时保留本地状态且不报告成功关闭", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(false);
+    const onOpenChange = vi.fn();
+
+    renderBindingDialog({
+      provider: makeProvider({ id: "p-fail", template_id: null }),
+      templates: [bindingTemplateView({ id: "tpl-cc" })],
+      onSave,
+      onOpenChange,
+    });
+
+    const select = screen.getByTestId(
+      "ai-gateway-provider-template-select",
+    ) as HTMLSelectElement;
+    await user.selectOptions(select, "tpl-cc");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(
+      screen.getByTestId("ai-gateway-provider-template-select"),
+    ).toHaveValue("tpl-cc");
+  });
+});
+
 

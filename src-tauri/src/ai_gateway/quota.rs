@@ -1,3 +1,5 @@
+use super::templates::effective_quota_strategy;
+use super::types_config::QuotaStrategy;
 use super::{storage, GatewayConfig, GatewayUpstreamProvider};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -89,30 +91,32 @@ pub(in crate::ai_gateway) struct QuotaRequest {
     pub(in crate::ai_gateway) api_key: String,
 }
 
+/// Resolve the CommandCode quota request for a provider strictly from its
+/// effective template quota policy: a provider whose effective strategy is not
+/// `commandcode` — including an unbound provider, a broken binding or a
+/// different specialized policy — is rejected before any key or base-URL is
+/// consulted, so no upstream fetch can happen. The fixed endpoint and pinned
+/// source key are otherwise resolved exactly as before.
 pub(in crate::ai_gateway) fn resolve_quota_request(
+    config: &GatewayConfig,
     provider: &GatewayUpstreamProvider,
 ) -> Result<QuotaRequest, String> {
+    if effective_quota_strategy(config, provider) != QuotaStrategy::Commandcode {
+        return Err(
+            "provider is not bound to a CommandCode quota policy; bind the CommandCode template to monitor quota"
+                .to_string(),
+        );
+    }
+
     let api_key = super::selection::pinned_key_value(provider)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "no API key configured for this provider".to_string())?;
-
-    let base_url = provider.base_url.trim();
-    if base_url.is_empty() {
-        return Err("provider base URL is blank".to_string());
-    }
-    let parsed = url::Url::parse(base_url)
-        .map_err(|_| "provider base URL is invalid".to_string())?;
-    if !parsed
-        .host_str()
-        .is_some_and(|host| host.eq_ignore_ascii_case("api.commandcode.ai"))
-    {
-        return Err("provider is not hosted by api.commandcode.ai".to_string());
-    }
+        .ok_or_else(|| "no API key configured for this provider".to_string())?
+        .to_string();
 
     Ok(QuotaRequest {
         url: COMMANDCODE_QUOTA_URL.to_string(),
-        api_key: api_key.to_string(),
+        api_key,
     })
 }
 
@@ -194,7 +198,7 @@ where
         .iter()
         .find(|provider| provider.id == provider_id)
         .ok_or_else(|| format!("unknown provider: {provider_id}"))?;
-    let QuotaRequest { url, api_key } = resolve_quota_request(provider)?;
+    let QuotaRequest { url, api_key } = resolve_quota_request(config, provider)?;
 
     {
         let cache = cache

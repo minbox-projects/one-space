@@ -38,6 +38,267 @@ const LEGACY_PROVIDER_RUNTIME_KEYS: [&str; 5] = [
 const LEGACY_SINGULAR_OFF_PEAK_KEY: &str = "off_peak";
 const OFF_PEAKS_KEY: &str = "off_peaks";
 
+/// Version-2 OpenCode Zen template identity, superseded in schema 3 by OpenCode
+/// Go. This migration module is the only non-test production source allowed to
+/// name the legacy identity.
+const LEGACY_OPENCODE_ZEN_TEMPLATE_ID: &str = "opencode-zen";
+/// Current OpenCode Go template identity.
+const OPENCODE_GO_TEMPLATE_ID: &str = "opencode-go";
+const TEMPLATE_ID_FIELD: &str = "template_id";
+const TEMPLATE_FIELD: &str = "template";
+const SYNCED_AT_FIELD: &str = "synced_at";
+const SOURCE_FIELD: &str = "source";
+const BASE_URL_FIELD: &str = "base_url";
+const DELETED_TEMPLATE_IDS_FIELD: &str = "deleted_template_ids";
+const PROVIDERS_FIELD: &str = "providers";
+const PROVIDER_TEMPLATES_FIELD: &str = "provider_templates";
+const MAPPINGS_FIELD: &str = "mappings";
+const IGNORED_MODELS_FIELD: &str = "ignored_models";
+const DEFAULT_MODEL_FIELD: &str = "default_model";
+const UPSTREAM_MODEL_FIELD: &str = "upstream_model";
+const PROTOCOL_FIELD: &str = "protocol";
+const ENABLED_FIELD: &str = "enabled";
+
+/// Serialize the shipped OpenCode Go baseline into its persisted JSON shape,
+/// plus each declared model id's explicit protocol. A missing baseline yields
+/// `None` so the migration no-ops instead of corrupting the value.
+struct GoBaseline {
+    template: Value,
+    base_url: String,
+    models_url: String,
+    declarations: Vec<(String, String)>,
+}
+
+fn opencode_go_baseline() -> Option<GoBaseline> {
+    let baseline = super::templates::find_builtin_template(OPENCODE_GO_TEMPLATE_ID).ok()?;
+    let declarations = baseline
+        .models
+        .iter()
+        .filter_map(|model| {
+            model.protocol.map(|protocol| {
+                let protocol = match protocol {
+                    super::types_config::UpstreamProtocol::ChatCompletions => "chat_completions",
+                    super::types_config::UpstreamProtocol::Responses => "responses",
+                };
+                (model.upstream_model.clone(), protocol.to_string())
+            })
+        })
+        .collect();
+    Some(GoBaseline {
+        template: serde_json::to_value(&baseline).ok()?,
+        base_url: baseline.base_url.clone(),
+        models_url: baseline.models_url.clone().unwrap_or_default(),
+        declarations,
+    })
+}
+
+/// Map every persisted `opencode-zen` identity to `opencode-go` and quarantine
+/// the provider data the Go baseline cannot serve, in the raw configuration
+/// value. Only a `template_id` binding triggers a provider migration, so a
+/// provider whose URL merely resembles Zen is left untouched. Idempotent: a
+/// second pass finds no Zen identity and changes nothing.
+fn migrate_opencode_zen_to_go(object: &mut Map<String, Value>) -> bool {
+    let has_zen_deleted = object
+        .get(DELETED_TEMPLATE_IDS_FIELD)
+        .and_then(Value::as_array)
+        .is_some_and(|ids| {
+            ids.iter()
+                .any(|id| id.as_str() == Some(LEGACY_OPENCODE_ZEN_TEMPLATE_ID))
+        });
+    let has_zen_state = object
+        .get(PROVIDER_TEMPLATES_FIELD)
+        .and_then(Value::as_array)
+        .is_some_and(|states| {
+            states.iter().any(|state| {
+                state.get(TEMPLATE_ID_FIELD).and_then(Value::as_str)
+                    == Some(LEGACY_OPENCODE_ZEN_TEMPLATE_ID)
+            })
+        });
+    let has_zen_provider = object
+        .get(PROVIDERS_FIELD)
+        .and_then(Value::as_array)
+        .is_some_and(|providers| {
+            providers.iter().any(|provider| {
+                provider.get(TEMPLATE_ID_FIELD).and_then(Value::as_str)
+                    == Some(LEGACY_OPENCODE_ZEN_TEMPLATE_ID)
+            })
+        });
+    if !has_zen_deleted && !has_zen_state && !has_zen_provider {
+        return false;
+    }
+
+    let Some(baseline) = opencode_go_baseline() else {
+        return false;
+    };
+    let mut changed = false;
+
+    if let Some(deleted) = object
+        .get_mut(DELETED_TEMPLATE_IDS_FIELD)
+        .and_then(Value::as_array_mut)
+    {
+        for id in deleted.iter_mut() {
+            if id.as_str() == Some(LEGACY_OPENCODE_ZEN_TEMPLATE_ID) {
+                *id = Value::String(OPENCODE_GO_TEMPLATE_ID.to_string());
+                changed = true;
+            }
+        }
+    }
+
+    if let Some(states) = object
+        .get_mut(PROVIDER_TEMPLATES_FIELD)
+        .and_then(Value::as_array_mut)
+    {
+        let go_state_exists = states.iter().any(|state| {
+            state.get(TEMPLATE_ID_FIELD).and_then(Value::as_str) == Some(OPENCODE_GO_TEMPLATE_ID)
+        });
+        if go_state_exists {
+            // A Go state already exists: drop the stale Zen duplicate
+            // deterministically rather than creating two Go identities.
+            let before = states.len();
+            states.retain(|state| {
+                state.get(TEMPLATE_ID_FIELD).and_then(Value::as_str)
+                    != Some(LEGACY_OPENCODE_ZEN_TEMPLATE_ID)
+            });
+            if states.len() != before {
+                changed = true;
+            }
+        } else {
+            for state in states.iter_mut() {
+                if state.get(TEMPLATE_ID_FIELD).and_then(Value::as_str)
+                    != Some(LEGACY_OPENCODE_ZEN_TEMPLATE_ID)
+                {
+                    continue;
+                }
+                let Some(state) = state.as_object_mut() else {
+                    continue;
+                };
+                state.insert(
+                    TEMPLATE_ID_FIELD.to_string(),
+                    Value::String(OPENCODE_GO_TEMPLATE_ID.to_string()),
+                );
+                state.insert(TEMPLATE_FIELD.to_string(), baseline.template.clone());
+                state.insert(SYNCED_AT_FIELD.to_string(), Value::Null);
+                if !baseline.models_url.is_empty() {
+                    state.insert(
+                        SOURCE_FIELD.to_string(),
+                        Value::String(baseline.models_url.clone()),
+                    );
+                }
+                changed = true;
+            }
+        }
+    }
+
+    if let Some(providers) = object
+        .get_mut(PROVIDERS_FIELD)
+        .and_then(Value::as_array_mut)
+    {
+        for provider in providers.iter_mut() {
+            if provider.get(TEMPLATE_ID_FIELD).and_then(Value::as_str)
+                != Some(LEGACY_OPENCODE_ZEN_TEMPLATE_ID)
+            {
+                continue;
+            }
+            let Some(provider) = provider.as_object_mut() else {
+                continue;
+            };
+            provider.insert(
+                TEMPLATE_ID_FIELD.to_string(),
+                Value::String(OPENCODE_GO_TEMPLATE_ID.to_string()),
+            );
+            provider.insert(
+                BASE_URL_FIELD.to_string(),
+                Value::String(baseline.base_url.clone()),
+            );
+            changed = true;
+
+            let mut ignored: Vec<String> = provider
+                .get(IGNORED_MODELS_FIELD)
+                .and_then(Value::as_array)
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|id| id.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            if let Some(mappings) = provider
+                .get_mut(MAPPINGS_FIELD)
+                .and_then(Value::as_array_mut)
+            {
+                for mapping in mappings.iter_mut() {
+                    let Some(mapping) = mapping.as_object_mut() else {
+                        continue;
+                    };
+                    let Some(upstream_model) = mapping
+                        .get(UPSTREAM_MODEL_FIELD)
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                    else {
+                        continue;
+                    };
+                    let declared_protocol = baseline
+                        .declarations
+                        .iter()
+                        .find(|(identifier, _)| *identifier == upstream_model)
+                        .map(|(_, protocol)| protocol.clone());
+                    match declared_protocol {
+                        Some(protocol) => {
+                            // Preserve an explicit protocol; give a supported
+                            // Responses mapping an explicit protocol when it
+                            // previously inherited the old provider default.
+                            if mapping
+                                .get(PROTOCOL_FIELD)
+                                .and_then(Value::as_str)
+                                .is_none()
+                                && protocol == "responses"
+                            {
+                                mapping.insert(PROTOCOL_FIELD.to_string(), Value::String(protocol));
+                                changed = true;
+                            }
+                        }
+                        None => {
+                            if mapping.get(ENABLED_FIELD).and_then(Value::as_bool) != Some(false) {
+                                mapping.insert(ENABLED_FIELD.to_string(), Value::Bool(false));
+                                changed = true;
+                            }
+                            if !ignored.iter().any(|existing| existing == &upstream_model) {
+                                ignored.push(upstream_model);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !ignored.is_empty() {
+                let ignored = Value::Array(ignored.into_iter().map(Value::String).collect());
+                if provider.get(IGNORED_MODELS_FIELD) != Some(&ignored) {
+                    provider.insert(IGNORED_MODELS_FIELD.to_string(), ignored);
+                    changed = true;
+                }
+            }
+
+            // Clear a default model the Go baseline does not serve.
+            if let Some(default_model) = provider
+                .get(DEFAULT_MODEL_FIELD)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            {
+                let supported = baseline
+                    .declarations
+                    .iter()
+                    .any(|(identifier, _)| identifier == default_model.trim());
+                if !supported {
+                    provider.insert(DEFAULT_MODEL_FIELD.to_string(), Value::Null);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    changed
+}
+
 /// Legacy provider-level single credential field, superseded by the ordered
 /// `keys` pool. This is the only non-test production source allowed to name it.
 const LEGACY_SINGLE_KEY_FIELD: &str = "api_key";
@@ -166,11 +427,21 @@ fn convert_singular_off_peak(row: &mut Map<String, Value>) -> bool {
 /// entry; provider-level runtime keys are cleared. Missing fields are tolerated
 /// so a legacy shape can never fail the whole parse.
 pub(in crate::ai_gateway) fn migrate_legacy_config(config: &mut Value) -> bool {
+    if !config.is_object() {
+        return false;
+    }
+    // The schema-3 Zen-to-Go identity migration runs first so reachability and
+    // price scoping see the migrated provider bindings and mappings.
+    let mut changed = {
+        let object = config
+            .as_object_mut()
+            .expect("config was checked to be an object");
+        migrate_opencode_zen_to_go(object)
+    };
     let reachable = reachable_provider_models(config);
     let Some(object) = config.as_object_mut() else {
-        return false;
+        return changed;
     };
-    let mut changed = false;
 
     if let Some(providers) = object.get_mut("providers").and_then(Value::as_array_mut) {
         for provider in providers.iter_mut() {

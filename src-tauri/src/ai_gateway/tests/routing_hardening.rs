@@ -887,3 +887,84 @@ fn f2_large_config(include_victim: bool) -> Value {
         }],
     })
 }
+
+// ===========================================================================
+// 20261010-provider-template-bound-strategies — REQ-006 (AC-017): the effective
+// template policy/protocol reaches terminal projection, while the existing
+// generic error/retry/failover/streaming semantics stay untouched.
+// ===========================================================================
+
+/// AC-017: after a Go sync, the opencode terminal projection carries exactly the
+/// declared Chat/Responses models: an undeclared id never reaches the terminal
+/// model set.
+#[test]
+fn go_bound_provider_terminal_projection_excludes_undeclared_models() {
+    let snapshot = json!([{
+        "id": "opencode-go",
+        "name": "OpenCode Go",
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "protocol": "chat_completions",
+        "source": "https://opencode.ai/zen/go/v1/models",
+        "models_url": "https://opencode.ai/zen/go/v1/models",
+        "sync_strategy": "opencode_go",
+        "quota_strategy": "opencode_go",
+        "error_strategy": "generic",
+        "models": [{"upstream_model": "go-chat", "protocol": "chat_completions", "enabled": true}]
+    }]);
+    let template = crate::ai_gateway::templates::parse_template_snapshot(&snapshot.to_string())
+        .expect("the Go template fixture must parse")
+        .remove(0);
+
+    let mut config = GatewayConfig::default();
+    config
+        .provider_templates
+        .push(crate::ai_gateway::ProviderTemplateState {
+            template_id: "opencode-go".to_string(),
+            template: Some(template),
+            synced_at: Some(1),
+            source: Some("https://opencode.ai/zen/go/v1/models".to_string()),
+        });
+    let provider = GatewayUpstreamProvider {
+        id: "sync-provider".to_string(),
+        name: "Go Provider".to_string(),
+        base_url: "https://opencode.ai/zen/go/v1".to_string(),
+        template_id: Some("opencode-go".to_string()),
+        protocol: crate::ai_gateway::UpstreamProtocol::ChatCompletions,
+        enabled: true,
+        ..GatewayUpstreamProvider::default()
+    };
+    config.providers.push(provider);
+
+    let body = json!({"data": [
+        {"id": "go-chat", "name": "Go Chat"},
+        {"id": "go-undeclared", "name": "Undeclared"}
+    ]});
+    crate::ai_gateway::templates::apply_template_sync_from_body(
+        &mut config,
+        "opencode-go",
+        &body.to_string(),
+    )
+    .expect("the Go sync must succeed");
+
+    let record = crate::ai_gateway::build_gateway_provider(
+        "sync-provider",
+        "opencode",
+        "https://opencode.ai/zen/go/v1",
+        "sk-local",
+        &config.providers,
+        crate::ai_gateway::TerminalSyncProfile::RELEASE,
+    )
+    .expect("the terminal projection must build");
+    let models = record
+        .pointer("/tool_config/models")
+        .and_then(Value::as_object)
+        .expect("the opencode projection must carry a models object");
+    assert!(
+        models.contains_key("go-chat"),
+        "a declared Chat model must reach terminal projection"
+    );
+    assert!(
+        !models.contains_key("go-undeclared"),
+        "an undeclared model must never reach terminal projection"
+    );
+}

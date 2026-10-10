@@ -4776,7 +4776,7 @@ fn create_provider_from_template_command_returns_config() {
         super::storage::write_config(&GatewayConfig::default()).expect("write config");
 
         let result = super::commands::ai_gateway_create_provider_from_template(
-            "opencode-zen".into(),
+            "opencode-go".into(),
             "T".into(),
             "".into(),
             UpstreamProtocol::ChatCompletions,
@@ -4788,7 +4788,7 @@ fn create_provider_from_template_command_returns_config() {
             result
                 .providers
                 .iter()
-                .any(|provider| provider.template_id.as_deref() == Some("opencode-zen")),
+                .any(|provider| provider.template_id.as_deref() == Some("opencode-go")),
             "the command must return the config containing the new template provider"
         );
     });
@@ -16679,6 +16679,7 @@ fn normalize_config_leaves_explicit_values_and_does_not_guess() {
                     ..ProviderTemplateModel::default()
                 }],
                 icon: None,
+                ..ProviderTemplate::default()
             }),
             synced_at: Some(100),
             source: None,
@@ -16815,6 +16816,7 @@ fn written_config_round_trips_explicit_values_without_guessed_fields() {
                     },
                 ],
                 icon: None,
+                ..ProviderTemplate::default()
             }),
             synced_at: Some(100),
             source: None,
@@ -27057,6 +27059,7 @@ fn resync_seed_template(config: &mut GatewayConfig, template_id: &str) {
                 models_url: Some(RESYNC_SYNC_URL.to_string()),
                 models: Vec::new(),
                 icon: None,
+                ..super::ProviderTemplate::default()
             }),
             synced_at: None,
             source: None,
@@ -28365,9 +28368,9 @@ fn quota_probe_is_not_attempted_before_the_60_second_boundary() {
 fn template_creation_stores_one_default_named_key() {
     with_temp_home("key-pool-template-default", |_home| {
         super::commands::ai_gateway_create_provider_from_template(
-            "opencode-zen".to_string(),
-            "My Zen".to_string(),
-            "https://my-zen.example.com/v1".to_string(),
+            "opencode-go".to_string(),
+            "My Go".to_string(),
+            "https://my-go.example.com/v1".to_string(),
             UpstreamProtocol::ChatCompletions,
             "sk-create-secret".to_string(),
         )
