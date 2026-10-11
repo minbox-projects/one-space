@@ -2949,3 +2949,91 @@ describe("ProviderDetailDialog 模板绑定与有效策略（Step 2）", () => {
 });
 
 
+
+// ---------------------------------------------------------------------------
+// Step 4: the provider default and per-row protocol selectors gain the third
+// upstream protocol `anthropic_messages` while rows keep inheritance.
+// RED before implementation: only Chat/Responses options exist.
+// ---------------------------------------------------------------------------
+
+describe("ProviderDetailDialog anthropic_messages 协议选项", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("服务商默认协议选择器提供 Anthropic Messages (native) 选项", () => {
+    renderProviderDialog({ provider: makeProvider() });
+
+    const select = screen.getByLabelText("API protocol");
+    const option = within(select).getByRole("option", {
+      name: "Anthropic Messages (native)",
+    });
+    expect(option).toHaveValue("anthropic_messages");
+  });
+
+  it("映射行协议选择器提供继承与 Anthropic Messages 选项并保存显式协议", async () => {
+    const user = userEvent.setup();
+    const provider = makeProvider({
+      protocol: "chat_completions",
+      mappings: [
+        { local_model: "claude-local", upstream_model: "cc-opus", protocol: null },
+      ],
+    });
+    const { onSave } = renderProviderDialog({ provider });
+
+    const rowSelect = screen.getByLabelText("Mapping protocol 1");
+    expect(
+      within(rowSelect).getByRole("option", { name: "Inherit from provider" }),
+    ).toBeInTheDocument();
+    expect(
+      within(rowSelect).getByRole("option", {
+        name: "Anthropic Messages (native)",
+      }),
+    ).toHaveValue("anthropic_messages");
+
+    await user.selectOptions(rowSelect, "anthropic_messages");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as GatewayUpstreamProvider;
+    expect(saved.mappings[0].protocol).toBe("anthropic_messages");
+  });
+
+  it("父默认切换为 Anthropic Messages 只影响继承行", async () => {
+    const user = userEvent.setup();
+    const provider = makeProvider({
+      protocol: "chat_completions",
+      mappings: [
+        { local_model: "inherit", upstream_model: "cc-opus", protocol: null },
+        {
+          local_model: "responses-row",
+          upstream_model: "gpt-4o",
+          protocol: "responses",
+        },
+      ],
+    });
+    const { onSave } = renderProviderDialog({ provider });
+
+    await user.selectOptions(
+      screen.getByLabelText("API protocol"),
+      "anthropic_messages",
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as GatewayUpstreamProvider;
+    expect(saved.protocol).toBe("anthropic_messages");
+    // The inherited row keeps no explicit protocol (null = follow parent).
+    expect(saved.mappings[0].protocol).toBeUndefined();
+    expect(saved.mappings[1].protocol).toBe("responses");
+  });
+
+  it("中文下提供 Anthropic Messages（原生）标签", async () => {
+    await i18n.changeLanguage("zh");
+    renderProviderDialog({ provider: makeProvider() });
+
+    expect(
+      screen.getByRole("option", { name: "Anthropic Messages（原生）" }),
+    ).toBeInTheDocument();
+  });
+});

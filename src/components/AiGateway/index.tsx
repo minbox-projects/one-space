@@ -63,6 +63,7 @@ import {
   type GatewayTerminalTarget,
   type GatewayUpstreamProvider,
   type GatewayUpstreamProviderWithKeys,
+  type ClaudeModelSelection,
   type ModelPrice,
   type UsageStats,
 } from "@/lib/aiGateway";
@@ -805,11 +806,14 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const toolDisplayName = (tool: string) =>
     targets.find((target) => target.tool === tool)?.name ?? tool;
 
-  const handleConfigureTool = (tool: string) =>
+  const handleConfigureTool = (
+    tool: string,
+    claudeModels?: ClaudeModelSelection,
+  ) =>
     void runTerminalAction(
       tool,
       async () => {
-        await aiGatewayConfigureTerminal([tool]);
+        await aiGatewayConfigureTerminal([tool], claudeModels);
         await applyConfig(await aiGatewayGetConfig());
       },
       t("aiGatewayConfigureSuccess", "Terminal provider added for {{tool}}.", {
@@ -822,11 +826,11 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       ),
     );
 
-  const handleSyncTool = (tool: string) =>
+  const handleSyncTool = (tool: string, claudeModels?: ClaudeModelSelection) =>
     void runTerminalAction(
       tool,
       async () => {
-        await aiGatewaySyncTerminal([tool]);
+        await aiGatewaySyncTerminal([tool], claudeModels);
         await applyConfig(await aiGatewayGetConfig());
       },
       t("aiGatewaySyncSuccess", "Terminal provider synced for {{tool}}.", {
@@ -1324,8 +1328,10 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
             onStartGateway={handleToggleService}
             startingGateway={busy}
             syncingTools={syncingTools}
-            onConfigureTool={(tool) => handleConfigureTool(tool)}
-            onSyncTool={(tool) => handleSyncTool(tool)}
+            onConfigureTool={(tool, claudeModels) =>
+              handleConfigureTool(tool, claudeModels)
+            }
+            onSyncTool={(tool, claudeModels) => handleSyncTool(tool, claudeModels)}
           />
         </div>
 

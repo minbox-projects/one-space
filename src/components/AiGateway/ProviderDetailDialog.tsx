@@ -929,6 +929,12 @@ export function ProviderDetailDialog({
                 <option value="responses">
                   {t("aiGatewayProtocolResponses", "Responses (/responses)")}
                 </option>
+                <option value="anthropic_messages">
+                  {t(
+                    "aiGatewayProtocolAnthropicMessages",
+                    "Anthropic Messages (native)",
+                  )}
+                </option>
               </select>
             </div>
 
@@ -1584,6 +1590,12 @@ export function ProviderDetailDialog({
                         </option>
                         <option value="responses">
                           {t("aiGatewayProtocolResponses", "Responses (/responses)")}
+                        </option>
+                        <option value="anthropic_messages">
+                          {t(
+                            "aiGatewayProtocolAnthropicMessages",
+                            "Anthropic Messages (native)",
+                          )}
                         </option>
                       </select>
                       <button

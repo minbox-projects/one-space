@@ -25,6 +25,8 @@ import {
 } from "./ProviderTemplateIcon";
 import {
   formatDateTime,
+  protocolBadgeClass,
+  protocolShortLabel,
 } from "./gatewayShared";
 import {
   AI_GATEWAY_ALERT_AUTO_DISMISS_MS,
@@ -99,7 +101,7 @@ function UpstreamProviderCardItem({
   const mappingCount = provider.mappings?.length ?? 0;
   const providerKeys = providerKeyPool(provider);
   const markedKeys = providerMarkedKeys(provider);
-  const isChatProtocol = provider.protocol !== "responses";
+  const protocolLabel = protocolShortLabel(provider.protocol);
   const templateView = provider.template_id
     ? templates?.find(
         (view) => view.template.id === provider.template_id,
@@ -265,13 +267,11 @@ function UpstreamProviderCardItem({
               </button>
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
                 <span
-                  className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-4 ${
-                    isChatProtocol
-                      ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                      : "bg-purple-500/10 text-purple-600 dark:text-purple-400"
-                  }`}
+                  className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-4 ${protocolBadgeClass(
+                    provider.protocol,
+                  )}`}
                 >
-                  {isChatProtocol ? "Chat" : "Responses"}
+                  {protocolLabel}
                 </span>
                 <span
                   data-testid={`ai-gateway-weight-badge-${provider.id}`}

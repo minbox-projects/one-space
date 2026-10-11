@@ -819,3 +819,55 @@ describe("模型列表国际化键", () => {
     await i18n.changeLanguage("en");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 4: the third upstream protocol appears in the model-list badge and the
+// protocol filter; an Anthropic mapping is shown as `/messages`.
+// RED before implementation: endpointPath and protocolOptions only know
+// chat_completions/responses.
+// ---------------------------------------------------------------------------
+
+describe("ModelListPanel anthropic_messages 徽标与筛选", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("anthropic 上游在本行展示 /messages 徽标并可经协议筛选命中", () => {
+    renderPanel([
+      makeProvider({
+        id: "p1",
+        name: "Provider 1",
+        protocol: "chat_completions",
+        mappings: [
+          {
+            local_model: "chat-model",
+            upstream_model: "chat-up",
+            protocol: "chat_completions",
+          },
+          {
+            local_model: "claude-model",
+            upstream_model: "claude-up",
+            protocol: "anthropic_messages",
+          },
+        ],
+      }),
+    ]);
+
+    expect(rowModels()).toEqual(["chat-model", "claude-model"]);
+
+    const anthRow = screen
+      .getAllByTestId("ai-gateway-model-list-row")
+      .find((row) => row.getAttribute("data-model") === "claude-model");
+    expect(anthRow).toBeDefined();
+    expect(anthRow).toHaveTextContent("/messages");
+
+    fireEvent.click(
+      screen.getByTestId("ai-gateway-model-list-protocol-filter-trigger"),
+    );
+    const anthOption = screen.getByRole("option", { name: /anthropic/i });
+    fireEvent.click(anthOption);
+
+    expect(rowModels()).toEqual(["claude-model"]);
+  });
+});

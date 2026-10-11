@@ -217,3 +217,49 @@ describe("ProviderTemplatePickerDialog", () => {
     expect(within(cmdItem).getByTestId("provider-icon-commandcode")).toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 4: a template whose protocol is `anthropic_messages` shows the third
+// upstream protocol badge instead of the Chat/Responses fallback.
+// RED before implementation: the badge label is "Chat" for anything non-Responses.
+// ---------------------------------------------------------------------------
+
+describe("ProviderTemplatePickerDialog anthropic_messages 徽标", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("模板协议为 anthropic_messages 时卡片展示第三协议徽标", () => {
+    const templates: GatewayProviderTemplateView[] = [
+      {
+        template: {
+          id: "tpl-anth",
+          name: "CommandCode",
+          description: "Template for the third upstream protocol",
+          base_url: "https://api.commandcode.ai/provider/v1",
+          protocol: "anthropic_messages",
+          source: "https://api.commandcode.ai/provider/v1/models",
+          models: [],
+        },
+        synced_at: null,
+        from_snapshot: true,
+        source: "https://api.commandcode.ai/provider/v1/models",
+      },
+    ];
+
+    render(
+      <ProviderTemplatePickerDialog
+        open={true}
+        onOpenChange={vi.fn()}
+        templates={templates}
+        busy={false}
+        onSelectBlank={vi.fn()}
+        onSelectTemplate={vi.fn()}
+      />,
+    );
+
+    const item = screen.getByTestId("template-picker-item-tpl-anth");
+    expect(item).toHaveTextContent(/anthropic/i);
+    expect(within(item).queryByText("Chat")).not.toBeInTheDocument();
+  });
+});

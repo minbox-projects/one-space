@@ -51,9 +51,11 @@ import {
   subscribeTemplateAutoRefreshIntervalChanged,
   USAGE_RANGE_KEYS,
   usageStatusTranslationKey,
+  type ClaudeModelSelection,
   type GatewayConfig,
   type GatewayKey,
   type GatewayProviderKey,
+  type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
   type ModelPrice,
   type UsageMetrics,
@@ -2158,3 +2160,115 @@ describe("AI Gateway 模板策略 DTO 与有效策略解析", () => {
     expect(isProviderTemplateBindingBroken([], null)).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 4: the third upstream protocol and the optional Claude model selection.
+// RED before implementation: `GatewayUpstreamProtocol` only has two members and
+// the terminal wrappers cannot carry `claude_models`.
+// ---------------------------------------------------------------------------
+
+describe("AI Gateway anthropic_messages 协议与 Claude 四选择 wrapper", () => {
+  beforeEach(() => {
+    resetTauriMocks();
+  });
+
+  it("GatewayUpstreamProtocol 联合接受 anthropic_messages", () => {
+    const protocol: GatewayUpstreamProtocol = "anthropic_messages";
+    expect(protocol).toBe("anthropic_messages");
+  });
+
+  it("服务商默认与映射行接受 anthropic_messages 并保持父默认继承", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      provider({
+        id: "p-anth",
+        protocol: "anthropic_messages",
+        mappings: [
+          // No row protocol: inherits the provider's anthropic default.
+          { local_model: "claude-inherit", upstream_model: "cc-opus" },
+          // Explicit row protocol overrides the inherited default.
+          {
+            local_model: "chat-explicit",
+            upstream_model: "gpt-4o",
+            protocol: "chat_completions",
+          },
+        ],
+      }),
+    ];
+
+    const models = aggregateModels(providers);
+    expect(
+      models.find((entry) => entry.model === "claude-inherit")?.providers[0]
+        .endpoint,
+    ).toBe("anthropic_messages");
+    expect(
+      models.find((entry) => entry.model === "chat-explicit")?.providers[0]
+        .endpoint,
+    ).toBe("chat_completions");
+  });
+
+  it("configure wrapper 携带可选 claude_models 并序列化为后端四选择载荷", async () => {
+    const selection: ClaudeModelSelection = {
+      default_model: "cc-opus",
+      haiku: "cc-haiku",
+      sonnet: "cc-sonnet",
+      opus: "cc-opus",
+    };
+
+    await aiGatewayConfigureTerminal(["claude"], selection);
+
+    expect(invokeMock).toHaveBeenCalledWith("ai_gateway_configure_terminal", {
+      targetTools: ["claude"],
+      claudeModels: {
+        default_model: "cc-opus",
+        haiku: "cc-haiku",
+        sonnet: "cc-sonnet",
+        opus: "cc-opus",
+      },
+    });
+  });
+
+  it("sync wrapper 携带可选 claude_models 且载荷恰好四个本地模型 id", async () => {
+    const selection: ClaudeModelSelection = {
+      default_model: "cc-opus",
+      haiku: "cc-haiku",
+      sonnet: "cc-sonnet",
+      opus: "cc-opus",
+    };
+
+    await aiGatewaySyncTerminal(["claude"], selection);
+
+    expect(invokeMock).toHaveBeenCalledWith("ai_gateway_sync_terminal", {
+      targetTools: ["claude"],
+      claudeModels: {
+        default_model: "cc-opus",
+        haiku: "cc-haiku",
+        sonnet: "cc-sonnet",
+        opus: "cc-opus",
+      },
+    });
+
+    const payload = invokeMock.mock.calls.find(
+      ([command]) => command === "ai_gateway_sync_terminal",
+    )?.[1] as { claudeModels: Record<string, unknown> };
+    expect(Object.keys(payload.claudeModels).sort()).toEqual([
+      "default_model",
+      "haiku",
+      "opus",
+      "sonnet",
+    ]);
+    // The payload is model ids only: no credential-shaped key leaks through.
+    expect(JSON.stringify(payload)).not.toMatch(/api[_-]?key|"value"|sk-/i);
+  });
+
+  it("未提供 Claude 选择时 wrapper 不携带 claudeModels 键", async () => {
+    await aiGatewayConfigureTerminal(["opencode"]);
+    expect(invokeMock).toHaveBeenCalledWith("ai_gateway_configure_terminal", {
+      targetTools: ["opencode"],
+    });
+
+    resetTauriMocks();
+    await aiGatewaySyncTerminal();
+    expect(invokeMock).toHaveBeenCalledWith("ai_gateway_sync_terminal", {});
+  });
+});
+

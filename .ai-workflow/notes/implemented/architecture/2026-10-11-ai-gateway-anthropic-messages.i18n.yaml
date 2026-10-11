@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-10-11-ai-gateway-anthropic-messages.md
-2026-10-11-ai-gateway-anthropic-messages.md: 173191006bc3d9276016274bb833d8dfb4a2eed8
-2026-10-11-ai-gateway-anthropic-messages.zh.md: 2c4ff74a7f6fec66e0acfc0067cbfd1823bfcc60
+2026-10-11-ai-gateway-anthropic-messages.md: 61483cffc8904de4d48dd19c7a406fb36d43fdce
+2026-10-11-ai-gateway-anthropic-messages.zh.md: e3126a78113e4c98008e22303b3de58725edc6ca
