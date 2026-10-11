@@ -6,13 +6,17 @@ use super::attempt_policy::{
     settle_success, sync_key_runtime_marks, AttemptResult, KeyAuthFailedTransition,
     MappingAutoDisabledTransition, RequestHealth, RetryCandidate,
 };
-use super::forwarding::{forward_non_streaming, open_streaming_response};
-use super::anthropic::{error_payload as anthropic_error_payload, is_messages_path, stream_error_event};
-use super::anthropic_sse::AnthropicSseObserver;
+use super::forwarding::{forward_non_streaming_with_protocol, open_streaming_response_with_protocol};
+use super::anthropic::{
+    convert_response, error_payload as anthropic_error_payload, is_conversion_path,
+    is_messages_path, stream_error_event, validate_conversion_request,
+};
+use super::anthropic_sse::{AnthropicSseConverter, AnthropicSseObserver};
 use super::selection::{
     candidate_providers, classify_failure_with_message, clear_key_runtime_state,
     default_retry_delay, find_probe_candidate, is_quota_exceeded_message,
     is_retryable_with_message, mark_key_failure, rearm_key_probe, resolve_model_for_protocol,
+    resolve_upstream_protocol,
     resolve_session_id, retry_header_delay, select_usable_key, session_affinity,
     try_acquire_probe_guard, weighted_candidates, FailureClass, ModelResolution, ProbeCandidate,
     ProbeGuard, SessionOrder, MAX_RETRIES_PER_PROVIDER,
@@ -889,10 +893,21 @@ async fn attempt_candidate(
     path: &str,
     body: &[u8],
     model: &str,
+    requested: Option<&str>,
+    upstream_protocol: UpstreamProtocol,
     client_headers: &HashMap<String, String>,
 ) -> (AttemptResult, AttemptLog) {
     let started = Instant::now();
-    match forward_non_streaming(provider, path, body, model, client_headers).await {
+    match forward_non_streaming_with_protocol(
+        provider,
+        path,
+        body,
+        model,
+        client_headers,
+        upstream_protocol,
+    )
+    .await
+    {
         Ok(response) => {
             // Usage is only meaningful for a successful 2xx upstream response;
             // an error body that happens to carry `usage` must never be billed.
@@ -916,7 +931,7 @@ async fn attempt_candidate(
             };
             let log = build_attempt_log(
                 provider,
-                protocol_for_path(path),
+                upstream_protocol,
                 model,
                 started,
                 response.status,
@@ -933,16 +948,44 @@ async fn attempt_candidate(
                 provider_id: provider.id.clone(),
                 provider_name: provider.name.clone(),
                 upstream_model: model.to_string(),
-                protocol: protocol_for_path(path),
+                protocol: upstream_protocol,
                 usage: usage.map(|canonical| canonical.tokens),
                 ..Default::default()
             };
             if served {
+                let body = if upstream_protocol == UpstreamProtocol::AnthropicMessages
+                    && is_conversion_path(path)
+                {
+                    match convert_response(path, &response.body, requested.unwrap_or(model)) {
+                        Ok(body) => body,
+                        Err(error) => {
+                            let log = build_attempt_log(
+                                provider,
+                                upstream_protocol,
+                                model,
+                                started,
+                                502,
+                                UsageResult::Failure,
+                                Some(error.clone()),
+                                usage,
+                            );
+                            return (
+                                AttemptResult::ReturnToClient(json_response(
+                                    502,
+                                    error_envelope(error, "server_error", "conversion_error"),
+                                )),
+                                log,
+                            );
+                        }
+                    }
+                } else {
+                    response.body
+                };
                 return (
                     AttemptResult::Success(HttpResponse {
                         status: response.status,
                         content_type: "application/json",
-                        body: response.body,
+                        body,
                         capture: Some(capture),
                     }),
                     log,
@@ -1000,7 +1043,7 @@ async fn attempt_candidate(
             let reason = format_network_error_reason(&error);
             let log = build_attempt_log(
                 provider,
-                protocol_for_path(path),
+                upstream_protocol,
                 model,
                 started,
                 0,
@@ -1090,8 +1133,19 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                 clear_ttl_expired_key_runtime_state(&mut provider, &selected);
             }
             provider.attempt_key = selected.value.clone();
+            let upstream_protocol = resolve_upstream_protocol(&provider, requested, protocol)
+                .unwrap_or(protocol);
             let (outcome, log) =
-                attempt_candidate(&provider, path, body, &model, client_headers).await;
+                attempt_candidate(
+                    &provider,
+                    path,
+                    body,
+                    &model,
+                    requested,
+                    upstream_protocol,
+                    client_headers,
+                )
+                .await;
             attempts.push(log);
             match outcome {
                 AttemptResult::Success(response) => {
@@ -1234,8 +1288,23 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                 clear_ttl_expired_key_runtime_state(&mut candidate.provider, &selected);
             }
             candidate.provider.attempt_key = selected.value.clone();
+            let upstream_protocol = resolve_upstream_protocol(
+                &candidate.provider,
+                requested,
+                protocol,
+            )
+            .unwrap_or(protocol);
             let (outcome, log) =
-                attempt_candidate(&candidate.provider, path, body, &model, client_headers).await;
+                attempt_candidate(
+                    &candidate.provider,
+                    path,
+                    body,
+                    &model,
+                    requested,
+                    upstream_protocol,
+                    client_headers,
+                )
+                .await;
             attempts.push(log);
             match outcome {
                 AttemptResult::Success(response) => {
@@ -1386,8 +1455,19 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                     clear_ttl_expired_key_runtime_state(&mut provider, &selected);
                 }
                 provider.attempt_key = selected.value.clone();
+                let upstream_protocol = resolve_upstream_protocol(&provider, requested, protocol)
+                    .unwrap_or(protocol);
                 let (outcome, log) =
-                    attempt_candidate(&provider, path, body, model, client_headers).await;
+                    attempt_candidate(
+                        &provider,
+                        path,
+                        body,
+                        model,
+                        requested,
+                        upstream_protocol,
+                        client_headers,
+                    )
+                    .await;
                 attempts.push(log);
                 match outcome {
                     AttemptResult::Success(response) => {
@@ -1554,8 +1634,9 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     // Read-only usage parser fed from the relay's own passthrough loop; it never
     // influences the bytes written to the caller.
     let mut usage = SseUsageAccumulator::default();
-    let native_messages = is_messages_path(path);
-    let mut native_sse = native_messages.then(AnthropicSseObserver::default);
+    let mut native_messages = is_messages_path(path);
+    let mut native_sse: Option<AnthropicSseObserver> = None;
+    let mut converted_sse: Option<AnthropicSseConverter> = None;
     let mut capture = ForwardCapture::default();
     // Real failure status to persist for a terminal all-unavailable outcome: the
     // last upstream HTTP status (0 for a network error). The caller-facing
@@ -1669,17 +1750,33 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             clear_ttl_expired_key_runtime_state(&mut candidate.provider, &selected);
         }
         candidate.provider.attempt_key = selected.value.clone();
-    capture.provider_id = candidate.provider.id.clone();
-    capture.provider_name = candidate.provider.name.clone();
-    capture.upstream_model = candidate.model.clone();
-        capture.protocol = protocol;
+        let upstream_protocol = resolve_upstream_protocol(
+            &candidate.provider,
+            requested,
+            protocol,
+        )
+        .unwrap_or(protocol);
+        native_messages = upstream_protocol == UpstreamProtocol::AnthropicMessages;
+        native_sse = native_messages.then(AnthropicSseObserver::default);
+        converted_sse = (native_messages && is_conversion_path(path))
+            .then(|| AnthropicSseConverter::new(path, requested.unwrap_or(&candidate.model)));
+        capture.provider_id = candidate.provider.id.clone();
+        capture.provider_name = candidate.provider.name.clone();
+        capture.upstream_model = candidate.model.clone();
+        capture.protocol = upstream_protocol;
         let provider = &candidate.provider;
         let started = Instant::now();
         let (class, retryable, reason, retry_delay, transport, key_failure, bare_rotation) =
             'attempt: {
-            let streamed = open_streaming_response(
-                provider, path, body, &candidate.model, client_headers,
-            ).await;
+            let streamed = open_streaming_response_with_protocol(
+                provider,
+                path,
+                body,
+                &candidate.model,
+                client_headers,
+                upstream_protocol,
+            )
+            .await;
             let response = match streamed {
                 Ok(response) => response,
                 Err(error) => {
@@ -1687,7 +1784,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     let reason = format_network_error_reason(&error);
                     attempts.push(build_attempt_log(
                         provider,
-                        protocol,
+                        upstream_protocol,
                         &candidate.model,
                         started,
                         0,
@@ -1834,7 +1931,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                             false,
                         );
                     }
-                    if !native_messages {
+                    if !native_messages || converted_sse.is_some() {
                         if let Err(error) = write_stream_headers(writer, status).await {
                             health.apply();
                             return Err(error);
@@ -1846,14 +1943,23 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     if let Some(observer) = native_sse.as_mut() {
                         observer.feed(&first);
                     }
-                    if let Err(error) = writer.write_all(&first).await {
-                        health.apply();
-                        return Err(error.to_string());
+                    let first_output = if let Some(converter) = converted_sse.as_mut() {
+                        converter.feed(&first).unwrap_or_default()
+                    } else {
+                        vec![first.to_vec()]
+                    };
+                    for output in &first_output {
+                        if let Err(error) = writer.write_all(output).await {
+                            health.apply();
+                            return Err(error.to_string());
+                        }
                     }
                     // Last byte forwarded to the caller, used to complete the
                     // SSE event boundary before a mid-stream error fragment
                     // (REQ-005/AC-008).
-                    let mut last_forwarded = first.last().copied();
+                    let mut last_forwarded = first_output
+                        .last()
+                        .and_then(|output| output.last().copied());
                     if writer.flush().await.is_err() {
                         health.apply();
                         capture.downstream_cancelled = true;
@@ -1866,12 +1972,22 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                 if let Some(observer) = native_sse.as_mut() {
                                     observer.feed(&chunk);
                                 }
-                                if writer.write_all(&chunk).await.is_err() {
-                                    health.apply();
-                                    capture.downstream_cancelled = true;
-                                    return Ok(capture);
+                                let output = if let Some(converter) = converted_sse.as_mut() {
+                                    converter.feed(&chunk).unwrap_or_default()
+                                } else {
+                                    vec![chunk.to_vec()]
+                                };
+                                for item in &output {
+                                    if writer.write_all(item).await.is_err() {
+                                        health.apply();
+                                        capture.downstream_cancelled = true;
+                                        return Ok(capture);
+                                    }
                                 }
-                                last_forwarded = chunk.last().copied();
+                                last_forwarded = output
+                                    .last()
+                                    .and_then(|item| item.last().copied())
+                                    .or(last_forwarded);
                             }
                             // Bytes already sent: terminate the stream, never switch.
                             Some(Err(error)) => {
@@ -1921,7 +2037,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     let _ = writer.write_all(b"\n").await;
                                 }
                                 let _ = writer.write_all(b"\n").await;
-                                if native_messages {
+                                if is_messages_path(path) {
                                     let fragment = stream_error_event(reason, "api_error");
                                     let _ = writer.write_all(&fragment).await;
                                 } else {
@@ -2003,8 +2119,19 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                             canonical,
                                         ));
                                         if !observer.has_in_band_error() {
-                                            let fragment = stream_error_event(reason, "api_error");
-                                            let _ = writer.write_all(&fragment).await;
+                                            if is_messages_path(path) {
+                                                let fragment = stream_error_event(reason, "api_error");
+                                                let _ = writer.write_all(&fragment).await;
+                                            } else {
+                                                let envelope = error_envelope(
+                                                    reason,
+                                                    "server_error",
+                                                    "upstream_stream_error",
+                                                );
+                                                let _ = writer
+                                                    .write_all(format!("data: {envelope}\n\n").as_bytes())
+                                                    .await;
+                                            }
                                             let _ = writer.flush().await;
                                         }
                                         capture.status = 502;
@@ -2497,6 +2624,24 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
             .into_iter()
             .cloned()
             .collect();
+    if !is_messages_path(path)
+        && candidates.iter().any(|provider| {
+            resolve_upstream_protocol(provider, requested.as_deref(), protocol)
+                == Some(UpstreamProtocol::AnthropicMessages)
+        })
+    {
+        if let Err(error) = validate_conversion_request(path, &body_value) {
+            let response = json_response(
+                400,
+                error_envelope(error, "invalid_request_error", "invalid_request"),
+            );
+            stream
+                .write_all(&http_response_bytes(response))
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+    }
     // The half-open probe is computed against the healthy candidate provider
     // ids so an already-serving provider is never also probed (REQ-002). It is
     // the only attempt of a zero-candidate request that has an eligible row.

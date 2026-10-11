@@ -1,5 +1,5 @@
-use super::anthropic::{is_messages_path, DEFAULT_ANTHROPIC_VERSION};
-use super::GatewayUpstreamProvider;
+use super::anthropic::{convert_request, is_conversion_path, is_messages_path, DEFAULT_ANTHROPIC_VERSION};
+use super::{GatewayUpstreamProvider, UpstreamProtocol};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
 use std::collections::HashMap;
@@ -104,9 +104,17 @@ fn build_request(
     model: &str,
     stream: bool,
     client_headers: &HashMap<String, String>,
+    upstream_protocol: UpstreamProtocol,
 ) -> Result<reqwest::RequestBuilder, String> {
-    let url = join_url(&provider.base_url, path);
-    let rewritten = rewrite_body_model(body, model)?;
+    let converted = upstream_protocol == UpstreamProtocol::AnthropicMessages
+        && is_conversion_path(path);
+    let upstream_path = if converted { "/v1/messages" } else { path };
+    let url = join_url(&provider.base_url, upstream_path);
+    let rewritten = if converted {
+        convert_request(path, body, model)?
+    } else {
+        rewrite_body_model(body, model)?
+    };
     let mut request = shared_client().post(url);
     // Forward unknown client headers (e.g. vendor session headers) so upstream
     // requirements like `x-opencode-session` survive the relay. Invalid names
@@ -135,27 +143,38 @@ fn build_request(
         .body(rewritten);
     let attempt_key = provider.attempt_key.trim();
     if !attempt_key.is_empty() {
-        if is_messages_path(path) {
+        if upstream_protocol == UpstreamProtocol::AnthropicMessages || is_messages_path(upstream_path) {
             request = request.header("x-api-key", attempt_key);
         } else {
             request = request.header("authorization", format!("Bearer {attempt_key}"));
         }
     }
-    if is_messages_path(path) && !client_headers.contains_key("anthropic-version") {
+    if upstream_protocol == UpstreamProtocol::AnthropicMessages
+        && !client_headers.contains_key("anthropic-version")
+    {
         request = request.header("anthropic-version", DEFAULT_ANTHROPIC_VERSION);
     }
     Ok(request)
 }
 
 /// Send a non-streaming upstream request and return status plus raw body.
-pub(in crate::ai_gateway) async fn forward_non_streaming(
+pub(in crate::ai_gateway) async fn forward_non_streaming_with_protocol(
     provider: &GatewayUpstreamProvider,
     path: &str,
     body: &[u8],
     model: &str,
     client_headers: &HashMap<String, String>,
+    upstream_protocol: UpstreamProtocol,
 ) -> Result<UpstreamJsonResponse, String> {
-    let request = build_request(provider, path, body, model, false, client_headers)?;
+    let request = build_request(
+        provider,
+        path,
+        body,
+        model,
+        false,
+        client_headers,
+        upstream_protocol,
+    )?;
     let response = request.send().await.map_err(|e| e.to_string())?;
     let status = response.status().as_u16();
     let headers = response.headers().clone();
@@ -177,6 +196,50 @@ pub(in crate::ai_gateway) async fn forward_non_streaming(
 
 /// Open an upstream streaming response. Callers stream bytes and enforce the
 /// first-byte switching boundary themselves.
+pub(in crate::ai_gateway) async fn open_streaming_response_with_protocol(
+    provider: &GatewayUpstreamProvider,
+    path: &str,
+    body: &[u8],
+    model: &str,
+    client_headers: &HashMap<String, String>,
+    upstream_protocol: UpstreamProtocol,
+) -> Result<reqwest::Response, String> {
+    let request = build_request(
+        provider,
+        path,
+        body,
+        model,
+        true,
+        client_headers,
+        upstream_protocol,
+    )?;
+    request.send().await.map_err(|e| e.to_string())
+}
+
+pub(in crate::ai_gateway) async fn forward_non_streaming(
+    provider: &GatewayUpstreamProvider,
+    path: &str,
+    body: &[u8],
+    model: &str,
+    client_headers: &HashMap<String, String>,
+) -> Result<UpstreamJsonResponse, String> {
+    forward_non_streaming_with_protocol(
+        provider,
+        path,
+        body,
+        model,
+        client_headers,
+        if is_messages_path(path) {
+            UpstreamProtocol::AnthropicMessages
+        } else if path.split('?').next().unwrap_or(path) == "/v1/responses" {
+            UpstreamProtocol::Responses
+        } else {
+            UpstreamProtocol::ChatCompletions
+        },
+    )
+    .await
+}
+
 pub(in crate::ai_gateway) async fn open_streaming_response(
     provider: &GatewayUpstreamProvider,
     path: &str,
@@ -184,6 +247,19 @@ pub(in crate::ai_gateway) async fn open_streaming_response(
     model: &str,
     client_headers: &HashMap<String, String>,
 ) -> Result<reqwest::Response, String> {
-    let request = build_request(provider, path, body, model, true, client_headers)?;
-    request.send().await.map_err(|e| e.to_string())
+    open_streaming_response_with_protocol(
+        provider,
+        path,
+        body,
+        model,
+        client_headers,
+        if is_messages_path(path) {
+            UpstreamProtocol::AnthropicMessages
+        } else if path.split('?').next().unwrap_or(path) == "/v1/responses" {
+            UpstreamProtocol::Responses
+        } else {
+            UpstreamProtocol::ChatCompletions
+        },
+    )
+    .await
 }

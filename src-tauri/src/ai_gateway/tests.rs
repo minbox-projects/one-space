@@ -36,6 +36,7 @@ mod runtime_lifecycle;
 mod usage_store;
 mod attempt_policy;
 mod anthropic_messages;
+mod anthropic_conversion;
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(

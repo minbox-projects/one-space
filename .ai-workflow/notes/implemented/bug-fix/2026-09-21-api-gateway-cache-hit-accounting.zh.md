@@ -45,4 +45,4 @@ Status: implemented
 - 流式转发字节与请求体保持不变；绝不注入 `stream_options.include_usage`，缺失的 usage 对象记作不存在。
 - 部分取代：[API Gateway Usage Stats and Request Logs](../architecture/2026-09-17-ai-gateway-usage-logs.md) 保留并交叉链接；本记录只取代其记录的流式 usage 来源、缺失 usage 记 0 的行为与原始 token 档位语义，其中的 SQLite 日志、记录时价格冻结、保留、`group_by` 契约与 `local_model` 面决策仍然有效。
 - `MEMORY.md` 与两个 `api-gateway` 导航职责描述这套归一化、schema、资格与覆盖契约，且 `navigation.md` 已按权威 JSON 重新生成。
-- 部分取代：[Native Anthropic Messages Entry and Protocol Recognition](../architecture/2026-10-11-ai-gateway-anthropic-messages.md) 通过在 `AnthropicSseObserver` 中新增原生 Anthropic Messages 的 start/cumulative 按字段合并，部分取代本记录的流式 usage 观察，而四档归一化、存储迁移、合格谓词与覆盖契约继续有效。
+- 部分取代：[Native Anthropic Messages Entry, Protocol Recognition and OpenAI Entry Conversion](../architecture/2026-10-11-ai-gateway-anthropic-messages.md) 通过在 `AnthropicSseObserver` 中新增原生 Anthropic Messages 的 start/cumulative 按字段合并，并以实际上游用量为转换后的 Chat/Responses 入口计量（其包含式调用方输入仍与持久化的普通档位不同），部分取代本记录的流式 usage 观察，而四档归一化、存储迁移、合格谓词与覆盖契约继续有效。
