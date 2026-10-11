@@ -491,6 +491,13 @@ pub(in crate::ai_gateway) fn local_base_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/v1")
 }
 
+/// The bare loopback origin for the gateway listener, without the `/v1` suffix.
+/// Claude's native Anthropic base URL is the origin itself; the OpenAI terminal
+/// tools keep [`local_base_url`].
+pub(in crate::ai_gateway) fn local_origin(port: u16) -> String {
+    format!("http://127.0.0.1:{port}")
+}
+
 pub(in crate::ai_gateway) fn touch_key_created_at(key: &mut GatewayKey) {
     if key.created_at == 0 {
         key.created_at = now_ts();

@@ -23,7 +23,7 @@ import {
 } from "@/lib/aiGateway";
 import { TemplateCreateDialog } from "./TemplateCreateDialog";
 import { ProviderTemplateAvatar } from "./ProviderTemplateIcon";
-import { protocolBadgeClass } from "./gatewayShared";
+import { protocolBadgeClass, protocolShortLabel } from "./gatewayShared";
 import { useTemplateAutoRefreshFailures } from "./useTemplateAutoRefresh";
 
 export type ProviderTemplateSectionProps = {
@@ -68,12 +68,11 @@ function ProviderTemplateCard({
 
   const [searchQuery, setSearchQuery] = useState("");
   const [protocolFilter, setProtocolFilter] = useState<
-    "all" | "chat_completions" | "responses"
+    "all" | "chat_completions" | "responses" | "anthropic_messages"
   >("all");
   const [copiedModel, setCopiedModel] = useState<string | null>(null);
 
-  const protocolLabel =
-    template.protocol === "responses" ? "Responses" : "Chat";
+  const protocolLabel = protocolShortLabel(template.protocol);
   const syncedText = view.synced_at
     ? formatGatewayTimestamp(view.synced_at)
     : t("aiGatewayTemplateNotSynced", "Not synced yet");
@@ -81,7 +80,9 @@ function ProviderTemplateCard({
   const chatCount = useMemo(
     () =>
       template.models.filter(
-        (m) => (m.protocol ?? template.protocol ?? "chat_completions") !== "responses",
+        (m) =>
+          (m.protocol ?? template.protocol ?? "chat_completions") ===
+          "chat_completions",
       ).length,
     [template.models, template.protocol],
   );
@@ -94,17 +95,21 @@ function ProviderTemplateCard({
     [template.models, template.protocol],
   );
 
+  const anthropicCount = useMemo(
+    () =>
+      template.models.filter(
+        (m) =>
+          (m.protocol ?? template.protocol ?? "chat_completions") ===
+          "anthropic_messages",
+      ).length,
+    [template.models, template.protocol],
+  );
+
   const filteredModels = useMemo(() => {
     return template.models.filter((model) => {
       const effectiveProtocol =
         model.protocol ?? template.protocol ?? "chat_completions";
-      if (protocolFilter === "responses" && effectiveProtocol !== "responses") {
-        return false;
-      }
-      if (
-        protocolFilter === "chat_completions" &&
-        effectiveProtocol === "responses"
-      ) {
+      if (protocolFilter !== "all" && effectiveProtocol !== protocolFilter) {
         return false;
       }
       if (searchQuery.trim()) {
@@ -387,6 +392,19 @@ function ProviderTemplateCard({
                       Responses ({responsesCount})
                     </button>
                   )}
+                  {anthropicCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setProtocolFilter("anthropic_messages")}
+                      className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
+                        protocolFilter === "anthropic_messages"
+                          ? "bg-primary text-primary-foreground font-semibold shadow-xs"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {protocolShortLabel("anthropic_messages")} ({anthropicCount})
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -491,7 +509,9 @@ function ProviderTemplateCard({
                                 model.protocol,
                               )}`}
                             >
-                              {model.protocol === "responses" ? "Responses" : "Chat"}
+                              {protocolShortLabel(
+                                model.protocol ?? template.protocol,
+                              )}
                             </span>
                           </div>
                         </div>

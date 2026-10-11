@@ -15,8 +15,12 @@ export const AI_GATEWAY_KEY_AUTH_TOAST_WINDOW_MS = 1500;
 /** Delay before an unacknowledged provider-card warning pill auto-dismisses. */
 export const AI_GATEWAY_ALERT_AUTO_DISMISS_MS = 8000;
 
-/** Terminal tools AI Gateway is allowed to configure; claude/antigravity are excluded. */
-export const AI_GATEWAY_SUPPORTED_TERMINAL_TOOLS = ["opencode", "codex"] as const;
+/** Terminal tools AI Gateway is allowed to configure; Antigravity is excluded. */
+export const AI_GATEWAY_SUPPORTED_TERMINAL_TOOLS = [
+  "opencode",
+  "codex",
+  "claude",
+] as const;
 
 export interface GatewayModelMapping {
   local_model: string;
@@ -45,8 +49,31 @@ export interface GatewayModelMapping {
   last_error_at?: number | null;
 }
 
-/** Upstream endpoint family a provider exposes; request bodies are not translated. */
-export type GatewayUpstreamProtocol = "chat_completions" | "responses";
+/**
+ * Upstream endpoint family a provider exposes. Same-protocol requests are
+ * forwarded unchanged; an `anthropic_messages` mapping can serve
+ * Chat/Responses ingress through the conversion service.
+ */
+export type GatewayUpstreamProtocol =
+  | "chat_completions"
+  | "responses"
+  | "anthropic_messages";
+
+/**
+ * The four explicit model choices an operator submits for a Claude terminal
+ * sync: the default model plus the haiku/sonnet/opus family aliases.
+ *
+ * Values are local mapping ids (the ids Claude Code sends), never vendor ids
+ * guessed from a name, and the same id may fill several slots. The shape is
+ * shared with the backend terminal-target snapshot; it never carries a
+ * credential value.
+ */
+export interface ClaudeModelSelection {
+  default_model: string;
+  haiku: string;
+  sonnet: string;
+  opus: string;
+}
 
 /** Key-scoped failure kinds that persist a runtime mark on one upstream key. */
 export type GatewayProviderKeyFailureKind = "authentication" | "quota";
@@ -244,6 +271,11 @@ export interface GatewayTerminalTarget {
   pending_sync: boolean;
   synced_key_id: string | null;
   synced_at: number | null;
+  /**
+   * Model-only Claude selection snapshot (the four local mapping ids) for the
+   * `claude` target; absent for the OpenAI tools and never a credential.
+   */
+  claude_models?: ClaudeModelSelection | null;
 }
 
 /**
@@ -519,17 +551,24 @@ export function aiGatewayTerminalTargets() {
   return invoke<GatewayTerminalTarget[]>("ai_gateway_terminal_targets");
 }
 
-export function aiGatewayConfigureTerminal(targetTools: string[]) {
+export function aiGatewayConfigureTerminal(
+  targetTools: string[],
+  claudeModels?: ClaudeModelSelection,
+) {
   return invoke<GatewayTerminalSyncRecord[]>("ai_gateway_configure_terminal", {
     targetTools,
+    ...(claudeModels ? { claudeModels } : {}),
   });
 }
 
-export function aiGatewaySyncTerminal(targetTools?: string[]) {
-  return invoke<GatewayTerminalSyncRecord[]>(
-    "ai_gateway_sync_terminal",
-    targetTools ? { targetTools } : {},
-  );
+export function aiGatewaySyncTerminal(
+  targetTools?: string[],
+  claudeModels?: ClaudeModelSelection,
+) {
+  return invoke<GatewayTerminalSyncRecord[]>("ai_gateway_sync_terminal", {
+    ...(targetTools ? { targetTools } : {}),
+    ...(claudeModels ? { claudeModels } : {}),
+  });
 }
 
 /** Quick time ranges shared by the usage-stats and request-logs tabs. */

@@ -17,7 +17,7 @@ import type {
   GatewayProviderTemplateView,
 } from "@/lib/aiGateway";
 import { ProviderTemplateAvatar } from "./ProviderTemplateIcon";
-import { protocolBadgeClass } from "./gatewayShared";
+import { protocolBadgeClass, protocolShortLabel } from "./gatewayShared";
 
 export type ProviderTemplatePickerDialogProps = {
   open: boolean;
@@ -142,8 +142,7 @@ export function ProviderTemplatePickerDialog({
           <div className="space-y-3">
             {templates.map((view) => {
               const { template } = view;
-              const protocolLabel =
-                template.protocol === "responses" ? "Responses" : "Chat";
+              const protocolLabel = protocolShortLabel(template.protocol);
 
               return (
                 <button

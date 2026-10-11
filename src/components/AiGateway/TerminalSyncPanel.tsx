@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
@@ -13,11 +13,14 @@ import {
 } from "lucide-react";
 import {
   AI_GATEWAY_SUPPORTED_TERMINAL_TOOLS,
+  aggregateModels,
   formatGatewayTimestamp,
   resolveDefaultKeyId,
+  type ClaudeModelSelection,
   type GatewayConfig,
   type GatewayTerminalTarget,
 } from "@/lib/aiGateway";
+import { ClaudeModelSelectionDialog } from "./ClaudeModelSelectionDialog";
 
 type TerminalSyncPanelProps = {
   targets: GatewayTerminalTarget[];
@@ -26,9 +29,31 @@ type TerminalSyncPanelProps = {
   gatewayRunning?: boolean;
   onStartGateway?: () => void;
   startingGateway?: boolean;
-  onConfigureTool: (tool: string) => void;
-  onSyncTool: (tool: string) => void;
+  onConfigureTool: (tool: string, claudeModels?: ClaudeModelSelection) => void;
+  onSyncTool: (tool: string, claudeModels?: ClaudeModelSelection) => void;
 };
+
+/**
+ * A target's saved Claude selection is reusable only when all four slots hold a
+ * non-blank local mapping id that a native Messages upstream can actually serve;
+ * otherwise the row must open the dialog to collect a first/valid selection
+ * instead of silently syncing an incomplete or unservable payload.
+ */
+function validSavedClaudeSelection(
+  target: GatewayTerminalTarget,
+  candidateModels: string[],
+): ClaudeModelSelection | null {
+  const saved = target.claude_models;
+  if (!saved) return null;
+  const values = [saved.default_model, saved.haiku, saved.sonnet, saved.opus];
+  if (
+    !values.every((value) => typeof value === "string" && value.trim() !== "")
+  ) {
+    return null;
+  }
+  const candidates = new Set(candidateModels);
+  return values.every((value) => candidates.has(value)) ? saved : null;
+}
 
 export function TerminalSyncPanel({
   targets,
@@ -42,6 +67,10 @@ export function TerminalSyncPanel({
 }: TerminalSyncPanelProps) {
   const { t } = useTranslation();
   const [showFaq, setShowFaq] = useState(false);
+  const [claudeDialogOpen, setClaudeDialogOpen] = useState(false);
+  const [claudeDialogAction, setClaudeDialogAction] = useState<
+    "configure" | "sync"
+  >("configure");
   const defaultKeyId = resolveDefaultKeyId(config.keys, config.default_key_id);
   const defaultKeyMissing = !defaultKeyId;
   const supportedTargets = targets.filter((target) =>
@@ -49,6 +78,46 @@ export function TerminalSyncPanel({
       target.tool as (typeof AI_GATEWAY_SUPPORTED_TERMINAL_TOOLS)[number],
     ),
   );
+
+  // Candidate local ids a native Messages upstream can serve, derived from the
+  // aggregated enabled mappings so the dialog never offers unsupported models.
+  const claudeCandidateModels = useMemo(
+    () =>
+      aggregateModels(config.providers)
+        .filter((entry) =>
+          entry.providers.some((p) => p.endpoint === "anthropic_messages"),
+        )
+        .map((entry) => entry.model),
+    [config.providers],
+  );
+
+  // Route a row action: Claude reuses a valid saved selection directly and only
+  // opens the four-choice dialog for a first/missing/invalid selection; the
+  // OpenAI tools keep their single-argument callbacks.
+  const triggerRowAction = (
+    target: GatewayTerminalTarget,
+    hasBeenAdded: boolean,
+  ) => {
+    if (target.tool === "claude") {
+      const saved = validSavedClaudeSelection(target, claudeCandidateModels);
+      if (saved) {
+        if (hasBeenAdded) onSyncTool("claude", saved);
+        else onConfigureTool("claude", saved);
+        return;
+      }
+      setClaudeDialogAction(hasBeenAdded ? "sync" : "configure");
+      setClaudeDialogOpen(true);
+      return;
+    }
+    if (hasBeenAdded) onSyncTool(target.tool);
+    else onConfigureTool(target.tool);
+  };
+
+  const handleClaudeSubmit = (selection: ClaudeModelSelection) => {
+    setClaudeDialogOpen(false);
+    if (claudeDialogAction === "sync") onSyncTool("claude", selection);
+    else onConfigureTool("claude", selection);
+  };
 
   return (
     <div className="space-y-3.5">
@@ -229,7 +298,7 @@ export function TerminalSyncPanel({
                   {hasBeenAdded ? (
                     <button
                       type="button"
-                      onClick={() => onSyncTool(target.tool)}
+                      onClick={() => triggerRowAction(target, true)}
                       disabled={rowDisabled}
                       data-testid={`ai-gateway-sync-${target.tool}`}
                       className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
@@ -242,7 +311,7 @@ export function TerminalSyncPanel({
                   ) : (
                     <button
                       type="button"
-                      onClick={() => onConfigureTool(target.tool)}
+                      onClick={() => triggerRowAction(target, false)}
                       disabled={rowDisabled}
                       data-testid={`ai-gateway-sync-${target.tool}`}
                       className="inline-flex h-7 items-center gap-1.5 rounded-lg border bg-background px-2.5 text-xs font-medium shadow-sm transition hover:bg-muted disabled:opacity-50"
@@ -311,6 +380,14 @@ export function TerminalSyncPanel({
           </div>
         ) : null}
       </div>
+
+      <ClaudeModelSelectionDialog
+        open={claudeDialogOpen}
+        models={claudeCandidateModels}
+        initialSelection={null}
+        onSubmit={handleClaudeSubmit}
+        onCancel={() => setClaudeDialogOpen(false)}
+      />
     </div>
   );
 }

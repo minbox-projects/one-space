@@ -6,11 +6,17 @@ use super::attempt_policy::{
     settle_success, sync_key_runtime_marks, AttemptResult, KeyAuthFailedTransition,
     MappingAutoDisabledTransition, RequestHealth, RetryCandidate,
 };
-use super::forwarding::{forward_non_streaming, open_streaming_response};
+use super::forwarding::{forward_non_streaming_with_protocol, open_streaming_response_with_protocol};
+use super::anthropic::{
+    convert_response, error_payload as anthropic_error_payload, is_conversion_path,
+    is_messages_path, stream_error_event, validate_conversion_request,
+};
+use super::anthropic_sse::{AnthropicSseConverter, AnthropicSseObserver};
 use super::selection::{
     candidate_providers, classify_failure_with_message, clear_key_runtime_state,
     default_retry_delay, find_probe_candidate, is_quota_exceeded_message,
     is_retryable_with_message, mark_key_failure, rearm_key_probe, resolve_model_for_protocol,
+    resolve_upstream_protocol,
     resolve_session_id, retry_header_delay, select_usable_key, session_affinity,
     try_acquire_probe_guard, weighted_candidates, FailureClass, ModelResolution, ProbeCandidate,
     ProbeGuard, SessionOrder, MAX_RETRIES_PER_PROVIDER,
@@ -301,14 +307,30 @@ pub(in crate::ai_gateway) async fn start_server(
 }
 
 pub(in crate::ai_gateway) async fn stop_server() -> Result<GatewayStatus, String> {
-    let config = read_config()?;
+    let config = read_config();
     let mut guard = state_lock().lock().await;
+    let running_port = guard.as_ref().map(|running| running.port);
     if let Some(mut running) = guard.take() {
         if let Some(tx) = running.shutdown.take() {
             let _ = tx.send(());
         }
     }
-    Ok(status_from_config(&config, false))
+    match config {
+        Ok(config) => Ok(status_from_config(&config, false)),
+        // Stopping the listener must not depend on a readable configuration:
+        // an unreadable config still stops the server and reports a
+        // best-effort status for the port that was running.
+        Err(_) => Ok(GatewayStatus {
+            running: false,
+            enabled: false,
+            port: running_port.unwrap_or(0),
+            local_base_url: running_port.map(local_base_url).unwrap_or_default(),
+            provider_count: 0,
+            auto_disabled_count: 0,
+            key_count: 0,
+            default_key_id: None,
+        }),
+    }
 }
 
 /// Synchronous best-effort stop for the shutdown path: signal the running
@@ -470,6 +492,7 @@ pub(in crate::ai_gateway) struct ForwardCapture {
     pub(in crate::ai_gateway) provider_id: String,
     pub(in crate::ai_gateway) provider_name: String,
     pub(in crate::ai_gateway) upstream_model: String,
+    pub(in crate::ai_gateway) protocol: UpstreamProtocol,
     pub(in crate::ai_gateway) usage: Option<UsageTokens>,
     /// No candidate could serve the request (including every candidate failing).
     pub(in crate::ai_gateway) all_unavailable: bool,
@@ -510,6 +533,7 @@ pub(in crate::ai_gateway) struct AttemptLog {
     pub(in crate::ai_gateway) provider_id: String,
     pub(in crate::ai_gateway) provider_name: String,
     pub(in crate::ai_gateway) upstream_model: String,
+    pub(in crate::ai_gateway) protocol: UpstreamProtocol,
     pub(in crate::ai_gateway) status: u16,
     pub(in crate::ai_gateway) result: UsageResult,
     pub(in crate::ai_gateway) error_message: Option<String>,
@@ -524,6 +548,7 @@ pub(in crate::ai_gateway) struct AttemptLog {
 /// canonical usage carries both the persisted tiers and their validity.
 fn build_attempt_log(
     provider: &GatewayUpstreamProvider,
+    protocol: UpstreamProtocol,
     upstream_model: &str,
     started: Instant,
     status: u16,
@@ -535,6 +560,7 @@ fn build_attempt_log(
         provider_id: provider.id.clone(),
         provider_name: provider.name.clone(),
         upstream_model: upstream_model.to_string(),
+        protocol,
         status,
         result,
         error_message,
@@ -618,16 +644,17 @@ fn canonical_api_path(path: &str) -> Option<&'static str> {
         "/v1/models" | "/models" => Some("/v1/models"),
         "/v1/chat/completions" | "/chat/completions" => Some("/v1/chat/completions"),
         "/v1/responses" | "/responses" => Some("/v1/responses"),
+        "/v1/messages" | "/messages" => Some("/v1/messages"),
         _ => None,
     }
 }
 
 /// The protocol an inbound canonical path speaks.
 fn protocol_for_path(path: &str) -> UpstreamProtocol {
-    if path == "/v1/responses" {
-        UpstreamProtocol::Responses
-    } else {
-        UpstreamProtocol::ChatCompletions
+    match path.split('?').next().unwrap_or(path) {
+        "/v1/responses" => UpstreamProtocol::Responses,
+        "/v1/messages" => UpstreamProtocol::AnthropicMessages,
+        _ => UpstreamProtocol::ChatCompletions,
     }
 }
 
@@ -732,6 +759,19 @@ fn error_envelope(message: impl Into<String>, error_type: &str, code: &str) -> V
     })
 }
 
+fn local_error_payload(
+    path: &str,
+    message: impl Into<String>,
+    error_type: &str,
+    code: &str,
+) -> Value {
+    if is_messages_path(path) {
+        anthropic_error_payload(message, error_type)
+    } else {
+        error_envelope(message, error_type, code)
+    }
+}
+
 /// Whether an upstream error body already uses the OpenAI standard shape: valid
 /// JSON containing an `error` object. Such a body is passed through unchanged;
 /// anything else is wrapped by the gateway (REQ-004/AC-007).
@@ -758,6 +798,14 @@ fn upstream_error_payload(status: u16, body: &[u8]) -> Value {
 
 fn all_unavailable_payload(message: impl Into<String>) -> Value {
     error_envelope(message, "server_error", "all_providers_unavailable")
+}
+
+fn all_unavailable_payload_for_path(path: &str, message: impl Into<String>) -> Value {
+    if is_messages_path(path) {
+        anthropic_error_payload(message, "api_error")
+    } else {
+        all_unavailable_payload(message)
+    }
 }
 
 fn no_candidate_message(
@@ -861,10 +909,21 @@ async fn attempt_candidate(
     path: &str,
     body: &[u8],
     model: &str,
+    requested: Option<&str>,
+    upstream_protocol: UpstreamProtocol,
     client_headers: &HashMap<String, String>,
 ) -> (AttemptResult, AttemptLog) {
     let started = Instant::now();
-    match forward_non_streaming(provider, path, body, model, client_headers).await {
+    match forward_non_streaming_with_protocol(
+        provider,
+        path,
+        body,
+        model,
+        client_headers,
+        upstream_protocol,
+    )
+    .await
+    {
         Ok(response) => {
             // Usage is only meaningful for a successful 2xx upstream response;
             // an error body that happens to carry `usage` must never be billed.
@@ -888,6 +947,7 @@ async fn attempt_candidate(
             };
             let log = build_attempt_log(
                 provider,
+                upstream_protocol,
                 model,
                 started,
                 response.status,
@@ -904,15 +964,44 @@ async fn attempt_candidate(
                 provider_id: provider.id.clone(),
                 provider_name: provider.name.clone(),
                 upstream_model: model.to_string(),
+                protocol: upstream_protocol,
                 usage: usage.map(|canonical| canonical.tokens),
                 ..Default::default()
             };
             if served {
+                let body = if upstream_protocol == UpstreamProtocol::AnthropicMessages
+                    && is_conversion_path(path)
+                {
+                    match convert_response(path, &response.body, requested.unwrap_or(model)) {
+                        Ok(body) => body,
+                        Err(error) => {
+                            let log = build_attempt_log(
+                                provider,
+                                upstream_protocol,
+                                model,
+                                started,
+                                502,
+                                UsageResult::Failure,
+                                Some(error.clone()),
+                                usage,
+                            );
+                            return (
+                                AttemptResult::ReturnToClient(json_response(
+                                    502,
+                                    error_envelope(error, "server_error", "conversion_error"),
+                                )),
+                                log,
+                            );
+                        }
+                    }
+                } else {
+                    response.body
+                };
                 return (
                     AttemptResult::Success(HttpResponse {
                         status: response.status,
                         content_type: "application/json",
-                        body: response.body,
+                        body,
                         capture: Some(capture),
                     }),
                     log,
@@ -932,7 +1021,7 @@ async fn attempt_candidate(
                 // non-standard one keeps the status but is wrapped so clients
                 // can read `error.message` (REQ-004/AC-006/AC-007).
                 let standard = is_standard_error_body(&response.body);
-                let body = if standard {
+                let body = if is_messages_path(path) || standard {
                     response.body
                 } else {
                     serde_json::to_vec(&upstream_error_payload(response.status, &response.body))
@@ -970,6 +1059,7 @@ async fn attempt_candidate(
             let reason = format_network_error_reason(&error);
             let log = build_attempt_log(
                 provider,
+                upstream_protocol,
                 model,
                 started,
                 0,
@@ -1059,8 +1149,19 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                 clear_ttl_expired_key_runtime_state(&mut provider, &selected);
             }
             provider.attempt_key = selected.value.clone();
+            let upstream_protocol = resolve_upstream_protocol(&provider, requested, protocol)
+                .unwrap_or(protocol);
             let (outcome, log) =
-                attempt_candidate(&provider, path, body, &model, client_headers).await;
+                attempt_candidate(
+                    &provider,
+                    path,
+                    body,
+                    &model,
+                    requested,
+                    upstream_protocol,
+                    client_headers,
+                )
+                .await;
             attempts.push(log);
             match outcome {
                 AttemptResult::Success(response) => {
@@ -1203,8 +1304,23 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                 clear_ttl_expired_key_runtime_state(&mut candidate.provider, &selected);
             }
             candidate.provider.attempt_key = selected.value.clone();
+            let upstream_protocol = resolve_upstream_protocol(
+                &candidate.provider,
+                requested,
+                protocol,
+            )
+            .unwrap_or(protocol);
             let (outcome, log) =
-                attempt_candidate(&candidate.provider, path, body, &model, client_headers).await;
+                attempt_candidate(
+                    &candidate.provider,
+                    path,
+                    body,
+                    &model,
+                    requested,
+                    upstream_protocol,
+                    client_headers,
+                )
+                .await;
             attempts.push(log);
             match outcome {
                 AttemptResult::Success(response) => {
@@ -1355,8 +1471,22 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                     clear_ttl_expired_key_runtime_state(&mut provider, &selected);
                 }
                 provider.attempt_key = selected.value.clone();
+                // The probed row is auto-disabled, so the normal served-row
+                // resolution skips it; forward under the row's own effective
+                // protocol so a converted probe reaches `/v1/messages`
+                // (REQ-005/AC-010).
+                let upstream_protocol = candidate.protocol;
                 let (outcome, log) =
-                    attempt_candidate(&provider, path, body, model, client_headers).await;
+                    attempt_candidate(
+                        &provider,
+                        path,
+                        body,
+                        model,
+                        requested,
+                        upstream_protocol,
+                        client_headers,
+                    )
+                    .await;
                 attempts.push(log);
                 match outcome {
                     AttemptResult::Success(response) => {
@@ -1445,9 +1575,10 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
 
     health.apply();
     let message = all_unavailable_message(&failures);
-    let mut response = json_response(502, all_unavailable_payload(message.clone()));
+    let mut response = json_response(502, all_unavailable_payload_for_path(path, message.clone()));
     let mut capture = last_capture.unwrap_or_default();
     capture.status = 502;
+    capture.protocol = protocol;
     capture.all_unavailable = true;
     // The terminal row records the same diagnostic the caller received.
     capture.message = Some(message);
@@ -1522,6 +1653,9 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     // Read-only usage parser fed from the relay's own passthrough loop; it never
     // influences the bytes written to the caller.
     let mut usage = SseUsageAccumulator::default();
+    let mut native_messages = is_messages_path(path);
+    let mut native_sse: Option<AnthropicSseObserver> = None;
+    let mut converted_sse: Option<AnthropicSseConverter> = None;
     let mut capture = ForwardCapture::default();
     // Real failure status to persist for a terminal all-unavailable outcome: the
     // last upstream HTTP status (0 for a network error). The caller-facing
@@ -1538,7 +1672,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     let mut probe_key_failure_reason: Option<String> = None;
     let mut _probe_guard: Option<ProbeGuard> = None;
     loop {
-        let (mut candidate, retry_index, probe_target, selected) =
+        let (mut candidate, retry_index, probe_target, selected, attempt_protocol) =
             if let Some(mut candidate) = ordered_queue.pop_front() {
                 sync_key_runtime_marks(&mut candidate.provider);
                 let Some(selected) = select_attempt_key(
@@ -1559,7 +1693,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     );
                     continue;
                 };
-                (candidate, retries.len(), None, selected)
+                (candidate, retries.len(), None, selected, None)
             } else if let Some(index) =
                 RetryCandidate::next_ready(&retries, &mut remaining_wait).await
             {
@@ -1582,7 +1716,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     );
                     continue;
                 };
-                (candidate, index, None, selected)
+                (candidate, index, None, selected, None)
             } else if let Some(probe_candidate) = pending_probe.take() {
                 // The single-flight guard is acquired once and then held across
                 // every in-probe key rotation, so a re-entry must not re-acquire it.
@@ -1624,6 +1758,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     retries.len(),
                     Some(probe_candidate.target.clone()),
                     selected,
+                    Some(probe_candidate.protocol),
                 )
             } else {
                 break;
@@ -1635,16 +1770,33 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             clear_ttl_expired_key_runtime_state(&mut candidate.provider, &selected);
         }
         candidate.provider.attempt_key = selected.value.clone();
+        // A probe forwards under the probed row's own protocol (the row is
+        // auto-disabled, so the normal served-row resolution skips it); every
+        // other attempt keeps the resolved effective protocol.
+        let upstream_protocol = attempt_protocol
+            .or_else(|| resolve_upstream_protocol(&candidate.provider, requested, protocol))
+            .unwrap_or(protocol);
+        native_messages = upstream_protocol == UpstreamProtocol::AnthropicMessages;
+        native_sse = native_messages.then(AnthropicSseObserver::default);
+        converted_sse = (native_messages && is_conversion_path(path))
+            .then(|| AnthropicSseConverter::new(path, requested.unwrap_or(&candidate.model)));
         capture.provider_id = candidate.provider.id.clone();
         capture.provider_name = candidate.provider.name.clone();
         capture.upstream_model = candidate.model.clone();
+        capture.protocol = upstream_protocol;
         let provider = &candidate.provider;
         let started = Instant::now();
         let (class, retryable, reason, retry_delay, transport, key_failure, bare_rotation) =
             'attempt: {
-            let streamed = open_streaming_response(
-                provider, path, body, &candidate.model, client_headers,
-            ).await;
+            let streamed = open_streaming_response_with_protocol(
+                provider,
+                path,
+                body,
+                &candidate.model,
+                client_headers,
+                upstream_protocol,
+            )
+            .await;
             let response = match streamed {
                 Ok(response) => response,
                 Err(error) => {
@@ -1652,6 +1804,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     let reason = format_network_error_reason(&error);
                     attempts.push(build_attempt_log(
                         provider,
+                        upstream_protocol,
                         &candidate.model,
                         started,
                         0,
@@ -1699,6 +1852,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     capture.status = status;
                     attempts.push(build_attempt_log(
                         provider,
+                        protocol,
                         &candidate.model,
                         started,
                         status,
@@ -1710,7 +1864,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     // standard error; otherwise keep the status and wrap it
                     // (REQ-004/AC-006/AC-007).
                     let standard = is_standard_error_body(&bytes);
-                    let body = if standard {
+                    let body = if native_messages || standard {
                         bytes.to_vec()
                     } else {
                         serde_json::to_vec(&upstream_error_payload(status, &bytes))
@@ -1739,6 +1893,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 let bare_rotation = status == 429 && key_failure.is_none();
                 attempts.push(build_attempt_log(
                     provider,
+                    protocol,
                     &candidate.model,
                     started,
                     status,
@@ -1775,6 +1930,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         // information this attempt produces (REQ-003).
                         attempts.push(build_attempt_log(
                             provider,
+                            protocol,
                             &candidate.model,
                             started,
                             502,
@@ -1795,98 +1951,262 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                             false,
                         );
                     }
-                    if let Err(error) = write_stream_headers(writer, status).await {
-                        health.apply();
-                        return Err(error);
+                    if !native_messages || converted_sse.is_some() {
+                        if let Err(error) = write_stream_headers(writer, status).await {
+                            health.apply();
+                            return Err(error);
+                        }
                     }
                     // Capture usage from a read-only copy before the bytes are
                     // written; the forwarded payload is unchanged.
                     usage.feed(&first);
-                    if let Err(error) = writer.write_all(&first).await {
-                        health.apply();
-                        return Err(error.to_string());
+                    if let Some(observer) = native_sse.as_mut() {
+                        observer.feed(&first);
+                    }
+                    // A conversion error after the first upstream byte is a
+                    // post-byte failure: no success marker, no retry, and the
+                    // failed attempt keeps its captured usage.
+                    let mut stream_error: Option<String> = None;
+                    let first_output = if let Some(converter) = converted_sse.as_mut() {
+                        match converter.feed(&first) {
+                            Ok(output) => output,
+                            Err(error) => {
+                                stream_error =
+                                    Some(format!("stream failed after first byte: {error}"));
+                                Vec::new()
+                            }
+                        }
+                    } else {
+                        vec![first.to_vec()]
+                    };
+                    if stream_error.is_none() {
+                        for output in &first_output {
+                            if let Err(error) = writer.write_all(output).await {
+                                health.apply();
+                                return Err(error.to_string());
+                            }
+                        }
                     }
                     // Last byte forwarded to the caller, used to complete the
                     // SSE event boundary before a mid-stream error fragment
                     // (REQ-005/AC-008).
-                    let mut last_forwarded = first.last().copied();
-                    if writer.flush().await.is_err() {
+                    let mut last_forwarded = first_output
+                        .last()
+                        .and_then(|output| output.last().copied());
+                    if stream_error.is_none() && writer.flush().await.is_err() {
                         health.apply();
                         capture.downstream_cancelled = true;
                         return Ok(capture);
                     }
                     loop {
+                        // Bytes already sent: terminate the stream, never switch.
+                        // The failed attempt keeps the usage accumulated so far
+                        // (REQ-004/REQ-005/AC-009).
+                        if let Some(reason) = stream_error.take() {
+                            if let Some(target) = &probe_target {
+                                // A mid-stream probe failure re-arms the
+                                // cooldown; it is never retried and no
+                                // second probe is attempted (REQ-001).
+                                health.record_probe_failure(target, now_ts(), true, &reason);
+                            } else {
+                                settle_failure(
+                                    &mut health,
+                                    provider,
+                                    requested,
+                                    &candidate.model,
+                                    FailureClass::Retryable,
+                                    &reason,
+                                    true,
+                                );
+                            }
+                            if selected.probe {
+                                persist_key_runtime_state(&provider.id, &selected.id, |key| {
+                                    rearm_key_probe(key, None, &reason, now_ts());
+                                });
+                            }
+                            health.apply();
+                            // The attempt is complete: its stream ended with
+                            // an error and keeps the usage accumulated so far
+                            // (REQ-003/REQ-005).
+                            let failed_usage = if native_messages {
+                                native_sse
+                                    .as_ref()
+                                    .and_then(AnthropicSseObserver::canonical_usage)
+                            } else {
+                                usage.canonical_usage()
+                            };
+                            attempts.push(build_attempt_log(
+                                provider,
+                                protocol,
+                                &candidate.model,
+                                started,
+                                502,
+                                UsageResult::Failure,
+                                sanitize_provider_error_text(&reason, provider),
+                                failed_usage.clone(),
+                            ));
+                            // Complete the SSE event boundary so the error
+                            // fragment parses standalone even when the last
+                            // forwarded byte is not a newline, then append one
+                            // `data:` error event. No `[DONE]`, no retry, no
+                            // candidate switch; downstream write failures stay
+                            // best-effort (REQ-005/AC-008).
+                            if last_forwarded != Some(b'\n') {
+                                let _ = writer.write_all(b"\n").await;
+                            }
+                            let _ = writer.write_all(b"\n").await;
+                            if is_messages_path(path) {
+                                let fragment = stream_error_event(reason, "api_error");
+                                let _ = writer.write_all(&fragment).await;
+                            } else {
+                                let envelope =
+                                    error_envelope(reason, "server_error", "upstream_stream_error");
+                                let fragment = format!("data: {envelope}\n\n");
+                                let _ = writer.write_all(fragment.as_bytes()).await;
+                            }
+                            let _ = writer.flush().await;
+                            capture.status = 502;
+                            capture.usage = if native_messages {
+                                failed_usage.map(|canonical| canonical.tokens)
+                            } else {
+                                usage.usage()
+                            };
+                            capture.upstream_error = true;
+                            return Ok(capture);
+                        }
                         match chunks.next().await {
                             Some(Ok(chunk)) => {
                                 usage.feed(&chunk);
-                                if writer.write_all(&chunk).await.is_err() {
-                                    health.apply();
-                                    capture.downstream_cancelled = true;
-                                    return Ok(capture);
+                                if let Some(observer) = native_sse.as_mut() {
+                                    observer.feed(&chunk);
                                 }
-                                last_forwarded = chunk.last().copied();
-                            }
-                            // Bytes already sent: terminate the stream, never switch.
-                            Some(Err(error)) => {
-                                let reason = format!("stream failed after first byte: {error}");
-                                if let Some(target) = &probe_target {
-                                    // A mid-stream probe failure re-arms the
-                                    // cooldown; it is never retried and no
-                                    // second probe is attempted (REQ-001).
-                                    health.record_probe_failure(target, now_ts(), true, &reason);
+                                let output = if let Some(converter) = converted_sse.as_mut() {
+                                    match converter.feed(&chunk) {
+                                        Ok(output) => output,
+                                        Err(error) => {
+                                            stream_error = Some(format!(
+                                                "stream failed after first byte: {error}"
+                                            ));
+                                            Vec::new()
+                                        }
+                                    }
                                 } else {
-                                    settle_failure(
-                                        &mut health,
-                                        provider,
-                                        requested,
-                                        &candidate.model,
-                                        FailureClass::Retryable,
-                                        &reason,
-                                        true,
-                                    );
+                                    vec![chunk.to_vec()]
+                                };
+                                if stream_error.is_some() {
+                                    continue;
                                 }
-                                if selected.probe {
-                                    persist_key_runtime_state(&provider.id, &selected.id, |key| {
-                                        rearm_key_probe(key, None, &reason, now_ts());
-                                    });
+                                for item in &output {
+                                    if writer.write_all(item).await.is_err() {
+                                        health.apply();
+                                        capture.downstream_cancelled = true;
+                                        return Ok(capture);
+                                    }
                                 }
-                                health.apply();
-                                // The attempt is complete: its stream ended with
-                                // an error and keeps the usage accumulated so far
-                                // (REQ-003/REQ-005).
-                                attempts.push(build_attempt_log(
-                                    provider,
-                                    &candidate.model,
-                                    started,
-                                    502,
-                                    UsageResult::Failure,
-                                    sanitize_provider_error_text(&reason, provider),
-                                    usage.canonical_usage(),
-                                ));
-                                // Complete the SSE event boundary so the error
-                                // fragment parses standalone even when the last
-                                // forwarded byte is not a newline, then append one
-                                // `data:` error event. No `[DONE]`, no retry, no
-                                // candidate switch; downstream write failures stay
-                                // best-effort (REQ-005/AC-008).
-                                if last_forwarded != Some(b'\n') {
-                                    let _ = writer.write_all(b"\n").await;
-                                }
-                                let _ = writer.write_all(b"\n").await;
-                                let envelope = error_envelope(
-                                    reason,
-                                    "server_error",
-                                    "upstream_stream_error",
-                                );
-                                let fragment = format!("data: {envelope}\n\n");
-                                let _ = writer.write_all(fragment.as_bytes()).await;
-                                let _ = writer.flush().await;
-                                capture.status = 502;
-                                capture.usage = usage.usage();
-                                capture.upstream_error = true;
-                                return Ok(capture);
+                                last_forwarded = output
+                                    .last()
+                                    .and_then(|item| item.last().copied())
+                                    .or(last_forwarded);
+                            }
+                            Some(Err(error)) => {
+                                stream_error =
+                                    Some(format!("stream failed after first byte: {error}"));
+                                continue;
                             }
                             None => {
+                                let native_usage = if native_messages {
+                                    let mut observer = native_sse
+                                        .take()
+                                        .expect("native Messages stream observer");
+                                    observer.finish();
+                                    if !observer.is_success() {
+                                        let reason = if observer.has_in_band_error() {
+                                            "upstream emitted an Anthropic error event".to_string()
+                                        } else {
+                                            "native stream ended before message_stop".to_string()
+                                        };
+                                        if let Some(target) = &probe_target {
+                                            health.record_probe_failure(
+                                                target,
+                                                now_ts(),
+                                                false,
+                                                &reason,
+                                            );
+                                        } else {
+                                            settle_failure(
+                                                &mut health,
+                                                provider,
+                                                requested,
+                                                &candidate.model,
+                                                FailureClass::Retryable,
+                                                &reason,
+                                                false,
+                                            );
+                                        }
+                                        if selected.probe {
+                                            persist_key_runtime_state(
+                                                &provider.id,
+                                                &selected.id,
+                                                |key| {
+                                                    rearm_key_probe(
+                                                        key,
+                                                        None,
+                                                        &reason,
+                                                        now_ts(),
+                                                    )
+                                                },
+                                            );
+                                        }
+                                        health.apply();
+                                        let canonical = observer.canonical_usage();
+                                        attempts.push(build_attempt_log(
+                                            provider,
+                                            protocol,
+                                            &candidate.model,
+                                            started,
+                                            502,
+                                            UsageResult::Failure,
+                                            sanitize_provider_error_text(&reason, provider),
+                                            canonical,
+                                        ));
+                                        if !observer.has_in_band_error() {
+                                            if is_messages_path(path) {
+                                                let fragment = stream_error_event(reason, "api_error");
+                                                let _ = writer.write_all(&fragment).await;
+                                            } else {
+                                                let envelope = error_envelope(
+                                                    reason,
+                                                    "server_error",
+                                                    "upstream_stream_error",
+                                                );
+                                                let _ = writer
+                                                    .write_all(format!("data: {envelope}\n\n").as_bytes())
+                                                    .await;
+                                            }
+                                            let _ = writer.flush().await;
+                                        }
+                                        capture.status = 502;
+                                        capture.usage = canonical.map(|usage| usage.tokens);
+                                        capture.upstream_error = true;
+                                        return Ok(capture);
+                                    }
+                                    observer.canonical_usage()
+                                } else {
+                                    None
+                                };
+                                // Flush a final native event that arrived
+                                // without a trailing blank line (for example
+                                // `message_stop` immediately before EOF) so the
+                                // converted caller still receives its single
+                                // completion marker (REQ-004).
+                                if let Some(mut converter) = converted_sse.take() {
+                                    if let Ok(outputs) = converter.finish() {
+                                        for output in &outputs {
+                                            let _ = writer.write_all(output).await;
+                                        }
+                                        let _ = writer.flush().await;
+                                    }
+                                }
                                 if let Some(target) = &probe_target {
                                     // A served probe clears its row's runtime
                                     // state (REQ-001/AC-001).
@@ -1908,17 +2228,20 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                 }
                                 health.apply();
                                 capture.status = status;
-                                capture.usage = usage.usage();
+                                capture.usage = native_usage
+                                    .map(|canonical| canonical.tokens)
+                                    .or_else(|| usage.usage());
                                 // A normally ended stream is the served success
                                 // of this attempt (REQ-001/REQ-003).
                                 attempts.push(build_attempt_log(
                                     provider,
+                                    protocol,
                                     &candidate.model,
                                     started,
                                     status,
                                     UsageResult::Success,
                                     None,
-                                    usage.canonical_usage(),
+                                    native_usage.or_else(|| usage.canonical_usage()),
                                 ));
                                 return Ok(capture);
                             }
@@ -1930,6 +2253,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     let reason = format!("stream failed before first byte: {error}");
                     attempts.push(build_attempt_log(
                         provider,
+                        protocol,
                         &candidate.model,
                         started,
                         0,
@@ -1954,6 +2278,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     // error message (REQ-003).
                     attempts.push(build_attempt_log(
                         provider,
+                        protocol,
                         &candidate.model,
                         started,
                         502,
@@ -1995,6 +2320,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         provider: next_provider,
                         target: target.clone(),
                         upstream_model: candidate.model.clone(),
+                        protocol: upstream_protocol,
                     });
                     continue;
                 }
@@ -2092,7 +2418,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     // Nothing was written downstream yet, so the failure is a plain HTTP 502
     // JSON response rather than an SSE error event over HTTP 200 (REQ-003).
     let message = all_unavailable_message(&failures);
-    let response = json_response(502, all_unavailable_payload(message.clone()));
+    let response = json_response(502, all_unavailable_payload_for_path(path, message.clone()));
     write_response(writer, response).await?;
     // The transport is 502, but the log records the real upstream failure status
     // (0 when no upstream HTTP status was determinable, for example a network
@@ -2113,6 +2439,71 @@ async fn write_response<W: AsyncWrite + Unpin>(
         .write_all(&http_response_bytes(response))
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Add HTTP headers only when a native Messages attempt actually starts an SSE
+/// body. Pre-first-byte JSON responses already contain their own HTTP headers,
+/// while the direct streaming seam intentionally exposes only native SSE bytes.
+struct NativeHttpWriter<W> {
+    inner: W,
+    decided: bool,
+    pending: Vec<u8>,
+}
+
+impl<W> NativeHttpWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            decided: false,
+            pending: Vec::new(),
+        }
+    }
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for NativeHttpWriter<W> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if !self.decided {
+            self.decided = true;
+            if !buf.starts_with(b"HTTP/1.1 ") {
+                self.pending = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n".to_vec();
+            }
+        }
+        while !self.pending.is_empty() {
+            let pending = std::mem::take(&mut self.pending);
+            match std::pin::Pin::new(&mut self.inner).poll_write(cx, &pending) {
+                std::task::Poll::Ready(Ok(written)) => {
+                    if written < pending.len() {
+                        self.pending = pending[written..].to_vec();
+                        return std::task::Poll::Pending;
+                    }
+                }
+                std::task::Poll::Ready(Err(error)) => return std::task::Poll::Ready(Err(error)),
+                std::task::Poll::Pending => {
+                    self.pending = pending;
+                    return std::task::Poll::Pending;
+                }
+            }
+        }
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 async fn write_stream_headers<W: AsyncWrite + Unpin>(
@@ -2156,9 +2547,17 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
     let config = match read_config() {
         Ok(config) => config,
         Err(error) => {
+            // The route is known from the request line even when the
+            // configuration cannot be read, so a native Messages early failure
+            // still answers with the Anthropic error envelope (REQ-002).
             let response = json_response(
                 500,
-                error_envelope(error, "server_error", "config_error"),
+                local_error_payload(
+                    clean_path(&request.path),
+                    error,
+                    "server_error",
+                    "config_error",
+                ),
             );
             let _ = stream.write_all(&http_response_bytes(response)).await;
             return Ok(());
@@ -2166,7 +2565,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
     };
 
     let raw_path = clean_path(&request.path);
-    let Some(path) = canonical_api_path(raw_path) else {
+    let Some(canonical_path) = canonical_api_path(raw_path) else {
         let response = json_response(
             404,
             error_envelope(
@@ -2181,12 +2580,23 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
             .map_err(|e| e.to_string())?;
         return Ok(());
     };
+    let upstream_path = if canonical_path == "/v1/messages" {
+        request
+            .path
+            .split_once('?')
+            .map(|(_, query)| format!("{canonical_path}?{query}"))
+            .unwrap_or_else(|| canonical_path.to_string())
+    } else {
+        canonical_path.to_string()
+    };
+    let path = upstream_path.as_str();
     let is_models = path == "/v1/models";
 
     if !is_authorized(&request, &config) {
         let response = json_response(
             401,
-            error_envelope(
+            local_error_payload(
+                path,
                 "invalid or missing local API key",
                 "invalid_request_error",
                 "invalid_api_key",
@@ -2222,7 +2632,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
     if request.method != "POST" {
         let response = json_response(
             404,
-            error_envelope("not found", "invalid_request_error", "not_found"),
+            local_error_payload(path, "not found", "invalid_request_error", "not_found"),
         );
         stream
             .write_all(&http_response_bytes(response))
@@ -2236,7 +2646,12 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
         Err(error) => {
             let response = json_response(
                 400,
-                error_envelope(error.to_string(), "invalid_request_error", "invalid_request"),
+                local_error_payload(
+                    path,
+                    error.to_string(),
+                    "invalid_request_error",
+                    "invalid_request",
+                ),
             );
             stream
                 .write_all(&http_response_bytes(response))
@@ -2245,6 +2660,27 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
             return Ok(());
         }
     };
+    if is_messages_path(path)
+        && body_value
+            .get("model")
+            .and_then(Value::as_str)
+            .is_none_or(|model| model.trim().is_empty())
+    {
+        let response = json_response(
+            400,
+            local_error_payload(
+                path,
+                "field 'model' is required",
+                "invalid_request_error",
+                "invalid_request",
+            ),
+        );
+        stream
+            .write_all(&http_response_bytes(response))
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     let requested = body_value
         .get("model")
         .and_then(|value| value.as_str())
@@ -2275,13 +2711,36 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
         &healthy_provider_ids,
         now_ts(),
     );
+    // Conversion validation runs before any Anthropic attempt, including a
+    // half-open probe: a probe-only Anthropic candidate must not bypass the
+    // field-specific 400 and settle no probe/key health (REQ-003/AC-007).
+    if !is_messages_path(path)
+        && (candidates.iter().any(|provider| {
+            resolve_upstream_protocol(provider, requested.as_deref(), protocol)
+                == Some(UpstreamProtocol::AnthropicMessages)
+        }) || probe
+            .as_ref()
+            .is_some_and(|candidate| candidate.protocol == UpstreamProtocol::AnthropicMessages))
+    {
+        if let Err(error) = validate_conversion_request(path, &body_value) {
+            let response = json_response(
+                400,
+                error_envelope(error, "invalid_request_error", "invalid_request"),
+            );
+            stream
+                .write_all(&http_response_bytes(response))
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+    }
     let probe_only = candidates.is_empty();
     if probe_only && probe.is_none() {
         let message = no_candidate_message(&config, requested.as_deref(), protocol);
         // Streaming and non-streaming alike answer HTTP 502 + JSON before any
         // byte is written; the log always records the gateway failure status.
         let status = 502;
-        let response = json_response(502, all_unavailable_payload(message.clone()));
+        let response = json_response(502, all_unavailable_payload_for_path(path, message.clone()));
         stream
             .write_all(&http_response_bytes(response))
             .await
@@ -2353,18 +2812,34 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
     let mut attempts: Vec<AttemptLog> = Vec::new();
     let forward = async {
         if wants_stream {
-            attempt_streaming(
-                &mut writer,
-                &ordered,
-                path,
-                &request.body,
-                requested.as_deref(),
-                &request.headers,
-                suppress_transport_failures,
-                probe.as_ref(),
-                &mut attempts,
-            )
-            .await
+            if is_messages_path(path) {
+                let mut native_writer = NativeHttpWriter::new(&mut writer);
+                attempt_streaming(
+                    &mut native_writer,
+                    &ordered,
+                    path,
+                    &request.body,
+                    requested.as_deref(),
+                    &request.headers,
+                    suppress_transport_failures,
+                    probe.as_ref(),
+                    &mut attempts,
+                )
+                .await
+            } else {
+                attempt_streaming(
+                    &mut writer,
+                    &ordered,
+                    path,
+                    &request.body,
+                    requested.as_deref(),
+                    &request.headers,
+                    suppress_transport_failures,
+                    probe.as_ref(),
+                    &mut attempts,
+                )
+                .await
+            }
         } else {
             let mut response = attempt_non_streaming(
                 &ordered,

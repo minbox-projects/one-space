@@ -77,6 +77,7 @@ fn parse_protocol(raw: &str) -> Option<UpstreamProtocol> {
     match raw {
         "chat_completions" => Some(UpstreamProtocol::ChatCompletions),
         "responses" => Some(UpstreamProtocol::Responses),
+        "anthropic_messages" => Some(UpstreamProtocol::AnthropicMessages),
         _ => None,
     }
 }
@@ -538,11 +539,12 @@ fn complete_model_display_name(base: Option<&str>, identifier: &str) -> Option<S
 /// source `name` completed with the identifier segment's uncovered remainder
 /// (a blank source name falls back to the previously stored display name, and
 /// a missing base transforms the identifier segment on its own). When
-/// `supported_endpoints` is an array the protocol is `/chat/completions` if
-/// declared, else `/responses`; an array declaring neither drops the entry,
-/// while a missing or non-array field keeps the entry with no protocol so it
-/// inherits the template protocol. Existing models keep their local `enabled`
-/// flag and any source-omitted display name/protocol; new models start enabled.
+/// `supported_endpoints` is an array: Chat Completions wins over Responses,
+/// which wins over Anthropic Messages; an array declaring none of those drops
+/// the entry. A missing or non-array field keeps the entry with no protocol so
+/// it inherits the template protocol. Existing models keep their local
+/// `enabled` flag and any source-omitted display name/protocol; new models start
+/// enabled.
 /// Duplicate identifiers keep the first. A missing model array, an entry
 /// without an identifier and an empty effective set are fatal.
 fn parse_model_list_source(
@@ -633,6 +635,8 @@ fn parse_model_list_source(
                     Some(UpstreamProtocol::ChatCompletions)
                 } else if has("/responses") {
                     Some(UpstreamProtocol::Responses)
+                } else if has("/messages") || has("/v1/messages") {
+                    Some(UpstreamProtocol::AnthropicMessages)
                 } else {
                     continue;
                 }
@@ -676,9 +680,9 @@ fn parse_model_list_source(
 
     if previous.sync_strategy == SyncStrategy::OpencodeGo {
         // A Go sync is declaration-aware: only an id the effective template
-        // explicitly declares as Chat Completions/Responses — or one the source
-        // itself declares with a supported endpoint — is compatible. An
-        // undeclared, Messages-only or metadata-less id is never guessed as Chat.
+        // explicitly declares as Chat Completions, Responses or Anthropic
+        // Messages — or one the source itself declares with a supported endpoint
+        // — is compatible. An undeclared, metadata-less id is never guessed.
         let declared: Vec<(&str, UpstreamProtocol)> = previous
             .models
             .iter()

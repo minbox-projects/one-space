@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
 import { ProviderTemplateEditDialog } from "./ProviderTemplateEditDialog";
 import type {
   GatewayProviderTemplate,
@@ -545,5 +546,89 @@ describe("ProviderTemplateEditDialog 策略选择器", () => {
         error_strategy: "generic",
       }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 4: the template default and per-model protocol selectors gain the third
+// upstream protocol `anthropic_messages` while model rows keep inheritance.
+// RED before implementation: only Chat/Responses options exist.
+// ---------------------------------------------------------------------------
+
+describe("ProviderTemplateEditDialog anthropic_messages 协议选项", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("模板默认协议选择器提供 Anthropic Messages (native) 选项", () => {
+    renderDialog();
+
+    const select = screen.getByTestId("template-edit-protocol") as HTMLSelectElement;
+    const option = Array.from(select.options).find(
+      (candidate) => candidate.value === "anthropic_messages",
+    );
+    expect(option?.textContent).toBe("Anthropic Messages (native)");
+  });
+
+  it("模型行协议选择器提供继承与 Anthropic Messages 选项并保存显式协议", async () => {
+    const { onSave } = renderDialog();
+
+    const rowSelect = screen.getByTestId(
+      "template-edit-model-protocol-0",
+    ) as HTMLSelectElement;
+    expect(
+      Array.from(rowSelect.options).some(
+        (candidate) => candidate.value === "" && candidate.textContent === "Inherit from provider",
+      ),
+    ).toBe(true);
+    expect(
+      Array.from(rowSelect.options).some(
+        (candidate) =>
+          candidate.value === "anthropic_messages" &&
+          candidate.textContent === "Anthropic Messages (native)",
+      ),
+    ).toBe(true);
+
+    fireEvent.change(rowSelect, { target: { value: "anthropic_messages" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("template-edit-save-btn"));
+    });
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        models: expect.arrayContaining([
+          expect.objectContaining({
+            upstream_model: "test-model-1",
+            protocol: "anthropic_messages",
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("模板默认切换为 Anthropic Messages 后保存该协议", async () => {
+    const { onSave } = renderDialog();
+
+    fireEvent.change(screen.getByTestId("template-edit-protocol"), {
+      target: { value: "anthropic_messages" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("template-edit-save-btn"));
+    });
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: "anthropic_messages" }),
+    );
+  });
+
+  it("中文下提供 Anthropic Messages（原生）标签", async () => {
+    await i18n.changeLanguage("zh");
+    renderDialog();
+
+    const select = screen.getByTestId("template-edit-protocol") as HTMLSelectElement;
+    const option = Array.from(select.options).find(
+      (candidate) => candidate.value === "anthropic_messages",
+    );
+    expect(option?.textContent).toBe("Anthropic Messages（原生）");
   });
 });

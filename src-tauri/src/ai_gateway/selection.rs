@@ -40,6 +40,15 @@ pub(in crate::ai_gateway) enum ModelResolution {
     NoMatch,
 }
 
+fn can_convert_from(protocol: UpstreamProtocol, inbound: UpstreamProtocol) -> bool {
+    protocol == inbound
+        || (protocol == UpstreamProtocol::AnthropicMessages
+            && matches!(
+                inbound,
+                UpstreamProtocol::ChatCompletions | UpstreamProtocol::Responses
+            ))
+}
+
 /// Resolve the upstream model for a provider under the inbound `protocol`.
 ///
 /// Rows with an empty `upstream_model` are discarded and count as no match.
@@ -72,7 +81,7 @@ pub(in crate::ai_gateway) fn resolve_model_for_protocol(
                 continue;
             }
             let effective = mapping.effective_protocol(provider.protocol);
-            if effective == protocol {
+            if can_convert_from(effective, protocol) {
                 return ModelResolution::Serve(mapping.upstream_model.trim().to_string());
             }
             configured.get_or_insert(effective);
@@ -89,9 +98,48 @@ pub(in crate::ai_gateway) fn resolve_model_for_protocol(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .filter(|_| provider.protocol == protocol)
+        .filter(|_| can_convert_from(provider.protocol, protocol))
         .map(|value| ModelResolution::Serve(value.to_string()))
         .unwrap_or(ModelResolution::NoMatch)
+}
+
+/// Resolve the actual protocol used by a served mapping. The inbound protocol
+/// is deliberately separate: Chat and Responses may be converted to Messages,
+/// while native Messages never widens to an OpenAI upstream.
+pub(in crate::ai_gateway) fn resolve_upstream_protocol(
+    provider: &GatewayUpstreamProvider,
+    requested: Option<&str>,
+    inbound: UpstreamProtocol,
+) -> Option<UpstreamProtocol> {
+    let requested = requested.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(requested) = requested {
+        let mut mismatched = false;
+        for mapping in provider.mappings.iter().filter(|mapping| {
+            mapping.local_model.trim() == requested && !mapping.upstream_model.trim().is_empty()
+        }) {
+            if !mapping.enabled || mapping.auto_disabled {
+                continue;
+            }
+            let effective = mapping.effective_protocol(provider.protocol);
+            if can_convert_from(effective, inbound) {
+                return Some(effective);
+            }
+            mismatched = true;
+        }
+        if mismatched {
+            return None;
+        }
+    }
+    if provider
+        .default_model
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        && can_convert_from(provider.protocol, inbound)
+    {
+        return Some(provider.protocol);
+    }
+    None
 }
 
 /// Candidate set: enabled and able to serve the request model under the inbound
@@ -841,6 +889,11 @@ pub(in crate::ai_gateway) struct ProbeCandidate {
     pub(in crate::ai_gateway) provider: GatewayUpstreamProvider,
     pub(in crate::ai_gateway) target: MappingTarget,
     pub(in crate::ai_gateway) upstream_model: String,
+    /// The effective protocol of the probed row. The probe attempt forwards
+    /// under this protocol even though the auto-disabled row is invisible to
+    /// the normal served-row resolution, so a converted probe still reaches the
+    /// Anthropic Messages endpoint (REQ-005/AC-010).
+    pub(in crate::ai_gateway) protocol: UpstreamProtocol,
 }
 
 /// Whether a row's trimmed `disabled_reason` denotes an immediate auth disable
@@ -907,7 +960,7 @@ pub(in crate::ai_gateway) fn find_probe_candidate(
             if upstream_model.is_empty() {
                 continue;
             }
-            if mapping.effective_protocol(provider.protocol) != protocol {
+            if !can_convert_from(mapping.effective_protocol(provider.protocol), protocol) {
                 continue;
             }
             let key = (
@@ -928,6 +981,7 @@ pub(in crate::ai_gateway) fn find_probe_candidate(
                         provider: provider.clone(),
                         target,
                         upstream_model,
+                        protocol: mapping.effective_protocol(provider.protocol),
                     },
                 ));
             }

@@ -35,6 +35,9 @@ mod performance;
 mod runtime_lifecycle;
 mod usage_store;
 mod attempt_policy;
+mod anthropic_messages;
+mod anthropic_conversion;
+mod claude_terminal_sync;
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -2988,7 +2991,10 @@ fn resolve_port_maps_canonical_defaults_per_build_profile() {
 
 #[test]
 fn build_gateway_provider_rejects_unsupported_tools() {
-    for tool in ["claude", "antigravity", ""] {
+    // `claude` is a supported terminal target as of Step 3
+    // (`20261011-ai-gateway-anthropic-messages`); only tools without a builder
+    // remain rejected.
+    for tool in ["antigravity", ""] {
         let error = build_gateway_provider(
             "g-1",
             tool,
@@ -7477,7 +7483,7 @@ async fn terminal_sync_with_seam_rejects_unsupported_tools() {
     let error = super::commands::apply_terminal_sync_with(
         &json!({ "providers": [] }),
         |_value| -> super::commands::UpsertFuture { Box::pin(async move { Ok(()) }) },
-        vec!["claude".to_string()],
+        vec!["antigravity".to_string()],
         TerminalSyncProfile::RELEASE,
     )
     .await
@@ -7529,11 +7535,14 @@ fn terminal_targets_from_lists_supported_tools_in_order() {
     let config = GatewayConfig::default();
     let targets = super::commands::terminal_targets_from(&config, &json!({ "providers": [] }), TerminalSyncProfile::RELEASE);
 
-    assert_eq!(targets.len(), 2, "one target per supported tool: {targets:?}");
+    // Step 3 (`20261011-ai-gateway-anthropic-messages`) adds `claude` as a
+    // supported terminal target after the existing opencode/codex pair.
+    assert_eq!(targets.len(), 3, "one target per supported tool: {targets:?}");
     let tools: Vec<&str> = targets.iter().map(|target| target.tool.as_str()).collect();
-    assert_eq!(tools, vec!["opencode", "codex"]);
+    assert_eq!(tools, vec!["opencode", "codex", "claude"]);
     assert_eq!(targets[0].name, "OpenCode");
     assert_eq!(targets[1].name, "Codex");
+    assert_eq!(targets[2].name, "Claude");
 }
 
 /// No ledger and no marker provider: every target is unsynced and pending.
@@ -27391,22 +27400,25 @@ fn previously_synced_terminal_tools_lists_only_marked_managed_providers_in_suppo
     );
 
     // Supported-tool order is independent of the payload order (codex first).
+    // As of Step 3 (`20261011-ai-gateway-anthropic-messages`) `claude` is a
+    // supported terminal target, so a marked claude record participates in the
+    // best-effort terminal refresh like the other tools.
     let codex_first = json!({
         "providers": [
             managed_gateway_provider_top_level("managed-cx", "codex"),
             managed_gateway_provider("managed-oc", "opencode"),
             {
-                "id": "unrelated-other",
+                "id": "managed-claude",
                 "tool": "claude",
-                "name": "Unrelated Tool",
+                "name": "AI Gateway",
                 "ai_gateway_gateway": true
             }
         ]
     });
     assert_eq!(
         super::commands::previously_synced_terminal_tools(&config, &codex_first, TerminalSyncProfile::RELEASE),
-        vec!["opencode".to_string(), "codex".to_string()],
-        "marked managed providers are listed in supported-tool order, ignoring other tools"
+        vec!["opencode".to_string(), "codex".to_string(), "claude".to_string()],
+        "marked managed providers are listed in supported-tool order"
     );
 
     let codex_only = json!({

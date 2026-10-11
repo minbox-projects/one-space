@@ -24,27 +24,31 @@ import {
 } from "@/lib/aiGateway";
 
 function endpointPath(protocol: GatewayUpstreamProtocol): string {
-  return protocol === "responses" ? "/responses" : "/chat/completions";
+  if (protocol === "responses") return "/responses";
+  if (protocol === "anthropic_messages") return "/messages";
+  return "/chat/completions";
 }
 
 function ProtocolBadge({ protocol }: { protocol: GatewayUpstreamProtocol }) {
   const isResponses = protocol === "responses";
+  const isAnthropic = protocol === "anthropic_messages";
   const path = endpointPath(protocol);
+  const tone = isResponses
+    ? "border-purple-500/25 bg-purple-500/10 text-purple-700 dark:text-purple-300"
+    : isAnthropic
+      ? "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+      : "border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300";
+  const dot = isResponses
+    ? "bg-purple-500"
+    : isAnthropic
+      ? "bg-amber-500"
+      : "bg-sky-500";
 
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-[10px] font-medium leading-none shadow-2xs ${
-        isResponses
-          ? "border-purple-500/25 bg-purple-500/10 text-purple-700 dark:text-purple-300"
-          : "border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300"
-      }`}
+      className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-[10px] font-medium leading-none shadow-2xs ${tone}`}
     >
-      <span
-        aria-hidden="true"
-        className={`h-1.5 w-1.5 rounded-full shrink-0 ${
-          isResponses ? "bg-purple-500" : "bg-sky-500"
-        }`}
-      />
+      <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full shrink-0 ${dot}`} />
       <span>{path}</span>
     </span>
   );
@@ -120,6 +124,13 @@ export function ModelListPanel({
       {
         value: "responses",
         label: "Responses",
+      },
+      {
+        value: "anthropic_messages",
+        label: t(
+          "aiGatewayProtocolAnthropicMessages",
+          "Anthropic Messages (native)",
+        ),
       },
     ],
     [t],

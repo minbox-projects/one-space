@@ -2469,3 +2469,40 @@ describe("UpstreamProviderList 模板策略监控选择（Step 2）", () => {
     ).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 4: a provider whose default protocol is `anthropic_messages` shows the
+// third upstream protocol badge instead of the Chat/Responses fallback.
+// RED before implementation: anything non-Responses renders as "Chat".
+// ---------------------------------------------------------------------------
+
+describe("UpstreamProviderList anthropic_messages 徽标", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("协议为 anthropic_messages 的服务商卡片展示第三协议徽标", () => {
+    const providers: GatewayUpstreamProvider[] = [
+      makeProvider({
+        id: "p-anth",
+        name: "Provider One",
+        protocol: "anthropic_messages",
+      }),
+    ];
+
+    renderWithProviders(
+      <UpstreamProviderList
+        providers={providers}
+        selectedProviderId={null}
+        busy={false}
+        onSelect={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+
+    const card = screen.getByTestId("ai-gateway-provider-p-anth");
+    expect(card).toHaveTextContent(/anthropic/i);
+    expect(within(card).queryByText("Chat")).not.toBeInTheDocument();
+  });
+});

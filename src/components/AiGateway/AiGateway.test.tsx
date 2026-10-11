@@ -303,7 +303,9 @@ describe("AiGateway", () => {
     renderWithProviders(<AiGateway />);
     await screen.findByText("OpenCode");
 
-    expect(screen.queryByText("Claude Code")).not.toBeInTheDocument();
+    // Step 4 adds Claude as a supported terminal target while Antigravity
+    // remains unsupported.
+    expect(screen.getByText("Claude Code")).toBeInTheDocument();
     expect(screen.queryByText("Antigravity")).not.toBeInTheDocument();
 
     const panel = within(screen.getByTestId("ai-gateway-terminals"));
@@ -317,6 +319,70 @@ describe("AiGateway", () => {
     expect(
       panel.queryByRole("button", { name: /sync again/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("首次同步 Claude 打开四选择对话框并以 claude_models 载荷调用配置命令", async () => {
+    const store: Store = {
+      config: makeConfig({
+        keys: [{ id: "k1", label: "Main", value: "********", enabled: true, created_at: 1 }],
+        default_key_id: "k1",
+        providers: [
+          makeProvider({
+            id: "p-claude",
+            name: "CommandCode",
+            protocol: "anthropic_messages",
+            mappings: [
+              { local_model: "cc-haiku", upstream_model: "claude-haiku-5-5" },
+              { local_model: "cc-sonnet", upstream_model: "claude-sonnet-5-5" },
+              { local_model: "cc-opus", upstream_model: "claude-opus-5-5" },
+            ],
+          }),
+        ],
+      }),
+      status: makeStatus({ key_count: 1, default_key_id: "k1", provider_count: 1 }),
+      targets: [
+        openCodeTarget({
+          provider_id: "gw-claude",
+          tool: "claude",
+          name: "Claude Code",
+          base_url: null,
+        }),
+      ],
+    };
+    mockStore(store);
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Claude Code");
+
+    const claudeRow = within(screen.getByTestId("ai-gateway-target-claude"));
+    fireEvent.click(claudeRow.getByRole("button", { name: /add/i }));
+
+    const dialog = await screen.findByTestId("claude-model-selection-dialog");
+    fireEvent.change(within(dialog).getByTestId("claude-model-select-default"), {
+      target: { value: "cc-opus" },
+    });
+    fireEvent.change(within(dialog).getByTestId("claude-model-select-haiku"), {
+      target: { value: "cc-haiku" },
+    });
+    fireEvent.change(within(dialog).getByTestId("claude-model-select-sonnet"), {
+      target: { value: "cc-sonnet" },
+    });
+    fireEvent.change(within(dialog).getByTestId("claude-model-select-opus"), {
+      target: { value: "cc-opus" },
+    });
+    fireEvent.click(within(dialog).getByTestId("claude-model-selection-submit"));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_configure_terminal", {
+        targetTools: ["claude"],
+        claudeModels: {
+          default_model: "cc-opus",
+          haiku: "cc-haiku",
+          sonnet: "cc-sonnet",
+          opus: "cc-opus",
+        },
+      }),
+    );
   });
 
   it("待同步的行内显示添加，点击仅以该工具调用配置", async () => {

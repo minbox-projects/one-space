@@ -79,6 +79,9 @@ fn opencode_go_baseline() -> Option<GoBaseline> {
                 let protocol = match protocol {
                     super::types_config::UpstreamProtocol::ChatCompletions => "chat_completions",
                     super::types_config::UpstreamProtocol::Responses => "responses",
+                    super::types_config::UpstreamProtocol::AnthropicMessages => {
+                        "anthropic_messages"
+                    }
                 };
                 (model.upstream_model.clone(), protocol.to_string())
             })
@@ -244,15 +247,15 @@ fn migrate_opencode_zen_to_go(object: &mut Map<String, Value>) -> bool {
                         .map(|(_, protocol)| protocol.clone());
                     match declared_protocol {
                         Some(protocol) => {
-                            // Preserve an explicit protocol; give a supported
-                            // Responses mapping an explicit protocol when it
-                            // previously inherited the old provider default.
-                            if mapping
-                                .get(PROTOCOL_FIELD)
-                                .and_then(Value::as_str)
-                                .is_none()
-                                && protocol == "responses"
-                            {
+                                // Preserve an explicit protocol; give a supported
+                                // non-Chat mapping an explicit protocol when it
+                                // previously inherited the old provider default.
+                                if mapping
+                                    .get(PROTOCOL_FIELD)
+                                    .and_then(Value::as_str)
+                                    .is_none()
+                                    && protocol != "chat_completions"
+                                {
                                 mapping.insert(PROTOCOL_FIELD.to_string(), Value::String(protocol));
                                 changed = true;
                             }

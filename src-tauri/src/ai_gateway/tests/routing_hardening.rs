@@ -14,10 +14,10 @@
 //! `isolated_temp_home` guard does not cross spawned tasks/threads.
 
 use super::{
-    key_named, mapping, pool_key, pool_provider, spawn_mock_upstream, temp_home,
-    upstream_provider, write_raw_gateway_config, MockReply,
+    call_gateway, free_port, key_named, mapping, pool_key, pool_provider, spawn_mock_upstream,
+    temp_home, upstream_provider, write_raw_gateway_config, MockReply,
 };
-use crate::ai_gateway::runtime_http::attempt_non_streaming;
+use crate::ai_gateway::runtime_http::{attempt_non_streaming, start_server, stop_server};
 use crate::ai_gateway::storage::{config_path, read_config, write_config};
 use crate::ai_gateway::{
     ai_gateway_upsert_provider, GatewayConfig, GatewayUpstreamProvider, KeyFailureKind,
@@ -967,4 +967,234 @@ fn go_bound_provider_terminal_projection_excludes_undeclared_models() {
         !models.contains_key("go-undeclared"),
         "an undeclared model must never reach terminal projection"
     );
+}
+
+// ===========================================================================
+// Review-repair round: R3 (probe bypass) and R13 (mixed candidates + cooled
+// Anthropic probe). These drive the real loopback listener and observe the
+// captured upstream attempt plus the persisted configuration.
+// ===========================================================================
+
+/// A single-row native Anthropic provider whose only mapping is auto-disabled
+/// and past its probe cooldown, so it is eligible only as a half-open probe.
+fn cooled_anthropic_probe_provider(
+    id: &str,
+    base_url: &str,
+    local_model: &str,
+    upstream_model: &str,
+) -> GatewayUpstreamProvider {
+    let mut provider = upstream_provider(id, "Probe Provider", base_url, "sk-probe", None);
+    provider.protocol = crate::ai_gateway::UpstreamProtocol::AnthropicMessages;
+    let mut row = mapping(local_model, upstream_model, Some("Anthropic"));
+    row.protocol = Some(crate::ai_gateway::UpstreamProtocol::AnthropicMessages);
+    row.auto_disabled = true;
+    row.consecutive_failures = 3;
+    row.disabled_reason = Some("HTTP 500 upstream".to_string());
+    row.disabled_at = Some(1);
+    provider.mappings = vec![row];
+    provider
+}
+
+/// R3 / REQ-003 / AC-007: a probe-only Anthropic candidate must not bypass the
+/// conversion validation. A Chat request with an unsupported `response_format`
+/// is a field-specific 400 before any upstream attempt, and no probe/key
+/// settlement side effect is produced.
+#[tokio::test]
+async fn probe_only_anthropic_candidate_rejects_unsupported_conversion_before_any_attempt() {
+    let _home = temp_home("probe-only-conversion-validation");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok"}))).await;
+
+    let provider = cooled_anthropic_probe_provider(
+        "p-probe",
+        &upstream_url,
+        "claude-sonnet-5-5",
+        "commandcode/sonnet-5-5",
+    );
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(provider);
+    write_config(&config).expect("seed the probe config");
+    start_server(None).await.expect("start the listener");
+
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({
+            "model": "claude-sonnet-5-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type": "json_schema", "json_schema": {"name": "x", "schema": {"type": "object"}}}
+        })),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "a probe-only Anthropic candidate must still reject unsupported conversion with a field-specific 400: {status} {text}"
+    );
+    assert!(
+        text.contains("response_format"),
+        "the 400 must identify response_format: {text}"
+    );
+    assert_eq!(
+        log.lock().expect("mock log").len(),
+        0,
+        "no request may reach the probed upstream"
+    );
+
+    // No probe/key settlement side effect: the cooldown, counters and key marks
+    // are exactly as persisted before the rejected request.
+    let stored = read_config().expect("the config must stay readable");
+    let probe_provider = stored
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p-probe")
+        .expect("the probe provider must persist");
+    let row = &probe_provider.mappings[0];
+    assert!(row.auto_disabled, "the probe row stays auto-disabled");
+    assert_eq!(
+        row.consecutive_failures, 3,
+        "the rejected request must not settle the probe failure counter"
+    );
+    assert_eq!(
+        row.disabled_at,
+        Some(1),
+        "the rejected request must not re-arm the probe cooldown"
+    );
+    assert!(
+        probe_provider
+            .keys
+            .iter()
+            .all(|key| !key.auto_marked),
+        "the rejected request must not mark the probed provider's key"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// R13 / REQ-005 / AC-010: when one provider serves the same local model over
+/// both Chat and Anthropic rows, the Chat entry selects the enabled Chat row
+/// instead of the auto-disabled Anthropic row.
+#[tokio::test]
+async fn chat_entry_selects_the_enabled_row_when_an_anthropic_row_is_disabled() {
+    let _home = temp_home("mixed-candidate-chat-selection");
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({"id": "chat", "choices": [{"message": {"role": "assistant", "content": "ok"}}]}),
+        )
+    })
+    .await;
+
+    let mut provider = upstream_provider("p-mixed", "Mixed Provider", &upstream_url, "sk-mixed", None);
+    provider.protocol = crate::ai_gateway::UpstreamProtocol::ChatCompletions;
+    let mut chat_row = mapping("local-mixed", "remote-chat", Some("Chat"));
+    chat_row.protocol = Some(crate::ai_gateway::UpstreamProtocol::ChatCompletions);
+    let mut anthropic_row = mapping("local-mixed", "remote-anthropic", Some("Anthropic"));
+    anthropic_row.protocol = Some(crate::ai_gateway::UpstreamProtocol::AnthropicMessages);
+    anthropic_row.auto_disabled = true;
+    anthropic_row.consecutive_failures = 3;
+    anthropic_row.disabled_reason = Some("HTTP 500 upstream".to_string());
+    anthropic_row.disabled_at = Some(1);
+    provider.mappings = vec![chat_row, anthropic_row];
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(provider);
+    write_config(&config).expect("seed the mixed config");
+    start_server(None).await.expect("start the listener");
+
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-mixed", "messages": [{"role": "user", "content": "hi"}]})),
+    )
+    .await;
+    assert_eq!(status, 200, "the enabled Chat row must serve the request: {text}");
+
+    let captured = log.lock().expect("mock log").clone();
+    assert_eq!(captured.len(), 1, "exactly one upstream attempt");
+    assert_eq!(
+        captured[0].path.matches("/v1/chat/completions").count(),
+        1,
+        "the enabled same-protocol row must forward to the Chat endpoint: {}",
+        captured[0].path
+    );
+    let sent: Value = serde_json::from_slice(&captured[0].body).expect("upstream JSON");
+    assert_eq!(
+        sent["model"], "remote-chat",
+        "the enabled Chat row's upstream model must be used: {sent}"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// R13 / REQ-005 / AC-010: a cooled Anthropic probe reached through the Chat
+/// entry converts the request and reaches the upstream `/v1/messages` exactly
+/// once.
+#[tokio::test]
+async fn cooled_anthropic_probe_reaches_upstream_once_with_a_converted_body() {
+    let _home = temp_home("cooled-anthropic-probe-converted");
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }),
+        )
+    })
+    .await;
+
+    let provider =
+        cooled_anthropic_probe_provider("p-probe-conv", &upstream_url, "local-probe", "remote-anthropic");
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(provider);
+    write_config(&config).expect("seed the probe config");
+    start_server(None).await.expect("start the listener");
+
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-probe", "messages": [{"role": "user", "content": "hi"}]})),
+    )
+    .await;
+    assert_eq!(status, 200, "the cooled probe must serve the converted request: {text}");
+
+    let captured = log.lock().expect("mock log").clone();
+    assert_eq!(captured.len(), 1, "the probe must reach the upstream exactly once");
+    assert_eq!(
+        captured[0].path.matches("/v1/messages").count(),
+        1,
+        "the converted probe must hit /v1/messages once: {}",
+        captured[0].path
+    );
+    let sent: Value = serde_json::from_slice(&captured[0].body).expect("upstream JSON");
+    assert_eq!(sent["model"], "remote-anthropic", "the mapped upstream model: {sent}");
+    assert!(
+        sent["messages"].is_array(),
+        "the probe body must be a converted Anthropic request: {sent}"
+    );
+    assert!(
+        sent["max_tokens"].is_number(),
+        "the converted probe must carry the output cap: {sent}"
+    );
+
+    stop_server().await.expect("stop the listener");
 }

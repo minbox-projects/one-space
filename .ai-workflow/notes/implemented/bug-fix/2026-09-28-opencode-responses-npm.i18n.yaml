@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/bug-fix/2026-09-28-opencode-responses-npm.md
-2026-09-28-opencode-responses-npm.md: 8ca214a1a146cf2a8def48703d1769fe920916a2
-2026-09-28-opencode-responses-npm.zh.md: 3d393acdb39c95b49f6b4c1a4471718d8fd20bf0
+2026-09-28-opencode-responses-npm.md: 72ac4cd8fd65c50cbff35f299c8a1258f6bc1398
+2026-09-28-opencode-responses-npm.zh.md: df5499d7d4523b07454bfc387a204cc2cdbdeef0

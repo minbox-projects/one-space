@@ -77,6 +77,25 @@ export function formatResetTime(
 }
 
 /**
+ * Short protocol label shared by the provider, template and picker badges.
+ * Mirrors the existing hard-coded "Chat" / "Responses" convention and adds the
+ * third upstream protocol.
+ */
+export function protocolShortLabel(
+  protocol: GatewayUpstreamProtocol | null | undefined,
+): string {
+  switch (protocol) {
+    case "responses":
+      return "Responses";
+    case "anthropic_messages":
+      return "Anthropic Messages";
+    case "chat_completions":
+    default:
+      return "Chat";
+  }
+}
+
+/**
  * Tailwind classes for an upstream protocol badge. `bordered` adds the
  * outlined variant used by the template picker.
  */
@@ -85,11 +104,19 @@ export function protocolBadgeClass(
   options?: { bordered?: boolean },
 ): string {
   const isResponses = protocol === "responses";
+  const isAnthropic = protocol === "anthropic_messages";
   const tone = isResponses
     ? "bg-purple-500/10 text-purple-600 dark:text-purple-400"
-    : "bg-blue-500/10 text-blue-600 dark:text-blue-400";
+    : isAnthropic
+      ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+      : "bg-blue-500/10 text-blue-600 dark:text-blue-400";
   if (!options?.bordered) return tone;
-  return `${tone} border ${isResponses ? "border-purple-500/20" : "border-blue-500/20"}`;
+  const border = isResponses
+    ? "border-purple-500/20"
+    : isAnthropic
+      ? "border-amber-500/20"
+      : "border-blue-500/20";
+  return `${tone} border ${border}`;
 }
 
 /** i18n keys for the shared usage quick-range labels. */

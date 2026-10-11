@@ -607,3 +607,52 @@ describe("ProviderTemplateSection 服务商模板区域", () => {
     adapter.unmount();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 4: the template model badge, count and protocol filter include the third
+// upstream protocol `anthropic_messages`.
+// RED before implementation: only Chat/Responses pills and badges exist.
+// ---------------------------------------------------------------------------
+
+describe("ProviderTemplateSection anthropic_messages 徽标/计数/筛选", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("模板模型行展示第三协议徽标且协议筛选计入 anthropic 计数", () => {
+    const view = makeView({
+      template: makeTemplate({
+        id: "t-anth",
+        protocol: "chat_completions",
+        models: [
+          makeModel({ upstream_model: "chat-model", protocol: "chat_completions" }),
+          makeModel({
+            upstream_model: "claude-model",
+            protocol: "anthropic_messages",
+          }),
+        ],
+      }),
+    });
+
+    renderSection({ templates: [view] });
+    fireEvent.click(screen.getByTestId("ai-gateway-template-expand-t-anth"));
+
+    const anthRow = screen.getByTestId(
+      "ai-gateway-template-model-t-anth-claude-model",
+    );
+    expect(anthRow).toHaveTextContent(/anthropic/i);
+
+    const filter = screen.getByTestId("template-model-protocol-filter-t-anth");
+    const anthPill = within(filter).getByRole("button", { name: /anthropic/i });
+    expect(anthPill).toHaveTextContent("1");
+
+    fireEvent.click(anthPill);
+    expect(
+      screen.getByTestId("ai-gateway-template-model-t-anth-claude-model"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("ai-gateway-template-model-t-anth-chat-model"),
+    ).not.toBeInTheDocument();
+  });
+});

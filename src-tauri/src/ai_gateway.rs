@@ -1,4 +1,6 @@
 mod attempt_policy;
+mod anthropic;
+mod anthropic_sse;
 mod commands;
 mod forwarding;
 mod go_usage;
