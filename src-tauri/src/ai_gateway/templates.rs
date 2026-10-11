@@ -680,9 +680,9 @@ fn parse_model_list_source(
 
     if previous.sync_strategy == SyncStrategy::OpencodeGo {
         // A Go sync is declaration-aware: only an id the effective template
-        // explicitly declares as Chat Completions/Responses — or one the source
-        // itself declares with a supported endpoint — is compatible. An
-        // undeclared, Messages-only or metadata-less id is never guessed as Chat.
+        // explicitly declares as Chat Completions, Responses or Anthropic
+        // Messages — or one the source itself declares with a supported endpoint
+        // — is compatible. An undeclared, metadata-less id is never guessed.
         let declared: Vec<(&str, UpstreamProtocol)> = previous
             .models
             .iter()

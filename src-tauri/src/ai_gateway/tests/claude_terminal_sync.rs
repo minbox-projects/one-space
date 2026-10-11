@@ -40,11 +40,11 @@ use super::{
     upstream_provider,
 };
 use crate::ai_gateway::commands::{
-    apply_terminal_sync_with, build_gateway_provider, terminal_targets_from, TerminalSyncProfile,
-    UpsertFuture,
+    apply_terminal_sync_with, apply_terminal_sync_with_selection, build_gateway_provider,
+    terminal_targets_from, TerminalSyncProfile, UpsertFuture,
 };
-use crate::ai_gateway::storage::write_config;
-use crate::ai_gateway::{TerminalSyncRecord, UpstreamProtocol};
+use crate::ai_gateway::storage::{read_config, write_config};
+use crate::ai_gateway::{ClaudeModelSelection, TerminalSyncRecord, UpstreamProtocol};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
@@ -118,7 +118,7 @@ fn family_upstream(payload: &Value, family: &str) -> String {
 #[tokio::test]
 async fn claude_sync_writes_origin_model_selection_and_never_appends_v1() {
     let _home = isolated_temp_home("claude-sync-origin-selection");
-    let config = gateway_config(19000);
+    let config = claude_servable_gateway_config(19000);
     write_config(&config).expect("write gateway config");
     assert_eq!(super::super::storage::local_base_url(config.port), format!("{ORIGIN}/v1"));
 
@@ -174,7 +174,7 @@ async fn claude_sync_writes_origin_model_selection_and_never_appends_v1() {
 #[tokio::test]
 async fn claude_resync_preserves_saved_selection_and_reuses_identity() {
     let _home = isolated_temp_home("claude-resync-preserve");
-    write_config(&gateway_config(19000)).expect("write gateway config");
+    write_config(&claude_servable_gateway_config(19000)).expect("write gateway config");
 
     let saved = saved_claude_provider(
         "gateway-claude",
@@ -216,7 +216,7 @@ async fn claude_resync_preserves_saved_selection_and_reuses_identity() {
 #[tokio::test]
 async fn claude_sync_never_claims_an_unmarked_user_provider() {
     let _home = isolated_temp_home("claude-sync-ownership");
-    let mut config = gateway_config(19000);
+    let mut config = claude_servable_gateway_config(19000);
     config.terminal_syncs.push(TerminalSyncRecord {
         provider_id: "user-claude".to_string(),
         tool: "claude".to_string(),
@@ -458,7 +458,7 @@ fn opencode_uses_chat_adapter_for_anthropic_servable_models() {
 #[tokio::test]
 async fn claude_coexists_with_opencode_and_codex_in_one_sync() {
     let _home = isolated_temp_home("claude-sync-coexist");
-    write_config(&gateway_config(19000)).expect("write gateway config");
+    write_config(&claude_servable_gateway_config(19000)).expect("write gateway config");
 
     let providers_data = json!({ "providers": [saved_claude_provider(
         "gateway-claude",
@@ -498,7 +498,7 @@ async fn claude_coexists_with_opencode_and_codex_in_one_sync() {
 #[tokio::test]
 async fn claude_dev_sync_uses_the_dev_marker_and_name() {
     let _home = isolated_temp_home("claude-sync-dev-identity");
-    write_config(&gateway_config(19000)).expect("write gateway config");
+    write_config(&claude_servable_gateway_config(19000)).expect("write gateway config");
 
     let providers_data = json!({ "providers": [saved_claude_provider(
         "claude-dev",
@@ -518,4 +518,326 @@ async fn claude_dev_sync_uses_the_dev_marker_and_name() {
     assert_eq!(claude["name"], "AI Gateway (Dev)");
     assert_eq!(claude["tool_config"]["ai_gateway_gateway"], "dev");
     assert_eq!(claude["id"], "claude-dev");
+}
+
+// ---------------------------------------------------------------------------
+// Review-repair round: R1-backend / R8 / R12
+// ---------------------------------------------------------------------------
+
+/// The four local mapping ids the saved Claude provider fixtures persist as
+/// their selection (default + haiku/sonnet/opus), matching the arguments the
+/// five read-back tests pass to `saved_claude_provider`.
+const CLAUDE_FIXTURE_LOCAL_IDS: [&str; 4] = [
+    "gpt-4o",
+    "claude-haiku-local",
+    "claude-sonnet-local",
+    "claude-opus-local",
+];
+
+/// `gateway_config(port)` plus one enabled native Anthropic Messages upstream
+/// serving `CLAUDE_FIXTURE_LOCAL_IDS`. The shared `gateway_config` stays
+/// Chat-only, so the two counterweight fixtures (`gpt-4o`, `ds`) remain
+/// unservable; only the five saved-selection read-back tests opt in here so the
+/// `None` read-back servability validation accepts a complete-but-servable
+/// saved selection.
+fn claude_servable_gateway_config(port: u16) -> crate::ai_gateway::GatewayConfig {
+    let mut config = gateway_config(port);
+    let mut anthropic = upstream_provider(
+        "g-anth-fixture",
+        "Anthropic Fixture",
+        "https://api.anthropic.example/v1",
+        "sk-anthropic",
+        None,
+    );
+    anthropic.protocol = UpstreamProtocol::AnthropicMessages;
+    anthropic.mappings = CLAUDE_FIXTURE_LOCAL_IDS
+        .iter()
+        .map(|local_model| mapping(*local_model, &format!("vendor/{local_model}"), None))
+        .collect();
+    config.providers.push(anthropic);
+    config
+}
+
+/// A native Anthropic Messages upstream that can serve the local mapping id
+/// `claude-sonnet-local`.
+fn anthropic_servable_gateway() -> crate::ai_gateway::GatewayUpstreamProvider {
+    let mut anthropic = upstream_provider(
+        "g-anth",
+        "Anthropic",
+        "https://api.anthropic.example/v1",
+        "sk-anthropic",
+        None,
+    );
+    anthropic.protocol = UpstreamProtocol::AnthropicMessages;
+    let mut row = mapping("claude-sonnet-local", "commandcode/sonnet-5-5", Some("Sonnet"));
+    row.protocol = Some(UpstreamProtocol::AnthropicMessages);
+    anthropic.mappings = vec![row];
+    anthropic
+}
+
+/// Run an explicit-selection Claude sync against the current stored config and
+/// report `(rejected, upsert_call_count)`.
+async fn claude_explicit_selection_outcome(
+    selection: ClaudeModelSelection,
+) -> (bool, usize) {
+    let calls = Arc::new(Mutex::new(0usize));
+    let calls_for_upsert = calls.clone();
+    let result = apply_terminal_sync_with_selection(
+        &json!({ "providers": [] }),
+        move |_value| -> UpsertFuture {
+            let calls = calls_for_upsert.clone();
+            Box::pin(async move {
+                *calls.lock().expect("call counter") += 1;
+                Ok(())
+            })
+        },
+        vec!["claude".to_string()],
+        TerminalSyncProfile::RELEASE,
+        Some(selection),
+    )
+    .await;
+    let call_count = *calls.lock().expect("call counter");
+    (result.is_err(), call_count)
+}
+
+/// R1-backend / REQ-006: the `None` read-back path must validate servability.
+/// A complete-but-unservable saved selection (its local ids are not enabled
+/// native-Anthropic mappings) is rejected and writes no Claude provider or
+/// ledger, exactly like an explicitly submitted invalid selection.
+#[tokio::test]
+async fn claude_none_readback_rejects_unservable_saved_selection_before_writing() {
+    let _home = isolated_temp_home("claude-none-unservable");
+    write_config(&gateway_config(19000)).expect("write gateway config");
+
+    let providers_data = json!({ "providers": [saved_claude_provider(
+        "gateway-claude",
+        json!(true),
+        "gpt-4o",
+        "removed-haiku",
+        "removed-sonnet",
+        "removed-opus",
+        "gateway-claude-code",
+    )] });
+
+    let calls = Arc::new(Mutex::new(0usize));
+    let calls_for_upsert = calls.clone();
+    let result = apply_terminal_sync_with_selection(
+        &providers_data,
+        move |_value| -> UpsertFuture {
+            let calls = calls_for_upsert.clone();
+            Box::pin(async move {
+                *calls.lock().expect("call counter") += 1;
+                Ok(())
+            })
+        },
+        vec!["claude".to_string()],
+        TerminalSyncProfile::RELEASE,
+        None,
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "an unservable saved selection must be rejected on the None read-back path: {result:?}"
+    );
+    assert_eq!(
+        *calls.lock().unwrap(),
+        0,
+        "no Claude provider may be upserted for an unservable saved selection"
+    );
+    let stored = read_config().expect("read gateway config");
+    assert!(
+        !stored.terminal_syncs.iter().any(|record| record.tool == "claude"),
+        "no Claude ledger may be written for an unservable saved selection: {:?}",
+        stored.terminal_syncs
+    );
+}
+
+/// R8 / REQ-006: a best-effort template-refresh fan-out over opencode, codex and
+/// claude must not abort when the saved Claude selection became unservable. Only
+/// Claude is skipped; opencode and codex are still upserted with no error.
+#[tokio::test]
+async fn template_refresh_skips_invalid_claude_and_still_upserts_opencode_codex() {
+    let _home = isolated_temp_home("claude-fanout-skip");
+    write_config(&gateway_config(19000)).expect("write gateway config");
+
+    let providers_data = json!({ "providers": [saved_claude_provider(
+        "gateway-claude",
+        json!(true),
+        "gpt-4o",
+        "removed-haiku",
+        "removed-sonnet",
+        "removed-opus",
+        "gateway-claude-code",
+    )] });
+
+    let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = captured.clone();
+    let records = apply_terminal_sync_with_selection(
+        &providers_data,
+        move |value| -> UpsertFuture {
+            let sink = sink.clone();
+            Box::pin(async move {
+                sink.lock().expect("capture lock").push(value);
+                Ok(())
+            })
+        },
+        vec![
+            "opencode".to_string(),
+            "codex".to_string(),
+            "claude".to_string(),
+        ],
+        TerminalSyncProfile::RELEASE,
+        None,
+    )
+    .await
+    .expect("a fan-out refresh must not abort because the saved Claude selection is unservable");
+
+    let submitted = captured.lock().unwrap().clone();
+    let tools: Vec<String> = submitted
+        .iter()
+        .filter_map(|value| value["tool"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        tools.contains(&"opencode".to_string()),
+        "opencode must still be upserted while Claude is skipped: {tools:?}"
+    );
+    assert!(
+        tools.contains(&"codex".to_string()),
+        "codex must still be upserted while Claude is skipped: {tools:?}"
+    );
+    assert!(
+        !tools.contains(&"claude".to_string()),
+        "the unservable Claude must be skipped, not written: {tools:?}"
+    );
+    assert!(
+        !records.iter().any(|record| record.tool == "claude"),
+        "no Claude ledger record may be written when Claude is skipped: {records:?}"
+    );
+}
+
+/// R12 / REQ-006 / AC-012: a valid explicit four-choice selection (the same id
+/// allowed in every slot) persists the exact local ids into `model` and the
+/// three `claude_model_mappings` families plus a ledger record.
+#[tokio::test]
+async fn claude_explicit_selection_persists_valid_choices_and_allows_duplicates() {
+    let _home = isolated_temp_home("claude-explicit-valid");
+    let mut config = gateway_config(19000);
+    config.providers.push(anthropic_servable_gateway());
+    write_config(&config).expect("write gateway config");
+
+    let selection = ClaudeModelSelection {
+        default_model: "claude-sonnet-local".to_string(),
+        haiku: "claude-sonnet-local".to_string(),
+        sonnet: "claude-sonnet-local".to_string(),
+        opus: "claude-sonnet-local".to_string(),
+    };
+
+    let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = captured.clone();
+    let records = apply_terminal_sync_with_selection(
+        &json!({ "providers": [] }),
+        move |value| -> UpsertFuture {
+            let sink = sink.clone();
+            Box::pin(async move {
+                sink.lock().expect("capture lock").push(value);
+                Ok(())
+            })
+        },
+        vec!["claude".to_string()],
+        TerminalSyncProfile::RELEASE,
+        Some(selection),
+    )
+    .await
+    .expect("a valid explicit selection must persist");
+
+    let submitted = captured.lock().unwrap().clone();
+    assert_eq!(submitted.len(), 1, "one Claude upsert: {submitted:?}");
+    let claude = &submitted[0];
+    assert_eq!(claude["model"], "claude-sonnet-local");
+    assert_eq!(family_upstream(claude, "haiku"), "claude-sonnet-local");
+    assert_eq!(family_upstream(claude, "sonnet"), "claude-sonnet-local");
+    assert_eq!(family_upstream(claude, "opus"), "claude-sonnet-local");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].tool, "claude");
+}
+
+/// R12 / REQ-006 / AC-012: blank slots, unservable/disabled local ids and a
+/// missing enabled local key all reject before any Claude write.
+#[tokio::test]
+async fn claude_explicit_selection_rejections_write_nothing() {
+    let _home = isolated_temp_home("claude-explicit-reject");
+    let mut config = gateway_config(19000);
+    config.providers.push(anthropic_servable_gateway());
+    write_config(&config).expect("write gateway config");
+
+    let valid = |default_model: &str,
+                 haiku: &str,
+                 sonnet: &str,
+                 opus: &str|
+     -> ClaudeModelSelection {
+        ClaudeModelSelection {
+            default_model: default_model.to_string(),
+            haiku: haiku.to_string(),
+            sonnet: sonnet.to_string(),
+            opus: opus.to_string(),
+        }
+    };
+
+    // A blank slot (a complete-looking selection with whitespace) is rejected.
+    let (rejected, calls) = claude_explicit_selection_outcome(valid(
+        "claude-sonnet-local",
+        "   ",
+        "claude-sonnet-local",
+        "claude-sonnet-local",
+    ))
+    .await;
+    assert!(rejected, "a blank slot must be rejected");
+    assert_eq!(calls, 0, "nothing may be written for a blank slot");
+
+    // An unservable local id (a Chat-only mapping) is rejected.
+    let (rejected, calls) = claude_explicit_selection_outcome(valid(
+        "claude-sonnet-local",
+        "gpt-4o",
+        "claude-sonnet-local",
+        "claude-sonnet-local",
+    ))
+    .await;
+    assert!(rejected, "an unservable local id must be rejected");
+    assert_eq!(calls, 0, "nothing may be written for an unservable local id");
+
+    // A disabled native row is not servable and is rejected.
+    {
+        let mut disabled = gateway_config(19000);
+        let mut gateway = anthropic_servable_gateway();
+        gateway.mappings[0].enabled = false;
+        disabled.providers.push(gateway);
+        write_config(&disabled).expect("write disabled config");
+    }
+    let (rejected, calls) = claude_explicit_selection_outcome(valid(
+        "claude-sonnet-local",
+        "claude-sonnet-local",
+        "claude-sonnet-local",
+        "claude-sonnet-local",
+    ))
+    .await;
+    assert!(rejected, "a disabled native row must not be servable");
+    assert_eq!(calls, 0, "nothing may be written for a disabled row");
+
+    // No enabled local key rejects before any Claude write.
+    {
+        let mut keyless = gateway_config(19000);
+        keyless.keys[0].enabled = false;
+        keyless.providers.push(anthropic_servable_gateway());
+        write_config(&keyless).expect("write keyless config");
+    }
+    let (rejected, calls) = claude_explicit_selection_outcome(valid(
+        "claude-sonnet-local",
+        "claude-sonnet-local",
+        "claude-sonnet-local",
+        "claude-sonnet-local",
+    ))
+    .await;
+    assert!(rejected, "a missing enabled local key must reject");
+    assert_eq!(calls, 0, "nothing may be written without an enabled local key");
 }

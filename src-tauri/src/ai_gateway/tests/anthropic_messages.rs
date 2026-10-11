@@ -24,7 +24,7 @@ use super::{
 use crate::ai_gateway::runtime_http::{
     attempt_streaming, start_server, stop_server, AttemptLog, ForwardCapture,
 };
-use crate::ai_gateway::storage::{read_config, write_config};
+use crate::ai_gateway::storage::{config_path, read_config, write_config};
 use crate::ai_gateway::{
     GatewayConfig, GatewayUpstreamProvider, UpstreamProtocol, UsageResult, UsageTokens,
     GATEWAY_CONFIG_SCHEMA_VERSION,
@@ -612,5 +612,193 @@ async fn native_messages_in_band_error_event_is_not_success() {
     assert!(
         !output.contains("[DONE]"),
         "no OpenAI [DONE] may be injected into a native stream"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Review-repair round: R7 / R14 / R15
+// ---------------------------------------------------------------------------
+
+/// R7 / REQ-002: an early gateway failure on the native route (here a config
+/// read failure) must still answer with the Anthropic error envelope, never the
+/// OpenAI one.
+#[tokio::test]
+async fn native_messages_config_read_failure_uses_the_anthropic_error_envelope() {
+    let home = temp_home("native-messages-config-error-envelope");
+    let port = free_port().await;
+
+    let mut config = GatewayConfig::default();
+    config.port = port;
+    config.keys.push(key_named("k1", LOCAL_KEY));
+    write_config(&config).expect("seed the local config");
+    start_server(None).await.expect("start the native listener");
+
+    // Corrupt the persisted configuration after the listener is up so the
+    // per-request config read fails. The new bytes differ in length and mtime,
+    // so the metadata-keyed read cache is invalidated and the file is re-read.
+    let path = config_path().expect("config path");
+    std::fs::write(&path, "not-a-valid-encrypted-config").expect("corrupt the config");
+
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/messages",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "m", "messages": []})),
+    )
+    .await;
+    assert_eq!(status, 500, "a config read failure must be a 500: {text}");
+
+    let body: Value = serde_json::from_str(&text).expect("native error body must be JSON");
+    assert_eq!(
+        body["type"], "error",
+        "the native route must use the Anthropic error envelope: {text}"
+    );
+    assert!(
+        body["error"]["type"].as_str().is_some_and(|kind| !kind.is_empty()),
+        "the Anthropic envelope must carry error.type: {text}"
+    );
+    assert!(
+        body["error"]["message"].as_str().is_some_and(|message| !message.is_empty()),
+        "the Anthropic envelope must carry error.message: {text}"
+    );
+
+    stop_server().await.expect("stop the native listener");
+    drop(home);
+}
+
+/// R14 / REQ-002 / AC-003 / AC-004: a real routed native stream through the
+/// public listener (`POST /v1/messages?beta=true`) preserves the native SSE
+/// bytes and the query string, and injects no OpenAI `[DONE]`.
+#[tokio::test]
+async fn native_messages_stream_is_routed_through_the_public_listener() {
+    let home = temp_home("native-messages-public-routed-stream");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Stream(NATIVE_SSE_OK.to_string())).await;
+    write_raw_gateway_config(&raw_config_with_provider(
+        port,
+        anthropic_provider_value(
+            "p-native-routed",
+            &upstream_url,
+            LOCAL_CLAUDE,
+            UPSTREAM_CLAUDE,
+            UPSTREAM_SECRET,
+        ),
+    ));
+    start_server(None).await.expect("start the native listener");
+
+    let body = json!({
+        "model": LOCAL_CLAUDE,
+        "max_tokens": 16,
+        "stream": true,
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+    let (status, content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/messages?beta=true",
+        &[("authorization", "Bearer local-key")],
+        Some(body),
+    )
+    .await;
+
+    assert_eq!(status, 200, "the native stream must route through /v1/messages: {text}");
+    assert!(
+        content_type.contains("text/event-stream"),
+        "native streaming must answer with text/event-stream, got {content_type}"
+    );
+    assert_eq!(
+        text, NATIVE_SSE_OK,
+        "the routed native SSE bytes must be relayed verbatim"
+    );
+    assert!(
+        !text.contains("[DONE]"),
+        "no OpenAI [DONE] may be injected into a routed native stream"
+    );
+
+    let captured = log.lock().expect("mock log").clone();
+    assert_eq!(captured.len(), 1, "exactly one upstream attempt");
+    assert_eq!(
+        captured[0].path.matches("/v1/messages").count(),
+        1,
+        "the upstream URL must contain exactly one /v1/messages: {}",
+        captured[0].path
+    );
+    assert!(
+        captured[0].path.contains("?beta=true"),
+        "the inbound query string must be preserved upstream: {}",
+        captured[0].path
+    );
+
+    stop_server().await.expect("stop the native listener");
+    drop(home);
+}
+
+/// R15 / REQ-005 / AC-009: a native post-byte stream failure keeps the field-wise
+/// merged start/delta usage on the failed attempt.
+#[tokio::test]
+async fn native_messages_post_byte_failure_retains_merged_attempt_usage() {
+    let _home = isolated_temp_home("native-post-byte-usage");
+    let first = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}\n\n",
+    );
+    let declared = first.len() + 256;
+    let (upstream_url, _log) =
+        spawn_mock_upstream(move |_| MockReply::PartialStream(first.to_string(), declared)).await;
+
+    let mut provider_value = native_provider_value("p-native-post-byte");
+    provider_value["base_url"] = json!(upstream_url);
+    let provider: GatewayUpstreamProvider = serde_json::from_value(provider_value.clone())
+        .expect("the native provider must deserialize");
+    write_raw_gateway_config(&raw_config_with_provider(0, provider_value));
+
+    let body = serde_json::to_vec(&json!({
+        "model": LOCAL_CLAUDE,
+        "max_tokens": 16,
+        "stream": true,
+        "messages": [{"role": "user", "content": "hi"}]
+    }))
+    .expect("encode the native request");
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let mut attempts: Vec<AttemptLog> = Vec::new();
+    attempt_streaming(
+        &mut server,
+        std::slice::from_ref(&provider),
+        "/v1/messages",
+        &body,
+        Some(LOCAL_CLAUDE),
+        &HashMap::new(),
+        false,
+        None,
+        &mut attempts,
+    )
+    .await
+    .expect("the native stream must terminate after the post-byte failure");
+    drop(server);
+
+    let mut output = Vec::new();
+    client
+        .read_to_end(&mut output)
+        .await
+        .expect("read the relayed native stream");
+
+    let failed = attempts.last().expect("one completed attempt");
+    assert_eq!(
+        failed.result,
+        UsageResult::Failure,
+        "an incomplete native stream is a post-byte failure"
+    );
+    assert_eq!(
+        failed.usage,
+        Some(UsageTokens {
+            input_tokens: 10,
+            output_tokens: 7,
+            ..UsageTokens::default()
+        }),
+        "the failed attempt must retain the field-wise merged start/delta usage"
     );
 }

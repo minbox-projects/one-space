@@ -307,14 +307,30 @@ pub(in crate::ai_gateway) async fn start_server(
 }
 
 pub(in crate::ai_gateway) async fn stop_server() -> Result<GatewayStatus, String> {
-    let config = read_config()?;
+    let config = read_config();
     let mut guard = state_lock().lock().await;
+    let running_port = guard.as_ref().map(|running| running.port);
     if let Some(mut running) = guard.take() {
         if let Some(tx) = running.shutdown.take() {
             let _ = tx.send(());
         }
     }
-    Ok(status_from_config(&config, false))
+    match config {
+        Ok(config) => Ok(status_from_config(&config, false)),
+        // Stopping the listener must not depend on a readable configuration:
+        // an unreadable config still stops the server and reports a
+        // best-effort status for the port that was running.
+        Err(_) => Ok(GatewayStatus {
+            running: false,
+            enabled: false,
+            port: running_port.unwrap_or(0),
+            local_base_url: running_port.map(local_base_url).unwrap_or_default(),
+            provider_count: 0,
+            auto_disabled_count: 0,
+            key_count: 0,
+            default_key_id: None,
+        }),
+    }
 }
 
 /// Synchronous best-effort stop for the shutdown path: signal the running
@@ -1455,8 +1471,11 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                     clear_ttl_expired_key_runtime_state(&mut provider, &selected);
                 }
                 provider.attempt_key = selected.value.clone();
-                let upstream_protocol = resolve_upstream_protocol(&provider, requested, protocol)
-                    .unwrap_or(protocol);
+                // The probed row is auto-disabled, so the normal served-row
+                // resolution skips it; forward under the row's own effective
+                // protocol so a converted probe reaches `/v1/messages`
+                // (REQ-005/AC-010).
+                let upstream_protocol = candidate.protocol;
                 let (outcome, log) =
                     attempt_candidate(
                         &provider,
@@ -1653,7 +1672,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     let mut probe_key_failure_reason: Option<String> = None;
     let mut _probe_guard: Option<ProbeGuard> = None;
     loop {
-        let (mut candidate, retry_index, probe_target, selected) =
+        let (mut candidate, retry_index, probe_target, selected, attempt_protocol) =
             if let Some(mut candidate) = ordered_queue.pop_front() {
                 sync_key_runtime_marks(&mut candidate.provider);
                 let Some(selected) = select_attempt_key(
@@ -1674,7 +1693,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     );
                     continue;
                 };
-                (candidate, retries.len(), None, selected)
+                (candidate, retries.len(), None, selected, None)
             } else if let Some(index) =
                 RetryCandidate::next_ready(&retries, &mut remaining_wait).await
             {
@@ -1697,7 +1716,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     );
                     continue;
                 };
-                (candidate, index, None, selected)
+                (candidate, index, None, selected, None)
             } else if let Some(probe_candidate) = pending_probe.take() {
                 // The single-flight guard is acquired once and then held across
                 // every in-probe key rotation, so a re-entry must not re-acquire it.
@@ -1739,6 +1758,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     retries.len(),
                     Some(probe_candidate.target.clone()),
                     selected,
+                    Some(probe_candidate.protocol),
                 )
             } else {
                 break;
@@ -1750,12 +1770,12 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             clear_ttl_expired_key_runtime_state(&mut candidate.provider, &selected);
         }
         candidate.provider.attempt_key = selected.value.clone();
-        let upstream_protocol = resolve_upstream_protocol(
-            &candidate.provider,
-            requested,
-            protocol,
-        )
-        .unwrap_or(protocol);
+        // A probe forwards under the probed row's own protocol (the row is
+        // auto-disabled, so the normal served-row resolution skips it); every
+        // other attempt keeps the resolved effective protocol.
+        let upstream_protocol = attempt_protocol
+            .or_else(|| resolve_upstream_protocol(&candidate.provider, requested, protocol))
+            .unwrap_or(protocol);
         native_messages = upstream_protocol == UpstreamProtocol::AnthropicMessages;
         native_sse = native_messages.then(AnthropicSseObserver::default);
         converted_sse = (native_messages && is_conversion_path(path))
@@ -1943,15 +1963,28 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     if let Some(observer) = native_sse.as_mut() {
                         observer.feed(&first);
                     }
+                    // A conversion error after the first upstream byte is a
+                    // post-byte failure: no success marker, no retry, and the
+                    // failed attempt keeps its captured usage.
+                    let mut stream_error: Option<String> = None;
                     let first_output = if let Some(converter) = converted_sse.as_mut() {
-                        converter.feed(&first).unwrap_or_default()
+                        match converter.feed(&first) {
+                            Ok(output) => output,
+                            Err(error) => {
+                                stream_error =
+                                    Some(format!("stream failed after first byte: {error}"));
+                                Vec::new()
+                            }
+                        }
                     } else {
                         vec![first.to_vec()]
                     };
-                    for output in &first_output {
-                        if let Err(error) = writer.write_all(output).await {
-                            health.apply();
-                            return Err(error.to_string());
+                    if stream_error.is_none() {
+                        for output in &first_output {
+                            if let Err(error) = writer.write_all(output).await {
+                                health.apply();
+                                return Err(error.to_string());
+                            }
                         }
                     }
                     // Last byte forwarded to the caller, used to complete the
@@ -1960,12 +1993,87 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     let mut last_forwarded = first_output
                         .last()
                         .and_then(|output| output.last().copied());
-                    if writer.flush().await.is_err() {
+                    if stream_error.is_none() && writer.flush().await.is_err() {
                         health.apply();
                         capture.downstream_cancelled = true;
                         return Ok(capture);
                     }
                     loop {
+                        // Bytes already sent: terminate the stream, never switch.
+                        // The failed attempt keeps the usage accumulated so far
+                        // (REQ-004/REQ-005/AC-009).
+                        if let Some(reason) = stream_error.take() {
+                            if let Some(target) = &probe_target {
+                                // A mid-stream probe failure re-arms the
+                                // cooldown; it is never retried and no
+                                // second probe is attempted (REQ-001).
+                                health.record_probe_failure(target, now_ts(), true, &reason);
+                            } else {
+                                settle_failure(
+                                    &mut health,
+                                    provider,
+                                    requested,
+                                    &candidate.model,
+                                    FailureClass::Retryable,
+                                    &reason,
+                                    true,
+                                );
+                            }
+                            if selected.probe {
+                                persist_key_runtime_state(&provider.id, &selected.id, |key| {
+                                    rearm_key_probe(key, None, &reason, now_ts());
+                                });
+                            }
+                            health.apply();
+                            // The attempt is complete: its stream ended with
+                            // an error and keeps the usage accumulated so far
+                            // (REQ-003/REQ-005).
+                            let failed_usage = if native_messages {
+                                native_sse
+                                    .as_ref()
+                                    .and_then(AnthropicSseObserver::canonical_usage)
+                            } else {
+                                usage.canonical_usage()
+                            };
+                            attempts.push(build_attempt_log(
+                                provider,
+                                protocol,
+                                &candidate.model,
+                                started,
+                                502,
+                                UsageResult::Failure,
+                                sanitize_provider_error_text(&reason, provider),
+                                failed_usage.clone(),
+                            ));
+                            // Complete the SSE event boundary so the error
+                            // fragment parses standalone even when the last
+                            // forwarded byte is not a newline, then append one
+                            // `data:` error event. No `[DONE]`, no retry, no
+                            // candidate switch; downstream write failures stay
+                            // best-effort (REQ-005/AC-008).
+                            if last_forwarded != Some(b'\n') {
+                                let _ = writer.write_all(b"\n").await;
+                            }
+                            let _ = writer.write_all(b"\n").await;
+                            if is_messages_path(path) {
+                                let fragment = stream_error_event(reason, "api_error");
+                                let _ = writer.write_all(&fragment).await;
+                            } else {
+                                let envelope =
+                                    error_envelope(reason, "server_error", "upstream_stream_error");
+                                let fragment = format!("data: {envelope}\n\n");
+                                let _ = writer.write_all(fragment.as_bytes()).await;
+                            }
+                            let _ = writer.flush().await;
+                            capture.status = 502;
+                            capture.usage = if native_messages {
+                                failed_usage.map(|canonical| canonical.tokens)
+                            } else {
+                                usage.usage()
+                            };
+                            capture.upstream_error = true;
+                            return Ok(capture);
+                        }
                         match chunks.next().await {
                             Some(Ok(chunk)) => {
                                 usage.feed(&chunk);
@@ -1973,10 +2081,21 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     observer.feed(&chunk);
                                 }
                                 let output = if let Some(converter) = converted_sse.as_mut() {
-                                    converter.feed(&chunk).unwrap_or_default()
+                                    match converter.feed(&chunk) {
+                                        Ok(output) => output,
+                                        Err(error) => {
+                                            stream_error = Some(format!(
+                                                "stream failed after first byte: {error}"
+                                            ));
+                                            Vec::new()
+                                        }
+                                    }
                                 } else {
                                     vec![chunk.to_vec()]
                                 };
+                                if stream_error.is_some() {
+                                    continue;
+                                }
                                 for item in &output {
                                     if writer.write_all(item).await.is_err() {
                                         health.apply();
@@ -1989,78 +2108,10 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     .and_then(|item| item.last().copied())
                                     .or(last_forwarded);
                             }
-                            // Bytes already sent: terminate the stream, never switch.
                             Some(Err(error)) => {
-                                let reason = format!("stream failed after first byte: {error}");
-                                if let Some(target) = &probe_target {
-                                    // A mid-stream probe failure re-arms the
-                                    // cooldown; it is never retried and no
-                                    // second probe is attempted (REQ-001).
-                                    health.record_probe_failure(target, now_ts(), true, &reason);
-                                } else {
-                                    settle_failure(
-                                        &mut health,
-                                        provider,
-                                        requested,
-                                        &candidate.model,
-                                        FailureClass::Retryable,
-                                        &reason,
-                                        true,
-                                    );
-                                }
-                                if selected.probe {
-                                    persist_key_runtime_state(&provider.id, &selected.id, |key| {
-                                        rearm_key_probe(key, None, &reason, now_ts());
-                                    });
-                                }
-                                health.apply();
-                                // The attempt is complete: its stream ended with
-                                // an error and keeps the usage accumulated so far
-                                // (REQ-003/REQ-005).
-                                attempts.push(build_attempt_log(
-                                    provider,
-                                    protocol,
-                                    &candidate.model,
-                                    started,
-                                    502,
-                                    UsageResult::Failure,
-                                    sanitize_provider_error_text(&reason, provider),
-                                    usage.canonical_usage(),
-                                ));
-                                // Complete the SSE event boundary so the error
-                                // fragment parses standalone even when the last
-                                // forwarded byte is not a newline, then append one
-                                // `data:` error event. No `[DONE]`, no retry, no
-                                // candidate switch; downstream write failures stay
-                                // best-effort (REQ-005/AC-008).
-                                if last_forwarded != Some(b'\n') {
-                                    let _ = writer.write_all(b"\n").await;
-                                }
-                                let _ = writer.write_all(b"\n").await;
-                                if is_messages_path(path) {
-                                    let fragment = stream_error_event(reason, "api_error");
-                                    let _ = writer.write_all(&fragment).await;
-                                } else {
-                                    let envelope = error_envelope(
-                                        reason,
-                                        "server_error",
-                                        "upstream_stream_error",
-                                    );
-                                    let fragment = format!("data: {envelope}\n\n");
-                                    let _ = writer.write_all(fragment.as_bytes()).await;
-                                }
-                                let _ = writer.flush().await;
-                                capture.status = 502;
-                                capture.usage = if native_messages {
-                                    native_sse
-                                        .as_ref()
-                                        .and_then(AnthropicSseObserver::canonical_usage)
-                                        .map(|canonical| canonical.tokens)
-                                } else {
-                                    usage.usage()
-                                };
-                                capture.upstream_error = true;
-                                return Ok(capture);
+                                stream_error =
+                                    Some(format!("stream failed after first byte: {error}"));
+                                continue;
                             }
                             None => {
                                 let native_usage = if native_messages {
@@ -2143,6 +2194,19 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                 } else {
                                     None
                                 };
+                                // Flush a final native event that arrived
+                                // without a trailing blank line (for example
+                                // `message_stop` immediately before EOF) so the
+                                // converted caller still receives its single
+                                // completion marker (REQ-004).
+                                if let Some(mut converter) = converted_sse.take() {
+                                    if let Ok(outputs) = converter.finish() {
+                                        for output in &outputs {
+                                            let _ = writer.write_all(output).await;
+                                        }
+                                        let _ = writer.flush().await;
+                                    }
+                                }
                                 if let Some(target) = &probe_target {
                                     // A served probe clears its row's runtime
                                     // state (REQ-001/AC-001).
@@ -2256,6 +2320,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         provider: next_provider,
                         target: target.clone(),
                         upstream_model: candidate.model.clone(),
+                        protocol: upstream_protocol,
                     });
                     continue;
                 }
@@ -2482,9 +2547,17 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
     let config = match read_config() {
         Ok(config) => config,
         Err(error) => {
+            // The route is known from the request line even when the
+            // configuration cannot be read, so a native Messages early failure
+            // still answers with the Anthropic error envelope (REQ-002).
             let response = json_response(
                 500,
-                error_envelope(error, "server_error", "config_error"),
+                local_error_payload(
+                    clean_path(&request.path),
+                    error,
+                    "server_error",
+                    "config_error",
+                ),
             );
             let _ = stream.write_all(&http_response_bytes(response)).await;
             return Ok(());
@@ -2624,24 +2697,6 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
             .into_iter()
             .cloned()
             .collect();
-    if !is_messages_path(path)
-        && candidates.iter().any(|provider| {
-            resolve_upstream_protocol(provider, requested.as_deref(), protocol)
-                == Some(UpstreamProtocol::AnthropicMessages)
-        })
-    {
-        if let Err(error) = validate_conversion_request(path, &body_value) {
-            let response = json_response(
-                400,
-                error_envelope(error, "invalid_request_error", "invalid_request"),
-            );
-            stream
-                .write_all(&http_response_bytes(response))
-                .await
-                .map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-    }
     // The half-open probe is computed against the healthy candidate provider
     // ids so an already-serving provider is never also probed (REQ-002). It is
     // the only attempt of a zero-candidate request that has an eligible row.
@@ -2656,6 +2711,29 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
         &healthy_provider_ids,
         now_ts(),
     );
+    // Conversion validation runs before any Anthropic attempt, including a
+    // half-open probe: a probe-only Anthropic candidate must not bypass the
+    // field-specific 400 and settle no probe/key health (REQ-003/AC-007).
+    if !is_messages_path(path)
+        && (candidates.iter().any(|provider| {
+            resolve_upstream_protocol(provider, requested.as_deref(), protocol)
+                == Some(UpstreamProtocol::AnthropicMessages)
+        }) || probe
+            .as_ref()
+            .is_some_and(|candidate| candidate.protocol == UpstreamProtocol::AnthropicMessages))
+    {
+        if let Err(error) = validate_conversion_request(path, &body_value) {
+            let response = json_response(
+                400,
+                error_envelope(error, "invalid_request_error", "invalid_request"),
+            );
+            stream
+                .write_all(&http_response_bytes(response))
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+    }
     let probe_only = candidates.is_empty();
     if probe_only && probe.is_none() {
         let message = no_candidate_message(&config, requested.as_deref(), protocol);

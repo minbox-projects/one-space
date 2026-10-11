@@ -49,7 +49,11 @@ export interface GatewayModelMapping {
   last_error_at?: number | null;
 }
 
-/** Upstream endpoint family a provider exposes; request bodies are not translated. */
+/**
+ * Upstream endpoint family a provider exposes. Same-protocol requests are
+ * forwarded unchanged; an `anthropic_messages` mapping can serve
+ * Chat/Responses ingress through the conversion service.
+ */
 export type GatewayUpstreamProtocol =
   | "chat_completions"
   | "responses"

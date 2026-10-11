@@ -122,6 +122,14 @@ pub(in crate::ai_gateway) struct AnthropicSseConverter {
     message_id: String,
     tool_ids: HashMap<usize, String>,
     tool_names: HashMap<usize, String>,
+    /// Responses `function_call` output items, in the order their blocks start.
+    function_items: Vec<Value>,
+    /// Maps a `content_block` index to its `function_items` slot.
+    function_item_indices: HashMap<usize, usize>,
+    /// Accumulated assistant text, used to build the Responses `message` item.
+    text: String,
+    /// Whether the Responses `message` output item has been announced.
+    message_item_added: bool,
     usage: Value,
     failed: bool,
     stopped: bool,
@@ -136,6 +144,10 @@ impl AnthropicSseConverter {
             message_id: String::new(),
             tool_ids: HashMap::new(),
             tool_names: HashMap::new(),
+            function_items: Vec::new(),
+            function_item_indices: HashMap::new(),
+            text: String::new(),
+            message_item_added: false,
             usage: Value::Object(serde_json::Map::new()),
             failed: false,
             stopped: false,
@@ -160,10 +172,6 @@ impl AnthropicSseConverter {
         self.convert_event(&event)
     }
 
-    pub(in crate::ai_gateway) fn stopped(&self) -> bool {
-        self.stopped
-    }
-
     fn is_responses(&self) -> bool {
         self.path.split('?').next().unwrap_or(&self.path) == "/v1/responses"
     }
@@ -174,6 +182,22 @@ impl AnthropicSseConverter {
 
     fn responses_event(kind: &str, value: Value) -> Vec<u8> {
         format!("event: {kind}\ndata: {value}\n\n").into_bytes()
+    }
+
+    /// The Responses usage object, mirroring the non-streaming converter's
+    /// inclusive-input shape (`input_tokens` includes the cache tiers).
+    fn responses_usage(usage: &Value) -> Value {
+        let canonical = canonical_usage_from_value(usage).tokens;
+        let input = canonical
+            .input_tokens
+            .saturating_add(canonical.cache_read_tokens)
+            .saturating_add(canonical.cache_write_tokens);
+        serde_json::json!({
+            "input_tokens": input,
+            "output_tokens": canonical.output_tokens,
+            "total_tokens": input.saturating_add(canonical.output_tokens),
+            "input_tokens_details": {"cached_tokens": canonical.cache_read_tokens},
+        })
     }
 
     fn convert_event(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
@@ -213,6 +237,17 @@ impl AnthropicSseConverter {
                 {
                     self.merge_usage(usage);
                 }
+                if self.is_responses() {
+                    self.message_item_added = true;
+                    return Ok(vec![Self::responses_event(
+                        "response.output_item.added",
+                        serde_json::json!({
+                            "type": "response.output_item.added",
+                            "output_index": 0,
+                            "item": {"type":"message","id":self.message_id,"role":"assistant","status":"in_progress","content":[]},
+                        }),
+                    )]);
+                }
                 Ok(Vec::new())
             }
             "content_block_start" => {
@@ -233,10 +268,14 @@ impl AnthropicSseConverter {
                     .to_string();
                 self.tool_ids.insert(index, id.clone());
                 self.tool_names.insert(index, name.clone());
+                let item = serde_json::json!({"type":"function_call","id":id,"call_id":id,"name":name,"arguments":""});
+                let item_index = self.function_items.len();
+                self.function_item_indices.insert(index, item_index);
+                self.function_items.push(item.clone());
                 if self.is_responses() {
                     Ok(vec![Self::responses_event(
                         "response.output_item.added",
-                        serde_json::json!({"type":"response.output_item.added","item":{"type":"function_call","id":id,"call_id":id,"name":name,"arguments":""}}),
+                        serde_json::json!({"type":"response.output_item.added","output_index":item_index + 1,"item":item}),
                     )])
                 } else {
                     Ok(vec![Self::chat_event(serde_json::json!({
@@ -259,6 +298,7 @@ impl AnthropicSseConverter {
                         if text.is_empty() {
                             return Ok(Vec::new());
                         }
+                        self.text.push_str(text);
                         if self.is_responses() {
                             Ok(vec![Self::responses_event(
                                 "response.output_text.delta",
@@ -277,6 +317,16 @@ impl AnthropicSseConverter {
                             .unwrap_or_default();
                         if partial.is_empty() {
                             return Ok(Vec::new());
+                        }
+                        if let Some(item_index) = self.function_item_indices.get(&index).copied() {
+                            if let Some(arguments) = self
+                                .function_items
+                                .get_mut(item_index)
+                                .and_then(|item| item.get_mut("arguments"))
+                            {
+                                let current = arguments.as_str().unwrap_or_default().to_string();
+                                *arguments = Value::String(format!("{current}{partial}"));
+                            }
                         }
                         if self.is_responses() {
                             Ok(vec![Self::responses_event(
@@ -328,10 +378,44 @@ impl AnthropicSseConverter {
             "message_stop" => {
                 self.stopped = true;
                 if self.is_responses() {
-                    Ok(vec![Self::responses_event(
+                    let message_item = serde_json::json!({
+                        "type": "message",
+                        "id": self.message_id,
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": if self.text.is_empty() {
+                            serde_json::json!([])
+                        } else {
+                            serde_json::json!([{"type":"output_text","text":self.text,"annotations":[]}])
+                        },
+                    });
+                    let mut output = Vec::new();
+                    if self.message_item_added || !self.text.is_empty() {
+                        output.push(message_item.clone());
+                    }
+                    output.extend(self.function_items.iter().cloned());
+                    let mut events = Vec::new();
+                    if self.message_item_added {
+                        events.push(Self::responses_event(
+                            "response.output_item.done",
+                            serde_json::json!({"type":"response.output_item.done","output_index":0,"item":message_item}),
+                        ));
+                    }
+                    events.push(Self::responses_event(
                         "response.completed",
-                        serde_json::json!({"type":"response.completed","response":{"id":self.message_id,"object":"response","model":self.model,"status":"completed"}}),
-                    )])
+                        serde_json::json!({
+                            "type": "response.completed",
+                            "response": {
+                                "id": self.message_id,
+                                "object": "response",
+                                "model": self.model,
+                                "status": "completed",
+                                "output": output,
+                                "usage": Self::responses_usage(&self.usage),
+                            },
+                        }),
+                    ));
+                    Ok(events)
                 } else {
                     Ok(vec![b"data: [DONE]\n\n".to_vec()])
                 }

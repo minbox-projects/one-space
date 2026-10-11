@@ -161,7 +161,7 @@ fn tool_choice(value: Option<&Value>) -> Result<Option<Value>, String> {
         return match choice {
             "auto" => Ok(Some(json!({"type": "auto"}))),
             "required" => Ok(Some(json!({"type": "any"}))),
-            "none" => Ok(None),
+            "none" => Ok(Some(json!({"type": "none"}))),
             _ => Err(field_error("tool_choice", "unsupported choice")),
         };
     }
@@ -179,8 +179,27 @@ fn tool_choice(value: Option<&Value>) -> Result<Option<Value>, String> {
         }))),
         Some("auto") => Ok(Some(json!({"type": "auto"}))),
         Some("required") => Ok(Some(json!({"type": "any"}))),
-        Some("none") => Ok(None),
+        Some("none") => Ok(Some(json!({"type": "none"}))),
         _ => Err(field_error("tool_choice", "unsupported choice")),
+    }
+}
+
+/// Fold the OpenAI `parallel_tool_calls:false` control into the Anthropic
+/// `tool_choice` object, the only place Anthropic accepts
+/// `disable_parallel_tool_use`. An absent choice with the flag disabled becomes
+/// an explicit `auto` choice carrying the flag; an explicit choice keeps its
+/// own type and gains the flag.
+fn apply_parallel_tool_use(choice: Option<Value>, disable_parallel: bool) -> Option<Value> {
+    match (choice, disable_parallel) {
+        (Some(mut choice), true) => {
+            if let Some(object) = choice.as_object_mut() {
+                object.insert("disable_parallel_tool_use".to_string(), Value::Bool(true));
+            }
+            Some(choice)
+        }
+        (Some(choice), false) => Some(choice),
+        (None, true) => Some(json!({"type": "auto", "disable_parallel_tool_use": true})),
+        (None, false) => None,
     }
 }
 
@@ -233,14 +252,16 @@ fn reject_common_conversion_fields(body: &Map<String, Value>, chat: bool) -> Res
             ));
         }
     }
-    if body
-        .get("response_format")
-        .is_some_and(|value| !value.is_null())
-    {
-        return Err(field_error(
-            "response_format",
-            "JSON and schema output are unsupported for Anthropic conversion",
-        ));
+    if let Some(value) = body.get("response_format").filter(|value| !value.is_null()) {
+        // A plain text output has no Anthropic-side control, so accepting it is
+        // a no-op; JSON object/schema and any unknown format stay unsupported.
+        let is_text = value.get("type").and_then(Value::as_str) == Some("text");
+        if !is_text {
+            return Err(field_error(
+                "response_format",
+                "JSON and schema output are unsupported for Anthropic conversion",
+            ));
+        }
     }
     let reasoning = body
         .get(if chat {
@@ -371,16 +392,11 @@ fn convert_chat(body: &Map<String, Value>, model: &str) -> Result<Value, String>
     if let Some(tools) = convert_tools(body.get("tools"))? {
         result.insert("tools".to_string(), Value::Array(tools));
     }
-    if let Some(choice) = tool_choice(body.get("tool_choice"))? {
-        if body.get("parallel_tool_calls").and_then(Value::as_bool) == Some(false) {
-            let mut choice = choice;
-            if let Some(object) = choice.as_object_mut() {
-                object.insert("disable_parallel_tool_use".to_string(), Value::Bool(true));
-            }
-            result.insert("tool_choice".to_string(), choice);
-        } else {
-            result.insert("tool_choice".to_string(), choice);
-        }
+    let disable_parallel = body.get("parallel_tool_calls").and_then(Value::as_bool) == Some(false);
+    if let Some(choice) =
+        apply_parallel_tool_use(tool_choice(body.get("tool_choice"))?, disable_parallel)
+    {
+        result.insert("tool_choice".to_string(), choice);
     }
     Ok(Value::Object(result))
 }
@@ -486,11 +502,11 @@ fn convert_responses(body: &Map<String, Value>, model: &str) -> Result<Value, St
     if let Some(tools) = convert_tools(body.get("tools"))? {
         result.insert("tools".to_string(), Value::Array(tools));
     }
-    if let Some(choice) = tool_choice(body.get("tool_choice"))? {
+    let disable_parallel = body.get("parallel_tool_calls").and_then(Value::as_bool) == Some(false);
+    if let Some(choice) =
+        apply_parallel_tool_use(tool_choice(body.get("tool_choice"))?, disable_parallel)
+    {
         result.insert("tool_choice".to_string(), choice);
-    }
-    if body.get("parallel_tool_calls").and_then(Value::as_bool) == Some(false) {
-        result.insert("disable_parallel_tool_use".to_string(), Value::Bool(true));
     }
     Ok(Value::Object(result))
 }
@@ -551,13 +567,17 @@ pub(in crate::ai_gateway) fn convert_response(
         .ok_or_else(|| "Anthropic response.content must be an array".to_string())?;
     let mut text = String::new();
     let mut tool_calls = Vec::new();
-    let mut output = Vec::new();
+    // Responses text is carried inside a `message` output item whose `content`
+    // is a list of `output_text` blocks; Anthropic `tool_use` blocks become
+    // sibling `function_call` output items.
+    let mut text_blocks = Vec::new();
+    let mut function_items = Vec::new();
     for block in blocks {
         match block.get("type").and_then(Value::as_str) {
             Some("text") => {
                 if let Some(value) = block.get("text").and_then(Value::as_str) {
                     text.push_str(value);
-                    output.push(json!({
+                    text_blocks.push(json!({
                         "type": "output_text",
                         "text": value,
                         "annotations": [],
@@ -580,7 +600,7 @@ pub(in crate::ai_gateway) fn convert_response(
                     "type": "function",
                     "function": {"name": name, "arguments": arguments},
                 }));
-                output.push(json!({
+                function_items.push(json!({
                     "type": "function_call",
                     "id": tool_id,
                     "call_id": tool_id,
@@ -609,6 +629,20 @@ pub(in crate::ai_gateway) fn convert_response(
             "usage": usage_openai,
         })
     } else {
+        let mut output = Vec::new();
+        if !text_blocks.is_empty() {
+            output.push(json!({
+                "type": "message",
+                "id": format!("{id}_message"),
+                "role": "assistant",
+                "status": "completed",
+                "content": text_blocks,
+            }));
+        }
+        output.extend(function_items);
+        if output.is_empty() {
+            output.push(json!({"type":"message","id":format!("{id}_message"),"role":"assistant","status":"completed","content":[]}));
+        }
         let input_tokens = usage_openai
             .get("prompt_tokens")
             .cloned()
@@ -622,7 +656,7 @@ pub(in crate::ai_gateway) fn convert_response(
             "object": "response",
             "model": model,
             "status": "completed",
-            "output": if output.is_empty() { vec![json!({"type":"message","id":format!("{id}_message"),"role":"assistant","status":"completed","content":[]})] } else { output },
+            "output": output,
             "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens, "total_tokens": usage_openai.get("total_tokens").cloned().unwrap_or(json!(0)), "input_tokens_details": {"cached_tokens": usage_openai.pointer("/prompt_tokens_details/cached_tokens").cloned().unwrap_or(json!(0))}},
         })
     };

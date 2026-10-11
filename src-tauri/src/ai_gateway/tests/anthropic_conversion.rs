@@ -34,7 +34,7 @@ use crate::ai_gateway::runtime_http::{
 };
 use crate::ai_gateway::storage::write_config;
 use crate::ai_gateway::{
-    GatewayConfig, GatewayUpstreamProvider, UsageResult, GATEWAY_CONFIG_SCHEMA_VERSION,
+    GatewayConfig, GatewayUpstreamProvider, UsageResult, UsageTokens, GATEWAY_CONFIG_SCHEMA_VERSION,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -1413,6 +1413,16 @@ async fn converted_chat_stream_failure_after_first_byte_has_no_completion() {
         UsageResult::Failure,
         "the failed attempt must be recorded as a failure"
     );
+    // R15: the captured start/delta usage stays on the failed attempt even
+    // though the stream never completed.
+    assert_eq!(
+        attempts.last().expect("one attempt").usage,
+        Some(UsageTokens {
+            input_tokens: 6,
+            ..UsageTokens::default()
+        }),
+        "the failed attempt must retain the field-wise merged start usage"
+    );
     assert_eq!(capture.status, 502, "the terminal capture must be a failure");
 }
 
@@ -1727,6 +1737,555 @@ async fn malformed_chat_body_is_a_client_error_without_upstream_attempt() {
         "malformed JSON must be a 400: {status}"
     );
     assert_eq!(captured_len(&log), 0, "no malformed request may reach an upstream");
+
+    stop_server().await.expect("stop the listener");
+    drop(home);
+}
+
+// ---------------------------------------------------------------------------
+// Review-repair round: R2 / R4 / R5 / R6
+//
+// These tests shape-assert the caller-visible JSON/SSE and the captured native
+// request body. They never disable the existing incremental/order assertions.
+// ---------------------------------------------------------------------------
+
+/// Parse every JSON payload carried by an SSE stream (`data:` lines), skipping
+/// the Chat `[DONE]` sentinel. Used to shape-assert converted events.
+fn sse_events(output: &str) -> Vec<Value> {
+    output
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+        .collect()
+}
+
+/// R2 / REQ-003 / AC-005: a non-streaming Responses conversion of assistant
+/// text must wrap the text in a `message` output item whose `content` carries an
+/// `output_text` block, matching the OpenAI Responses shape.
+#[tokio::test]
+async fn responses_non_streaming_text_is_a_message_output_item() {
+    let home = temp_home("responses-text-schema");
+    let port = free_port().await;
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            anthropic_message(
+                json!([{"type": "text", "text": "hello"}]),
+                "end_turn",
+                json!({"input_tokens": 10, "output_tokens": 5}),
+            ),
+        )
+    })
+    .await;
+    write_raw_gateway_config(&raw_config(
+        port,
+        vec![anthropic_provider_value(
+            "p-r2a",
+            &upstream_url,
+            LOCAL_MODEL,
+            UPSTREAM_MODEL,
+            UPSTREAM_SECRET,
+        )],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(responses_body()),
+    )
+    .await;
+    assert_eq!(status, 200, "unexpected response: {text}");
+
+    let caller: Value = serde_json::from_str(&text).expect("caller body must be JSON");
+    let output = caller["output"]
+        .as_array()
+        .expect("Responses output must be an array");
+    let message = output
+        .iter()
+        .find(|item| item["type"] == "message")
+        .unwrap_or_else(|| panic!("Responses text must be a `message` output item: {text}"));
+    let content = message["content"]
+        .as_array()
+        .expect("the message item must carry a content array");
+    let text_block = content
+        .iter()
+        .find(|item| item["type"] == "output_text")
+        .unwrap_or_else(|| {
+            panic!("the message content must carry an `output_text` block: {text}")
+        });
+    assert!(
+        text_block["text"].as_str().is_some_and(|value| value.contains("hello")),
+        "the output_text block must carry the assistant text: {text}"
+    );
+
+    stop_server().await.expect("stop the listener");
+    drop(home);
+}
+
+/// R2 / REQ-004 / AC-008: a converted Responses stream must announce the
+/// assistant `message` output item, keep the incremental text delta, and carry
+/// `output` and `usage` on the completed response object.
+#[tokio::test]
+async fn converted_responses_stream_adds_message_item_and_completes_with_output_and_usage() {
+    let (upstream_url, _log) =
+        spawn_mock_upstream(|_| MockReply::Stream(ANTHROPIC_SSE_TOOLS.to_string())).await;
+    let provider = anthropic_provider_value(
+        "p-r2b",
+        &upstream_url,
+        LOCAL_MODEL,
+        UPSTREAM_MODEL,
+        UPSTREAM_SECRET,
+    );
+    let (output, _capture, _attempts) = relay_stream(
+        &upstream_url,
+        &provider,
+        "/v1/responses",
+        &json!({"model": LOCAL_MODEL, "stream": true, "input": "hi"}),
+    )
+    .await;
+
+    let events = sse_events(&output);
+    let added_message = events.iter().find(|event| {
+        event["type"] == "response.output_item.added" && event["item"]["type"] == "message"
+    });
+    assert!(
+        added_message.is_some(),
+        "a converted Responses stream must add a `message` output item: {output}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["type"] == "response.output_text.delta"),
+        "the incremental text delta must survive: {output}"
+    );
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .unwrap_or_else(|| panic!("a completed Responses stream must complete: {output}"));
+    assert!(
+        completed["response"]["output"].is_array(),
+        "response.completed.response must carry the output items: {output}"
+    );
+    assert!(
+        completed["response"]["usage"].is_object(),
+        "response.completed.response must carry usage: {output}"
+    );
+}
+
+/// R4 / REQ-004: a native stream whose final event has no trailing blank line
+/// (immediate EOF after `message_stop`) must still emit the caller completion
+/// event: exactly one Chat `[DONE]` and a Responses `response.completed`.
+#[tokio::test]
+async fn converted_stream_without_trailing_blank_line_still_terminates_once() {
+    const SSE_STOP_NO_TRAILING_BLANK: &str = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"model\":\"commandcode/claude-sonnet-5-5\",\"content\":[],\"usage\":{\"input_tokens\":4,\"output_tokens\":0}}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}",
+    );
+
+    let (chat_url, _chat_log) =
+        spawn_mock_upstream(|_| MockReply::Stream(SSE_STOP_NO_TRAILING_BLANK.to_string())).await;
+    let chat_provider = anthropic_provider_value(
+        "p-r4a-chat",
+        &chat_url,
+        LOCAL_MODEL,
+        UPSTREAM_MODEL,
+        UPSTREAM_SECRET,
+    );
+    let (chat_output, _capture, _attempts) = relay_stream(
+        &chat_url,
+        &chat_provider,
+        "/v1/chat/completions",
+        &json!({"model": LOCAL_MODEL, "stream": true, "messages": [{"role": "user", "content": "hi"}]}),
+    )
+    .await;
+    assert_eq!(
+        chat_output.matches("[DONE]").count(),
+        1,
+        "an unterminated-but-complete Chat stream must still end with exactly one [DONE]: {chat_output}"
+    );
+
+    let (responses_url, _responses_log) =
+        spawn_mock_upstream(|_| MockReply::Stream(SSE_STOP_NO_TRAILING_BLANK.to_string())).await;
+    let responses_provider = anthropic_provider_value(
+        "p-r4a-responses",
+        &responses_url,
+        LOCAL_MODEL,
+        UPSTREAM_MODEL,
+        UPSTREAM_SECRET,
+    );
+    let (responses_output, _capture, _attempts) = relay_stream(
+        &responses_url,
+        &responses_provider,
+        "/v1/responses",
+        &json!({"model": LOCAL_MODEL, "stream": true, "input": "hi"}),
+    )
+    .await;
+    assert!(
+        responses_output.contains("response.completed"),
+        "an unterminated-but-complete Responses stream must still complete: {responses_output}"
+    );
+}
+
+/// R4 / REQ-004 / AC-009: an event whose JSON cannot be parsed after bytes have
+/// already reached the caller is a post-byte failure: a caller-format error, no
+/// success marker and no replay.
+#[tokio::test]
+async fn converted_stream_malformed_event_is_post_byte_failure() {
+    const SSE_MALFORMED_EVENT: &str = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"model\":\"commandcode/claude-sonnet-5-5\",\"content\":[],\"usage\":{\"input_tokens\":4,\"output_tokens\":0}}}\n\n",
+        "event: content_block_delta\n",
+        "data: {this-is-not-json}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    let (upstream_url, _log) =
+        spawn_mock_upstream(|_| MockReply::Stream(SSE_MALFORMED_EVENT.to_string())).await;
+    let provider = anthropic_provider_value(
+        "p-r4b",
+        &upstream_url,
+        LOCAL_MODEL,
+        UPSTREAM_MODEL,
+        UPSTREAM_SECRET,
+    );
+    let (output, capture, attempts) = relay_stream(
+        &upstream_url,
+        &provider,
+        "/v1/chat/completions",
+        &json!({"model": LOCAL_MODEL, "stream": true, "messages": [{"role": "user", "content": "hi"}]}),
+    )
+    .await;
+
+    assert!(
+        output.contains("\"error\""),
+        "a malformed converted event must emit a caller-format error: {output}"
+    );
+    assert!(
+        !output.contains("[DONE]"),
+        "a malformed converted event must never gain a success marker: {output}"
+    );
+    assert_eq!(
+        attempts.len(),
+        1,
+        "a post-byte converted failure must not replay: {output}"
+    );
+    assert_eq!(
+        attempts.last().expect("one attempt").result,
+        UsageResult::Failure,
+        "the malformed converted stream must be recorded as a failure"
+    );
+    assert_eq!(capture.status, 502, "the terminal capture must be a failure");
+}
+
+/// R5 / REQ-003 / AC-006: the Chat entry maps `tool_choice:"none"` to an
+/// explicit Anthropic `{"type":"none"}`, injects
+/// `{"type":"auto","disable_parallel_tool_use":true}` when parallel calls are
+/// disabled without a choice, and nests the flag inside an explicit choice.
+#[tokio::test]
+async fn chat_conversion_tool_choice_none_and_parallel_controls() {
+    let home = temp_home("chat-tool-choice-parallel");
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            anthropic_message(json!([{"type": "text", "text": "ok"}]), "end_turn", json!({})),
+        )
+    })
+    .await;
+    write_raw_gateway_config(&raw_config(
+        port,
+        vec![anthropic_provider_value(
+            "p-r5-chat",
+            &upstream_url,
+            LOCAL_MODEL,
+            UPSTREAM_MODEL,
+            UPSTREAM_SECRET,
+        )],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let tools = json!([{
+        "type": "function",
+        "function": {"name": "get_weather", "parameters": {"type": "object"}}
+    }]);
+    let requests = [
+        json!({"model": LOCAL_MODEL, "messages": [{"role": "user", "content": "hi"}], "tools": tools, "tool_choice": "none"}),
+        json!({"model": LOCAL_MODEL, "messages": [{"role": "user", "content": "hi"}], "tools": tools, "parallel_tool_calls": false}),
+        json!({"model": LOCAL_MODEL, "messages": [{"role": "user", "content": "hi"}], "tools": tools, "tool_choice": {"type": "function", "function": {"name": "get_weather"}}, "parallel_tool_calls": false}),
+    ];
+    for body in requests {
+        let (status, _ct, text) = call_gateway(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[("authorization", "Bearer local-key")],
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, 200, "the tool-choice fixture must be served: {text}");
+    }
+
+    let captured = log.lock().expect("mock log").clone();
+    assert_eq!(captured.len(), 3, "three upstream attempts");
+    let sent: Vec<Value> = captured
+        .iter()
+        .map(|attempt| serde_json::from_slice(&attempt.body).expect("upstream JSON"))
+        .collect();
+
+    assert_eq!(
+        sent[0]["tool_choice"],
+        json!({"type": "none"}),
+        "tool_choice none must convert to an explicit none: {}",
+        sent[0]
+    );
+    assert_eq!(
+        sent[1]["tool_choice"],
+        json!({"type": "auto", "disable_parallel_tool_use": true}),
+        "parallel_tool_calls:false without a choice must inject an auto choice: {}",
+        sent[1]
+    );
+    assert_eq!(
+        sent[2]["tool_choice"],
+        json!({"type": "tool", "name": "get_weather", "disable_parallel_tool_use": true}),
+        "the parallel flag must be nested inside an explicit function choice: {}",
+        sent[2]
+    );
+
+    stop_server().await.expect("stop the listener");
+    drop(home);
+}
+
+/// R5 / REQ-003 / AC-006: the Responses entry keeps the tool-choice/parallel
+/// controls at the `tool_choice` level (never a top-level body flag).
+#[tokio::test]
+async fn responses_conversion_tool_choice_and_parallel_nesting() {
+    let home = temp_home("responses-tool-choice-parallel");
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            anthropic_message(json!([{"type": "text", "text": "ok"}]), "end_turn", json!({})),
+        )
+    })
+    .await;
+    write_raw_gateway_config(&raw_config(
+        port,
+        vec![anthropic_provider_value(
+            "p-r5-responses",
+            &upstream_url,
+            LOCAL_MODEL,
+            UPSTREAM_MODEL,
+            UPSTREAM_SECRET,
+        )],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let tools = json!([{
+        "type": "function",
+        "name": "get_weather",
+        "parameters": {"type": "object"}
+    }]);
+    let requests = [
+        json!({"model": LOCAL_MODEL, "input": "hi", "tools": tools, "tool_choice": "none"}),
+        json!({"model": LOCAL_MODEL, "input": "hi", "tools": tools, "parallel_tool_calls": false}),
+        json!({"model": LOCAL_MODEL, "input": "hi", "tools": tools, "tool_choice": {"type": "auto"}, "parallel_tool_calls": false}),
+    ];
+    for body in requests {
+        let (status, _ct, text) = call_gateway(
+            port,
+            "POST",
+            "/v1/responses",
+            &[("authorization", "Bearer local-key")],
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, 200, "the Responses tool-choice fixture must be served: {text}");
+    }
+
+    let captured = log.lock().expect("mock log").clone();
+    assert_eq!(captured.len(), 3, "three upstream attempts");
+    let sent: Vec<Value> = captured
+        .iter()
+        .map(|attempt| serde_json::from_slice(&attempt.body).expect("upstream JSON"))
+        .collect();
+
+    assert_eq!(
+        sent[0]["tool_choice"],
+        json!({"type": "none"}),
+        "tool_choice none must convert to an explicit none: {}",
+        sent[0]
+    );
+    assert_eq!(
+        sent[1]["tool_choice"],
+        json!({"type": "auto", "disable_parallel_tool_use": true}),
+        "parallel_tool_calls:false without a choice must inject an auto choice: {}",
+        sent[1]
+    );
+    assert_eq!(
+        sent[2]["tool_choice"],
+        json!({"type": "auto", "disable_parallel_tool_use": true}),
+        "the parallel flag must be nested inside tool_choice: {}",
+        sent[2]
+    );
+    assert!(
+        sent[2].get("disable_parallel_tool_use").is_none(),
+        "the parallel flag must not be a top-level body field: {}",
+        sent[2]
+    );
+
+    stop_server().await.expect("stop the listener");
+    drop(home);
+}
+
+/// R6 / REQ-003 / AC-007: `response_format:{"type":"text"}` is accepted and the
+/// request reaches the upstream, while JSON object/schema and unknown output
+/// formats remain field-specific 400s before any attempt.
+#[tokio::test]
+async fn chat_conversion_response_format_text_is_accepted_and_others_rejected() {
+    let home = temp_home("chat-response-format");
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            anthropic_message(json!([{"type": "text", "text": "ok"}]), "end_turn", json!({})),
+        )
+    })
+    .await;
+    write_raw_gateway_config(&raw_config(
+        port,
+        vec![anthropic_provider_value(
+            "p-r6",
+            &upstream_url,
+            LOCAL_MODEL,
+            UPSTREAM_MODEL,
+            UPSTREAM_SECRET,
+        )],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    // Plain text output is acceptable and reaches the upstream.
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({
+            "model": LOCAL_MODEL,
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type": "text"}
+        })),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "response_format text must be accepted for Anthropic conversion: {text}"
+    );
+    assert_eq!(
+        captured_len(&log),
+        1,
+        "the text response_format request must reach the upstream"
+    );
+
+    for format in [
+        json!({"type": "json_object"}),
+        json!({"type": "json_schema", "json_schema": {"name": "x", "schema": {"type": "object"}}}),
+        json!({"type": "not_a_real_format"}),
+    ] {
+        let (status, _ct, text) = call_gateway(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[("authorization", "Bearer local-key")],
+            Some(json!({
+                "model": LOCAL_MODEL,
+                "messages": [{"role": "user", "content": "hi"}],
+                "response_format": format
+            })),
+        )
+        .await;
+        assert_eq!(
+            status, 400,
+            "an unsupported response_format must be a field-specific 400: {format} {text}"
+        );
+        assert!(
+            text.contains("response_format"),
+            "the 400 must identify response_format: {text}"
+        );
+    }
+    assert_eq!(
+        captured_len(&log),
+        1,
+        "only the accepted text response_format request may reach the upstream"
+    );
+
+    stop_server().await.expect("stop the listener");
+    drop(home);
+}
+
+/// R6 / REQ-003 / AC-007: the Responses entry also accepts a plain text output
+/// format while rejecting JSON/schema formats.
+#[tokio::test]
+async fn responses_conversion_response_format_text_is_accepted() {
+    let home = temp_home("responses-response-format");
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            anthropic_message(json!([{"type": "text", "text": "ok"}]), "end_turn", json!({})),
+        )
+    })
+    .await;
+    write_raw_gateway_config(&raw_config(
+        port,
+        vec![anthropic_provider_value(
+            "p-r6-responses",
+            &upstream_url,
+            LOCAL_MODEL,
+            UPSTREAM_MODEL,
+            UPSTREAM_SECRET,
+        )],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": LOCAL_MODEL, "input": "hi", "response_format": {"type": "text"}})),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "response_format text must be accepted on the Responses entry: {text}"
+    );
+    assert_eq!(
+        captured_len(&log),
+        1,
+        "the text response_format Responses request must reach the upstream"
+    );
+
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": LOCAL_MODEL, "input": "hi", "response_format": {"type": "json_schema", "json_schema": {"name": "x", "schema": {"type": "object"}}}})),
+    )
+    .await;
+    assert_eq!(status, 400, "a schema response_format must be rejected: {text}");
+    assert!(text.contains("response_format"), "the 400 must identify response_format: {text}");
+    assert_eq!(captured_len(&log), 1, "no rejected request may reach the upstream");
 
     stop_server().await.expect("stop the listener");
     drop(home);

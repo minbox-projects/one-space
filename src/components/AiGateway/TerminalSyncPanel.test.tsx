@@ -414,6 +414,49 @@ describe("TerminalSyncPanel Claude 目标与四模型选择对话框", () => {
       ).toBeInTheDocument();
     }
   });
+
+  // R1-frontend: a saved Claude selection that references a local model no
+  // native-Messages candidate can serve must open the four-choice dialog instead
+  // of silently resending an unservable selection.
+  it("已存 claude_models 引用不可服务模型时打开对话框且不调用同步回调", async () => {
+    const user = userEvent.setup();
+    const onSyncTool = vi.fn();
+    const onConfigureTool = vi.fn();
+    const staleSaved = {
+      ...claudeTarget({
+        synced: true,
+        pending_sync: true,
+        provider_id: "gateway-claude",
+        base_url: "http://127.0.0.1:17688",
+        synced_key_id: "key-1",
+        synced_at: 1_700_000_000,
+      }),
+      claude_models: {
+        default_model: "cc-opus",
+        haiku: "removed-haiku",
+        sonnet: "removed-sonnet",
+        opus: "removed-opus",
+      },
+    } as unknown as GatewayTerminalTarget;
+
+    renderWithProviders(
+      <TerminalSyncPanel
+        targets={[staleSaved]}
+        config={claudeConfig()}
+        syncingTools={{}}
+        onConfigureTool={onConfigureTool}
+        onSyncTool={onSyncTool}
+      />,
+    );
+
+    await user.click(screen.getByTestId("ai-gateway-sync-claude"));
+
+    expect(onSyncTool).not.toHaveBeenCalled();
+    expect(onConfigureTool).not.toHaveBeenCalled();
+    expect(
+      screen.getByTestId("claude-model-selection-dialog"),
+    ).toBeInTheDocument();
+  });
 });
 
 

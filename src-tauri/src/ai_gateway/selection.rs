@@ -889,6 +889,11 @@ pub(in crate::ai_gateway) struct ProbeCandidate {
     pub(in crate::ai_gateway) provider: GatewayUpstreamProvider,
     pub(in crate::ai_gateway) target: MappingTarget,
     pub(in crate::ai_gateway) upstream_model: String,
+    /// The effective protocol of the probed row. The probe attempt forwards
+    /// under this protocol even though the auto-disabled row is invisible to
+    /// the normal served-row resolution, so a converted probe still reaches the
+    /// Anthropic Messages endpoint (REQ-005/AC-010).
+    pub(in crate::ai_gateway) protocol: UpstreamProtocol,
 }
 
 /// Whether a row's trimmed `disabled_reason` denotes an immediate auth disable
@@ -976,6 +981,7 @@ pub(in crate::ai_gateway) fn find_probe_candidate(
                         provider: provider.clone(),
                         target,
                         upstream_model,
+                        protocol: mapping.effective_protocol(provider.protocol),
                     },
                 ));
             }

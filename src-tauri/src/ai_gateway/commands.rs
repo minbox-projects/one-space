@@ -1189,12 +1189,36 @@ where
                     validate_claude_selection(&config, &normalized)?;
                     normalized
                 }
-                None => managed
-                    .and_then(claude_selection_from_provider)
-                    .ok_or_else(|| {
-                        "a Claude sync requires a saved or submitted model selection; open the Claude model dialog first"
-                            .to_string()
-                    })?,
+                None => {
+                    // The read-back path validates exactly like an explicit
+                    // submission. A multi-tool best-effort fan-out (the
+                    // post-template refresh) requests Claude alongside other
+                    // tools: an unavailable or unservable saved selection skips
+                    // only Claude so the rest of the batch still syncs, while a
+                    // Claude-only sync (manual) surfaces the rejection and
+                    // writes nothing.
+                    let fan_out = tools.len() > 1;
+                    match managed.and_then(claude_selection_from_provider) {
+                        Some(saved) => {
+                            if let Err(error) = validate_claude_selection(&config, &saved) {
+                                if fan_out {
+                                    continue;
+                                }
+                                return Err(error);
+                            }
+                            saved
+                        }
+                        None => {
+                            if fan_out {
+                                continue;
+                            }
+                            return Err(
+                                "a Claude sync requires a saved or submitted model selection; open the Claude model dialog first"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
             };
             let provider_id = managed
                 .and_then(|provider| provider.get("id").and_then(Value::as_str))

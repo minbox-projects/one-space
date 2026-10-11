@@ -35,20 +35,24 @@ type TerminalSyncPanelProps = {
 
 /**
  * A target's saved Claude selection is reusable only when all four slots hold a
- * non-blank local mapping id; otherwise the row must open the dialog to collect
- * a first/valid selection instead of silently syncing an incomplete payload.
+ * non-blank local mapping id that a native Messages upstream can actually serve;
+ * otherwise the row must open the dialog to collect a first/valid selection
+ * instead of silently syncing an incomplete or unservable payload.
  */
 function validSavedClaudeSelection(
   target: GatewayTerminalTarget,
+  candidateModels: string[],
 ): ClaudeModelSelection | null {
   const saved = target.claude_models;
   if (!saved) return null;
   const values = [saved.default_model, saved.haiku, saved.sonnet, saved.opus];
-  return values.every(
-    (value) => typeof value === "string" && value.trim() !== "",
-  )
-    ? saved
-    : null;
+  if (
+    !values.every((value) => typeof value === "string" && value.trim() !== "")
+  ) {
+    return null;
+  }
+  const candidates = new Set(candidateModels);
+  return values.every((value) => candidates.has(value)) ? saved : null;
 }
 
 export function TerminalSyncPanel({
@@ -95,7 +99,7 @@ export function TerminalSyncPanel({
     hasBeenAdded: boolean,
   ) => {
     if (target.tool === "claude") {
-      const saved = validSavedClaudeSelection(target);
+      const saved = validSavedClaudeSelection(target, claudeCandidateModels);
       if (saved) {
         if (hasBeenAdded) onSyncTool("claude", saved);
         else onConfigureTool("claude", saved);
