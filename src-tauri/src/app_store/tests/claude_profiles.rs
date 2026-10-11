@@ -1,5 +1,54 @@
 use super::*;
+use crate::claude_profiles::materialize_claude_settings_sp;
 use serde_json::json;
+
+/// A gateway-owned Claude service provider exactly as AI Gateway's Step 3
+/// terminal sync builds it (native Anthropic Messages, bare gateway origin,
+/// local key, default plus three family local mapping ids, gateway marker).
+#[allow(clippy::too_many_arguments)]
+fn gateway_claude_record(
+    id: &str,
+    api_key: &str,
+    base_url: &str,
+    default_model: &str,
+    haiku: &str,
+    sonnet: &str,
+    opus: &str,
+    code: &str,
+) -> ServiceProviderRecord {
+    let mut tool_config = Map::new();
+    tool_config.insert("ai_gateway_gateway".to_string(), Value::Bool(true));
+    let mapping = |family: &str, display_name: &str, upstream_model: &str| ClaudeModelMapping {
+        family: family.to_string(),
+        display_name: display_name.to_string(),
+        upstream_model: upstream_model.to_string(),
+        supports_1m: Some(false),
+        supported_capabilities: None,
+    };
+    ServiceProviderRecord {
+        id: id.to_string(),
+        name: "AI Gateway".to_string(),
+        tool: "claude".to_string(),
+        api_key: api_key.to_string(),
+        base_url: Some(base_url.to_string()),
+        model: Some(default_model.to_string()),
+        claude_api_format: "anthropic_messages".to_string(),
+        claude_connection_mode: "native_anthropic".to_string(),
+        claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
+        claude_model_mappings: vec![
+            mapping("haiku", "Haiku", haiku),
+            mapping("sonnet", "Sonnet", sonnet),
+            mapping("opus", "Opus", opus),
+        ],
+        code: Some(code.to_string()),
+        is_enabled: Some(true),
+        env_managed: Some(true),
+        tool_config,
+        history: vec![],
+        extra: Map::new(),
+        ..ServiceProviderRecord::default()
+    }
+}
 
 #[test]
 fn launch_claude_config_dir_with_provider_id() {
@@ -246,5 +295,128 @@ fn service_providers_upsert_non_claude_does_not_create_claude_profile() {
             .join("onespace")
             .join("claude_profiles");
         assert!(!profile_root.exists());
+    });
+}
+
+/// AC-014: the isolated Claude profile materialized for a gateway-owned record
+/// carries the gateway origin (no `/v1`), the local key and all four selected
+/// local mapping ids.
+#[test]
+fn gateway_owned_claude_profile_materializes_origin_key_and_family_models() {
+    with_temp_dir("gateway-claude-profile-materialize", |home| {
+        let provider = gateway_claude_record(
+            "gateway-claude",
+            "local-key-123",
+            "http://127.0.0.1:19000",
+            "gpt-4o",
+            "claude-haiku-local",
+            "claude-sonnet-local",
+            "claude-opus-local",
+            "gateway-claude-code",
+        );
+        let dir = home
+            .join(".config")
+            .join("onespace")
+            .join("claude_profiles")
+            .join("gateway-claude-code");
+
+        materialize_claude_settings_sp(&provider, &dir).expect("materialize gateway claude profile");
+
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap())
+                .expect("parse settings");
+        let env = settings["env"].as_object().expect("profile env");
+        assert_eq!(
+            env.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()),
+            Some("http://127.0.0.1:19000")
+        );
+        assert!(
+            !env.get("ANTHROPIC_BASE_URL")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .contains("/v1"),
+            "the gateway origin must not be doubled with /v1: {settings}"
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_API_KEY").and_then(|v| v.as_str()),
+            Some("local-key-123")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_MODEL").and_then(|v| v.as_str()),
+            Some("gpt-4o")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL").and_then(|v| v.as_str()),
+            Some("claude-haiku-local")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_DEFAULT_SONNET_MODEL").and_then(|v| v.as_str()),
+            Some("claude-sonnet-local")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").and_then(|v| v.as_str()),
+            Some("claude-opus-local")
+        );
+    });
+}
+
+/// AC-013 / AC-014: release and dev gateway records own distinct profile codes,
+/// so materializing one never overwrites the other (opposite-profile survival).
+#[test]
+fn release_and_dev_gateway_records_materialize_to_distinct_profiles() {
+    with_temp_dir("gateway-claude-opposite-profiles", |home| {
+        let root = home
+            .join(".config")
+            .join("onespace")
+            .join("claude_profiles");
+        let release = gateway_claude_record(
+            "claude-release",
+            "release-key",
+            "http://127.0.0.1:19000",
+            "gpt-4o",
+            "claude-haiku-local",
+            "claude-sonnet-local",
+            "claude-opus-local",
+            "gateway",
+        );
+        let dev = gateway_claude_record(
+            "claude-dev",
+            "dev-key",
+            "http://127.0.0.1:19001",
+            "gpt-4o-mini",
+            "claude-haiku-local",
+            "claude-sonnet-local",
+            "claude-opus-local",
+            "gateway-dev",
+        );
+
+        materialize_claude_settings_sp(&release, &root.join("gateway")).expect("release profile");
+        materialize_claude_settings_sp(&dev, &root.join("gateway-dev")).expect("dev profile");
+
+        let release_settings: Value = serde_json::from_str(
+            &fs::read_to_string(root.join("gateway").join("settings.json")).unwrap(),
+        )
+        .expect("parse release settings");
+        let dev_settings: Value = serde_json::from_str(
+            &fs::read_to_string(root.join("gateway-dev").join("settings.json")).unwrap(),
+        )
+        .expect("parse dev settings");
+
+        assert_eq!(
+            release_settings["env"]["ANTHROPIC_API_KEY"],
+            Value::String("release-key".to_string())
+        );
+        assert_eq!(
+            dev_settings["env"]["ANTHROPIC_API_KEY"],
+            Value::String("dev-key".to_string())
+        );
+        assert_eq!(
+            release_settings["env"]["ANTHROPIC_BASE_URL"],
+            Value::String("http://127.0.0.1:19000".to_string())
+        );
+        assert_eq!(
+            dev_settings["env"]["ANTHROPIC_BASE_URL"],
+            Value::String("http://127.0.0.1:19001".to_string())
+        );
     });
 }

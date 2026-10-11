@@ -6,7 +6,7 @@ Status: implemented
 
 ## Problem
 
-AI 网关此前只中继 OpenAI 兼容的 `/v1/chat/completions` 与 `/v1/responses` 两个入口。服务商持久化的 `protocol` 只认识 `chat_completions` 与 `responses`，模型清单来源解析会丢弃 `supported_endpoints` 中既未声明 Chat Completions 也未声明 Responses 的条目，且回环服务器把 `/v1/messages` 当作未知路径。因此仅支持 Messages 的上游既无法被配置、也无法被原生调用，而使用原生 Messages 协议的 Claude Code 在网关中没有任何入口。当这类上游可配置之后，既有 OpenAI 入口仍然无法触达它：候选解析把 Anthropic 映射排除在 Chat 与 Responses 请求之外，且不存在任何请求、响应或流转换，因此使用 Chat Completions 或 Responses 的调用方无法使用网关仅能经 Messages 服务的模型。
+AI 网关此前只中继 OpenAI 兼容的 `/v1/chat/completions` 与 `/v1/responses` 两个入口。服务商持久化的 `protocol` 只认识 `chat_completions` 与 `responses`，模型清单来源解析会丢弃 `supported_endpoints` 中既未声明 Chat Completions 也未声明 Responses 的条目，且回环服务器把 `/v1/messages` 当作未知路径。因此仅支持 Messages 的上游既无法被配置、也无法被原生调用，而使用原生 Messages 协议的 Claude Code 在网关中没有任何入口。当这类上游可配置之后，既有 OpenAI 入口仍然无法触达它：候选解析把 Anthropic 映射排除在 Chat 与 Responses 请求之外，且不存在任何请求、响应或流转换，因此使用 Chat Completions 或 Responses 的调用方无法使用网关仅能经 Messages 服务的模型。终端同步与 configure/sync 命令只支持 `opencode` 与 `codex`，刻意不触碰 `claude` 记录，也没有任何位置持久化操作者的四个模型选择（默认模型加 haiku/sonnet/opus 家族别名）。Claude 工具的原生 Anthropic 基地址是不带路径的回环 origin，而不是 OpenAI 工具的 `/v1` 基地址，因此复用既有基地址会追加第二个 `/v1`。既有服务商 upsert 会整体替换记录，因此省略选择的后续同步会静默清空它们，而固定的 profile code 或未标记的用户记录可能命中或覆写用户自己的 Claude 配置。
 
 ## Decision
 
@@ -20,6 +20,12 @@ AI 网关此前只中继 OpenAI 兼容的 `/v1/chat/completions` 与 `/v1/respon
 - 流转换：`AnthropicSseConverter` 把分片的 Anthropic SSE 增量转换为调用方事件，具有稳定的文本与工具标识和有序参数增量：`message_start` 捕获消息 id 并合并用量且不发增量，`content_block_start`/`input_json_delta` 发出 Chat 工具调用分片或 Responses 的 `response.output_item.added`/`response.function_call_arguments.delta`，文本增量发出 Chat 内容或 Responses 的 `response.output_text.delta`，`message_stop` 发出恰好一次 Chat `[DONE]` 或 Responses 的 `response.completed`。ping 等原生专属事件不编造任何内容。`AnthropicSseObserver` 只读转发字节，按字段合并 `message_start.message.usage` 与累积 `message_delta.usage`（出现的值替换、缺失的值保留）；原生与转换流都只有在 `message_stop` 之后才算成功，带内 `error` 事件绝不视为成功。
 - 失败与生命周期：首字节之后出错、EOF 或缺少 `message_stop` 会以调用方格式结束转换流且绝不写成功完成标记或重放，而原生流保持其原生错误格式；失败前捕获的用量保留在该失败尝试中。既有首客户端字节重试边界、下游取消（丢弃缓冲行且不结算上游健康）、空闲读取超时、key 轮换、探测与健康结算均不变。
 - 转换感知解析与计量：`src-tauri/src/ai_gateway/selection.rs` 在候选的有效协议等于入站协议时，或在候选为 `anthropic_messages` 且入站协议为 Chat Completions 或 Responses 时解析该候选。因此原生 Messages 绝不选择 Chat 或 Responses 上游，Chat-only 与 Responses-only 上游在没有 Anthropic 适配器时保持互斥，禁用行、自动禁用行、默认、加权调度、会话亲和与 key/重试策略保持既有行为。用量在转换之前取自实际上游：按字段的 Anthropic 合并归一化为既有四档，因此转换后的 Chat 响应报告包含式输入（普通输入加缓存读加缓存写，符合 OpenAI 形态），而持久化的普通上游输入保持独立。
+- Claude 目标与 DTO：`claude` 加入既有 `ai_gateway_configure_terminal` 与 `ai_gateway_sync_terminal` 命令，两者新增可选 `claude_models: Option<ClaudeModelSelection>` 参数。`ClaudeModelSelection`（`src-tauri/src/ai_gateway/types_config.rs`）携带四个显式本地映射 id `{ default_model, haiku, sonnet, opus }`，每个都是本地 id（绝不从模型名猜测厂商 id），同一 id 可填多个槽位。同一结构体也被序列化到仅模型快照 `TerminalTarget.claude_models`，且绝不携带凭据值。
+- 校验与原子性：`src-tauri/src/ai_gateway/commands.rs` 的 `validate_claude_selection` 要求四个选择都非空、已启用且可作为原生 Anthropic Messages 本地映射（一条 Anthropic 映射行或服务商默认，经与请求路径同一套权威 `selection::resolve_model_for_protocol` 解析）服务。缺失的首次选择、非法选择或无可用本地 Key 会在任何 Claude provider/ledger/projection 写入之前被拒绝，且整批载荷在首个 upsert 之前全部构建，因此拒绝不会留下部分已 upsert 的批次。
+- 持久化与所有权：四个选择只持久化在 gateway 拥有的 canonical Claude 服务商顶层 `model` 与 `claude_model_mappings`（`haiku`/`sonnet`/`opus` 三行的 `upstream_model`），后续同步从该拥有记录读回完整选择并整份重发，因此既有替换式 upsert 无法清空省略的选择。管线只复用同工具、同 profile 的标记网关记录；`code` 在首次创建时由新 provider UUID 派生并在此后原样复用，因此固定名冲突或用户自己的未标记服务商绝不会被认领或覆写，另一 profile 的记录不受影响。
+- Origin、变量与复用：`src-tauri/src/ai_gateway/storage.rs` 新增 `local_origin(port)`，即不带 `/v1` 的裸回环 origin `http://127.0.0.1:<port>`。Claude 服务商以该 origin 作为 `base_url`，并写 `claude_api_format = "anthropic_messages"`、`claude_connection_mode = "native_anthropic"` 与 `claude_auth_env_key = "ANTHROPIC_API_KEY"`，复用既有 upsert、按 profile 激活与 Claude 投影。手动同步成功后激活并投影 Claude；由于 upsert、激活与投影不是同一事务，之后的投影失败会被如实上报，而不是谎报为成功应用。
+- 目标、pending 与 fan-out：`TerminalTarget` 新增可选的仅模型 `claude_models` 快照（不含凭据）；Claude 目标的 `pending_sync` 比较 ledger 的 key id 与裸 origin，并把不可读或不完整的选择视为漂移，因此地址、Key 与选择都当前时不 pending。先前已同步的 Claude 记录参与既有的 best-effort 模板刷新 fan-out（`previously_synced_terminal_tools` 顺序 `opencode`、`codex`、`claude`）；无效或缺失的选择跳过该次自动 Claude 写入，且不提示、不替换、不清空已保存的选择，模板同步结果仍然成立。
+- OpenCode 适配器优先级：只要任一启用网关能经 Chat Completions 或 Anthropic Messages 服务该本地模型（包括同时可经 Responses 与 Anthropic 服务的来源），OpenCode 就保持既有 Chat 适配器；只有真正仅 Responses 的本地模型获得 `@ai-sdk/openai` npm 覆盖。Codex 配置、身份与手动激活不变。
 
 ## Alternatives considered
 
@@ -29,6 +35,12 @@ AI 网关此前只中继 OpenAI 兼容的 `/v1/chat/completions` 与 `/v1/respon
 - 修复或静默改写不支持的转换输入而不是拒绝它：未采纳，因为发送畸变或降级的请求会歪曲调用方意图；在任何尝试之前给出字段级 400 是明确且安全的。
 - 让转换输出上限无界或继承任意上游默认值：未采纳，因为省略的上限需要一个确定且有文档的边界；固定的 4096 默认值只应用于转换请求。
 - 改写或规范化原生流字节，或向原生流注入 OpenAI 终止符：未采纳，因为原生调用方与本网关都是字节忠实的中继，注入 `[DONE]` 或改写事件会破坏 Messages 协议。
+- 为 Claude 提供独立的同步路径与自己的存储，而不是扩展现有 configure/sync 命令与 canonical 服务商：未采纳，因为这会重复 upsert、激活、投影与标记所有权，而既有命令已经表达按工具的目标。
+- 只把四个选择存到终端目标或新的旁路台账，而不是拥有的 canonical Claude 服务商：未采纳，因为 canonical 服务商是既有投影器已经读取的唯一来源，平行存储会与投影出的 `ANTHROPIC_MODEL` 与家族变量失去同步。
+- 派生固定的 Claude profile code 或复用任意同工具记录：未采纳，因为固定 code 会在不同安装间冲突，而未标记记录是用户自己的配置；由 UUID 派生、且只在拥有的标记记录上复用的 code 让再次同步幂等而不认领用户数据。
+- 为 Claude 在 OpenAI 基地址上追加 `/v1`，而不使用裸 origin：未采纳，因为 Claude 的原生 Anthropic 基地址就是 origin，且网关已经容忍缺失 `/v1`；第二个 `/v1` 会产生重复的版本段。
+- 当模型不可用时静默清除或替换 Claude 选择：未采纳，因为抹掉操作者的显式选择具有破坏性；自动刷新跳过 Claude 写入，手动同步请求替换。
+- 要求四个选择必须互不相同：未采纳，因为操作者可能刻意让多个家族别名指向同一模型；只有空白、禁用或不可服务的 id 才被拒绝。
 
 ## Consequences
 
@@ -37,6 +49,7 @@ AI 网关此前只中继 OpenAI 兼容的 `/v1/chat/completions` 与 `/v1/respon
 - 流保持增量与稳定的标识和顺序：Chat 以 `[DONE]` 恰好结束一次，Responses 携带自己的工具与完成事件，仅 ping 输入不编造内容，首字节后出错、EOF 或缺少 `message_stop` 产生调用方格式的失败且无成功标记或重放，同时保留已捕获的用量。
 - 转换感知解析保留每一条运行时边界：尝试与探测都携带实际生效的上游协议，加权调度保持在入站范围内，排除、默认阻塞与 key/重试策略成立，原生 Messages 绝不选择 OpenAI 上游，Chat-only 与 Responses-only 上游保持互斥。
 - 计量保持实际：按字段的 `message_start`/`message_delta` 合并归一化为既有四档，转换后的 Chat 响应包含式输入可与持久化的普通上游输入不同，而尝试、价格与服务商标识仍取上游实际值。
-- 兼容与边界：配置 schema 保持 3 且无新迁移，同协议 OpenAI 载荷除既有模型改写外保持既有行为，且不添加 Chat 到 Responses 的转换、多候选、服务端 Responses 存储、结构化输出/推理推断或整理的模型/价格清单。本变更不交付 Claude 终端同步、其 UI 选择器/对话框或任何终端同步行为。
+- 兼容与边界：配置 schema 保持 3 且无新迁移，同协议 OpenAI 载荷除既有模型改写外保持既有行为，且不添加 Chat 到 Responses 的转换、多候选、服务端 Responses 存储、结构化输出/推理推断或整理的模型/价格清单。本变更交付 Step 3 的 Claude 终端同步（目标、DTO、命令、校验、持久化、所有权、origin 与 fan-out）；四条 UI 选择器与 Claude 选择对话框（Step 4）以及整理的模型/价格清单均未交付。
+- Claude 终端同步：四个有效选择的首次手动同步把它们持久化到拥有的 canonical 服务商并激活/投影 Claude；后续同步复用它们，无效的自动刷新跳过 Claude 写入而不替换，手动同步可请求替换，用户未标记的服务商或另一 profile 绝不被覆写。
 - `MEMORY.md`、权威的 `ai-gateway-backend` 导航条目与重新生成的 `navigation.md` 在同一变更中描述新模块、符号、测试与行为。
-- 部分取代：[API Gateway Provider Templates and Incremental Model Sync](2026-09-18-api-gateway-provider-templates.md) 保留其增量合并、忽略集合生命周期与称谓决策，而其端点过滤与识别新增 Messages，且其识别出的 Messages 映射现在可经既有 OpenAI 入口通过转换服务；[Provider Templates Own Closed Strategies and Bind Providers by Template Id](2026-10-10-provider-template-bound-strategies.md) 保留其封闭策略字段、绑定校验与有效策略解析，而其 Go 声明基线接纳源声明的 Messages id，且该 id 现在可由转换经 OpenAI 入口服务；[API Gateway Cache Hit Rate Normalizes Provider Usage Semantics](../bug-fix/2026-09-21-api-gateway-cache-hit-accounting.md) 保留其四档归一化、存储迁移、合格谓词与覆盖契约，而原生与转换的 Messages 用量由独立的按字段合并观察，且转换调用方的包含式输入仍与持久化的普通档位不同；[OpenCode Responses-Only Models Carry the @ai-sdk/openai npm Override](../bug-fix/2026-09-28-opencode-responses-npm.md) 保留其对真正仅 Responses 模型的按模型 npm 覆盖，而其「网关不做请求体转换」边界与逐模型可服务性现在计入 Chat/Responses 到 Messages 的转换使 Anthropic 映射经 Chat 可服务。
+- 部分取代：[API Gateway Provider Templates and Incremental Model Sync](2026-09-18-api-gateway-provider-templates.md) 保留其增量合并、忽略集合生命周期与称谓决策，而其端点过滤与识别新增 Messages，且其识别出的 Messages 映射现在可经既有 OpenAI 入口通过转换服务；[Provider Templates Own Closed Strategies and Bind Providers by Template Id](2026-10-10-provider-template-bound-strategies.md) 保留其封闭策略字段、绑定校验与有效策略解析，而其 Go 声明基线接纳源声明的 Messages id，且该 id 现在可由转换经 OpenAI 入口服务；[API Gateway Cache Hit Rate Normalizes Provider Usage Semantics](../bug-fix/2026-09-21-api-gateway-cache-hit-accounting.md) 保留其四档归一化、存储迁移、合格谓词与覆盖契约，而原生与转换的 Messages 用量由独立的按字段合并观察，且转换调用方的包含式输入仍与持久化的普通档位不同；[OpenCode Responses-Only Models Carry the @ai-sdk/openai npm Override](../bug-fix/2026-09-28-opencode-responses-npm.md) 保留其按模型 npm 覆盖、跨全部启用网关求值与回滚决策，而其「网关不做请求体转换」边界与逐模型可服务性现在计入 Chat/Responses 到 Messages 的转换以及 Anthropic Messages 作为可经 Chat 服务来源，因此覆盖仅留给真正仅 Responses 的模型；[API Fusion Terminal Sync Writes an Independent Gateway Provider](../feature/2026-09-17-api-fusion-terminal-independent-provider.md) 保留其独立服务商、台账复用与标记所有权决策，而 `claude` 成为第三个受支持终端目标并拥有自己的模型选择、裸 origin 与激活/投影，从而收窄其早先「不触碰 `claude` 记录」的表述。

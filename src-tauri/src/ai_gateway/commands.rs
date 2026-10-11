@@ -5,8 +5,8 @@ use super::selection::{
     resolve_model_for_protocol, set_user_enabled, ModelResolution,
 };
 use super::storage::{
-    find_provider_mut, local_base_url, modify_config, new_key_id, new_key_value, new_provider_id,
-    read_config, resolve_default_key_id, touch_key_created_at,
+    find_provider_mut, local_base_url, local_origin, modify_config, new_key_id, new_key_value,
+    new_provider_id, read_config, resolve_default_key_id, touch_key_created_at,
 };
 use super::templates::{
     apply_create_provider_from_template, apply_delete_provider_model,
@@ -23,12 +23,12 @@ use super::usage_log::{
 };
 use super::{
     normalize_template_auto_refresh_minutes, now_ts, validate_template_auto_refresh_minutes,
-    GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, ModelPrice,
-    ProviderTemplate, TemplateAutoRefreshStatus, TerminalSyncRecord, UpstreamProtocol,
+    ClaudeModelSelection, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider,
+    ModelPrice, ProviderTemplate, TemplateAutoRefreshStatus, TerminalSyncRecord, UpstreamProtocol,
     UsageResult, MAX_PROVIDER_WEIGHT, MIN_PROVIDER_WEIGHT,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 #[cfg(test)]
 thread_local! {
@@ -41,7 +41,8 @@ thread_local! {
 }
 
 /// Terminal tools that AI Gateway is allowed to write to.
-pub(in crate::ai_gateway) const SUPPORTED_TERMINAL_TOOLS: [&str; 2] = ["opencode", "codex"];
+pub(in crate::ai_gateway) const SUPPORTED_TERMINAL_TOOLS: [&str; 3] =
+    ["opencode", "codex", "claude"];
 
 /// Stable marker key identifying a provider record written by AI Gateway. The
 /// accepted marker value is owned by the [`TerminalSyncProfile`].
@@ -149,6 +150,11 @@ pub struct TerminalTarget {
     pub synced_key_id: Option<String>,
     #[serde(default)]
     pub synced_at: Option<u64>,
+    /// Model-only Claude selection snapshot (the four local mapping ids) for the
+    /// `claude` target; absent for the OpenAI tools. It never carries a
+    /// credential value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_models: Option<ClaudeModelSelection>,
 }
 
 pub(in crate::ai_gateway) fn is_supported_terminal_tool(tool: &str) -> bool {
@@ -266,9 +272,10 @@ pub(in crate::ai_gateway) fn build_gateway_provider(
                     continue;
                 }
                 // Per-local-model servability across every enabled gateway: a
-                // model the gateway can only serve over Responses gets the
-                // `@ai-sdk/openai` npm override so opencode calls `/responses`.
-                // Chat service anywhere wins and preserves today's shape.
+                // model the gateway can serve over Chat or Anthropic Messages
+                // keeps opencode's existing Chat adapter (the Chat entry
+                // converts for an Anthropic upstream), so only a genuinely
+                // Responses-only model gets the `@ai-sdk/openai` npm override.
                 let chat_servable = gateway_protocol_servable(
                     gateways,
                     &local_model,
@@ -276,6 +283,11 @@ pub(in crate::ai_gateway) fn build_gateway_provider(
                 );
                 let responses_servable =
                     gateway_protocol_servable(gateways, &local_model, UpstreamProtocol::Responses);
+                let anthropic_servable = gateway_protocol_servable(
+                    gateways,
+                    &local_model,
+                    UpstreamProtocol::AnthropicMessages,
+                );
                 let name = non_empty(mapping.display_name.as_deref())
                     .or_else(|| non_empty(Some(mapping.upstream_model.as_str())))
                     .unwrap_or_default();
@@ -303,7 +315,7 @@ pub(in crate::ai_gateway) fn build_gateway_provider(
                     model.insert("variants".to_string(), Value::Object(variants));
                 }
 
-                if !chat_servable && responses_servable {
+                if !chat_servable && !anthropic_servable && responses_servable {
                     let mut provider = Map::new();
                     provider.insert(
                         "npm".to_string(),
@@ -341,6 +353,142 @@ pub(in crate::ai_gateway) fn build_gateway_provider(
 
     object.insert("tool_config".to_string(), Value::Object(tool_config));
     Ok(Value::Object(object))
+}
+
+/// Read the four persisted Claude model choices back from a canonical,
+/// marker-owned Claude service provider as it appears in the terminal service
+/// provider list. A missing mirrored default or any missing/blank family row
+/// yields `None`, so an incomplete selection is never resent as a partial one.
+fn claude_selection_from_provider(provider: &Value) -> Option<ClaudeModelSelection> {
+    let default_model = provider
+        .get("claude_default_model")
+        .and_then(Value::as_str)
+        .or_else(|| provider.get("model").and_then(Value::as_str))?
+        .trim();
+    if default_model.is_empty() {
+        return None;
+    }
+    let mappings = provider.get("claude_model_mappings")?.as_array()?;
+    let family = |name: &str| {
+        mappings
+            .iter()
+            .find(|row| row.get("family").and_then(Value::as_str) == Some(name))
+            .and_then(|row| row.get("upstream_model").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    Some(ClaudeModelSelection {
+        default_model: default_model.to_string(),
+        haiku: family("haiku")?,
+        sonnet: family("sonnet")?,
+        opus: family("opus")?,
+    })
+}
+
+/// A collision-safe Claude profile code derived from the new provider UUID.
+/// The owned canonical record's code is reused verbatim on later syncs; this
+/// fallback only runs when no owned record (and therefore no code) exists yet.
+fn derived_claude_code(provider_id: &str) -> String {
+    let mut suffix: String = provider_id
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_lowercase())
+        .collect();
+    if suffix.is_empty() {
+        suffix = uuid::Uuid::new_v4().simple().to_string();
+    }
+    format!("gw-claude-{}", &suffix[..suffix.len().min(24)])
+}
+
+/// Build the gateway-owned Claude service-provider payload for one sync.
+///
+/// It carries the tool-specific origin (never a trailing `/v1`), the resolved
+/// default local key, the default and three family local mapping ids, a
+/// UUID-derived or reused `code`, and the profile marker under `tool_config`.
+/// It never carries an `active`/`is_active` flag; activation and projection are
+/// applied separately after the upsert succeeds.
+fn build_claude_gateway_provider(
+    provider_id: &str,
+    origin: &str,
+    api_key: &str,
+    selection: &ClaudeModelSelection,
+    code: &str,
+    profile: TerminalSyncProfile,
+) -> Value {
+    let mapping = |family: &str, display_name: &str, upstream_model: &str| {
+        json!({
+            "family": family,
+            "display_name": display_name,
+            "upstream_model": upstream_model,
+        })
+    };
+    let mut tool_config = Map::new();
+    tool_config.insert(GATEWAY_MARKER_KEY.to_string(), profile.marker());
+
+    let mut object = Map::new();
+    object.insert("id".to_string(), Value::String(provider_id.to_string()));
+    object.insert(
+        "name".to_string(),
+        Value::String(profile.provider_name().to_string()),
+    );
+    object.insert("tool".to_string(), Value::String("claude".to_string()));
+    object.insert("base_url".to_string(), Value::String(origin.to_string()));
+    object.insert("api_key".to_string(), Value::String(api_key.to_string()));
+    object.insert(
+        "model".to_string(),
+        Value::String(selection.default_model.clone()),
+    );
+    object.insert("code".to_string(), Value::String(code.to_string()));
+    object.insert(
+        "claude_api_format".to_string(),
+        Value::String("anthropic_messages".to_string()),
+    );
+    object.insert(
+        "claude_connection_mode".to_string(),
+        Value::String("native_anthropic".to_string()),
+    );
+    object.insert(
+        "claude_auth_env_key".to_string(),
+        Value::String("ANTHROPIC_API_KEY".to_string()),
+    );
+    object.insert(
+        "claude_model_mappings".to_string(),
+        Value::Array(vec![
+            mapping("haiku", "Haiku", &selection.haiku),
+            mapping("sonnet", "Sonnet", &selection.sonnet),
+            mapping("opus", "Opus", &selection.opus),
+        ]),
+    );
+    object.insert("tool_config".to_string(), Value::Object(tool_config));
+    Value::Object(object)
+}
+
+/// Validate an explicitly submitted Claude selection: every value must be a
+/// non-blank, enabled, native Anthropic-Messages-servable local mapping id (an
+/// Anthropic mapping row or an Anthropic-protocol provider default). The same
+/// id may fill several slots.
+fn validate_claude_selection(
+    config: &GatewayConfig,
+    selection: &ClaudeModelSelection,
+) -> Result<(), String> {
+    for (label, id) in [
+        ("default", &selection.default_model),
+        ("haiku", &selection.haiku),
+        ("sonnet", &selection.sonnet),
+        ("opus", &selection.opus),
+    ] {
+        let id = id.trim();
+        if id.is_empty() {
+            return Err(format!("Claude {label} model must not be blank"));
+        }
+        if !gateway_protocol_servable(&config.providers, id, UpstreamProtocol::AnthropicMessages) {
+            return Err(format!(
+                "Claude {label} model '{id}' is not an enabled native Anthropic Messages mapping"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Pending-sync is derived from the persisted ledger, never from the redacted api_key.
@@ -829,7 +977,6 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let base_url = local_base_url(config.port);
     let mut targets = Vec::new();
     for tool in SUPPORTED_TERMINAL_TOOLS {
         let ledger = config
@@ -844,22 +991,44 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
             .and_then(|provider| provider.get("base_url").and_then(Value::as_str))
             .map(str::to_string);
         let synced = provider_id.is_some();
+        // Claude's native base URL is the bare origin; the OpenAI tools keep the
+        // `/v1` loopback base URL.
+        let current_base_url = if tool == "claude" {
+            local_origin(config.port)
+        } else {
+            local_base_url(config.port)
+        };
+        // The Claude target exposes a model-only snapshot of the persisted
+        // choices; an incomplete snapshot counts as drifted (pending) but stays
+        // `synced` through the marker, so a manual sync can request replacement.
+        let claude_models = if tool == "claude" {
+            managed.and_then(claude_selection_from_provider)
+        } else {
+            None
+        };
         let pending_sync = match (synced, ledger) {
             (true, Some(record)) => {
-                let ledger_pending =
-                    terminal_sync_pending(record, config.default_key_id.as_deref(), &base_url);
-                let model_drifted = match (provider_id.as_deref(), managed) {
-                    (Some(id), Some(stored)) => build_gateway_provider(
-                        id,
-                        tool,
-                        &base_url,
-                        "",
-                        &config.providers,
-                        profile,
-                    )
-                    .map(|generated| terminal_model_selection_drifted(tool, stored, &generated))
-                    .unwrap_or(true),
-                    _ => true,
+                let ledger_pending = terminal_sync_pending(
+                    record,
+                    config.default_key_id.as_deref(),
+                    &current_base_url,
+                );
+                let model_drifted = if tool == "claude" {
+                    claude_models.is_none()
+                } else {
+                    match (provider_id.as_deref(), managed) {
+                        (Some(id), Some(stored)) => build_gateway_provider(
+                            id,
+                            tool,
+                            &current_base_url,
+                            "",
+                            &config.providers,
+                            profile,
+                        )
+                        .map(|generated| terminal_model_selection_drifted(tool, stored, &generated))
+                        .unwrap_or(true),
+                        _ => true,
+                    }
                 };
                 ledger_pending || model_drifted
             }
@@ -869,7 +1038,8 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
             tool: tool.to_string(),
             name: match tool {
                 "opencode" => "OpenCode".to_string(),
-                _ => "Codex".to_string(),
+                "codex" => "Codex".to_string(),
+                _ => "Claude".to_string(),
             },
             provider_id,
             base_url: provider_base_url,
@@ -877,6 +1047,7 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
             pending_sync,
             synced_key_id: ledger.map(|record| record.synced_key_id.clone()),
             synced_at: ledger.map(|record| record.synced_at),
+            claude_models,
         });
     }
     targets
@@ -885,7 +1056,11 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
 /// The supported terminal tools whose managed AI Gateway provider record for
 /// `profile` already exists, in `SUPPORTED_TERMINAL_TOOLS` order. Reuses the same
 /// `synced` predicate the terminal target list exposes, so a null or unreadable
-/// payload yields no tools and the other profile's records are ignored.
+/// payload yields no tools and the other profile's records are ignored. A marked
+/// Claude record participates like the other tools; when its model selection is
+/// unavailable the refresh performs no Claude write (the pipeline rejects the
+/// missing selection before any write) and the template sync result still
+/// stands.
 pub(in crate::ai_gateway) fn previously_synced_terminal_tools(
     config: &GatewayConfig,
     providers_data: &serde_json::Value,
@@ -919,14 +1094,40 @@ pub(in crate::ai_gateway) type UpsertFuture =
 /// resolved default local key value as its `api_key`), then refresh the ledger.
 /// Any upsert error aborts before the ledger is written, so the ledger never
 /// claims a sync that did not happen. The payload itself never carries an
-/// `active`/`is_active` flag; opencode activation plus projection to
-/// opencode.json are applied separately in `apply_terminal_sync` after the
-/// ledger is persisted.
+/// `active`/`is_active` flag; activation plus projection are applied separately
+/// in `apply_terminal_sync` after the ledger is persisted.
+///
+/// This 4-argument entry point reads any Claude selection back from the owned
+/// canonical provider; the command layer uses
+/// [`apply_terminal_sync_with_selection`] to also accept an explicit operator
+/// selection for a first sync.
 pub(in crate::ai_gateway) async fn apply_terminal_sync_with<F>(
+    providers_data: &serde_json::Value,
+    upsert: F,
+    target_tools: Vec<String>,
+    profile: TerminalSyncProfile,
+) -> Result<Vec<TerminalSyncRecord>, String>
+where
+    F: FnMut(serde_json::Value) -> UpsertFuture,
+{
+    apply_terminal_sync_with_selection(providers_data, upsert, target_tools, profile, None).await
+}
+
+/// Terminal sync pipeline with an injected upsert and an optional explicit
+/// Claude model selection.
+///
+/// Every payload is built (and every Claude selection validated) before the
+/// first upsert, so an invalid or missing Claude selection is rejected before
+/// any Claude provider or ledger write. A `claude` target without an explicit
+/// selection reads the four saved choices back from the owned canonical Claude
+/// provider and resends them whole, so the existing replace-style upsert cannot
+/// clear omitted choices.
+pub(in crate::ai_gateway) async fn apply_terminal_sync_with_selection<F>(
     providers_data: &serde_json::Value,
     mut upsert: F,
     target_tools: Vec<String>,
     profile: TerminalSyncProfile,
+    claude_models: Option<ClaudeModelSelection>,
 ) -> Result<Vec<TerminalSyncRecord>, String>
 where
     F: FnMut(serde_json::Value) -> UpsertFuture,
@@ -951,35 +1152,103 @@ where
     for tool in &tools {
         if !is_supported_terminal_tool(tool) {
             return Err(format!(
-                "unsupported terminal tool '{tool}': only opencode and codex are supported"
+                "unsupported terminal tool '{tool}': only opencode, codex and claude are supported"
             ));
         }
     }
 
     let base_url = local_base_url(config.port);
+    let origin = local_origin(config.port);
     let providers: &[Value] = providers_data
         .get("providers")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
 
-    let mut synced = Vec::new();
+    // Build every payload first so a rejected Claude selection never leaves a
+    // partially upserted batch behind.
+    struct PlannedTool {
+        tool: String,
+        provider_id: String,
+        base_url: String,
+        payload: Value,
+    }
+    let mut planned: Vec<PlannedTool> = Vec::new();
     for tool in &tools {
-        let provider_id = resolve_gateway_provider_id(tool, providers, &config, profile);
-        let payload = build_gateway_provider(
-            &provider_id,
-            tool,
-            &base_url,
-            &key_value,
-            &config.providers,
-            profile,
-        )?;
-        upsert(payload).await?;
+        if tool == "claude" {
+            let ledger = config
+                .terminal_syncs
+                .iter()
+                .find(|record| record.tool.eq_ignore_ascii_case("claude"));
+            let managed = find_managed_gateway_provider("claude", providers, ledger, profile);
+            let selection = match claude_models.as_ref() {
+                Some(explicit) => {
+                    let normalized = explicit.normalized().ok_or_else(|| {
+                        "a Claude sync requires all four model choices to be non-blank".to_string()
+                    })?;
+                    validate_claude_selection(&config, &normalized)?;
+                    normalized
+                }
+                None => managed
+                    .and_then(claude_selection_from_provider)
+                    .ok_or_else(|| {
+                        "a Claude sync requires a saved or submitted model selection; open the Claude model dialog first"
+                            .to_string()
+                    })?,
+            };
+            let provider_id = managed
+                .and_then(|provider| provider.get("id").and_then(Value::as_str))
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    resolve_gateway_provider_id("claude", providers, &config, profile)
+                });
+            let code = managed
+                .and_then(|provider| provider.get("code").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| derived_claude_code(&provider_id));
+            let payload = build_claude_gateway_provider(
+                &provider_id,
+                &origin,
+                &key_value,
+                &selection,
+                &code,
+                profile,
+            );
+            planned.push(PlannedTool {
+                tool: tool.clone(),
+                provider_id,
+                base_url: origin.clone(),
+                payload,
+            });
+        } else {
+            let provider_id = resolve_gateway_provider_id(tool, providers, &config, profile);
+            let payload = build_gateway_provider(
+                &provider_id,
+                tool,
+                &base_url,
+                &key_value,
+                &config.providers,
+                profile,
+            )?;
+            planned.push(PlannedTool {
+                tool: tool.clone(),
+                provider_id,
+                base_url: base_url.clone(),
+                payload,
+            });
+        }
+    }
+
+    let mut synced = Vec::new();
+    for plan in planned {
+        upsert(plan.payload).await?;
         let record = TerminalSyncRecord {
-            provider_id,
-            tool: tool.clone(),
+            provider_id: plan.provider_id,
+            tool: plan.tool,
             synced_key_id: key_id.clone(),
-            synced_base_url: base_url.clone(),
+            synced_base_url: plan.base_url,
             synced_at: now_ts(),
         };
         synced.push(record);
@@ -1002,10 +1271,11 @@ where
 async fn apply_terminal_sync(
     app: tauri::AppHandle,
     target_tools: Vec<String>,
+    claude_models: Option<ClaudeModelSelection>,
 ) -> Result<Vec<TerminalSyncRecord>, String> {
     let payload = crate::app_store::service_providers_list().map_err(api_err_to_string)?;
     let upsert_app = app.clone();
-    let records = apply_terminal_sync_with(
+    let records = apply_terminal_sync_with_selection(
         &payload.data,
         move |value| -> UpsertFuture {
             let app = upsert_app.clone();
@@ -1018,26 +1288,30 @@ async fn apply_terminal_sync(
         },
         target_tools,
         TerminalSyncProfile::current(),
+        claude_models,
     )
     .await?;
-    // Auto-activate the gateway provider under opencode so the synced endpoint
-    // takes effect, then project it to ~/.config/opencode/opencode.json so the
-    // entry (including options.apiKey) actually lands on disk; codex keeps its
-    // manual activation. A stale ledger entry that resolved to an unmarked user
-    // record never reaches here because the pipeline writes a fresh gateway
-    // record instead.
+    // Auto-activate the synced provider so the endpoint takes effect, then
+    // project it to disk so the entry (including options.apiKey / the Claude
+    // settings) actually lands; codex keeps its manual activation. A stale
+    // ledger entry that resolved to an unmarked user record never reaches here
+    // because the pipeline writes a fresh gateway record instead. Activation and
+    // projection are not one transaction with the upsert, so a projection
+    // failure is surfaced rather than reported as a successful application.
     for record in &records {
-        if record.tool.eq_ignore_ascii_case("opencode") {
+        if record.tool.eq_ignore_ascii_case("opencode")
+            || record.tool.eq_ignore_ascii_case("claude")
+        {
             crate::app_store::service_providers_set_active(
                 app.clone(),
-                "opencode".to_string(),
+                record.tool.clone(),
                 record.provider_id.clone(),
             )
             .await
             .map_err(api_err_to_string)?;
             crate::app_store::projection_apply(
                 app.clone(),
-                "opencode".to_string(),
+                record.tool.clone(),
                 record.provider_id.clone(),
             )
             .await
@@ -1091,14 +1365,16 @@ where
 pub async fn ai_gateway_configure_terminal(
     app: tauri::AppHandle,
     target_tools: Vec<String>,
+    claude_models: Option<ClaudeModelSelection>,
 ) -> Result<Vec<TerminalSyncRecord>, String> {
-    apply_terminal_sync(app, target_tools).await
+    apply_terminal_sync(app, target_tools, claude_models).await
 }
 
 #[tauri::command]
 pub async fn ai_gateway_sync_terminal(
     app: tauri::AppHandle,
     target_tools: Option<Vec<String>>,
+    claude_models: Option<ClaudeModelSelection>,
 ) -> Result<Vec<TerminalSyncRecord>, String> {
     let config = read_config()?;
     let targets = match target_tools {
@@ -1109,7 +1385,7 @@ pub async fn ai_gateway_sync_terminal(
             .map(|record| record.tool.clone())
             .collect(),
     };
-    apply_terminal_sync(app, targets).await
+    apply_terminal_sync(app, targets, claude_models).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1427,7 +1703,7 @@ pub(in crate::ai_gateway) async fn execute_template_sync(
     // ledger write after the template sync stands, so a failure is swallowed.
     if !tools.is_empty() {
         if let Some(handle) = app {
-            let _ = apply_terminal_sync(handle, tools).await;
+            let _ = apply_terminal_sync(handle, tools, None).await;
         }
     }
     Ok(view)
