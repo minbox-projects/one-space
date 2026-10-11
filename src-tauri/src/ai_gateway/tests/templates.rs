@@ -391,6 +391,54 @@ fn parse_template_snapshot_drops_invalid_models_and_keeps_first_duplicate() {
     );
 }
 
+/// AC-001 / REQ-001: a persisted template default and an individual template
+/// model both accept the `anthropic_messages` protocol; a model without its own
+/// protocol keeps inheriting the template default.
+#[test]
+fn parse_template_snapshot_accepts_anthropic_messages_protocols() {
+    let raw = json!([
+        {
+            "id": "tpl-anthropic",
+            "name": "Anthropic",
+            "base_url": "https://anthropic.example/v1",
+            "protocol": "anthropic_messages",
+            "models": [
+                {"upstream_model": "claude-sonnet-5-5", "protocol": "anthropic_messages", "enabled": true},
+                {"upstream_model": "claude-inherit", "enabled": true}
+            ]
+        }
+    ])
+    .to_string();
+
+    let templates = parse_template_snapshot(&raw).expect("the native template must parse");
+    assert_eq!(
+        serde_json::to_value(templates[0].protocol).expect("serialize the template protocol"),
+        json!("anthropic_messages"),
+        "the template default protocol must accept `anthropic_messages`"
+    );
+
+    let model = templates[0]
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "claude-sonnet-5-5")
+        .expect("a model declaring `anthropic_messages` must be preserved");
+    assert_eq!(
+        serde_json::to_value(model.protocol).expect("serialize the model protocol"),
+        json!("anthropic_messages"),
+        "an individual template model must accept `anthropic_messages`"
+    );
+
+    let inherit = templates[0]
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "claude-inherit")
+        .expect("the inheriting model must be preserved");
+    assert_eq!(
+        inherit.protocol, None,
+        "a model without its own protocol must keep inheriting the template default"
+    );
+}
+
 /// Compatibility / REQ-001: a persisted snapshot carrying the removed price,
 /// off-peak, reasoning-effort and snapshot-version fields parses with those
 /// fields ignored and the reduced model shape intact.
@@ -715,20 +763,24 @@ fn sync_accepts_data_models_root_and_string_shapes() {
     assert_eq!(ids, vec!["f", "g"]);
 }
 
-/// AC-006 / REQ-004: `supported_endpoints` decides the protocol; an entry
-/// declaring neither supported endpoint is dropped while an entry without
-/// endpoint information is kept with no protocol (inheriting the template
-/// protocol).
+/// AC-001 / AC-002 / REQ-001: `supported_endpoints` decides the protocol with
+/// the Chat Completions, then Responses, then Messages preference; `/messages`
+/// and `/v1/messages` are both recognized Messages declarations, an entry
+/// without endpoint information is kept with no protocol (inheriting the
+/// template protocol), and an entry declaring only unknown endpoints is
+/// dropped.
 #[test]
-fn sync_derives_protocol_from_supported_endpoints_and_drops_unservable_entries() {
+fn sync_derives_protocol_from_supported_endpoints_with_chat_then_responses_then_messages() {
     let mut config = seeded_config(UpstreamProtocol::ChatCompletions, vec![]);
     let body = json!({
         "data": [
-            {"id": "chat", "supported_endpoints": ["/messages", "/chat/completions"]},
-            {"id": "resp", "supported_endpoints": ["/responses"]},
+            {"id": "chat-wins", "supported_endpoints": ["/messages", "/responses", "/chat/completions"]},
+            {"id": "resp-wins", "supported_endpoints": ["/v1/messages", "/responses"]},
+            {"id": "messages-only", "supported_endpoints": ["/messages"]},
+            {"id": "v1-messages-only", "supported_endpoints": ["/v1/messages"]},
             {"id": "unlabeled"},
-            {"id": "dropped", "supported_endpoints": ["/messages"]},
-            {"id": "non-array", "supported_endpoints": "/chat/completions"}
+            {"id": "non-array", "supported_endpoints": "/chat/completions"},
+            {"id": "unknown-only", "supported_endpoints": ["/completions"]}
         ]
     })
     .to_string();
@@ -741,14 +793,34 @@ fn sync_derives_protocol_from_supported_endpoints_and_drops_unservable_entries()
             .iter()
             .find(|model| model.upstream_model == id)
     };
+    let protocol = |id: &str| {
+        serde_json::to_value(
+            find(id)
+                .unwrap_or_else(|| panic!("the model {id} must be present"))
+                .protocol,
+        )
+        .expect("serialize the derived protocol")
+    };
 
     assert_eq!(
-        find("chat").expect("chat").protocol,
-        Some(UpstreamProtocol::ChatCompletions)
+        protocol("chat-wins"),
+        json!("chat_completions"),
+        "Chat Completions wins when every endpoint is declared"
     );
     assert_eq!(
-        find("resp").expect("resp").protocol,
-        Some(UpstreamProtocol::Responses)
+        protocol("resp-wins"),
+        json!("responses"),
+        "Responses wins over Messages when Chat Completions is absent"
+    );
+    assert_eq!(
+        protocol("messages-only"),
+        json!("anthropic_messages"),
+        "a `/messages` declaration is a recognized native protocol"
+    );
+    assert_eq!(
+        protocol("v1-messages-only"),
+        json!("anthropic_messages"),
+        "a `/v1/messages` declaration is a recognized native protocol"
     );
     assert_eq!(find("unlabeled").expect("unlabeled").protocol, None);
     assert_eq!(
@@ -757,8 +829,8 @@ fn sync_derives_protocol_from_supported_endpoints_and_drops_unservable_entries()
         "a non-array endpoints field counts as no endpoint information"
     );
     assert!(
-        find("dropped").is_none(),
-        "an entry declaring only unsupported endpoints is dropped"
+        find("unknown-only").is_none(),
+        "an entry declaring only unknown endpoints is dropped"
     );
 }
 
@@ -947,7 +1019,7 @@ fn sync_fatal_failures_name_the_url_and_write_nothing() {
     );
     assert_sync_fatal_keeps_config(Ok(r#"{"data": []}"#), SYNC_URL, "empty");
     assert_sync_fatal_keeps_config(
-        Ok(r#"{"data": [{"id": "only-messages", "supported_endpoints": ["/messages"]}]}"#),
+        Ok(r#"{"data": [{"id": "only-unknown", "supported_endpoints": ["/completions"]}]}"#),
         SYNC_URL,
         "empty",
     );
@@ -2800,12 +2872,22 @@ fn live_catalog_fixture_names_cover_their_identifier_segments() {
     let models = sync_models(serde_json::from_str(LIVE_MODEL_CATALOG_2026_09_20).expect(
         "the fixture must parse as a sync payload",
     ));
-    // Eight fixture entries declare only `/messages` and are dropped by the
-    // existing endpoint filter, so 63 models remain.
+    // Every fixture entry declares at least one recognized endpoint now that
+    // `/messages` is a supported declaration, so all 71 entries survive.
     assert_eq!(
         models.len(),
-        63,
-        "the sync keeps every fixture entry the endpoint filter allows"
+        71,
+        "the sync keeps every fixture entry a recognized endpoint allows"
+    );
+
+    let claude = models
+        .iter()
+        .find(|model| model.upstream_model == "claude-sonnet-5")
+        .expect("the `/messages`-declared claude model must now sync");
+    assert_eq!(
+        serde_json::to_value(claude.protocol).expect("serialize the claude protocol"),
+        json!("anthropic_messages"),
+        "a `/messages`-only fixture entry must sync as the native protocol"
     );
 
     for model in &models {
@@ -4658,17 +4740,18 @@ fn go_sync_accepts_only_declared_chat_and_responses_ids() {
     );
 }
 
-/// AC-007 / AC-008: a Go source entry that explicitly declares only the
-/// `/responses` endpoint is accepted with an explicit Responses protocol even
-/// though the template never declared it, while a `/messages`-only entry is
-/// dropped and never guessed as Chat Completions.
+/// AC-001 / AC-007 / AC-008: a Go source entry that explicitly declares only
+/// the `/responses` or `/messages` endpoint is accepted with that explicit
+/// protocol even though the template never declared it, while an undeclared
+/// metadata-less id is excluded.
 #[test]
-fn go_sync_accepts_endpoint_declared_responses_and_drops_messages_only() {
+fn go_sync_accepts_endpoint_declared_responses_and_messages() {
     let mut config = go_bound_config(&[("go-chat-a", "chat_completions")]);
     let body = json!({"data": [
         {"id": "go-chat-a", "name": "Go Chat A"},
         {"id": "endpoint-resp", "name": "Endpoint Responses", "supported_endpoints": ["/responses"]},
-        {"id": "messages-only", "name": "Messages Only", "supported_endpoints": ["/messages"]}
+        {"id": "endpoint-messages", "name": "Endpoint Messages", "supported_endpoints": ["/messages"]},
+        {"id": "no-metadata", "name": "No Metadata"}
     ]});
 
     let (view, _notices) =
@@ -4683,8 +4766,8 @@ fn go_sync_accepts_endpoint_declared_responses_and_drops_messages_only() {
         .collect();
     assert_eq!(
         ids,
-        vec!["go-chat-a", "endpoint-resp"],
-        "an endpoint-declared Responses id may enter the Go set while a Messages-only id is dropped"
+        vec!["go-chat-a", "endpoint-resp", "endpoint-messages"],
+        "endpoint-declared Responses and Messages ids may enter the Go set while a metadata-less id is excluded"
     );
     let endpoint_resp = view
         .template
@@ -4697,9 +4780,20 @@ fn go_sync_accepts_endpoint_declared_responses_and_drops_messages_only() {
         Some(UpstreamProtocol::Responses),
         "an endpoint-declared Responses id must carry an explicit Responses protocol"
     );
+    let endpoint_messages = view
+        .template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "endpoint-messages")
+        .expect("the endpoint-declared Messages id must be present");
+    assert_eq!(
+        serde_json::to_value(endpoint_messages.protocol).expect("serialize the messages protocol"),
+        json!("anthropic_messages"),
+        "an endpoint-declared Messages id must carry the native protocol"
+    );
     assert!(
-        !ids.contains(&"messages-only"),
-        "a Messages-only id must never enter the Go model set"
+        !ids.contains(&"no-metadata"),
+        "an undeclared metadata-less id must never be guessed and admitted"
     );
 
     let provider = config
@@ -4722,12 +4816,28 @@ fn go_sync_accepts_endpoint_declared_responses_and_drops_messages_only() {
         UpstreamProtocol::Responses,
         "the derived endpoint-declared mapping must resolve to Responses"
     );
+    let derived_messages = provider
+        .mappings
+        .iter()
+        .find(|mapping| mapping.upstream_model == "endpoint-messages")
+        .expect("the endpoint-declared Messages id must be derived as a mapping");
+    assert_eq!(
+        serde_json::to_value(derived_messages.protocol).expect("serialize the derived protocol"),
+        json!("anthropic_messages"),
+        "the derived endpoint-declared mapping must carry the native protocol"
+    );
+    assert_eq!(
+        serde_json::to_value(derived_messages.effective_protocol(provider.protocol))
+            .expect("serialize the effective protocol"),
+        json!("anthropic_messages"),
+        "the derived endpoint-declared mapping must resolve to the native protocol"
+    );
     assert!(
         provider
             .mappings
             .iter()
-            .all(|mapping| mapping.upstream_model != "messages-only"),
-        "a Messages-only id must never be guessed as Chat and derived as a mapping"
+            .all(|mapping| mapping.upstream_model != "no-metadata"),
+        "an undeclared metadata-less id must never be guessed and derived as a mapping"
     );
 }
 

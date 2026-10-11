@@ -1,3 +1,4 @@
+use super::anthropic::{is_messages_path, DEFAULT_ANTHROPIC_VERSION};
 use super::GatewayUpstreamProvider;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
@@ -134,7 +135,14 @@ fn build_request(
         .body(rewritten);
     let attempt_key = provider.attempt_key.trim();
     if !attempt_key.is_empty() {
-        request = request.header("authorization", format!("Bearer {attempt_key}"));
+        if is_messages_path(path) {
+            request = request.header("x-api-key", attempt_key);
+        } else {
+            request = request.header("authorization", format!("Bearer {attempt_key}"));
+        }
+    }
+    if is_messages_path(path) && !client_headers.contains_key("anthropic-version") {
+        request = request.header("anthropic-version", DEFAULT_ANTHROPIC_VERSION);
     }
     Ok(request)
 }

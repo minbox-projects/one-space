@@ -25,7 +25,7 @@ Status: implemented
 
 `UsageMetrics` 在 totals、时间分桶、模型与服务商四个层级新增五个始终序列化的附加字段：`cache_hit_tokens`、`cache_eligible_tokens`、`cache_hit_rate_percent`（`0..=100` 的百分数或 `null`）、`cache_rate_eligible_count` 与 `successful_request_count`。命令名 `api_gateway_usage_stats` 及其既有字段不变。分子为 `cache_read` 求和，分母为 `ordinary + cache_read + cache_write` 求和；所有层级共用同一合格谓词（终止、`result='success'`、`usage_semantics='canonical_v1'`、`usage_present=1`、`cache_accounting_valid=1`、分母大于 0），因此同一本地模型跨服务商时先分别求和分子与分母、再计算一次 token 加权命中率，而服务商明细仍按 `local_model + provider_id + provider_name` 分离。`successful_request_count` 统计范围内成功终止行，`cache_rate_eligible_count` 只统计合格行：legacy、缺失、零分母与非法成功计入成功但不合格，失败与无候选行两者都不计；遗留 `cancelled` 行在旧数据库首次打开时被一次性删除（[Gateway Migration Is Permanent and Version-Gated](../architecture/2026-09-24-version-gated-gateway-migration.md)）。
 
-`SseUsageAccumulator` 同时接受 Chat Completions 顶层 `usage` 与 Responses 的 `response.completed.response.usage`，保留最后一个有效对象，并只以有界透传读取转发字节；网关绝不注入 `stream_options.include_usage`，缺失的 usage 对象记 `usage_present = false`。不修改任何请求或响应字节，`forwarding.rs` 保持不变。用量面板直接渲染后端 `cache_hit_rate_percent`（`null` 显示 `—`、真实的 `0.0` 显示 `0%`），在总览、模型与服务商层级把覆盖显示为合格数/成功数，并把指标名固定为中文“Token 缓存命中率”、英文“Token Cache Hit Rate”。
+`SseUsageAccumulator` 同时接受 Chat Completions 顶层 `usage` 与 Responses 的 `response.completed.response.usage`，保留最后一个有效对象，并只以有界透传读取转发字节；原生 Anthropic Messages 流另由 `AnthropicSseObserver` 观察，在同一个归一化之前按字段合并 `message_start.message.usage` 与累积 `message_delta.usage`；网关绝不注入 `stream_options.include_usage`，缺失的 usage 对象记 `usage_present = false`。不修改任何请求或响应字节，`forwarding.rs` 保持不变。用量面板直接渲染后端 `cache_hit_rate_percent`（`null` 显示 `—`、真实的 `0.0` 显示 `0%`），在总览、模型与服务商层级把覆盖显示为合格数/成功数，并把指标名固定为中文“Token 缓存命中率”、英文“Token Cache Hit Rate”。
 
 ## Alternatives considered
 
@@ -45,3 +45,4 @@ Status: implemented
 - 流式转发字节与请求体保持不变；绝不注入 `stream_options.include_usage`，缺失的 usage 对象记作不存在。
 - 部分取代：[API Gateway Usage Stats and Request Logs](../architecture/2026-09-17-ai-gateway-usage-logs.md) 保留并交叉链接；本记录只取代其记录的流式 usage 来源、缺失 usage 记 0 的行为与原始 token 档位语义，其中的 SQLite 日志、记录时价格冻结、保留、`group_by` 契约与 `local_model` 面决策仍然有效。
 - `MEMORY.md` 与两个 `api-gateway` 导航职责描述这套归一化、schema、资格与覆盖契约，且 `navigation.md` 已按权威 JSON 重新生成。
+- 部分取代：[Native Anthropic Messages Entry and Protocol Recognition](../architecture/2026-10-11-ai-gateway-anthropic-messages.md) 通过在 `AnthropicSseObserver` 中新增原生 Anthropic Messages 的 start/cumulative 按字段合并，部分取代本记录的流式 usage 观察，而四档归一化、存储迁移、合格谓词与覆盖契约继续有效。

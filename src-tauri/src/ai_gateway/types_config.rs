@@ -279,6 +279,7 @@ pub enum UpstreamProtocol {
     #[default]
     ChatCompletions,
     Responses,
+    AnthropicMessages,
 }
 
 impl UpstreamProtocol {
@@ -287,6 +288,7 @@ impl UpstreamProtocol {
         match self {
             Self::ChatCompletions => "/chat/completions",
             Self::Responses => "/responses",
+            Self::AnthropicMessages => "/messages",
         }
     }
 }
