@@ -1653,9 +1653,6 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     // Read-only usage parser fed from the relay's own passthrough loop; it never
     // influences the bytes written to the caller.
     let mut usage = SseUsageAccumulator::default();
-    let mut native_messages = is_messages_path(path);
-    let mut native_sse: Option<AnthropicSseObserver> = None;
-    let mut converted_sse: Option<AnthropicSseConverter> = None;
     let mut capture = ForwardCapture::default();
     // Real failure status to persist for a terminal all-unavailable outcome: the
     // last upstream HTTP status (0 for a network error). The caller-facing
@@ -1776,9 +1773,9 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         let upstream_protocol = attempt_protocol
             .or_else(|| resolve_upstream_protocol(&candidate.provider, requested, protocol))
             .unwrap_or(protocol);
-        native_messages = upstream_protocol == UpstreamProtocol::AnthropicMessages;
-        native_sse = native_messages.then(AnthropicSseObserver::default);
-        converted_sse = (native_messages && is_conversion_path(path))
+        let native_messages = upstream_protocol == UpstreamProtocol::AnthropicMessages;
+        let mut native_sse = native_messages.then(AnthropicSseObserver::default);
+        let mut converted_sse = (native_messages && is_conversion_path(path))
             .then(|| AnthropicSseConverter::new(path, requested.unwrap_or(&candidate.model)));
         capture.provider_id = candidate.provider.id.clone();
         capture.provider_name = candidate.provider.name.clone();

@@ -216,6 +216,7 @@ pub(in crate::ai_gateway) async fn open_streaming_response_with_protocol(
     request.send().await.map_err(|e| e.to_string())
 }
 
+#[cfg(test)]
 pub(in crate::ai_gateway) async fn forward_non_streaming(
     provider: &GatewayUpstreamProvider,
     path: &str,
@@ -224,30 +225,6 @@ pub(in crate::ai_gateway) async fn forward_non_streaming(
     client_headers: &HashMap<String, String>,
 ) -> Result<UpstreamJsonResponse, String> {
     forward_non_streaming_with_protocol(
-        provider,
-        path,
-        body,
-        model,
-        client_headers,
-        if is_messages_path(path) {
-            UpstreamProtocol::AnthropicMessages
-        } else if path.split('?').next().unwrap_or(path) == "/v1/responses" {
-            UpstreamProtocol::Responses
-        } else {
-            UpstreamProtocol::ChatCompletions
-        },
-    )
-    .await
-}
-
-pub(in crate::ai_gateway) async fn open_streaming_response(
-    provider: &GatewayUpstreamProvider,
-    path: &str,
-    body: &[u8],
-    model: &str,
-    client_headers: &HashMap<String, String>,
-) -> Result<reqwest::Response, String> {
-    open_streaming_response_with_protocol(
         provider,
         path,
         body,

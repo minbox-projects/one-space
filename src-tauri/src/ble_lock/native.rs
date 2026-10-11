@@ -256,6 +256,7 @@ impl<P: BleLockPlatform> BleLockNativeController<P> {
 
     /// Record a near transition (no measurement): wake the display and, when
     /// fully qualified, make at most one guarded password injection.
+    #[cfg(test)]
     pub fn note_near(&mut self) -> BleLockNativeOutcome {
         let mut outcome = BleLockNativeOutcome::default();
         if self.stopped || self.system_sleeping {

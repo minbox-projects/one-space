@@ -1101,6 +1101,7 @@ pub(in crate::ai_gateway) type UpsertFuture =
 /// canonical provider; the command layer uses
 /// [`apply_terminal_sync_with_selection`] to also accept an explicit operator
 /// selection for a first sync.
+#[cfg(test)]
 pub(in crate::ai_gateway) async fn apply_terminal_sync_with<F>(
     providers_data: &serde_json::Value,
     upsert: F,
