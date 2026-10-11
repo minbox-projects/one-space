@@ -622,35 +622,38 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 
 - 每个上游维护名称、`Api 地址`、`ApiKey`、默认模型、模型映射与 `接口协议`；每条「本地模型 → 远端模型」映射都可选填 `本地模型名称`（网关中为该本地模型展示的名称，留空时回退到远端模型名），并可单独选择协议，默认「跟随服务商协议」（保存为继承而非固定值），因此在同一条上游记录内就能让不同模型走不同 endpoint
 - 模型解析先按请求模型匹配映射：命中映射但该映射的协议与请求不一致时，该上游不参与本次请求，也不会回退默认模型；没有匹配到映射时才回退默认模型，并要求服务商协议与请求一致，两者都不可用时该上游不参与本次请求
-- `接口协议` 决定该上游接收哪种请求：`Chat Completions (/chat/completions)` 或 `Responses (/responses)`。本地服务同时接受 `/chat/completions` 与 `/responses`（也接受不带 `/v1` 的写法），但只会把请求交给映射行协议（缺省继承服务商协议）一致的上游；映射行协议不一致的上游不参与本次请求，且不会做请求体转换，请让调用方协议与该上游协议保持一致
+- `接口协议` 决定该上游接收哪种请求：`Chat Completions (/chat/completions)`、`Responses (/responses)` 或 `Anthropic Messages（原生, /messages）`。本地服务同时接受 `POST /v1/chat/completions`、`POST /v1/responses` 与 `POST /v1/messages`（也接受不带 `/v1` 的写法，`/v1/messages` 支持 `?beta=true` 之类查询串），但只会把请求交给映射行协议（缺省继承服务商协议）一致的上游；映射行协议不一致的上游不参与本次请求。当上游是 `Anthropic Messages` 而调用方使用 `/v1/chat/completions` 或 `/v1/responses` 时，网关会把请求、响应与 SSE 流转换为调用方协议；当调用方使用原生 `/v1/messages` 时则按 Anthropic 语义透传（见下）
 - `Api 地址` 写成 `https://host` 或 `https://host/v1` 均可，本地服务会归一化路径并折叠重复的 `/v1`
 - 可以用 `预览模型` 查看某个本地模型最终会解析成哪个远端模型与目标 endpoint
-- 已知边界：`/v1/messages`（Anthropic messages 协议）暂不支持；只提供该协议的模型（例如 OpenCode Go 的 Qwen / MiniMax 系列）本轮不可用
+- 原生 `Anthropic Messages` 入口为 `POST http://127.0.0.1:<端口>/v1/messages`（含查询串），供 Claude Code 等原生 Anthropic 调用方使用；网关按 Anthropic 信封/事件返回自身错误，透传入站 `anthropic-beta` 与 `anthropic-version`，仅在调用方缺省时补充 `anthropic-version: 2023-06-01`，并用所选上游密钥池 key 替换本地凭据
+- 转换边界：映射协议为 `Anthropic Messages` 时，`/v1/chat/completions` 与 `/v1/responses` 的请求体会被转换为 Messages，响应与 SSE 流再转回调用方格式；`previous_response_id`、未解析的条目引用、`background`、`store`、`n > 1`、JSON/schema 输出格式与不可翻译的非空推理选项会在任何上游尝试前以字段级 400 拒绝，输出上限缺省为 4096、负数/小数/字符串上限同样按字段拒绝；原生流必须收到 `message_stop` 才算成功，带内 `error` 事件按失败处理且不重放
 - 可以单独启用/禁用某个上游；禁用只影响是否参与转发，不会删除其配置
 - 新建本地 Key 只需填写名称，Key 值由应用随机生成
 - 本地 Key 是调用方访问本地服务时使用的凭证，请求通过 `Authorization: Bearer <key>` 或 `x-api-key` 携带，任一启用 Key 均可用；没有任何启用 Key 时所有请求都会被拒绝
 - 默认 Key 在 `本地 Key` 列表中标记；手动指定的默认 Key 被禁用或删除后，会按列表顺序顺延到下一个启用 Key
 - 列表中的 Key 只显示掩码值，可复制完整值；密钥不会以明文落盘
 
-把本地 Api / Key 一键配置到 OpenCode / Codex：
+把本地 Api / Key 一键配置到 OpenCode / Codex / Claude：
 
-1. 打开 `AI 终端集成`；列表固定为每个受支持工具（`opencode`、`codex`）各一行，不依赖该工具是否已有服务商记录
-2. 点目标工具所在行最右侧的单个按钮：尚未添加过显示 `添加服务商`（调用 `ai_gateway_configure_terminal`），已添加过显示 `同步`（调用 `ai_gateway_sync_terminal`）
-3. 写入内容是本地 Api 地址、当前默认本地 Key，以及网关的模型映射列表
+1. 打开 `AI 终端集成`；列表固定为每个受支持工具（`opencode`、`codex`、`claude`）各一行，不依赖该工具是否已有服务商记录
+2. 点目标工具所在行最右侧的单个按钮：尚未添加过显示 `添加服务商`（调用 `ai_gateway_configure_terminal`），已添加过显示 `同步`（调用 `ai_gateway_sync_terminal`）；`claude` 行在首次同步或已保存选择缺失/失效时会先弹出四模型选择对话框
+3. 写入内容是本地 Api 地址、当前默认本地 Key，以及网关的模型映射列表（`claude` 另写入默认模型与 haiku / sonnet / opus 三个家族别名）
 
 说明：
 
-- 同步不会改写你已有的 `opencode` / `codex` 服务商记录，而是为每个工具创建或更新一条名为 `AI Gateway` 的独立网关服务商记录
-- 该记录不会自动启用；需要使用时到 `AI Environments` 中手动启用，不需要时可直接禁用或删除
-- 写入的模型清单只取当前已启用且未被自动禁用的上游服务商：`opencode` 按每条映射的本地模型名列出模型，并在该映射配置了推理档位时把档位写成模型条目的 `reasoning: true` 与 `variants`（每个档位形如 `{"reasoningEffort": "<档位>"}`），未配置档位的模型只写名称；当某个本地模型在所有已启用上游中都只能经 Responses (`/responses`) 服务、没有任何一个能经 Chat Completions (`/chat/completions`) 服务时，该模型条目会额外写入 `provider.npm = "@ai-sdk/openai"`，让 opencode 对这个模型调用 `/responses`（只覆盖该模型条目，服务商条目本身仍使用 `@ai-sdk/openai-compatible`）；只要任一已启用上游能经 Chat Completions 服务该模型，就保持默认条目、按 chat 调用，因此同一本地模型同时存在两种协议的服务方时以 chat 为准；判断按每个本地模型跨全部已启用上游进行，禁用的上游、禁用或自动禁用的映射行都不参与；`codex` 使用第一条映射的本地模型名作为模型，没有可用映射时才回退该服务商的默认模型
+- 同步不会改写你已有的 `opencode` / `codex` / `claude` 服务商记录，而是为每个工具创建或更新一条名为 `AI Gateway` 的独立网关服务商记录；`claude` 记录使用不带 `/v1` 的裸 origin 作为 `ANTHROPIC_BASE_URL`
+- `opencode` 与 `claude` 的记录在同步成功后会由网关自动激活并投影到对应 CLI 配置；`codex` 记录保持手动激活与手动投影，需要使用时到 `AI Environments` 中启用，不需要时可直接禁用或删除
+- 写入的模型清单只取当前已启用且未被自动禁用的上游服务商：`opencode` 按每条映射的本地模型名列出模型，并在该映射配置了推理档位时把档位写成模型条目的 `reasoning: true` 与 `variants`（每个档位形如 `{"reasoningEffort": "<档位>"}`），未配置档位的模型只写名称；当某个本地模型在所有已启用上游中都只能经 Responses (`/responses`) 服务、没有任何一个能经 Chat Completions (`/chat/completions`) 或 Anthropic Messages 服务时，该模型条目会额外写入 `provider.npm = "@ai-sdk/openai"`，让 opencode 对这个模型调用 `/responses`（只覆盖该模型条目，服务商条目本身仍使用 `@ai-sdk/openai-compatible`）；只要任一已启用上游能经 Chat Completions 或 Anthropic Messages 服务该模型，就保持默认条目、按 chat 调用，因此同一本地模型同时存在两种协议的服务方时以 chat 为准；判断按每个本地模型跨全部已启用上游进行，禁用的上游、禁用或自动禁用的映射行都不参与；`codex` 使用第一条映射的本地模型名作为模型，没有可用映射时才回退该服务商的默认模型
 - 同步按本地同步台账的 provider id 更新同一条记录，不会每次新建；仅当该记录仍是该工具名下带网关标记的网关服务商时才复用，若台账指向的是你的普通服务商记录，则视为过期记录并新建独立的网关服务商，绝不会改写它；在 `AI Environments` 中删除网关记录后，再点该行的 `同步` 会自动新建一条全新的 `AI Gateway` 记录
-- 不读写 `claude`、`antigravity` 记录，也不改写 `Protocol Router` 的 route 数据
+- 不读写 `antigravity` 记录，也不改写 `Protocol Router` 的 route 数据；`claude` 记录只在 `claude` 行同步时按网关拥有的独立记录创建或更新，绝不改写你已有的 `claude` 服务商记录
+- `claude` 行使用原生 Anthropic 协议：首次同步（或已保存选择缺失/失效）会弹出四选择对话框，为默认模型与 haiku / sonnet / opus 三个家族别名各选一个可经原生 Anthropic Messages 服务的本地模型 id；四个槽位可指向同一个模型，取消对话框不会写入任何命令
+- 选择保存在网关拥有的独立 `AI Gateway` Claude 服务商记录中；后续同步直接复用已保存的选择而不再弹窗，模板自动刷新遇到失效或缺失的选择会跳过该次 Claude 写入、不提示也不替换你已保存的选择；同步成功后会自动激活并投影 Claude（写入 `ANTHROPIC_BASE_URL`、`ANTHROPIC_API_KEY` 与 `ANTHROPIC_MODEL` 及三个家族变量），与 `opencode` 一致，`codex` 仍为手动激活与手动投影
 - 没有启用本地 Key 时，配置与同步会被拒绝并提示先新增并启用一个本地 Key
-- 如需撤销，在 `AI Environments` 中禁用或删除该网关服务商记录
+- 如需撤销，在 `AI Environments` 中禁用或删除该网关服务商记录；如需回退到不支持 `anthropic_messages` 的旧版本，必须先用当前版本移除所有 `anthropic_messages` 值（模板默认、模板模型、服务商默认与映射行），或恢复同一 profile 的旧加密配置与其密钥材料——仅禁用相关行不足以让旧版本的枚举解析器读取该协议；回退 Claude 终端同步时，用既有应用操作恢复先前的 Claude 活动服务商与投影
 
 同步时机：
 
-- 每行显示 `已同步` 或 `待同步` 状态徽标；状态由后端按本地同步台账与工具侧网关记录计算（`pending_sync`）：默认 Key 或本地 Api 地址与上次写入的不一致时为 `待同步`；此外，后端还会把「此刻重新同步会写出的模型选择」与工具侧已存记录比较（`opencode` 深比较模型清单 `tool_config.models`，`codex` 比较顶层 `model`），仅一侧缺键、不一致或同步载荷构建失败同样显示 `待同步`；该比较绝不比较 Key 值本身；尚未写入过或找不到受标记的网关记录时也显示 `待同步`
+- 每行显示 `已同步` 或 `待同步` 状态徽标；状态由后端按本地同步台账与工具侧网关记录计算（`pending_sync`）：默认 Key 或本地 Api 地址与上次写入的不一致时为 `待同步`；此外，后端还会把「此刻重新同步会写出的模型选择」与工具侧已存记录比较（`opencode` 深比较模型清单 `tool_config.models`，`codex` 比较顶层 `model`，`claude` 比较地址、Key 与四模型选择），仅一侧缺键、不一致或同步载荷构建失败同样显示 `待同步`；该比较绝不比较 Key 值本身；尚未写入过或找不到受标记的网关记录时也显示 `待同步`
 - 修改端口或切换默认 Key 后，之前配置过的目标会重新显示为 `待同步`，需要再点该行的 `同步`；改动上游映射、映射协议、启用状态或 `default_model` 等会改变工具侧模型选择的配置（包括应用升级改变生成的模型条目，例如按模型写入的 `provider.npm`）后同样会重新显示为 `待同步`
 - 没有顶部全局按钮、多选框与批量操作；每次写入都由用户主动点击该行的单个按钮触发
 
@@ -678,7 +681,7 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 - 流式请求：在写出首字节前允许切换到其他候选，写出首字节后只终止本次流，不会重试或重复输出
 - 没有任何可用候选时：非流式返回上述 `502`，流式返回 `200` 的 SSE 错误事件并以 `data: [DONE]` 结束
 - 协议用错时（例如用 `/chat/completions` 调用只走 `/responses` 的模型），返回的 `502` 消息会指出该模型应走的 endpoint；流式请求返回的是同一错误对象的 `200` SSE 事件
-- 只有 `POST /v1/chat/completions` 与 `POST /v1/responses` 会被转发；`GET /v1/models` 只返回本地模型名并集，不请求上游；其他路径或方法返回 `404`
+- 只有 `POST /v1/chat/completions`、`POST /v1/responses` 与 `POST /v1/messages` 会被转发；`GET /v1/models` 只返回本地模型名并集，不请求上游；其他路径或方法返回 `404`
 
 ### 13.4 用量统计与请求日志
 
