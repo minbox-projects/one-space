@@ -457,6 +457,140 @@ describe("TerminalSyncPanel Claude 目标与四模型选择对话框", () => {
       screen.getByTestId("claude-model-selection-dialog"),
     ).toBeInTheDocument();
   });
+
+  it("已添加 Claude 行展示当前模型映射摘要标签与模型映射按钮", () => {
+    const saved = {
+      ...claudeTarget({
+        synced: true,
+        pending_sync: false,
+        synced_key_id: "key-1",
+        synced_at: 1_700_000_000,
+      }),
+      claude_models: {
+        default_model: "cc-opus",
+        haiku: "cc-haiku",
+        sonnet: "cc-sonnet",
+        opus: "cc-opus",
+      },
+    } as unknown as GatewayTerminalTarget;
+
+    renderWithProviders(
+      <TerminalSyncPanel
+        targets={[saved]}
+        config={claudeConfig()}
+        syncingTools={{}}
+        onConfigureTool={vi.fn()}
+        onSyncTool={vi.fn()}
+      />,
+    );
+
+    const summary = screen.getByTestId("ai-gateway-claude-mappings-summary");
+    expect(summary).toHaveTextContent("default: cc-opus");
+    expect(summary).toHaveTextContent("haiku: cc-haiku");
+    expect(summary).toHaveTextContent("sonnet: cc-sonnet");
+    expect(summary).toHaveTextContent("opus: cc-opus");
+    expect(
+      screen.getByTestId("ai-gateway-claude-edit-models"),
+    ).toBeInTheDocument();
+  });
+
+  it("未配置模型映射时摘要显示未配置", () => {
+    const unsyncedClaude = {
+      ...claudeTarget({
+        synced: false,
+        pending_sync: true,
+      }),
+      claude_models: null,
+    } as unknown as GatewayTerminalTarget;
+
+    renderWithProviders(
+      <TerminalSyncPanel
+        targets={[unsyncedClaude]}
+        config={claudeConfig()}
+        syncingTools={{}}
+        onConfigureTool={vi.fn()}
+        onSyncTool={vi.fn()}
+      />,
+    );
+
+    const summary = screen.getByTestId("ai-gateway-claude-mappings-summary");
+    expect(summary).toHaveTextContent("Not configured");
+    expect(
+      screen.queryByTestId("ai-gateway-claude-edit-models"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("后期点击模型映射按钮打开弹窗、正确回显当前模型并在修改后同步", async () => {
+    const user = userEvent.setup();
+    const onSyncTool = vi.fn();
+    const saved = {
+      ...claudeTarget({
+        synced: true,
+        pending_sync: false,
+        synced_key_id: "key-1",
+        synced_at: 1_700_000_000,
+      }),
+      claude_models: {
+        default_model: "cc-opus",
+        haiku: "cc-haiku",
+        sonnet: "cc-sonnet",
+        opus: "cc-opus",
+      },
+    } as unknown as GatewayTerminalTarget;
+
+    renderWithProviders(
+      <TerminalSyncPanel
+        targets={[saved]}
+        config={claudeConfig()}
+        syncingTools={{}}
+        onConfigureTool={vi.fn()}
+        onSyncTool={onSyncTool}
+      />,
+    );
+
+    const editBtn = screen.getByTestId("ai-gateway-claude-edit-models");
+    await user.click(editBtn);
+
+    expect(
+      screen.getByTestId("claude-model-selection-dialog"),
+    ).toBeInTheDocument();
+
+    // 验证历史配置正确回显
+    expect(screen.getByTestId("claude-model-select-default")).toHaveValue(
+      "cc-opus",
+    );
+    expect(screen.getByTestId("claude-model-select-haiku")).toHaveValue(
+      "cc-haiku",
+    );
+    expect(screen.getByTestId("claude-model-select-sonnet")).toHaveValue(
+      "cc-sonnet",
+    );
+    expect(screen.getByTestId("claude-model-select-opus")).toHaveValue(
+      "cc-opus",
+    );
+
+    // 修改 default 和 opus 模型为 cc-sonnet
+    await user.selectOptions(
+      screen.getByTestId("claude-model-select-default"),
+      "cc-sonnet",
+    );
+    await user.selectOptions(
+      screen.getByTestId("claude-model-select-opus"),
+      "cc-sonnet",
+    );
+
+    await user.click(screen.getByTestId("claude-model-selection-submit"));
+
+    // 验证调用了 onSyncTool 并携带最新修改后的模型映射
+    expect(onSyncTool).toHaveBeenCalledWith("claude", {
+      default_model: "cc-sonnet",
+      haiku: "cc-haiku",
+      sonnet: "cc-sonnet",
+      opus: "cc-sonnet",
+    });
+    expect(onSyncTool).toHaveBeenCalledTimes(1);
+  });
 });
+
 
 

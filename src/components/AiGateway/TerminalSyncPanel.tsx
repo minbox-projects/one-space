@@ -8,6 +8,7 @@ import {
   HelpCircle,
   Play,
   RefreshCw,
+  SlidersHorizontal,
   TerminalSquare,
   Wand2,
 } from "lucide-react";
@@ -90,6 +91,24 @@ export function TerminalSyncPanel({
         .map((entry) => entry.model),
     [config.providers],
   );
+
+  const claudeTarget = supportedTargets.find((target) => target.tool === "claude");
+  const claudeInitialSelection = useMemo(() => {
+    const saved = claudeTarget?.claude_models;
+    if (!saved) return null;
+    const candidates = new Set(claudeCandidateModels);
+    return {
+      default_model: candidates.has(saved.default_model) ? saved.default_model : "",
+      haiku: candidates.has(saved.haiku) ? saved.haiku : "",
+      sonnet: candidates.has(saved.sonnet) ? saved.sonnet : "",
+      opus: candidates.has(saved.opus) ? saved.opus : "",
+    };
+  }, [claudeTarget?.claude_models, claudeCandidateModels]);
+
+  const handleOpenClaudeEdit = (hasBeenAdded: boolean) => {
+    setClaudeDialogAction(hasBeenAdded ? "sync" : "configure");
+    setClaudeDialogOpen(true);
+  };
 
   // Route a row action: Claude reuses a valid saved selection directly and only
   // opens the four-choice dialog for a first/missing/invalid selection; the
@@ -272,6 +291,48 @@ export function TerminalSyncPanel({
                       </span>
                     </span>
                   </div>
+                  {target.tool === "claude" ? (
+                    <div
+                      className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground"
+                      data-testid="ai-gateway-claude-mappings-summary"
+                    >
+                      <span className="font-medium text-foreground/75">
+                        {t("aiGatewayModelMappings", "Model mappings")}:
+                      </span>
+                      {target.claude_models ? (
+                        <div className="flex flex-wrap items-center gap-1">
+                          <span
+                            className="rounded border border-border/60 bg-muted/50 px-1.5 py-0.2 font-mono text-[10px] text-foreground/80"
+                            title={t("aiGatewayClaudeDefaultModel", "Default model")}
+                          >
+                            default: {target.claude_models.default_model}
+                          </span>
+                          <span
+                            className="rounded border border-border/60 bg-muted/50 px-1.5 py-0.2 font-mono text-[10px] text-foreground/80"
+                            title={t("aiGatewayClaudeHaikuModel", "Haiku model")}
+                          >
+                            haiku: {target.claude_models.haiku}
+                          </span>
+                          <span
+                            className="rounded border border-border/60 bg-muted/50 px-1.5 py-0.2 font-mono text-[10px] text-foreground/80"
+                            title={t("aiGatewayClaudeSonnetModel", "Sonnet model")}
+                          >
+                            sonnet: {target.claude_models.sonnet}
+                          </span>
+                          <span
+                            className="rounded border border-border/60 bg-muted/50 px-1.5 py-0.2 font-mono text-[10px] text-foreground/80"
+                            title={t("aiGatewayClaudeOpusModel", "Opus model")}
+                          >
+                            opus: {target.claude_models.opus}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="italic text-muted-foreground/70">
+                          {t("aiGatewayClaudeNotConfigured", "Not configured")}
+                        </span>
+                      )}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -295,6 +356,22 @@ export function TerminalSyncPanel({
                       </>
                     )}
                   </span>
+                  {target.tool === "claude" && hasBeenAdded ? (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenClaudeEdit(true)}
+                      disabled={rowDisabled}
+                      data-testid="ai-gateway-claude-edit-models"
+                      title={t(
+                        "aiGatewayClaudeEditModelsTip",
+                        "Modify model mappings between Claude Code and the gateway",
+                      )}
+                      className="inline-flex h-7 items-center gap-1.5 rounded-lg border bg-background px-2.5 text-xs font-medium shadow-xs transition hover:bg-muted disabled:opacity-50"
+                    >
+                      <SlidersHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span>{t("aiGatewayClaudeEditModels", "Model mappings")}</span>
+                    </button>
+                  ) : null}
                   {hasBeenAdded ? (
                     <button
                       type="button"
@@ -384,7 +461,7 @@ export function TerminalSyncPanel({
       <ClaudeModelSelectionDialog
         open={claudeDialogOpen}
         models={claudeCandidateModels}
-        initialSelection={null}
+        initialSelection={claudeInitialSelection}
         onSubmit={handleClaudeSubmit}
         onCancel={() => setClaudeDialogOpen(false)}
       />

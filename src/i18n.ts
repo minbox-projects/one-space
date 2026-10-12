@@ -636,6 +636,10 @@ const resources = {
       aiGatewayClaudeSonnetModel: "Sonnet model",
       aiGatewayClaudeOpusModel: "Opus model",
       aiGatewayClaudeModelPlaceholder: "Select a local model",
+      aiGatewayClaudeEditModels: "Model mappings",
+      aiGatewayClaudeEditModelsTip:
+        "Modify model mappings between Claude Code and the gateway",
+      aiGatewayClaudeNotConfigured: "Not configured",
       aiGatewayLoadFailed: "Failed to load AI Gateway configuration.",
       aiGatewayServiceStarted: "Gateway service started",
       aiGatewayServiceStopped: "Gateway service stopped",
@@ -4351,6 +4355,10 @@ const resources = {
       aiGatewayClaudeSonnetModel: "Sonnet 模型",
       aiGatewayClaudeOpusModel: "Opus 模型",
       aiGatewayClaudeModelPlaceholder: "选择本地模型",
+      aiGatewayClaudeEditModels: "模型映射",
+      aiGatewayClaudeEditModelsTip:
+        "修改 Claude Code 各槽位与网关中模型的映射关系",
+      aiGatewayClaudeNotConfigured: "未配置",
       aiGatewayLoadFailed: "加载 AI 网关配置失败。",
       aiGatewayServiceStarted: "网关服务已启动",
       aiGatewayServiceStopped: "网关服务已停止",
