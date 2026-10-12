@@ -39,6 +39,7 @@ aiGatewayDeleteKeyConfirm
 aiGatewayDeleteKeyTitle
 aiGatewayDisableAllMappings
 aiGatewayEnableAllMappings
+aiGatewayEndpoints
 aiGatewayEveryDay
 aiGatewayIgnoredModels
 aiGatewayIgnoredModelsDesc
@@ -57,6 +58,7 @@ aiGatewayMappingReenabled
 aiGatewayMappingsReenabledAll
 aiGatewayModelRestored
 aiGatewayNoTemplates
+aiGatewayPort
 aiGatewayProviderAutoDisabledModelsHint
 aiGatewayProviderCreated
 aiGatewayProviderDeleted

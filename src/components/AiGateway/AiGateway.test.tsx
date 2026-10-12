@@ -1446,9 +1446,13 @@ describe("AiGateway", () => {
     expect(within(tokensCard).getByText("2")).toBeInTheDocument();
     expect(within(tokensCard).getByText(/Today's tokens|今日消耗/i)).toBeInTheDocument();
 
-    // 5. 顶部操作栏提供默认 Key 快捷复制入口
-    expect(screen.getByTestId("ai-gateway-default-key-preview")).toBeInTheDocument();
-    expect(screen.getByTestId("ai-gateway-copy-default-key")).toBeInTheDocument();
+    // 5. 协议端点栏提供 Anthropic Messages 协议地址与复制入口
+    expect(screen.getByTestId("ai-gateway-anthropic-address")).toHaveTextContent(
+      "http://127.0.0.1:17688/v1/messages",
+    );
+    expect(
+      screen.getByTestId("ai-gateway-copy-anthropic-address"),
+    ).toBeInTheDocument();
 
     // 6. 终端同步状态转移到终端集成 Tab 徽标：展示 1/2 已同步
     const terminalsTab = screen.getByRole("tab", { name: /AI terminal integration/i });
@@ -2836,6 +2840,7 @@ describe("AiGateway 逐行自动禁用前端计数与重新启用入口", () => 
     };
     const store: Store = {
       config: makeConfig({
+        port: 17688,
         keys: [key],
         default_key_id: "k1",
       }),
@@ -2848,31 +2853,40 @@ describe("AiGateway 逐行自动禁用前端计数与重新启用入口", () => 
 
     renderWithProviders(<AiGateway />);
 
-    const copyBtn = await screen.findByTestId("ai-gateway-copy-default-key");
-    fireEvent.click(copyBtn);
+    // Anthropic Messages 协议地址快捷复制
+    const anthropicAddress = await screen.findByTestId(
+      "ai-gateway-anthropic-address",
+    );
+    expect(anthropicAddress).toHaveTextContent(
+      "http://127.0.0.1:17688/v1/messages",
+    );
 
-    expect(spy).toHaveBeenCalledWith("sk-gateway-secret-12345");
+    const copyAnthropicBtn = await screen.findByTestId(
+      "ai-gateway-copy-anthropic-address",
+    );
+    fireEvent.click(copyAnthropicBtn);
+    expect(spy).toHaveBeenCalledWith("http://127.0.0.1:17688/v1/messages");
   });
 
-  it("顶部未配置默认 Key 时显示未配置文案且点击可直达密钥Tab", async () => {
+  it("顶部操作栏同时展示 OpenAI 与 Anthropic Messages 两个协议地址与徽标", async () => {
     const store: Store = {
-      config: makeConfig({
-        keys: [],
-        default_key_id: null,
-      }),
-      status: makeStatus({ running: true }),
+      config: makeConfig({ port: 17688 }),
+      status: makeStatus({ running: false }),
       targets: [],
     };
     mockStore(store);
 
     renderWithProviders(<AiGateway />);
 
-    const noKeyHint = await screen.findByText(/No key configured|未配置密钥/i);
-    expect(noKeyHint).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("ai-gateway-local-address"),
+    ).toHaveTextContent("http://127.0.0.1:17688/v1");
+    expect(screen.getByText("OpenAI")).toBeInTheDocument();
 
-    fireEvent.click(noKeyHint);
-    const keysTab = screen.getByRole("tab", { name: /API Keys|API 密钥/i });
-    expect(keysTab).toHaveAttribute("aria-selected", "true");
+    expect(
+      await screen.findByTestId("ai-gateway-anthropic-address"),
+    ).toHaveTextContent("http://127.0.0.1:17688/v1/messages");
+    expect(screen.getByText("Anthropic Messages")).toBeInTheDocument();
   });
 
   it("顶部操作栏展示手动刷新按钮，点击后重新获取今日统计与日志", async () => {

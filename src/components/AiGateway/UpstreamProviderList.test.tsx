@@ -2404,7 +2404,7 @@ describe("UpstreamProviderList 模板策略监控选择（Step 2）", () => {
     expect(monitorCalls("ai_gateway_provider_go_usage", "broken")).toHaveLength(0);
   });
 
-  it("卡片展示绑定模板与有效策略", () => {
+  it("卡片展示绑定模板，且不再展示有效策略", () => {
     renderPolicyList(
       [makeProvider({ id: "bound", template_id: "tpl-go" })],
       [
@@ -2422,12 +2422,9 @@ describe("UpstreamProviderList 模板策略监控选择（Step 2）", () => {
     );
     expect(binding).toHaveTextContent("OpenCode Go");
 
-    const strategy = screen.getByTestId(
-      "ai-gateway-provider-effective-strategy-bound",
-    );
-    expect(strategy).toHaveAttribute("data-sync-strategy", "opencode_go");
-    expect(strategy).toHaveAttribute("data-quota-strategy", "opencode_go");
-    expect(strategy).toHaveAttribute("data-error-strategy", "generic");
+    expect(
+      screen.queryByTestId("ai-gateway-provider-effective-strategy-bound"),
+    ).not.toBeInTheDocument();
   });
 
   it("批量刷新资格按有效额度策略与密钥池判定而非 URL", async () => {

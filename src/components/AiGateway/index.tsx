@@ -50,6 +50,7 @@ import {
   aiGatewayUpsertProvider,
   aiGatewayUpsertProviderTemplate,
   aiGatewayUsageStats,
+  localAnthropicMessagesUrl,
   localBaseUrl,
   providerKeyPool,
   resolveDefaultKeyId,
@@ -129,7 +130,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [syncingTools, setSyncingTools] = useState<Record<string, boolean>>({});
   const [addressCopied, setAddressCopied] = useState(false);
-  const [defaultKeyCopied, setDefaultKeyCopied] = useState(false);
+  const [anthropicAddressCopied, setAnthropicAddressCopied] = useState(false);
   const [todayStats, setTodayStats] = useState<UsageStats | null>(null);
   const [todayFailedRequests, setTodayFailedRequests] = useState(0);
   const [refreshingToday, setRefreshingToday] = useState(false);
@@ -1013,27 +1014,33 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
     }
   };
 
-  const handleCopyDefaultKey = async () => {
+  const handleCopyAnthropicAddress = async () => {
     if (!config) return;
-    const effectiveId = resolveDefaultKeyId(config.keys, config.default_key_id);
-    const key = config.keys.find((k) => k.id === effectiveId);
-    if (!key) return;
+    const address = localAnthropicMessagesUrl(config.port);
     try {
-      await navigator.clipboard.writeText(key.value);
-      setDefaultKeyCopied(true);
-      setTimeout(() => setDefaultKeyCopied(false), 2000);
+      await navigator.clipboard.writeText(address);
+      setAnthropicAddressCopied(true);
+      setTimeout(() => setAnthropicAddressCopied(false), 2000);
       pushToast({
-        title: t("aiGatewayDefaultKeyCopied", "Default API key copied"),
+        title: t(
+          "aiGatewayAnthropicAddressCopied",
+          "Anthropic Messages API address copied",
+        ),
+        description: address,
         kind: "success",
       });
     } catch (err) {
       pushToast({
-        title: t("aiGatewayKeyCopyFailed", "Failed to copy API key"),
+        title: t(
+          "aiGatewayAddressCopyFailed",
+          "Failed to copy local API address",
+        ),
         description: errorToMessage(err),
         kind: "error",
       });
     }
   };
+
 
   const handleCopyKey = async (key: GatewayKey) => {
     try {
@@ -1187,7 +1194,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           config={config}
           busy={busy}
           addressCopied={addressCopied}
-          defaultKeyCopied={defaultKeyCopied}
+          anthropicAddressCopied={anthropicAddressCopied}
           todayStats={todayStats}
           todayFailedRequests={todayFailedRequests}
           refreshing={refreshingToday}
@@ -1195,7 +1202,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           onStart={handleToggleService}
           onStop={handleToggleService}
           onCopyAddress={() => void handleCopyAddress()}
-          onCopyDefaultKey={() => void handleCopyDefaultKey()}
+          onCopyAnthropicAddress={() => void handleCopyAnthropicAddress()}
           onRefresh={() => void handleManualRefresh()}
         />
 

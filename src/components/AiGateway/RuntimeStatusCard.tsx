@@ -7,7 +7,6 @@ import {
   Check,
   CheckCircle2,
   Copy,
-  KeyRound,
   Loader2,
   Play,
   RefreshCw,
@@ -19,8 +18,8 @@ import {
   aggregateModels,
   formatGatewayTokens,
   formatUsageCurrency,
+  localAnthropicMessagesUrl,
   localBaseUrl,
-  resolveDefaultKeyId,
   type GatewayConfig,
   type GatewayStatus,
   type UsageStats,
@@ -31,7 +30,7 @@ type RuntimeStatusCardProps = {
   config: GatewayConfig;
   busy: boolean;
   addressCopied: boolean;
-  defaultKeyCopied?: boolean;
+  anthropicAddressCopied?: boolean;
   todayStats?: UsageStats | null;
   todayFailedRequests?: number;
   refreshing?: boolean;
@@ -39,7 +38,7 @@ type RuntimeStatusCardProps = {
   onStart: () => void;
   onStop: () => void;
   onCopyAddress: () => void;
-  onCopyDefaultKey?: () => void;
+  onCopyAnthropicAddress?: () => void;
   onRefresh?: () => void;
 };
 
@@ -48,7 +47,7 @@ export function RuntimeStatusCard({
   config,
   busy,
   addressCopied,
-  defaultKeyCopied = false,
+  anthropicAddressCopied = false,
   todayStats = null,
   todayFailedRequests = 0,
   refreshing = false,
@@ -56,12 +55,13 @@ export function RuntimeStatusCard({
   onStart,
   onStop,
   onCopyAddress,
-  onCopyDefaultKey,
+  onCopyAnthropicAddress,
   onRefresh,
 }: RuntimeStatusCardProps) {
   const { t } = useTranslation();
   const running = Boolean(status?.running);
   const address = localBaseUrl(config.port);
+  const anthropicAddress = localAnthropicMessagesUrl(config.port);
 
   // 1. 服务商与健康度
   const totalProviders = status?.provider_count ?? config.providers.length;
@@ -76,14 +76,7 @@ export function RuntimeStatusCard({
     [config.providers],
   );
 
-  // 3. 默认 API 密钥解析
-  const effectiveDefaultKey = useMemo(() => {
-    const effectiveId = resolveDefaultKeyId(config.keys, config.default_key_id);
-    if (!effectiveId) return null;
-    return config.keys.find((k) => k.id === effectiveId) ?? null;
-  }, [config.keys, config.default_key_id]);
-
-  // 4. 今日用量与消耗
+  // 3. 今日用量与消耗
   const todayRequests = todayStats?.request_count ?? 0;
   const todayTokens = todayStats?.total_tokens ?? 0;
   const todayAmount = todayStats?.amount ?? 0;
@@ -93,11 +86,16 @@ export function RuntimeStatusCard({
       className="space-y-3 rounded-xl border bg-card p-4 shadow-sm"
       data-testid="ai-gateway-runtime"
     >
-      {/* 顶部主状态栏：运行状态、本地 API 地址、默认 Key 快速复制与启停按钮 */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2.5">
-          {/* 服务运行状态灯与基础地址 */}
-          <div className="flex items-center gap-2 rounded-lg border bg-muted/20 px-3 py-1.5">
+      {/* 顶部单行聚合栏：运行状态 + 协议端点药丸 + 刷新与启停控制 */}
+      <div
+        className="flex flex-wrap items-center justify-between gap-2.5"
+        data-testid="ai-gateway-endpoints-section"
+        aria-label={t("aiGatewayEndpoints", "API Endpoints")}
+      >
+        {/* 左侧：运行状态与各协议接口端点药丸 */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* 运行状态指示灯与状态文字 */}
+          <div className="flex items-center gap-1.5 shrink-0">
             <span className="relative flex h-2.5 w-2.5">
               {running ? (
                 <>
@@ -108,105 +106,108 @@ export function RuntimeStatusCard({
                 <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground/40" />
               )}
             </span>
-            <div className="flex items-center gap-2 text-xs">
-              <span
-                className={`font-semibold leading-none ${
-                  running ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"
-                }`}
-                data-testid="ai-gateway-runtime-state"
-              >
-                {running ? t("aiGatewayRunning", "Running") : t("aiGatewayStopped", "Stopped")}
-              </span>
-              <span className="text-muted-foreground/40">·</span>
-              <div className="flex items-center gap-1">
-                <code
-                  className={`font-mono text-xs font-medium select-all ${
-                    running ? "text-foreground" : "text-muted-foreground/70"
-                  }`}
-                  title={address}
-                  data-testid="ai-gateway-local-address"
-                >
-                  {address}
-                </code>
-                <button
-                  type="button"
-                  onClick={onCopyAddress}
-                  aria-label={t("aiGatewayCopyAddress", "Copy local API address")}
-                  title={
-                    addressCopied
-                      ? t("aiGatewayAddressCopied", "Local API address copied")
-                      : t("aiGatewayCopyAddress", "Copy local API address")
-                  }
-                  className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                >
-                  {addressCopied ? (
-                    <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
-                  ) : (
-                    <Copy className="h-3 w-3" />
-                  )}
-                </button>
-              </div>
-              <span className="text-muted-foreground/40">·</span>
-              <span className="rounded bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                OpenAI
-              </span>
-            </div>
+            <span
+              className={`text-xs font-semibold leading-none ${
+                running ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"
+              }`}
+              data-testid="ai-gateway-runtime-state"
+            >
+              {running ? t("aiGatewayRunning", "Running") : t("aiGatewayStopped", "Stopped")}
+            </span>
           </div>
 
-          {/* 默认 API 密钥快速复制栏（高频快捷接入） */}
-          <div className="flex items-center gap-1.5 rounded-lg border bg-muted/20 px-3 py-1.5 text-xs">
-            <KeyRound className="h-3.5 w-3.5 text-muted-foreground/70 shrink-0" />
-            <span className="text-muted-foreground/70 text-[11px] font-medium">
-              {t("aiGatewayDefaultKey", "Default API key")}:
+          <span className="text-muted-foreground/30 text-xs hidden sm:inline">·</span>
+
+          {/* OpenAI 兼容协议端点 */}
+          <div className="flex items-center gap-1.5 rounded-md border bg-muted/20 px-2 py-1 text-xs">
+            <span className="shrink-0 rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400 border border-blue-500/20">
+              OpenAI
             </span>
-            {effectiveDefaultKey ? (
-              <div className="flex items-center gap-1">
-                <code
-                  className="font-mono text-xs font-medium select-all text-foreground"
-                  title={effectiveDefaultKey.label || effectiveDefaultKey.value}
-                  data-testid="ai-gateway-default-key-preview"
-                >
-                  {effectiveDefaultKey.value
-                    ? `${effectiveDefaultKey.value.slice(0, 11)}••••`
-                    : effectiveDefaultKey.label}
-                </code>
-                <button
-                  type="button"
-                  onClick={onCopyDefaultKey}
-                  aria-label={t("aiGatewayCopyDefaultKey", "Copy default API key")}
-                  title={
-                    defaultKeyCopied
-                      ? t("aiGatewayDefaultKeyCopied", "Default API key copied")
-                      : t("aiGatewayCopyDefaultKey", "Copy default API key")
-                  }
-                  data-testid="ai-gateway-copy-default-key"
-                  className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                >
-                  {defaultKeyCopied ? (
-                    <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
-                  ) : (
-                    <Copy className="h-3 w-3" />
-                  )}
-                </button>
-              </div>
-            ) : (
-              <span
-                className="text-muted-foreground/60 text-[11px] cursor-pointer hover:underline"
-                onClick={() => onSelectTab?.("keys")}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") onSelectTab?.("keys");
-                }}
-              >
-                {t("aiGatewayNoDefaultKey", "No key configured")}
-              </span>
-            )}
+            <code
+              className={`font-mono text-xs font-medium select-all ${
+                running ? "text-foreground" : "text-muted-foreground/70"
+              }`}
+              title={address}
+              data-testid="ai-gateway-local-address"
+            >
+              {address}
+            </code>
+            <button
+              type="button"
+              onClick={onCopyAddress}
+              aria-label={
+                addressCopied
+                  ? t("aiGatewayAddressCopied", "Local API address copied")
+                  : t("aiGatewayCopyAddress", "Copy local API address")
+              }
+              title={
+                addressCopied
+                  ? t("aiGatewayAddressCopied", "Local API address copied")
+                  : t("aiGatewayCopyAddress", "Copy local API address")
+              }
+              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            >
+              {addressCopied ? (
+                <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+              ) : (
+                <Copy className="h-3 w-3" />
+              )}
+            </button>
+          </div>
+
+          {/* Anthropic Messages 原生协议端点 */}
+          <div className="flex items-center gap-1.5 rounded-md border bg-muted/20 px-2 py-1 text-xs">
+            <span className="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400 border border-amber-500/20">
+              Anthropic Messages
+            </span>
+            <code
+              className={`font-mono text-xs font-medium select-all ${
+                running ? "text-foreground" : "text-muted-foreground/70"
+              }`}
+              title={anthropicAddress}
+              data-testid="ai-gateway-anthropic-address"
+            >
+              {anthropicAddress}
+            </code>
+            <button
+              type="button"
+              onClick={onCopyAnthropicAddress}
+              aria-label={
+                anthropicAddressCopied
+                  ? t(
+                      "aiGatewayAnthropicAddressCopied",
+                      "Anthropic Messages API address copied",
+                    )
+                  : t(
+                      "aiGatewayCopyAnthropicAddress",
+                      "Copy Anthropic Messages API address",
+                    )
+              }
+              title={
+                anthropicAddressCopied
+                  ? t(
+                      "aiGatewayAnthropicAddressCopied",
+                      "Anthropic Messages API address copied",
+                    )
+                  : t(
+                      "aiGatewayCopyAnthropicAddress",
+                      "Copy Anthropic Messages API address",
+                    )
+              }
+              data-testid="ai-gateway-copy-anthropic-address"
+              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            >
+              {anthropicAddressCopied ? (
+                <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+              ) : (
+                <Copy className="h-3 w-3" />
+              )}
+            </button>
           </div>
         </div>
 
-        {/* 右侧服务操作按钮 */}
-        <div className="flex items-center gap-2">
+        {/* 右侧：刷新数据与启停服务操作按钮 */}
+        <div className="flex items-center gap-1.5 shrink-0">
           {onRefresh && (
             <button
               type="button"
@@ -215,9 +216,9 @@ export function RuntimeStatusCard({
               title={t("aiGatewayRefreshData", "Refresh data")}
               aria-label={t("aiGatewayRefreshData", "Refresh data")}
               data-testid="ai-gateway-refresh-btn"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border/80 bg-background text-muted-foreground shadow-2xs transition hover:bg-muted hover:text-foreground active:scale-98 disabled:opacity-50"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-border/80 bg-background text-muted-foreground shadow-2xs transition hover:bg-muted hover:text-foreground active:scale-98 disabled:opacity-50"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
             </button>
           )}
 
@@ -228,18 +229,18 @@ export function RuntimeStatusCard({
             title={running ? t("aiGatewayStop", "Stop service") : t("aiGatewayStart", "Start service")}
             aria-label={running ? t("aiGatewayStop", "Stop service") : t("aiGatewayStart", "Start service")}
             data-testid="ai-gateway-toggle-service"
-            className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium shadow-sm transition disabled:opacity-50 ${
+            className={`inline-flex h-7 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium shadow-2xs transition disabled:opacity-50 ${
               running
                 ? "border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20 active:bg-destructive/30"
                 : "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 active:bg-emerald-500/30 dark:border-emerald-500/40 dark:bg-emerald-500/15 dark:text-emerald-400"
             }`}
           >
             {busy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="h-3 w-3 animate-spin" />
             ) : running ? (
-              <Square className="h-3.5 w-3.5 fill-current" />
+              <Square className="h-3 w-3 fill-current" />
             ) : (
-              <Play className="h-3.5 w-3.5 fill-current translate-x-0.5" />
+              <Play className="h-3 w-3 fill-current translate-x-0.5" />
             )}
             <span>{running ? t("aiGatewayStop", "Stop service") : t("aiGatewayStart", "Start service")}</span>
           </button>

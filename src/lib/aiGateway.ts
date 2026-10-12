@@ -311,6 +311,11 @@ export function localBaseUrl(port: number): string {
   return `http://127.0.0.1:${port}/v1`;
 }
 
+/** Build the local Anthropic Messages-compatible API endpoint address. */
+export function localAnthropicMessagesUrl(port: number): string {
+  return `http://127.0.0.1:${port}/v1/messages`;
+}
+
 /** Trim, drop blanks and deduplicate reasoning efforts preserving first-seen order. */
 export function normalizeReasoningEfforts(
   efforts: string[] | null | undefined,

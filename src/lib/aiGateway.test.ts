@@ -41,6 +41,7 @@ import {
   formatUtc8Day,
   formatUtc8Hour,
   isUnpricedOnly,
+  localAnthropicMessagesUrl,
   localBaseUrl,
   maskSecret,
   notifyTemplateAutoRefreshIntervalChanged,
@@ -264,6 +265,17 @@ describe("localBaseUrl 本地 Api 地址", () => {
       `http://127.0.0.1:${AI_GATEWAY_DEFAULT_PORT}/v1`,
     );
     expect(localBaseUrl(18000)).toBe("http://127.0.0.1:18000/v1");
+  });
+});
+
+describe("localAnthropicMessagesUrl 本地 Anthropic Messages 地址", () => {
+  it("固定绑定回环地址、端口与 /v1/messages 路径", () => {
+    expect(localAnthropicMessagesUrl(AI_GATEWAY_DEFAULT_PORT)).toBe(
+      `http://127.0.0.1:${AI_GATEWAY_DEFAULT_PORT}/v1/messages`,
+    );
+    expect(localAnthropicMessagesUrl(18000)).toBe(
+      "http://127.0.0.1:18000/v1/messages",
+    );
   });
 });
 
