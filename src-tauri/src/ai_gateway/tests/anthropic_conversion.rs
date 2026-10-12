@@ -2290,3 +2290,150 @@ async fn responses_conversion_response_format_text_is_accepted() {
     stop_server().await.expect("stop the listener");
     drop(home);
 }
+
+// ---------------------------------------------------------------------------
+// Outbound stream-flag regression: the converted native Anthropic body must
+// carry a JSON boolean `stream` that matches the inbound OpenAI request, and a
+// non-streaming request must not invent one. Asserted only through the captured
+// upstream HTTP body on the loopback entries.
+// ---------------------------------------------------------------------------
+
+/// The two upstream replies this regression needs: a valid native SSE stream for
+/// the inbound `stream:true` cases and a JSON message for the omission cases.
+#[derive(Clone, Copy)]
+enum ConvertedUpstreamReply {
+    Sse(&'static str),
+    Message,
+}
+
+/// Drive one loopback conversion request against an `anthropic_messages`
+/// mapping and return the captured outbound native Anthropic body. The global
+/// `HOME` lock and the process-wide listener are released before any assertion
+/// can panic, so one failing red case never strands the shared state the other
+/// cases need.
+async fn captured_converted_upstream_body(
+    name: &str,
+    path: &str,
+    body: Value,
+    reply: ConvertedUpstreamReply,
+) -> Value {
+    let home = temp_home(name);
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(move |_| match reply {
+        ConvertedUpstreamReply::Sse(sse) => MockReply::Stream(sse.to_string()),
+        ConvertedUpstreamReply::Message => MockReply::Json(
+            200,
+            anthropic_message(
+                json!([{"type": "text", "text": "ok"}]),
+                "end_turn",
+                json!({"input_tokens": 1, "output_tokens": 1}),
+            ),
+        ),
+    })
+    .await;
+    write_raw_gateway_config(&raw_config(
+        port,
+        vec![anthropic_provider_value(
+            "p-stream-flag",
+            &upstream_url,
+            LOCAL_MODEL,
+            UPSTREAM_MODEL,
+            UPSTREAM_SECRET,
+        )],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        path,
+        &[("authorization", "Bearer local-key")],
+        Some(body),
+    )
+    .await;
+
+    let captured = log.lock().expect("mock log").clone();
+
+    stop_server().await.expect("stop the listener");
+    drop(home);
+
+    assert_eq!(status, 200, "the converted request must be served: {text}");
+    assert_eq!(captured.len(), 1, "exactly one upstream attempt");
+    serde_json::from_slice(&captured[0].body).expect("upstream body must be JSON")
+}
+
+/// AC1: a Chat request with `stream:true` must forward a JSON boolean true in
+/// the converted native Anthropic body. The mock returns SSE independently of
+/// the flag, so the assertion reads the actual sent body and a dropped flag
+/// cannot be hidden by the response shape.
+#[tokio::test]
+async fn converted_anthropic_stream_flag_is_forwarded_on_chat_entry() {
+    let sent = captured_converted_upstream_body(
+        "conv-stream-flag-chat",
+        "/v1/chat/completions",
+        json!({"model": LOCAL_MODEL, "stream": true, "messages": [{"role": "user", "content": "hi"}]}),
+        ConvertedUpstreamReply::Sse(ANTHROPIC_SSE_TOOLS),
+    )
+    .await;
+
+    assert_eq!(
+        sent.get("stream"),
+        Some(&Value::Bool(true)),
+        "a Chat request with stream:true must forward a JSON boolean true to the Anthropic upstream: {sent}"
+    );
+}
+
+/// AC2: a Responses request with `stream:true` must forward the same JSON
+/// boolean true in the converted native Anthropic body, asserted on the actual
+/// sent body.
+#[tokio::test]
+async fn converted_anthropic_stream_flag_is_forwarded_on_responses_entry() {
+    let sent = captured_converted_upstream_body(
+        "conv-stream-flag-responses",
+        "/v1/responses",
+        json!({"model": LOCAL_MODEL, "stream": true, "input": "hi"}),
+        ConvertedUpstreamReply::Sse(ANTHROPIC_SSE_TOOLS),
+    )
+    .await;
+
+    assert_eq!(
+        sent.get("stream"),
+        Some(&Value::Bool(true)),
+        "a Responses request with stream:true must forward a JSON boolean true to the Anthropic upstream: {sent}"
+    );
+}
+
+/// AC3: absent and explicit-false `stream` cases on both entries must leave the
+/// converted body without a true stream flag, preserving the exact current
+/// omission (`get("stream").is_none()`).
+#[tokio::test]
+async fn converted_anthropic_stream_flag_omitted_when_not_requested() {
+    let cases = [
+        (
+            "/v1/chat/completions",
+            json!({"model": LOCAL_MODEL, "messages": [{"role": "user", "content": "hi"}]}),
+        ),
+        (
+            "/v1/chat/completions",
+            json!({"model": LOCAL_MODEL, "stream": false, "messages": [{"role": "user", "content": "hi"}]}),
+        ),
+        ("/v1/responses", json!({"model": LOCAL_MODEL, "input": "hi"})),
+        (
+            "/v1/responses",
+            json!({"model": LOCAL_MODEL, "stream": false, "input": "hi"}),
+        ),
+    ];
+    for (index, (path, body)) in cases.into_iter().enumerate() {
+        let sent = captured_converted_upstream_body(
+            &format!("conv-stream-flag-omitted-{index}"),
+            path,
+            body,
+            ConvertedUpstreamReply::Message,
+        )
+        .await;
+        assert!(
+            sent.get("stream").is_none(),
+            "a non-streaming {path} request must not forward a stream flag: {sent}"
+        );
+    }
+}

@@ -518,11 +518,14 @@ pub(in crate::ai_gateway) fn convert_request(
 ) -> Result<Vec<u8>, String> {
     let value: Value = serde_json::from_slice(body).map_err(|error| error.to_string())?;
     let object = required_object(&value)?;
-    let converted = match path.split('?').next().unwrap_or(path) {
+    let mut converted = match path.split('?').next().unwrap_or(path) {
         "/v1/chat/completions" => convert_chat(object, model)?,
         "/v1/responses" => convert_responses(object, model)?,
         _ => return Err("request path is not convertible to Anthropic Messages".to_string()),
     };
+    if object.get("stream").and_then(Value::as_bool) == Some(true) {
+        converted["stream"] = Value::Bool(true);
+    }
     serde_json::to_vec(&converted).map_err(|error| error.to_string())
 }
 
