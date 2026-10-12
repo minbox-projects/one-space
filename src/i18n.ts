@@ -434,7 +434,7 @@ const resources = {
       protocolRouterNoUpstreamModelMappings: "No upstream model mappings",
       aiGateway: "AI Gateway",
       aiGatewayWorkspaceDesc:
-        "Run a local OpenAI-compatible relay across multiple upstream providers, manage local keys, and push the local endpoint to OpenCode / Codex.",
+        "Manage upstream providers and key pools with OpenAI / Anthropic dual-protocol relay, intelligent routing, and failover, syncing seamlessly to OpenCode, Codex, and Claude Code.",
       aiGatewayRunning: "Running",
       aiGatewayStopped: "Stopped",
       aiGatewayPort: "Port",
@@ -4159,7 +4159,7 @@ const resources = {
       protocolRouterNoUpstreamModelMappings: "暂无上游模型映射",
       aiGateway: "AI 网关",
       aiGatewayWorkspaceDesc:
-        "在多个上游服务商之间运行本地 OpenAI 兼容转发服务，维护本地 Key，并把本地入口写入 OpenCode / Codex。",
+        "统一管理多上游服务商与密钥池，提供 OpenAI / Anthropic 双协议转发、智能路由与故障转移，并一键同步到 OpenCode / Codex / Claude Code 等终端。",
       aiGatewayRunning: "运行中",
       aiGatewayStopped: "已停止",
       aiGatewayPort: "端口",

@@ -3927,3 +3927,25 @@ describe("AiGateway 服务商模板绑定接线（Step 2）", () => {
   });
 });
 
+describe("AI 网关头部与副标题渲染", () => {
+  it("在英文环境下渲染更新后的副标题", async () => {
+    await i18n.changeLanguage("en");
+    renderWithProviders(<AiGateway />);
+    expect(
+      await screen.findByText(
+        "Manage upstream providers and key pools with OpenAI / Anthropic dual-protocol relay, intelligent routing, and failover, syncing seamlessly to OpenCode, Codex, and Claude Code.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("在中文环境下渲染更新后的副标题", async () => {
+    await i18n.changeLanguage("zh");
+    renderWithProviders(<AiGateway />);
+    expect(
+      await screen.findByText(
+        "统一管理多上游服务商与密钥池，提供 OpenAI / Anthropic 双协议转发、智能路由与故障转移，并一键同步到 OpenCode / Codex / Claude Code 等终端。",
+      ),
+    ).toBeInTheDocument();
+  });
+});
+

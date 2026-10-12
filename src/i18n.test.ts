@@ -1061,3 +1061,27 @@ describe("AI 网关服务商模板策略与绑定国际化键", () => {
     }
   });
 });
+
+describe("AI 网关页面副标题国际化文案", () => {
+  it("en 提供根据实际功能逻辑更新后的 AI 网关副标题文案", () => {
+    const translation = i18n.getResource(
+      "en",
+      "translation",
+      "aiGatewayWorkspaceDesc",
+    );
+    expect(translation).toBe(
+      "Manage upstream providers and key pools with OpenAI / Anthropic dual-protocol relay, intelligent routing, and failover, syncing seamlessly to OpenCode, Codex, and Claude Code.",
+    );
+  });
+
+  it("zh 提供根据实际功能逻辑更新后的 AI 网关副标题文案", () => {
+    const translation = i18n.getResource(
+      "zh",
+      "translation",
+      "aiGatewayWorkspaceDesc",
+    );
+    expect(translation).toBe(
+      "统一管理多上游服务商与密钥池，提供 OpenAI / Anthropic 双协议转发、智能路由与故障转移，并一键同步到 OpenCode / Codex / Claude Code 等终端。",
+    );
+  });
+});

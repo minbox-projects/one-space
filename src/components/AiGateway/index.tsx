@@ -1182,7 +1182,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
             <p className="max-w-3xl text-xs text-muted-foreground">
               {t(
                 "aiGatewayWorkspaceDesc",
-                "Run a local OpenAI-compatible relay across multiple upstream providers, manage local keys, and push the local endpoint to OpenCode / Codex.",
+                "Manage upstream providers and key pools with OpenAI / Anthropic dual-protocol relay, intelligent routing, and failover, syncing seamlessly to OpenCode, Codex, and Claude Code.",
               )}
             </p>
           </div>
