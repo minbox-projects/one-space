@@ -403,7 +403,10 @@ describe("BleLockTool", () => {
       renderWithProviders(<BleLockTool />);
       await screen.findByRole("heading", { level: 2, name: COPY.title });
 
-      const input = screen.getByLabelText(COPY.password);
+      await user.click(
+        screen.getByRole("button", { name: COPY.password }),
+      );
+      const input = await screen.findByLabelText(COPY.password);
       await user.type(input, password);
       await user.click(screen.getByRole("button", { name: COPY.setPassword }));
 
