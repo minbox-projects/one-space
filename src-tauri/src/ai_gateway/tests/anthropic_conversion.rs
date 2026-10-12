@@ -2437,3 +2437,217 @@ async fn converted_anthropic_stream_flag_omitted_when_not_requested() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unified blank-text conversion normalization.
+//
+// One behavior: no Chat or Responses conversion may emit an empty or
+// whitespace-only `text` block, and a message left with no blocks is a local
+// 400 naming `messages.content` / `input.content` before any upstream attempt.
+// The converted native `messages` are asserted by exact equality against an
+// independent `json!` expectation; rejects are proven by the caller status and
+// an unchanged capture count. Existing fixtures (`chat_tool_body`, `raw_config`,
+// `anthropic_message`) are reused and no private converter helper is called.
+// ---------------------------------------------------------------------------
+
+/// Send one conversion request, require exactly one new upstream attempt, and
+/// return the captured converted native body.
+async fn converted_body(port: u16, log: &super::CapturedLog, path: &str, body: Value) -> Value {
+    let before = captured_len(log);
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        path,
+        &[("authorization", "Bearer local-key")],
+        Some(body),
+    )
+    .await;
+    let captured = log.lock().expect("mock log").clone();
+    assert_eq!(status, 200, "the conversion must be served: {status} {text}");
+    assert_eq!(captured.len(), before + 1, "exactly one upstream attempt");
+    serde_json::from_slice(&captured[before].body).expect("converted upstream body must be JSON")
+}
+
+/// One unified blank-text regression across every Chat/Responses input shape
+/// that can reach a converted text block.
+#[tokio::test]
+async fn blank_conversion_text_blocks_are_dropped_or_rejected() {
+    let home = temp_home("conversion-blank-text");
+    let port = free_port().await;
+    // Native SSE for the inbound `stream:true` cases and a plain native message
+    // for every non-streaming case; the discriminator reads the converted
+    // upstream body's forwarded `stream` flag.
+    let (upstream_url, log) = spawn_mock_upstream(|captured| {
+        let stream = serde_json::from_slice::<Value>(&captured.body)
+            .ok()
+            .and_then(|body| body.get("stream").and_then(Value::as_bool))
+            .unwrap_or(false);
+        if stream {
+            MockReply::Stream(ANTHROPIC_SSE_TOOLS.to_string())
+        } else {
+            MockReply::Json(
+                200,
+                anthropic_message(
+                    json!([{"type": "text", "text": "ok"}]),
+                    "end_turn",
+                    json!({"input_tokens": 1, "output_tokens": 1}),
+                ),
+            )
+        }
+    })
+    .await;
+    write_raw_gateway_config(&raw_config(
+        port,
+        vec![anthropic_provider_value(
+            "p-blank",
+            &upstream_url,
+            LOCAL_MODEL,
+            UPSTREAM_MODEL,
+            UPSTREAM_SECRET,
+        )],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    // Chat tool chain: swap the assistant content for every shape, for both
+    // stream flags, and assert the whole converted `messages` by exact equality
+    // (tool_use id/name/input and the linked tool_result tool_use_id/content).
+    let tool_use = json!({"id": "call_1", "input": {"city": "SF"}, "name": "get_weather", "type": "tool_use"});
+    let tool_result = json!({"content": "sunny", "tool_use_id": "call_1", "type": "tool_result"});
+    let user_text = json!({"text": "use the tool", "type": "text"});
+    for stream in [false, true] {
+        for (label, content, surviving) in [
+            ("empty_string", json!(""), None),
+            ("null", json!(null), None),
+            ("whitespace", json!(" \t\n "), None),
+            ("nonblank_surrounded", json!("answer "), Some(json!({"text": "answer ", "type": "text"}))),
+            ("mixed_array", json!([
+                {"type": "text", "text": ""},
+                {"type": "text", "text": "   "},
+                {"type": "text", "text": "kept "}
+            ]), Some(json!({"text": "kept ", "type": "text"}))),
+        ] {
+            let mut body = chat_tool_body();
+            body["messages"][1]["content"] = content;
+            body["stream"] = json!(stream);
+            let sent = converted_body(port, &log, "/v1/chat/completions", body).await;
+            let mut assistant = Vec::new();
+            if let Some(block) = surviving {
+                assistant.push(block);
+            }
+            assistant.push(tool_use.clone());
+            assert_eq!(
+                sent["messages"],
+                json!([
+                    {"content": [user_text.clone()], "role": "user"},
+                    {"content": assistant, "role": "assistant"},
+                    {"content": [tool_result.clone()], "role": "user"}
+                ]),
+                "chat assistant {label} stream={stream}: {sent}"
+            );
+            if stream {
+                assert_eq!(sent.get("stream").and_then(Value::as_bool), Some(true), "stream flag: {sent}");
+            } else {
+                assert!(sent.get("stream").is_none(), "a non-streaming request must omit the flag: {sent}");
+            }
+        }
+    }
+
+    // Blank `instructions` must not produce a `system` message.
+    for instructions in ["", " \t\n "] {
+        let body = json!({
+            "model": LOCAL_MODEL,
+            "instructions": instructions,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
+        });
+        let sent = converted_body(port, &log, "/v1/responses", body).await;
+        assert_eq!(
+            sent["messages"],
+            json!([{"content": [{"text": "hi", "type": "text"}], "role": "user"}]),
+            "blank instructions {instructions:?} must not produce a system block: {sent}"
+        );
+    }
+
+    // A mixed Responses content array keeps only the nonblank text.
+    let sent = converted_body(
+        port,
+        &log,
+        "/v1/responses",
+        json!({
+            "model": LOCAL_MODEL,
+            "input": [{"role": "user", "content": [
+                {"type": "input_text", "text": ""},
+                {"type": "input_text", "text": "   "},
+                {"type": "input_text", "text": "  keep  "}
+            ]}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        sent["messages"],
+        json!([{"content": [{"text": "  keep  ", "type": "text"}], "role": "user"}]),
+        "only the nonblank Responses text may survive: {sent}"
+    );
+
+    // A blank text block mixed with an image is dropped while the image stays.
+    let sent = converted_body(
+        port,
+        &log,
+        "/v1/chat/completions",
+        json!({
+            "model": LOCAL_MODEL,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "   "},
+                {"type": "image_url", "image_url": {"url": "https://example.com/photo.png"}}
+            ]}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        sent["messages"],
+        json!([{"content": [{
+            "source": {"type": "url", "url": "https://example.com/photo.png"},
+            "type": "image"
+        }], "role": "user"}]),
+        "a blank text block must not hide the image: {sent}"
+    );
+
+    // A message left with no blocks is a local 400 naming its content field,
+    // with no upstream attempt.
+    let rejects: Vec<(&str, &str, Value)> = vec![
+        ("chat_empty_assistant_no_tools", "/v1/chat/completions", json!({"model": LOCAL_MODEL, "messages": [{"role": "assistant", "content": ""}]})),
+        ("chat_whitespace_assistant_no_tools", "/v1/chat/completions", json!({"model": LOCAL_MODEL, "messages": [{"role": "assistant", "content": " \t\n "}]})),
+        ("chat_empty_user", "/v1/chat/completions", json!({"model": LOCAL_MODEL, "messages": [{"role": "user", "content": ""}]})),
+        ("chat_whitespace_user", "/v1/chat/completions", json!({"model": LOCAL_MODEL, "messages": [{"role": "user", "content": " \t\n "}]})),
+        ("chat_blank_only_user_array", "/v1/chat/completions", json!({"model": LOCAL_MODEL, "messages": [{"role": "user", "content": [{"type": "text", "text": ""}, {"type": "text", "text": "  "}]}]})),
+        ("chat_blank_system", "/v1/chat/completions", json!({"model": LOCAL_MODEL, "messages": [{"role": "system", "content": ""}, {"role": "user", "content": "hi"}]})),
+        ("chat_blank_developer", "/v1/chat/completions", json!({"model": LOCAL_MODEL, "messages": [{"role": "developer", "content": " \t\n "}, {"role": "user", "content": "hi"}]})),
+        ("responses_empty_top_level_input", "/v1/responses", json!({"model": LOCAL_MODEL, "input": ""})),
+        ("responses_whitespace_top_level_input", "/v1/responses", json!({"model": LOCAL_MODEL, "input": " \t\n "})),
+        ("responses_empty_message", "/v1/responses", json!({"model": LOCAL_MODEL, "input": [{"role": "user", "content": ""}]})),
+        ("responses_whitespace_message", "/v1/responses", json!({"model": LOCAL_MODEL, "input": [{"role": "user", "content": " \t\n "}]})),
+        ("responses_blank_only_message_array", "/v1/responses", json!({"model": LOCAL_MODEL, "input": [{"role": "user", "content": [{"type": "input_text", "text": ""}, {"type": "input_text", "text": "\t\n"}]}]})),
+        ("responses_blank_any_role_message", "/v1/responses", json!({"model": LOCAL_MODEL, "input": [{"role": "assistant", "content": ""}]})),
+    ];
+    for (label, path, body) in rejects {
+        let before = captured_len(&log);
+        let (status, _content_type, text) = call_gateway(
+            port,
+            "POST",
+            path,
+            &[("authorization", "Bearer local-key")],
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, 400, "{label}: a block-less message must be a local 400: {text}");
+        let error: Value = serde_json::from_str(&text).expect("the 400 body must be JSON");
+        let field = if path == "/v1/responses" { "input.content" } else { "messages.content" };
+        assert!(
+            error["error"]["message"].as_str().unwrap_or_default().contains(field),
+            "{label}: the 400 must name {field}: {text}"
+        );
+        assert_eq!(captured_len(&log), before, "{label}: no rejected request may reach an upstream");
+    }
+
+    stop_server().await.expect("stop the listener");
+    drop(home);
+}

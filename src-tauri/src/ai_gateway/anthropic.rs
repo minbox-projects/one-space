@@ -42,6 +42,24 @@ fn required_object<'a>(body: &'a Value) -> Result<&'a Map<String, Value>, String
         .ok_or_else(|| "request body must be a JSON object".to_string())
 }
 
+/// Build a native Anthropic `text` block, or `None` when the text is empty or
+/// whitespace-only. Chat and Responses conversions share this rule so no
+/// converted request ever carries a blank `text` block; nonblank text is kept
+/// verbatim, including leading and trailing whitespace.
+fn text_block(text: &str) -> Option<Value> {
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some(json!({"type": "text", "text": text}))
+    }
+}
+
+/// The local 400 for a message whose content blocks all filtered away, naming
+/// the caller-facing content field before any upstream attempt.
+fn blockless_message_error(field: &str) -> String {
+    field_error(field, "message must contain at least one content block")
+}
+
 fn output_cap(body: &Map<String, Value>, fields: &[&str]) -> Result<u64, String> {
     for field in fields {
         if let Some(value) = body.get(*field) {
@@ -80,77 +98,77 @@ fn parse_image_url(url: &str) -> Result<Value, String> {
 
 fn chat_content_blocks(content: &Value) -> Result<Vec<Value>, String> {
     if let Some(text) = content.as_str() {
-        return Ok(vec![json!({"type": "text", "text": text})]);
+        return Ok(text_block(text).into_iter().collect());
     }
     let Some(items) = content.as_array() else {
         return Err("message.content: expected text or content blocks".to_string());
     };
-    items
-        .iter()
-        .map(|item| {
-            let object = item
-                .as_object()
-                .ok_or_else(|| "message.content: invalid block".to_string())?;
-            match object.get("type").and_then(Value::as_str) {
-                Some("text") => Ok(json!({
-                    "type": "text",
-                    "text": object.get("text").and_then(Value::as_str).ok_or_else(|| {
-                        "message.content.text: expected a string".to_string()
-                    })?
-                })),
-                Some("image_url") => {
-                    let url = object
-                        .get("image_url")
-                        .and_then(|value| value.get("url"))
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            "message.content.image_url.url: expected a string".to_string()
-                        })?;
-                    parse_image_url(url)
-                }
-                Some(other) => Err(format!("message.content.{other}: unsupported block type")),
-                None => Err("message.content.type: field is required".to_string()),
+    let mut blocks = Vec::new();
+    for item in items {
+        let object = item
+            .as_object()
+            .ok_or_else(|| "message.content: invalid block".to_string())?;
+        match object.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                let text = object
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "message.content.text: expected a string".to_string())?;
+                blocks.extend(text_block(text));
             }
-        })
-        .collect()
+            Some("image_url") => {
+                let url = object
+                    .get("image_url")
+                    .and_then(|value| value.get("url"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        "message.content.image_url.url: expected a string".to_string()
+                    })?;
+                blocks.push(parse_image_url(url)?);
+            }
+            Some(other) => return Err(format!("message.content.{other}: unsupported block type")),
+            None => return Err("message.content.type: field is required".to_string()),
+        }
+    }
+    Ok(blocks)
 }
 
 fn response_content_blocks(content: &Value) -> Result<Vec<Value>, String> {
     if let Some(text) = content.as_str() {
-        return Ok(vec![json!({"type": "text", "text": text})]);
+        return Ok(text_block(text).into_iter().collect());
     }
     let Some(items) = content.as_array() else {
         return Err("input.content: expected text or content blocks".to_string());
     };
-    items
-        .iter()
-        .map(|item| {
-            let object = item
-                .as_object()
-                .ok_or_else(|| "input.content: invalid block".to_string())?;
-            match object.get("type").and_then(Value::as_str) {
-                Some("input_text") | Some("output_text") | Some("text") => Ok(json!({
-                    "type": "text",
-                    "text": object.get("text").and_then(Value::as_str).ok_or_else(|| {
-                        "input.content.text: expected a string".to_string()
-                    })?
-                })),
-                Some("input_image") => {
-                    let url = object
-                        .get("image_url")
-                        .and_then(|value| {
-                            value
-                                .as_str()
-                                .or_else(|| value.get("url").and_then(Value::as_str))
-                        })
-                        .ok_or_else(|| "input.content.image_url: expected a URL".to_string())?;
-                    parse_image_url(url)
-                }
-                Some(other) => Err(format!("input.content.{other}: unsupported block type")),
-                None => Err("input.content.type: field is required".to_string()),
+    let mut blocks = Vec::new();
+    for item in items {
+        let object = item
+            .as_object()
+            .ok_or_else(|| "input.content: invalid block".to_string())?;
+        match object.get("type").and_then(Value::as_str) {
+            Some("input_text") | Some("output_text") | Some("text") => {
+                let text = object
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "input.content.text: expected a string".to_string())?;
+                blocks.extend(text_block(text));
             }
-        })
-        .collect()
+            Some("input_image") => {
+                let url = object
+                    .get("image_url")
+                    .and_then(|value| {
+                        value
+                            .as_str()
+                            .or_else(|| value.get("url").and_then(Value::as_str))
+                    })
+                    .ok_or_else(|| "input.content.image_url: expected a URL".to_string())?;
+                blocks.push(parse_image_url(url)?);
+            }
+            Some(other) => return Err(format!("input.content.{other}: unsupported block type")),
+            None => return Err("input.content.type: field is required".to_string()),
+        }
+    }
+    Ok(blocks)
 }
 
 fn tool_choice(value: Option<&Value>) -> Result<Option<Value>, String> {
@@ -286,7 +304,11 @@ fn reject_common_conversion_fields(body: &Map<String, Value>, chat: bool) -> Res
 
 fn assistant_tool_blocks(message: &Map<String, Value>) -> Result<Vec<Value>, String> {
     let mut blocks = Vec::new();
-    if let Some(content) = message.get("content").filter(|value| !value.is_null()) {
+    // A null or absent `content` keeps the existing "no content" behavior; only
+    // a provided, nonblank-only content that filters down to zero blocks is a
+    // block-less message when no tool call survives either.
+    let content = message.get("content").filter(|value| !value.is_null());
+    if let Some(content) = content {
         blocks.extend(chat_content_blocks(content)?);
     }
     for call in message
@@ -311,6 +333,9 @@ fn assistant_tool_blocks(message: &Map<String, Value>) -> Result<Vec<Value>, Str
             "name": function.get("name").and_then(Value::as_str).unwrap_or_default(),
             "input": input,
         }));
+    }
+    if blocks.is_empty() && content.is_some() {
+        return Err(blockless_message_error("messages.content"));
     }
     Ok(blocks)
 }
@@ -337,14 +362,21 @@ fn convert_chat(body: &Map<String, Value>, model: &str) -> Result<Value, String>
                 let content = object
                     .get("content")
                     .ok_or_else(|| "messages.content: field is required".to_string())?;
-                system.extend(chat_content_blocks(content)?);
+                let blocks = chat_content_blocks(content)?;
+                if blocks.is_empty() {
+                    return Err(blockless_message_error("messages.content"));
+                }
+                system.extend(blocks);
             }
             "user" => {
                 let content = object
                     .get("content")
                     .ok_or_else(|| "messages.content: field is required".to_string())?;
-                native_messages
-                    .push(json!({"role": "user", "content": chat_content_blocks(content)?}));
+                let blocks = chat_content_blocks(content)?;
+                if blocks.is_empty() {
+                    return Err(blockless_message_error("messages.content"));
+                }
+                native_messages.push(json!({"role": "user", "content": blocks}));
             }
             "assistant" => {
                 native_messages.push(json!({
@@ -450,6 +482,9 @@ fn append_responses_item(item: &Value, messages: &mut Vec<Value>) -> Result<(), 
         .get("content")
         .ok_or_else(|| field_error("input.content", "field is required"))?;
     let blocks = response_content_blocks(content)?;
+    if blocks.is_empty() {
+        return Err(blockless_message_error("input.content"));
+    }
     messages.push(json!({"role": role, "content": blocks}));
     Ok(())
 }
@@ -476,13 +511,21 @@ fn convert_responses(body: &Map<String, Value>, model: &str) -> Result<Value, St
     let max_tokens = output_cap(body, &["max_output_tokens"])?;
     let mut messages = Vec::new();
     if let Some(instructions) = body.get("instructions") {
-        messages.push(json!({"role": "system", "content": response_content_blocks(instructions)?}));
+        // Instructions are optional context: empty or whitespace-only content
+        // is skipped rather than emitting an empty `system` message.
+        let blocks = response_content_blocks(instructions)?;
+        if !blocks.is_empty() {
+            messages.push(json!({"role": "system", "content": blocks}));
+        }
     }
     let input = body
         .get("input")
         .ok_or_else(|| field_error("input", "field is required"))?;
     if let Some(text) = input.as_str() {
-        messages.push(json!({"role": "user", "content": [{"type": "text", "text": text}]}));
+        let Some(block) = text_block(text) else {
+            return Err(blockless_message_error("input.content"));
+        };
+        messages.push(json!({"role": "user", "content": [block]}));
     } else if let Some(items) = input.as_array() {
         for item in items {
             append_responses_item(item, &mut messages)?;
