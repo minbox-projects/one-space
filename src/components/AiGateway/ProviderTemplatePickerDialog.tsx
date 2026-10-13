@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import {
   ArrowRight,
+  Boxes,
   Plus,
   Server,
   Sparkles,
@@ -27,6 +28,8 @@ export type ProviderTemplatePickerDialogProps = {
   onSelectBlank: () => void;
   onSelectTemplate: (template: GatewayProviderTemplate) => void;
   onNewTemplate?: () => void;
+  /** Open the dedicated model-pool dialog (Create model pool channel). */
+  onSelectModelPool?: () => void;
 };
 
 export function ProviderTemplatePickerDialog({
@@ -37,6 +40,7 @@ export function ProviderTemplatePickerDialog({
   onSelectBlank,
   onSelectTemplate,
   onNewTemplate,
+  onSelectModelPool,
 }: ProviderTemplatePickerDialogProps) {
   const { t } = useTranslation();
 
@@ -116,6 +120,40 @@ export function ProviderTemplatePickerDialog({
                 </div>
               </div>
               <div className="hidden sm:flex items-center gap-1 text-xs font-medium text-primary shrink-0 opacity-80 group-hover:opacity-100 group-hover:translate-x-0.5 transition">
+                <span>{t("aiGatewayUseThisTemplate", "Configure")}</span>
+                <ArrowRight className="h-3.5 w-3.5" />
+              </div>
+            </div>
+          </button>
+
+          {/* 通道 1b: 创建模型池（复用现有服务商作为来源） */}
+          <button
+            type="button"
+            data-testid="template-picker-model-pool-btn"
+            onClick={onSelectModelPool}
+            disabled={busy}
+            className="group w-full rounded-2xl border-2 border-dashed border-emerald-500/30 bg-emerald-500/5 p-4 sm:p-5 text-left transition-all duration-200 hover:border-emerald-500/60 hover:bg-emerald-500/10 active:scale-[0.99]"
+          >
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-start gap-3.5 min-w-0">
+                <div className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500 text-white shadow-xs transition group-hover:scale-105">
+                  <Boxes className="h-5 w-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-sm text-foreground flex items-center gap-2">
+                    <span>
+                      {t("aiGatewayModelPoolCreate", "Create model pool")}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                    {t(
+                      "aiGatewayModelPoolCreateDesc",
+                      "Combine models from existing upstream providers behind one public model.",
+                    )}
+                  </p>
+                </div>
+              </div>
+              <div className="hidden sm:flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 shrink-0 opacity-80 group-hover:opacity-100 group-hover:translate-x-0.5 transition">
                 <span>{t("aiGatewayUseThisTemplate", "Configure")}</span>
                 <ArrowRight className="h-3.5 w-3.5" />
               </div>

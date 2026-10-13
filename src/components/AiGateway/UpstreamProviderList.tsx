@@ -38,9 +38,12 @@ import {
   providerMarkedKeys,
   PROVIDER_KEY_STATE_TRANSLATION_KEYS,
   resolveEffectiveTemplatePolicy,
+  type GatewayModelPool,
+  type GatewayModelPoolStatus,
   type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
 } from "@/lib/aiGateway";
+import { ModelPoolCard } from "./ModelPoolCard";
 import {
   autoDisabledAlertInstanceKey,
   dismissAlertInstanceKeys,
@@ -62,6 +65,13 @@ type UpstreamProviderListProps = {
   onManageTemplates?: () => void;
   /** Re-enable one runtime-marked key of a provider. */
   onReenableKey?: (providerId: string, keyId: string) => void;
+  /** Saved virtual model-pool cards shown beside real providers. */
+  modelPools?: GatewayModelPool[];
+  poolStatuses?: GatewayModelPoolStatus[];
+  onTogglePoolEnabled?: (poolId: string, enabled: boolean) => void;
+  onEditPool?: (pool: GatewayModelPool) => void;
+  onDeletePool?: (poolId: string) => void;
+  onOpenPoolLogs?: (model: string) => void;
 };
 
 type UpstreamProviderCardItemProps = {
@@ -554,6 +564,12 @@ export function UpstreamProviderList({
   onAdd,
   onManageTemplates,
   onReenableKey,
+  modelPools = [],
+  poolStatuses = [],
+  onTogglePoolEnabled,
+  onEditPool,
+  onDeletePool,
+  onOpenPoolLogs,
 }: UpstreamProviderListProps) {
   const { t } = useTranslation();
 
@@ -987,6 +1003,30 @@ export function UpstreamProviderList({
               <span>{t("aiGatewayProvidersRefreshQuota")}</span>
             </button>
           </div>
+        </div>
+      ) : null}
+
+      {/* 模型池虚拟卡片：与真实上游服务商并列展示 */}
+      {modelPools.length > 0 ? (
+        <div
+          data-testid="ai-gateway-model-pools"
+          className="grid gap-3 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3 items-start"
+        >
+          {modelPools.map((pool) => (
+            <ModelPoolCard
+              key={pool.id}
+              pool={pool}
+              providers={providers}
+              status={poolStatuses.find((item) => item.id === pool.id) ?? null}
+              busy={busy}
+              onToggleEnabled={(poolId, enabled) =>
+                onTogglePoolEnabled?.(poolId, enabled)
+              }
+              onEdit={(target) => onEditPool?.(target)}
+              onDelete={(poolId) => onDeletePool?.(poolId)}
+              onOpenLogs={(model) => onOpenPoolLogs?.(model)}
+            />
+          ))}
         </div>
       ) : null}
 

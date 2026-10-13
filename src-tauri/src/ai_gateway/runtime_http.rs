@@ -34,7 +34,8 @@ use super::usage_log::{
     UsageResult, UsageTokens,
 };
 use super::{
-    now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, UpstreamProtocol,
+    now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, ModelPool,
+    UpstreamProtocol,
 };
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -722,7 +723,13 @@ pub(in crate::ai_gateway) fn is_authorized(request: &HttpRequest, config: &Gatew
 }
 
 /// Union of local model names across enabled providers' user-enabled,
-/// not-auto-disabled mapping rows.
+/// not-auto-disabled mapping rows, plus the public model id of every enabled
+/// configured pool.
+///
+/// An enabled pool advertises its alias exactly once, independent of transient
+/// candidate readiness/cooldown, key availability or a disabled source; a
+/// disabled pool and a reserved-but-unowned retired alias are never advertised
+/// (REQ-008/AC-011).
 pub(in crate::ai_gateway) fn local_model_names(config: &GatewayConfig) -> Vec<String> {
     let mut names: Vec<String> = config
         .providers
@@ -735,6 +742,13 @@ pub(in crate::ai_gateway) fn local_model_names(config: &GatewayConfig) -> Vec<St
                 .filter(|mapping| mapping.enabled && !mapping.auto_disabled)
                 .map(|mapping| mapping.local_model.trim().to_string())
         })
+        .chain(
+            config
+                .model_pools
+                .iter()
+                .filter(|pool| pool.enabled)
+                .map(|pool| pool.model.trim().to_string()),
+        )
         .filter(|name| !name.is_empty())
         .collect();
     names.sort();
@@ -745,9 +759,56 @@ pub(in crate::ai_gateway) fn local_model_names(config: &GatewayConfig) -> Vec<St
 pub(in crate::ai_gateway) fn models_payload(config: &GatewayConfig) -> Value {
     let data: Vec<Value> = local_model_names(config)
         .into_iter()
-        .map(|id| json!({ "id": id, "object": "model" }))
+        .map(|id| {
+            match config
+                .model_pools
+                .iter()
+                .find(|pool| pool.enabled && pool.model.trim() == id.as_str())
+            {
+                Some(pool) => pool_discovery_entry(config, pool),
+                None => json!({ "id": id, "object": "model" }),
+            }
+        })
         .collect();
     json!({ "object": "list", "data": data })
+}
+
+/// The `/v1/models` row for one enabled configured pool (REQ-008/AC-011).
+///
+/// It advertises the pool's own public id and display name, the two OpenAI
+/// ingress protocols it supports and its real selected source identities. It
+/// never carries a source key, endpoint, price, reasoning variant or a
+/// readiness/cooldown flag, so a temporarily all-unready or cooling pool stays
+/// advertised and no capability is guessed from a source model.
+fn pool_discovery_entry(config: &GatewayConfig, pool: &ModelPool) -> Value {
+    let model = pool.model.trim();
+    let name = pool.name.trim();
+    let sources: Vec<Value> = pool
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let provider_name = config
+                .providers
+                .iter()
+                .find(|provider| provider.id == candidate.provider_id.trim())
+                .map(|provider| provider.name.clone());
+            json!({
+                "provider_id": candidate.provider_id.trim(),
+                "provider_name": provider_name,
+                "local_model": candidate.local_model.trim(),
+                "upstream_model": candidate.upstream_model.trim(),
+                "protocol": candidate.protocol,
+            })
+        })
+        .collect();
+    json!({
+        "id": model,
+        "object": "model",
+        "name": if name.is_empty() { model } else { name },
+        "protocols": ["chat_completions", "responses"],
+        "source_count": pool.candidates.len(),
+        "sources": sources,
+    })
 }
 
 /// The one gateway-generated error envelope (REQ-006/AC-010): `error.message`,

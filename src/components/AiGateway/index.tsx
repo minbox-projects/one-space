@@ -31,7 +31,9 @@ import {
   aiGatewayDeleteProvider,
   aiGatewayDeleteProviderModel,
   aiGatewayDeleteProviderTemplate,
+  aiGatewayDeleteModelPool,
   aiGatewayGetConfig,
+  aiGatewayModelPoolsStatus,
   aiGatewayProviderTemplates,
   aiGatewayReenableProviderKey,
   aiGatewayReenableProviderModel,
@@ -39,6 +41,7 @@ import {
   aiGatewayRequestLogs,
   aiGatewayRestoreProviderModel,
   aiGatewaySetDefaultKey,
+  aiGatewaySetModelPoolEnabled,
   aiGatewaySetProviderEnabled,
   aiGatewayStart,
   aiGatewayStatus,
@@ -47,17 +50,21 @@ import {
   aiGatewaySyncTerminal,
   aiGatewayTerminalTargets,
   aiGatewayUpsertKey,
+  aiGatewayUpsertModelPool,
   aiGatewayUpsertProvider,
   aiGatewayUpsertProviderTemplate,
   aiGatewayUsageStats,
   localAnthropicMessagesUrl,
   localBaseUrl,
+  modelPools as readModelPools,
   providerKeyPool,
   resolveDefaultKeyId,
   type CreateProviderFromTemplateRequest,
   type GatewayConfig,
   type GatewayKey,
   type GatewayKeyAuthFailedEvent,
+  type GatewayModelPool,
+  type GatewayModelPoolStatus,
   type GatewayProviderTemplate,
   type GatewayProviderTemplateView,
   type GatewayStatus,
@@ -81,6 +88,7 @@ import { UpstreamProviderList } from "./UpstreamProviderList";
 import { ProviderDetailDialog } from "./ProviderDetailDialog";
 import { ProviderTemplateSection } from "./ProviderTemplateSection";
 import { ProviderTemplatePickerDialog } from "./ProviderTemplatePickerDialog";
+import { ModelPoolDialog } from "./ModelPoolDialog";
 import { ProviderTemplateEditDialog } from "./ProviderTemplateEditDialog";
 import { TemplateCreateDialog } from "./TemplateCreateDialog";
 import { LocalKeyDialog } from "./LocalKeyDialog";
@@ -152,6 +160,12 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
     Record<string, boolean>
   >({});
   const [usageSubTab, setUsageSubTab] = useState<UsageSubTab>("stats");
+  const [poolStatuses, setPoolStatuses] = useState<GatewayModelPoolStatus[]>([]);
+  const [isPoolDialogOpen, setIsPoolDialogOpen] = useState(false);
+  const [editingPool, setEditingPool] = useState<GatewayModelPool | null>(null);
+  const [poolDialogKey, setPoolDialogKey] = useState(0);
+  const [usageFocusModel, setUsageFocusModel] = useState<string | null>(null);
+  const [usageFocusToken, setUsageFocusToken] = useState(0);
 
   const allTemplatesExpanded = useMemo(() => {
     if (templates.length === 0) return false;
@@ -206,6 +220,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       setLoadError(null);
       setTodayStats(null);
       setTodayFailedRequests(0);
+      setPoolStatuses([]);
       return;
     }
 
@@ -224,6 +239,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         nextConfig,
         nextStatus,
         nextTargets,
+        nextPoolStatuses,
         templatesResult,
         nextTodayStats,
         nextTodayLogs,
@@ -231,6 +247,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         aiGatewayGetConfig(),
         aiGatewayStatus(),
         aiGatewayTerminalTargets(),
+        aiGatewayModelPoolsStatus().catch(() => [] as GatewayModelPoolStatus[]),
         templatesPromise,
         statsPromise,
         logsPromise,
@@ -239,6 +256,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       setStatus(nextStatus);
       publishRuntimeStatus("gateway", nextStatus);
       setTargets(nextTargets ?? []);
+      setPoolStatuses(nextPoolStatuses ?? []);
       setTodayStats(nextTodayStats);
       const failedCount = (nextTodayLogs?.groups ?? []).reduce(
         (acc, g) => acc + (g.error_count || 0),
@@ -275,17 +293,19 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       const templatesPromise = aiGatewayProviderTemplates()
         .then((value) => ({ ok: true as const, value: value ?? [] }))
         .catch((err: unknown) => ({ ok: false as const, error: err }));
-      const [nextConfig, nextStatus, nextTargets, templatesResult] =
+      const [nextConfig, nextStatus, nextTargets, nextPoolStatuses, templatesResult] =
         await Promise.all([
           aiGatewayGetConfig(),
           aiGatewayStatus(),
           aiGatewayTerminalTargets(),
+          aiGatewayModelPoolsStatus().catch(() => [] as GatewayModelPoolStatus[]),
           templatesPromise,
         ]);
       setConfig(nextConfig);
       setStatus(nextStatus);
       publishRuntimeStatus("gateway", nextStatus);
       setTargets(nextTargets ?? []);
+      setPoolStatuses(nextPoolStatuses ?? []);
       if (templatesResult.ok) {
         setTemplates(templatesResult.value);
       } else {
@@ -398,11 +418,15 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         setRefreshingToday(true);
       }
       try {
-        const [nextTodayStats, nextTodayLogs, nextStatus] = await Promise.all([
-          aiGatewayUsageStats("today").catch(() => null),
-          aiGatewayRequestLogs({ range: "today", groupBy: "day" }).catch(() => null),
-          aiGatewayStatus().catch(() => null),
-        ]);
+        const [nextTodayStats, nextTodayLogs, nextStatus, nextPoolStatuses] =
+          await Promise.all([
+            aiGatewayUsageStats("today").catch(() => null),
+            aiGatewayRequestLogs({ range: "today", groupBy: "day" }).catch(
+              () => null,
+            ),
+            aiGatewayStatus().catch(() => null),
+            aiGatewayModelPoolsStatus().catch(() => null),
+          ]);
         setTodayStats(nextTodayStats);
         const failedCount = (nextTodayLogs?.groups ?? []).reduce(
           (acc, g) => acc + (g.error_count || 0),
@@ -412,6 +436,9 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         if (nextStatus) {
           setStatus(nextStatus);
           publishRuntimeStatus("gateway", nextStatus);
+        }
+        if (nextPoolStatuses) {
+          setPoolStatuses(nextPoolStatuses);
         }
       } catch {
         // 静默刷新异常不干扰用户体验
@@ -675,6 +702,77 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       }),
       t("aiGatewayProviderOperationFailed", "Upstream provider operation failed"),
     );
+  };
+
+  const refreshPoolStatuses = useCallback(async () => {
+    try {
+      setPoolStatuses(await aiGatewayModelPoolsStatus());
+    } catch {
+      // Nonsecret status refresh failure must never block configuration edits.
+    }
+  }, []);
+
+  const handleTogglePoolEnabled = (pool: GatewayModelPool, enabled: boolean) =>
+    runAction(
+      async () => {
+        await applyConfig(await aiGatewaySetModelPoolEnabled(pool.id, enabled));
+        await refreshPoolStatuses();
+      },
+      enabled
+        ? t("aiGatewayModelPoolEnabled", "Model pool enabled: {{name}}", {
+            name: pool.name,
+          })
+        : t("aiGatewayModelPoolDisabled", "Model pool disabled: {{name}}", {
+            name: pool.name,
+          }),
+      t("aiGatewayModelPoolOperationFailed", "Model pool operation failed"),
+    );
+
+  const handleOpenNewPool = () => {
+    setEditingPool(null);
+    setPoolDialogKey((key) => key + 1);
+    setIsPoolDialogOpen(true);
+  };
+
+  const handleOpenEditPool = (pool: GatewayModelPool) => {
+    setEditingPool(pool);
+    setPoolDialogKey((key) => key + 1);
+    setIsPoolDialogOpen(true);
+  };
+
+  const handleSavePool = async (pool: GatewayModelPool) => {
+    // A rejected write propagates to the dialog, which keeps the draft visible.
+    const next = await aiGatewayUpsertModelPool(pool);
+    setConfig(next);
+    await refreshPoolStatuses();
+    pushToast({
+      title: t("aiGatewayModelPoolSaved", "Model pool saved: {{name}}", {
+        name: pool.name,
+      }),
+      kind: "success",
+    });
+  };
+
+  const handleDeletePool = (poolId: string) => {
+    const name =
+      readModelPools(config).find((pool) => pool.id === poolId)?.name ?? poolId;
+    return runAction(
+      async () => {
+        await applyConfig(await aiGatewayDeleteModelPool(poolId));
+        await refreshPoolStatuses();
+      },
+      t("aiGatewayModelPoolDeleted", "Model pool deleted: {{name}}", { name }),
+      t("aiGatewayModelPoolOperationFailed", "Model pool operation failed"),
+    );
+  };
+
+  const handleOpenPoolLogs = (model: string) => {
+    // Reuse the existing request-log query state: switch to the logs subtab and
+    // seed the alias filter; no new trace-ID or log format is introduced.
+    setUsageFocusModel(model);
+    setUsageFocusToken((token) => token + 1);
+    setUsageSubTab("logs");
+    setActiveTab("usage");
   };
 
   const syncEditingProvider = (
@@ -1136,7 +1234,9 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       id: "models",
       label: t("aiGatewayModelListTab", "Model list"),
       icon: Boxes,
-      count: aggregateModels(config.providers).length,
+      count:
+        aggregateModels(config.providers).length +
+        readModelPools(config).filter((pool) => pool.enabled).length,
     },
     {
       id: "keys",
@@ -1287,6 +1387,17 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
             onReenableKey={(providerId, keyId) =>
               void handleReenableProviderKey(providerId, keyId)
             }
+            modelPools={readModelPools(config)}
+            poolStatuses={poolStatuses}
+            onTogglePoolEnabled={(poolId, enabled) => {
+              const pool = readModelPools(config).find(
+                (item) => item.id === poolId,
+              );
+              if (pool) void handleTogglePoolEnabled(pool, enabled);
+            }}
+            onEditPool={(pool) => handleOpenEditPool(pool)}
+            onDeletePool={(poolId) => void handleDeletePool(poolId)}
+            onOpenPoolLogs={(model) => handleOpenPoolLogs(model)}
           />
         </div>
 
@@ -1298,7 +1409,9 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         >
           <ModelListPanel
             providers={config.providers}
+            modelPools={readModelPools(config)}
             port={config.port}
+            isActive={activeTab === "models"}
             onNavigateProviders={() => setActiveTab("providers")}
           />
         </div>
@@ -1393,7 +1506,11 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           </div>
 
           <div className={usageSubTab === "logs" ? "block" : "hidden"}>
-            <UsageLogsPanel isActive={activeTab === "usage" && usageSubTab === "logs"} />
+            <UsageLogsPanel
+              isActive={activeTab === "usage" && usageSubTab === "logs"}
+              focusModel={usageFocusModel}
+              focusToken={usageFocusToken}
+            />
           </div>
         </div>
 
@@ -1465,6 +1582,27 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
             setEditingTemplate(null);
             setIsTemplateEditOpen(true);
           }}
+          onSelectModelPool={() => {
+            setIsTemplatePickerOpen(false);
+            handleOpenNewPool();
+          }}
+        />
+
+        {/* 模型池创建与编辑模态弹窗 */}
+        <ModelPoolDialog
+          key={poolDialogKey}
+          open={isPoolDialogOpen}
+          onOpenChange={(open) => {
+            setIsPoolDialogOpen(open);
+            if (!open) setEditingPool(null);
+          }}
+          providers={config.providers}
+          pool={editingPool}
+          poolStatus={
+            poolStatuses.find((status) => status.id === editingPool?.id) ?? null
+          }
+          busy={busy}
+          onSave={handleSavePool}
         />
 
         {/* 服务商模板维护与编辑模态弹窗 */}

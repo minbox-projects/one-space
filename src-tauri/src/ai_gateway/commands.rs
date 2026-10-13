@@ -225,6 +225,37 @@ pub(in crate::ai_gateway) fn build_gateway_provider(
     gateways: &[GatewayUpstreamProvider],
     profile: TerminalSyncProfile,
 ) -> Result<serde_json::Value, String> {
+    build_gateway_provider_with_pools(
+        provider_id,
+        tool,
+        base_url,
+        api_key,
+        gateways,
+        &[],
+        None,
+        profile,
+    )
+}
+
+/// Pool-aware variant of [`build_gateway_provider`].
+///
+/// `pools` contributes the public alias of every enabled configured pool to the
+/// generated catalog: an OpenCode Chat-compatible row with no guessed reasoning
+/// variants, and a Codex generated model that only fills a gap. `previous_model`
+/// is the model already stored on the owned record, used only to retain a valid
+/// previously selected enabled pool alias on a Codex resync. The original
+/// `build_gateway_provider` keeps its signature and passes no pools.
+#[allow(clippy::too_many_arguments)]
+fn build_gateway_provider_with_pools(
+    provider_id: &str,
+    tool: &str,
+    base_url: &str,
+    api_key: &str,
+    gateways: &[GatewayUpstreamProvider],
+    pools: &[ModelPool],
+    previous_model: Option<&str>,
+    profile: TerminalSyncProfile,
+) -> Result<serde_json::Value, String> {
     let tool = tool.trim().to_ascii_lowercase();
     if !is_supported_terminal_tool(&tool) {
         return Err(format!(
@@ -331,10 +362,27 @@ pub(in crate::ai_gateway) fn build_gateway_provider(
                 models.insert(local_model, Value::Object(model));
             }
         }
+        // Every enabled configured pool contributes its public alias exactly
+        // once as a Chat-compatible row. A pool never borrows a source model's
+        // reasoning variants and is never given the Responses npm override, so
+        // no `variants`/`reasoning`/`provider` is guessed from its candidates
+        // (REQ-008/AC-011). A disabled pool is never exposed.
+        for pool in pools.iter().filter(|pool| pool.enabled) {
+            let Some(local_model) = non_empty(Some(pool.model.as_str())) else {
+                continue;
+            };
+            if models.contains_key(&local_model) {
+                continue;
+            }
+            let name = non_empty(Some(pool.name.as_str())).unwrap_or_else(|| local_model.clone());
+            let mut model = Map::new();
+            model.insert("name".to_string(), Value::String(name));
+            models.insert(local_model, Value::Object(model));
+        }
         tool_config.insert("models".to_string(), Value::Object(models));
     } else {
         tool_config.insert("wire_api".to_string(), Value::String("chat".to_string()));
-        let model = gateways
+        let ordinary = gateways
             .iter()
             .filter(|gateway| gateway.enabled)
             .find_map(|gateway| {
@@ -350,6 +398,25 @@ pub(in crate::ai_gateway) fn build_gateway_provider(
                     .filter(|gateway| gateway.enabled)
                     .find_map(|gateway| non_empty(gateway.default_model.as_deref()))
             });
+        // Retain an already selected *enabled* pool alias on resync; a disabled
+        // or retired alias is not retainable, so an ordinary default wins.
+        let retained_pool = previous_model
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .filter(|value| {
+                pools
+                    .iter()
+                    .any(|pool| pool.enabled && pool.model.trim() == *value)
+            })
+            .map(str::to_string);
+        // A pool-only configuration (no ordinary model) uses the first enabled
+        // pool alias as its generated fallback; an ordinary default is never
+        // replaced just because a pool exists (REQ-008/AC-011).
+        let fallback_pool = pools
+            .iter()
+            .filter(|pool| pool.enabled)
+            .find_map(|pool| non_empty(Some(pool.model.as_str())));
+        let model = retained_pool.or(ordinary).or(fallback_pool);
         if let Some(model) = model {
             object.insert("model".to_string(), Value::String(model));
         }
@@ -1142,12 +1209,14 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
                     claude_models.is_none()
                 } else {
                     match (provider_id.as_deref(), managed) {
-                        (Some(id), Some(stored)) => build_gateway_provider(
+                        (Some(id), Some(stored)) => build_gateway_provider_with_pools(
                             id,
                             tool,
                             &current_base_url,
                             "",
                             &config.providers,
+                            &config.model_pools,
+                            stored.get("model").and_then(Value::as_str),
                             profile,
                         )
                         .map(|generated| terminal_model_selection_drifted(tool, stored, &generated))
@@ -1374,12 +1443,23 @@ where
             });
         } else {
             let provider_id = resolve_gateway_provider_id(tool, providers, &config, profile);
-            let payload = build_gateway_provider(
+            // The owned record's current model lets a Codex resync retain an
+            // already selected enabled pool alias instead of dropping it.
+            let managed_ledger = config
+                .terminal_syncs
+                .iter()
+                .find(|record| record.tool.eq_ignore_ascii_case(tool));
+            let previous_model =
+                find_managed_gateway_provider(tool, providers, managed_ledger, profile)
+                    .and_then(|provider| provider.get("model").and_then(Value::as_str));
+            let payload = build_gateway_provider_with_pools(
                 &provider_id,
                 tool,
                 &base_url,
                 &key_value,
                 &config.providers,
+                &config.model_pools,
+                previous_model,
                 profile,
             )?;
             planned.push(PlannedTool {

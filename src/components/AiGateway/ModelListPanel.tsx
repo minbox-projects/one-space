@@ -19,9 +19,12 @@ import {
   localBaseUrl,
   resolveAggregatedModelName,
   resolveAggregatedReasoningEfforts,
+  type AggregatedModel,
+  type GatewayModelPool,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
 } from "@/lib/aiGateway";
+import { protocolShortLabel } from "./gatewayShared";
 
 function endpointPath(protocol: GatewayUpstreamProtocol): string {
   if (protocol === "responses") return "/responses";
@@ -56,13 +59,19 @@ function ProtocolBadge({ protocol }: { protocol: GatewayUpstreamProtocol }) {
 
 type ModelListPanelProps = {
   providers: GatewayUpstreamProvider[];
+  /** Enabled model pools are advertised once alongside aggregated local models. */
+  modelPools?: GatewayModelPool[];
   port?: number;
+  /** When false the hidden panel renders nothing while keeping its search state. */
+  isActive?: boolean;
   onNavigateProviders?: () => void;
 };
 
 export function ModelListPanel({
   providers,
+  modelPools = [],
   port = AI_GATEWAY_DEFAULT_PORT,
+  isActive = true,
   onNavigateProviders,
 }: ModelListPanelProps) {
   const { t } = useTranslation();
@@ -72,18 +81,59 @@ export function ModelListPanel({
   const [protocolFilter, setProtocolFilter] = useState<string>("all");
   const [copiedTarget, setCopiedTarget] = useState<string | null>(null);
 
-  const rows = useMemo(
-    () =>
-      aggregateModels(providers).map((entry) => ({
-        entry,
-        name: resolveAggregatedModelName(entry),
-        protocols: Array.from(
-          new Set(entry.providers.map((upstream) => upstream.endpoint)),
-        ),
-        reasoningEfforts: resolveAggregatedReasoningEfforts(entry),
-      })),
-    [providers],
-  );
+  const providerNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const provider of providers) map.set(provider.id, provider.name);
+    return map;
+  }, [providers]);
+
+  const rows = useMemo(() => {
+    const aggregateRows = aggregateModels(providers).map((entry) => ({
+      entry,
+      name: resolveAggregatedModelName(entry),
+      protocols: Array.from(
+        new Set(entry.providers.map((upstream) => upstream.endpoint)),
+      ) as GatewayUpstreamProtocol[],
+      reasoningEfforts: resolveAggregatedReasoningEfforts(entry),
+      pool: undefined as GatewayModelPool | undefined,
+    }));
+
+    // Each enabled pool is advertised exactly once, including while all of its
+    // candidates are temporarily unavailable; disabled pools are excluded.
+    const poolRows = modelPools
+      .filter((pool) => pool.enabled)
+      .map((pool) => {
+        const entry: AggregatedModel = {
+          model: pool.model,
+          providers: pool.candidates.map((candidate) => ({
+            providerId: candidate.provider_id,
+            providerName:
+              providerNameById.get(candidate.provider_id) ??
+              candidate.provider_id,
+            upstreamModel: candidate.upstream_model,
+            endpoint: candidate.protocol,
+            isDefault: false,
+          })),
+        };
+        return {
+          entry,
+          name: pool.name,
+          // The public pool always advertises Chat + Responses, never a guessed
+          // native Claude choice; the actual source protocol stays in the
+          // upstream column.
+          protocols: [
+            "chat_completions",
+            "responses",
+          ] as GatewayUpstreamProtocol[],
+          reasoningEfforts: [] as string[],
+          pool,
+        };
+      });
+
+    return [...aggregateRows, ...poolRows].sort((a, b) =>
+      a.entry.model.localeCompare(b.entry.model),
+    );
+  }, [modelPools, providerNameById, providers]);
 
   // 提取可用服务商选项（仅包含有生效模型的服务商）
   const providerOptions = useMemo(() => {
@@ -206,6 +256,8 @@ export function ModelListPanel({
     Boolean(normalizedQuery) ||
     providerFilter !== "all" ||
     protocolFilter !== "all";
+
+  if (!isActive) return null;
 
   return (
     <div className="space-y-4" data-testid="ai-gateway-model-list">
@@ -452,7 +504,7 @@ export function ModelListPanel({
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
-              {visibleRows.map(({ entry, name, protocols, reasoningEfforts }) => {
+              {visibleRows.map(({ entry, name, protocols, reasoningEfforts, pool }) => {
                 const localTargetKey = `local:${entry.model}`;
                 const isCopied = copiedTarget === localTargetKey;
                 return (
@@ -513,11 +565,28 @@ export function ModelListPanel({
                         >
                           {name}
                         </span>
-                        <div className="flex flex-wrap items-center gap-1">
-                          {protocols.map((proto) => (
-                            <ProtocolBadge key={proto} protocol={proto} />
-                          ))}
-                        </div>
+                        {pool ? (
+                          <div className="flex flex-wrap items-center gap-1">
+                            {protocols.map((proto) => (
+                              <span
+                                key={proto}
+                                className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium leading-4 ${
+                                  proto === "responses"
+                                    ? "bg-purple-500/10 text-purple-600 dark:text-purple-400"
+                                    : "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                                }`}
+                              >
+                                {protocolShortLabel(proto)}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-1">
+                            {protocols.map((proto) => (
+                              <ProtocolBadge key={proto} protocol={proto} />
+                            ))}
+                          </div>
+                        )}
                         {reasoningEfforts.length > 0 ? (
                           <div
                             data-testid="ai-gateway-model-list-reasoning-efforts"

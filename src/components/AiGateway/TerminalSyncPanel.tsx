@@ -93,7 +93,7 @@ export function TerminalSyncPanel({
   );
 
   const claudeTarget = supportedTargets.find((target) => target.tool === "claude");
-  const claudeInitialSelection = useMemo(() => {
+  const claudeInitialSelection = (() => {
     const saved = claudeTarget?.claude_models;
     if (!saved) return null;
     const candidates = new Set(claudeCandidateModels);
@@ -103,7 +103,7 @@ export function TerminalSyncPanel({
       sonnet: candidates.has(saved.sonnet) ? saved.sonnet : "",
       opus: candidates.has(saved.opus) ? saved.opus : "",
     };
-  }, [claudeTarget?.claude_models, claudeCandidateModels]);
+  })();
 
   const handleOpenClaudeEdit = (hasBeenAdded: boolean) => {
     setClaudeDialogAction(hasBeenAdded ? "sync" : "configure");

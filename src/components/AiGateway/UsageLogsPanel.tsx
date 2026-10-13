@@ -362,7 +362,17 @@ function CostDetail({
   );
 }
 
-export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
+export function UsageLogsPanel({
+  isActive = true,
+  focusModel = null,
+  focusToken = 0,
+}: {
+  isActive?: boolean;
+  /** Alias filter requested by an external shortcut (e.g. a pool card log button). */
+  focusModel?: string | null;
+  /** Bumped by the external shortcut; each new value re-applies `focusModel`. */
+  focusToken?: number;
+}) {
   const { t } = useTranslation();
   const [range, setRange] = useState<UsageRangeKey>("today");
   const [groupBy, setGroupBy] = useState<UsageGroupBy>("none");
@@ -440,10 +450,21 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
     [groupBy, model, page, provider, range, status],
   );
 
+  // External shortcut (e.g. a model-pool card log button): apply the alias
+  // filter through the existing query state without inventing a new log format.
+  useEffect(() => {
+    if (focusToken === 0) return;
+    setModel(focusModel);
+    setDraftModel(focusModel);
+    setPage(1);
+  }, [focusToken, focusModel]);
+
   useEffect(() => {
     if (!isActive) return;
+    // Avoid a transient null-filter request while an external focus is pending.
+    if (focusToken > 0 && focusModel !== null && model !== focusModel) return;
     void load();
-  }, [isActive, load]);
+  }, [focusModel, focusToken, isActive, load, model]);
 
   const visibleRecords = pageData?.records ?? [];
 

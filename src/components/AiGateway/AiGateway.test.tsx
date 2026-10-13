@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { act, fireEvent, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
@@ -35,6 +36,8 @@ type Store = {
   config: GatewayConfig;
   status: GatewayStatus;
   targets: GatewayTerminalTarget[];
+  /** Nonsecret pool status payload; absent means an empty collection. */
+  poolStatus?: unknown[];
 };
 
 function makeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
@@ -155,6 +158,8 @@ function mockStore(store: Store) {
         return store.status;
       case "ai_gateway_terminal_targets":
         return store.targets;
+      case "ai_gateway_model_pools_status":
+        return store.poolStatus ?? [];
       case "ai_gateway_start":
         store.status = { ...store.status, running: true };
         return store.status;
@@ -3946,6 +3951,255 @@ describe("AI 网关头部与副标题渲染", () => {
         "统一管理多上游服务商与密钥池，提供 OpenAI / Anthropic 双协议转发、智能路由与故障转移，并一键同步到 OpenCode / Codex / Claude Code 等终端。",
       ),
     ).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 3 (20261013-free-model-pool): the AI Gateway console renders and
+// inspects a saved model pool alongside real upstream providers (REQ-008;
+// AC-011 / AC-013 / AC-014 / AC-016).
+//
+// The pool model fields are not part of the typed `GatewayConfig` yet, so the
+// fixtures attach them through a cast. Every assertion is behavior-level: the
+// card is visible, the nonsecret status command is used, and the enabled alias
+// appears exactly once in the model list.
+// ---------------------------------------------------------------------------
+
+function withModelPools(config: GatewayConfig, pools: unknown[]): GatewayConfig {
+  return { ...config, model_pools: pools } as unknown as GatewayConfig;
+}
+
+function modelPoolFixture(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: "pool-free",
+    name: "Free Modle",
+    model: "free-model",
+    enabled: true,
+    candidates: [
+      {
+        provider_id: "p1",
+        local_model: "local-a",
+        upstream_model: "remote-a",
+        protocol: "chat_completions",
+        weight: 1,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function poolStore(
+  pools: unknown[],
+  poolStatus: unknown[] = [],
+): Store {
+  return {
+    config: withModelPools(
+      makeConfig({
+        keys: [
+          { id: "k1", label: "Main", value: "********", enabled: true, created_at: 1 },
+        ],
+        default_key_id: "k1",
+        providers: [
+          makeProvider({
+            id: "p1",
+            name: "Upstream A",
+            mappings: [{ local_model: "local-a", upstream_model: "remote-a" }],
+          }),
+          makeProvider({
+            id: "p2",
+            name: "Upstream B",
+            mappings: [{ local_model: "local-b", upstream_model: "remote-b" }],
+          }),
+        ],
+      }),
+      pools,
+    ),
+    status: makeStatus({ key_count: 1, default_key_id: "k1", provider_count: 2 }),
+    targets: [],
+    poolStatus,
+  };
+}
+
+describe("AiGateway model pool integration", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("renders an enabled model pool card alongside real providers", async () => {
+    mockStore(poolStore([modelPoolFixture()]));
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Upstream A");
+
+    expect(screen.getByText("Free Modle")).toBeInTheDocument();
+    expect(screen.getByText("free-model")).toBeInTheDocument();
+    expect(screen.getByText("Upstream A")).toBeInTheDocument();
+  });
+
+  it("merges nonsecret pool status through the pool status command", async () => {
+    mockStore(
+      poolStore(
+        [modelPoolFixture()],
+        [
+          {
+            id: "pool-free",
+            name: "Free Modle",
+            model: "free-model",
+            enabled: true,
+            candidates: [
+              {
+                provider_id: "p1",
+                provider_name: "Upstream A",
+                local_model: "local-a",
+                upstream_model: "remote-a",
+                protocol: "chat_completions",
+                weight: 1,
+                ready: false,
+                availability: "missing_provider",
+                reason: "missing provider 'p1'",
+                cooling_until: null,
+              },
+            ],
+          },
+        ],
+      ),
+    );
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Upstream A");
+
+    await waitFor(() => {
+      expect(
+        invokeMock.mock.calls.some(
+          ([command]) => command === "ai_gateway_model_pools_status",
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("lists the enabled pool once with its display name, both ingress protocols and real sources", async () => {
+    mockStore(poolStore([modelPoolFixture()]));
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Upstream A");
+
+    fireEvent.click(screen.getByRole("tab", { name: /Model list/i }));
+    const modelList = await screen.findByTestId("ai-gateway-model-list");
+
+    expect(modelList.querySelectorAll('[data-model="free-model"]')).toHaveLength(1);
+    const row = modelList.querySelector('[data-model="free-model"]') as HTMLElement;
+    expect(row).not.toBeNull();
+    expect(
+      within(row).getByTestId("ai-gateway-model-list-name"),
+    ).toHaveTextContent("Free Modle");
+    expect(within(row).getByText("Chat")).toBeInTheDocument();
+    expect(within(row).getByText("Responses")).toBeInTheDocument();
+    expect(
+      within(row).getByTestId("ai-gateway-model-list-upstream-provider"),
+    ).toHaveTextContent("Upstream A");
+    expect(
+      within(row).getByTestId("ai-gateway-model-list-upstream-model"),
+    ).toHaveTextContent("remote-a");
+    // No reasoning variants are guessed for the pool.
+    expect(
+      within(row).queryByTestId("ai-gateway-model-list-reasoning-efforts"),
+    ).not.toBeInTheDocument();
+
+    // Counts stay consistent: two ordinary mapping rows plus the enabled pool.
+    expect(within(modelList).getAllByTestId("ai-gateway-model-list-row")).toHaveLength(3);
+  });
+
+  it("keeps an enabled all-unready pool advertised in the model list", async () => {
+    mockStore(
+      poolStore(
+        [modelPoolFixture()],
+        [
+          {
+            id: "pool-free",
+            name: "Free Modle",
+            model: "free-model",
+            enabled: true,
+            candidates: [
+              {
+                provider_id: "p1",
+                provider_name: "Upstream A",
+                local_model: "local-a",
+                upstream_model: "remote-a",
+                protocol: "chat_completions",
+                weight: 1,
+                ready: false,
+                availability: "cooling",
+                reason: "cooling after a model-scoped failure",
+                cooling_until: 1_900_000_000,
+              },
+            ],
+          },
+        ],
+      ),
+    );
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Upstream A");
+
+    fireEvent.click(screen.getByRole("tab", { name: /Model list/i }));
+    const modelList = await screen.findByTestId("ai-gateway-model-list");
+    expect(modelList.querySelectorAll('[data-model="free-model"]')).toHaveLength(1);
+  });
+
+  it("excludes a disabled pool from the model list", async () => {
+    mockStore(poolStore([modelPoolFixture({ enabled: false })]));
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Upstream A");
+
+    fireEvent.click(screen.getByRole("tab", { name: /Model list/i }));
+    const modelList = await screen.findByTestId("ai-gateway-model-list");
+    expect(modelList.querySelectorAll('[data-model="free-model"]')).toHaveLength(0);
+    expect(within(modelList).getAllByTestId("ai-gateway-model-list-row")).toHaveLength(2);
+  });
+
+  it("does not poll pool status while the page is hidden", async () => {
+    mockStore(poolStore([modelPoolFixture()]));
+
+    renderWithProviders(<AiGateway isVisible={false} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const commands = invokeMock.mock.calls.map(([command]) => command);
+    expect(commands).not.toContain("ai_gateway_get_config");
+    expect(commands).not.toContain("ai_gateway_model_pools_status");
+  });
+
+  it("refreshes pool status exactly once when the page becomes visible", async () => {
+    mockStore(poolStore([modelPoolFixture()]));
+
+    function Host() {
+      const [visible, setVisible] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setVisible(true)}>
+            show
+          </button>
+          <AiGateway isVisible={visible} />
+        </>
+      );
+    }
+
+    const poolStatusCalls = () =>
+      invokeMock.mock.calls.filter(
+        ([command]) => command === "ai_gateway_model_pools_status",
+      ).length;
+
+    renderWithProviders(<Host />);
+    expect(poolStatusCalls()).toBe(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "show" }));
+    await screen.findByTestId("ai-gateway-providers");
+    await waitFor(() => expect(poolStatusCalls()).toBe(1));
   });
 });
 

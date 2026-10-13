@@ -249,6 +249,18 @@ export interface GatewayConfig {
   terminal_syncs: GatewayTerminalSyncRecord[];
   /** Provider-scoped price rows; optional so older fixtures stay valid. */
   model_prices?: ModelPrice[];
+  /**
+   * Operator-defined model pools; absent/empty means no pools (default for
+   * configs written before the feature). Pool records never carry source keys
+   * or endpoints — only stable identity and exact source references.
+   */
+  model_pools?: GatewayModelPool[];
+  /**
+   * Minimal alias reservation: pool model ids previously/currently owned by a
+   * pool. It is never advertised as callable and only blocks ordinary routing
+   * from reusing a retired alias.
+   */
+  model_pool_reserved_models?: string[];
 }
 
 export interface GatewayStatus {
@@ -1142,6 +1154,272 @@ export function aiGatewayTemplateAutoRefreshStatus() {
   return invoke<TemplateAutoRefreshStatus>(
     "ai_gateway_template_auto_refresh_status",
   );
+}
+
+// ---------------------------------------------------------------------------
+// Model pools
+// ---------------------------------------------------------------------------
+
+/**
+ * One source candidate of a model pool: an exact reference to a real provider
+ * mapping. It never carries a source key or endpoint — the referenced mapping
+ * remains authoritative for endpoint, credential and health.
+ */
+export interface GatewayModelPoolCandidate {
+  provider_id: string;
+  local_model: string;
+  upstream_model: string;
+  protocol: GatewayUpstreamProtocol;
+  /** Integer 1-100; default 1. */
+  weight: number;
+}
+
+/**
+ * An operator-defined pool exposed through one public model id. The default
+ * display name is the user's `Free Modle` and the default id is `free-model`.
+ */
+export interface GatewayModelPool {
+  id: string;
+  name: string;
+  model: string;
+  enabled: boolean;
+  candidates: GatewayModelPoolCandidate[];
+}
+
+/** Nonsecret source-availability code reported per candidate by the backend. */
+export type GatewayModelPoolAvailability =
+  | "ready"
+  | "cooling"
+  | "source_disabled"
+  | "mapping_unavailable"
+  | "missing_provider"
+  | "no_usable_key"
+  | "unsupported_protocol";
+
+/** Nonsecret per-candidate status; never carries a key value or endpoint. */
+export interface GatewayModelPoolCandidateStatus extends GatewayModelPoolCandidate {
+  provider_name: string | null;
+  ready: boolean;
+  availability: GatewayModelPoolAvailability | string;
+  reason: string | null;
+  /** Wall-clock epoch SECONDS when cooldown ends; `null` when not cooling. */
+  cooling_until: number | null;
+}
+
+/** Nonsecret pool status snapshot derived from current source config. */
+export interface GatewayModelPoolStatus {
+  id: string;
+  name: string;
+  model: string;
+  enabled: boolean;
+  candidates: GatewayModelPoolCandidateStatus[];
+}
+
+/** Read the stored model pools; a legacy/missing collection yields an empty list. */
+export function modelPools(
+  config: GatewayConfig | null | undefined,
+): GatewayModelPool[] {
+  return config?.model_pools ?? [];
+}
+
+/** Stored pools with the user's enabled intent on, preserving stored order. */
+export function enabledModelPools(
+  config: GatewayConfig | null | undefined,
+): GatewayModelPool[] {
+  return modelPools(config).filter((pool) => pool.enabled);
+}
+
+/** The minimal alias reservation; a legacy/missing collection yields an empty list. */
+export function modelPoolReservedModels(
+  config: GatewayConfig | null | undefined,
+): string[] {
+  return config?.model_pool_reserved_models ?? [];
+}
+
+/**
+ * Stable candidate identity key. It is not a secret; it only folds the exact
+ * source tuple (provider, local/upstream model, protocol) into one string.
+ */
+export function modelPoolCandidateKey(
+  candidate: Pick<
+    GatewayModelPoolCandidate,
+    "provider_id" | "local_model" | "upstream_model" | "protocol"
+  >,
+): string {
+  return [
+    candidate.provider_id,
+    candidate.local_model,
+    candidate.upstream_model,
+    candidate.protocol,
+  ].join("\u0001");
+}
+
+/** Build the exact pool reference for one provider mapping, defaulting weight to 1. */
+export function modelPoolCandidateFromMapping(
+  provider: GatewayUpstreamProvider,
+  mapping: GatewayModelMapping,
+  weight = 1,
+): GatewayModelPoolCandidate | null {
+  const localModel = mapping.local_model.trim();
+  const upstreamModel = mapping.upstream_model.trim();
+  if (!localModel || !upstreamModel) return null;
+  return {
+    provider_id: provider.id,
+    local_model: localModel,
+    upstream_model: upstreamModel,
+    protocol: mapping.protocol ?? provider.protocol ?? "chat_completions",
+    weight,
+  };
+}
+
+/** Generate a fresh opaque pool id; the backend stores it verbatim. */
+export function newModelPoolId(): string {
+  return `pool-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function aiGatewayUpsertModelPool(pool: GatewayModelPool) {
+  return invoke<GatewayConfig>("ai_gateway_upsert_model_pool", { pool });
+}
+
+export function aiGatewayDeleteModelPool(poolId: string) {
+  return invoke<GatewayConfig>("ai_gateway_delete_model_pool", { poolId });
+}
+
+export function aiGatewaySetModelPoolEnabled(poolId: string, enabled: boolean) {
+  return invoke<GatewayConfig>("ai_gateway_set_model_pool_enabled", {
+    poolId,
+    enabled,
+  });
+}
+
+export function aiGatewayModelPoolsStatus() {
+  return invoke<GatewayModelPoolStatus[]>("ai_gateway_model_pools_status");
+}
+
+/** i18n keys for every nonsecret candidate availability code. */
+export const MODEL_POOL_AVAILABILITY_LABEL_KEYS: Record<string, string> = {
+  ready: "aiGatewayModelPoolStatusReady",
+  cooling: "aiGatewayModelPoolStatusCooling",
+  source_disabled: "aiGatewayModelPoolStatusSourceDisabled",
+  mapping_unavailable: "aiGatewayModelPoolStatusMappingUnavailable",
+  missing_provider: "aiGatewayModelPoolStatusMissingProvider",
+  no_usable_key: "aiGatewayModelPoolStatusNoUsableKey",
+  unsupported_protocol: "aiGatewayModelPoolStatusUnsupportedProtocol",
+};
+
+/**
+ * A candidate's resolved availability: the localized-code state is authoritative
+ * for known current-config conditions, while the raw backend `reason` (if any) is
+ * retained as additional detail and never substitutes the code.
+ */
+export interface ResolvedModelPoolCandidateState {
+  availability: string;
+  reason: string | null;
+  cooling_until: number | null;
+  provider_name: string | null;
+  ready: boolean;
+}
+
+/** States derived from current intent that must never be masked by a stale snapshot. */
+const HARD_CURRENT_POOL_STATES = new Set([
+  "missing_provider",
+  "source_disabled",
+  "mapping_unavailable",
+  "no_usable_key",
+]);
+
+/** A quota-marked key recovers automatically once its mark is older than 1800s. */
+export const POOL_KEY_QUOTA_MARK_TTL_SECONDS = 1800;
+
+function poolKeyUsable(key: GatewayProviderKey, nowSeconds: number): boolean {
+  if (!key.enabled) return false;
+  if (!key.auto_marked) return true;
+  // Authentication marks are manual-only and never expire on their own.
+  if (key.failure_kind === "authentication") return false;
+  const markedAt = typeof key.marked_at === "number" ? key.marked_at : 0;
+  if (markedAt <= 0) return false;
+  return nowSeconds - markedAt > POOL_KEY_QUOTA_MARK_TTL_SECONDS;
+}
+
+/**
+ * Derive a candidate's availability from the CURRENT config (provider intent,
+ * exact mapping/protocol reference and key availability), optionally augmented by
+ * this pool's own nonsecret status for transient signals (cooldown, live health).
+ *
+ * The own-pool status may add a cooling/health state over an otherwise-ready source,
+ * but a stale snapshot can never turn a currently disabled/removed/mapping-mismatched
+ * or key-less source back into `ready`. Another pool's status is never consulted.
+ */
+export function resolveModelPoolCandidateState(
+  candidate: GatewayModelPoolCandidate,
+  providers: GatewayUpstreamProvider[] | null | undefined,
+  statusCandidate?: GatewayModelPoolCandidateStatus | null,
+  nowSeconds: number = Math.floor(Date.now() / 1000),
+): ResolvedModelPoolCandidateState {
+  const provider =
+    (providers ?? []).find((item) => item.id === candidate.provider_id) ?? null;
+  const statusReason = statusCandidate?.reason?.trim()
+    ? statusCandidate.reason.trim()
+    : null;
+  const providerName =
+    provider?.name?.trim() ||
+    statusCandidate?.provider_name?.trim() ||
+    candidate.provider_id;
+
+  let current = "ready";
+  if (!provider) {
+    current = "missing_provider";
+  } else if (provider.enabled === false) {
+    current = "source_disabled";
+  } else {
+    const mapping = (provider.mappings ?? []).find(
+      (item) =>
+        item.local_model.trim() === candidate.local_model &&
+        item.upstream_model.trim() === candidate.upstream_model &&
+        (item.protocol ?? provider.protocol ?? "chat_completions") ===
+          candidate.protocol,
+    );
+    if (!mapping) {
+      current = "mapping_unavailable";
+    } else {
+      const rawKeys = (provider as GatewayUpstreamProviderWithKeys).keys;
+      if (Array.isArray(rawKeys)) {
+        current = rawKeys.some((key) => poolKeyUsable(key, nowSeconds))
+          ? "ready"
+          : "no_usable_key";
+      }
+      // A missing/legacy `keys` field is unknown, never an automatic denial.
+    }
+  }
+
+  if (HARD_CURRENT_POOL_STATES.has(current)) {
+    return {
+      availability: current,
+      reason: statusReason,
+      cooling_until: null,
+      provider_name: providerName,
+      ready: false,
+    };
+  }
+
+  const statusAvailability = statusCandidate?.availability ?? null;
+  if (statusAvailability) {
+    return {
+      availability: statusAvailability,
+      reason: statusReason,
+      cooling_until: statusCandidate?.cooling_until ?? null,
+      provider_name: providerName,
+      ready: statusAvailability === "ready",
+    };
+  }
+
+  return {
+    availability: current,
+    reason: null,
+    cooling_until: null,
+    provider_name: providerName,
+    ready: current === "ready",
+  };
 }
 
 // ---------------------------------------------------------------------------
