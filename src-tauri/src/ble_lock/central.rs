@@ -101,7 +101,7 @@ mod imp {
     use objc2_core_bluetooth::{
         CBAdvertisementDataLocalNameKey, CBCentralManager, CBCentralManagerDelegate,
         CBCentralManagerScanOptionAllowDuplicatesKey, CBManager, CBManagerAuthorization,
-        CBManagerState, CBPeripheral, CBPeripheralDelegate,
+        CBManagerState, CBPeripheral, CBPeripheralDelegate, CBPeripheralState,
     };
     use objc2_foundation::{
         NSArray, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol, NSString, NSUUID,
@@ -284,6 +284,11 @@ mod imp {
                 // A connection we no longer own; never adopt it.
                 return;
             }
+            if self.ivars().mode.get() != BleLockMode::Active {
+                // A late connect callback after switching to passive mode must not
+                // be adopted; passive mode never connects.
+                return;
+            }
             unsafe {
                 peripheral.setDelegate(Some(ProtocolObject::from_ref(self)));
                 peripheral.readRSSI();
@@ -351,7 +356,13 @@ mod imp {
                 self.clear(central);
                 return Err(BleLockError::device_not_selected());
             }
-            self.cancel(central);
+            // Re-applying the *same* selected UUID (the periodic re-plan) must not
+            // cancel an in-flight connect: a pending CoreBluetooth request does not
+            // time out, and cancelling abandons it. A replacement still cancels.
+            let same_device = self.ivars().selected_id.borrow().as_deref() == Some(device_id);
+            if !same_device {
+                self.cancel(central);
+            }
             *self.ivars().selected_id.borrow_mut() = Some(device_id.to_string());
             *self.ivars().selected_name.borrow_mut() = name.map(|value| value.to_string());
             if self.ivars().mode.get() == BleLockMode::Active {
@@ -390,7 +401,11 @@ mod imp {
             }
             let peripheral = self.ivars().peripheral.borrow();
             if let Some(peripheral) = peripheral.as_ref() {
-                unsafe { peripheral.readRSSI() };
+                // `readRSSI` is only valid on a connected peripheral; a pending or
+                // in-flight connect must not be disturbed.
+                if unsafe { peripheral.state() } == CBPeripheralState::Connected {
+                    unsafe { peripheral.readRSSI() };
+                }
             }
         }
 
@@ -413,7 +428,16 @@ mod imp {
                 .ok_or_else(BleLockError::device_unavailable)?;
             unsafe {
                 peripheral.setDelegate(Some(ProtocolObject::from_ref(self)));
-                central.connectPeripheral_options(&peripheral, None);
+            }
+            // We initiate a connection only while the peripheral is Disconnected, so
+            // an existing pending or established connection is preserved. A pending
+            // connect does not time out, and cancelling abandons it; therefore the
+            // Connecting / Connected / Disconnecting states leave the existing
+            // request untouched.
+            if unsafe { peripheral.state() } == CBPeripheralState::Disconnected {
+                unsafe {
+                    central.connectPeripheral_options(&peripheral, None);
+                }
             }
             *self.ivars().peripheral.borrow_mut() = Some(peripheral);
             Ok(())

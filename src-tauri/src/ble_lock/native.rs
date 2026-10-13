@@ -1440,8 +1440,6 @@ pub const BLE_LOCK_DEVICES_EVENT: &str = "ble-lock-devices-updated";
 
 /// RSSI/away-lost cadence for the process-owned runtime, independent of UI.
 const BLE_LOCK_TICK_INTERVAL: Duration = Duration::from_secs(1);
-/// Minimum spacing between reconnect attempts after an unexpected disconnect.
-const RECONNECT_THROTTLE_MS: u64 = 5_000;
 
 thread_local! {
     /// Main-thread-confined CoreBluetooth bridge. Never moved off the main queue,
@@ -1467,8 +1465,6 @@ struct RuntimeState {
     last_presence: BlePresence,
     /// Last published snapshot so unchanged status is not re-emitted each tick.
     last_status: Option<BleLockStatus>,
-    /// Throttle for reconnect attempts after an unexpected disconnect.
-    last_reconnect_ms: u64,
 }
 
 /// A monitored resource is desired only when a device is selected *and* at least
@@ -1558,7 +1554,6 @@ pub fn install(app: AppHandle) {
         discovering: false,
         last_presence,
         last_status: None,
-        last_reconnect_ms: 0,
     };
     if RUNTIME.set(Mutex::new(state)).is_err() {
         return;
@@ -1740,7 +1735,6 @@ fn handle_central_event(app: &AppHandle, event: BleCentralEvent) {
     let now = now_ms();
     let mut devices_changed = false;
     let mut reapply = false;
-    let mut reconnect = false;
     if let Some(mut guard) = runtime_guard() {
         // Ignore any bridge event while asleep or stopped: the resource is
         // released and a rebuild clears stale eligibility on wake.
@@ -1806,19 +1800,14 @@ fn handle_central_event(app: &AppHandle, event: BleCentralEvent) {
                 guard.last_status = None;
             }
             BleCentralEvent::Disconnected { .. } => {
+                // The monitor's periodic tick owns the throttled Connect retry:
+                // a quick failure inside the throttle window consumes the last
+                // CoreBluetooth callback with no future callback until the next
+                // attempt, so this callback only records the transient error.
                 guard
                     .monitor
                     .set_last_error(BleLockError::device_unavailable());
                 guard.last_status = None;
-                let powered =
-                    guard.monitor.status().bluetooth_state == BleBluetoothState::PoweredOn;
-                if desired_monitoring(&guard)
-                    && powered
-                    && now.saturating_sub(guard.last_reconnect_ms) >= RECONNECT_THROTTLE_MS
-                {
-                    guard.last_reconnect_ms = now;
-                    reconnect = true;
-                }
             }
             BleCentralEvent::Error(error) => {
                 guard.monitor.set_last_error(error);
@@ -1829,7 +1818,7 @@ fn handle_central_event(app: &AppHandle, event: BleCentralEvent) {
     if devices_changed {
         emit_devices(app);
     }
-    if reapply || reconnect {
+    if reapply {
         let plan = runtime_guard().map(|guard| hardware_plan(&guard));
         if let Some((selection, mode, scan, background)) = plan {
             dispatch_sync_central(app, selection, mode, scan, background, false);
@@ -1851,6 +1840,7 @@ fn start_tick(app: AppHandle) {
 fn tick_once(app: &AppHandle) -> bool {
     let now = now_ms();
     let mut request_active_rssi = false;
+    let mut retry_connect = false;
     let mut running = true;
     if let Some(mut guard) = runtime_guard() {
         running = !guard.controller.snapshot().stopped;
@@ -1866,8 +1856,15 @@ fn tick_once(app: &AppHandle) -> bool {
         }
         let effects = guard.monitor.tick(now);
         for effect in effects {
-            if effect == BleLockEffect::Lock {
-                guard.controller.lock_for_presence();
+            match effect {
+                BleLockEffect::Lock => {
+                    guard.controller.lock_for_presence();
+                }
+                // A throttled automatic reconnect for a selected active device
+                // whose transport reported it unavailable; dispatched below,
+                // outside this runtime lock.
+                BleLockEffect::Connect => retry_connect = true,
+                BleLockEffect::Unlock => {}
             }
         }
         // Tick the adapter even without a Lock effect so a threshold crossing
@@ -1881,6 +1878,14 @@ fn tick_once(app: &AppHandle) -> bool {
         guard.last_status = None;
         if desired_monitoring(&guard) && guard.config.mode == BleLockMode::Active {
             request_active_rssi = true;
+        }
+    }
+    // The emitted retry reuses the background-aware hardware plan; same-id
+    // selection keeps an in-flight CoreBluetooth request intact.
+    if retry_connect {
+        let plan = runtime_guard().map(|guard| hardware_plan(&guard));
+        if let Some((selection, mode, scan, background)) = plan {
+            dispatch_sync_central(app, selection, mode, scan, background, false);
         }
     }
     if request_active_rssi {
@@ -1963,8 +1968,17 @@ fn dispatch_sync_central(
                 *cell.borrow_mut() = Some(central);
             }
             if let Some(central) = cell.borrow().as_ref() {
+                // Keep the runtime monitor's radio state in sync with the real
+                // manager before any connection attempt. A same-bridge monitor
+                // rebuild (same device and mode) starts `Unknown`, and no state
+                // event follows for a retained manager, which would otherwise
+                // disable the powered-on retry guard forever.
+                let state = central.state();
+                if let Some(mut guard) = runtime_guard() {
+                    guard.monitor.set_bluetooth_state(state);
+                }
                 central.set_mode(mode);
-                if central.state() == BleBluetoothState::PoweredOn {
+                if state == BleBluetoothState::PoweredOn {
                     match &selection {
                         Some((id, name)) if background => {
                             if let Err(error) = central.select_device(id, name.as_deref()) {

@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -323,6 +323,11 @@ describe("BleLockTool", () => {
       renderWithProviders(<BleLockTool />);
       await screen.findByRole("heading", { level: 2, name: COPY.title });
 
+      // Opening the device chooser is now an explicit user action; the device
+      // event only updates the already-open list.
+      await user.click(await screen.findByRole("button", { name: COPY.scan }));
+      await waitFor(() => expect(bleLockScanStartMock).toHaveBeenCalled());
+
       await fireTauriEvent("ble-lock-devices-updated", [
         { id: "uuid-a", name: "Key Fob", rssi: -55 },
         { id: "uuid-b", name: "Headset", rssi: -70 },
@@ -489,10 +494,32 @@ describe("BleLockTool", () => {
       );
       await waitFor(() => expect(bleLockScanStartMock).toHaveBeenCalled());
 
+      // Results arrive while scanning; the chooser lists them for selection.
+      await fireTauriEvent("ble-lock-devices-updated", [
+        { id: "uuid-a", name: "Key Fob", rssi: -55 },
+      ]);
+
+      // The in-dialog Stop action is the only accessible Stop button (the
+      // header affordance is aria-hidden behind the modal).
       await user.click(
         await screen.findByRole("button", { name: COPY.stopScan }),
       );
       await waitFor(() => expect(bleLockScanStopMock).toHaveBeenCalled());
+
+      // Stopping scanning must NOT dismiss the results chooser: it stays open
+      // and its discovered devices remain selectable.
+      const dialog = await screen.findByRole("dialog");
+      expect(
+        within(dialog).getByRole("button", { name: COPY.scan }),
+      ).toBeInTheDocument();
+      expect(
+        within(dialog).getByRole("button", { name: `${COPY.select} Key Fob` }),
+      ).toBeInTheDocument();
+
+      // An explicit close dismisses the chooser without another scan_stop.
+      await user.click(within(dialog).getByRole("button", { name: "关闭" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(bleLockScanStopMock).toHaveBeenCalledTimes(1);
     });
 
     it("shows a stable localized error for a backend error code", async () => {
@@ -507,6 +534,247 @@ describe("BleLockTool", () => {
 
       const expected = String(i18n.t("bleLockError_bluetooth_unauthorized"));
       expect(await screen.findByText(expected)).toBeInTheDocument();
+    });
+
+    // Regression (BLE-chooser-close): choosing a new device is an explicit user
+    // action that starts discovery and opens the chooser. Dismissing the chooser
+    // must cancel user discovery exactly once, and a later/background device
+    // list update must only refresh the list, never reopen the chooser.
+    const chooserDismissals: ReadonlyArray<
+      [string, (user: ReturnType<typeof userEvent.setup>) => Promise<void>]
+    > = [
+      [
+        "the footer close button",
+        async (user) => {
+          await user.click(screen.getByRole("button", { name: "关闭" }));
+        },
+      ],
+      [
+        "the built-in close button",
+        async (user) => {
+          await user.click(screen.getByRole("button", { name: "Close" }));
+        },
+      ],
+      [
+        "the Escape key",
+        async (user) => {
+          await user.keyboard("{Escape}");
+        },
+      ],
+    ];
+
+    it.each(chooserDismissals)(
+      "cancels user discovery once and ignores later device updates when the chooser is dismissed via %s",
+      async (_dismissLabel, dismiss) => {
+        bleLockGetStatusMock.mockImplementation(async () =>
+          statusFixture({
+            monitoring: true,
+            selected_device: { id: "uuid-a", name: "Key Fob", rssi: -55 },
+            averaged_rssi: -55,
+            config: configFixture({
+              device_id: "uuid-a",
+              device_name: "Key Fob",
+            }),
+          }),
+        );
+        const user = userEvent.setup();
+        renderWithProviders(<BleLockTool />);
+        await screen.findByRole("heading", { level: 2, name: COPY.title });
+
+        // The chooser starts closed and no discovery is running, so the header
+        // scan affordance is present before the explicit user action.
+        await screen.findByRole("button", { name: COPY.scan });
+        expect(screen.queryByRole("dialog")).toBeNull();
+
+        // Explicit user action: "change device" starts discovery and opens the
+        // chooser for the already-selected device.
+        await user.click(
+          await screen.findByRole("button", { name: "更换设备" }),
+        );
+        await waitFor(() =>
+          expect(bleLockScanStartMock).toHaveBeenCalledTimes(1),
+        );
+        expect(await screen.findByRole("dialog")).toBeInTheDocument();
+
+        // Dismissing the chooser cancels user discovery exactly once and the
+        // dialog disappears.
+        await dismiss(user);
+        await waitFor(() =>
+          expect(bleLockScanStopMock).toHaveBeenCalledTimes(1),
+        );
+        await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+        // A later/background device update only refreshes the list; it must not
+        // reopen the chooser or restart discovery.
+        await fireTauriEvent("ble-lock-devices-updated", [
+          { id: "uuid-c", name: "Watch", rssi: -60 },
+        ]);
+        expect(screen.queryByRole("dialog")).toBeNull();
+        expect(bleLockScanStopMock).toHaveBeenCalledTimes(1);
+        expect(bleLockScanStartMock).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it("ignores a late scan-start settlement after the chooser closes before it resolves", async () => {
+      let resolveStart: (value: BleLockStatusLike) => void = () => {};
+      const pendingStart = new Promise<BleLockStatusLike>((resolve) => {
+        resolveStart = resolve;
+      });
+      bleLockScanStartMock.mockImplementationOnce(() => pendingStart);
+
+      const user = userEvent.setup();
+      renderWithProviders(<BleLockTool />);
+      await screen.findByRole("heading", { level: 2, name: COPY.title });
+      await screen.findByRole("button", { name: COPY.scan });
+
+      await user.click(await screen.findByRole("button", { name: COPY.scan }));
+      await waitFor(() => expect(bleLockScanStartMock).toHaveBeenCalledTimes(1));
+      expect(await screen.findByRole("dialog")).toBeInTheDocument();
+
+      // Close while the start request is still pending.
+      await user.click(screen.getByRole("button", { name: "关闭" }));
+      await waitFor(() => expect(bleLockScanStopMock).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+      // The late settlement must not reopen the chooser or re-enter user
+      // discovery, and a subsequent device update must not either.
+      await act(async () => {
+        resolveStart(statusFixture({ monitoring: true, scanning: true }));
+        await pendingStart;
+      });
+      await fireTauriEvent("ble-lock-devices-updated", [
+        { id: "uuid-c", name: "Watch", rssi: -60 },
+      ]);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.queryByRole("button", { name: COPY.stopScan })).toBeNull();
+      expect(screen.getByRole("button", { name: COPY.scan })).toBeInTheDocument();
+      expect(bleLockScanStopMock).toHaveBeenCalledTimes(1);
+      expect(bleLockScanStartMock).toHaveBeenCalledTimes(1);
+    });
+
+    // Regression (passive background survives user discovery): the native
+    // monitor keeps `status.scanning` true in passive mode, so the chooser must
+    // key off user intent, not that flag. An explicit change-device action must
+    // still start user discovery, and selecting a device must stop it exactly
+    // once while leaving the passive monitor's scanning status intact.
+    it("keeps passive monitoring intact across user discovery from change device to selection", async () => {
+      const passiveConfig = configFixture({
+        device_id: "uuid-a",
+        device_name: "Key Fob",
+        mode: "passive",
+      });
+      const passiveSelected = { id: "uuid-a", name: "Key Fob", rssi: -55 };
+
+      bleLockGetStatusMock.mockImplementation(async () =>
+        statusFixture({
+          monitoring: true,
+          scanning: true,
+          selected_device: passiveSelected,
+          averaged_rssi: -55,
+          presence: "near",
+          config: passiveConfig,
+        }),
+      );
+      bleLockScanStartMock.mockImplementation(async () =>
+        statusFixture({
+          monitoring: true,
+          scanning: true,
+          selected_device: passiveSelected,
+          averaged_rssi: -55,
+          presence: "near",
+          config: passiveConfig,
+        }),
+      );
+      bleLockSelectDeviceMock.mockImplementation(
+        async (id: string, name?: string) =>
+          statusFixture({
+            monitoring: true,
+            scanning: true,
+            selected_device: { id, name: name ?? id, rssi: -70 },
+            averaged_rssi: -70,
+            presence: "near",
+            config: configFixture({
+              device_id: id,
+              device_name: name ?? id,
+              mode: "passive",
+            }),
+          }),
+      );
+      // User scan_stop returns while the passive monitor keeps scanning.
+      bleLockScanStopMock.mockImplementation(async () =>
+        statusFixture({
+          monitoring: true,
+          scanning: true,
+          selected_device: { id: "uuid-b", name: "Headset", rssi: -70 },
+          averaged_rssi: -70,
+          presence: "near",
+          config: configFixture({
+            device_id: "uuid-b",
+            device_name: "Headset",
+            mode: "passive",
+          }),
+        }),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<BleLockTool />);
+      await screen.findByRole("heading", { level: 2, name: COPY.title });
+
+      // Passive scanning is already active, but no user discovery is running:
+      // the header offers the explicit Scan affordance, not a user-scan Stop.
+      await screen.findByRole("button", { name: COPY.scan });
+      expect(screen.queryByRole("button", { name: COPY.stopScan })).toBeNull();
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      // A background device update must not auto-open the chooser.
+      await fireTauriEvent("ble-lock-devices-updated", [
+        { id: "uuid-c", name: "Watch", rssi: -60 },
+      ]);
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      // Explicit change-device starts user discovery even though the passive
+      // monitor already reports scanning.
+      await user.click(await screen.findByRole("button", { name: "更换设备" }));
+      await waitFor(() => expect(bleLockScanStartMock).toHaveBeenCalledTimes(1));
+      expect(await screen.findByRole("dialog")).toBeInTheDocument();
+
+      // Device results arrive while the chooser is open.
+      await fireTauriEvent("ble-lock-devices-updated", [
+        { id: "uuid-b", name: "Headset", rssi: -70 },
+      ]);
+      await user.click(
+        await screen.findByRole("button", { name: `${COPY.select} Headset` }),
+      );
+
+      // Selection selects the new device, ends user discovery exactly once, and
+      // closes the chooser.
+      await waitFor(() =>
+        expect(bleLockSelectDeviceMock).toHaveBeenCalledWith(
+          "uuid-b",
+          "Headset",
+        ),
+      );
+      await waitFor(() => expect(bleLockScanStopMock).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+      // The stop result still reports passive scanning, yet the UI is idle: the
+      // header shows the explicit Scan action, not a lingering user-scan Stop.
+      expect(
+        await screen.findByRole("button", { name: COPY.scan }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: COPY.stopScan })).toBeNull();
+
+      // A later background update cannot reopen the chooser.
+      await fireTauriEvent("ble-lock-devices-updated", [
+        { id: "uuid-d", name: "Tag", rssi: -65 },
+      ]);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(bleLockScanStopMock).toHaveBeenCalledTimes(1);
+
+      // An explicit reopen still starts a fresh user discovery.
+      await user.click(await screen.findByRole("button", { name: "更换设备" }));
+      await waitFor(() => expect(bleLockScanStartMock).toHaveBeenCalledTimes(2));
+      expect(await screen.findByRole("dialog")).toBeInTheDocument();
     });
   });
 });

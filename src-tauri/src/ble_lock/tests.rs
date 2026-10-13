@@ -14,8 +14,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::ble_lock::{
-    BleDevice, BleLockConfig, BleLockConfigStore, BleLockEffect, BleLockEvent, BleLockMode,
-    BleLockMonitor, BlePresence,
+    BleBluetoothState, BleDevice, BleLockConfig, BleLockConfigStore, BleLockEffect, BleLockError,
+    BleLockEvent, BleLockMode, BleLockMonitor, BlePresence,
 };
 
 // ---------------------------------------------------------------------------
@@ -79,6 +79,19 @@ fn count_unlocks(effects: &[BleLockEffect]) -> usize {
         .iter()
         .filter(|effect| **effect == BleLockEffect::Unlock)
         .count()
+}
+
+fn count_locks(effects: &[BleLockEffect]) -> usize {
+    effects
+        .iter()
+        .filter(|effect| **effect == BleLockEffect::Lock)
+        .count()
+}
+
+fn has_connect(effects: &[BleLockEffect]) -> bool {
+    effects
+        .iter()
+        .any(|effect| *effect == BleLockEffect::Connect)
 }
 
 // ---------------------------------------------------------------------------
@@ -702,5 +715,198 @@ fn status_reports_platform_availability_for_the_build_target() {
         monitor.status().platform_available,
         cfg!(target_os = "macos"),
         "platform_available must reflect the compiled target"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BLE-return regression: a transport failure after "device left" must retry the
+// connection on the periodic tick, throttled, until a valid reading returns.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn device_unavailable_retries_connect_periodically_until_recovery() {
+    // Active monitoring with lock and unlock enabled, so the selected device
+    // stays eligible for automatic (re)connection and later proximity actions.
+    let config = BleLockConfig {
+        mode: BleLockMode::Active,
+        lock_rssi: Some(-60),
+        unlock_rssi: Some(-50),
+        ..base_config()
+    };
+    let mut monitor = BleLockMonitor::new(config);
+    monitor.set_bluetooth_state(BleBluetoothState::PoweredOn);
+
+    let initial = monitor.select_device(device("uuid-return", -40));
+    assert_eq!(
+        initial,
+        vec![BleLockEffect::Connect],
+        "selecting an active device establishes the initial connection"
+    );
+
+    // A healthy near reading: the device is present and its signal is not lost.
+    let reading = monitor.feed(connection_read("uuid-return", -40), 1_000);
+    assert!(
+        reading.is_empty(),
+        "a near reading emits no lock/unlock intent"
+    );
+    let status = monitor.status();
+    assert_eq!(status.presence, BlePresence::Near);
+    assert_eq!(status.averaged_rssi, Some(-40));
+    assert_eq!(
+        status.selected_device.as_ref().map(|d| d.id.as_str()),
+        Some("uuid-return")
+    );
+
+    // The transport then reports the selected device is unreachable: the
+    // "device left" state that must recover without a manual reselect.
+    monitor.set_last_error(BleLockError::device_unavailable());
+
+    // The periodic tick itself must retry the connection; it cannot wait for a
+    // CoreBluetooth disconnect callback that may never arrive inside the window.
+    let first_retry = monitor.tick(10_000);
+    assert!(
+        has_connect(&first_retry),
+        "a tick after device_unavailable must emit an automatic Connect retry"
+    );
+
+    // A quick failure inside the five-second window must not busy-loop.
+    let within_window = monitor.tick(11_000);
+    assert!(
+        !has_connect(&within_window),
+        "a tick inside the 5s retry window must not emit another Connect"
+    );
+
+    // ... nor may it stop retrying: a later tick past the window retries again
+    // with no new scan and no re-selection.
+    let later_retry = monitor.tick(15_000);
+    assert!(
+        has_connect(&later_retry),
+        "a tick at or beyond 5s must retry Connect without a new scan or reselect"
+    );
+
+    // Retrying preserves the user's selection and monitored presence.
+    let status = monitor.status();
+    assert_eq!(
+        status.selected_device.as_ref().map(|d| d.id.as_str()),
+        Some("uuid-return"),
+        "automatic retries must preserve the selected UUID"
+    );
+    assert!(status.monitoring, "the selected device stays monitored");
+    assert_eq!(status.presence, BlePresence::Near, "signal was never lost");
+
+    // The outage outlasts the no-signal timeout: the selected device is now
+    // genuinely LOST (last valid reading at 1s, default 30s timeout). The tick
+    // must classify the loss, emit exactly one Lock for the episode, and keep
+    // retrying Connect without dropping the selection.
+    let lost = monitor.tick(31_000);
+    assert_eq!(
+        monitor.status().presence,
+        BlePresence::Lost,
+        "no valid reading within the 30s timeout must classify the device as lost"
+    );
+    assert_eq!(
+        count_locks(&lost),
+        1,
+        "the lost episode must emit exactly one Lock"
+    );
+    assert!(
+        has_connect(&lost),
+        "a lost-but-unavailable device must still emit an automatic Connect retry"
+    );
+    assert_eq!(
+        monitor
+            .status()
+            .selected_device
+            .as_ref()
+            .map(|d| d.id.as_str()),
+        Some("uuid-return"),
+        "a long outage that reaches lost must preserve the selected UUID"
+    );
+
+    // A quick follow-up tick inside the retry window must neither busy-loop nor
+    // repeat the Lock for the same lost episode.
+    let followup = monitor.tick(32_000);
+    assert!(
+        !has_connect(&followup),
+        "a tick inside the 5s window must not emit another Connect while lost"
+    );
+    assert_eq!(
+        count_locks(&followup),
+        0,
+        "a single lost episode must emit only one Lock"
+    );
+    assert_eq!(
+        monitor.status().presence,
+        BlePresence::Lost,
+        "a throttled tick must not change the lost classification"
+    );
+
+    // A later tick past the window keeps retrying Connect, still with no repeat
+    // Lock and no new scan or re-selection.
+    let resumed = monitor.tick(36_000);
+    assert!(
+        has_connect(&resumed),
+        "a tick at or beyond 5s must keep retrying Connect while still unavailable"
+    );
+    assert_eq!(
+        count_locks(&resumed),
+        0,
+        "continuing retries must not repeat the Lock for the same episode"
+    );
+
+    // The device returns after the long outage with a valid active connection
+    // reading: it resolves device_unavailable, restores near, and spends the one
+    // unlock eligibility that the lost episode armed.
+    let recovered = monitor.feed(connection_read("uuid-return", -40), 40_000);
+    assert_eq!(
+        count_unlocks(&recovered),
+        1,
+        "lost-then-near must restore exactly one unlock eligibility"
+    );
+    let status = monitor.status();
+    assert_eq!(
+        status.last_error, None,
+        "a valid selected active reading must clear device_unavailable"
+    );
+    assert_eq!(
+        status.presence,
+        BlePresence::Near,
+        "recovery after lost restores the near state"
+    );
+    assert_eq!(status.averaged_rssi, Some(-40));
+    assert_eq!(
+        status.selected_device.as_ref().map(|d| d.id.as_str()),
+        Some("uuid-return"),
+        "recovery must preserve the selected device"
+    );
+
+    // A second identical reading must not unlock again.
+    let repeated = monitor.feed(connection_read("uuid-return", -40), 41_000);
+    assert_eq!(
+        count_unlocks(&repeated),
+        0,
+        "only one unlock is eligible per lost-then-near episode"
+    );
+
+    // After recovery the transport is no longer unavailable, so the periodic
+    // tick must not emit any further automatic Connect retry.
+    let after_recovery = monitor.tick(45_000);
+    assert!(
+        !has_connect(&after_recovery),
+        "a recovered device must not receive an automatic Connect retry"
+    );
+    assert_eq!(
+        count_locks(&after_recovery),
+        0,
+        "a recovered near device must not emit a Lock"
+    );
+
+    // Only the transient unavailability is resolved: an unrelated error stays.
+    monitor.set_last_error(BleLockError::platform_unavailable());
+    monitor.feed(connection_read("uuid-return", -40), 46_000);
+    assert_eq!(
+        monitor.status().last_error,
+        Some(BleLockError::platform_unavailable()),
+        "recovery must preserve unrelated errors"
     );
 }

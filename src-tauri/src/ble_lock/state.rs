@@ -17,6 +17,11 @@ pub const MAX_SMOOTHING_READINGS: usize = 5;
 /// CoreBluetooth's reserved "RSSI not available" value.
 pub const INVALID_RSSI_SENTINEL: i16 = 127;
 
+/// Minimum spacing between automatic reconnect attempts while the selected active
+/// device is reported unavailable. A CoreBluetooth pending connect request has no
+/// timeout, so early failures must keep retrying without busy-looping.
+const RECONNECT_RETRY_INTERVAL_MS: u64 = 5_000;
+
 /// Presence classification for the selected device.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -145,6 +150,8 @@ pub struct BleLockMonitor {
     lost_emitted: bool,
     /// Unlock is armed only after an away/lost observation is cleared by near.
     unlock_armed: bool,
+    /// Timestamp of the most recent automatic Connect retry, for throttling.
+    last_connect_retry_ms: Option<u64>,
 }
 
 impl BleLockMonitor {
@@ -166,6 +173,7 @@ impl BleLockMonitor {
             lock_emitted: false,
             lost_emitted: false,
             unlock_armed: false,
+            last_connect_retry_ms: None,
         }
     }
 
@@ -235,6 +243,18 @@ impl BleLockMonitor {
             device.rssi = rssi;
         }
 
+        // A valid, mode-matching connected reading from the selected device proves
+        // the transient transport failure is over. Only `device_unavailable` is
+        // cleared; unrelated stable errors survive the recovery reading.
+        if matches!(event, BleLockEvent::ConnectionRead { .. })
+            && self
+                .last_error
+                .as_ref()
+                .is_some_and(|error| error.code == "device_unavailable")
+        {
+            self.last_error = None;
+        }
+
         let mut effects = Vec::new();
         let average = self.average().unwrap_or(rssi);
         if self.is_close(average) {
@@ -292,6 +312,17 @@ impl BleLockMonitor {
                 self.lost_emitted = true;
                 self.below_since_ms = None;
             }
+        }
+
+        // An active selection whose transport reported the device unavailable
+        // retries the connection on the periodic tick. A quick failure inside the
+        // throttle window consumes the last CoreBluetooth callback, and no further
+        // callback arrives until we initiate the next attempt, so the tick must
+        // schedule the retry itself. It is throttled to avoid busy-looping and
+        // never resets presence history or manual-lock eligibility.
+        if self.should_retry_connect(now_ms) {
+            self.last_connect_retry_ms = Some(now_ms);
+            effects.push(BleLockEffect::Connect);
         }
 
         effects
@@ -371,6 +402,7 @@ impl BleLockMonitor {
         self.lock_emitted = false;
         self.lost_emitted = false;
         self.unlock_armed = false;
+        self.last_connect_retry_ms = None;
     }
 
     fn average(&self) -> Option<i16> {
@@ -395,6 +427,25 @@ impl BleLockMonitor {
         match self.config.unlock_rssi {
             Some(unlock) => average >= unlock,
             None => false,
+        }
+    }
+
+    fn device_unavailable(&self) -> bool {
+        self.last_error
+            .as_ref()
+            .is_some_and(|error| error.code == "device_unavailable")
+    }
+
+    fn should_retry_connect(&self, now_ms: u64) -> bool {
+        if self.config.mode != BleLockMode::Active
+            || self.bluetooth_state != BleBluetoothState::PoweredOn
+            || !self.device_unavailable()
+        {
+            return false;
+        }
+        match self.last_connect_retry_ms {
+            Some(last) => now_ms.saturating_sub(last) >= RECONNECT_RETRY_INTERVAL_MS,
+            None => true,
         }
     }
 }

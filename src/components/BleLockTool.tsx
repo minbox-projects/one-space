@@ -220,15 +220,15 @@ export function BleLockTool({ isVisible = true }: ToolboxNavigationProps) {
   // Dialog visibility states
   const [scanDialogOpen, setScanDialogOpen] = useState(false);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
+  // User-initiated discovery intent, kept separate from the passive
+  // `status.scanning` flag the native monitor may already hold.
+  const [userScanning, setUserScanning] = useState(false);
 
   useTauriEvent(
     BLE_LOCK_DEVICES_EVENT,
     (payload) => {
       if (Array.isArray(payload)) {
         setDevices(payload as BleDevice[]);
-        if (payload.length > 0) {
-          setScanDialogOpen(true);
-        }
       }
     },
     platformAvailable && isVisible,
@@ -288,19 +288,38 @@ export function BleLockTool({ isVisible = true }: ToolboxNavigationProps) {
     [updateConfig],
   );
 
-  const handleScanToggle = useCallback(() => {
+  const beginUserDiscovery = useCallback(() => {
     setActionError(null);
-    if (!status.scanning) {
-      setScanDialogOpen(true);
-      bleLockScanStart()
-        .then((result) => applyStatus(result))
-        .catch((error) => setActionError(describeError(error)));
+    setScanDialogOpen(true);
+    setUserScanning(true);
+    bleLockScanStart()
+      .then((result) => applyStatus(result))
+      .catch((error) => {
+        setUserScanning(false);
+        setActionError(describeError(error));
+      });
+  }, [applyStatus, describeError]);
+
+  const stopUserScan = useCallback(() => {
+    if (!userScanning) return;
+    setUserScanning(false);
+    bleLockScanStop()
+      .then((result) => applyStatus(result))
+      .catch((error) => setActionError(describeError(error)));
+  }, [applyStatus, describeError, userScanning]);
+
+  const closeUserDiscovery = useCallback(() => {
+    setScanDialogOpen(false);
+    stopUserScan();
+  }, [stopUserScan]);
+
+  const handleScanToggle = useCallback(() => {
+    if (userScanning) {
+      stopUserScan();
     } else {
-      bleLockScanStop()
-        .then((result) => applyStatus(result))
-        .catch((error) => setActionError(describeError(error)));
+      beginUserDiscovery();
     }
-  }, [applyStatus, describeError, status.scanning]);
+  }, [beginUserDiscovery, stopUserScan, userScanning]);
 
   const handleSelectDevice = useCallback(
     (device: BleDevice) => {
@@ -308,11 +327,11 @@ export function BleLockTool({ isVisible = true }: ToolboxNavigationProps) {
       bleLockSelectDevice(device.id, device.name || undefined)
         .then((result) => {
           applyStatus(result);
-          setScanDialogOpen(false);
+          closeUserDiscovery();
         })
         .catch((error) => setActionError(describeError(error)));
     },
-    [applyStatus, describeError],
+    [applyStatus, describeError, closeUserDiscovery],
   );
 
   const handleClearDevice = useCallback(() => {
@@ -399,12 +418,12 @@ export function BleLockTool({ isVisible = true }: ToolboxNavigationProps) {
       actions={
         <>
           <Button
-            variant={status.scanning ? "default" : "outline"}
-            className={status.scanning ? "bg-sky-600 hover:bg-sky-700 text-white" : ""}
+            variant={userScanning ? "default" : "outline"}
+            className={userScanning ? "bg-sky-600 hover:bg-sky-700 text-white" : ""}
             onClick={handleScanToggle}
             disabled={!nativeEnabled}
           >
-            {status.scanning ? (
+            {userScanning ? (
               <>
                 <RefreshCw className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
                 {String(t("bleLockStopScan"))}
@@ -480,14 +499,7 @@ export function BleLockTool({ isVisible = true }: ToolboxNavigationProps) {
                     size="sm"
                     variant="outline"
                     className="border-sky-300/60 text-sky-600 hover:bg-sky-500/10"
-                    onClick={() => {
-                      setScanDialogOpen(true);
-                      if (!status.scanning) {
-                        bleLockScanStart()
-                          .then((result) => applyStatus(result))
-                          .catch((error) => setActionError(describeError(error)));
-                      }
-                    }}
+                    onClick={beginUserDiscovery}
                     disabled={!nativeEnabled}
                   >
                     <BluetoothSearching className="mr-1.5 h-3.5 w-3.5" />
@@ -503,14 +515,7 @@ export function BleLockTool({ isVisible = true }: ToolboxNavigationProps) {
                   variant="ghost"
                   size="sm"
                   className="h-8 text-xs text-sky-600 hover:text-sky-700 hover:bg-sky-500/10"
-                  onClick={() => {
-                    setScanDialogOpen(true);
-                    if (!status.scanning) {
-                      bleLockScanStart()
-                        .then((result) => applyStatus(result))
-                        .catch((error) => setActionError(describeError(error)));
-                    }
-                  }}
+                  onClick={beginUserDiscovery}
                   disabled={!nativeEnabled}
                 >
                   <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
@@ -852,7 +857,12 @@ export function BleLockTool({ isVisible = true }: ToolboxNavigationProps) {
         </section>
 
         {/* 4. Scan Devices Dialog */}
-        <Dialog open={scanDialogOpen} onOpenChange={setScanDialogOpen}>
+        <Dialog
+          open={scanDialogOpen}
+          onOpenChange={(open) => {
+            if (!open) closeUserDiscovery();
+          }}
+        >
           <DialogContent className="sm:max-w-md max-h-[85vh] flex flex-col p-6">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-base">
@@ -860,7 +870,7 @@ export function BleLockTool({ isVisible = true }: ToolboxNavigationProps) {
                 {String(t("bleLockDevices"))}
               </DialogTitle>
               <DialogDescription>
-                {status.scanning
+                {userScanning
                   ? "正在搜索附近的低功耗蓝牙设备，请靠近您的设备..."
                   : "蓝牙扫描已就绪。点击下方重新扫描以发现新设备。"}
               </DialogDescription>
@@ -869,7 +879,7 @@ export function BleLockTool({ isVisible = true }: ToolboxNavigationProps) {
             <div className="flex-1 overflow-y-auto py-2 min-h-[200px] max-h-[350px] space-y-2">
               {devices.length === 0 ? (
                 <div className="h-44 flex flex-col items-center justify-center text-center p-4 rounded-lg border border-dashed">
-                  {status.scanning ? (
+                  {userScanning ? (
                     <>
                       <RefreshCw className="h-8 w-8 text-sky-500 animate-spin mb-3" />
                       <p className="text-sm font-medium">{String(t("bleLockScan"))}中...</p>
@@ -937,7 +947,7 @@ export function BleLockTool({ isVisible = true }: ToolboxNavigationProps) {
                 onClick={handleScanToggle}
                 disabled={!nativeEnabled}
               >
-                {status.scanning ? (
+                {userScanning ? (
                   <>
                     <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                     {String(t("bleLockStopScan"))}
@@ -949,7 +959,7 @@ export function BleLockTool({ isVisible = true }: ToolboxNavigationProps) {
                   </>
                 )}
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => setScanDialogOpen(false)}>
+              <Button variant="ghost" size="sm" onClick={closeUserDiscovery}>
                 关闭
               </Button>
             </DialogFooter>
