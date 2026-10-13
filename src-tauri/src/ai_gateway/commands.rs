@@ -1,4 +1,8 @@
 use super::migration::migrate_legacy_files;
+use super::model_pools::{
+    new_pool_id, pool_status, reserve_alias, reserved_aliases, validate_pool_upsert,
+    ModelPoolStatus,
+};
 use super::runtime_http::{autostart, server_status, start_server, stop_server};
 use super::selection::{
     clear_key_runtime_state, clear_mapping_runtime_state, manual_reenable, mapping_matches_key,
@@ -24,8 +28,8 @@ use super::usage_log::{
 use super::{
     normalize_template_auto_refresh_minutes, now_ts, validate_template_auto_refresh_minutes,
     ClaudeModelSelection, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider,
-    ModelPrice, ProviderTemplate, TemplateAutoRefreshStatus, TerminalSyncRecord, UpstreamProtocol,
-    UsageResult, MAX_PROVIDER_WEIGHT, MIN_PROVIDER_WEIGHT,
+    ModelPool, ModelPrice, ProviderTemplate, TemplateAutoRefreshStatus, TerminalSyncRecord,
+    UpstreamProtocol, UsageResult, MAX_PROVIDER_WEIGHT, MIN_PROVIDER_WEIGHT,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -643,6 +647,36 @@ pub fn ai_gateway_upsert_provider(
             provider.id = new_provider_id();
         }
         let provider_id = provider.id.clone();
+        // An ordinary provider mapping must not acquire a current or retired
+        // model-pool alias (REQ-001/REQ-007). Retaining an already-stored row is
+        // allowed so resubmitting an unchanged provider never fails.
+        let pool_aliases = reserved_aliases(config);
+        if !pool_aliases.is_empty() {
+            let stored_mappings: Vec<String> = config
+                .providers
+                .iter()
+                .find(|stored| stored.id == provider_id)
+                .map(|stored| {
+                    stored
+                        .mappings
+                        .iter()
+                        .map(|mapping| mapping.local_model.trim().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            for mapping in &provider.mappings {
+                let local = mapping.local_model.trim();
+                if local.is_empty() {
+                    continue;
+                }
+                if pool_aliases.contains(local) && !stored_mappings.iter().any(|stored| stored == local)
+                {
+                    return Err(format!(
+                        "mapping local model '{local}' is reserved by a model pool"
+                    ));
+                }
+            }
+        }
         if let Some(existing) = find_provider_mut(config, &provider_id) {
             merge_provider_keys(existing, &mut provider)?;
             // Runtime health belongs to a trimmed `(local_model, upstream_model)`
@@ -726,6 +760,97 @@ pub fn ai_gateway_set_provider_enabled(
         Ok((true, ()))
     })?;
     read_config()
+}
+
+/// Create or edit one model pool (REQ-001).
+///
+/// The submitted pool is validated against the latest configuration and written
+/// through the same serialized atomic primitive as every other gateway write, so
+/// a validation or write failure changes nothing. Renaming a pool reserves its
+/// previous alias, so neither an ordinary mapping nor a retired route can
+/// acquire it; a new pool may reuse a retired alias.
+#[tauri::command]
+pub fn ai_gateway_upsert_model_pool(mut pool: ModelPool) -> Result<GatewayConfig, String> {
+    modify_config(|config| {
+        if pool.id.trim().is_empty() {
+            pool.id = new_pool_id();
+        }
+        let normalized = validate_pool_upsert(config, &pool)?;
+        if let Some(existing) = config
+            .model_pools
+            .iter()
+            .find(|stored| stored.id == normalized.id)
+        {
+            let previous = existing.model.trim().to_string();
+            if previous != normalized.model {
+                reserve_alias(config, &previous);
+            }
+        }
+        if let Some(existing) = config
+            .model_pools
+            .iter_mut()
+            .find(|stored| stored.id == normalized.id)
+        {
+            *existing = normalized;
+        } else {
+            config.model_pools.push(normalized);
+        }
+        Ok((true, ()))
+    })?;
+    read_config()
+}
+
+/// Delete one model pool and reserve its alias so a stale client can never fall
+/// through to an unrelated ordinary source. An unknown id is an actionable error
+/// that writes nothing.
+#[tauri::command]
+pub fn ai_gateway_delete_model_pool(pool_id: String) -> Result<GatewayConfig, String> {
+    modify_config(|config| {
+        let removed: Vec<String> = config
+            .model_pools
+            .iter()
+            .filter(|pool| pool.id == pool_id)
+            .map(|pool| pool.model.trim().to_string())
+            .collect();
+        if removed.is_empty() {
+            return Err(format!("model pool not found: {pool_id}"));
+        }
+        config.model_pools.retain(|pool| pool.id != pool_id);
+        for alias in removed {
+            reserve_alias(config, &alias);
+        }
+        Ok((true, ()))
+    })?;
+    read_config()
+}
+
+/// Toggle a pool's `enabled` intent without touching its candidates, so
+/// readiness and user intent stay separate (REQ-001/REQ-008). An unknown id is an
+/// actionable error that writes nothing.
+#[tauri::command]
+pub fn ai_gateway_set_model_pool_enabled(
+    pool_id: String,
+    enabled: bool,
+) -> Result<GatewayConfig, String> {
+    modify_config(|config| {
+        let pool = config
+            .model_pools
+            .iter_mut()
+            .find(|pool| pool.id == pool_id)
+            .ok_or_else(|| format!("model pool not found: {pool_id}"))?;
+        pool.enabled = enabled;
+        Ok((true, ()))
+    })?;
+    read_config()
+}
+
+/// Nonsecret readiness of every stored pool and candidate (REQ-004 of the
+/// frozen plan): source identity, availability code and cooldown deadline only.
+/// No network/quota probe runs and nothing is persisted.
+#[tauri::command]
+pub fn ai_gateway_model_pools_status() -> Result<Vec<ModelPoolStatus>, String> {
+    let config = read_config()?;
+    Ok(pool_status(&config))
 }
 
 /// Clear the runtime health state of the mapping row identified by the trimmed

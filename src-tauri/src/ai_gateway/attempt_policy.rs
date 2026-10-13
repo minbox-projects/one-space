@@ -334,6 +334,11 @@ pub(in crate::ai_gateway) enum AttemptResult {
         /// usable key of the same provider inside the pass without persisting a
         /// mark, registering mapping health or consuming the retry budget.
         bare_rotation: bool,
+        /// True only for a model-pool attempt whose failure is model-scoped or
+        /// unknown-scope quota-like: the caller cools this candidate and moves
+        /// on without touching the provider's keys or mapping health. Always
+        /// false for an ordinary attempt, so ordinary key rotation is intact.
+        pool_scope: bool,
     },
 }
 
@@ -606,7 +611,10 @@ impl RequestHealth {
 /// Settle one finished attempt on the mapping row it belongs to, if any.
 ///
 /// A `default_model` attempt (or any attempt resolving to no matching row)
-/// produces no target and therefore no health outcome.
+/// produces no target and therefore no health outcome. A model-pool attempt
+/// carries its original mapping target on `provider.pool_candidate`, so its
+/// health settles on the real source row even though the routing clone serves
+/// the pool alias.
 pub(in crate::ai_gateway) fn settle_failure(
     health: &mut RequestHealth,
     provider: &GatewayUpstreamProvider,
@@ -616,7 +624,7 @@ pub(in crate::ai_gateway) fn settle_failure(
     reason: &str,
     transport: bool,
 ) {
-    if let Some(target) = MappingTarget::for_request(provider, requested, upstream_model) {
+    if let Some(target) = resolved_health_target(provider, requested, upstream_model) {
         health.record_failure(&target, class, reason, transport);
     }
 }
@@ -628,9 +636,27 @@ pub(in crate::ai_gateway) fn settle_success(
     requested: Option<&str>,
     upstream_model: &str,
 ) {
-    if let Some(target) = MappingTarget::for_request(provider, requested, upstream_model) {
+    if let Some(target) = resolved_health_target(provider, requested, upstream_model) {
         health.record_success(&target);
     }
+}
+
+/// The mapping row an attempt settles on. A prepared model-pool candidate
+/// resolves to its stored original provider/local/upstream identity; every other
+/// attempt resolves through the normal requested-model mapping lookup.
+pub(in crate::ai_gateway) fn resolved_health_target(
+    provider: &GatewayUpstreamProvider,
+    requested: Option<&str>,
+    upstream_model: &str,
+) -> Option<MappingTarget> {
+    if let Some(identity) = provider.pool_candidate.as_ref() {
+        return Some(MappingTarget::new(
+            &identity.provider_id,
+            &identity.local_model,
+            &identity.upstream_model,
+        ));
+    }
+    MappingTarget::for_request(provider, requested, upstream_model)
 }
 
 /// One key chosen for an upstream attempt.

@@ -5,6 +5,7 @@ mod commands;
 mod forwarding;
 mod go_usage;
 mod migration;
+mod model_pools;
 mod quota;
 mod runtime_http;
 mod selection;

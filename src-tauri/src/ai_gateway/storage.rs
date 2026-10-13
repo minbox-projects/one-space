@@ -1,7 +1,9 @@
 use super::migration::migrate_legacy_files;
+use super::model_pools::prune_removed_pools;
 use super::{
-    now_ts, resolve_port, GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelPrice,
-    CONFIG_FILE, GATEWAY_CONFIG_SCHEMA_VERSION, MAX_PROVIDER_WEIGHT, MIN_PROVIDER_WEIGHT,
+    now_ts, resolve_port, GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelPool,
+    ModelPrice, CONFIG_FILE, GATEWAY_CONFIG_SCHEMA_VERSION, MAX_PROVIDER_WEIGHT,
+    MIN_PROVIDER_WEIGHT,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -354,6 +356,20 @@ fn persisted_provider_ids(path: &Path) -> HashSet<String> {
     }
 }
 
+/// Model pools of the configuration currently persisted at `path`, read without
+/// taking the write lock and without publishing anything. Used to diff a
+/// successful publication so scheduler/cooldown entries owned by removed pools
+/// or candidates can be pruned; a missing or unreadable file yields no pools.
+fn persisted_model_pools(path: &Path) -> Vec<ModelPool> {
+    if let Some(config) = cached_config(path) {
+        return config.model_pools;
+    }
+    match read_config_locked(path) {
+        Ok(Some((config, _))) => config.model_pools,
+        _ => Vec::new(),
+    }
+}
+
 /// Encrypt the entire configuration and write it atomically through a unique
 /// temp file plus rename so a partial write can never corrupt the on-disk
 /// state. Every write stamps the current schema version so an older file can
@@ -364,9 +380,13 @@ fn persisted_provider_ids(path: &Path) -> HashSet<String> {
 pub(in crate::ai_gateway) fn write_config(config: &GatewayConfig) -> Result<(), String> {
     let path = config_path()?;
     let before_ids = persisted_provider_ids(&path);
+    let before_pools = persisted_model_pools(&path);
     let tmp = unique_config_temp_path(&path);
     let published = write_config_through_temp(config, &path, &tmp)?;
     prune_removed_providers(&before_ids, &published);
+    // Pool scheduler/cooldown entries owned by pools or candidates this write
+    // removed are pruned only after a successful publication.
+    prune_removed_pools(&before_pools, &published.model_pools);
     store_cached_config(&path, &published);
     Ok(())
 }
@@ -449,11 +469,13 @@ pub(in crate::ai_gateway) fn modify_config<T>(
         None => read_config_locked(&path)?.unwrap_or((GatewayConfig::default(), false)),
     };
     let before_ids = provider_ids(&config);
+    let before_pools = config.model_pools.clone();
     let (changed, value) = mutate(&mut config)?;
     if changed || needs_migration {
         let tmp = unique_config_temp_path(&path);
         let published = write_config_through_temp(&config, &path, &tmp)?;
         prune_removed_providers(&before_ids, &published);
+        prune_removed_pools(&before_pools, &published.model_pools);
         store_cached_config(&path, &published);
     } else {
         // Warm the cache with the fresh parse so a no-op settlement still
