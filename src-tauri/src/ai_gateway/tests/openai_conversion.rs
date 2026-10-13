@@ -793,6 +793,97 @@ async fn chat_nonportable_fields_are_rejected_before_any_attempt() {
     stop_server().await.expect("stop listener");
 }
 
+/// REQ-005 / AC-007: a Chat `messages[].name` member has no faithful message
+/// representation in the opposite Responses direction, so a Chat ingress
+/// request that may select a Responses candidate must be rejected with 400
+/// naming `messages.name` before any upstream attempt or health mutation.
+#[tokio::test]
+async fn chat_message_name_is_rejected_before_a_converted_responses_attempt() {
+    let _home = temp_home("pool-chat-message-name-responses");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let (alias, log) = responses_candidate_fixture(port, &tag).await;
+
+    let (status, _ct, text) = post(
+        port,
+        "/v1/chat/completions",
+        json!({
+            "model": alias,
+            "messages": [{"role": "user", "content": "hi", "name": "Bob"}]
+        }),
+    )
+    .await;
+    assert_field_rejected(status, &text, &["messages.name"]);
+    assert!(
+        captured(&log).is_empty(),
+        "a Chat message name must be rejected before any upstream attempt: {text}"
+    );
+
+    let stored = crate::ai_gateway::storage::read_config().expect("read config");
+    let provider = stored
+        .providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .expect("the provider must persist");
+    assert!(
+        !provider.mappings[0].auto_disabled,
+        "a rejected field must not settle mapping health: {:?}",
+        provider.mappings[0]
+    );
+    assert_eq!(
+        provider.mappings[0].consecutive_failures, 0,
+        "a rejected field must not settle mapping health"
+    );
+
+    stop_server().await.expect("stop listener");
+}
+
+/// REQ-005 / AC-007: acceptance must not depend on which candidate the rotation
+/// happens to pick, so the same `messages.name` rejection holds for a
+/// same-protocol Chat pool even though a verbatim Chat forward could carry it.
+#[tokio::test]
+async fn chat_message_name_is_rejected_for_a_same_protocol_chat_pool() {
+    let _home = temp_home("pool-chat-message-name-chat-only");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let (alias, log) = chat_candidate_fixture(port, &tag).await;
+
+    let (status, _ct, text) = post(
+        port,
+        "/v1/chat/completions",
+        json!({
+            "model": alias,
+            "messages": [{"role": "user", "content": "hi", "name": "Bob"}]
+        }),
+    )
+    .await;
+    assert_field_rejected(status, &text, &["messages.name"]);
+    assert!(
+        captured(&log).is_empty(),
+        "a Chat message name must be rejected before any upstream attempt: {text}"
+    );
+
+    let stored = crate::ai_gateway::storage::read_config().expect("read config");
+    let provider = stored
+        .providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .expect("the provider must persist");
+    assert!(
+        !provider.mappings[0].auto_disabled,
+        "a rejected field must not settle mapping health: {:?}",
+        provider.mappings[0]
+    );
+    assert_eq!(
+        provider.mappings[0].consecutive_failures, 0,
+        "a rejected field must not settle mapping health"
+    );
+
+    stop_server().await.expect("stop listener");
+}
+
 #[tokio::test]
 async fn unknown_stream_options_member_and_nonboolean_include_usage_are_rejected() {
     let _home = temp_home("pool-stream-options");

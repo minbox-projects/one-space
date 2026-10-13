@@ -390,6 +390,9 @@ export function UsageLogsPanel({
   const [draftProvider, setDraftProvider] = useState<string | null>(null);
   const requestSeqRef = useRef(0);
   const filterRef = useRef<HTMLDivElement>(null);
+  // Highest `focusToken` already reflected in the local model filter: the
+  // external-focus guard is one-shot and releases once this value catches up.
+  const appliedFocusTokenRef = useRef(0);
 
   useEffect(() => {
     if (!filterOpen) return;
@@ -461,8 +464,18 @@ export function UsageLogsPanel({
 
   useEffect(() => {
     if (!isActive) return;
-    // Avoid a transient null-filter request while an external focus is pending.
-    if (focusToken > 0 && focusModel !== null && model !== focusModel) return;
+    // Avoid a transient null-filter request while an external focus is pending,
+    // but only until the focused alias has been applied to the local model
+    // filter once. Afterwards every normal query-state change loads exactly as
+    // before this feature (the parent never clears focusModel/focusToken).
+    const focusPending =
+      focusModel !== null &&
+      focusToken > appliedFocusTokenRef.current &&
+      model !== focusModel;
+    if (focusPending) return;
+    if (focusModel !== null && model === focusModel) {
+      appliedFocusTokenRef.current = focusToken;
+    }
     void load();
   }, [focusModel, focusToken, isActive, load, model]);
 

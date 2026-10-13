@@ -330,10 +330,10 @@ fn validate_chat_message(message: &Value) -> Result<(), String> {
         .as_object()
         .ok_or_else(|| field_error("messages", "every message must be an object"))?;
     for key in object.keys() {
-        if !matches!(
-            key.as_str(),
-            "role" | "content" | "name" | "tool_calls" | "tool_call_id"
-        ) {
+        // `name` has no faithful representation in the opposite Responses
+        // message shape, so it is not part of the portable Chat message
+        // contract; it must be rejected rather than silently dropped.
+        if !matches!(key.as_str(), "role" | "content" | "tool_calls" | "tool_call_id") {
             return Err(field_error(
                 format!("messages.{key}"),
                 "is not supported by the model-pool contract",
@@ -817,6 +817,15 @@ fn validate_responses_item(item: &Value) -> Result<(), String> {
             Ok(())
         }
         Some("message") | None => {
+            // `name` is admitted by the item union for a `function_call` item,
+            // but a `message` item has no faithful Chat representation for it,
+            // so it is rejected here rather than silently dropped.
+            if present_nonnull(object, "name") {
+                return Err(field_error(
+                    "input.name",
+                    "is not supported by the model-pool contract",
+                ));
+            }
             if let Some(content) = object.get("content") {
                 validate_responses_content(content)?;
             }

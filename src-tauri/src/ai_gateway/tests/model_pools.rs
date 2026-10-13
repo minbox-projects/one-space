@@ -1309,6 +1309,425 @@ async fn structured_free_usage_limit_with_account_words_stays_candidate_scoped()
     stop_server().await.expect("stop the listener");
 }
 
+// ===========================================================================
+// Review-repair (2026-10-13), SPEC-3 / AC-009: credential, account and mapping
+// isolation for a pool candidate, observed at the public loopback + status
+// boundary only.
+// ===========================================================================
+
+/// AC-009 / REQ-006: an HTTP 401 from the first selected key marks only that
+/// key as authentication-failed and the request continues in order on the next
+/// usable key; the other key stays untouched and the mapping row is not
+/// disabled.
+#[tokio::test]
+async fn pool_credential_401_marks_only_the_failed_key_and_rotates_to_the_next() {
+    let _home = temp_home("pool-401-key-rotation");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let alias = format!("free-model-{tag}");
+    let (provider_url, log) = spawn_mock_upstream(|captured| match auth_of(captured) {
+        Some("Bearer sk-first") => MockReply::Json(
+            401,
+            json!({"error": {"message": "unauthorized: invalid credential"}}),
+        ),
+        Some("Bearer sk-second") => {
+            MockReply::Json(200, json!({"id": "served-by-second", "choices": []}))
+        }
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+
+    let provider = pool_provider(
+        &provider_id,
+        "Provider One",
+        &provider_url,
+        vec![
+            pool_key("key-first", "First", "sk-first", true),
+            pool_key("key-second", "Second", "sk-second", true),
+        ],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(provider_id.as_str(), "local-a", "remote-a", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = post_chat(port, &alias).await;
+    assert_eq!(
+        status, 200,
+        "a 401 on the first key must rotate to the next usable key: {text}"
+    );
+
+    let captured = log.lock().unwrap().clone();
+    let seen: Vec<Option<&str>> = captured.iter().map(auth_of).collect();
+    assert_eq!(
+        captured.len(),
+        2,
+        "the request must continue on the next usable key: {seen:?}"
+    );
+    assert_eq!(auth_of(&captured[0]), Some("Bearer sk-first"));
+    assert_eq!(auth_of(&captured[1]), Some("Bearer sk-second"));
+    assert_eq!(captured_model(&captured[1]), "remote-a");
+
+    let stored = stored_provider(&provider_id);
+    let first = stored
+        .keys
+        .iter()
+        .find(|key| key.id == "key-first")
+        .expect("the first key must persist");
+    let second = stored
+        .keys
+        .iter()
+        .find(|key| key.id == "key-second")
+        .expect("the second key must persist");
+    assert!(first.auto_marked, "the 401 key must be marked: {first:?}");
+    assert_eq!(
+        first.failure_kind,
+        Some(crate::ai_gateway::KeyFailureKind::Authentication),
+        "a 401 must mark the key authentication-failed: {first:?}"
+    );
+    assert!(
+        !second.auto_marked,
+        "the other key must stay untouched: {second:?}"
+    );
+    assert_eq!(second.failure_kind, None);
+    assert!(
+        !stored.mappings[0].auto_disabled,
+        "a credential 401 is key-scoped and must not disable the mapping row"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// AC-009 / REQ-006: a 403 whose text names a credential problem
+/// (`is_authentication_error_message`) marks the key exactly like a 401 and
+/// rotates in the same ordered way instead of disabling the mapping row.
+#[tokio::test]
+async fn pool_credential_text_403_marks_the_key_like_a_401() {
+    let _home = temp_home("pool-403-credential-key-rotation");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let alias = format!("free-model-{tag}");
+    let (provider_url, log) = spawn_mock_upstream(|captured| match auth_of(captured) {
+        Some("Bearer sk-first") => {
+            MockReply::Json(403, json!({"error": {"message": "invalid api key"}}))
+        }
+        Some("Bearer sk-second") => {
+            MockReply::Json(200, json!({"id": "served-by-second", "choices": []}))
+        }
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+
+    let provider = pool_provider(
+        &provider_id,
+        "Provider One",
+        &provider_url,
+        vec![
+            pool_key("key-first", "First", "sk-first", true),
+            pool_key("key-second", "Second", "sk-second", true),
+        ],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(provider_id.as_str(), "local-a", "remote-a", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = post_chat(port, &alias).await;
+    assert_eq!(
+        status, 200,
+        "a credential-text 403 must rotate to the next usable key: {text}"
+    );
+
+    let captured = log.lock().unwrap().clone();
+    let seen: Vec<Option<&str>> = captured.iter().map(auth_of).collect();
+    assert_eq!(captured.len(), 2, "the 403 must rotate keys: {seen:?}");
+    assert_eq!(auth_of(&captured[0]), Some("Bearer sk-first"));
+    assert_eq!(auth_of(&captured[1]), Some("Bearer sk-second"));
+
+    let stored = stored_provider(&provider_id);
+    let first = stored
+        .keys
+        .iter()
+        .find(|key| key.id == "key-first")
+        .expect("the first key must persist");
+    assert!(first.auto_marked, "the credential-text 403 key must be marked");
+    assert_eq!(
+        first.failure_kind,
+        Some(crate::ai_gateway::KeyFailureKind::Authentication),
+        "a credential-text 403 must mark the key authentication-failed: {first:?}"
+    );
+    assert!(
+        !stored.mappings[0].auto_disabled,
+        "a credential-text 403 is key-scoped and must not disable the mapping row"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// AC-009 / REQ-006: a non-credential 403 keeps the key valid, auto-disables the
+/// original mapping row with an HTTP 403 reason, lets the selected sibling serve
+/// on the same key, and never cools the pool candidate.
+#[tokio::test]
+async fn pool_noncredential_403_disables_the_original_mapping_and_keeps_the_key() {
+    let _home = temp_home("pool-noncredential-403");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let alias = format!("free-model-{tag}");
+    let pool_id = format!("pool-{tag}");
+    let (provider_url, log) = spawn_mock_upstream(|captured| {
+        if captured_model(captured) == "remote-a" {
+            MockReply::Json(
+                403,
+                json!({"error": {"message": "forbidden: region mismatch"}}),
+            )
+        } else {
+            MockReply::Json(200, json!({"id": "served-by-b", "choices": []}))
+        }
+    })
+    .await;
+
+    let provider = pool_provider(
+        &provider_id,
+        "Provider One",
+        &provider_url,
+        vec![pool_key("key-shared", "Shared", "sk-shared", true)],
+        vec![
+            provider_mapping("local-a", "remote-a", "chat_completions"),
+            provider_mapping("local-b", "remote-b", "chat_completions"),
+        ],
+    );
+    let pool = json!({
+        "id": pool_id,
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(provider_id.as_str(), "local-a", "remote-a", "chat_completions", Some(100)),
+            pool_candidate(provider_id.as_str(), "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = post_chat(port, &alias).await;
+    assert_eq!(
+        status, 200,
+        "the sibling must serve after the non-credential 403: {text}"
+    );
+
+    let captured = log.lock().unwrap().clone();
+    let models: Vec<String> = captured.iter().map(captured_model).collect();
+    assert_eq!(
+        models,
+        vec!["remote-a".to_string(), "remote-b".to_string()],
+        "the original mapping must fail first, then the sibling serves: {models:?}"
+    );
+    for entry in &captured {
+        assert_eq!(
+            auth_of(entry),
+            Some("Bearer sk-shared"),
+            "the sibling must serve using the same shared key"
+        );
+    }
+
+    let stored = stored_provider(&provider_id);
+    assert!(
+        stored.mappings[0].auto_disabled,
+        "a non-credential 403 must auto-disable the original mapping row: {:?}",
+        stored.mappings[0]
+    );
+    assert!(
+        stored.mappings[0]
+            .disabled_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("403")),
+        "the disable reason must name HTTP 403: {:?}",
+        stored.mappings[0].disabled_reason
+    );
+    for key in &stored.keys {
+        assert!(
+            !key.auto_marked,
+            "a non-credential 403 must not mark the valid key: {key:?}"
+        );
+        assert_eq!(key.failure_kind, None);
+    }
+
+    let statuses =
+        crate::ai_gateway::commands::ai_gateway_model_pools_status().expect("pool status");
+    let pool = statuses
+        .iter()
+        .find(|pool| pool.id == pool_id)
+        .expect("the pool status must be reported");
+    let candidate_a = pool
+        .candidates
+        .iter()
+        .find(|candidate| candidate.upstream_model == "remote-a")
+        .expect("candidate A status");
+    assert_eq!(
+        candidate_a.cooling_until, None,
+        "a non-credential 403 disables the mapping and must not cool the pool candidate: {candidate_a:?}"
+    );
+    assert_eq!(
+        candidate_a.availability, "mapping_unavailable",
+        "the disabled mapping is the reason, not a candidate cooldown: {candidate_a:?}"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// AC-009 / REQ-006: an explicit account-exhaustion 429 keeps the existing
+/// key/account policy (the exhausted key is quota-marked and the pass rotates
+/// to the next usable key), does not candidate-cool, and the candidate stays
+/// reachable on a later request through its healthy key.
+#[tokio::test]
+async fn pool_explicit_account_exhaustion_keeps_key_policy_without_candidate_cooling() {
+    let _home = temp_home("pool-account-exhaustion");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let alias = format!("free-model-{tag}");
+    let pool_id = format!("pool-{tag}");
+    let (provider_url, log) = spawn_mock_upstream(|captured| match auth_of(captured) {
+        Some("Bearer sk-exhausted") => MockReply::Json(
+            429,
+            json!({"error": {"message": "insufficient account balance"}}),
+        ),
+        Some("Bearer sk-ok") => {
+            MockReply::Json(200, json!({"id": "served-by-ok", "choices": []}))
+        }
+        other => MockReply::Json(
+            500,
+            json!({"error": {"message": format!("unexpected authorization {other:?}")}}),
+        ),
+    })
+    .await;
+
+    let provider = pool_provider(
+        &provider_id,
+        "Provider One",
+        &provider_url,
+        vec![
+            pool_key("key-exhausted", "Exhausted", "sk-exhausted", true),
+            pool_key("key-ok", "Ok", "sk-ok", true),
+        ],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let pool = json!({
+        "id": pool_id,
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(provider_id.as_str(), "local-a", "remote-a", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = post_chat(port, &alias).await;
+    assert_eq!(
+        status, 200,
+        "explicit account exhaustion must use the existing key rotation: {text}"
+    );
+
+    let captured = log.lock().unwrap().clone();
+    let seen: Vec<Option<&str>> = captured.iter().map(auth_of).collect();
+    assert_eq!(
+        captured.len(),
+        2,
+        "the exhausted key must rotate to the next usable key: {seen:?}"
+    );
+    assert_eq!(auth_of(&captured[0]), Some("Bearer sk-exhausted"));
+    assert_eq!(auth_of(&captured[1]), Some("Bearer sk-ok"));
+
+    let stored = stored_provider(&provider_id);
+    let exhausted = stored
+        .keys
+        .iter()
+        .find(|key| key.id == "key-exhausted")
+        .expect("the exhausted key must persist");
+    let ok = stored
+        .keys
+        .iter()
+        .find(|key| key.id == "key-ok")
+        .expect("the healthy key must persist");
+    assert!(
+        exhausted.auto_marked,
+        "an explicit account exhaustion must quota-mark the key: {exhausted:?}"
+    );
+    assert_eq!(
+        exhausted.failure_kind,
+        Some(crate::ai_gateway::KeyFailureKind::Quota),
+        "an explicit account exhaustion must use the existing quota key mark: {exhausted:?}"
+    );
+    assert!(
+        !ok.auto_marked,
+        "the healthy key must stay usable: {ok:?}"
+    );
+
+    let statuses =
+        crate::ai_gateway::commands::ai_gateway_model_pools_status().expect("pool status");
+    let pool = statuses
+        .iter()
+        .find(|pool| pool.id == pool_id)
+        .expect("the pool status must be reported");
+    let candidate = pool
+        .candidates
+        .iter()
+        .find(|candidate| candidate.upstream_model == "remote-a")
+        .expect("candidate status");
+    assert_eq!(
+        candidate.cooling_until, None,
+        "account exhaustion must not candidate-cool: {candidate:?}"
+    );
+    assert!(
+        candidate.ready,
+        "the candidate is still usable through its healthy key: {candidate:?}"
+    );
+
+    // A later request still reaches the same candidate through its healthy key;
+    // only the exhausted key is skipped by the existing quota policy.
+    let (second_status, _content_type, second_text) = post_chat(port, &alias).await;
+    assert_eq!(
+        second_status, 200,
+        "the candidate must remain reachable on a later request: {second_text}"
+    );
+    let captured = log.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        3,
+        "the second request must reach the candidate exactly once"
+    );
+    assert_eq!(auth_of(&captured[2]), Some("Bearer sk-ok"));
+
+    stop_server().await.expect("stop the listener");
+}
+
 /// REQ-001 / AC-002: the public pool CRUD commands validate atomically, preserve
 /// the encrypted configuration on every rejected write, retain a stored
 /// reference whose source later became unavailable, reserve a deleted alias and

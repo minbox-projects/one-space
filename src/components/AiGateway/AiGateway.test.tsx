@@ -11,6 +11,7 @@ import {
   maskSecret,
   type GatewayConfig,
   type GatewayKeyAuthFailedEvent,
+  type GatewayModelPool,
   type GatewayProviderTemplate,
   type GatewayProviderTemplateModel,
   type GatewayProviderTemplateView,
@@ -3959,19 +3960,22 @@ describe("AI 网关头部与副标题渲染", () => {
 // inspects a saved model pool alongside real upstream providers (REQ-008;
 // AC-011 / AC-013 / AC-014 / AC-016).
 //
-// The pool model fields are not part of the typed `GatewayConfig` yet, so the
-// fixtures attach them through a cast. Every assertion is behavior-level: the
-// card is visible, the nonsecret status command is used, and the enabled alias
-// appears exactly once in the model list.
+// `model_pools` / `model_pool_reserved_models` are typed on `GatewayConfig`, so
+// the fixtures attach them through the real types. Every assertion is
+// behavior-level: the card is visible, the nonsecret status command is used,
+// and the enabled alias appears exactly once in the model list.
 // ---------------------------------------------------------------------------
 
-function withModelPools(config: GatewayConfig, pools: unknown[]): GatewayConfig {
-  return { ...config, model_pools: pools } as unknown as GatewayConfig;
+function withModelPools(
+  config: GatewayConfig,
+  pools: GatewayModelPool[],
+): GatewayConfig {
+  return { ...config, model_pools: pools };
 }
 
 function modelPoolFixture(
-  overrides: Record<string, unknown> = {},
-): Record<string, unknown> {
+  overrides: Partial<GatewayModelPool> = {},
+): GatewayModelPool {
   return {
     id: "pool-free",
     name: "Free Modle",
@@ -3991,7 +3995,7 @@ function modelPoolFixture(
 }
 
 function poolStore(
-  pools: unknown[],
+  pools: GatewayModelPool[],
   poolStatus: unknown[] = [],
 ): Store {
   return {
