@@ -1149,16 +1149,52 @@ pub(in crate::ai_gateway) fn set_user_enabled(
     provider.enabled = enabled;
 }
 
+/// The fixed UTC+8 natural day index of a UNIX-seconds timestamp.
+///
+/// The `+08:00` offset is folded in through quotient/remainder decomposition so
+/// no timestamp value (including `u64::MAX`) can overflow, and the result is the
+/// number of whole UTC+8 calendar days since the UNIX epoch. Comparing two day
+/// indices is therefore exactly "the clock's UTC+8 calendar day is later than
+/// the other's", which never consults the device timezone.
+fn utc8_natural_day(timestamp: u64) -> u64 {
+    const SECONDS_PER_DAY: u64 = 86_400;
+    const UTC8_OFFSET_SECONDS: u64 = 8 * 3_600;
+    timestamp / SECONDS_PER_DAY
+        + (timestamp % SECONDS_PER_DAY + UTC8_OFFSET_SECONDS) / SECONDS_PER_DAY
+}
+
+/// Whether a daily-reset quota mark is due at the explicit `now`.
+///
+/// The key must be user-enabled with `daily_reset` on, runtime-marked with a
+/// quota failure and a known marking time, and `now` must fall on a strictly
+/// later fixed UTC+8 natural day than the mark. A same-day mark stays excluded
+/// however old it is, a future-dated mark is never due early, and a missing
+/// marking time never qualifies; the device timezone is never consulted.
+pub(in crate::ai_gateway) fn daily_quota_reset_due(key: &UpstreamKey, now: u64) -> bool {
+    key.enabled
+        && key.daily_reset
+        && key.auto_marked
+        && key.failure_kind == Some(KeyFailureKind::Quota)
+        && key
+            .marked_at
+            .is_some_and(|marked_at| utc8_natural_day(now) > utc8_natural_day(marked_at))
+}
+
 /// Whether a quota mark is old enough to make the key usable again through
-/// normal list-order selection. Eligibility is inclusive at exactly
-/// [`KEY_QUOTA_MARK_TTL_SECS`] seconds and exclusive below it. Auth marks and
+/// normal list-order selection. A `daily_reset` key is due exactly when the
+/// explicit `now`'s UTC+8 day is later than the mark's (see
+/// [`daily_quota_reset_due`]); a legacy key keeps the inclusive
+/// [`KEY_QUOTA_MARK_TTL_SECS`]-second TTL, exclusive below it. Auth marks and
 /// quota marks without a marking time never expire this way.
 pub(in crate::ai_gateway) fn quota_mark_expired(key: &UpstreamKey, now: u64) -> bool {
-    key.auto_marked
-        && key.failure_kind == Some(KeyFailureKind::Quota)
-        && key.marked_at.is_some_and(|marked_at| {
-            now.saturating_sub(marked_at) >= KEY_QUOTA_MARK_TTL_SECS
-        })
+    if !key.auto_marked || key.failure_kind != Some(KeyFailureKind::Quota) {
+        return false;
+    }
+    if key.daily_reset {
+        return daily_quota_reset_due(key, now);
+    }
+    key.marked_at
+        .is_some_and(|marked_at| now.saturating_sub(marked_at) >= KEY_QUOTA_MARK_TTL_SECS)
 }
 
 /// First key usable for a normal upstream attempt: enabled, not already
@@ -1183,8 +1219,11 @@ pub(in crate::ai_gateway) fn select_usable_key<'a>(
 /// Eligibility requires the key to be enabled and runtime-marked with
 /// [`KeyFailureKind::Quota`] at least [`KEY_PROBE_COOLDOWN_SECS`] seconds before
 /// the explicit `now` (`now - marked_at >= cooldown`). Auth-marked keys are
-/// never returned; a missing `marked_at` is never eligible. At most one key is
-/// chosen: the oldest `marked_at` first, ties by list order.
+/// never returned; a missing `marked_at` is never eligible; and a
+/// `daily_reset` key is excluded entirely, because a same-day daily mark must
+/// not be probed and a due one recovers through normal selection and the daily
+/// scan instead. At most one key is chosen: the oldest `marked_at` first, ties
+/// by list order.
 pub(in crate::ai_gateway) fn find_key_probe_candidate(
     provider: &GatewayUpstreamProvider,
     now: u64,
@@ -1192,7 +1231,7 @@ pub(in crate::ai_gateway) fn find_key_probe_candidate(
     provider
         .keys
         .iter()
-        .filter(|key| key.enabled && key.auto_marked)
+        .filter(|key| key.enabled && key.auto_marked && !key.daily_reset)
         .filter(|key| key.failure_kind == Some(KeyFailureKind::Quota))
         .filter(|key| {
             key.marked_at

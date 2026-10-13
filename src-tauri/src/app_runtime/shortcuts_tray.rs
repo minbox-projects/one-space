@@ -170,6 +170,7 @@ pub(super) fn shutdown_runtime_services() {
     // (signal + clear, idempotent) and the template auto-refresh schedule.
     crate::ai_gateway::stop_gateway_for_shutdown();
     crate::ai_gateway::stop_template_auto_refresh_scheduler();
+    crate::ai_gateway::stop_daily_reset_scanner();
     // Stop and release the BLE lock runtime; idempotent (REQ-011/AC-014).
     super::run_app::ble_lock_native::shutdown_runtime();
 }

@@ -2,6 +2,7 @@ mod attempt_policy;
 mod anthropic;
 mod anthropic_sse;
 mod commands;
+mod daily_reset;
 mod forwarding;
 mod go_usage;
 mod migration;
@@ -24,6 +25,7 @@ pub(crate) use quota::__cmd__ai_gateway_provider_quota;
 pub use go_usage::ai_gateway_provider_go_usage;
 pub(crate) use go_usage::__cmd__ai_gateway_provider_go_usage;
 pub use auto_refresh::TemplateAutoRefreshStatus;
+pub(crate) use daily_reset::{start_daily_reset_scanner, stop_daily_reset_scanner};
 pub use types_config::*;
 pub use usage_log::*;
 

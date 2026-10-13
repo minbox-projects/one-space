@@ -116,6 +116,10 @@ pub fn run() {
             // Process-owned template scheduler: start once per process, after
             // gateway autostart, independent of WebViews and the listener.
             ai_gateway::start_template_auto_refresh_scheduler(app.handle().clone());
+            // Process-owned daily-reset scanner: install once per process with
+            // an immediate startup scan, independent of WebViews, the listener
+            // and the template-refresh preference.
+            ai_gateway::start_daily_reset_scanner(app.handle().clone());
             ssh_tunnels::start_system_wake_observer();
             ssh_tunnels::start_sleep_resume_monitor();
             ssh_tunnels::start_tunnel_watchdog(app.handle().clone());
