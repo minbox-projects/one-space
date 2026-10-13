@@ -1,4 +1,8 @@
 use super::migration::migrate_legacy_files;
+use super::model_pools::{
+    new_pool_id, pool_status, reserve_alias, reserved_aliases, validate_pool_upsert,
+    ModelPoolStatus,
+};
 use super::runtime_http::{autostart, server_status, start_server, stop_server};
 use super::selection::{
     clear_key_runtime_state, clear_mapping_runtime_state, manual_reenable, mapping_matches_key,
@@ -24,8 +28,8 @@ use super::usage_log::{
 use super::{
     normalize_template_auto_refresh_minutes, now_ts, validate_template_auto_refresh_minutes,
     ClaudeModelSelection, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider,
-    ModelPrice, ProviderTemplate, TemplateAutoRefreshStatus, TerminalSyncRecord, UpstreamProtocol,
-    UsageResult, MAX_PROVIDER_WEIGHT, MIN_PROVIDER_WEIGHT,
+    ModelPool, ModelPrice, ProviderTemplate, TemplateAutoRefreshStatus, TerminalSyncRecord,
+    UpstreamProtocol, UsageResult, MAX_PROVIDER_WEIGHT, MIN_PROVIDER_WEIGHT,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -221,6 +225,37 @@ pub(in crate::ai_gateway) fn build_gateway_provider(
     gateways: &[GatewayUpstreamProvider],
     profile: TerminalSyncProfile,
 ) -> Result<serde_json::Value, String> {
+    build_gateway_provider_with_pools(
+        provider_id,
+        tool,
+        base_url,
+        api_key,
+        gateways,
+        &[],
+        None,
+        profile,
+    )
+}
+
+/// Pool-aware variant of [`build_gateway_provider`].
+///
+/// `pools` contributes the public alias of every enabled configured pool to the
+/// generated catalog: an OpenCode Chat-compatible row with no guessed reasoning
+/// variants, and a Codex generated model that only fills a gap. `previous_model`
+/// is the model already stored on the owned record, used only to retain a valid
+/// previously selected enabled pool alias on a Codex resync. The original
+/// `build_gateway_provider` keeps its signature and passes no pools.
+#[allow(clippy::too_many_arguments)]
+fn build_gateway_provider_with_pools(
+    provider_id: &str,
+    tool: &str,
+    base_url: &str,
+    api_key: &str,
+    gateways: &[GatewayUpstreamProvider],
+    pools: &[ModelPool],
+    previous_model: Option<&str>,
+    profile: TerminalSyncProfile,
+) -> Result<serde_json::Value, String> {
     let tool = tool.trim().to_ascii_lowercase();
     if !is_supported_terminal_tool(&tool) {
         return Err(format!(
@@ -327,10 +362,27 @@ pub(in crate::ai_gateway) fn build_gateway_provider(
                 models.insert(local_model, Value::Object(model));
             }
         }
+        // Every enabled configured pool contributes its public alias exactly
+        // once as a Chat-compatible row. A pool never borrows a source model's
+        // reasoning variants and is never given the Responses npm override, so
+        // no `variants`/`reasoning`/`provider` is guessed from its candidates
+        // (REQ-008/AC-011). A disabled pool is never exposed.
+        for pool in pools.iter().filter(|pool| pool.enabled) {
+            let Some(local_model) = non_empty(Some(pool.model.as_str())) else {
+                continue;
+            };
+            if models.contains_key(&local_model) {
+                continue;
+            }
+            let name = non_empty(Some(pool.name.as_str())).unwrap_or_else(|| local_model.clone());
+            let mut model = Map::new();
+            model.insert("name".to_string(), Value::String(name));
+            models.insert(local_model, Value::Object(model));
+        }
         tool_config.insert("models".to_string(), Value::Object(models));
     } else {
         tool_config.insert("wire_api".to_string(), Value::String("chat".to_string()));
-        let model = gateways
+        let ordinary = gateways
             .iter()
             .filter(|gateway| gateway.enabled)
             .find_map(|gateway| {
@@ -346,6 +398,25 @@ pub(in crate::ai_gateway) fn build_gateway_provider(
                     .filter(|gateway| gateway.enabled)
                     .find_map(|gateway| non_empty(gateway.default_model.as_deref()))
             });
+        // Retain an already selected *enabled* pool alias on resync; a disabled
+        // or retired alias is not retainable, so an ordinary default wins.
+        let retained_pool = previous_model
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .filter(|value| {
+                pools
+                    .iter()
+                    .any(|pool| pool.enabled && pool.model.trim() == *value)
+            })
+            .map(str::to_string);
+        // A pool-only configuration (no ordinary model) uses the first enabled
+        // pool alias as its generated fallback; an ordinary default is never
+        // replaced just because a pool exists (REQ-008/AC-011).
+        let fallback_pool = pools
+            .iter()
+            .filter(|pool| pool.enabled)
+            .find_map(|pool| non_empty(Some(pool.model.as_str())));
+        let model = retained_pool.or(ordinary).or(fallback_pool);
         if let Some(model) = model {
             object.insert("model".to_string(), Value::String(model));
         }
@@ -643,6 +714,36 @@ pub fn ai_gateway_upsert_provider(
             provider.id = new_provider_id();
         }
         let provider_id = provider.id.clone();
+        // An ordinary provider mapping must not acquire a current or retired
+        // model-pool alias (REQ-001/REQ-007). Retaining an already-stored row is
+        // allowed so resubmitting an unchanged provider never fails.
+        let pool_aliases = reserved_aliases(config);
+        if !pool_aliases.is_empty() {
+            let stored_mappings: Vec<String> = config
+                .providers
+                .iter()
+                .find(|stored| stored.id == provider_id)
+                .map(|stored| {
+                    stored
+                        .mappings
+                        .iter()
+                        .map(|mapping| mapping.local_model.trim().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            for mapping in &provider.mappings {
+                let local = mapping.local_model.trim();
+                if local.is_empty() {
+                    continue;
+                }
+                if pool_aliases.contains(local) && !stored_mappings.iter().any(|stored| stored == local)
+                {
+                    return Err(format!(
+                        "mapping local model '{local}' is reserved by a model pool"
+                    ));
+                }
+            }
+        }
         if let Some(existing) = find_provider_mut(config, &provider_id) {
             merge_provider_keys(existing, &mut provider)?;
             // Runtime health belongs to a trimmed `(local_model, upstream_model)`
@@ -726,6 +827,97 @@ pub fn ai_gateway_set_provider_enabled(
         Ok((true, ()))
     })?;
     read_config()
+}
+
+/// Create or edit one model pool (REQ-001).
+///
+/// The submitted pool is validated against the latest configuration and written
+/// through the same serialized atomic primitive as every other gateway write, so
+/// a validation or write failure changes nothing. Renaming a pool reserves its
+/// previous alias, so neither an ordinary mapping nor a retired route can
+/// acquire it; a new pool may reuse a retired alias.
+#[tauri::command]
+pub fn ai_gateway_upsert_model_pool(mut pool: ModelPool) -> Result<GatewayConfig, String> {
+    modify_config(|config| {
+        if pool.id.trim().is_empty() {
+            pool.id = new_pool_id();
+        }
+        let normalized = validate_pool_upsert(config, &pool)?;
+        if let Some(existing) = config
+            .model_pools
+            .iter()
+            .find(|stored| stored.id == normalized.id)
+        {
+            let previous = existing.model.trim().to_string();
+            if previous != normalized.model {
+                reserve_alias(config, &previous);
+            }
+        }
+        if let Some(existing) = config
+            .model_pools
+            .iter_mut()
+            .find(|stored| stored.id == normalized.id)
+        {
+            *existing = normalized;
+        } else {
+            config.model_pools.push(normalized);
+        }
+        Ok((true, ()))
+    })?;
+    read_config()
+}
+
+/// Delete one model pool and reserve its alias so a stale client can never fall
+/// through to an unrelated ordinary source. An unknown id is an actionable error
+/// that writes nothing.
+#[tauri::command]
+pub fn ai_gateway_delete_model_pool(pool_id: String) -> Result<GatewayConfig, String> {
+    modify_config(|config| {
+        let removed: Vec<String> = config
+            .model_pools
+            .iter()
+            .filter(|pool| pool.id == pool_id)
+            .map(|pool| pool.model.trim().to_string())
+            .collect();
+        if removed.is_empty() {
+            return Err(format!("model pool not found: {pool_id}"));
+        }
+        config.model_pools.retain(|pool| pool.id != pool_id);
+        for alias in removed {
+            reserve_alias(config, &alias);
+        }
+        Ok((true, ()))
+    })?;
+    read_config()
+}
+
+/// Toggle a pool's `enabled` intent without touching its candidates, so
+/// readiness and user intent stay separate (REQ-001/REQ-008). An unknown id is an
+/// actionable error that writes nothing.
+#[tauri::command]
+pub fn ai_gateway_set_model_pool_enabled(
+    pool_id: String,
+    enabled: bool,
+) -> Result<GatewayConfig, String> {
+    modify_config(|config| {
+        let pool = config
+            .model_pools
+            .iter_mut()
+            .find(|pool| pool.id == pool_id)
+            .ok_or_else(|| format!("model pool not found: {pool_id}"))?;
+        pool.enabled = enabled;
+        Ok((true, ()))
+    })?;
+    read_config()
+}
+
+/// Nonsecret readiness of every stored pool and candidate (REQ-004 of the
+/// frozen plan): source identity, availability code and cooldown deadline only.
+/// No network/quota probe runs and nothing is persisted.
+#[tauri::command]
+pub fn ai_gateway_model_pools_status() -> Result<Vec<ModelPoolStatus>, String> {
+    let config = read_config()?;
+    Ok(pool_status(&config))
 }
 
 /// Clear the runtime health state of the mapping row identified by the trimmed
@@ -1017,12 +1209,14 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
                     claude_models.is_none()
                 } else {
                     match (provider_id.as_deref(), managed) {
-                        (Some(id), Some(stored)) => build_gateway_provider(
+                        (Some(id), Some(stored)) => build_gateway_provider_with_pools(
                             id,
                             tool,
                             &current_base_url,
                             "",
                             &config.providers,
+                            &config.model_pools,
+                            stored.get("model").and_then(Value::as_str),
                             profile,
                         )
                         .map(|generated| terminal_model_selection_drifted(tool, stored, &generated))
@@ -1249,12 +1443,23 @@ where
             });
         } else {
             let provider_id = resolve_gateway_provider_id(tool, providers, &config, profile);
-            let payload = build_gateway_provider(
+            // The owned record's current model lets a Codex resync retain an
+            // already selected enabled pool alias instead of dropping it.
+            let managed_ledger = config
+                .terminal_syncs
+                .iter()
+                .find(|record| record.tool.eq_ignore_ascii_case(tool));
+            let previous_model =
+                find_managed_gateway_provider(tool, providers, managed_ledger, profile)
+                    .and_then(|provider| provider.get("model").and_then(Value::as_str));
+            let payload = build_gateway_provider_with_pools(
                 &provider_id,
                 tool,
                 &base_url,
                 &key_value,
                 &config.providers,
+                &config.model_pools,
+                previous_model,
                 profile,
             )?;
             planned.push(PlannedTool {

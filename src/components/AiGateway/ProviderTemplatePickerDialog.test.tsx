@@ -224,6 +224,36 @@ describe("ProviderTemplatePickerDialog", () => {
 // RED before implementation: the badge label is "Chat" for anything non-Responses.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Step 3 (20261013-free-model-pool): the existing Add-provider picker gains a
+// "Create model pool" channel beside manual creation (REQ-008 / AC-013).
+// RED before implementation: the channel test id does not exist yet.
+// ---------------------------------------------------------------------------
+
+describe("ProviderTemplatePickerDialog model pool creation", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("offers a Create model pool channel beside manual creation", () => {
+    render(
+      <ProviderTemplatePickerDialog
+        open={true}
+        onOpenChange={vi.fn()}
+        templates={mockTemplates}
+        busy={false}
+        onSelectBlank={vi.fn()}
+        onSelectTemplate={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("template-picker-blank-btn")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("template-picker-model-pool-btn"),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("ProviderTemplatePickerDialog anthropic_messages 徽标", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("en");

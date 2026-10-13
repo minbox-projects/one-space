@@ -362,7 +362,17 @@ function CostDetail({
   );
 }
 
-export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
+export function UsageLogsPanel({
+  isActive = true,
+  focusModel = null,
+  focusToken = 0,
+}: {
+  isActive?: boolean;
+  /** Alias filter requested by an external shortcut (e.g. a pool card log button). */
+  focusModel?: string | null;
+  /** Bumped by the external shortcut; each new value re-applies `focusModel`. */
+  focusToken?: number;
+}) {
   const { t } = useTranslation();
   const [range, setRange] = useState<UsageRangeKey>("today");
   const [groupBy, setGroupBy] = useState<UsageGroupBy>("none");
@@ -380,6 +390,9 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
   const [draftProvider, setDraftProvider] = useState<string | null>(null);
   const requestSeqRef = useRef(0);
   const filterRef = useRef<HTMLDivElement>(null);
+  // Highest `focusToken` already reflected in the local model filter: the
+  // external-focus guard is one-shot and releases once this value catches up.
+  const appliedFocusTokenRef = useRef(0);
 
   useEffect(() => {
     if (!filterOpen) return;
@@ -440,10 +453,31 @@ export function UsageLogsPanel({ isActive = true }: { isActive?: boolean }) {
     [groupBy, model, page, provider, range, status],
   );
 
+  // External shortcut (e.g. a model-pool card log button): apply the alias
+  // filter through the existing query state without inventing a new log format.
+  useEffect(() => {
+    if (focusToken === 0) return;
+    setModel(focusModel);
+    setDraftModel(focusModel);
+    setPage(1);
+  }, [focusToken, focusModel]);
+
   useEffect(() => {
     if (!isActive) return;
+    // Avoid a transient null-filter request while an external focus is pending,
+    // but only until the focused alias has been applied to the local model
+    // filter once. Afterwards every normal query-state change loads exactly as
+    // before this feature (the parent never clears focusModel/focusToken).
+    const focusPending =
+      focusModel !== null &&
+      focusToken > appliedFocusTokenRef.current &&
+      model !== focusModel;
+    if (focusPending) return;
+    if (focusModel !== null && model === focusModel) {
+      appliedFocusTokenRef.current = focusToken;
+    }
     void load();
-  }, [isActive, load]);
+  }, [focusModel, focusToken, isActive, load, model]);
 
   const visibleRecords = pageData?.records ?? [];
 

@@ -70,10 +70,12 @@ export function RuntimeStatusCard({
     return config.providers.filter((p) => p.enabled).length;
   }, [config.providers]);
 
-  // 2. 聚合模型数（与聚合模型面板严格一致）
+  // 2. 聚合模型数（与聚合模型面板严格一致）：每个启用的模型池作为一个公开模型计入。
   const aggregatedModelsCount = useMemo(
-    () => aggregateModels(config.providers).length,
-    [config.providers],
+    () =>
+      aggregateModels(config.providers).length +
+      (config.model_pools ?? []).filter((pool) => pool.enabled).length,
+    [config.providers, config.model_pools],
   );
 
   // 3. 今日用量与消耗

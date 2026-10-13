@@ -2051,6 +2051,71 @@ describe("UsageLogsPanel", () => {
       expectCostDetailAssociated(control, costDetailContent(row));
     }
   });
+
+  // Review-repair (2026-10-13), SPEC-1 regression: a model-pool card log
+  // shortcut focuses one alias once via (focusModel, focusToken>=1) and the
+  // parent never clears it while both usage panes stay mounted. Changing the
+  // model filter afterwards must still issue the new query on page 1 instead of
+  // being blocked forever by the pending-focus guard.
+  it("SPEC-1 外部 alias 聚焦后，切换模型筛选仍发出新的日志请求", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      const selected: string | null = args?.model ?? null;
+      return {
+        ...page({ records: [record({ local_model: selected ?? "free-model" })] }),
+        models: ["free-model", "other-model"],
+      } as UsageLogsPage & { models: string[] };
+    });
+
+    // Simulate the parent pool-card log shortcut: the pool alias is focused
+    // once and the parent never clears focusModel/focusToken.
+    renderWithProviders(
+      <UsageLogsPanel focusModel="free-model" focusToken={1} />,
+    );
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "none",
+        status: null,
+        model: "free-model",
+        provider: null,
+        page: 1,
+      }),
+    );
+
+    // The existing manual Refresh control must keep working after the focus.
+    const logsCalls = () =>
+      invokeMock.mock.calls.filter(
+        (call) => call[0] === "ai_gateway_request_logs",
+      ).length;
+    const beforeRefresh = logsCalls();
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(logsCalls()).toBeGreaterThan(beforeRefresh));
+
+    // The user then picks a different model and applies the filter; the next
+    // query must carry the new model value on page 1.
+    await user.click(screen.getByTestId("ai-gateway-logs-filter-trigger"));
+    const panel = await screen.findByTestId("ai-gateway-logs-filter-panel");
+    await user.click(
+      within(panel).getByRole("button", { name: "other-model" }),
+    );
+    await user.click(within(panel).getByRole("button", { name: "Apply" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "none",
+        status: null,
+        model: "other-model",
+        provider: null,
+        page: 1,
+      }),
+    );
+  });
 });
 
 

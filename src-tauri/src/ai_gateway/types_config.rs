@@ -381,6 +381,88 @@ pub struct GatewayUpstreamProvider {
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// Transport-only resolved model-pool candidate identity. A model-pool
+    /// request clones its real provider into a one-candidate slot and attaches
+    /// this identity so every attempt, retry and probe keeps the real provider
+    /// and the original mapping health target while never persisting pool
+    /// secrets. It is deliberately never serialized.
+    #[serde(skip)]
+    pub pool_candidate: Option<PoolCandidateIdentity>,
+}
+
+/// Transport-only identity of one prepared model-pool candidate.
+///
+/// It names the owning pool plus the real provider and the original mapping
+/// `(local_model, upstream_model)` pair and effective protocol the candidate
+/// references, so scheduler accounting, cooldown and mapping-health settlement
+/// stay scoped to the exact source while the routing clone carries only the
+/// provided candidate. Never serialized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolCandidateIdentity {
+    pub pool_id: String,
+    pub provider_id: String,
+    pub local_model: String,
+    pub upstream_model: String,
+    pub protocol: UpstreamProtocol,
+}
+
+/// One candidate of an operator-defined model pool.
+///
+/// A candidate is an explicit reference to one real provider mapping row: the
+/// real provider id plus the original trimmed `(local_model, upstream_model)`
+/// pair and effective protocol, with an integer weight from 1 to 100 defaulting
+/// to 1. It never copies a source key or endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelPoolCandidate {
+    pub provider_id: String,
+    pub local_model: String,
+    pub upstream_model: String,
+    pub protocol: UpstreamProtocol,
+    #[serde(default = "default_provider_weight")]
+    pub weight: u32,
+}
+
+impl Default for ModelPoolCandidate {
+    fn default() -> Self {
+        Self {
+            provider_id: String::new(),
+            local_model: String::new(),
+            upstream_model: String::new(),
+            protocol: UpstreamProtocol::ChatCompletions,
+            weight: 1,
+        }
+    }
+}
+
+/// An operator-defined model pool exposed as a virtual provider.
+///
+/// `id` is a stable identity, `name` is the trimmed display name, `model` is the
+/// public model id clients request, `enabled` carries the operator's intent, and
+/// `candidates` are the exact selected source references. A missing field in an
+/// older configuration reads as an empty collection. Always serialized.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelPool {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub candidates: Vec<ModelPoolCandidate>,
+}
+
+impl Default for ModelPool {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            model: String::new(),
+            enabled: true,
+            candidates: Vec::new(),
+        }
+    }
 }
 
 impl Default for GatewayUpstreamProvider {
@@ -400,6 +482,7 @@ impl Default for GatewayUpstreamProvider {
             weight: 1,
             tags: Vec::new(),
             icon: None,
+            pool_candidate: None,
         }
     }
 }
@@ -763,6 +846,16 @@ pub struct GatewayConfig {
         deserialize_with = "deserialize_template_auto_refresh_minutes"
     )]
     pub template_auto_refresh_minutes: u32,
+    /// Operator-defined model pools. Always serialized with a `serde(default)`
+    /// empty collection, so a configuration written before pools existed loads
+    /// unchanged and every later write keeps the field present.
+    #[serde(default)]
+    pub model_pools: Vec<ModelPool>,
+    /// Aliases that were previously owned by a model pool (renamed or deleted)
+    /// and must never be acquired by an ordinary provider mapping or served as
+    /// an ordinary route. Always serialized with a `serde(default)` empty list.
+    #[serde(default)]
+    pub model_pool_reserved_models: Vec<String>,
 }
 
 impl Default for GatewayConfig {
@@ -780,6 +873,8 @@ impl Default for GatewayConfig {
             provider_templates: Vec::new(),
             deleted_template_ids: Vec::new(),
             template_auto_refresh_minutes: DEFAULT_TEMPLATE_AUTO_REFRESH_MINUTES,
+            model_pools: Vec::new(),
+            model_pool_reserved_models: Vec::new(),
         }
     }
 }

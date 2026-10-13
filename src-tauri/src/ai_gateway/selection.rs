@@ -40,7 +40,10 @@ pub(in crate::ai_gateway) enum ModelResolution {
     NoMatch,
 }
 
-fn can_convert_from(protocol: UpstreamProtocol, inbound: UpstreamProtocol) -> bool {
+pub(in crate::ai_gateway) fn can_convert_from(
+    protocol: UpstreamProtocol,
+    inbound: UpstreamProtocol,
+) -> bool {
     protocol == inbound
         || (protocol == UpstreamProtocol::AnthropicMessages
             && matches!(
