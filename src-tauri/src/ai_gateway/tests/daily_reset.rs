@@ -714,6 +714,20 @@ fn wait_until(label: &str, timeout: Duration, condition: impl Fn() -> bool) {
     panic!("timed out waiting for {label}");
 }
 
+/// RAII cleanup for the process-owned scanner: stop and join the worker on any
+/// exit path, including a panicking assertion, so it never keeps scanning after
+/// this test's temp HOME is gone. Declared after `temp_home` in the lifecycle
+/// test so reverse drop order stops and joins the worker before the real HOME is
+/// restored and the temp profile directory is removed.
+struct ScannerLifecycleGuard;
+
+impl Drop for ScannerLifecycleGuard {
+    fn drop(&mut self) {
+        stop_daily_reset_scanner();
+        reset_daily_reset_scanner_for_tests();
+    }
+}
+
 /// AC-004: the installed process-owned scanner runs the immediate startup scan
 /// exactly once, keeps repeated installation a no-op, catches up through its
 /// periodic pass with a fresh wall clock across a UTC+8 day boundary, and stops
@@ -724,6 +738,9 @@ fn daily_reset_scanner_startup_periodic_catch_up_and_idempotent_stop() {
     let _home = temp_home("daily-reset-scanner-lifecycle");
     let app = tauri::test::mock_app();
     let clock = Arc::new(AtomicU64::new(T_2026_10_13_2200_UTC8));
+    // Declared after `_home` so reverse drop order stops and joins the scanner
+    // worker before the real HOME is restored on any panic path.
+    let _scanner_guard = ScannerLifecycleGuard;
 
     // Seed: a key due at startup, a key that catches up one day later, a key for
     // the post-stop re-install, an authentication mark, an unrelated provider and
