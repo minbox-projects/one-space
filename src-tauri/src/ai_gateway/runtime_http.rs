@@ -15,6 +15,8 @@ use super::anthropic::{
     is_messages_path, stream_error_event, validate_conversion_request,
 };
 use super::anthropic_sse::{AnthropicSseConverter, AnthropicSseObserver};
+use super::openai_conversion::{self, include_usage_requested};
+use super::openai_sse::OpenAiSseConverter;
 use super::selection::{
     candidate_providers, classify_failure_with_message, clear_key_runtime_state,
     default_retry_delay, find_probe_candidate, is_quota_exceeded_message,
@@ -924,6 +926,31 @@ fn failure_reason(status: u16, body_parsed: bool, error_message: Option<&str>) -
 
 
 
+/// The exact upstream model and protocol for one attempt.
+///
+/// A prepared model-pool candidate carries its full stored identity, so its real
+/// upstream model and declared protocol are used directly; this is what lets a
+/// pool candidate cross the two OpenAI endpoints without changing the ordinary
+/// `can_convert_from` selection boundary. An ordinary provider keeps its
+/// existing resolution untouched.
+fn attempt_target(
+    provider: &GatewayUpstreamProvider,
+    requested: Option<&str>,
+    protocol: UpstreamProtocol,
+) -> Option<(String, UpstreamProtocol)> {
+    if let Some(identity) = provider.pool_candidate.as_ref() {
+        return Some((identity.upstream_model.clone(), identity.protocol));
+    }
+    match resolve_model_for_protocol(provider, requested, protocol) {
+        ModelResolution::Serve(model) => {
+            let upstream =
+                resolve_upstream_protocol(provider, requested, protocol).unwrap_or(protocol);
+            Some((model, upstream))
+        }
+        ModelResolution::ProtocolMismatch(_) | ModelResolution::NoMatch => None,
+    }
+}
+
 async fn attempt_candidate(
     provider: &GatewayUpstreamProvider,
     path: &str,
@@ -989,10 +1016,21 @@ async fn attempt_candidate(
                 ..Default::default()
             };
             if served {
-                let body = if upstream_protocol == UpstreamProtocol::AnthropicMessages
-                    && is_conversion_path(path)
-                {
-                    match convert_response(path, &response.body, requested.unwrap_or(model)) {
+                let convert = provider.pool_candidate.is_some()
+                    || (upstream_protocol == UpstreamProtocol::AnthropicMessages
+                        && is_conversion_path(path));
+                let body = if convert {
+                    let converted = if upstream_protocol == UpstreamProtocol::AnthropicMessages {
+                        convert_response(path, &response.body, requested.unwrap_or(model))
+                    } else {
+                        openai_conversion::convert_response(
+                            path,
+                            upstream_protocol,
+                            &response.body,
+                            requested.unwrap_or(model),
+                        )
+                    };
+                    match converted {
                         Ok(body) => body,
                         Err(error) => {
                             let log = build_attempt_log(
@@ -1155,9 +1193,8 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
     // registration, while a bare rate-limit 429 rotates to the next
     // unattempted usable key in the same pass without persisting any mark.
     for provider_snapshot in ordered {
-        let model = match resolve_model_for_protocol(provider_snapshot, requested, protocol) {
-            ModelResolution::Serve(model) => model,
-            ModelResolution::ProtocolMismatch(_) | ModelResolution::NoMatch => continue,
+        let Some((model, _)) = attempt_target(provider_snapshot, requested, protocol) else {
+            continue;
         };
         let mut provider = provider_snapshot.clone();
         sync_key_runtime_marks(&mut provider);
@@ -1181,7 +1218,8 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                 clear_ttl_expired_key_runtime_state(&mut provider, &selected);
             }
             provider.attempt_key = selected.value.clone();
-            let upstream_protocol = resolve_upstream_protocol(&provider, requested, protocol)
+            let upstream_protocol = attempt_target(&provider, requested, protocol)
+                .map(|(_, upstream)| upstream)
                 .unwrap_or(protocol);
             let (outcome, log) =
                 attempt_candidate(
@@ -1353,12 +1391,9 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                 clear_ttl_expired_key_runtime_state(&mut candidate.provider, &selected);
             }
             candidate.provider.attempt_key = selected.value.clone();
-            let upstream_protocol = resolve_upstream_protocol(
-                &candidate.provider,
-                requested,
-                protocol,
-            )
-            .unwrap_or(protocol);
+            let upstream_protocol = attempt_target(&candidate.provider, requested, protocol)
+                .map(|(_, upstream)| upstream)
+                .unwrap_or(protocol);
             let (outcome, log) =
                 attempt_candidate(
                     &candidate.provider,
@@ -1711,6 +1746,12 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
 ) -> Result<ForwardCapture, String> {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
+    // The caller's own boolean `stream_options.include_usage` (Chat ingress
+    // only); a converted Chat stream honors it without injecting the upstream
+    // flag the caller never requested.
+    let include_usage = serde_json::from_slice::<Value>(body)
+        .ok()
+        .is_some_and(|value| include_usage_requested(&value));
     // Whether any candidate provider still has an enabled key (AC-006).
     let request_has_enabled_key = ordered
         .iter()
@@ -1720,15 +1761,15 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     let mut remaining_wait = Duration::from_secs(120);
     let mut ordered_queue: VecDeque<RetryCandidate> = ordered
         .iter()
-        .filter_map(|provider| match resolve_model_for_protocol(provider, requested, protocol) {
-            ModelResolution::Serve(model) => Some(RetryCandidate {
+        .filter_map(|provider| match attempt_target(provider, requested, protocol) {
+            Some((model, _)) => Some(RetryCandidate {
                 provider: provider.clone(),
                 model,
                 attempts: 0,
                 ready_at: None,
                 attempted_keys: HashSet::new(),
             }),
-            ModelResolution::ProtocolMismatch(_) | ModelResolution::NoMatch => None,
+            None => None,
         })
         .collect();
     // Whether this request has already used its single key probe.
@@ -1854,12 +1895,29 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         // auto-disabled, so the normal served-row resolution skips it); every
         // other attempt keeps the resolved effective protocol.
         let upstream_protocol = attempt_protocol
-            .or_else(|| resolve_upstream_protocol(&candidate.provider, requested, protocol))
+            .or_else(|| {
+                attempt_target(&candidate.provider, requested, protocol)
+                    .map(|(_, upstream)| upstream)
+            })
             .unwrap_or(protocol);
         let native_messages = upstream_protocol == UpstreamProtocol::AnthropicMessages;
         let mut native_sse = native_messages.then(AnthropicSseObserver::default);
         let mut converted_sse = (native_messages && is_conversion_path(path))
             .then(|| AnthropicSseConverter::new(path, requested.unwrap_or(&candidate.model)));
+        // A prepared model-pool candidate on an OpenAI endpoint gets an OpenAI
+        // SSE converter so the caller's own protocol and the public alias are
+        // preserved even on a same-protocol stream.
+        let mut pool_sse = (candidate.provider.pool_candidate.is_some()
+            && !native_messages
+            && is_conversion_path(path))
+        .then(|| {
+            OpenAiSseConverter::new(
+                path,
+                upstream_protocol,
+                requested.unwrap_or(&candidate.model),
+                include_usage,
+            )
+        });
         capture.provider_id = candidate.provider.id.clone();
         capture.provider_name = candidate.provider.name.clone();
         capture.upstream_model = candidate.model.clone();
@@ -2019,7 +2077,16 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             let mut chunks = response.bytes_stream();
             match chunks.next().await {
                 Some(Ok(first)) => {
-                    if !is_sse_response_chunk(&content_type, &first) {
+                    // A pool conversion reads the stream incrementally, so a
+                    // first chunk fragmented inside an event's `event:` field
+                    // (e.g. `even`) must not be rejected; a declared SSE content
+                    // type is sufficient and a truly malformed stream becomes a
+                    // post-byte failure.
+                    let pool_sse_stream = pool_sse.is_some()
+                        && content_type
+                            .to_ascii_lowercase()
+                            .contains("text/event-stream");
+                    if !is_sse_response_chunk(&content_type, &first) && !pool_sse_stream {
                         last_failure_status = Some(502);
                         let reason = format!(
                             "2xx response is not a valid SSE stream (content-type: {content_type})"
@@ -2067,6 +2134,15 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     // failed attempt keeps its captured usage.
                     let mut stream_error: Option<String> = None;
                     let first_output = if let Some(converter) = converted_sse.as_mut() {
+                        match converter.feed(&first) {
+                            Ok(output) => output,
+                            Err(error) => {
+                                stream_error =
+                                    Some(format!("stream failed after first byte: {error}"));
+                                Vec::new()
+                            }
+                        }
+                    } else if let Some(converter) = pool_sse.as_mut() {
                         match converter.feed(&first) {
                             Ok(output) => output,
                             Err(error) => {
@@ -2160,7 +2236,16 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                             } else {
                                 let envelope =
                                     error_envelope(reason, "server_error", "upstream_stream_error");
-                                let fragment = format!("data: {envelope}\n\n");
+                                // A converted pool Responses client gets the
+                                // Responses error event shape; the ordinary
+                                // passthrough keeps its existing `data:` fragment.
+                                let fragment = if pool_sse.is_some()
+                                    && path.split('?').next() == Some("/v1/responses")
+                                {
+                                    format!("event: error\ndata: {envelope}\n\n")
+                                } else {
+                                    format!("data: {envelope}\n\n")
+                                };
                                 let _ = writer.write_all(fragment.as_bytes()).await;
                             }
                             let _ = writer.flush().await;
@@ -2180,6 +2265,16 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     observer.feed(&chunk);
                                 }
                                 let output = if let Some(converter) = converted_sse.as_mut() {
+                                    match converter.feed(&chunk) {
+                                        Ok(output) => output,
+                                        Err(error) => {
+                                            stream_error = Some(format!(
+                                                "stream failed after first byte: {error}"
+                                            ));
+                                            Vec::new()
+                                        }
+                                    }
+                                } else if let Some(converter) = pool_sse.as_mut() {
                                     match converter.feed(&chunk) {
                                         Ok(output) => output,
                                         Err(error) => {
@@ -2304,6 +2399,79 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                             let _ = writer.write_all(output).await;
                                         }
                                         let _ = writer.flush().await;
+                                    }
+                                }
+                                // A converted OpenAI pool stream must have seen
+                                // its completion marker; a truncated or malformed
+                                // stream is a post-byte failure, never a success.
+                                if let Some(mut converter) = pool_sse.take() {
+                                    let finished = converter.finish();
+                                    if let Ok(outputs) = &finished {
+                                        for output in outputs {
+                                            let _ = writer.write_all(output).await;
+                                        }
+                                        let _ = writer.flush().await;
+                                    }
+                                    if finished.is_err() || !converter.is_success() {
+                                        let reason = if converter.has_in_band_error() {
+                                            "upstream emitted an error event".to_string()
+                                        } else if let Err(error) = &finished {
+                                            format!("stream failed after first byte: {error}")
+                                        } else {
+                                            "converted stream ended before completion".to_string()
+                                        };
+                                        if let Some(target) = &probe_target {
+                                            health.record_probe_failure(target, now_ts(), false, &reason);
+                                        } else {
+                                            settle_failure(
+                                                &mut health,
+                                                provider,
+                                                requested,
+                                                &candidate.model,
+                                                FailureClass::Retryable,
+                                                &reason,
+                                                false,
+                                            );
+                                        }
+                                        if selected.probe {
+                                            persist_key_runtime_state(&provider.id, &selected.id, |key| {
+                                                rearm_key_probe(key, None, &reason, now_ts());
+                                            });
+                                        }
+                                        health.apply();
+                                        let failed_usage = usage.canonical_usage();
+                                        attempts.push(build_attempt_log(
+                                            provider,
+                                            protocol,
+                                            &candidate.model,
+                                            started,
+                                            502,
+                                            UsageResult::Failure,
+                                            sanitize_provider_error_text(&reason, provider),
+                                            failed_usage,
+                                        ));
+                                        if last_forwarded != Some(b'\n') {
+                                            let _ = writer.write_all(b"\n").await;
+                                        }
+                                        let _ = writer.write_all(b"\n").await;
+                                        let envelope = error_envelope(
+                                            reason,
+                                            "server_error",
+                                            "upstream_stream_error",
+                                        );
+                                        let fragment = if path.split('?').next()
+                                            == Some("/v1/responses")
+                                        {
+                                            format!("event: error\ndata: {envelope}\n\n")
+                                        } else {
+                                            format!("data: {envelope}\n\n")
+                                        };
+                                        let _ = writer.write_all(fragment.as_bytes()).await;
+                                        let _ = writer.flush().await;
+                                        capture.status = 502;
+                                        capture.usage = usage.usage();
+                                        capture.upstream_error = true;
+                                        return Ok(capture);
                                     }
                                 }
                                 if let Some(target) = &probe_target {
@@ -2813,6 +2981,39 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    // REQ-005/AC-007: a current pool alias on an OpenAI endpoint validates the
+    // full portable contract before any selection, SWRR mutation, attempt or
+    // probe. A native Messages alias stays on its fenced 502 path below.
+    if let Some(alias) = pool_alias {
+        if !is_messages_path(path) {
+            if let Some(pool) = config
+                .model_pools
+                .iter()
+                .find(|pool| pool.model.trim() == alias)
+            {
+                // A pool that stores at least one native Messages candidate must
+                // also satisfy the existing adapter's contract, and a `strict`
+                // function control it cannot carry is rejected before selection.
+                let messages_candidate = pool
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.protocol == UpstreamProtocol::AnthropicMessages);
+                if let Err(error) =
+                    openai_conversion::validate_pool_request(path, &body_value, messages_candidate)
+                {
+                    let response = json_response(
+                        400,
+                        error_envelope(error, "invalid_request_error", "invalid_request"),
+                    );
+                    stream
+                        .write_all(&http_response_bytes(response))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    return Ok(());
+                }
+            }
+        }
+    }
     let pool_plan = pool_alias
         .and_then(|alias| plan_pool_request(&config, alias, protocol, now_ts()));
     if let Some(PoolPlan::Fenced { message }) = &pool_plan {

@@ -6,6 +6,8 @@ mod forwarding;
 mod go_usage;
 mod migration;
 mod model_pools;
+mod openai_conversion;
+mod openai_sse;
 mod quota;
 mod runtime_http;
 mod selection;

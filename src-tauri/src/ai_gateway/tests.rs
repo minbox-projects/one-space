@@ -39,6 +39,7 @@ mod anthropic_messages;
 mod anthropic_conversion;
 mod claude_terminal_sync;
 mod model_pools;
+mod openai_conversion;
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(

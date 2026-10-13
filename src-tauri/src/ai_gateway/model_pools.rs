@@ -137,6 +137,26 @@ pub(in crate::ai_gateway) struct ResolvedCandidate {
     pub(in crate::ai_gateway) cooling_until: Option<u64>,
 }
 
+/// Whether a stored candidate protocol can serve an inbound OpenAI/Chat request
+/// for a model pool.
+///
+/// The ordinary selection boundary (`can_convert_from`) only accepts the same
+/// protocol or a native Anthropic target; a pool additionally admits the two
+/// OpenAI endpoints in either direction because Step 2 translates between them
+/// per attempt. Native Messages ingress never reaches here: a Messages request
+/// for a pool alias is fenced before candidate resolution.
+fn pool_ingress_supported(candidate: UpstreamProtocol, ingress: UpstreamProtocol) -> bool {
+    let candidate_openai = matches!(
+        candidate,
+        UpstreamProtocol::ChatCompletions | UpstreamProtocol::Responses
+    );
+    let ingress_openai = matches!(
+        ingress,
+        UpstreamProtocol::ChatCompletions | UpstreamProtocol::Responses
+    );
+    can_convert_from(candidate, ingress) || (candidate_openai && ingress_openai)
+}
+
 /// Resolve one pool candidate against the latest configuration.
 ///
 /// `ingress` is the inbound protocol; a candidate whose stored effective
@@ -200,7 +220,7 @@ fn resolve_candidate(
                             availability = "mapping_unavailable";
                             reason = Some("source mapping unavailable".to_string());
                         } else if ingress.is_some_and(|protocol| {
-                            !can_convert_from(identity.protocol, protocol)
+                            !pool_ingress_supported(identity.protocol, protocol)
                         }) {
                             availability = "unsupported_protocol";
                             reason = Some("protocol not supported by this endpoint".to_string());
@@ -483,21 +503,54 @@ fn pool_weighted_order(
 fn pool_probe(
     resolved: &[ResolvedCandidate],
     alias: &str,
-    protocol: UpstreamProtocol,
+    _protocol: UpstreamProtocol,
     now: u64,
 ) -> Option<ProbeCandidate> {
     // A candidate that is still cooling must not be probed; the cooldown is
     // shared across ingresses for that candidate.
-    let providers: Vec<GatewayUpstreamProvider> = resolved
-        .iter()
-        .filter(|candidate| pool_candidate_cooling(&candidate.identity).is_none())
-        .filter_map(|candidate| candidate.prepared.clone())
-        .collect();
-    if providers.is_empty() {
-        return None;
+    //
+    // Each selected candidate is probed through the ordinary eligibility
+    // predicate under its *own stored source protocol*, so a cross-OpenAI
+    // selected mapping (e.g. a Responses row reached via the Chat ingress)
+    // stays reachable without loosening the ordinary selection protocol filter
+    // or relabelling the source. The existing per-provider tie/cooldown/auth
+    // rules stay inside `find_probe_candidate`; this loop only picks the
+    // earliest candidate exactly as the ordinary single call did.
+    let mut best: Option<((u64, String, String, String), ProbeCandidate)> = None;
+    for candidate in resolved {
+        if pool_candidate_cooling(&candidate.identity).is_some() {
+            continue;
+        }
+        let Some(prepared) = candidate.prepared.as_ref() else {
+            continue;
+        };
+        let Some(probe) = find_probe_candidate(
+            std::slice::from_ref(prepared),
+            Some(alias),
+            candidate.identity.protocol,
+            &[],
+            now,
+        ) else {
+            continue;
+        };
+        let disabled_at = prepared
+            .mappings
+            .iter()
+            .filter_map(|mapping| mapping.disabled_at)
+            .min()
+            .unwrap_or(0);
+        let key = (
+            disabled_at,
+            probe.provider.id.trim().to_string(),
+            candidate.identity.local_model.trim().to_string(),
+            candidate.identity.upstream_model.trim().to_string(),
+        );
+        let replace = best.as_ref().is_none_or(|(best_key, _)| key < *best_key);
+        if replace {
+            best = Some((key, probe));
+        }
     }
-    let healthy: Vec<String> = Vec::new();
-    let mut probe = find_probe_candidate(&providers, Some(alias), protocol, &healthy, now)?;
+    let (_, mut probe) = best?;
     if let Some(identity) = probe.provider.pool_candidate.as_ref() {
         probe.target = MappingTarget::new(
             &identity.provider_id,

@@ -1426,3 +1426,277 @@ fn model_pool_upsert_validates_atomically_and_keeps_stored_unavailable_refs() {
         );
     });
 }
+
+// ===========================================================================
+// Step 2 (20261013-free-model-pool) policy integration
+//
+// These tests exercise the Step 2 request contract at the public listener and
+// command boundary: a converted Chat->Responses pool request must keep the real
+// source and the original upstream usage in exactly one terminal row, and the
+// public status DTO must keep reporting the wall-clock cooldown deadline.
+// ===========================================================================
+
+/// REQ-009 / AC-012: a converted pool request logs the public alias as
+/// `local_model` and the real provider id and upstream model, and observes the
+/// original upstream usage exactly once (no converted duplicate row).
+#[tokio::test]
+async fn pool_converted_request_logs_real_source_and_original_usage_once() {
+    let _home = temp_home("pool-converted-usage-identity");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let alias = format!("free-model-{tag}");
+    let (provider_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "resp_1",
+                "object": "response",
+                "model": "remote-r",
+                "status": "completed",
+                "output": [{
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "ok", "annotations": []}]
+                }],
+                "usage": {"input_tokens": 11, "output_tokens": 4, "total_tokens": 15}
+            }),
+        )
+    })
+    .await;
+
+    // The mapping declares `responses` while the provider default stays Chat;
+    // the candidate's stored protocol is the mapping's effective protocol.
+    let provider = pool_provider(
+        &provider_id,
+        "Provider One",
+        &provider_url,
+        vec![pool_key("key-default", "Default", "sk-upstream", true)],
+        vec![provider_mapping("local-r", "remote-r", "responses")],
+    );
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(provider_id.as_str(), "local-r", "remote-r", "responses", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = post_chat(port, &alias).await;
+    assert_eq!(status, 200, "the converted Chat->Responses pool request must succeed: {text}");
+
+    let records = wait_for_usage_logs(1).await;
+    assert_eq!(
+        records.len(),
+        1,
+        "one converted request must settle exactly one terminal row: {records:?}"
+    );
+    let row = &records[0];
+    assert_eq!(row.local_model, alias, "the public alias must be the local model: {row:?}");
+    assert_eq!(row.provider_id, provider_id, "the real provider id must be logged: {row:?}");
+    assert_eq!(row.upstream_model, "remote-r", "the real upstream model must be logged: {row:?}");
+    assert_eq!(row.result, UsageResult::Success, "the converted request is a success: {row:?}");
+    assert_eq!(row.status, 200, "the terminal row status must be 200: {row:?}");
+    assert_eq!(
+        row.input_tokens, 11,
+        "the original upstream input usage must be observed once: {row:?}"
+    );
+    assert_eq!(
+        row.output_tokens, 4,
+        "the original upstream output usage must be observed once: {row:?}"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// REQ-006 / AC-008: the public status DTO keeps reporting `cooling_until` as a
+/// wall-clock epoch-seconds deadline, bounded by the 60-second default and never
+/// in the past, while the internal monotonic deadline governs availability.
+#[tokio::test]
+async fn pool_candidate_status_reports_wall_clock_cooling_seconds() {
+    let _home = temp_home("pool-status-wall-clock-cooldown");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let alias = format!("free-model-{tag}");
+    let pool_id = format!("pool-{tag}");
+    let (provider_url, _log) = spawn_mock_upstream(|captured| {
+        if captured_model(captured) == "remote-limited" {
+            MockReply::JsonWithHeaders(
+                429,
+                json!({"error": {"message": "free usage limit reached"}}),
+                vec![("retry-after-ms".to_string(), "60000".to_string())],
+            )
+        } else {
+            MockReply::Json(200, json!({"id": "ok", "choices": []}))
+        }
+    })
+    .await;
+
+    let provider = pool_provider(
+        &provider_id,
+        "Provider One",
+        &provider_url,
+        vec![pool_key("key-shared", "Shared", "sk-shared", true)],
+        vec![
+            provider_mapping("local-limited", "remote-limited", "chat_completions"),
+            provider_mapping("local-ok", "remote-ok", "chat_completions"),
+        ],
+    );
+    let pool = json!({
+        "id": pool_id,
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(provider_id.as_str(), "local-limited", "remote-limited", "chat_completions", Some(100)),
+            pool_candidate(provider_id.as_str(), "local-ok", "remote-ok", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = post_chat(port, &alias).await;
+    assert_eq!(status, 200, "the sibling must serve the limited candidate: {text}");
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs();
+    let statuses =
+        crate::ai_gateway::commands::ai_gateway_model_pools_status().expect("pool status");
+    let pool = statuses
+        .iter()
+        .find(|pool| pool.id == pool_id)
+        .expect("the pool status must be reported");
+    let limited = pool
+        .candidates
+        .iter()
+        .find(|candidate| candidate.upstream_model == "remote-limited")
+        .expect("the limited candidate status must be reported");
+    let until = limited
+        .cooling_until
+        .expect("a 60s retry-after-ms must report a cooldown deadline");
+    assert!(
+        until >= now,
+        "the wall-clock deadline must not be in the past: until={until} now={now}"
+    );
+    assert!(
+        until <= now + 60,
+        "the wall-clock deadline must stay inside the 60s boundary: until={until} now={now}"
+    );
+    assert!(!limited.ready, "a cooling candidate must not be ready: {limited:?}");
+
+    stop_server().await.expect("stop the listener");
+}
+
+// ===========================================================================
+// Review-repair (2026-10-13): a selected cross-protocol mapping must still be
+// reachable through the pool's half-open probe (REQ-002/REQ-007).
+// ===========================================================================
+
+/// A pool whose only selected candidate is an auto-disabled `responses` mapping,
+/// reached through the Chat ingress, must probe that exact stored mapping once
+/// (under its own protocol), clear the real row health and never touch an
+/// ordinary unselected Chat default.
+#[tokio::test]
+async fn pool_cross_protocol_probe_only_candidate_serves_selected_mapping() {
+    let _home = temp_home("pool-cross-protocol-probe");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let default_id = format!("p-default-{tag}");
+    let alias = format!("free-model-{tag}");
+    let (probe_url, probe_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "resp_probe",
+                "object": "response",
+                "model": "remote-r",
+                "status": "completed",
+                "output": [{"id": "m", "type": "message", "role": "assistant", "status": "completed",
+                    "content": [{"type": "output_text", "text": "ok", "annotations": []}]}],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            }),
+        )
+    })
+    .await;
+    let (default_url, default_log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ordinary"}))).await;
+
+    let mut disabled = provider_mapping("local-r", "remote-r", "responses");
+    disabled["auto_disabled"] = json!(true);
+    disabled["disabled_reason"] = json!("HTTP 500 upstream error");
+    disabled["disabled_at"] = json!(1);
+    disabled["consecutive_failures"] = json!(3);
+
+    let provider = pool_provider(
+        &provider_id,
+        "Probe Provider",
+        &probe_url,
+        vec![pool_key("key-default", "Default", "sk-probe", true)],
+        vec![disabled],
+    );
+    let mut unselected = pool_provider(
+        &default_id,
+        "Ordinary Provider",
+        &default_url,
+        vec![pool_key("key-default", "Default", "sk-default", true)],
+        vec![],
+    );
+    unselected["default_model"] = json!("remote-default");
+
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(provider_id.as_str(), "local-r", "remote-r", "responses", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider, unselected], vec![pool]));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = post_chat(port, &alias).await;
+    assert_eq!(
+        status, 200,
+        "the cross-protocol selected probe must serve the pool: {text}"
+    );
+
+    let calls = probe_log.lock().expect("probe log").clone();
+    assert_eq!(calls.len(), 1, "exactly one selected probe: {text}");
+    assert_eq!(
+        calls[0].path, "/v1/responses",
+        "the probe must use the selected mapping's stored protocol: {text}"
+    );
+    assert!(
+        default_log.lock().expect("default log").is_empty(),
+        "the unselected default must receive zero calls"
+    );
+
+    let stored = crate::ai_gateway::storage::read_config().expect("read config");
+    let provider = stored
+        .providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .expect("the probed provider must persist");
+    assert!(
+        !provider.mappings[0].auto_disabled,
+        "a successful probe must clear the real row health: {:?}",
+        provider.mappings[0]
+    );
+    assert_eq!(
+        provider.mappings[0].consecutive_failures, 0,
+        "a successful probe must reset the real row failure counter"
+    );
+
+    stop_server().await.expect("stop the listener");
+}

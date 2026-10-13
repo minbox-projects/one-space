@@ -1,4 +1,5 @@
 use super::anthropic::{convert_request, is_conversion_path, is_messages_path, DEFAULT_ANTHROPIC_VERSION};
+use super::openai_conversion;
 use super::{GatewayUpstreamProvider, UpstreamProtocol};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
@@ -108,10 +109,24 @@ fn build_request(
 ) -> Result<reqwest::RequestBuilder, String> {
     let converted = upstream_protocol == UpstreamProtocol::AnthropicMessages
         && is_conversion_path(path);
-    let upstream_path = if converted { "/v1/messages" } else { path };
+    // A prepared model-pool candidate may declare the opposite OpenAI endpoint
+    // from the client; that body must be translated to the candidate's protocol.
+    let openai_converted = provider.pool_candidate.is_some()
+        && openai_conversion::is_openai_path(path)
+        && upstream_protocol != UpstreamProtocol::AnthropicMessages
+        && openai_conversion::client_protocol(path) != Some(upstream_protocol);
+    let upstream_path = if converted {
+        "/v1/messages"
+    } else if openai_converted {
+        openai_conversion::endpoint_path(upstream_protocol)
+    } else {
+        path
+    };
     let url = join_url(&provider.base_url, upstream_path);
     let rewritten = if converted {
         convert_request(path, body, model)?
+    } else if openai_converted {
+        openai_conversion::convert_request(path, body, model, upstream_protocol)?
     } else {
         rewrite_body_model(body, model)?
     };

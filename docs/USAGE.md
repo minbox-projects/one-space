@@ -683,14 +683,17 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 - 协议用错时（例如用 `/chat/completions` 调用只走 `/responses` 的模型），返回的 `502` 消息会指出该模型应走的 endpoint；流式请求返回的是同一错误对象的 `200` SSE 事件
 - 只有 `POST /v1/chat/completions`、`POST /v1/responses` 与 `POST /v1/messages` 会被转发；`GET /v1/models` 只返回本地模型名并集，不请求上游；其他路径或方法返回 `404`
 
-模型池（Model Pool，后端基线）：
+模型池（Model Pool）：
 
 - 网关现在支持把多个已配置的来源映射汇成一个对外模型名。一个模型池持有自己的公共 `model`（调用方请求的模型名）与候选列表，每个候选精确引用某个上游服务商一条既有的「本地模型 → 远端模型」映射及其生效协议，并可带 1–100 的整数权重（默认 1）；池记录只保存这些引用，不会复制或额外保存服务商密钥与地址
 - 请求命中当前池的公共模型名时，网关只在该池选中的候选内按权重轮转（每次转发仍落在候选的真实来源服务商与上游模型上记账），不会回落到任何普通来源或默认模型；映射被禁用、服务商被禁用或没有可用密钥、协议不一致的候选不参与
 - 某个候选因模型自身的额度类失败（例如结构化免费额度上限）被暂时冷却时，冷却只作用于该候选，不标记共享密钥，也不影响同一池的其他候选；显式账户余额/额度耗尽与凭据问题仍按既有密钥与映射策略处理
 - 把池的公共模型名改掉或删除池后，旧名字会被记为退役别名并继续拒绝服务（fail-closed），直到新池重新使用它；普通服务商映射不能占用正在使用或已退役的池别名
 - 原生 Anthropic Messages 入口（`/v1/messages`）不服务池别名，会按既有 Anthropic 错误信封拒绝，且不会回落到普通来源
-- 当前步骤只交付后端路由与加密配置边界，尚无对应的管理界面或终端工具同步；需要配置时通过网关后端命令维护。回退到旧版本前，请保留同一 profile 的加密配置与匹配的密钥材料，旧写入可能丢弃模型池与退役别名字段
+- 请求命中的池候选存储的 OpenAI 协议与调用方不同（例如用 `/chat/completions` 调用存储为 Responses 的候选，或反向）时，网关会把请求、非流式 JSON 响应与 SSE 流在两种 OpenAI 协议间双向转换，并把调用方自己的协议与池公共模型名还给它；同协议候选也会被改写为公共模型名。转换只覆盖公共文本/工具契约：完整无状态文本/工具历史、system/developer 指令、函数 schema、tool choice 与并行控制、调用 id/参数/结果，采样控制为 `temperature` 与 `top_p`，输出上限 Chat 用 `max_completion_tokens`（优先于 `max_tokens`）、Responses 用 `max_output_tokens`，上限为非负整数（含 0），省略即省略
+- 便携契约在任何候选选择之前校验，无法忠实转换的字段以点名字段的 `400` 拒绝且不发起上游调用：Chat 的 `stop`、`frequency_penalty`、`presence_penalty`、`seed`、`logit_bias`、`logprobs`、`n>1`、非空推理选项、图片/文件/音频输入、未知 `stream_options` 成员与未知字段；Responses 的 `previous_response_id`、`conversation`、`truncation`、`include`、`logprobs`、`n>1`、非空 `reasoning`、托管工具、非文本输入与未知字段；`store`/`background` 为 `true` 时按字段拒绝、`false`（或缺省）允许；输出格式只允许缺省或纯文本，`json_object`/`json_schema` 等按格式字段拒绝。Chat 的布尔 `stream_options.include_usage: true` 受支持：转换后的 Chat 流会带上终止用量，但网关绝不向上游注入该标志。当池至少含一个原生 Anthropic Messages 候选时，`strict: true` 的函数控制会在选择前按字段拒绝（既有 Messages 适配器无法承载），`strict: false` 仍接受
+- 转换后的流是增量的：按最早的 LF/CRLF 事件边界解析、容忍跨 UTF-8/事件/工具参数的碎片、保留文本与工具的到达顺序和稳定身份，Chat 成功恰好一个 `data: [DONE]`，Responses 成功以 `response.completed` 结束；上游畸形帧、带内错误或不完整完成绝不冒充成功，写出首个客户端字节后失败按调用方协议报错且不重放
+- 当前这些步骤交付后端路由、加密配置边界与池专属的 OpenAI Chat/Responses 双向转换，尚无对应的管理界面或终端工具同步；需要配置时通过网关后端命令维护。回退到旧版本前，请保留同一 profile 的加密配置与匹配的密钥材料，旧写入可能丢弃模型池与退役别名字段
 
 ### 13.4 用量统计与请求日志
 

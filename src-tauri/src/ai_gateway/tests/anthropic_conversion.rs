@@ -2651,3 +2651,231 @@ async fn blank_conversion_text_blocks_are_dropped_or_rejected() {
     stop_server().await.expect("stop the listener");
     drop(home);
 }
+
+// ---------------------------------------------------------------------------
+// Step 2 (20261013-free-model-pool): a selected Messages candidate reached
+// through the pool boundary reuses this adapter and the portable field matrix
+// ---------------------------------------------------------------------------
+
+/// REQ-005 / REQ-007: a pool whose selected candidate is an `anthropic_messages`
+/// mapping must reject a nonportable Chat field (here `stop`) before any
+/// upstream attempt, using the pool's portable contract rather than silently
+/// forwarding it through the Messages adapter.
+#[tokio::test]
+async fn pool_messages_candidate_rejects_nonportable_chat_field_before_attempt() {
+    let _home = temp_home("pool-messages-nonportable-field");
+    let port = free_port().await;
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let provider_id = format!("p-{tag}");
+    let local = format!("local-{tag}");
+    let upstream = format!("remote-{tag}");
+    let alias = format!("free-model-{tag}");
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            anthropic_message(
+                json!([{"type": "text", "text": "ok"}]),
+                "end_turn",
+                json!({"input_tokens": 1, "output_tokens": 1}),
+            ),
+        )
+    })
+    .await;
+
+    let provider = anthropic_provider_value(&provider_id, &upstream_url, &local, &upstream, UPSTREAM_SECRET);
+    let mut config = raw_config(port, vec![provider]);
+    config["model_pools"] = json!([{
+        "id": format!("pool-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [{
+            "provider_id": provider_id,
+            "local_model": local,
+            "upstream_model": upstream,
+            "protocol": "anthropic_messages",
+            "weight": 1,
+        }],
+    }]);
+    config["model_pool_reserved_models"] = json!([]);
+    write_raw_gateway_config(&config);
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({
+            "model": alias,
+            "messages": [{"role": "user", "content": "hi"}],
+            "stop": "STOP",
+        })),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "a nonportable pool field must be rejected before the Messages conversion: {text}"
+    );
+    assert!(
+        text.to_ascii_lowercase().contains("stop"),
+        "the 400 must name the offending field: {text}"
+    );
+    assert_eq!(
+        captured_len(&log),
+        0,
+        "no upstream attempt may run before the pool field validation"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// REQ-004: a selected `anthropic_messages` candidate reached through the pool's
+/// Responses ingress still uses the existing adapter and returns the public
+/// alias with the real source in accounting.
+#[tokio::test]
+async fn pool_messages_candidate_serves_responses_ingress_with_public_alias() {
+    let _home = temp_home("pool-messages-responses-ingress");
+    let port = free_port().await;
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let provider_id = format!("p-{tag}");
+    let local = format!("local-{tag}");
+    let upstream = format!("remote-{tag}");
+    let alias = format!("free-model-{tag}");
+    let (upstream_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            anthropic_message(
+                json!([{"type": "text", "text": "ok"}]),
+                "end_turn",
+                json!({"input_tokens": 2, "output_tokens": 3}),
+            ),
+        )
+    })
+    .await;
+
+    let provider = anthropic_provider_value(&provider_id, &upstream_url, &local, &upstream, UPSTREAM_SECRET);
+    let mut config = raw_config(port, vec![provider]);
+    config["model_pools"] = json!([{
+        "id": format!("pool-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [{
+            "provider_id": provider_id,
+            "local_model": local,
+            "upstream_model": upstream,
+            "protocol": "anthropic_messages",
+            "weight": 1,
+        }],
+    }]);
+    config["model_pool_reserved_models"] = json!([]);
+    write_raw_gateway_config(&config);
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({
+            "model": alias,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        })),
+    )
+    .await;
+    assert_eq!(status, 200, "the pool Messages candidate must serve the Responses ingress: {text}");
+    let body: Value = serde_json::from_str(&text).expect("a Responses JSON body");
+    assert_eq!(body["object"], "response", "the caller keeps its Responses shape: {text}");
+    assert_eq!(body["model"], alias, "the public pool alias must be returned: {text}");
+
+    stop_server().await.expect("stop the listener");
+}
+
+// ===========================================================================
+// Review-repair (2026-10-13): a selected Messages candidate cannot represent
+// the OpenAI `strict` tool control, so a pool request that supplies it must be
+// rejected by name before any attempt (REQ-005/REQ-007).
+// ===========================================================================
+
+/// `strict: true` on a function tool is not representable by the Messages
+/// adapter; a pool that may select an `anthropic_messages` candidate must reject
+/// it with a field-named 400 instead of silently dropping it.
+#[tokio::test]
+async fn pool_messages_candidate_rejects_strict_tool_control_before_attempt() {
+    let _home = temp_home("pool-messages-strict-tool");
+    let port = free_port().await;
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let provider_id = format!("p-{tag}");
+    let local = format!("local-{tag}");
+    let upstream = format!("remote-{tag}");
+    let alias = format!("free-model-{tag}");
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            anthropic_message(
+                json!([{"type": "text", "text": "ok"}]),
+                "end_turn",
+                json!({"input_tokens": 1, "output_tokens": 1}),
+            ),
+        )
+    })
+    .await;
+
+    let provider =
+        anthropic_provider_value(&provider_id, &upstream_url, &local, &upstream, UPSTREAM_SECRET);
+    let mut config = raw_config(port, vec![provider]);
+    config["model_pools"] = json!([{
+        "id": format!("pool-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [{
+            "provider_id": provider_id,
+            "local_model": local,
+            "upstream_model": upstream,
+            "protocol": "anthropic_messages",
+            "weight": 1,
+        }],
+    }]);
+    config["model_pool_reserved_models"] = json!([]);
+    write_raw_gateway_config(&config);
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({
+            "model": alias,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "weather",
+                    "description": "weather",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+                    "strict": true,
+                }
+            }],
+            "tool_choice": "auto",
+        })),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "a selected Messages candidate cannot represent `strict`; reject it before selection: {text}"
+    );
+    assert!(
+        text.to_ascii_lowercase().contains("strict"),
+        "the 400 must name strict: {text}"
+    );
+    assert_eq!(
+        captured_len(&log),
+        0,
+        "no upstream attempt may run before the strict rejection"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
