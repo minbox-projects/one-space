@@ -14,7 +14,7 @@ Status: implemented
 
 状态是本次决策唯一新增的部分。未命中额度消息分类器的 HTTP 400 或 402 保持 `FailureClass::ReturnToClient` 且不产生 key 标记；401 与带凭据文本的 403 保持 `authentication`；无额度文本的裸限流 429 仍在同一趟内轮换且不持久化任何标记；网络错误、5xx、404 与其他 4xx 保持此前行为；首字节写出后的流式失败保持截断路径且不标记任何内容。由于分类器基于关键词并与既有 429 处理共用，正文含额度关键词但并非账号耗尽的 400（例如 `insufficient permissions`）也会走 key 标记路径；这一已接受的宽泛度由下方未改动的恢复路径界定。
 
-恢复不变。由该信号产生的额度标记只通过 `KEY_QUOTA_MARK_TTL_SECS = 1800` 的正常列表顺序选择（选中即清除、仍然耗尽则重新标记）、没有可用 key 时唯一一次 `KEY_PROBE_COOLDOWN_SECS = 60` 半开探测、或 `ai_gateway_reenable_provider_key` 恢复。没有新增任何 TTL、探测、后台流量或手动路径，且 `enabled` 标志、映射行、服务商状态、价格、终端同步与用量数据库 schema 均未被触碰。
+对 `daily_reset = false` 的 key 而言恢复不变。由该信号产生的额度标记只通过 `KEY_QUOTA_MARK_TTL_SECS = 1800` 的正常列表顺序选择（选中即清除、仍然耗尽则重新标记）、没有可用 key 时唯一一次 `KEY_PROBE_COOLDOWN_SECS = 60` 半开探测、或 `ai_gateway_reenable_provider_key` 恢复。`daily_reset` key 改为在下一个 UTC+8 自然日经正常选择与进程扫描恢复并被排除出探测（见 [Gateway Daily-Reset Keys Recover at the Next UTC+8 Day Boundary and the Editor Replaces Reordering with a Compact Daily-Reset Control](../feature/2026-10-13-ai-gateway-key-daily-reset.md)）。没有新增任何 TTL、探测、后台流量或手动路径，且 `enabled` 标志、映射行、服务商状态、价格、终端同步与用量数据库 schema 均未被触碰。
 
 ## Alternatives considered
 
@@ -27,8 +27,8 @@ Status: implemented
 
 - 额度耗尽的 HTTP 400/402/429 响应是 key 域额度失败：所尝试的 key 被标记并持久化，请求立即轮换到下一个可用 key 或候选，只要还有候选可服务就绝不把上游错误回传。
 - 其余判定边界全部不变：无额度文本的 400/402 保持回传调用方且不标记，401 与带凭据文本的 403 保持 authentication，裸 429 在同一趟内轮换且不持久化，网络/5xx/404/其他 4xx 保持其类别，流式保持首字节边界。
-- 恢复未被触碰：1800 秒 TTL 重新选择、唯一一次 60 秒探测与 `ai_gateway_reenable_provider_key` 是仅有的路径，标记不改变任何 `enabled` 标志、映射行、服务商状态、价格、终端同步或用量 schema。
+- 对 `daily_reset = false` 的 key 而言恢复未被触碰：1800 秒 TTL 重新选择、唯一一次 60 秒探测与 `ai_gateway_reenable_provider_key` 是仅有的路径，标记不改变任何 `enabled` 标志、映射行、服务商状态、价格、终端同步或用量 schema。
 - 可见表面是既有的服务商卡片 marked-key 区块，带有既有 `quota` 状态标签、标记时间、脱敏原因与重新启用控件；前端类型、组件与 i18n 键均无变化。
 - 验证：`src-tauri/src/ai_gateway/tests.rs` 中的行为套件覆盖额度 400 的标记与回退、双 key 轮换、全部标记跳过及其 `no usable upstream key (1 quota exhausted)` 摘要、无额度 400 反例、带与不带命中消息的 400/402/429 分类矩阵与关键词宽泛度用例，以及不变的 TTL、探测与手动重新启用回归套件；`cargo test --manifest-path src-tauri/Cargo.toml --lib ai_gateway` 以 0 退出且 602 个测试通过，前端 AI 网关回归 505 个测试通过。
-- Supersession（取代评估）：部分取代。[Gateway Key Pool Rotation Is Ordered, Probe-Limited and Manual-Only for Auth](../architecture/2026-09-24-gateway-key-pool-rotation.md)、[Gateway Key Health Rotates Bare 429s, Recovers Quota Marks after a TTL, Retries a Single Candidate and Pins the Query Source Key](../architecture/2026-09-25-gateway-key-health-lifecycle.md) 与 [Gateway Key Authentication Marks Are Credential-Scoped and Surfaced per Provider](2026-09-28-gateway-key-failure-scope-and-surfacing.md) 被保留并交叉链接；本记录只取代它们「命中额度消息分类器只在 HTTP 429 标记 key」的陈述，改为 HTTP 400/402/429 的状态加额度消息规则，而有序选择、auth/quota 持久标记、裸 429 轮换、TTL 与探测恢复、凭据限定的 403 规则、诊断与卡片操作全部继续有效。
+- Supersession（取代评估）：部分取代。[Gateway Key Pool Rotation Is Ordered, Probe-Limited and Manual-Only for Auth](../architecture/2026-09-24-gateway-key-pool-rotation.md)、[Gateway Key Health Rotates Bare 429s, Recovers Quota Marks after a TTL, Retries a Single Candidate and Pins the Query Source Key](../architecture/2026-09-25-gateway-key-health-lifecycle.md) 与 [Gateway Key Authentication Marks Are Credential-Scoped and Surfaced per Provider](2026-09-28-gateway-key-failure-scope-and-surfacing.md) 被保留并交叉链接；本记录只取代它们「命中额度消息分类器只在 HTTP 429 标记 key」的陈述，改为 HTTP 400/402/429 的状态加额度消息规则，而有序选择、auth/quota 持久标记、裸 429 轮换、TTL 与探测恢复、凭据限定的 403 规则、诊断与卡片操作全部继续有效。本记录另由 [Gateway Daily-Reset Keys Recover at the Next UTC+8 Day Boundary and the Editor Replaces Reordering with a Compact Daily-Reset Control](../feature/2026-10-13-ai-gateway-key-daily-reset.md) 部分取代：该记录只取代其对 daily-enabled key 的恢复陈述（`daily_reset` 额度标记在下一个 UTC+8 日边界恢复，而非 1800 秒 TTL，且被排除出探测）；状态加额度消息分类、有序选择、auth/quota 持久标记、裸 429 轮换、legacy TTL 与探测、凭据限定的 403 规则、诊断与卡片操作全部继续有效。
 - `MEMORY.md` 与 `ai-gateway-backend` 导航条目在同一变更中更新了扩展后的分类及其边界，`navigation.md` 已按权威 JSON 重新生成。

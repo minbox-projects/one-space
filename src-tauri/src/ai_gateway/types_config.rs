@@ -242,6 +242,11 @@ pub struct UpstreamKey {
     pub value: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// User intent: this key becomes eligible again at the next UTC+8 natural
+    /// day boundary after a quota mark. Independent from the runtime mark and
+    /// always serialized; a stored record without the field reads as `false`.
+    #[serde(default)]
+    pub daily_reset: bool,
     #[serde(default)]
     pub auto_marked: bool,
     #[serde(default)]
@@ -259,6 +264,7 @@ impl Default for UpstreamKey {
             name: String::new(),
             value: String::new(),
             enabled: true,
+            daily_reset: false,
             auto_marked: false,
             failure_kind: None,
             marked_at: None,

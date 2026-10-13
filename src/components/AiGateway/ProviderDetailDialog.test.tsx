@@ -1932,6 +1932,89 @@ describe("ProviderDetailDialog 运行时字段合并", () => {
     expect(saved.mappings[1].auto_disabled).toBeFalsy();
     expect(saved.mappings.some((m) => m.local_model === "no-match")).toBe(false);
   });
+
+  it("runtime_provider_refresh_updates_key_marks_without_replacing_unsaved_key_drafts", async () => {
+    const user = userEvent.setup();
+    const provider = makeProvider({
+      id: "p1",
+      keys: [
+        providerKey({ id: "k1", name: "Primary", value: "sk-one", enabled: true }),
+        providerKey({ id: "k2", name: "Backup", value: "sk-two", enabled: true }),
+      ],
+    });
+
+    const { applyRuntime } = renderRuntimeDialog({ provider });
+
+    // Unsaved edits across user-owned fields: edit key via modal, and fast switches on card.
+    await user.click(screen.getByTestId("ai-gateway-key-0"));
+    const nameInput = screen.getByTestId("ai-gateway-key-dialog-name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Primary Renamed");
+    const valInput = screen.getByTestId("ai-gateway-key-dialog-value");
+    await user.clear(valInput);
+    await user.type(valInput, "sk-renamed");
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-daily-reset"));
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
+
+    await user.click(screen.getByRole("switch", { name: "Enable key 1" }));
+
+    await user.click(screen.getByTestId("ai-gateway-key-1"));
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-daily-reset"));
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
+
+    // Event-equivalent snapshot refresh: same ids, runtime marks only.
+    await applyRuntime(
+      makeProvider({
+        id: "p1",
+        keys: [
+          providerKey({
+            id: "k1",
+            name: "Runtime Primary",
+            value: "sk-runtime-1",
+            enabled: true,
+            daily_reset: false,
+            auto_marked: true,
+            failure_kind: "quota",
+            marked_at: 1_700_000_000,
+          }),
+          providerKey({
+            id: "k2",
+            name: "Runtime Backup",
+            value: "sk-runtime-2",
+            enabled: false,
+            daily_reset: false,
+          }),
+        ],
+      }),
+    );
+
+    // Only the matching runtime mark merges in.
+    await waitFor(() =>
+      expect(screen.getByTestId("ai-gateway-reenable-key-0")).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByTestId("ai-gateway-reenable-key-1"),
+      "未携带运行时标记的第 2 行不应出现重新启用控件",
+    ).not.toBeInTheDocument();
+
+    // Unsaved user drafts survive the refresh untouched.
+    expect(screen.getByTestId("ai-gateway-key-name-0")).toHaveTextContent("Primary Renamed");
+    expect(
+      screen.getByTestId("ai-gateway-key-name-1"),
+      "第 2 行未保存的名称不应被运行时快照替换",
+    ).toHaveTextContent("Backup");
+    expect(
+      screen.getByRole("switch", { name: "Enable key 1" }),
+      "未保存的启用状态应保留",
+    ).toHaveAttribute("aria-checked", "false");
+    expect(
+      screen.getByTestId("ai-gateway-key-daily-reset-badge-0"),
+      "未保存的 daily reset 编辑应保留徽标",
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("ai-gateway-key-daily-reset-badge-1"),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("ProviderDetailDialog 批量启用/禁用映射", () => {
@@ -2350,11 +2433,13 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
     provider,
     onSave = vi.fn(),
     onReenableKey = vi.fn(),
+    onOpenChange = vi.fn(),
     busy = false,
   }: {
     provider: GatewayUpstreamProvider;
     onSave?: ReturnType<typeof vi.fn>;
     onReenableKey?: ReturnType<typeof vi.fn>;
+    onOpenChange?: ReturnType<typeof vi.fn>;
     busy?: boolean;
   }) {
     const props = {
@@ -2364,10 +2449,10 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
       onSave,
       onReenableKey,
       onDelete: vi.fn(),
-      onOpenChange: vi.fn(),
+      onOpenChange,
     } as unknown as ComponentProps<typeof ProviderDetailDialog>;
     const view = renderWithProviders(<ProviderDetailDialog {...props} />);
-    return { ...view, onSave, onReenableKey };
+    return { ...view, onSave, onReenableKey, onOpenChange };
   }
 
   function savedKeys(onSave: ReturnType<typeof vi.fn>): RawProviderKey[] {
@@ -2382,7 +2467,7 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
     const { onSave } = renderKeyDialog({ provider: makeProvider({ keys: [] }) });
 
     await user.click(screen.getByTestId("ai-gateway-add-key"));
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
 
     expect(onSave).not.toHaveBeenCalled();
     expect(screen.getByTestId("ai-gateway-key-name-error")).toHaveTextContent(
@@ -2395,8 +2480,8 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
     const { onSave } = renderKeyDialog({ provider: makeProvider({ keys: [] }) });
 
     await user.click(screen.getByTestId("ai-gateway-add-key"));
-    await user.type(screen.getByTestId("ai-gateway-key-name-0"), "Backup");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.type(screen.getByTestId("ai-gateway-key-dialog-name"), "Backup");
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
 
     expect(onSave).not.toHaveBeenCalled();
     expect(screen.getByTestId("ai-gateway-key-value-error")).toHaveTextContent(
@@ -2404,9 +2489,96 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
     );
   });
 
-  it("保存按编辑器顺序提交完整有序密钥列表", async () => {
+  it("keyRowsExposeIndependentDailyResetControlsAndSavePreservesIdentityAndOrder", async () => {
     const user = userEvent.setup();
     const { onSave } = renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({
+            id: "k1",
+            name: "Primary",
+            value: "sk-one",
+            daily_reset: true,
+          }),
+          // Older record without the field: must load as daily reset off.
+          providerKey({ id: "k2", name: "Backup", value: "sk-two" }),
+        ],
+      }),
+    });
+
+    // 既有 daily_reset=true 的密钥卡片展示日重置徽标，未开启的不展示
+    expect(
+      screen.getByTestId("ai-gateway-key-daily-reset-badge-0"),
+      "既有 daily_reset=true 的密钥卡片应显示日重置徽标",
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("ai-gateway-key-daily-reset-badge-1"),
+      "缺少 daily_reset 字段的旧记录不应显示日重置徽标",
+    ).not.toBeInTheDocument();
+
+    // The former up/down reorder controls must be gone from every row.
+    for (const testId of [
+      "ai-gateway-key-up-0",
+      "ai-gateway-key-down-0",
+      "ai-gateway-key-up-1",
+      "ai-gateway-key-down-1",
+    ]) {
+      expect(
+        screen.queryByTestId(testId),
+        `${testId} 不应再存在于密钥行中`,
+      ).not.toBeInTheDocument();
+    }
+
+    // Toggling in modal for row 0 (turn off) and row 1 (turn on)
+    await user.click(screen.getByTestId("ai-gateway-key-0"));
+    const resetSwitch0 = screen.getByTestId("ai-gateway-key-dialog-daily-reset");
+    expect(resetSwitch0).toHaveAttribute("aria-checked", "true");
+    await user.click(resetSwitch0);
+    expect(resetSwitch0).toHaveAttribute("aria-checked", "false");
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
+
+    await user.click(screen.getByTestId("ai-gateway-key-1"));
+    const resetSwitch1 = screen.getByTestId("ai-gateway-key-dialog-daily-reset");
+    expect(resetSwitch1).toHaveAttribute("aria-checked", "false");
+    await user.click(resetSwitch1);
+    expect(resetSwitch1).toHaveAttribute("aria-checked", "true");
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
+
+    expect(screen.queryByTestId("ai-gateway-key-daily-reset-badge-0")).not.toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-key-daily-reset-badge-1")).toBeInTheDocument();
+
+    // A newly appended row via modal defaults off and stays last.
+    await user.click(screen.getByTestId("ai-gateway-add-key"));
+    await user.type(screen.getByTestId("ai-gateway-key-dialog-name"), "Third");
+    await user.type(screen.getByTestId("ai-gateway-key-dialog-value"), "sk-three");
+    expect(
+      screen.getByTestId("ai-gateway-key-dialog-daily-reset"),
+      "新增密钥弹窗中应默认关闭 daily reset",
+    ).toHaveAttribute("aria-checked", "false");
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
+
+    expect(
+      screen.queryByTestId("ai-gateway-key-daily-reset-badge-2"),
+      "新增密钥卡片默认不应显示日重置徽标",
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const keys = savedKeys(onSave);
+    // Stable identity and retained relative order; the appended key is last.
+    expect(keys.map((entry) => entry.id)).toEqual([
+      "k1",
+      "k2",
+      expect.stringMatching(/^new-key-/),
+    ]);
+    // Each row's daily-reset setting is independent in the save payload.
+    expect(keys.map((entry) => entry.daily_reset)).toEqual([false, true, false]);
+  });
+
+  it("provider_dialog_saved_daily_reset_settings_survive_reopen_independently", async () => {
+    const user = userEvent.setup();
+    const first = renderKeyDialog({
       provider: makeProvider({
         keys: [
           providerKey({ id: "k1", name: "Primary", value: "sk-one" }),
@@ -2415,15 +2587,83 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
       }),
     });
 
-    await user.click(screen.getByTestId("ai-gateway-key-up-1"));
+    // Toggle only the second row via modal, then save successfully.
+    await user.click(screen.getByTestId("ai-gateway-key-1"));
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-daily-reset"));
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(onSave).toHaveBeenCalledTimes(1);
-    const keys = savedKeys(onSave);
-    expect(keys.map((entry) => entry.id)).toEqual(["k2", "k1"]);
-    expect(keys.map((entry) => entry.name)).toEqual(["Backup", "Primary"]);
-    expect(keys.map((entry) => entry.value)).toEqual(["sk-two", "sk-one"]);
-    expect(keys.map((entry) => entry.enabled)).toEqual([true, true]);
+    expect(first.onSave).toHaveBeenCalledTimes(1);
+    expect(
+      savedKeys(first.onSave).map((entry) => entry.daily_reset),
+      "保存载荷应分别携带每行 daily reset 状态",
+    ).toEqual([false, true]);
+
+    const saved = first.onSave.mock.calls[0][0] as GatewayUpstreamProvider;
+    first.unmount();
+
+    // Reopening the saved provider restores each row's setting independently.
+    renderKeyDialog({ provider: saved });
+    expect(
+      screen.queryByTestId("ai-gateway-key-daily-reset-badge-0"),
+      "重开后第 1 行应无徽标",
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("ai-gateway-key-daily-reset-badge-1"),
+      "重开后第 2 行应有徽标",
+    ).toBeInTheDocument();
+  });
+
+  it("provider_dialog_unsaved_daily_reset_edit_is_not_published_on_cancel_or_failed_save", async () => {
+    const user = userEvent.setup();
+    const baseKeys = [
+      providerKey({ id: "k1", name: "Primary", value: "sk-one" }),
+    ];
+
+    // Cancel: onSave is never invoked, so the draft setting is not published.
+    const cancelled = renderKeyDialog({
+      provider: makeProvider({ keys: baseKeys }),
+    });
+    await user.click(screen.getByTestId("ai-gateway-key-0"));
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-daily-reset"));
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(cancelled.onSave).not.toHaveBeenCalled();
+    expect(cancelled.onOpenChange).toHaveBeenCalledWith(false);
+    cancelled.unmount();
+
+    // A save that resolves false keeps the dialog and the unsaved draft.
+    const resolvedFalse = renderKeyDialog({
+      provider: makeProvider({ keys: baseKeys }),
+      onSave: vi.fn().mockResolvedValue(false),
+    });
+    await user.click(screen.getByTestId("ai-gateway-key-0"));
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-daily-reset"));
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(resolvedFalse.onSave).toHaveBeenCalledTimes(1));
+    expect(resolvedFalse.onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(
+      screen.getByTestId("ai-gateway-key-daily-reset-badge-0"),
+      "失败保存后应保留草稿中的 daily reset 徽标",
+    ).toBeInTheDocument();
+    resolvedFalse.unmount();
+
+    // A rejected save also keeps the dialog and the unsaved draft.
+    const rejected = renderKeyDialog({
+      provider: makeProvider({ keys: baseKeys }),
+      onSave: vi.fn().mockRejectedValue(new Error("save failed")),
+    });
+    await user.click(screen.getByTestId("ai-gateway-key-0"));
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-daily-reset"));
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(rejected.onSave).toHaveBeenCalledTimes(1));
+    expect(rejected.onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(
+      screen.getByTestId("ai-gateway-key-daily-reset-badge-0"),
+      "被拒绝保存后应保留草稿中的 daily reset 徽标",
+    ).toBeInTheDocument();
   });
 
   it("清空既有密钥值后保存以空白值提交（后端保留已存值）", async () => {
@@ -2443,7 +2683,10 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
       }),
     });
 
-    await user.clear(screen.getByTestId("ai-gateway-key-value-0"));
+    await user.click(screen.getByTestId("ai-gateway-key-0"));
+    const valueInput = screen.getByTestId("ai-gateway-key-dialog-value");
+    await user.clear(valueInput);
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(onSave).toHaveBeenCalledTimes(1);
@@ -2471,9 +2714,11 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
       }),
     });
 
-    const valueInput = screen.getByTestId("ai-gateway-key-value-0");
+    await user.click(screen.getByTestId("ai-gateway-key-0"));
+    const valueInput = screen.getByTestId("ai-gateway-key-dialog-value");
     await user.clear(valueInput);
     await user.type(valueInput, "sk-new");
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(savedKeys(onSave)[0]).toMatchObject({ id: "k1", value: "sk-new" });
@@ -2496,9 +2741,11 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
       }),
     });
 
-    const nameInput = screen.getByTestId("ai-gateway-key-name-0");
+    await user.click(screen.getByTestId("ai-gateway-key-0"));
+    const nameInput = screen.getByTestId("ai-gateway-key-dialog-name");
     await user.clear(nameInput);
     await user.type(nameInput, "Renamed");
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(savedKeys(onSave)[0]).toMatchObject({
@@ -2627,6 +2874,71 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
     expect(onReenableKey).toHaveBeenCalledWith("p1", "k-auth");
   });
 
+  it("密钥长错误消息提供展开/收起超链接按钮，点击后展开显示完整内容且不触发编辑弹窗", async () => {
+    const user = userEvent.setup();
+    const longReason =
+      "rate limit exceeded upstream: tokens per minute (TPM) limit reached, please retry after 60s";
+    renderKeyDialog({
+      provider: makeProvider({
+        id: "p1",
+        keys: [
+          providerKey({
+            id: "k-rate",
+            name: "RateLimitedKey",
+            value: "sk-rate",
+            auto_marked: true,
+            failure_kind: "quota",
+            marked_at: 1_700_000_000,
+            reason: longReason,
+          }),
+        ],
+      }),
+    });
+
+    const reasonContainer = screen.getByTestId("ai-gateway-key-reason-0");
+    expect(reasonContainer).toHaveTextContent(longReason);
+
+    // 存在展开详情超链接按钮
+    const toggleBtn = screen.getByTestId("ai-gateway-key-reason-toggle-0");
+    expect(toggleBtn).toBeInTheDocument();
+    expect(toggleBtn).toHaveTextContent(i18n.t("aiGatewayProviderKeyExpandDetails"));
+
+    // 点击展开按钮，不弹出编辑弹窗，按钮变为收起
+    await user.click(toggleBtn);
+    expect(screen.queryByTestId("ai-gateway-key-dialog")).not.toBeInTheDocument();
+    expect(toggleBtn).toHaveTextContent(i18n.t("aiGatewayProviderKeyCollapseDetails"));
+
+    // 再次点击收起
+    await user.click(toggleBtn);
+    expect(toggleBtn).toHaveTextContent(i18n.t("aiGatewayProviderKeyExpandDetails"));
+  });
+
+  it("编辑密钥弹窗中完整显示被自动标记密钥的错误诊断信息", async () => {
+    const user = userEvent.setup();
+    const detailedReason = "Detailed upstream authentication failure: invalid Bearer token format.";
+    renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({
+            id: "k-err",
+            name: "ErrorKey",
+            value: "sk-err",
+            auto_marked: true,
+            failure_kind: "authentication",
+            marked_at: 1_700_000_000,
+            reason: detailedReason,
+          }),
+        ],
+      }),
+    });
+
+    await user.click(screen.getByTestId("ai-gateway-key-0"));
+    expect(screen.getByTestId("ai-gateway-key-dialog")).toBeInTheDocument();
+    const dialogReason = screen.getByTestId("ai-gateway-key-dialog-reason");
+    expect(dialogReason).toBeInTheDocument();
+    expect(dialogReason).toHaveTextContent(detailedReason);
+  });
+
   it("删除其中一个密钥后保存，提交载荷省略该密钥并保留另一个", async () => {
     const user = userEvent.setup();
     const { onSave } = renderKeyDialog({
@@ -2638,7 +2950,8 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
       }),
     });
 
-    await user.click(screen.getByTestId("ai-gateway-key-remove-0"));
+    await user.click(screen.getByTestId("ai-gateway-key-0"));
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-delete"));
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(onSave).toHaveBeenCalledTimes(1);
@@ -2662,19 +2975,19 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
       }),
     });
 
-    const valueInput = screen.getByTestId("ai-gateway-key-value-0") as HTMLInputElement;
-    expect(valueInput.type).toBe("password");
+    const valueEl = screen.getByTestId("ai-gateway-key-value-0");
+    expect(valueEl).toHaveTextContent("sk-s••••-123");
 
     const toggleBtn = screen.getByTestId("ai-gateway-key-toggle-visibility-0");
     expect(toggleBtn).toBeInTheDocument();
     expect(toggleBtn).toHaveAttribute("aria-label", "Show secret");
 
     await user.click(toggleBtn);
-    expect(valueInput.type).toBe("text");
+    expect(valueEl).toHaveTextContent("sk-secret-123");
     expect(toggleBtn).toHaveAttribute("aria-label", "Hide secret");
 
     await user.click(toggleBtn);
-    expect(valueInput.type).toBe("password");
+    expect(valueEl).toHaveTextContent("sk-s••••-123");
     expect(toggleBtn).toHaveAttribute("aria-label", "Show secret");
   });
 
@@ -2689,24 +3002,59 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
       }),
     });
 
-    const input0 = screen.getByTestId("ai-gateway-key-value-0") as HTMLInputElement;
-    const input1 = screen.getByTestId("ai-gateway-key-value-1") as HTMLInputElement;
-    expect(input0.type).toBe("password");
-    expect(input1.type).toBe("password");
+    const value0 = screen.getByTestId("ai-gateway-key-value-0");
+    const value1 = screen.getByTestId("ai-gateway-key-value-1");
+    expect(value0).toHaveTextContent("••••••••");
+    expect(value1).toHaveTextContent("••••••••");
 
     const toggleBtn0 = screen.getByTestId("ai-gateway-key-toggle-visibility-0");
     const toggleBtn1 = screen.getByTestId("ai-gateway-key-toggle-visibility-1");
 
     await user.click(toggleBtn0);
-    expect(input0.type).toBe("text");
-    expect(input1.type).toBe("password");
+    expect(value0).toHaveTextContent("sk-one");
+    expect(value1).toHaveTextContent("••••••••");
 
     await user.click(toggleBtn1);
-    expect(input0.type).toBe("text");
-    expect(input1.type).toBe("text");
+    expect(value0).toHaveTextContent("sk-one");
+    expect(value1).toHaveTextContent("sk-two");
   });
 
-  it("密钥名称输入框具有缩小宽度且单行排版不独占一行，密钥输入框占满剩余空间", () => {
+  it("密钥列表以分层卡片形式展示，包含名称、状态、快捷开关与操作按钮", () => {
+    renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({ id: "k1", name: "Primary", value: "sk-one", daily_reset: true }),
+        ],
+      }),
+    });
+
+    const container = screen.getByTestId("ai-gateway-provider-keys");
+    expect(container.className).toContain("grid");
+    expect(container.className).toContain("md:grid-cols-2");
+
+    const keyCard = screen.getByTestId("ai-gateway-key-0");
+    expect(keyCard.className).toContain("rounded-xl");
+    expect(keyCard.className).toContain("bg-card");
+    expect(keyCard.className).toContain("border");
+
+    // 头部：名称、快捷启用开关与日重置徽标
+    const nameLabel = screen.getByTestId("ai-gateway-key-name-0");
+    expect(nameLabel).toHaveTextContent("Primary");
+    expect(screen.getByTestId("ai-gateway-key-toggle-0")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-key-daily-reset-badge-0")).toBeInTheDocument();
+
+    // 凭据盒：脱敏值与复制按钮
+    expect(screen.getByTestId("ai-gateway-key-value-0")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-key-copy-0")).toBeInTheDocument();
+
+    // 底栏已移除：卡片上不再呈现日重置开关与编辑、删除按钮
+    expect(screen.queryByTestId("ai-gateway-key-daily-reset-0")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-key-edit-0")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-key-remove-0")).not.toBeInTheDocument();
+  });
+
+  it("点击密钥卡片主体弹出编辑弹窗，取消弹窗不修改卡片", async () => {
+    const user = userEvent.setup();
     renderKeyDialog({
       provider: makeProvider({
         keys: [
@@ -2715,18 +3063,136 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
       }),
     });
 
-    const keyRow = screen.getByTestId("ai-gateway-key-0");
-    expect(keyRow.className).toContain("flex items-center");
-    expect(keyRow.className).toContain("flex-nowrap");
-    expect(keyRow.className).not.toContain("flex-wrap");
+    await user.click(screen.getByTestId("ai-gateway-key-0"));
+    expect(screen.getByTestId("ai-gateway-key-dialog")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-key-dialog-name")).toHaveValue("Primary");
 
-    const nameInput = screen.getByTestId("ai-gateway-key-name-0");
-    expect(nameInput.className).toContain("shrink-0");
-    expect(nameInput.className).toContain("!w-64");
-    expect(nameInput.className).toContain("sm:!w-72");
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-cancel"));
+    await waitFor(() => {
+      expect(screen.queryByTestId("ai-gateway-key-dialog")).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId("ai-gateway-key-name-0")).toHaveTextContent("Primary");
+  });
 
-    const valueInput = screen.getByTestId("ai-gateway-key-value-0");
-    expect(valueInput.parentElement?.className).toContain("flex-1");
+  it("点击卡片上的快捷启用开关直接操作且不触发编辑弹窗", async () => {
+    const user = userEvent.setup();
+    renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({ id: "k1", name: "Primary", value: "sk-one", daily_reset: false, enabled: true }),
+        ],
+      }),
+    });
+
+    const enableSwitch = screen.getByTestId("ai-gateway-key-toggle-0");
+
+    await user.click(enableSwitch);
+    expect(enableSwitch).toHaveAttribute("aria-checked", "false");
+    expect(screen.queryByTestId("ai-gateway-key-dialog")).not.toBeInTheDocument();
+  });
+
+  it("点击密钥卡片上的复制按钮复制密文且不触发编辑弹窗", async () => {
+    const user = userEvent.setup();
+    const writeTextSpy = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: writeTextSpy },
+      configurable: true,
+      writable: true,
+    });
+
+    renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({ id: "k1", name: "Primary", value: "sk-secret-content" }),
+        ],
+      }),
+    });
+
+    const copyBtn = screen.getByTestId("ai-gateway-key-copy-0");
+    await user.click(copyBtn);
+
+    expect(writeTextSpy).toHaveBeenCalledWith("sk-secret-content");
+    expect(screen.queryByTestId("ai-gateway-key-dialog")).not.toBeInTheDocument();
+  });
+
+  it("中文下编辑密钥弹窗确认与取消按钮显示中文", async () => {
+    await i18n.changeLanguage("zh");
+    const user = userEvent.setup();
+    renderKeyDialog({
+      provider: makeProvider({
+        keys: [providerKey({ id: "k1", name: "Primary", value: "sk-one" })],
+      }),
+    });
+
+    await user.click(screen.getByTestId("ai-gateway-key-0"));
+    expect(screen.getByTestId("ai-gateway-key-dialog-confirm")).toHaveTextContent("确认");
+    expect(screen.getByTestId("ai-gateway-key-dialog-cancel")).toHaveTextContent("取消");
+    await i18n.changeLanguage("en");
+  });
+
+  it("在编辑密钥弹窗中修改日重置开关并确认后保存生效", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderKeyDialog({
+      provider: makeProvider({
+        keys: [providerKey({ id: "k1", name: "Primary", value: "sk-one", daily_reset: false })],
+      }),
+    });
+
+    // 初始状态下无日重置徽标
+    expect(screen.queryByTestId("ai-gateway-key-daily-reset-badge-0")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("ai-gateway-key-0"));
+    const resetSwitch = screen.getByTestId("ai-gateway-key-dialog-daily-reset");
+    expect(resetSwitch).toHaveAttribute("aria-checked", "false");
+    await user.click(resetSwitch);
+    expect(resetSwitch).toHaveAttribute("aria-checked", "true");
+    await user.click(screen.getByTestId("ai-gateway-key-dialog-confirm"));
+
+    // 卡片上的日重置徽标出现
+    expect(screen.getByTestId("ai-gateway-key-daily-reset-badge-0")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(savedKeys(onSave)[0].daily_reset).toBe(true);
+  });
+
+  it("在编辑密钥弹窗中点击最左侧删除按钮移除该密钥并关闭弹窗", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({ id: "k1", name: "Primary", value: "sk-one" }),
+          providerKey({ id: "k2", name: "Secondary", value: "sk-two" }),
+        ],
+      }),
+    });
+
+    await user.click(screen.getByTestId("ai-gateway-key-0"));
+    const deleteBtn = screen.getByTestId("ai-gateway-key-dialog-delete");
+    expect(deleteBtn).toBeInTheDocument();
+    await user.click(deleteBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("ai-gateway-key-dialog")).not.toBeInTheDocument();
+    });
+    // 卡片中只剩下第 2 个密钥
+    expect(screen.queryByTestId("ai-gateway-key-name-0")).toHaveTextContent("Secondary");
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(savedKeys(onSave)).toHaveLength(1);
+    expect(savedKeys(onSave)[0].id).toBe("k2");
+  });
+
+  it("新增密钥模式下弹窗底部不展示删除按钮", async () => {
+    const user = userEvent.setup();
+    renderKeyDialog({
+      provider: makeProvider({ keys: [] }),
+    });
+
+    await user.click(screen.getByTestId("ai-gateway-add-key"));
+    expect(screen.getByTestId("ai-gateway-key-dialog")).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-key-dialog-delete")).not.toBeInTheDocument();
   });
 });
 

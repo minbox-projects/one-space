@@ -38,6 +38,7 @@ mod attempt_policy;
 mod anthropic_messages;
 mod anthropic_conversion;
 mod claude_terminal_sync;
+mod daily_reset;
 mod model_pools;
 mod openai_conversion;
 mod model_pool_terminal_sync;

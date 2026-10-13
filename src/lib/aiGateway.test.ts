@@ -87,6 +87,7 @@ function providerKey(overrides: RawProviderKey = {}): RawProviderKey {
     name: "Default",
     value: "sk-provider-key",
     enabled: true,
+    daily_reset: false,
     auto_marked: false,
     failure_kind: null,
     marked_at: null,
@@ -1899,6 +1900,7 @@ describe("AI Gateway 上游密钥池契约", () => {
       "name",
       "value",
       "enabled",
+      "daily_reset",
       "auto_marked",
       "failure_kind",
       "marked_at",
@@ -1916,8 +1918,20 @@ describe("AI Gateway 上游密钥池契约", () => {
 
   it("upsert 包装函数原样传递有序 keys 数组与启用标记", async () => {
     const keys = [
-      providerKey({ id: "k1", name: "Primary", value: "sk-one", enabled: true }),
-      providerKey({ id: "k2", name: "Backup", value: "sk-two", enabled: false }),
+      providerKey({
+        id: "k1",
+        name: "Primary",
+        value: "sk-one",
+        enabled: true,
+        daily_reset: true,
+      }),
+      providerKey({
+        id: "k2",
+        name: "Backup",
+        value: "sk-two",
+        enabled: false,
+        daily_reset: false,
+      }),
     ];
     const p = provider({ id: "p1", keys });
     const saved = config({ providers: [p] });
@@ -1931,6 +1945,15 @@ describe("AI Gateway 上游密钥池契约", () => {
       }),
       prices: null,
     });
+    const invokedKeys = (
+      invokeMock.mock.calls[0][1] as {
+        provider: { keys: RawProviderKey[] };
+      }
+    ).provider.keys;
+    expect(
+      invokedKeys.map((entry) => entry.daily_reset),
+      "包装函数应把字面量载荷中的 daily_reset 原样传递",
+    ).toEqual([true, false]);
     expect(result).toBe(saved);
   });
 
