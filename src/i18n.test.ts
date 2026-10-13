@@ -563,6 +563,11 @@ describe("服务商模板自动同步通知禁用计数键移除", () => {
 const PROVIDER_KEY_POOL_I18N_KEYS = [
   "aiGatewayProviderKeys",
   "aiGatewayProviderKeyAdd",
+  "aiGatewayProviderKeyAddTitle",
+  "aiGatewayProviderKeyEditTitle",
+  "aiGatewayProviderKeyEditAria",
+  "aiGatewayKeyLeaveBlankToKeep",
+  "aiGatewayKeyStoredBackend",
   "aiGatewayProviderKeyNameAria",
   "aiGatewayProviderKeyValueAria",
   "aiGatewayProviderKeyToggleAria",
