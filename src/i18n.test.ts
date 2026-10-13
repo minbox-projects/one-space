@@ -566,8 +566,9 @@ const PROVIDER_KEY_POOL_I18N_KEYS = [
   "aiGatewayProviderKeyNameAria",
   "aiGatewayProviderKeyValueAria",
   "aiGatewayProviderKeyToggleAria",
-  "aiGatewayProviderKeyMoveUpAria",
-  "aiGatewayProviderKeyMoveDownAria",
+  "aiGatewayProviderKeyDailyReset",
+  "aiGatewayProviderKeyDailyResetAria",
+  "aiGatewayProviderKeyDailyResetHint",
   "aiGatewayProviderKeyRemoveAria",
   "aiGatewayProviderKeyReenable",
   "aiGatewayProviderKeyNameRequired",
@@ -640,6 +641,90 @@ describe("AI 网关上游密钥池国际化键", () => {
       onlyZh: zhPaths.filter((path) => !enSet.has(path)),
     }).toEqual({ onlyEn: [], onlyZh: [] });
   });
+});
+
+// ---------------------------------------------------------------------------
+// REQ-001/REQ-002 / AC-001/AC-002: per-key daily-reset copy and the removal of
+// the obsolete reorder aria labels. Exact en/zh copy is pinned.
+// ---------------------------------------------------------------------------
+
+const PROVIDER_KEY_DAILY_RESET_COPY: Record<
+  | "aiGatewayProviderKeyDailyReset"
+  | "aiGatewayProviderKeyDailyResetAria"
+  | "aiGatewayProviderKeyDailyResetHint",
+  Record<"en" | "zh", string>
+> = {
+  aiGatewayProviderKeyDailyReset: {
+    en: "Daily reset",
+    zh: "日重置",
+  },
+  aiGatewayProviderKeyDailyResetAria: {
+    en: "Daily reset for key {{index}}",
+    zh: "密钥 {{index}} 每日重置",
+  },
+  aiGatewayProviderKeyDailyResetHint: {
+    en: "When this key hits its quota, it becomes available again after the next UTC+8 midnight.",
+    zh: "该密钥额度耗尽后，将在下一个 UTC+8 零点后自动恢复可用。",
+  },
+};
+
+// REQ-002 / AC-002 guard: the key editor drops the reorder controls, so their
+// bilingual aria labels must not survive in either bundle.
+const REMOVED_PROVIDER_KEY_MOVE_KEYS = [
+  "aiGatewayProviderKeyMoveUpAria",
+  "aiGatewayProviderKeyMoveDownAria",
+] as const;
+
+describe("AI 网关密钥每日重置国际化键", () => {
+  it.each(["en", "zh"] as const)(
+    "为 %s 提供每日重置的精确文案与 UTC+8 语义",
+    (language) => {
+      for (const [key, copy] of Object.entries(PROVIDER_KEY_DAILY_RESET_COPY)) {
+        const translation = i18n.getResource(language, "translation", key);
+        expect(typeof translation, `${language}:${key} 应为字符串`).toBe(
+          "string",
+        );
+        expect(translation, `${language}:${key} 文案不匹配`).toBe(
+          copy[language],
+        );
+      }
+      expect(
+        PROVIDER_KEY_DAILY_RESET_COPY.aiGatewayProviderKeyDailyResetHint[
+          language
+        ],
+        `${language} 的提示应说明固定的 UTC+8 日界`,
+      ).toContain("UTC+8");
+    },
+  );
+
+  it("每日重置 aria 文案保留 {{index}} 并正常插值", () => {
+    for (const language of ["en", "zh"] as const) {
+      const raw = i18n.getResource(
+        language,
+        "translation",
+        "aiGatewayProviderKeyDailyResetAria",
+      ) as string;
+      expect(raw, `${language} 应保留 {{index}}`).toContain("{{index}}");
+      expect(
+        i18n.t("aiGatewayProviderKeyDailyResetAria", { index: 2 }),
+        `${language} 插值后不应残留 {{index}}`,
+      ).not.toContain("{{index}}");
+    }
+  });
+});
+
+describe("AI 网关密钥排序文案键移除", () => {
+  it.each(["en", "zh"] as const)(
+    "为 %s 移除已废止的移动密钥文案键",
+    (language) => {
+      for (const key of REMOVED_PROVIDER_KEY_MOVE_KEYS) {
+        expect(
+          i18n.t(key),
+          `${language} 中已移除键 ${key} 应回退为键名`,
+        ).toBe(key);
+      }
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

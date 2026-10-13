@@ -1932,6 +1932,82 @@ describe("ProviderDetailDialog 运行时字段合并", () => {
     expect(saved.mappings[1].auto_disabled).toBeFalsy();
     expect(saved.mappings.some((m) => m.local_model === "no-match")).toBe(false);
   });
+
+  it("runtime_provider_refresh_updates_key_marks_without_replacing_unsaved_key_drafts", async () => {
+    const user = userEvent.setup();
+    const provider = makeProvider({
+      id: "p1",
+      keys: [
+        providerKey({ id: "k1", name: "Primary", value: "sk-one", enabled: true }),
+        providerKey({ id: "k2", name: "Backup", value: "sk-two", enabled: true }),
+      ],
+    });
+
+    const { applyRuntime } = renderRuntimeDialog({ provider });
+
+    // Unsaved edits across every user-owned field: name, value, enabled, daily_reset.
+    await user.clear(screen.getByTestId("ai-gateway-key-name-0"));
+    await user.type(screen.getByTestId("ai-gateway-key-name-0"), "Primary Renamed");
+    await user.clear(screen.getByTestId("ai-gateway-key-value-0"));
+    await user.type(screen.getByTestId("ai-gateway-key-value-0"), "sk-renamed");
+    await user.click(screen.getByRole("switch", { name: "Enable key 1" }));
+    await user.click(screen.getByRole("switch", { name: "Daily reset for key 1" }));
+    await user.click(screen.getByRole("switch", { name: "Daily reset for key 2" }));
+
+    // Event-equivalent snapshot refresh: same ids, runtime marks only.
+    await applyRuntime(
+      makeProvider({
+        id: "p1",
+        keys: [
+          providerKey({
+            id: "k1",
+            name: "Runtime Primary",
+            value: "sk-runtime-1",
+            enabled: true,
+            daily_reset: false,
+            auto_marked: true,
+            failure_kind: "quota",
+            marked_at: 1_700_000_000,
+          }),
+          providerKey({
+            id: "k2",
+            name: "Runtime Backup",
+            value: "sk-runtime-2",
+            enabled: false,
+            daily_reset: false,
+          }),
+        ],
+      }),
+    );
+
+    // Only the matching runtime mark merges in.
+    await waitFor(() =>
+      expect(screen.getByTestId("ai-gateway-reenable-key-0")).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByTestId("ai-gateway-reenable-key-1"),
+      "未携带运行时标记的第 2 行不应出现重新启用控件",
+    ).not.toBeInTheDocument();
+
+    // Unsaved user drafts survive the refresh untouched.
+    expect(screen.getByTestId("ai-gateway-key-name-0")).toHaveValue("Primary Renamed");
+    expect(screen.getByTestId("ai-gateway-key-value-0")).toHaveValue("sk-renamed");
+    expect(
+      screen.getByTestId("ai-gateway-key-name-1"),
+      "第 2 行未保存的名称不应被运行时快照替换",
+    ).toHaveValue("Backup");
+    expect(
+      screen.getByRole("switch", { name: "Enable key 1" }),
+      "未保存的启用状态应保留",
+    ).toHaveAttribute("aria-checked", "false");
+    expect(
+      screen.getByRole("switch", { name: "Daily reset for key 1" }),
+      "未保存的 daily reset 编辑应保留",
+    ).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.getByRole("switch", { name: "Daily reset for key 2" }),
+    ).toHaveAttribute("aria-checked", "true");
+  });
 });
 
 describe("ProviderDetailDialog 批量启用/禁用映射", () => {
@@ -2350,11 +2426,13 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
     provider,
     onSave = vi.fn(),
     onReenableKey = vi.fn(),
+    onOpenChange = vi.fn(),
     busy = false,
   }: {
     provider: GatewayUpstreamProvider;
     onSave?: ReturnType<typeof vi.fn>;
     onReenableKey?: ReturnType<typeof vi.fn>;
+    onOpenChange?: ReturnType<typeof vi.fn>;
     busy?: boolean;
   }) {
     const props = {
@@ -2364,10 +2442,10 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
       onSave,
       onReenableKey,
       onDelete: vi.fn(),
-      onOpenChange: vi.fn(),
+      onOpenChange,
     } as unknown as ComponentProps<typeof ProviderDetailDialog>;
     const view = renderWithProviders(<ProviderDetailDialog {...props} />);
-    return { ...view, onSave, onReenableKey };
+    return { ...view, onSave, onReenableKey, onOpenChange };
   }
 
   function savedKeys(onSave: ReturnType<typeof vi.fn>): RawProviderKey[] {
@@ -2404,9 +2482,87 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
     );
   });
 
-  it("保存按编辑器顺序提交完整有序密钥列表", async () => {
+  it("keyRowsExposeIndependentDailyResetControlsAndSavePreservesIdentityAndOrder", async () => {
     const user = userEvent.setup();
     const { onSave } = renderKeyDialog({
+      provider: makeProvider({
+        keys: [
+          providerKey({
+            id: "k1",
+            name: "Primary",
+            value: "sk-one",
+            daily_reset: true,
+          }),
+          // Older record without the field: must load as daily reset off.
+          providerKey({ id: "k2", name: "Backup", value: "sk-two" }),
+        ],
+      }),
+    });
+
+    // Every row exposes a compact boolean control with a per-key accessible name.
+    const firstControl = screen.getByRole("switch", {
+      name: "Daily reset for key 1",
+    });
+    const secondControl = screen.getByRole("switch", {
+      name: "Daily reset for key 2",
+    });
+    expect(
+      firstControl,
+      "既有 daily_reset=true 的密钥行应加载为开启",
+    ).toHaveAttribute("aria-checked", "true");
+    expect(
+      secondControl,
+      "缺少 daily_reset 字段的旧记录应默认为关闭",
+    ).toHaveAttribute("aria-checked", "false");
+
+    // The former up/down reorder controls must be gone from every row.
+    for (const testId of [
+      "ai-gateway-key-up-0",
+      "ai-gateway-key-down-0",
+      "ai-gateway-key-up-1",
+      "ai-gateway-key-down-1",
+    ]) {
+      expect(
+        screen.queryByTestId(testId),
+        `${testId} 不应再存在于密钥行中`,
+      ).not.toBeInTheDocument();
+    }
+
+    // Toggling one row must not move any other row's setting.
+    await user.click(firstControl);
+    await user.click(secondControl);
+    expect(firstControl).toHaveAttribute("aria-checked", "false");
+    expect(secondControl).toHaveAttribute("aria-checked", "true");
+
+    // A newly appended row defaults off and stays last.
+    await user.click(screen.getByTestId("ai-gateway-add-key"));
+    const appendedControl = screen.getByRole("switch", {
+      name: "Daily reset for key 3",
+    });
+    expect(
+      appendedControl,
+      "新增密钥行应默认关闭 daily reset",
+    ).toHaveAttribute("aria-checked", "false");
+    await user.type(screen.getByTestId("ai-gateway-key-name-2"), "Third");
+    await user.type(screen.getByTestId("ai-gateway-key-value-2"), "sk-three");
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const keys = savedKeys(onSave);
+    // Stable identity and retained relative order; the appended key is last.
+    expect(keys.map((entry) => entry.id)).toEqual([
+      "k1",
+      "k2",
+      expect.stringMatching(/^new-key-/),
+    ]);
+    // Each row's daily-reset setting is independent in the save payload.
+    expect(keys.map((entry) => entry.daily_reset)).toEqual([false, true, false]);
+  });
+
+  it("provider_dialog_saved_daily_reset_settings_survive_reopen_independently", async () => {
+    const user = userEvent.setup();
+    const first = renderKeyDialog({
       provider: makeProvider({
         keys: [
           providerKey({ id: "k1", name: "Primary", value: "sk-one" }),
@@ -2415,15 +2571,81 @@ describe("ProviderDetailDialog 上游密钥池编辑", () => {
       }),
     });
 
-    await user.click(screen.getByTestId("ai-gateway-key-up-1"));
+    // Toggle only the second row, then save successfully.
+    await user.click(screen.getByRole("switch", { name: "Daily reset for key 2" }));
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(onSave).toHaveBeenCalledTimes(1);
-    const keys = savedKeys(onSave);
-    expect(keys.map((entry) => entry.id)).toEqual(["k2", "k1"]);
-    expect(keys.map((entry) => entry.name)).toEqual(["Backup", "Primary"]);
-    expect(keys.map((entry) => entry.value)).toEqual(["sk-two", "sk-one"]);
-    expect(keys.map((entry) => entry.enabled)).toEqual([true, true]);
+    expect(first.onSave).toHaveBeenCalledTimes(1);
+    expect(
+      savedKeys(first.onSave).map((entry) => entry.daily_reset),
+      "保存载荷应分别携带每行 daily reset 状态",
+    ).toEqual([false, true]);
+
+    const saved = first.onSave.mock.calls[0][0] as GatewayUpstreamProvider;
+    first.unmount();
+
+    // Reopening the saved provider restores each row's setting independently.
+    renderKeyDialog({ provider: saved });
+    expect(
+      screen.getByRole("switch", { name: "Daily reset for key 1" }),
+      "重开后第 1 行应保持关闭",
+    ).toHaveAttribute("aria-checked", "false");
+    expect(
+      screen.getByRole("switch", { name: "Daily reset for key 2" }),
+      "重开后第 2 行应保持开启",
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("provider_dialog_unsaved_daily_reset_edit_is_not_published_on_cancel_or_failed_save", async () => {
+    const user = userEvent.setup();
+    const baseKeys = [
+      providerKey({ id: "k1", name: "Primary", value: "sk-one" }),
+    ];
+
+    // Cancel: onSave is never invoked, so the draft setting is not published.
+    const cancelled = renderKeyDialog({
+      provider: makeProvider({ keys: baseKeys }),
+    });
+    await user.click(
+      screen.getByRole("switch", { name: "Daily reset for key 1" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(cancelled.onSave).not.toHaveBeenCalled();
+    expect(cancelled.onOpenChange).toHaveBeenCalledWith(false);
+    cancelled.unmount();
+
+    // A save that resolves false keeps the dialog and the unsaved draft.
+    const resolvedFalse = renderKeyDialog({
+      provider: makeProvider({ keys: baseKeys }),
+      onSave: vi.fn().mockResolvedValue(false),
+    });
+    await user.click(
+      screen.getByRole("switch", { name: "Daily reset for key 1" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(resolvedFalse.onSave).toHaveBeenCalledTimes(1));
+    expect(resolvedFalse.onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(
+      screen.getByRole("switch", { name: "Daily reset for key 1" }),
+      "失败保存后应保留草稿中的 daily reset 编辑",
+    ).toHaveAttribute("aria-checked", "true");
+    resolvedFalse.unmount();
+
+    // A rejected save also keeps the dialog and the unsaved draft.
+    const rejected = renderKeyDialog({
+      provider: makeProvider({ keys: baseKeys }),
+      onSave: vi.fn().mockRejectedValue(new Error("save failed")),
+    });
+    await user.click(
+      screen.getByRole("switch", { name: "Daily reset for key 1" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(rejected.onSave).toHaveBeenCalledTimes(1));
+    expect(rejected.onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(
+      screen.getByRole("switch", { name: "Daily reset for key 1" }),
+      "被拒绝保存后应保留草稿中的 daily reset 编辑",
+    ).toHaveAttribute("aria-checked", "true");
   });
 
   it("清空既有密钥值后保存以空白值提交（后端保留已存值）", async () => {

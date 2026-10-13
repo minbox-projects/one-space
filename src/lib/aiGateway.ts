@@ -90,6 +90,13 @@ export interface GatewayProviderKey {
   name: string;
   value: string;
   enabled: boolean;
+  /**
+   * Independent per-key daily-reset preference. Optional so the pre-feature
+   * fixtures and records stay assignable; absent/`undefined` reads as `false`.
+   * A `true` key whose quota mark predates the current UTC+8 day becomes
+   * eligible again at the next UTC+8 midnight instead of the legacy 1800s TTL.
+   */
+  daily_reset?: boolean;
   auto_marked: boolean;
   failure_kind: GatewayProviderKeyFailureKind | null;
   marked_at: number | null;

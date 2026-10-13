@@ -131,6 +131,7 @@ function newProviderKeyDraft(): ProviderKeyDraft {
     name: "",
     value: "",
     enabled: true,
+    daily_reset: false,
     auto_marked: false,
     failure_kind: null,
     marked_at: null,
@@ -523,16 +524,6 @@ export function ProviderDetailDialog({
     setKeyValueError(false);
   };
 
-  const moveKey = (index: number, direction: -1 | 1) => {
-    setKeyDrafts((prev) => {
-      const target = index + direction;
-      if (target < 0 || target >= prev.length) return prev;
-      const next = [...prev];
-      [next[index], next[target]] = [next[target], next[index]];
-      return next;
-    });
-  };
-
   const toggleKeyVisibility = (keyId: string) => {
     setRevealedKeyIds((prev) => ({
       ...prev,
@@ -560,6 +551,7 @@ export function ProviderDetailDialog({
       name: key.name.trim(),
       value: key.value,
       enabled: key.enabled,
+      daily_reset: key.daily_reset === true,
       auto_marked: key.auto_marked,
       failure_kind: key.failure_kind,
       marked_at: key.marked_at,
@@ -1165,32 +1157,33 @@ export function ProviderDetailDialog({
                           className="shrink-0"
                         />
                         <div className="flex shrink-0 items-center gap-1">
-                          <button
-                            type="button"
-                            data-testid={`ai-gateway-key-up-${index}`}
-                            onClick={() => moveKey(index, -1)}
-                            disabled={busy || index === 0}
-                            aria-label={t("aiGatewayProviderKeyMoveUpAria", {
-                              index: index + 1,
-                              defaultValue: `Move key up ${index + 1}`,
-                            })}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
+                          <label
+                            className="inline-flex shrink-0 items-center gap-1.5"
+                            title={t(
+                              "aiGatewayProviderKeyDailyResetHint",
+                              "When this key hits its quota, it becomes available again after the next UTC+8 midnight.",
+                            )}
                           >
-                            <ChevronUp className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            data-testid={`ai-gateway-key-down-${index}`}
-                            onClick={() => moveKey(index, 1)}
-                            disabled={busy || index === keyDrafts.length - 1}
-                            aria-label={t("aiGatewayProviderKeyMoveDownAria", {
-                              index: index + 1,
-                              defaultValue: `Move key down ${index + 1}`,
-                            })}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
-                          >
-                            <ChevronDown className="h-3.5 w-3.5" />
-                          </button>
+                            <span className="whitespace-nowrap text-[11px] font-medium text-muted-foreground">
+                              {t("aiGatewayProviderKeyDailyReset", "Daily reset")}
+                            </span>
+                            <Switch
+                              data-testid={`ai-gateway-key-daily-reset-${index}`}
+                              aria-label={t(
+                                "aiGatewayProviderKeyDailyResetAria",
+                                {
+                                  index: index + 1,
+                                  defaultValue: `Daily reset for key ${index + 1}`,
+                                },
+                              )}
+                              checked={key.daily_reset === true}
+                              disabled={busy}
+                              onCheckedChange={(checked) =>
+                                updateKey(index, { daily_reset: checked })
+                              }
+                              className="shrink-0"
+                            />
+                          </label>
                           {key.auto_marked ? (
                             <button
                               type="button"
