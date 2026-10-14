@@ -805,6 +805,25 @@ const MODEL_LIST_I18N_KEYS: ReadonlyArray<
     "Copy models API endpoint",
     "复制模型列表 API 地址",
   ],
+  ["aiGatewayModelListTypeAll", "All models", "全部模型"],
+  ["aiGatewayModelListTypePools", "Model pools", "模型池"],
+  ["aiGatewayModelListTypeProviders", "Provider models", "服务商模型"],
+  ["aiGatewayModelListTypePoolBadge", "Model Pool", "模型池"],
+  ["aiGatewayModelListTypeProviderBadge", "Provider", "服务商"],
+  ["aiGatewayModelListCandidateCount", "{{count}} candidates", "{{count}} 候选"],
+  ["aiGatewayModelListPoolSectionTitle", "Model Pools", "模型池"],
+  [
+    "aiGatewayModelListPoolSectionDesc",
+    "Virtual models managed with multi-upstream routing, load balancing, and failover.",
+    "由网关统一管理的多上游路由、负载均衡与故障转移模型池。",
+  ],
+  ["aiGatewayModelListProviderSectionTitle", "Provider Models", "服务商直连模型"],
+  [
+    "aiGatewayModelListProviderSectionDesc",
+    "Direct models mapped from enabled upstream providers.",
+    "由已启用上游服务商直接映射提供的可用模型。",
+  ],
+  ["aiGatewayModelListManagePools", "Manage pools", "管理模型池"],
 ];
 
 describe("模型列表国际化键", () => {
@@ -871,3 +890,168 @@ describe("ModelListPanel anthropic_messages 徽标与筛选", () => {
     expect(rowModels()).toEqual(["claude-model"]);
   });
 });
+
+describe("ModelListPanel 模型池与服务商模型区分（形态 A 分组分节与分段选择）", () => {
+  const sampleProviders: GatewayUpstreamProvider[] = [
+    makeProvider({
+      id: "p1",
+      name: "Provider 1",
+      mappings: [
+        { local_model: "gpt-4o", upstream_model: "gpt-4o-2024" },
+      ],
+    }),
+  ];
+
+  const samplePool: any = {
+    id: "pool-1",
+    name: "Coding Pool",
+    model: "claude-coding-pool",
+    enabled: true,
+    candidates: [
+      {
+        provider_id: "p1",
+        upstream_model: "claude-3-7-sonnet",
+        protocol: "anthropic_messages",
+        weight: 1,
+      },
+      {
+        provider_id: "p1",
+        upstream_model: "claude-3-5-sonnet",
+        protocol: "anthropic_messages",
+        weight: 2,
+      },
+    ],
+  };
+
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("存在模型池时，在全部视图下渲染分段切换器、模型池与服务商分组小节及各自类型徽标", () => {
+    const onNavigatePools = vi.fn();
+    renderWithProviders(
+      <ModelListPanel
+        providers={sampleProviders}
+        modelPools={[samplePool]}
+        onNavigatePools={onNavigatePools}
+      />,
+    );
+
+    // 分段选择器存在且展示数量
+    expect(screen.getByTestId("ai-gateway-model-list-tab-all")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-model-list-tab-pools")).toHaveTextContent("1");
+    expect(screen.getByTestId("ai-gateway-model-list-tab-providers")).toHaveTextContent("1");
+
+    // 渲染两个分组小节表头
+    expect(screen.getByTestId("ai-gateway-model-list-section-pool")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-model-list-section-provider")).toBeInTheDocument();
+
+    // 两个模型行都存在
+    const rows = screen.getAllByTestId("ai-gateway-model-list-row");
+    expect(rows).toHaveLength(2);
+
+    // 模型池行：无行级前置类型徽标，但有候选数微标
+    const poolRow = rows.find((r) => r.getAttribute("data-model") === "claude-coding-pool");
+    expect(poolRow).toBeDefined();
+    expect(within(poolRow!).queryByTestId("ai-gateway-model-list-type-badge")).not.toBeInTheDocument();
+    expect(within(poolRow!).getByTestId("ai-gateway-model-list-id")).toHaveTextContent("claude-coding-pool");
+    expect(within(poolRow!).getByText("2 candidates")).toBeInTheDocument();
+
+    // 服务商模型行：无行级前置类型徽标
+    const providerRow = rows.find((r) => r.getAttribute("data-model") === "gpt-4o");
+    expect(providerRow).toBeDefined();
+    expect(within(providerRow!).queryByTestId("ai-gateway-model-list-type-badge")).not.toBeInTheDocument();
+    expect(within(providerRow!).getByTestId("ai-gateway-model-list-id")).toHaveTextContent("gpt-4o");
+
+    // 点击管理模型池按钮
+    const managePoolsBtn = screen.getByTestId("ai-gateway-model-list-manage-pools-btn");
+    fireEvent.click(managePoolsBtn);
+    expect(onNavigatePools).toHaveBeenCalledTimes(1);
+  });
+
+  it("支持通过分段器切换视图：只看模型池或只看服务商模型", () => {
+    renderWithProviders(
+      <ModelListPanel
+        providers={sampleProviders}
+        modelPools={[samplePool]}
+      />,
+    );
+
+    // 默认展示全部（2行）
+    expect(screen.getAllByTestId("ai-gateway-model-list-row")).toHaveLength(2);
+
+    // 切换到“模型池”
+    fireEvent.click(screen.getByTestId("ai-gateway-model-list-tab-pools"));
+    expect(screen.getAllByTestId("ai-gateway-model-list-row")).toHaveLength(1);
+    expect(screen.getByTestId("ai-gateway-model-list-row")).toHaveAttribute(
+      "data-model",
+      "claude-coding-pool",
+    );
+    expect(screen.getByTestId("ai-gateway-model-list-section-pool")).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-model-list-section-provider")).not.toBeInTheDocument();
+
+    // 切换到“服务商模型”
+    fireEvent.click(screen.getByTestId("ai-gateway-model-list-tab-providers"));
+    expect(screen.getAllByTestId("ai-gateway-model-list-row")).toHaveLength(1);
+    expect(screen.getByTestId("ai-gateway-model-list-row")).toHaveAttribute(
+      "data-model",
+      "gpt-4o",
+    );
+    expect(screen.queryByTestId("ai-gateway-model-list-section-pool")).not.toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-model-list-section-provider")).toBeInTheDocument();
+
+    // 切换回“全部”
+    fireEvent.click(screen.getByTestId("ai-gateway-model-list-tab-all"));
+    expect(screen.getAllByTestId("ai-gateway-model-list-row")).toHaveLength(2);
+  });
+
+  it("无模型池时，不渲染分段选择器与分组小节表头", () => {
+    renderWithProviders(
+      <ModelListPanel
+        providers={sampleProviders}
+        modelPools={[]}
+      />,
+    );
+
+    // 分段选择器与分组表头不应出现
+    expect(screen.queryByTestId("ai-gateway-model-list-tab-all")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-model-list-section-pool")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-model-list-section-provider")).not.toBeInTheDocument();
+
+    // 数据行仍然正常展示，且无多余前置徽标
+    const rows = screen.getAllByTestId("ai-gateway-model-list-row");
+    expect(rows).toHaveLength(1);
+    expect(within(rows[0]).queryByTestId("ai-gateway-model-list-type-badge")).not.toBeInTheDocument();
+    expect(within(rows[0]).getByTestId("ai-gateway-model-list-id")).toHaveTextContent("gpt-4o");
+  });
+
+  it("中文环境下分段切换器与分组小节标题正确展示中文", async () => {
+    await act(async () => {
+      await i18n.changeLanguage("zh");
+    });
+
+    renderWithProviders(
+      <ModelListPanel
+        providers={sampleProviders}
+        modelPools={[samplePool]}
+      />,
+    );
+
+    expect(screen.getByTestId("ai-gateway-model-list-tab-all")).toHaveTextContent("全部模型");
+    expect(screen.getByTestId("ai-gateway-model-list-tab-pools")).toHaveTextContent("模型池");
+    expect(screen.getByTestId("ai-gateway-model-list-tab-providers")).toHaveTextContent("服务商模型");
+
+    expect(screen.getByTestId("ai-gateway-model-list-section-pool")).toHaveTextContent("模型池");
+    expect(screen.getByTestId("ai-gateway-model-list-section-provider")).toHaveTextContent("服务商直连模型");
+
+    const poolRow = screen.getAllByTestId("ai-gateway-model-list-row").find((r) => r.getAttribute("data-model") === "claude-coding-pool");
+    expect(within(poolRow!).queryByTestId("ai-gateway-model-list-type-badge")).not.toBeInTheDocument();
+    expect(within(poolRow!).getByText("2 候选")).toBeInTheDocument();
+
+    await act(async () => {
+      await i18n.changeLanguage("en");
+    });
+  });
+});
+

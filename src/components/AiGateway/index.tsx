@@ -1434,6 +1434,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
             port={config.port}
             isActive={activeTab === "models"}
             onNavigateProviders={() => setActiveTab("providers")}
+            onNavigatePools={() => setActiveTab("model-pools")}
           />
         </div>
 

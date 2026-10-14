@@ -65,7 +65,10 @@ type ModelListPanelProps = {
   /** When false the hidden panel renders nothing while keeping its search state. */
   isActive?: boolean;
   onNavigateProviders?: () => void;
+  onNavigatePools?: () => void;
 };
+
+export type ModelTypeFilter = "all" | "pools" | "providers";
 
 export function ModelListPanel({
   providers,
@@ -73,10 +76,12 @@ export function ModelListPanel({
   port = AI_GATEWAY_DEFAULT_PORT,
   isActive = true,
   onNavigateProviders,
+  onNavigatePools,
 }: ModelListPanelProps) {
   const { t } = useTranslation();
   const { pushToast } = useToast();
   const [query, setQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState<ModelTypeFilter>("all");
   const [providerFilter, setProviderFilter] = useState<string>("all");
   const [protocolFilter, setProtocolFilter] = useState<string>("all");
   const [copiedTarget, setCopiedTarget] = useState<string | null>(null);
@@ -134,6 +139,15 @@ export function ModelListPanel({
       a.entry.model.localeCompare(b.entry.model),
     );
   }, [modelPools, providerNameById, providers]);
+
+  const totalPoolsCount = useMemo(
+    () => rows.filter(({ pool }) => Boolean(pool)).length,
+    [rows],
+  );
+  const totalProvidersCount = useMemo(
+    () => rows.filter(({ pool }) => !pool).length,
+    [rows],
+  );
 
   // 提取可用服务商选项（仅包含有生效模型的服务商）
   const providerOptions = useMemo(() => {
@@ -211,8 +225,23 @@ export function ModelListPanel({
       );
     }
 
+    if (typeFilter === "pools") {
+      result = result.filter(({ pool }) => Boolean(pool));
+    } else if (typeFilter === "providers") {
+      result = result.filter(({ pool }) => !pool);
+    }
+
     return result;
-  }, [normalizedQuery, protocolFilter, providerFilter, rows]);
+  }, [normalizedQuery, protocolFilter, providerFilter, rows, typeFilter]);
+
+  const visiblePoolRows = useMemo(
+    () => visibleRows.filter(({ pool }) => Boolean(pool)),
+    [visibleRows],
+  );
+  const visibleProviderRows = useMemo(
+    () => visibleRows.filter(({ pool }) => !pool),
+    [visibleRows],
+  );
 
   const modelsApiUrl = `${localBaseUrl(port)}/models`;
 
@@ -250,12 +279,236 @@ export function ModelListPanel({
     setQuery("");
     setProviderFilter("all");
     setProtocolFilter("all");
+    setTypeFilter("all");
   };
 
   const hasActiveFilters =
     Boolean(normalizedQuery) ||
     providerFilter !== "all" ||
-    protocolFilter !== "all";
+    protocolFilter !== "all" ||
+    typeFilter !== "all";
+
+  const renderRow = ({
+    entry,
+    name,
+    protocols,
+    reasoningEfforts,
+    pool,
+  }: (typeof rows)[number]) => {
+    const localTargetKey = `local:${entry.model}`;
+    const isCopied = copiedTarget === localTargetKey;
+    const isPool = Boolean(pool);
+
+    return (
+      <tr
+        key={entry.model}
+        data-testid="ai-gateway-model-list-row"
+        data-model={entry.model}
+        className={`align-top transition-colors ${
+          isPool
+            ? "bg-indigo-500/[0.015] hover:bg-indigo-500/[0.05]"
+            : "hover:bg-muted/30"
+        }`}
+      >
+        {/* 第一列：模型 ID 与快捷复制 */}
+        <td className="px-3.5 py-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+              <span
+                data-testid="ai-gateway-model-list-id"
+                className="font-mono font-medium text-foreground"
+              >
+                {entry.model}
+              </span>
+
+              {isPool ? (
+                <span
+                  title={t("aiGatewayModelListCandidateCount", {
+                    count: entry.providers.length,
+                    defaultValue: `${entry.providers.length} candidates`,
+                  })}
+                  className="inline-flex items-center rounded-full bg-indigo-500/15 px-1.5 py-0.2 text-[10px] font-semibold text-indigo-700 dark:text-indigo-300"
+                >
+                  {t("aiGatewayModelListCandidateCount", {
+                    count: entry.providers.length,
+                    defaultValue: `${entry.providers.length} candidates`,
+                  })}
+                </span>
+              ) : entry.providers.length > 1 ? (
+                <span
+                  title={t("aiGatewayModelListMultiUpstreamBadge", {
+                    count: entry.providers.length,
+                    defaultValue: `${entry.providers.length} upstream sources`,
+                  })}
+                  className="inline-flex items-center rounded-full bg-emerald-500/10 px-1.5 py-0.2 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"
+                >
+                  {entry.providers.length}
+                </span>
+              ) : null}
+            </div>
+
+            <button
+              type="button"
+              data-testid="ai-gateway-model-list-copy-btn"
+              aria-label={t("aiGatewayModelListCopyAria", "Copy model ID")}
+              onClick={() => void handleCopy(entry.model, localTargetKey)}
+              className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground shrink-0"
+            >
+              {isCopied ? (
+                <Check className="h-3.5 w-3.5 text-emerald-500" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+            </button>
+          </div>
+        </td>
+
+        {/* 第二列：显示名称、协议徽标与推理强度 */}
+        <td className="px-3.5 py-2.5">
+          <div className="space-y-1.5">
+            <span
+              data-testid="ai-gateway-model-list-name"
+              className="block text-foreground font-medium"
+            >
+              {name}
+            </span>
+            {isPool ? (
+              <div className="flex flex-wrap items-center gap-1">
+                {protocols.map((proto) => (
+                  <span
+                    key={proto}
+                    className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium leading-4 ${
+                      proto === "responses"
+                        ? "bg-purple-500/10 text-purple-600 dark:text-purple-400"
+                        : "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                    }`}
+                  >
+                    {protocolShortLabel(proto)}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-1">
+                {protocols.map((proto) => (
+                  <ProtocolBadge key={proto} protocol={proto} />
+                ))}
+              </div>
+            )}
+            {reasoningEfforts.length > 0 ? (
+              <div
+                data-testid="ai-gateway-model-list-reasoning-efforts"
+                className="flex flex-wrap items-center gap-1 pt-0.5"
+              >
+                <span
+                  title={t("aiGatewayReasoningEfforts", "Reasoning efforts")}
+                  className="text-[10px] font-medium text-muted-foreground"
+                >
+                  {t("aiGatewayReasoningEfforts", "Reasoning efforts")}:
+                </span>
+                {reasoningEfforts.map((effort) => (
+                  <span
+                    key={effort}
+                    data-testid={`ai-gateway-model-list-effort-${effort}`}
+                    className="inline-flex items-center rounded border border-border/80 bg-muted/60 px-1.5 py-0.2 font-mono text-[10px] font-medium text-foreground/85 leading-tight shadow-2xs"
+                  >
+                    {effort}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </td>
+
+        {/* 第三列：上游模型映射与来源 */}
+        <td
+          data-testid="ai-gateway-model-list-upstreams"
+          className="px-3.5 py-2.5"
+        >
+          <ul className="space-y-1.5">
+            {entry.providers.map((upstream, index) => {
+              const upstreamKey = `${upstream.providerId}-${upstream.upstreamModel}-${index}`;
+              const upstreamTargetKey = `upstream:${upstreamKey}`;
+              const isUpstreamCopied = copiedTarget === upstreamTargetKey;
+
+              return (
+                <li
+                  key={upstreamKey}
+                  data-testid="ai-gateway-model-list-upstream"
+                  data-default={upstream.isDefault ? "true" : "false"}
+                  className={`flex items-center justify-between gap-2.5 rounded-lg border px-2.5 py-1.5 text-xs transition-colors ${
+                    isPool
+                      ? "border-indigo-500/20 bg-indigo-500/[0.03] hover:bg-indigo-500/[0.07]"
+                      : "border-border/60 bg-muted/20 hover:bg-muted/40"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                    <span
+                      data-testid="ai-gateway-model-list-upstream-provider"
+                      className="font-medium text-foreground"
+                    >
+                      {upstream.providerName}
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className="text-muted-foreground/60 text-[11px]"
+                    >
+                      →
+                    </span>
+                    <code
+                      data-testid="ai-gateway-model-list-upstream-model"
+                      className={`rounded border px-1.5 py-0.5 font-mono text-[11px] text-foreground ${
+                        isPool
+                          ? "border-indigo-500/30 bg-indigo-500/10 text-indigo-900 dark:text-indigo-200"
+                          : "border-border/40 bg-muted/60"
+                      }`}
+                    >
+                      {upstream.upstreamModel}
+                    </code>
+                    <button
+                      type="button"
+                      data-testid="ai-gateway-model-list-upstream-copy-btn"
+                      aria-label={t(
+                        "aiGatewayModelListCopyUpstreamAria",
+                        "Copy upstream model ID",
+                      )}
+                      onClick={() =>
+                        void handleCopy(
+                          upstream.upstreamModel,
+                          upstreamTargetKey,
+                        )
+                      }
+                      className="rounded p-0.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                    >
+                      {isUpstreamCopied ? (
+                        <Check className="h-3.5 w-3.5 text-emerald-500" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                    {upstream.isDefault ? (
+                      <span
+                        data-testid="ai-gateway-model-list-upstream-default"
+                        className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+                      >
+                        {t(
+                          "aiGatewayAggregatedModelDefaultBadge",
+                          "Default",
+                        )}
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="shrink-0">
+                    <ProtocolBadge protocol={upstream.endpoint} />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </td>
+      </tr>
+    );
+  };
 
   if (!isActive) return null;
 
@@ -353,11 +606,80 @@ export function ModelListPanel({
         </div>
       </div>
 
-      {/* 控制栏：美化型搜索框与防换行过滤器 */}
+      {/* 控制栏：分段选择器、搜索框与过滤器 */}
       {rows.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2.5">
-          {/* 美化搜索框 */}
-          <div className="relative w-full sm:w-80 md:w-96">
+          {/* 模型类别分段切换器（仅当存在模型池时呈现） */}
+          {totalPoolsCount > 0 ? (
+            <div
+              role="tablist"
+              aria-label={t(
+                "aiGatewayModelListTypeFilterAria",
+                "Filter by model type",
+              )}
+              className="inline-flex items-center rounded-lg border bg-muted/40 p-0.5 text-xs shrink-0 shadow-2xs"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={typeFilter === "all"}
+                onClick={() => setTypeFilter("all")}
+                data-testid="ai-gateway-model-list-tab-all"
+                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                  typeFilter === "all"
+                    ? "bg-background text-foreground font-semibold shadow-xs"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                <span>{t("aiGatewayModelListTypeAll", "All models")}</span>
+                <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] font-semibold text-muted-foreground">
+                  {rows.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                role="tab"
+                aria-selected={typeFilter === "pools"}
+                onClick={() => setTypeFilter("pools")}
+                data-testid="ai-gateway-model-list-tab-pools"
+                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                  typeFilter === "pools"
+                    ? "bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 font-semibold shadow-xs"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Layers className="h-3.5 w-3.5 text-indigo-500" />
+                <span>{t("aiGatewayModelListTypePools", "Model pools")}</span>
+                <span className="rounded-full bg-indigo-500/20 px-1.5 py-0.2 text-[10px] font-semibold text-indigo-700 dark:text-indigo-300">
+                  {totalPoolsCount}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                role="tab"
+                aria-selected={typeFilter === "providers"}
+                onClick={() => setTypeFilter("providers")}
+                data-testid="ai-gateway-model-list-tab-providers"
+                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                  typeFilter === "providers"
+                    ? "bg-sky-500/15 text-sky-700 dark:text-sky-300 font-semibold shadow-xs"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Server className="h-3.5 w-3.5 text-sky-500" />
+                <span>{t("aiGatewayModelListTypeProviders", "Provider models")}</span>
+                <span className="rounded-full bg-sky-500/20 px-1.5 py-0.2 text-[10px] font-semibold text-sky-700 dark:text-sky-300">
+                  {totalProvidersCount}
+                </span>
+              </button>
+            </div>
+          ) : null}
+
+          {/* 美化搜索框（调窄宽度以防筛选器折行） */}
+          <div className="relative w-full sm:w-52 md:w-60 shrink-0">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/70 transition-colors" />
             <input
               type="search"
@@ -511,197 +833,93 @@ export function ModelListPanel({
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
-              {visibleRows.map(({ entry, name, protocols, reasoningEfforts, pool }) => {
-                const localTargetKey = `local:${entry.model}`;
-                const isCopied = copiedTarget === localTargetKey;
-                return (
-                  <tr
-                    key={entry.model}
-                    data-testid="ai-gateway-model-list-row"
-                    data-model={entry.model}
-                    className="align-top transition-colors hover:bg-muted/30"
-                  >
-                    {/* 第一列：模型 ID 与快捷复制 */}
-                    <td className="px-3.5 py-2.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span
-                            data-testid="ai-gateway-model-list-id"
-                            className="font-mono font-medium text-foreground"
-                          >
-                            {entry.model}
-                          </span>
-                          {entry.providers.length > 1 ? (
-                            <span
-                              title={t("aiGatewayModelListMultiUpstreamBadge", {
-                                count: entry.providers.length,
-                                defaultValue: `${entry.providers.length} upstream sources`,
-                              })}
-                              className="inline-flex items-center rounded-full bg-emerald-500/10 px-1.5 py-0.2 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"
-                            >
-                              {entry.providers.length}
-                            </span>
-                          ) : null}
-                        </div>
-
-                        <button
-                          type="button"
-                          data-testid="ai-gateway-model-list-copy-btn"
-                          aria-label={t(
-                            "aiGatewayModelListCopyAria",
-                            "Copy model ID",
-                          )}
-                          onClick={() => void handleCopy(entry.model, localTargetKey)}
-                          className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                        >
-                          {isCopied ? (
-                            <Check className="h-3.5 w-3.5 text-emerald-500" />
-                          ) : (
-                            <Copy className="h-3.5 w-3.5" />
-                          )}
-                        </button>
-                      </div>
-                    </td>
-
-                    {/* 第二列：显示名称、协议徽标与推理强度 */}
-                    <td className="px-3.5 py-2.5">
-                      <div className="space-y-1.5">
-                        <span
-                          data-testid="ai-gateway-model-list-name"
-                          className="block text-foreground"
-                        >
-                          {name}
-                        </span>
-                        {pool ? (
-                          <div className="flex flex-wrap items-center gap-1">
-                            {protocols.map((proto) => (
-                              <span
-                                key={proto}
-                                className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium leading-4 ${
-                                  proto === "responses"
-                                    ? "bg-purple-500/10 text-purple-600 dark:text-purple-400"
-                                    : "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                                }`}
-                              >
-                                {protocolShortLabel(proto)}
-                              </span>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="flex flex-wrap items-center gap-1">
-                            {protocols.map((proto) => (
-                              <ProtocolBadge key={proto} protocol={proto} />
-                            ))}
-                          </div>
-                        )}
-                        {reasoningEfforts.length > 0 ? (
-                          <div
-                            data-testid="ai-gateway-model-list-reasoning-efforts"
-                            className="flex flex-wrap items-center gap-1 pt-0.5"
-                          >
-                            <span
-                              title={t("aiGatewayReasoningEfforts", "Reasoning efforts")}
-                              className="text-[10px] font-medium text-muted-foreground"
-                            >
-                              {t("aiGatewayReasoningEfforts", "Reasoning efforts")}:
-                            </span>
-                            {reasoningEfforts.map((effort) => (
-                              <span
-                                key={effort}
-                                data-testid={`ai-gateway-model-list-effort-${effort}`}
-                                className="inline-flex items-center rounded border border-border/80 bg-muted/60 px-1.5 py-0.2 font-mono text-[10px] font-medium text-foreground/85 leading-tight shadow-2xs"
-                              >
-                                {effort}
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    </td>
-
-                    {/* 第三列：上游模型映射与来源 */}
-                    <td
-                      data-testid="ai-gateway-model-list-upstreams"
-                      className="px-3.5 py-2.5"
-                    >
-                      <ul className="space-y-1.5">
-                        {entry.providers.map((upstream, index) => {
-                          const upstreamKey = `${upstream.providerId}-${upstream.upstreamModel}-${index}`;
-                          const upstreamTargetKey = `upstream:${upstreamKey}`;
-                          const isUpstreamCopied =
-                            copiedTarget === upstreamTargetKey;
-
-                          return (
-                            <li
-                              key={upstreamKey}
-                              data-testid="ai-gateway-model-list-upstream"
-                              data-default={upstream.isDefault ? "true" : "false"}
-                              className="flex items-center justify-between gap-2.5 rounded-lg border border-border/60 bg-muted/20 px-2.5 py-1.5 text-xs transition-colors hover:bg-muted/40"
-                            >
-                              <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-                                <span
-                                  data-testid="ai-gateway-model-list-upstream-provider"
-                                  className="font-medium text-foreground"
-                                >
-                                  {upstream.providerName}
-                                </span>
-                                <span
-                                  aria-hidden="true"
-                                  className="text-muted-foreground/60 text-[11px]"
-                                >
-                                  →
-                                </span>
-                                <code
-                                  data-testid="ai-gateway-model-list-upstream-model"
-                                  className="rounded border border-border/40 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-foreground"
-                                >
-                                  {upstream.upstreamModel}
-                                </code>
-                                <button
-                                  type="button"
-                                  data-testid="ai-gateway-model-list-upstream-copy-btn"
-                                  aria-label={t(
-                                    "aiGatewayModelListCopyUpstreamAria",
-                                    "Copy upstream model ID",
-                                  )}
-                                  onClick={() =>
-                                    void handleCopy(
-                                      upstream.upstreamModel,
-                                      upstreamTargetKey,
-                                    )
-                                  }
-                                  className="rounded p-0.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                                >
-                                  {isUpstreamCopied ? (
-                                    <Check className="h-3.5 w-3.5 text-emerald-500" />
-                                  ) : (
-                                    <Copy className="h-3.5 w-3.5" />
-                                  )}
-                                </button>
-                                {upstream.isDefault ? (
-                                  <span
-                                    data-testid="ai-gateway-model-list-upstream-default"
-                                    className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
-                                  >
-                                    {t(
-                                      "aiGatewayAggregatedModelDefaultBadge",
-                                      "Default",
-                                    )}
-                                  </span>
-                                ) : null}
+              {totalPoolsCount > 0 ? (
+                <>
+                  {/* 模型池分组 */}
+                  {visiblePoolRows.length > 0 ? (
+                    <>
+                      <tr
+                        key="__section_pool"
+                        data-testid="ai-gateway-model-list-section-pool"
+                        className="bg-indigo-500/[0.05] border-y border-indigo-500/20 select-none"
+                      >
+                        <td colSpan={3} className="px-3.5 py-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <div className="flex h-5 w-5 items-center justify-center rounded-md bg-indigo-500/15 text-indigo-600 dark:text-indigo-400">
+                                <Layers className="h-3.5 w-3.5" />
                               </div>
+                              <span className="font-semibold text-xs text-foreground">
+                                {t("aiGatewayModelListPoolSectionTitle", "Model Pools")}
+                              </span>
+                              <span className="rounded-full bg-indigo-500/15 px-2 py-0.2 text-[10px] font-semibold text-indigo-700 dark:text-indigo-300">
+                                {visiblePoolRows.length}
+                              </span>
+                              <span className="hidden md:inline text-[11px] text-muted-foreground/80 pl-2 border-l border-border/60">
+                                {t(
+                                  "aiGatewayModelListPoolSectionDesc",
+                                  "Virtual models managed with multi-upstream routing, load balancing, and failover.",
+                                )}
+                              </span>
+                            </div>
+                            {onNavigatePools ? (
+                              <button
+                                type="button"
+                                data-testid="ai-gateway-model-list-manage-pools-btn"
+                                onClick={onNavigatePools}
+                                className="inline-flex items-center gap-1 text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors"
+                              >
+                                <span>
+                                  {t("aiGatewayModelListManagePools", "Manage pools")}
+                                </span>
+                                <ArrowRight className="h-3 w-3" />
+                              </button>
+                            ) : null}
+                          </div>
+                        </td>
+                      </tr>
+                      {visiblePoolRows.map(renderRow)}
+                    </>
+                  ) : null}
 
-                              <div className="shrink-0">
-                                <ProtocolBadge protocol={upstream.endpoint} />
-                              </div>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </td>
-                  </tr>
-                );
-              })}
+                  {/* 服务商直连模型分组 */}
+                  {visibleProviderRows.length > 0 ? (
+                    <>
+                      <tr
+                        key="__section_provider"
+                        data-testid="ai-gateway-model-list-section-provider"
+                        className="bg-muted/40 border-y border-border/80 select-none"
+                      >
+                        <td colSpan={3} className="px-3.5 py-2">
+                          <div className="flex items-center gap-2">
+                            <div className="flex h-5 w-5 items-center justify-center rounded-md bg-sky-500/15 text-sky-600 dark:text-sky-400">
+                              <Server className="h-3.5 w-3.5" />
+                            </div>
+                            <span className="font-semibold text-xs text-foreground">
+                              {t(
+                                "aiGatewayModelListProviderSectionTitle",
+                                "Provider Models",
+                              )}
+                            </span>
+                            <span className="rounded-full bg-muted px-2 py-0.2 text-[10px] font-semibold text-muted-foreground">
+                              {visibleProviderRows.length}
+                            </span>
+                            <span className="hidden md:inline text-[11px] text-muted-foreground/80 pl-2 border-l border-border/60">
+                              {t(
+                                "aiGatewayModelListProviderSectionDesc",
+                                "Direct models mapped from enabled upstream providers.",
+                              )}
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                      {visibleProviderRows.map(renderRow)}
+                    </>
+                  ) : null}
+                </>
+              ) : (
+                visibleRows.map(renderRow)
+              )}
             </tbody>
           </table>
         </div>
