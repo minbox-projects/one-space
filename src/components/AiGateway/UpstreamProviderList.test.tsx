@@ -2502,4 +2502,101 @@ describe("UpstreamProviderList anthropic_messages 徽标", () => {
     expect(card).toHaveTextContent(/anthropic/i);
     expect(within(card).queryByText("Chat")).not.toBeInTheDocument();
   });
+
+  describe("服务商与模型池整体布局及筛选器位置", () => {
+    it("服务商分区标题与视图切换按钮展示为服务商 (Providers)", async () => {
+      await i18n.changeLanguage("zh");
+      renderWithProviders(
+        <UpstreamProviderList
+          providers={[makeProvider({ id: "p1", name: "P1" })]}
+          modelPools={[
+            {
+              id: "pool-1",
+              name: "Pool 1",
+              model: "my-pool",
+              enabled: true,
+              candidates: [],
+            },
+          ]}
+          selectedProviderId={null}
+          busy={false}
+          onSelect={vi.fn()}
+          onToggleEnabled={vi.fn()}
+          onAdd={vi.fn()}
+        />,
+      );
+
+      const providersSection = screen.getByTestId("ai-gateway-providers-section");
+      expect(within(providersSection).getByRole("heading", { level: 3 })).toHaveTextContent("服务商");
+
+      const viewModeProvidersBtn = screen.getByTestId("ai-gateway-view-mode-providers");
+      expect(viewModeProvidersBtn).toHaveTextContent("服务商");
+
+      await i18n.changeLanguage("en");
+      expect(within(providersSection).getByRole("heading", { level: 3 })).toHaveTextContent("Providers");
+      expect(viewModeProvidersBtn).toHaveTextContent("Providers");
+    });
+
+    it("在全部模式下，服务商分区渲染在模型池分区上方", () => {
+      renderWithProviders(
+        <UpstreamProviderList
+          providers={[makeProvider({ id: "p1", name: "P1" })]}
+          modelPools={[
+            {
+              id: "pool-1",
+              name: "Pool 1",
+              model: "my-pool",
+              enabled: true,
+              candidates: [],
+            },
+          ]}
+          selectedProviderId={null}
+          busy={false}
+          onSelect={vi.fn()}
+          onToggleEnabled={vi.fn()}
+          onAdd={vi.fn()}
+        />,
+      );
+
+      const providersSection = screen.getByTestId("ai-gateway-providers-section");
+      const modelPoolsSection = screen.getByTestId("ai-gateway-model-pools-section");
+
+      // 验证 DOM 前后顺序：Node.DOCUMENT_POSITION_FOLLOWING (4)
+      const position = providersSection.compareDocumentPosition(modelPoolsSection);
+      expect(Boolean(position & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    });
+
+    it("模型池状态筛选器独立位于工具条中，且排布在标题之后、列表之前", () => {
+      renderWithProviders(
+        <UpstreamProviderList
+          providers={[makeProvider({ id: "p1", name: "P1" })]}
+          modelPools={[
+            {
+              id: "pool-1",
+              name: "Pool 1",
+              model: "my-pool",
+              enabled: true,
+              candidates: [],
+            },
+          ]}
+          selectedProviderId={null}
+          busy={false}
+          onSelect={vi.fn()}
+          onToggleEnabled={vi.fn()}
+          onAdd={vi.fn()}
+        />,
+      );
+
+      const modelPoolsSection = screen.getByTestId("ai-gateway-model-pools-section");
+      const heading = within(modelPoolsSection).getByRole("heading", { level: 3 });
+      const toolbar = within(modelPoolsSection).getByTestId("ai-gateway-model-pools-toolbar");
+      const filterGroup = within(toolbar).getByTestId("ai-gateway-pool-status-filter");
+      const cardsGrid = within(modelPoolsSection).getByTestId("ai-gateway-model-pools");
+
+      expect(filterGroup).toBeInTheDocument();
+      // 验证在 modelPoolsSection 内的层级顺序: heading -> toolbar -> cardsGrid
+      expect(Boolean(heading.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+      expect(Boolean(toolbar.compareDocumentPosition(cardsGrid) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    });
+  });
 });

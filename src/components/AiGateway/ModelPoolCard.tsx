@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   Check,
   Copy,
-  Layers,
+  Boxes,
   MoreVertical,
   Pencil,
   ScrollText,
@@ -97,7 +97,7 @@ export function ModelPoolCard({
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3 min-w-0 flex-1">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shadow-2xs mt-0.5">
-              <Layers className="h-4.5 w-4.5" />
+              <Boxes className="h-4.5 w-4.5" />
             </div>
             <div className="min-w-0 flex-1">
               <button

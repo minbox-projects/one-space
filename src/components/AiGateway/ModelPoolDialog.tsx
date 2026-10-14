@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   CheckSquare,
   ChevronDown,
-  Layers,
+  Boxes,
   Search,
   Server,
   Sparkles,
@@ -302,7 +302,7 @@ export function ModelPoolDialog({
         <DialogHeader className="pl-6 pr-14 py-4 border-b bg-card/80 backdrop-blur-sm shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-              <Layers className="h-4.5 w-4.5" />
+              <Boxes className="h-4.5 w-4.5" />
             </div>
             <div className="min-w-0">
               <DialogTitle className="truncate text-base font-semibold leading-5 text-foreground">

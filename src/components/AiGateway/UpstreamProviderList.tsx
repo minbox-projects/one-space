@@ -828,7 +828,7 @@ export function UpstreamProviderList({
             }`}
           >
             <Server className="h-3.5 w-3.5 text-primary" />
-            <span>{t("aiGatewayProviders", "Upstream providers")}</span>
+            <span>{t("aiGatewayProvidersSectionTitle", "Providers")}</span>
             <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] text-muted-foreground">
               {providers.length}
             </span>
@@ -890,187 +890,6 @@ export function UpstreamProviderList({
         </div>
       </div>
 
-      {/* 模型池分区：在全部模式（有模型池时）或模型池专属模式下展示 */}
-      {(viewMode === "all" && modelPools.length > 0) || viewMode === "model_pools" ? (
-        <div className="space-y-3" data-testid="ai-gateway-model-pools-section">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-2">
-                <Boxes className="h-4 w-4 text-violet-500" />
-                <h3 className="text-sm font-semibold text-foreground">
-                  {t("aiGatewayModelPoolsTab", "Model pools")}
-                </h3>
-                <span className="rounded-full bg-violet-500/15 px-2 py-0.2 text-[10px] font-semibold text-violet-700 dark:text-violet-300">
-                  {modelPools.length}
-                </span>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {t(
-                  "aiGatewayModelPoolsDesc",
-                  "Aggregate upstream models into unified public model pools with failover.",
-                )}
-              </p>
-            </div>
-
-            {modelPools.length > 0 ? (
-              <div
-                role="group"
-                aria-label={t("aiGatewayFilterAria", "Filter model pools by status")}
-                data-testid="ai-gateway-pool-status-filter"
-                className="inline-flex items-center rounded-lg border border-border/50 bg-muted/60 p-0.5 text-xs shadow-inner"
-              >
-                <button
-                  type="button"
-                  data-testid="filter-pool-status-all"
-                  aria-pressed={poolStatusFilter === "all"}
-                  onClick={() => setPoolStatusFilter("all")}
-                  className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
-                    poolStatusFilter === "all"
-                      ? "bg-background text-foreground shadow-sm border border-border/40"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-                  }`}
-                >
-                  <span>{t("aiGatewayFilterAll", "All")}</span>
-                  <span
-                    className={`rounded-full px-1.5 py-0.2 text-[10px] ${
-                      poolStatusFilter === "all"
-                        ? "bg-muted text-foreground"
-                        : "bg-background/60 text-muted-foreground"
-                    }`}
-                  >
-                    {poolCounts.all}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  data-testid="filter-pool-status-enabled"
-                  aria-pressed={poolStatusFilter === "enabled"}
-                  onClick={() => setPoolStatusFilter("enabled")}
-                  className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
-                    poolStatusFilter === "enabled"
-                      ? "bg-background text-foreground shadow-sm border border-border/40"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-                  }`}
-                >
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                  <span>{t("aiGatewayFilterEnabled", "Enabled")}</span>
-                  <span
-                    className={`rounded-full px-1.5 py-0.2 text-[10px] ${
-                      poolStatusFilter === "enabled"
-                        ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-semibold"
-                        : "bg-background/60 text-muted-foreground"
-                    }`}
-                  >
-                    {poolCounts.enabled}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  data-testid="filter-pool-status-disabled"
-                  aria-pressed={poolStatusFilter === "disabled"}
-                  onClick={() => setPoolStatusFilter("disabled")}
-                  className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
-                    poolStatusFilter === "disabled"
-                      ? "bg-background text-foreground shadow-sm border border-border/40"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-                  }`}
-                >
-                  <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
-                  <span>{t("aiGatewayFilterDisabled", "Disabled")}</span>
-                  <span
-                    className={`rounded-full px-1.5 py-0.2 text-[10px] ${
-                      poolStatusFilter === "disabled"
-                        ? "bg-rose-500/15 text-rose-700 dark:text-rose-300 font-semibold"
-                        : "bg-background/60 text-muted-foreground"
-                    }`}
-                  >
-                    {poolCounts.disabled}
-                  </span>
-                </button>
-              </div>
-            ) : null}
-          </div>
-
-          {modelPools.length === 0 ? (
-            <div
-              data-testid="ai-gateway-model-pools-empty"
-              className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/50 px-6 py-10 text-center"
-            >
-              <div className="rounded-full bg-violet-500/10 p-2.5 text-violet-600 dark:text-violet-400">
-                <Boxes className="h-5 w-5" />
-              </div>
-              <h4 className="mt-2.5 text-xs font-medium text-foreground">
-                {t("aiGatewayNoModelPools", "No model pools yet.")}
-              </h4>
-              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
-                {t(
-                  "aiGatewayNoModelPoolsGuide",
-                  "Create a model pool to combine models from different providers into a single virtual model.",
-                )}
-              </p>
-              {onAddPool ? (
-                <button
-                  type="button"
-                  onClick={onAddPool}
-                  disabled={busy}
-                  className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
-                >
-                  <Plus className="h-3 w-3" />
-                  {t("aiGatewayModelPoolCreate", "Create model pool")}
-                </button>
-              ) : null}
-            </div>
-          ) : filteredModelPools.length === 0 ? (
-            <div
-              data-testid="ai-gateway-model-pools-filter-empty"
-              className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/40 px-6 py-10 text-center"
-            >
-              <div className="rounded-full bg-muted/60 p-2.5 text-muted-foreground">
-                <Filter className="h-5 w-5 opacity-70" />
-              </div>
-              <h4 className="mt-2.5 text-xs font-medium text-foreground">
-                {t("aiGatewayNoMatchingModelPools", "No matching model pools")}
-              </h4>
-              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
-                {t(
-                  "aiGatewayNoMatchingModelPoolsGuide",
-                  "No model pools match the selected status filter.",
-                )}
-              </p>
-              <button
-                type="button"
-                onClick={() => setPoolStatusFilter("all")}
-                className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
-              >
-                <RotateCcw className="h-3 w-3" />
-                {t("aiGatewayClearFilter", "Show all")}
-              </button>
-            </div>
-          ) : (
-            <div
-              data-testid="ai-gateway-model-pools"
-              className="grid gap-3 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3 items-start"
-            >
-              {filteredModelPools.map((pool) => (
-                <ModelPoolCard
-                  key={pool.id}
-                  pool={pool}
-                  providers={providers}
-                  status={poolStatuses.find((item) => item.id === pool.id) ?? null}
-                  busy={busy}
-                  onToggleEnabled={(poolId, enabled) =>
-                    onTogglePoolEnabled?.(poolId, enabled)
-                  }
-                  onEdit={(target) => onEditPool?.(target)}
-                  onDelete={(poolId) => onDeletePool?.(poolId)}
-                  onOpenLogs={(model) => onOpenPoolLogs?.(model)}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      ) : null}
-
       {/* 上游服务商分区：在全部模式或服务商专属模式下展示 */}
       {viewMode === "all" || viewMode === "providers" ? (
         <div className="space-y-3.5" data-testid="ai-gateway-providers-section">
@@ -1079,7 +898,7 @@ export function UpstreamProviderList({
               <div className="flex items-center gap-2">
                 <Server className="h-4 w-4 text-primary" />
                 <h3 className="text-sm font-semibold text-foreground">
-                  {t("aiGatewayProviders", "Upstream providers")}
+                  {t("aiGatewayProvidersSectionTitle", "Providers")}
                 </h3>
                 <span className="rounded-full bg-muted px-2 py-0.2 text-[10px] font-semibold text-muted-foreground">
                   {providers.length}
@@ -1378,6 +1197,194 @@ export function UpstreamProviderList({
                   onToggleEnabled={onToggleEnabled}
                   onReenableKey={onReenableKey}
                   handleCardRefreshed={handleCardRefreshed}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {/* 模型池分区：在全部模式（有模型池时）或模型池专属模式下展示 */}
+      {(viewMode === "all" && modelPools.length > 0) || viewMode === "model_pools" ? (
+        <div className="space-y-3.5" data-testid="ai-gateway-model-pools-section">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <Boxes className="h-4 w-4 text-violet-500" />
+                <h3 className="text-sm font-semibold text-foreground">
+                  {t("aiGatewayModelPoolsTab", "Model pools")}
+                </h3>
+                <span className="rounded-full bg-violet-500/15 px-2 py-0.2 text-[10px] font-semibold text-violet-700 dark:text-violet-300">
+                  {modelPools.length}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  "aiGatewayModelPoolsDesc",
+                  "Aggregate upstream models into unified public model pools with failover.",
+                )}
+              </p>
+            </div>
+          </div>
+
+          {modelPools.length > 0 ? (
+            <div
+              data-testid="ai-gateway-model-pools-toolbar"
+              className="flex flex-wrap items-center justify-between gap-2.5 pt-0.5"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <div
+                  role="group"
+                  aria-label={t("aiGatewayFilterAria", "Filter model pools by status")}
+                  data-testid="ai-gateway-pool-status-filter"
+                  className="inline-flex items-center rounded-lg border border-border/50 bg-muted/60 p-0.5 text-xs shadow-inner"
+                >
+                  <button
+                    type="button"
+                    data-testid="filter-pool-status-all"
+                    aria-pressed={poolStatusFilter === "all"}
+                    onClick={() => setPoolStatusFilter("all")}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                      poolStatusFilter === "all"
+                        ? "bg-background text-foreground shadow-sm border border-border/40"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                    }`}
+                  >
+                    <span>{t("aiGatewayFilterAll", "All")}</span>
+                    <span
+                      className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                        poolStatusFilter === "all"
+                          ? "bg-muted text-foreground"
+                          : "bg-background/60 text-muted-foreground"
+                      }`}
+                    >
+                      {poolCounts.all}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="filter-pool-status-enabled"
+                    aria-pressed={poolStatusFilter === "enabled"}
+                    onClick={() => setPoolStatusFilter("enabled")}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                      poolStatusFilter === "enabled"
+                        ? "bg-background text-foreground shadow-sm border border-border/40"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                    }`}
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    <span>{t("aiGatewayFilterEnabled", "Enabled")}</span>
+                    <span
+                      className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                        poolStatusFilter === "enabled"
+                          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-semibold"
+                          : "bg-background/60 text-muted-foreground"
+                      }`}
+                    >
+                      {poolCounts.enabled}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="filter-pool-status-disabled"
+                    aria-pressed={poolStatusFilter === "disabled"}
+                    onClick={() => setPoolStatusFilter("disabled")}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                      poolStatusFilter === "disabled"
+                        ? "bg-background text-foreground shadow-sm border border-border/40"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                    }`}
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                    <span>{t("aiGatewayFilterDisabled", "Disabled")}</span>
+                    <span
+                      className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                        poolStatusFilter === "disabled"
+                          ? "bg-rose-500/15 text-rose-700 dark:text-rose-300 font-semibold"
+                          : "bg-background/60 text-muted-foreground"
+                      }`}
+                    >
+                      {poolCounts.disabled}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {modelPools.length === 0 ? (
+            <div
+              data-testid="ai-gateway-model-pools-empty"
+              className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/50 px-6 py-10 text-center"
+            >
+              <div className="rounded-full bg-violet-500/10 p-2.5 text-violet-600 dark:text-violet-400">
+                <Boxes className="h-5 w-5" />
+              </div>
+              <h4 className="mt-2.5 text-xs font-medium text-foreground">
+                {t("aiGatewayNoModelPools", "No model pools yet.")}
+              </h4>
+              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+                {t(
+                  "aiGatewayNoModelPoolsGuide",
+                  "Create a model pool to combine models from different providers into a single virtual model.",
+                )}
+              </p>
+              {onAddPool ? (
+                <button
+                  type="button"
+                  onClick={onAddPool}
+                  disabled={busy}
+                  className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
+                >
+                  <Plus className="h-3 w-3" />
+                  {t("aiGatewayModelPoolCreate", "Create model pool")}
+                </button>
+              ) : null}
+            </div>
+          ) : filteredModelPools.length === 0 ? (
+            <div
+              data-testid="ai-gateway-model-pools-filter-empty"
+              className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/40 px-6 py-10 text-center"
+            >
+              <div className="rounded-full bg-muted/60 p-2.5 text-muted-foreground">
+                <Filter className="h-5 w-5 opacity-70" />
+              </div>
+              <h4 className="mt-2.5 text-xs font-medium text-foreground">
+                {t("aiGatewayNoMatchingModelPools", "No matching model pools")}
+              </h4>
+              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+                {t(
+                  "aiGatewayNoMatchingModelPoolsGuide",
+                  "No model pools match the selected status filter.",
+                )}
+              </p>
+              <button
+                type="button"
+                onClick={() => setPoolStatusFilter("all")}
+                className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
+              >
+                <RotateCcw className="h-3 w-3" />
+                {t("aiGatewayClearFilter", "Show all")}
+              </button>
+            </div>
+          ) : (
+            <div
+              data-testid="ai-gateway-model-pools"
+              className="grid gap-3 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3 items-start"
+            >
+              {filteredModelPools.map((pool) => (
+                <ModelPoolCard
+                  key={pool.id}
+                  pool={pool}
+                  providers={providers}
+                  status={poolStatuses.find((item) => item.id === pool.id) ?? null}
+                  busy={busy}
+                  onToggleEnabled={(poolId, enabled) =>
+                    onTogglePoolEnabled?.(poolId, enabled)
+                  }
+                  onEdit={(target) => onEditPool?.(target)}
+                  onDelete={(poolId) => onDeletePool?.(poolId)}
+                  onOpenLogs={(model) => onOpenPoolLogs?.(model)}
                 />
               ))}
             </div>
