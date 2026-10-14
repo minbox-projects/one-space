@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
   ArrowRightLeft,
+  Boxes,
   Check,
   ChevronDown,
   Cpu,
@@ -52,6 +53,7 @@ import {
 } from "@/lib/aiGatewayAlertBadges";
 
 export type ProviderStatusFilter = "all" | "enabled" | "disabled";
+export type ProviderViewMode = "all" | "providers" | "model_pools";
 
 type UpstreamProviderListProps = {
   providers: GatewayUpstreamProvider[];
@@ -69,6 +71,7 @@ type UpstreamProviderListProps = {
   modelPools?: GatewayModelPool[];
   poolStatuses?: GatewayModelPoolStatus[];
   onTogglePoolEnabled?: (poolId: string, enabled: boolean) => void;
+  onAddPool?: () => void;
   onEditPool?: (pool: GatewayModelPool) => void;
   onDeletePool?: (poolId: string) => void;
   onOpenPoolLogs?: (model: string) => void;
@@ -567,6 +570,7 @@ export function UpstreamProviderList({
   modelPools = [],
   poolStatuses = [],
   onTogglePoolEnabled,
+  onAddPool,
   onEditPool,
   onDeletePool,
   onOpenPoolLogs,
@@ -576,7 +580,9 @@ export function UpstreamProviderList({
   // 计算所有服务商之前仅获取一次当前时间（有意读取时钟，providers 变化时重拍）
   // eslint-disable-next-line react-hooks/purity -- baseNow 需要在 providers 变化时快照 Date.now()
   const baseNow = useMemo(() => Date.now(), [providers]);
+  const [viewMode, setViewMode] = useState<ProviderViewMode>("all");
   const [statusFilter, setStatusFilter] = useState<ProviderStatusFilter>("all");
+  const [poolStatusFilter, setPoolStatusFilter] = useState<ProviderStatusFilter>("all");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [tagFilterOpen, setTagFilterOpen] = useState(false);
   const [quotaRefreshToken, setQuotaRefreshToken] = useState(0);
@@ -660,6 +666,31 @@ export function UpstreamProviderList({
       return true;
     });
   }, [providers, statusFilter, selectedTags]);
+
+  const poolCounts = useMemo(() => {
+    let enabled = 0;
+    let disabled = 0;
+    for (const pool of modelPools) {
+      if (pool.enabled) {
+        enabled++;
+      } else {
+        disabled++;
+      }
+    }
+    return {
+      all: modelPools.length,
+      enabled,
+      disabled,
+    };
+  }, [modelPools]);
+
+  const filteredModelPools = useMemo(() => {
+    return modelPools.filter((pool) => {
+      if (poolStatusFilter === "enabled" && !pool.enabled) return false;
+      if (poolStatusFilter === "disabled" && pool.enabled) return false;
+      return true;
+    });
+  }, [modelPools, poolStatusFilter]);
 
   // Every currently actionable warning instance across all providers: auto-disabled
   // rows and template-retired rows. Dismissals are pruned against this set so a
@@ -760,27 +791,81 @@ export function UpstreamProviderList({
   }, [canRefreshQuota]);
 
   return (
-    <section className="space-y-3.5" data-testid="ai-gateway-providers">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-0.5">
-          <div className="flex items-center gap-2">
-            <Server className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-semibold text-foreground">
-              {t("aiGatewayProviders", "Upstream providers")}
-            </h3>
-            <span className="rounded-full bg-muted px-2 py-0.2 text-[10px] font-semibold text-muted-foreground">
+    <section className="space-y-5" data-testid="ai-gateway-providers">
+      {/* 顶部视图分段切换栏与全局快捷操作 */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-1 border-b border-border/40">
+        <div
+          role="group"
+          aria-label={t("aiGatewayViewModeAria", "Select view mode")}
+          data-testid="ai-gateway-view-mode-selector"
+          className="inline-flex items-center rounded-lg border border-border/50 bg-muted/60 p-0.5 text-xs shadow-inner"
+        >
+          <button
+            type="button"
+            aria-pressed={viewMode === "all"}
+            data-testid="ai-gateway-view-mode-all"
+            onClick={() => setViewMode("all")}
+            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+              viewMode === "all"
+                ? "bg-background text-foreground shadow-xs border border-border/40 font-semibold"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+            }`}
+          >
+            <span>{t("aiGatewayFilterAll", "All")}</span>
+            <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] text-muted-foreground">
+              {providers.length + modelPools.length}
+            </span>
+          </button>
+          <button
+            type="button"
+            aria-pressed={viewMode === "providers"}
+            data-testid="ai-gateway-view-mode-providers"
+            onClick={() => setViewMode("providers")}
+            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+              viewMode === "providers"
+                ? "bg-background text-foreground shadow-xs border border-border/40 font-semibold"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+            }`}
+          >
+            <Server className="h-3.5 w-3.5 text-primary" />
+            <span>{t("aiGatewayProviders", "Upstream providers")}</span>
+            <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] text-muted-foreground">
               {providers.length}
             </span>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {t(
-              "aiGatewayProvidersDesc",
-              "Manage remote AI provider endpoints, protocols, and model route mappings.",
-            )}
-          </p>
+          </button>
+          <button
+            type="button"
+            aria-pressed={viewMode === "model_pools"}
+            data-testid="ai-gateway-view-mode-model-pools"
+            onClick={() => setViewMode("model_pools")}
+            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+              viewMode === "model_pools"
+                ? "bg-background text-foreground shadow-xs border border-border/40 font-semibold"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+            }`}
+          >
+            <Boxes className="h-3.5 w-3.5 text-violet-500" />
+            <span>{t("aiGatewayModelPoolsTab", "Model pools")}</span>
+            <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] text-muted-foreground">
+              {modelPools.length}
+            </span>
+          </button>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          {onAddPool ? (
+            <button
+              type="button"
+              onClick={onAddPool}
+              disabled={busy}
+              data-testid="ai-gateway-add-model-pool"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 text-xs font-medium text-violet-700 dark:text-violet-300 shadow-xs transition hover:bg-violet-500/20 active:bg-violet-500/30 disabled:opacity-50"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {t("aiGatewayModelPoolCreate", "Create model pool")}
+            </button>
+          ) : null}
+
           {onManageTemplates ? (
             <button
               type="button"
@@ -805,318 +890,500 @@ export function UpstreamProviderList({
         </div>
       </div>
 
-      {providers.length > 0 ? (
-        <div
-          data-testid="ai-gateway-providers-toolbar"
-          className="flex flex-wrap items-center justify-between gap-2.5 pt-0.5"
-        >
-          <div className="flex flex-wrap items-center gap-2">
-            <div
-              role="group"
-              aria-label={t("aiGatewayFilterAria", "Filter providers by status")}
-              data-testid="ai-gateway-provider-status-filter"
-              className="inline-flex items-center rounded-lg border border-border/50 bg-muted/60 p-0.5 text-xs shadow-inner"
-            >
-              <button
-                type="button"
-                data-testid="filter-status-all"
-                aria-pressed={statusFilter === "all"}
-                onClick={() => setStatusFilter("all")}
-                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
-                  statusFilter === "all"
-                    ? "bg-background text-foreground shadow-sm border border-border/40"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-                }`}
-              >
-                <span>{t("aiGatewayFilterAll", "All")}</span>
-                <span
-                  className={`rounded-full px-1.5 py-0.2 text-[10px] ${
-                    statusFilter === "all"
-                      ? "bg-muted text-foreground"
-                      : "bg-background/60 text-muted-foreground"
-                  }`}
-                >
-                  {counts.all}
+      {/* 模型池分区：在全部模式（有模型池时）或模型池专属模式下展示 */}
+      {(viewMode === "all" && modelPools.length > 0) || viewMode === "model_pools" ? (
+        <div className="space-y-3" data-testid="ai-gateway-model-pools-section">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <Boxes className="h-4 w-4 text-violet-500" />
+                <h3 className="text-sm font-semibold text-foreground">
+                  {t("aiGatewayModelPoolsTab", "Model pools")}
+                </h3>
+                <span className="rounded-full bg-violet-500/15 px-2 py-0.2 text-[10px] font-semibold text-violet-700 dark:text-violet-300">
+                  {modelPools.length}
                 </span>
-              </button>
-
-              <button
-                type="button"
-                data-testid="filter-status-enabled"
-                aria-pressed={statusFilter === "enabled"}
-                onClick={() => setStatusFilter("enabled")}
-                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
-                  statusFilter === "enabled"
-                    ? "bg-background text-foreground shadow-sm border border-border/40"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-                }`}
-              >
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                <span>{t("aiGatewayFilterEnabled", "Enabled")}</span>
-                <span
-                  className={`rounded-full px-1.5 py-0.2 text-[10px] ${
-                    statusFilter === "enabled"
-                      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-semibold"
-                      : "bg-background/60 text-muted-foreground"
-                  }`}
-                >
-                  {counts.enabled}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                data-testid="filter-status-disabled"
-                aria-pressed={statusFilter === "disabled"}
-                onClick={() => setStatusFilter("disabled")}
-                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
-                  statusFilter === "disabled"
-                    ? "bg-background text-foreground shadow-sm border border-border/40"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-                }`}
-              >
-                <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
-                <span>{t("aiGatewayFilterDisabled", "Disabled")}</span>
-                <span
-                  className={`rounded-full px-1.5 py-0.2 text-[10px] ${
-                    statusFilter === "disabled"
-                      ? "bg-rose-500/15 text-rose-700 dark:text-rose-300 font-semibold"
-                      : "bg-background/60 text-muted-foreground"
-                  }`}
-                >
-                  {counts.disabled}
-                </span>
-              </button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  "aiGatewayModelPoolsDesc",
+                  "Aggregate upstream models into unified public model pools with failover.",
+                )}
+              </p>
             </div>
 
-            {allAvailableTags.length > 0 ? (
-              <div className="relative" ref={tagFilterRef}>
+            {modelPools.length > 0 ? (
+              <div
+                role="group"
+                aria-label={t("aiGatewayFilterAria", "Filter model pools by status")}
+                data-testid="ai-gateway-pool-status-filter"
+                className="inline-flex items-center rounded-lg border border-border/50 bg-muted/60 p-0.5 text-xs shadow-inner"
+              >
                 <button
                   type="button"
-                  data-testid="ai-gateway-tag-filter-trigger"
-                  aria-expanded={tagFilterOpen}
-                  onClick={() => setTagFilterOpen((v) => !v)}
-                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium shadow-xs transition ${
-                    selectedTags.length > 0
-                      ? "border-primary/50 bg-primary/10 text-primary"
-                      : "border-border/70 bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                  data-testid="filter-pool-status-all"
+                  aria-pressed={poolStatusFilter === "all"}
+                  onClick={() => setPoolStatusFilter("all")}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                    poolStatusFilter === "all"
+                      ? "bg-background text-foreground shadow-sm border border-border/40"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
                   }`}
                 >
-                  <Tag className="h-3.5 w-3.5" />
-                  <span>{t("aiGatewayFilterByTags", "Tags")}</span>
-                  {selectedTags.length > 0 ? (
-                    <span
-                      data-testid="ai-gateway-tag-filter-badge"
-                      className="rounded-full bg-primary px-1.5 py-0.2 text-[10px] font-semibold text-primary-foreground"
-                    >
-                      {selectedTags.length}
-                    </span>
-                  ) : null}
-                  <ChevronDown
-                    className={`h-3 w-3 opacity-60 transition-transform ${
-                      tagFilterOpen ? "rotate-180" : ""
+                  <span>{t("aiGatewayFilterAll", "All")}</span>
+                  <span
+                    className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                      poolStatusFilter === "all"
+                        ? "bg-muted text-foreground"
+                        : "bg-background/60 text-muted-foreground"
                     }`}
-                  />
-                </button>
-
-                {tagFilterOpen && (
-                  <div
-                    data-testid="ai-gateway-tag-filter-menu"
-                    className="absolute left-0 z-50 mt-1.5 min-w-[200px] max-w-[280px] rounded-lg border border-border/80 bg-popover p-1.5 shadow-lg backdrop-blur-md animate-in fade-in-50 zoom-in-95"
                   >
-                    <div className="flex items-center justify-between border-b border-border/50 px-2 py-1 pb-1.5 text-xs font-semibold text-foreground">
-                      <span>{t("aiGatewayFilterByTags", "Filter by tags")}</span>
-                      {selectedTags.length > 0 ? (
-                        <button
-                          type="button"
-                          data-testid="ai-gateway-tag-filter-clear"
-                          onClick={clearTagFilter}
-                          className="text-[11px] font-normal text-muted-foreground hover:text-foreground"
-                        >
-                          {t("aiGatewayClearFilter", "Clear")}
-                        </button>
-                      ) : null}
-                    </div>
-                    <div className="max-h-56 overflow-y-auto py-1 space-y-0.5">
-                      {allAvailableTags.map((tag) => {
-                        const isChecked = selectedTags.includes(tag);
-                        const count = tagCounts.get(tag) ?? 0;
-                        return (
-                          <button
-                            key={tag}
-                            type="button"
-                            data-testid={`ai-gateway-tag-option-${tag}`}
-                            onClick={() => toggleTagFilter(tag)}
-                            className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-foreground hover:bg-muted/70 transition-colors"
-                          >
-                            <div className="flex items-center gap-2 truncate">
-                              <div
-                                className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${
-                                  isChecked
-                                    ? "border-primary bg-primary text-primary-foreground"
-                                    : "border-muted-foreground/40 bg-background"
-                                }`}
-                              >
-                                {isChecked && <Check className="h-2.5 w-2.5" />}
-                              </div>
-                              <span className="truncate">{tag}</span>
-                            </div>
-                            <span className="ml-2 text-[10px] text-muted-foreground">
-                              {count}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+                    {poolCounts.all}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  data-testid="filter-pool-status-enabled"
+                  aria-pressed={poolStatusFilter === "enabled"}
+                  onClick={() => setPoolStatusFilter("enabled")}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                    poolStatusFilter === "enabled"
+                      ? "bg-background text-foreground shadow-sm border border-border/40"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                  }`}
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  <span>{t("aiGatewayFilterEnabled", "Enabled")}</span>
+                  <span
+                    className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                      poolStatusFilter === "enabled"
+                        ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-semibold"
+                        : "bg-background/60 text-muted-foreground"
+                    }`}
+                  >
+                    {poolCounts.enabled}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  data-testid="filter-pool-status-disabled"
+                  aria-pressed={poolStatusFilter === "disabled"}
+                  onClick={() => setPoolStatusFilter("disabled")}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                    poolStatusFilter === "disabled"
+                      ? "bg-background text-foreground shadow-sm border border-border/40"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                  }`}
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                  <span>{t("aiGatewayFilterDisabled", "Disabled")}</span>
+                  <span
+                    className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                      poolStatusFilter === "disabled"
+                        ? "bg-rose-500/15 text-rose-700 dark:text-rose-300 font-semibold"
+                        : "bg-background/60 text-muted-foreground"
+                    }`}
+                  >
+                    {poolCounts.disabled}
+                  </span>
+                </button>
               </div>
             ) : null}
           </div>
 
-          <div className="flex items-center gap-2.5 text-xs">
-            {lastRefreshedAt ? (
-              <span
-                data-testid="ai-gateway-providers-last-refreshed"
-                className="text-[11px] text-muted-foreground"
-              >
-                {t("aiGatewayProvidersLastRefreshed", "最后刷新：{{time}}", {
-                  time: formatDateTime(lastRefreshedAt),
-                })}
-              </span>
-            ) : null}
-
-            <button
-              type="button"
-              data-testid="ai-gateway-providers-refresh"
-              disabled={!canRefreshQuota || isRefreshing}
-              aria-label={t("aiGatewayProvidersRefreshQuotaAria")}
-              title={
-                canRefreshQuota
-                  ? t("aiGatewayProvidersRefreshQuotaAria")
-                  : t("aiGatewayProvidersRefreshQuotaDisabled")
-              }
-              onClick={handleBulkRefresh}
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/70 bg-background px-3 text-xs font-medium text-foreground shadow-xs transition hover:bg-muted active:bg-muted/80 disabled:cursor-not-allowed disabled:opacity-50"
+          {modelPools.length === 0 ? (
+            <div
+              data-testid="ai-gateway-model-pools-empty"
+              className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/50 px-6 py-10 text-center"
             >
-              <RotateCcw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
-              <span>{t("aiGatewayProvidersRefreshQuota")}</span>
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      {/* 模型池虚拟卡片：与真实上游服务商并列展示 */}
-      {modelPools.length > 0 ? (
-        <div
-          data-testid="ai-gateway-model-pools"
-          className="grid gap-3 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3 items-start"
-        >
-          {modelPools.map((pool) => (
-            <ModelPoolCard
-              key={pool.id}
-              pool={pool}
-              providers={providers}
-              status={poolStatuses.find((item) => item.id === pool.id) ?? null}
-              busy={busy}
-              onToggleEnabled={(poolId, enabled) =>
-                onTogglePoolEnabled?.(poolId, enabled)
-              }
-              onEdit={(target) => onEditPool?.(target)}
-              onDelete={(poolId) => onDeletePool?.(poolId)}
-              onOpenLogs={(model) => onOpenPoolLogs?.(model)}
-            />
-          ))}
-        </div>
-      ) : null}
-
-      {providers.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/50 px-6 py-10 text-center">
-          <div className="rounded-full bg-muted/60 p-2.5 text-muted-foreground">
-            <Server className="h-5 w-5" />
-          </div>
-          <h4 className="mt-2.5 text-xs font-medium text-foreground">
-            {t("aiGatewayNoProviders", "No upstream providers yet.")}
-          </h4>
-          <p className="mt-1 max-w-sm text-xs text-muted-foreground">
-            {t(
-              "aiGatewayNoProvidersGuide",
-              "Add upstream providers like OpenAI, DeepSeek, or any OpenAI-compatible API to start proxying requests.",
-            )}
-          </p>
-          <div className="mt-3.5 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onAdd}
-              disabled={busy}
-              className="inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
+              <div className="rounded-full bg-violet-500/10 p-2.5 text-violet-600 dark:text-violet-400">
+                <Boxes className="h-5 w-5" />
+              </div>
+              <h4 className="mt-2.5 text-xs font-medium text-foreground">
+                {t("aiGatewayNoModelPools", "No model pools yet.")}
+              </h4>
+              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+                {t(
+                  "aiGatewayNoModelPoolsGuide",
+                  "Create a model pool to combine models from different providers into a single virtual model.",
+                )}
+              </p>
+              {onAddPool ? (
+                <button
+                  type="button"
+                  onClick={onAddPool}
+                  disabled={busy}
+                  className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
+                >
+                  <Plus className="h-3 w-3" />
+                  {t("aiGatewayModelPoolCreate", "Create model pool")}
+                </button>
+              ) : null}
+            </div>
+          ) : filteredModelPools.length === 0 ? (
+            <div
+              data-testid="ai-gateway-model-pools-filter-empty"
+              className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/40 px-6 py-10 text-center"
             >
-              <Plus className="h-3 w-3" />
-              {t("aiGatewayAddProvider", "Add provider")}
-            </button>
-            {onManageTemplates ? (
+              <div className="rounded-full bg-muted/60 p-2.5 text-muted-foreground">
+                <Filter className="h-5 w-5 opacity-70" />
+              </div>
+              <h4 className="mt-2.5 text-xs font-medium text-foreground">
+                {t("aiGatewayNoMatchingModelPools", "No matching model pools")}
+              </h4>
+              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+                {t(
+                  "aiGatewayNoMatchingModelPoolsGuide",
+                  "No model pools match the selected status filter.",
+                )}
+              </p>
               <button
                 type="button"
-                onClick={onManageTemplates}
-                data-testid="ai-gateway-manage-templates-empty"
-                className="inline-flex h-7.5 items-center gap-1.5 rounded-lg border border-border/70 bg-background px-3 text-xs font-medium text-muted-foreground shadow-sm transition hover:bg-muted hover:text-foreground"
+                onClick={() => setPoolStatusFilter("all")}
+                className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
               >
-                <Sparkles className="h-3 w-3 text-primary" />
-                {t("aiGatewayProviderTemplatesButton", "Provider templates")}
+                <RotateCcw className="h-3 w-3" />
+                {t("aiGatewayClearFilter", "Show all")}
               </button>
-            ) : null}
+            </div>
+          ) : (
+            <div
+              data-testid="ai-gateway-model-pools"
+              className="grid gap-3 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3 items-start"
+            >
+              {filteredModelPools.map((pool) => (
+                <ModelPoolCard
+                  key={pool.id}
+                  pool={pool}
+                  providers={providers}
+                  status={poolStatuses.find((item) => item.id === pool.id) ?? null}
+                  busy={busy}
+                  onToggleEnabled={(poolId, enabled) =>
+                    onTogglePoolEnabled?.(poolId, enabled)
+                  }
+                  onEdit={(target) => onEditPool?.(target)}
+                  onDelete={(poolId) => onDeletePool?.(poolId)}
+                  onOpenLogs={(model) => onOpenPoolLogs?.(model)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {/* 上游服务商分区：在全部模式或服务商专属模式下展示 */}
+      {viewMode === "all" || viewMode === "providers" ? (
+        <div className="space-y-3.5" data-testid="ai-gateway-providers-section">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <Server className="h-4 w-4 text-primary" />
+                <h3 className="text-sm font-semibold text-foreground">
+                  {t("aiGatewayProviders", "Upstream providers")}
+                </h3>
+                <span className="rounded-full bg-muted px-2 py-0.2 text-[10px] font-semibold text-muted-foreground">
+                  {providers.length}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  "aiGatewayProvidersDesc",
+                  "Manage remote AI provider endpoints, protocols, and model route mappings.",
+                )}
+              </p>
+            </div>
           </div>
+
+          {providers.length > 0 ? (
+            <div
+              data-testid="ai-gateway-providers-toolbar"
+              className="flex flex-wrap items-center justify-between gap-2.5 pt-0.5"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <div
+                  role="group"
+                  aria-label={t("aiGatewayFilterAria", "Filter providers by status")}
+                  data-testid="ai-gateway-provider-status-filter"
+                  className="inline-flex items-center rounded-lg border border-border/50 bg-muted/60 p-0.5 text-xs shadow-inner"
+                >
+                  <button
+                    type="button"
+                    data-testid="filter-status-all"
+                    aria-pressed={statusFilter === "all"}
+                    onClick={() => setStatusFilter("all")}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                      statusFilter === "all"
+                        ? "bg-background text-foreground shadow-sm border border-border/40"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                    }`}
+                  >
+                    <span>{t("aiGatewayFilterAll", "All")}</span>
+                    <span
+                      className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                        statusFilter === "all"
+                          ? "bg-muted text-foreground"
+                          : "bg-background/60 text-muted-foreground"
+                      }`}
+                    >
+                      {counts.all}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="filter-status-enabled"
+                    aria-pressed={statusFilter === "enabled"}
+                    onClick={() => setStatusFilter("enabled")}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                      statusFilter === "enabled"
+                        ? "bg-background text-foreground shadow-sm border border-border/40"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                    }`}
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    <span>{t("aiGatewayFilterEnabled", "Enabled")}</span>
+                    <span
+                      className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                        statusFilter === "enabled"
+                          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-semibold"
+                          : "bg-background/60 text-muted-foreground"
+                      }`}
+                    >
+                      {counts.enabled}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="filter-status-disabled"
+                    aria-pressed={statusFilter === "disabled"}
+                    onClick={() => setStatusFilter("disabled")}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                      statusFilter === "disabled"
+                        ? "bg-background text-foreground shadow-sm border border-border/40"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                    }`}
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                    <span>{t("aiGatewayFilterDisabled", "Disabled")}</span>
+                    <span
+                      className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                        statusFilter === "disabled"
+                          ? "bg-rose-500/15 text-rose-700 dark:text-rose-300 font-semibold"
+                          : "bg-background/60 text-muted-foreground"
+                      }`}
+                    >
+                      {counts.disabled}
+                    </span>
+                  </button>
+                </div>
+
+                {allAvailableTags.length > 0 ? (
+                  <div className="relative" ref={tagFilterRef}>
+                    <button
+                      type="button"
+                      data-testid="ai-gateway-tag-filter-trigger"
+                      aria-expanded={tagFilterOpen}
+                      onClick={() => setTagFilterOpen((v) => !v)}
+                      className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium shadow-xs transition ${
+                        selectedTags.length > 0
+                          ? "border-primary/50 bg-primary/10 text-primary"
+                          : "border-border/70 bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                      }`}
+                    >
+                      <Tag className="h-3.5 w-3.5" />
+                      <span>{t("aiGatewayFilterByTags", "Tags")}</span>
+                      {selectedTags.length > 0 ? (
+                        <span
+                          data-testid="ai-gateway-tag-filter-badge"
+                          className="rounded-full bg-primary px-1.5 py-0.2 text-[10px] font-semibold text-primary-foreground"
+                        >
+                          {selectedTags.length}
+                        </span>
+                      ) : null}
+                      <ChevronDown
+                        className={`h-3 w-3 opacity-60 transition-transform ${
+                          tagFilterOpen ? "rotate-180" : ""
+                        }`}
+                      />
+                    </button>
+
+                    {tagFilterOpen && (
+                      <div
+                        data-testid="ai-gateway-tag-filter-menu"
+                        className="absolute left-0 z-50 mt-1.5 min-w-[200px] max-w-[280px] rounded-lg border border-border/80 bg-popover p-1.5 shadow-lg backdrop-blur-md animate-in fade-in-50 zoom-in-95"
+                      >
+                        <div className="flex items-center justify-between border-b border-border/50 px-2 py-1 pb-1.5 text-xs font-semibold text-foreground">
+                          <span>{t("aiGatewayFilterByTags", "Filter by tags")}</span>
+                          {selectedTags.length > 0 ? (
+                            <button
+                              type="button"
+                              data-testid="ai-gateway-tag-filter-clear"
+                              onClick={clearTagFilter}
+                              className="text-[11px] font-normal text-muted-foreground hover:text-foreground"
+                            >
+                              {t("aiGatewayClearFilter", "Clear")}
+                            </button>
+                          ) : null}
+                        </div>
+                        <div className="max-h-56 overflow-y-auto py-1 space-y-0.5">
+                          {allAvailableTags.map((tag) => {
+                            const isChecked = selectedTags.includes(tag);
+                            const count = tagCounts.get(tag) ?? 0;
+                            return (
+                              <button
+                                key={tag}
+                                type="button"
+                                data-testid={`ai-gateway-tag-option-${tag}`}
+                                onClick={() => toggleTagFilter(tag)}
+                                className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-foreground hover:bg-muted/70 transition-colors"
+                              >
+                                <div className="flex items-center gap-2 truncate">
+                                  <div
+                                    className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${
+                                      isChecked
+                                        ? "border-primary bg-primary text-primary-foreground"
+                                        : "border-muted-foreground/40 bg-background"
+                                    }`}
+                                  >
+                                    {isChecked && <Check className="h-2.5 w-2.5" />}
+                                  </div>
+                                  <span className="truncate">{tag}</span>
+                                </div>
+                                <span className="ml-2 text-[10px] text-muted-foreground">
+                                  {count}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="flex items-center gap-2.5 text-xs">
+                {lastRefreshedAt ? (
+                  <span
+                    data-testid="ai-gateway-providers-last-refreshed"
+                    className="text-[11px] text-muted-foreground"
+                  >
+                    {t("aiGatewayProvidersLastRefreshed", "最后刷新：{{time}}", {
+                      time: formatDateTime(lastRefreshedAt),
+                    })}
+                  </span>
+                ) : null}
+
+                <button
+                  type="button"
+                  data-testid="ai-gateway-providers-refresh"
+                  disabled={!canRefreshQuota || isRefreshing}
+                  aria-label={t("aiGatewayProvidersRefreshQuotaAria")}
+                  title={
+                    canRefreshQuota
+                      ? t("aiGatewayProvidersRefreshQuotaAria")
+                      : t("aiGatewayProvidersRefreshQuotaDisabled")
+                  }
+                  onClick={handleBulkRefresh}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/70 bg-background px-3 text-xs font-medium text-foreground shadow-xs transition hover:bg-muted active:bg-muted/80 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RotateCcw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+                  <span>{t("aiGatewayProvidersRefreshQuota")}</span>
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {providers.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/50 px-6 py-10 text-center">
+              <div className="rounded-full bg-muted/60 p-2.5 text-muted-foreground">
+                <Server className="h-5 w-5" />
+              </div>
+              <h4 className="mt-2.5 text-xs font-medium text-foreground">
+                {t("aiGatewayNoProviders", "No upstream providers yet.")}
+              </h4>
+              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+                {t(
+                  "aiGatewayNoProvidersGuide",
+                  "Add upstream providers like OpenAI, DeepSeek, or any OpenAI-compatible API to start proxying requests.",
+                )}
+              </p>
+              <div className="mt-3.5 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={onAdd}
+                  disabled={busy}
+                  className="inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
+                >
+                  <Plus className="h-3 w-3" />
+                  {t("aiGatewayAddProvider", "Add provider")}
+                </button>
+                {onManageTemplates ? (
+                  <button
+                    type="button"
+                    onClick={onManageTemplates}
+                    data-testid="ai-gateway-manage-templates-empty"
+                    className="inline-flex h-7.5 items-center gap-1.5 rounded-lg border border-border/70 bg-background px-3 text-xs font-medium text-muted-foreground shadow-sm transition hover:bg-muted hover:text-foreground"
+                  >
+                    <Sparkles className="h-3 w-3 text-primary" />
+                    {t("aiGatewayProviderTemplatesButton", "Provider templates")}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : filteredProviders.length === 0 ? (
+            <div
+              data-testid="ai-gateway-providers-filter-empty"
+              className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/40 px-6 py-10 text-center"
+            >
+              <div className="rounded-full bg-muted/60 p-2.5 text-muted-foreground">
+                <Filter className="h-5 w-5 opacity-70" />
+              </div>
+              <h4 className="mt-2.5 text-xs font-medium text-foreground">
+                {t("aiGatewayNoMatchingProviders", "No matching upstream providers")}
+              </h4>
+              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+                {t(
+                  "aiGatewayNoMatchingProvidersGuide",
+                  "No upstream providers match the selected status filter.",
+                )}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setStatusFilter("all");
+                  setSelectedTags([]);
+                }}
+                className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
+              >
+                <RotateCcw className="h-3 w-3" />
+                {t("aiGatewayClearFilter", "Show all providers")}
+              </button>
+            </div>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3 items-start">
+              {filteredProviders.map((provider) => (
+                <UpstreamProviderCardItem
+                  key={provider.id}
+                  provider={provider}
+                  isSelected={provider.id === selectedProviderId}
+                  busy={busy}
+                  templates={templates}
+                  baseNow={baseNow}
+                  quotaRefreshToken={quotaRefreshToken}
+                  dismissedKeys={dismissedKeys}
+                  handleDismissInstances={handleDismissInstances}
+                  onSelect={onSelect}
+                  onToggleEnabled={onToggleEnabled}
+                  onReenableKey={onReenableKey}
+                  handleCardRefreshed={handleCardRefreshed}
+                />
+              ))}
+            </div>
+          )}
         </div>
-      ) : filteredProviders.length === 0 ? (
-        <div
-          data-testid="ai-gateway-providers-filter-empty"
-          className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/40 px-6 py-10 text-center"
-        >
-          <div className="rounded-full bg-muted/60 p-2.5 text-muted-foreground">
-            <Filter className="h-5 w-5 opacity-70" />
-          </div>
-          <h4 className="mt-2.5 text-xs font-medium text-foreground">
-            {t("aiGatewayNoMatchingProviders", "No matching upstream providers")}
-          </h4>
-          <p className="mt-1 max-w-sm text-xs text-muted-foreground">
-            {t(
-              "aiGatewayNoMatchingProvidersGuide",
-              "No upstream providers match the selected status filter.",
-            )}
-          </p>
-          <button
-            type="button"
-            onClick={() => {
-              setStatusFilter("all");
-              setSelectedTags([]);
-            }}
-            className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
-          >
-            <RotateCcw className="h-3 w-3" />
-            {t("aiGatewayClearFilter", "Show all providers")}
-          </button>
-        </div>
-      ) : (
-        <div className="grid gap-3 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3 items-start">
-          {filteredProviders.map((provider) => (
-            <UpstreamProviderCardItem
-              key={provider.id}
-              provider={provider}
-              isSelected={provider.id === selectedProviderId}
-              busy={busy}
-              templates={templates}
-              baseNow={baseNow}
-              quotaRefreshToken={quotaRefreshToken}
-              dismissedKeys={dismissedKeys}
-              handleDismissInstances={handleDismissInstances}
-              onSelect={onSelect}
-              onToggleEnabled={onToggleEnabled}
-              onReenableKey={onReenableKey}
-              handleCardRefreshed={handleCardRefreshed}
-            />
-          ))}
-        </div>
-      )}
+      ) : null}
     </section>
   );
 }

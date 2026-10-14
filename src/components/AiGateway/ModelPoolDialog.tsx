@@ -1,6 +1,15 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, Search, Server, Trash2, X } from "lucide-react";
+import {
+  CheckSquare,
+  ChevronDown,
+  Layers,
+  Search,
+  Server,
+  Sparkles,
+  Trash2,
+  X,
+} from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -18,6 +27,7 @@ import {
   type GatewayModelPool,
   type GatewayModelPoolCandidate,
   type GatewayModelPoolStatus,
+  type GatewayProviderTemplateView,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
 } from "@/lib/aiGateway";
@@ -29,6 +39,8 @@ type ModelPoolDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   providers: GatewayUpstreamProvider[];
+  /** Loaded template views, used to resolve a provider's bound template name. */
+  templates?: GatewayProviderTemplateView[];
   /** The saved pool being edited; `null`/absent creates a new pool. */
   pool?: GatewayModelPool | null;
   /** Latest nonsecret status for the edited pool, used only for reasons. */
@@ -54,6 +66,7 @@ export function ModelPoolDialog({
   open,
   onOpenChange,
   providers,
+  templates = [],
   pool = null,
   poolStatus = null,
   busy = false,
@@ -77,8 +90,24 @@ export function ModelPoolDialog({
   });
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // 默认仅展开第一个已启用的服务商，后续已启用的服务商默认折叠
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    const initial: Record<string, boolean> = {};
+    const enabledList = providers.filter((p) => p.enabled !== false);
+    enabledList.forEach((provider, index) => {
+      if (index > 0) {
+        initial[provider.id] = true;
+      }
+    });
+    return initial;
+  });
   const [saving, setSaving] = useState(false);
+
+  // 来源模型中仅显示已启用的服务商
+  const activeProviders = useMemo(
+    () => providers.filter((p) => p.enabled !== false),
+    [providers],
+  );
 
   const statusByKey = useMemo(() => {
     const map = new Map<string, GatewayModelPoolStatus["candidates"][number]>();
@@ -89,32 +118,38 @@ export function ModelPoolDialog({
   }, [poolStatus]);
 
   const sourceGroups = useMemo(() => {
-    const groups = providers.map((provider) => ({
-      providerId: provider.id,
-      providerName: provider.name,
-      rows: (provider.mappings ?? [])
-        .map((mapping) => {
-          const localModel = mapping.local_model.trim();
-          const upstreamModel = mapping.upstream_model.trim();
-          if (!localModel || !upstreamModel) return null;
-          const candidate: GatewayModelPoolCandidate = {
-            provider_id: provider.id,
-            local_model: localModel,
-            upstream_model: upstreamModel,
-            protocol:
-              (mapping.protocol as GatewayUpstreamProtocol | undefined) ??
-              provider.protocol ??
-              "chat_completions",
-            weight: 1,
-          };
-          return { key: modelPoolCandidateKey(candidate), candidate };
-        })
-        .filter((row): row is { key: string; candidate: GatewayModelPoolCandidate } =>
-          row !== null,
-        ),
-    }));
+    const groups = activeProviders.map((provider) => {
+      const template = provider.template_id
+        ? templates.find((t) => t.template.id === provider.template_id)?.template
+        : undefined;
+      return {
+        providerId: provider.id,
+        providerName: provider.name,
+        templateName: template?.name ?? null,
+        rows: (provider.mappings ?? [])
+          .map((mapping) => {
+            const localModel = mapping.local_model.trim();
+            const upstreamModel = mapping.upstream_model.trim();
+            if (!localModel || !upstreamModel) return null;
+            const candidate: GatewayModelPoolCandidate = {
+              provider_id: provider.id,
+              local_model: localModel,
+              upstream_model: upstreamModel,
+              protocol:
+                (mapping.protocol as GatewayUpstreamProtocol | undefined) ??
+                provider.protocol ??
+                "chat_completions",
+              weight: 1,
+            };
+            return { key: modelPoolCandidateKey(candidate), candidate };
+          })
+          .filter((row): row is { key: string; candidate: GatewayModelPoolCandidate } =>
+            row !== null,
+          ),
+      };
+    });
     return groups;
-  }, [providers]);
+  }, [activeProviders, templates]);
 
   const normalizedQuery = query.trim().toLowerCase();
 
@@ -122,6 +157,60 @@ export function ModelPoolDialog({
     () => new Set(selected.map((candidate) => candidate.key)),
     [selected],
   );
+
+  // 当前搜索过滤条件下的所有可见来源候选模型
+  const filteredCandidates = useMemo(() => {
+    const list: GatewayModelPoolCandidate[] = [];
+    for (const group of sourceGroups) {
+      const visibleRows = group.rows.filter((row) =>
+        normalizedQuery
+          ? row.candidate.local_model.toLowerCase().includes(normalizedQuery) ||
+            row.candidate.upstream_model.toLowerCase().includes(normalizedQuery) ||
+            group.providerName.toLowerCase().includes(normalizedQuery)
+          : true,
+      );
+      for (const r of visibleRows) {
+        list.push(r.candidate);
+      }
+    }
+    return list;
+  }, [sourceGroups, normalizedQuery]);
+
+  const allFilteredSelected = useMemo(() => {
+    if (filteredCandidates.length === 0) return false;
+    return filteredCandidates.every((candidate) =>
+      selectedKeys.has(modelPoolCandidateKey(candidate)),
+    );
+  }, [filteredCandidates, selectedKeys]);
+
+  const toggleSelectAllFiltered = () => {
+    if (filteredCandidates.length === 0) return;
+    if (allFilteredSelected) {
+      // 取消全选：移除所有属于当前筛选结果的候选项
+      const keysToRemove = new Set(
+        filteredCandidates.map((c) => modelPoolCandidateKey(c)),
+      );
+      setSelected((prev) => prev.filter((item) => !keysToRemove.has(item.key)));
+    } else {
+      // 全选：将尚未在已选中的筛选模型全部加入
+      const newItems: DraftCandidate[] = [];
+      const newWeights: Record<string, string> = {};
+      for (const c of filteredCandidates) {
+        const key = modelPoolCandidateKey(c);
+        if (!selectedKeys.has(key)) {
+          newItems.push({ ...c, weight: 1, key });
+          if (weights[key] === undefined) {
+            newWeights[key] = "1";
+          }
+        }
+      }
+      setSelected((prev) => [...prev, ...newItems]);
+      if (Object.keys(newWeights).length > 0) {
+        setWeights((prev) => ({ ...prev, ...newWeights }));
+      }
+    }
+    setError(null);
+  };
 
   const toggleCandidate = (candidate: GatewayModelPoolCandidate) => {
     const key = modelPoolCandidateKey(candidate);
@@ -213,7 +302,7 @@ export function ModelPoolDialog({
         <DialogHeader className="pl-6 pr-14 py-4 border-b bg-card/80 backdrop-blur-sm shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-              <Server className="h-4.5 w-4.5" />
+              <Layers className="h-4.5 w-4.5" />
             </div>
             <div className="min-w-0">
               <DialogTitle className="truncate text-base font-semibold leading-5 text-foreground">
@@ -294,8 +383,33 @@ export function ModelPoolDialog({
 
           {/* Source groups */}
           <div className="space-y-3">
-            <div className="text-xs font-semibold text-foreground">
-              {t("aiGatewayModelPoolSourcesTitle", "Source models")}
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-semibold text-foreground">
+                {t("aiGatewayModelPoolSourcesTitle", "Source models")}
+              </div>
+              {filteredCandidates.length > 0 ? (
+                <button
+                  type="button"
+                  data-testid="model-pool-select-all-filtered"
+                  onClick={toggleSelectAllFiltered}
+                  className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10 transition-colors"
+                >
+                  <CheckSquare className="h-3.5 w-3.5" />
+                  <span>
+                    {allFilteredSelected
+                      ? t(
+                          "aiGatewayModelPoolDeselectAllFiltered",
+                          "Deselect all ({{count}})",
+                          { count: filteredCandidates.length },
+                        )
+                      : t(
+                          "aiGatewayModelPoolSelectAllFiltered",
+                          "Select all ({{count}})",
+                          { count: filteredCandidates.length },
+                        )}
+                  </span>
+                </button>
+              ) : null}
             </div>
             {sourceGroups.length === 0 ? (
               <p className="rounded-lg border border-dashed bg-muted/20 px-3 py-4 text-center text-xs text-muted-foreground">
@@ -332,9 +446,19 @@ export function ModelPoolDialog({
                       }
                       className="flex w-full items-start justify-between gap-2 px-3 py-2 text-left"
                     >
-                      <span className="inline-flex min-w-0 flex-1 items-start gap-2 text-xs font-semibold text-foreground">
-                        <Server className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span className="inline-flex min-w-0 flex-1 items-center gap-2 text-xs font-semibold text-foreground">
+                        <Server className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         <span className="min-w-0 break-words">{group.providerName}</span>
+                        {group.templateName ? (
+                          <span
+                            data-testid={`model-pool-source-template-badge-${group.providerId}`}
+                            className="inline-flex items-center gap-1 rounded-md border border-indigo-500/25 bg-indigo-500/10 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:text-indigo-300 shrink-0"
+                            title={group.templateName}
+                          >
+                            <Sparkles className="h-2.5 w-2.5" />
+                            <span>{group.templateName}</span>
+                          </span>
+                        ) : null}
                         <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                           {group.rows.length}
                         </span>
@@ -453,77 +577,125 @@ export function ModelPoolDialog({
                 const label = labelKey ? t(labelKey) : state.availability;
                 const providerName =
                   state.provider_name ?? candidate.provider_id;
+                const candidateProvider = providers.find(
+                  (p) => p.id === candidate.provider_id,
+                );
+                const candidateTemplate = candidateProvider?.template_id
+                  ? templates.find(
+                      (t) => t.template.id === candidateProvider.template_id,
+                    )?.template
+                  : undefined;
+                const candidateTemplateName = candidateTemplate?.name ?? null;
                 return (
                   <div
                     key={candidate.key}
-                    className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-background/70 px-2.5 py-1.5"
+                    className="flex items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/70 p-2.5 transition hover:bg-card/90"
                   >
-                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 text-xs">
-                      <span className="break-all font-medium text-foreground">
-                        {candidate.local_model}
-                      </span>
-                      <span className="text-muted-foreground/60">→</span>
-                      <code className="break-all rounded border border-border/40 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-foreground">
-                        {candidate.upstream_model}
-                      </code>
-                      <span className="break-words text-[10px] text-muted-foreground">
-                        {providerName}
-                      </span>
-                      <span
-                        className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ${protocolBadgeClass(
-                          candidate.protocol,
-                        )}`}
-                      >
-                        {protocolShortLabel(candidate.protocol)}
-                      </span>
-                      <span
-                        className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
-                          state.ready
-                            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                            : "bg-amber-500/15 text-amber-700 dark:text-amber-400"
-                        }`}
-                      >
-                        {label}
-                      </span>
-                      {state.reason ? (
-                        <span className="break-words text-[10px] text-amber-600 dark:text-amber-400">
-                          {state.reason}
+                    {/* 左侧信息区：分为上下两行，层次分明 */}
+                    <div className="min-w-0 flex-1 space-y-1.5">
+                      {/* 第一行：模型映射与服务商来源 */}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className="font-semibold text-xs text-foreground truncate max-w-[200px]"
+                          title={candidate.local_model}
+                        >
+                          {candidate.local_model}
                         </span>
-                      ) : null}
+                        <span className="text-muted-foreground/50 text-xs">→</span>
+                        <code
+                          className="rounded border border-border/50 bg-muted/70 px-1.5 py-0.5 font-mono text-[11px] text-foreground truncate max-w-[240px]"
+                          title={candidate.upstream_model}
+                        >
+                          {candidate.upstream_model}
+                        </code>
+
+                        {/* 来源服务商与模板徽标 */}
+                        <span className="inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          <Server className="h-2.5 w-2.5 text-muted-foreground/80 shrink-0" />
+                          <span className="font-medium text-foreground/80 truncate max-w-[120px]">
+                            {providerName}
+                          </span>
+                          {candidateTemplateName ? (
+                            <span
+                              data-testid={`model-pool-selected-template-badge-${candidate.provider_id}`}
+                              className="inline-flex items-center gap-0.5 rounded border border-indigo-500/25 bg-indigo-500/10 px-1 py-0.2 text-[9px] font-medium text-indigo-700 dark:text-indigo-300 shrink-0"
+                              title={candidateTemplateName}
+                            >
+                              <Sparkles className="h-2 w-2" />
+                              <span>{candidateTemplateName}</span>
+                            </span>
+                          ) : null}
+                        </span>
+                      </div>
+
+                      {/* 第二行：协议、可用性状态与异常原因 */}
+                      <div className="flex flex-wrap items-center gap-2 text-[10px]">
+                        <span
+                          className={`inline-flex items-center rounded-md px-1.5 py-0.5 font-medium ${protocolBadgeClass(
+                            candidate.protocol,
+                          )}`}
+                        >
+                          {protocolShortLabel(candidate.protocol)}
+                        </span>
+                        <span
+                          className={`inline-flex items-center rounded-md px-1.5 py-0.5 font-medium ${
+                            state.ready
+                              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                              : "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                          }`}
+                        >
+                          {label}
+                        </span>
+                        {state.reason ? (
+                          <span
+                            className="truncate max-w-[280px] text-amber-600 dark:text-amber-400"
+                            title={state.reason}
+                          >
+                            {state.reason}
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
-                    <label className="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
-                      <input
-                        type="number"
-                        min={1}
-                        max={100}
-                        step={1}
-                        value={weights[candidate.key] ?? "1"}
-                        onChange={(event) =>
-                          setWeights((previous) => ({
-                            ...previous,
-                            [candidate.key]: event.target.value,
-                          }))
-                        }
-                        aria-label={t("aiGatewayModelPoolWeightAria", {
-                          model: candidate.local_model,
-                          defaultValue: "{{model}} weight",
-                        })}
+
+                    {/* 右侧操作区：权重配置与删除操作 */}
+                    <div className="flex items-center gap-2 shrink-0 self-center">
+                      <div className="flex items-center gap-1.5 bg-muted/40 border border-border/50 rounded-lg px-2 py-1">
+                        <span className="text-[10px] text-muted-foreground">
+                          {t("aiGatewayModelPoolWeightLabel", "weight")}
+                        </span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={100}
+                          step={1}
+                          value={weights[candidate.key] ?? "1"}
+                          onChange={(event) =>
+                            setWeights((previous) => ({
+                              ...previous,
+                              [candidate.key]: event.target.value,
+                            }))
+                          }
+                          aria-label={t("aiGatewayModelPoolWeightAria", {
+                            model: candidate.local_model,
+                            defaultValue: "{{model}} weight",
+                          })}
+                          disabled={busy || saving}
+                          className="h-6 w-12 rounded border border-border/70 bg-background px-1 text-center font-mono text-xs text-foreground shadow-2xs outline-none focus:border-primary/60 focus-visible:ring-1 focus-visible:ring-primary/20 disabled:opacity-50"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeCandidate(candidate.key)}
                         disabled={busy || saving}
-                        className="h-7 w-16 rounded-md border border-border/80 bg-background px-2 text-right text-xs text-foreground shadow-xs outline-none focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => removeCandidate(candidate.key)}
-                      disabled={busy || saving}
-                      aria-label={t("aiGatewayModelPoolRemoveAria", {
-                        model: candidate.local_model,
-                        defaultValue: "Remove {{model}}",
-                      })}
-                      className="shrink-0 rounded p-1 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                        aria-label={t("aiGatewayModelPoolRemoveAria", {
+                          model: candidate.local_model,
+                          defaultValue: "Remove {{model}}",
+                        })}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition disabled:opacity-50"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
                   </div>
                 );
               })

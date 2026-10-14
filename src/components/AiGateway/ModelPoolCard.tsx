@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ChevronDown,
+  Check,
   Copy,
   Layers,
   MoreVertical,
@@ -11,23 +11,15 @@ import {
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ToastProvider";
-import { errorToMessage } from "@/lib/messages";
 import {
-  formatGatewayTimestamp,
-  MODEL_POOL_AVAILABILITY_LABEL_KEYS,
-  modelPoolCandidateKey,
-  resolveModelPoolCandidateState,
   type GatewayModelPool,
-  type GatewayModelPoolCandidate,
-  type GatewayModelPoolCandidateStatus,
   type GatewayModelPoolStatus,
   type GatewayUpstreamProvider,
 } from "@/lib/aiGateway";
-import { protocolBadgeClass, protocolShortLabel } from "./gatewayShared";
 
 type ModelPoolCardProps = {
   pool: GatewayModelPool;
-  providers: GatewayUpstreamProvider[];
+  providers?: GatewayUpstreamProvider[];
   status?: GatewayModelPoolStatus | null;
   busy?: boolean;
   onToggleEnabled: (poolId: string, enabled: boolean) => void;
@@ -36,16 +28,8 @@ type ModelPoolCardProps = {
   onOpenLogs: (model: string) => void;
 };
 
-type ResolvedCandidateEntry = {
-  key: string;
-  candidate: GatewayModelPoolCandidate;
-  state: ReturnType<typeof resolveModelPoolCandidateState>;
-};
-
 export function ModelPoolCard({
   pool,
-  providers,
-  status = null,
   busy = false,
   onToggleEnabled,
   onEdit,
@@ -54,60 +38,46 @@ export function ModelPoolCard({
 }: ModelPoolCardProps) {
   const { t } = useTranslation();
   const { pushToast } = useToast();
-  const [expanded, setExpanded] = useState(true);
+  const [copied, setCopied] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
-  const statusByKey = useMemo(() => {
-    const map = new Map<string, GatewayModelPoolCandidateStatus>();
-    for (const candidate of status?.candidates ?? []) {
-      map.set(modelPoolCandidateKey(candidate), candidate);
+  const handleCopy = async () => {
+    let ok = false;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(pool.model);
+        ok = true;
+      }
+    } catch {
+      // Fall back to document.execCommand below
     }
-    return map;
-  }, [status]);
-
-  // Fold consecutive candidates of one provider so its name is rendered once,
-  // matching the compact "source-group" presentation. Availability is derived
-  // from the CURRENT config plus this pool's own transient status.
-  const groupedCandidates = useMemo(() => {
-    const groups: Array<{
-      providerId: string;
-      providerName: string;
-      entries: ResolvedCandidateEntry[];
-    }> = [];
-    for (const candidate of pool.candidates) {
-      const key = modelPoolCandidateKey(candidate);
-      const state = resolveModelPoolCandidateState(
-        candidate,
-        providers,
-        statusByKey.get(key) ?? null,
-      );
-      const entry: ResolvedCandidateEntry = { key, candidate, state };
-      const last = groups[groups.length - 1];
-      if (last && last.providerId === candidate.provider_id) {
-        last.entries.push(entry);
-      } else {
-        groups.push({
-          providerId: candidate.provider_id,
-          providerName: state.provider_name ?? candidate.provider_id,
-          entries: [entry],
-        });
+    if (!ok) {
+      try {
+        const textarea = document.createElement("textarea");
+        textarea.value = pool.model;
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        textarea.style.top = "-9999px";
+        textarea.setAttribute("readonly", "true");
+        document.body.appendChild(textarea);
+        textarea.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(textarea);
+      } catch {
+        ok = false;
       }
     }
-    return groups;
-  }, [pool.candidates, providers, statusByKey]);
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(pool.model);
+    if (ok) {
+      setCopied(true);
       pushToast({
         title: t("aiGatewayModelListCopySuccess", "Model ID copied to clipboard"),
         kind: "success",
       });
-    } catch (err) {
+      setTimeout(() => setCopied(false), 1500);
+    } else {
       pushToast({
-        title: t("aiGatewayCopyFailed", "Copy failed"),
-        description: errorToMessage(err),
+        title: t("aiGatewayCopyFailed", "Failed to copy to clipboard"),
         kind: "error",
       });
     }
@@ -130,16 +100,20 @@ export function ModelPoolCard({
               <Layers className="h-4.5 w-4.5" />
             </div>
             <div className="min-w-0 flex-1">
-              <div
+              <button
+                type="button"
                 data-testid={`ai-gateway-model-pool-name-${pool.id}`}
-                className="break-words text-left text-sm font-semibold text-foreground leading-5"
+                onClick={() => onEdit(pool)}
+                className="cursor-pointer break-words text-left text-sm font-semibold text-foreground leading-5 transition hover:text-primary"
               >
                 {pool.name}
-              </div>
+              </button>
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
                 <code
                   data-testid={`ai-gateway-model-pool-model-${pool.id}`}
-                  className="inline-flex max-w-full items-center break-all rounded-md border border-border/60 bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] font-medium leading-4 text-foreground"
+                  onClick={() => void handleCopy()}
+                  title={t("aiGatewayModelPoolCopyAria", "Copy public model ID")}
+                  className="inline-flex max-w-full cursor-pointer items-center break-all rounded-md border border-border/60 bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] font-medium leading-4 text-foreground transition hover:bg-muted"
                 >
                   {pool.model}
                 </code>
@@ -197,7 +171,11 @@ export function ModelPoolCard({
               title={t("aiGatewayModelPoolCopyAria", "Copy public model ID")}
               className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
             >
-              <Copy className="h-3.5 w-3.5" />
+              {copied ? (
+                <Check className="h-3.5 w-3.5 text-emerald-500" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
             </button>
             <button
               type="button"
@@ -260,91 +238,6 @@ export function ModelPoolCard({
               ) : null}
             </div>
           </div>
-        </div>
-
-        {/* Candidate expansion */}
-        <div
-          data-testid={`ai-gateway-model-pool-candidates-${pool.id}`}
-          className="mt-2 rounded-lg border border-border/60 bg-muted/20 p-2"
-        >
-          <button
-            type="button"
-            onClick={() => setExpanded((value) => !value)}
-            className="flex w-full items-center justify-between gap-2 text-left"
-          >
-            <span className="text-[11px] font-semibold text-muted-foreground">
-              {t("aiGatewayModelPoolSelectedTitle", "Selected candidates")}
-            </span>
-            <ChevronDown
-              className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${
-                expanded ? "" : "-rotate-90"
-              }`}
-            />
-          </button>
-          {expanded ? (
-            <div className="mt-1.5 space-y-2">
-              {groupedCandidates.map((group) => (
-                <div key={group.providerId} className="space-y-1">
-                  <div className="break-words text-[10px] font-medium text-muted-foreground">
-                    {group.providerName} · {group.entries.length}
-                  </div>
-                  {group.entries.map(({ key, candidate, state }) => {
-                    const labelKey =
-                      MODEL_POOL_AVAILABILITY_LABEL_KEYS[state.availability];
-                    const label = labelKey
-                      ? t(labelKey)
-                      : state.availability;
-                    const cooling = formatGatewayTimestamp(state.cooling_until);
-                    return (
-                      <div
-                        key={key}
-                        className="rounded-md border border-border/60 bg-background/70 px-2 py-1.5 text-[11px]"
-                      >
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="break-all font-medium text-foreground">
-                            {candidate.local_model}
-                          </span>
-                          <span className="text-muted-foreground/60">→</span>
-                          <code className="break-all rounded border border-border/40 bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
-                            {candidate.upstream_model}
-                          </code>
-                          <span
-                            className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ${protocolBadgeClass(
-                              candidate.protocol,
-                            )}`}
-                          >
-                            {protocolShortLabel(candidate.protocol)}
-                          </span>
-                        </div>
-                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                          <span
-                            data-testid={`ai-gateway-model-pool-status-${pool.id}`}
-                            className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
-                              state.ready
-                                ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                                : "bg-amber-500/15 text-amber-700 dark:text-amber-400"
-                            }`}
-                          >
-                            {label}
-                          </span>
-                          {cooling ? (
-                            <span className="text-[10px] text-muted-foreground">
-                              {cooling}
-                            </span>
-                          ) : null}
-                        </div>
-                        {state.reason ? (
-                          <div className="mt-0.5 break-words text-[10px] text-amber-600 dark:text-amber-400">
-                            {state.reason}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
-          ) : null}
         </div>
 
         {/* Delete confirmation */}

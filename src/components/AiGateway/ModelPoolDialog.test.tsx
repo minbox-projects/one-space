@@ -41,6 +41,7 @@ type ProviderFixture = {
     upstream_model: string;
     protocol?: "chat_completions" | "responses";
   }>;
+  enabled?: boolean;
 };
 
 const PROVIDERS: ProviderFixture[] = [
@@ -48,6 +49,7 @@ const PROVIDERS: ProviderFixture[] = [
     id: "p-a",
     name: "Provider A",
     protocol: "chat_completions",
+    enabled: true,
     mappings: [
       { local_model: "local-a1", upstream_model: "remote-a1" },
       { local_model: "local-a2", upstream_model: "remote-a2", protocol: "responses" },
@@ -57,6 +59,7 @@ const PROVIDERS: ProviderFixture[] = [
     id: "p-b",
     name: "Provider B",
     protocol: "responses",
+    enabled: true,
     mappings: [{ local_model: "local-b1", upstream_model: "remote-b1" }],
   },
 ];
@@ -66,18 +69,36 @@ const mockState: {
   statusPayload: unknown[];
   upsertError: string | null;
   deleted: Array<Record<string, unknown>>;
+  templates: unknown[];
 } = {
   config: buildConfig([]),
   statusPayload: [],
   upsertError: null,
   deleted: [],
+  templates: [],
 };
 
-function buildConfig(pools: unknown[]): GatewayConfig {
+function makeProvider(
+  overrides: Partial<ProviderFixture> & { template_id?: string; enabled?: boolean } = {},
+): ProviderFixture & { template_id?: string; enabled?: boolean } {
+  return {
+    id: "p-test",
+    name: "Provider Test",
+    protocol: "chat_completions",
+    mappings: [],
+    enabled: true,
+    ...overrides,
+  };
+}
+
+function buildConfig(
+  pools: unknown[],
+  providers: unknown[] = PROVIDERS,
+): GatewayConfig {
   return {
     enabled: true,
     port: 17688,
-    providers: PROVIDERS as unknown as GatewayConfig["providers"],
+    providers: providers as unknown as GatewayConfig["providers"],
     keys: [
       { id: "k1", label: "Main", value: "********", enabled: true, created_at: 1 },
     ],
@@ -107,6 +128,8 @@ function installMock() {
         return mockState.config;
       case "ai_gateway_status":
         return buildStatus();
+      case "ai_gateway_provider_templates":
+        return mockState.templates;
       case "ai_gateway_terminal_targets":
         return [];
       case "ai_gateway_model_pools_status":
@@ -125,9 +148,9 @@ function installMock() {
 }
 
 /** Open the Add-provider picker, then the Create-model-pool channel. */
-async function openModelPoolDialog() {
+async function openModelPoolDialog(firstProviderName = "Provider A") {
   renderWithProviders(<AiGateway />);
-  await screen.findByText("Provider A");
+  await screen.findByText(firstProviderName);
   fireEvent.click(screen.getByRole("button", { name: /Add provider/i }));
   fireEvent.click(screen.getByTestId("template-picker-model-pool-btn"));
   return screen.getByTestId("model-pool-dialog");
@@ -425,9 +448,26 @@ describe("ModelPoolDialog", () => {
         mappings: [{ local_model: "local-c1", upstream_model: "remote-c1" }],
       },
     ];
+    const savedPool = {
+      id: "pool-saved",
+      name: "Saved Pool",
+      model: "saved-model",
+      enabled: true,
+      candidates: [
+        {
+          provider_id: "p-b",
+          local_model: "local-b1",
+          upstream_model: "remote-b1",
+          protocol: "chat_completions",
+          weight: 1,
+        },
+      ],
+    };
+
     mockState.config = {
-      ...(buildConfig([]) as unknown as Record<string, unknown>),
+      ...(buildConfig([savedPool]) as unknown as Record<string, unknown>),
       providers,
+      model_pools: [savedPool],
     } as unknown as GatewayConfig;
     // Another saved pool currently cools p-a/local-a1; the NEW draft must not
     // inherit that unrelated cooldown.
@@ -454,7 +494,19 @@ describe("ModelPoolDialog", () => {
       },
     ];
 
-    await openModelPoolDialog();
+    renderWithProviders(<AiGateway />);
+    await waitFor(() =>
+      expect(screen.getByTestId("ai-gateway-model-pool-pool-saved")).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-saved"));
+    expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
+
+    // 来源模型中不展示已禁用的 Provider B
+    expect(screen.queryByTestId("model-pool-source-group-p-b")).not.toBeInTheDocument();
+
+    // 默认仅展开第一个已启用的服务商 Provider A，展开 Provider C
+    fireEvent.click(screen.getByTestId("model-pool-source-group-p-c"));
 
     const rowFor = (model: string) =>
       screen
@@ -469,9 +521,6 @@ describe("ModelPoolDialog", () => {
 
     // Current-config state is visible immediately, with no saved pool snapshot.
     expect(
-      within(rowFor("local-b1")).queryAllByText(disabledLabel).length,
-    ).toBeGreaterThan(0);
-    expect(
       within(rowFor("local-c1")).queryAllByText(noKeyLabel).length,
     ).toBeGreaterThan(0);
     // The healthy source is healthy and does not inherit the other pool's cooldown.
@@ -482,9 +531,7 @@ describe("ModelPoolDialog", () => {
       within(rowFor("local-a1")).queryAllByText(disabledLabel).length,
     ).toBe(0);
 
-    // A disabled source stays selectable/retained and shows its state in the
-    // selected list.
-    fireEvent.click(screen.getByRole("checkbox", { name: /local-b1/i }));
+    // 已选列表中保留了先前来自已禁用服务商的候选，并展示“来源已禁用”状态
     const selected = screen.getByTestId("model-pool-selected-list");
     expect(within(selected).getAllByText(/local-b1/i).length).toBeGreaterThan(0);
     expect(
@@ -560,4 +607,151 @@ describe("ModelPoolDialog", () => {
       ).length,
     ).toBeGreaterThan(0);
   });
+
+  it("renders a template tag badge for providers created from a template in both source groups and selected candidates", async () => {
+    const templates = [
+      {
+        template: {
+          id: "tpl-deepseek",
+          name: "DeepSeek Official",
+          protocol: "chat_completions",
+          models: ["deepseek-chat"],
+        },
+      },
+    ];
+    mockState.templates = templates;
+
+    const pool = {
+      id: "pool-1",
+      name: "Tpl Pool",
+      model: "tpl-pool",
+      enabled: true,
+      candidates: [
+        {
+          provider_id: "p-a",
+          local_model: "local-a1",
+          upstream_model: "remote-a1",
+          protocol: "chat_completions",
+          weight: 1,
+        },
+      ],
+    };
+
+    mockState.config = {
+      ...(buildConfig([pool]) as unknown as Record<string, unknown>),
+      providers: [
+        {
+          id: "p-a",
+          name: "Provider A",
+          template_id: "tpl-deepseek",
+          protocol: "chat_completions",
+          mappings: [{ local_model: "local-a1", upstream_model: "remote-a1" }],
+          enabled: true,
+        },
+      ],
+      model_pools: [pool],
+    } as unknown as GatewayConfig;
+
+    renderWithProviders(<AiGateway />);
+    await waitFor(() =>
+      expect(screen.getByTestId("ai-gateway-model-pool-pool-1")).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-1"));
+    expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
+
+    // Source group header badge
+    const groupBadge = screen.getByTestId("model-pool-source-template-badge-p-a");
+    expect(groupBadge).toHaveTextContent("DeepSeek Official");
+
+    // Selected candidate badge
+    const selectedBadge = screen.getByTestId(
+      "model-pool-selected-template-badge-p-a",
+    );
+    expect(selectedBadge).toHaveTextContent("DeepSeek Official");
+  });
+
+  it("默认仅展开第一个服务商，后续服务商默认折叠", async () => {
+    installMock();
+    mockState.config = buildConfig([], [
+      makeProvider({ id: "p-1", name: "Provider 1" }),
+      makeProvider({ id: "p-2", name: "Provider 2" }),
+      makeProvider({ id: "p-3", name: "Provider 3" }),
+    ]);
+
+    await openModelPoolDialog("Provider 1");
+
+    const group1 = screen.getByTestId("model-pool-source-group-p-1");
+    const group2 = screen.getByTestId("model-pool-source-group-p-2");
+    const group3 = screen.getByTestId("model-pool-source-group-p-3");
+
+    expect(group1).toHaveAttribute("aria-expanded", "true");
+    expect(group2).toHaveAttribute("aria-expanded", "false");
+    expect(group3).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("支持根据筛选条件全选与反选", async () => {
+    installMock();
+    mockState.config = buildConfig([], [
+      makeProvider({
+        id: "p-1",
+        name: "Provider 1",
+        mappings: [
+          { local_model: "gpt-4o", upstream_model: "gpt-4o" },
+          { local_model: "claude-3-5-sonnet", upstream_model: "claude-3-5" },
+        ],
+      }),
+      makeProvider({
+        id: "p-2",
+        name: "Provider 2",
+        mappings: [
+          { local_model: "gpt-4o-mini", upstream_model: "gpt-4o-mini" },
+          { local_model: "deepseek-chat", upstream_model: "deepseek-v3" },
+        ],
+      }),
+    ]);
+
+    await openModelPoolDialog("Provider 1");
+
+    // 搜索 gpt
+    const searchInput = screen.getByTestId("model-pool-source-search");
+    fireEvent.change(searchInput, { target: { value: "gpt" } });
+
+    // 当前筛选出的候选模型为 gpt-4o 与 gpt-4o-mini (2 个)
+    const selectAllBtn = screen.getByTestId("model-pool-select-all-filtered");
+    expect(selectAllBtn).toHaveTextContent("Select all (2)");
+
+    // 点击全选
+    fireEvent.click(selectAllBtn);
+
+    const selectedList = screen.getByTestId("model-pool-selected-list");
+    expect(within(selectedList).getAllByText("gpt-4o").length).toBeGreaterThanOrEqual(1);
+    expect(within(selectedList).getAllByText("gpt-4o-mini").length).toBeGreaterThanOrEqual(1);
+    expect(within(selectedList).queryByText("claude-3-5-sonnet")).not.toBeInTheDocument();
+
+    // 此时按钮文案变为 Deselect all (2)
+    expect(selectAllBtn).toHaveTextContent("Deselect all (2)");
+
+    // 再次点击反选
+    fireEvent.click(selectAllBtn);
+    expect(within(selectedList).queryByText("gpt-4o")).not.toBeInTheDocument();
+    expect(within(selectedList).queryByText("gpt-4o-mini")).not.toBeInTheDocument();
+    expect(selectAllBtn).toHaveTextContent("Select all (2)");
+  });
+
+  it("来源模型中仅显示已启用的服务商，已禁用的服务商不予显示", async () => {
+    installMock();
+    mockState.config = buildConfig([], [
+      makeProvider({ id: "p-enabled-1", name: "Enabled Provider 1", enabled: true }),
+      makeProvider({ id: "p-disabled", name: "Disabled Provider", enabled: false }),
+      makeProvider({ id: "p-enabled-2", name: "Enabled Provider 2", enabled: true }),
+    ]);
+
+    await openModelPoolDialog("Enabled Provider 1");
+
+    expect(screen.getByTestId("model-pool-source-group-p-enabled-1")).toBeInTheDocument();
+    expect(screen.getByTestId("model-pool-source-group-p-enabled-2")).toBeInTheDocument();
+    expect(screen.queryByTestId("model-pool-source-group-p-disabled")).not.toBeInTheDocument();
+  });
 });
+

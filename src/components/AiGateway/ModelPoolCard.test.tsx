@@ -20,12 +20,11 @@
 //                          ai_gateway_delete_model_pool,
 //                          ai_gateway_model_pools_status
 
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { AiGateway } from "@/components/AiGateway";
 import {
-  formatGatewayTimestamp,
   type GatewayConfig,
   type GatewayStatus,
 } from "@/lib/aiGateway";
@@ -200,9 +199,9 @@ describe("ModelPoolCard", () => {
     expect(within(card).getByText("free-model")).toBeInTheDocument();
   });
 
-  it("exposes copy, candidate expansion, log, edit and more-menu controls", async () => {
+  it("exposes copy, log, edit and more-menu controls", async () => {
     const card = await renderConsole();
-    for (const suffix of ["copy", "candidates", "log", "edit", "menu"]) {
+    for (const suffix of ["copy", "log", "edit", "menu"]) {
       expect(
         within(card).getByTestId(`ai-gateway-model-pool-${suffix}-${POOL_ID}`),
       ).toBeInTheDocument();
@@ -212,28 +211,15 @@ describe("ModelPoolCard", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows every unready candidate's reason, keeps intent on, and toggles via the typed command", async () => {
+  it("keeps intent on and toggles via the typed command", async () => {
     const card = await renderConsole();
-
-    // The raw backend reasons and the remaining cooldown deadline stay visible
-    // (matched by substring so an added localized availability label may render
-    // in the same or an adjacent node without breaking this guard).
-    expect(
-      within(card).getAllByText(/cooling after a model-scoped failure/).length,
-    ).toBeGreaterThan(0);
-    expect(
-      within(card).getAllByText(/source provider disabled/).length,
-    ).toBeGreaterThan(0);
-    expect(
-      within(card).getByText(formatGatewayTimestamp(COOLING_UNTIL) as string),
-    ).toBeInTheDocument();
 
     // No fabricated aggregate/free/traffic claim is rendered on the pool card.
     for (const forbidden of [/traffic/i, /balance/i, /unlimited/i, /infinite/i]) {
       expect(within(card).queryByText(forbidden)).not.toBeInTheDocument();
     }
 
-    // All-unready must not flip the user's enabled intent; toggling is explicit.
+    // Toggling is explicit and dispatches the command.
     fireEvent.click(
       within(card).getByTestId(`ai-gateway-model-pool-enable-${POOL_ID}`),
     );
@@ -256,17 +242,25 @@ describe("ModelPoolCard", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("free-model"));
   });
 
-  it("expands the complete stored candidate list with source identities", async () => {
+  it("does not render candidate expansion list on card to keep it compact and clean", async () => {
     const card = await renderConsole();
-    const candidates = within(card).getByTestId(
-      `ai-gateway-model-pool-candidates-${POOL_ID}`,
+    expect(
+      within(card).queryByTestId(`ai-gateway-model-pool-candidates-${POOL_ID}`),
+    ).not.toBeInTheDocument();
+    // Candidate counts and source counts are still summarized
+    expect(within(card).getByText(/candidate/i)).toBeInTheDocument();
+    expect(within(card).getByText(/source/i)).toBeInTheDocument();
+  });
+
+  it("clicking the model pool name opens the edit dialog", async () => {
+    const card = await renderConsole();
+    fireEvent.click(
+      within(card).getByTestId(`ai-gateway-model-pool-name-${POOL_ID}`),
     );
-    expect(within(candidates).getByText(/local-a1/i)).toBeInTheDocument();
-    expect(within(candidates).getByText(/remote-a1/i)).toBeInTheDocument();
-    expect(within(candidates).getByText(/local-a2/i)).toBeInTheDocument();
-    expect(within(candidates).getByText(/Provider A/i)).toBeInTheDocument();
-    expect(within(candidates).getByText(/chat/i)).toBeInTheDocument();
-    expect(within(candidates).getByText(/responses/i)).toBeInTheDocument();
+
+    const dialog = await screen.findByTestId("model-pool-dialog");
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByTestId("model-pool-name-input")).toHaveValue("Free Modle");
   });
 
   it("log shortcut opens the un-grouped log view filtered by the pool alias", async () => {
@@ -365,109 +359,20 @@ describe("ModelPoolCard", () => {
     expect(networkCommands).toEqual([]);
   });
 
-  // -------------------------------------------------------------------------
-  // Review-repair: AC-016 / AC-018 localized status labels and current-config
-  // availability (no optimistic ready when status is stale or missing).
-  // -------------------------------------------------------------------------
-
-  it("always shows the localized coded availability label and keeps the raw reason in Chinese", async () => {
-    const base = buildConfig() as unknown as {
-      providers: Array<Record<string, unknown>>;
-    };
-    const pool = {
-      id: POOL_ID,
-      name: "Free Modle",
-      model: "free-model",
-      enabled: true,
-      candidates: [
-        { provider_id: "p-a", local_model: "local-a1", upstream_model: "remote-a1", protocol: "chat_completions", weight: 1 },
-        { provider_id: "p-a", local_model: "local-a2", upstream_model: "remote-a2", protocol: "responses", weight: 1 },
-        { provider_id: "p-b", local_model: "local-b1", upstream_model: "remote-b1", protocol: "responses", weight: 1 },
-      ],
-    };
-    mockState.config = {
-      ...(base as unknown as GatewayConfig),
-      model_pools: [pool],
-    } as unknown as GatewayConfig;
-    mockState.statusPayload = [
-      {
-        id: POOL_ID,
-        name: "Free Modle",
-        model: "free-model",
-        enabled: true,
-        candidates: [
-          { provider_id: "p-a", provider_name: "Provider A", local_model: "local-a1", upstream_model: "remote-a1", protocol: "chat_completions", weight: 1, ready: false, availability: "cooling", reason: "cooling after a model-scoped failure", cooling_until: COOLING_UNTIL },
-          { provider_id: "p-a", provider_name: "Provider A", local_model: "local-a2", upstream_model: "remote-a2", protocol: "responses", weight: 1, ready: false, availability: "source_disabled", reason: "source provider disabled", cooling_until: null },
-          { provider_id: "p-b", provider_name: "Provider B", local_model: "local-b1", upstream_model: "remote-b1", protocol: "responses", weight: 1, ready: false, availability: "no_usable_key", reason: "no usable upstream key", cooling_until: null },
-        ],
+  it("copies through execCommand fallback when navigator.clipboard fails", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockRejectedValue(new Error("denied")),
       },
-    ];
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    document.execCommand = execCommand;
 
-    await i18n.changeLanguage("zh");
     const card = await renderConsole();
-
-    const shows = (pattern: RegExp) =>
-      expect(within(card).getAllByText(pattern).length).toBeGreaterThan(0);
-
-    // The localized coded label is always present, per availability code.
-    shows(new RegExp(i18n.t("aiGatewayModelPoolStatusCooling")));
-    shows(new RegExp(i18n.t("aiGatewayModelPoolStatusSourceDisabled")));
-    shows(new RegExp(i18n.t("aiGatewayModelPoolStatusNoUsableKey")));
-    // The raw backend reason is preserved as additional detail.
-    shows(/cooling after a model-scoped failure/);
-    shows(/source provider disabled/);
-    shows(/no usable upstream key/);
-    // Cooldown deadline and user intent are unchanged.
-    expect(
-      within(card).getByText(formatGatewayTimestamp(COOLING_UNTIL) as string),
-    ).toBeInTheDocument();
-    expect(
-      within(card).getByTestId(`ai-gateway-model-pool-enable-${POOL_ID}`),
-    ).toBeInTheDocument();
-    expect(
-      within(card).getAllByText(
-        new RegExp(i18n.t("aiGatewayModelPoolIntentEnabled")),
-      ).length,
-    ).toBeGreaterThan(0);
-  });
-
-  it("never shows a disabled candidate as ready with a stale or missing status snapshot", async () => {
-    const base = buildConfig() as unknown as {
-      providers: Array<Record<string, unknown>>;
-    } & GatewayConfig;
-    const disabledProviders = base.providers.map((provider) =>
-      provider.id === "p-a" ? { ...provider, enabled: false } : provider,
+    fireEvent.click(
+      within(card).getByTestId(`ai-gateway-model-pool-copy-${POOL_ID}`),
     );
-    const readySnapshot = [
-      {
-        id: POOL_ID,
-        name: "Free Modle",
-        model: "free-model",
-        enabled: true,
-        candidates: [
-          { provider_id: "p-a", provider_name: "Provider A", local_model: "local-a1", upstream_model: "remote-a1", protocol: "chat_completions", weight: 1, ready: true, availability: "ready", reason: null, cooling_until: null },
-          { provider_id: "p-a", provider_name: "Provider A", local_model: "local-a2", upstream_model: "remote-a2", protocol: "responses", weight: 1, ready: true, availability: "ready", reason: null, cooling_until: null },
-        ],
-      },
-    ];
-
-    const disabledLabel = () => new RegExp(i18n.t("aiGatewayModelPoolStatusSourceDisabled"));
-    const readyLabel = () => new RegExp(`^${i18n.t("aiGatewayModelPoolStatusReady")}$`);
-
-    // With a stale snapshot that still claims ready, current config wins.
-    for (const statusPayload of [readySnapshot, []]) {
-      cleanup();
-      mockState.config = {
-        ...base,
-        providers: disabledProviders,
-      } as unknown as GatewayConfig;
-      mockState.statusPayload = statusPayload;
-
-      const card = await renderConsole();
-      expect(
-        within(card).queryAllByText(disabledLabel()).length,
-      ).toBeGreaterThan(0);
-      expect(within(card).queryAllByText(readyLabel()).length).toBe(0);
-    }
+    await waitFor(() => expect(execCommand).toHaveBeenCalledWith("copy"));
   });
 });

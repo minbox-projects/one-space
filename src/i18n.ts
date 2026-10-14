@@ -475,6 +475,7 @@ const resources = {
       aiGatewayModelListClearSearch: "Clear search",
       aiGatewayModelListClearFilters: "Clear filters",
       aiGatewayModelListCopySuccess: "Model ID copied to clipboard",
+      aiGatewayCopyFailed: "Failed to copy to clipboard",
       aiGatewayModelListCopyAria: "Copy model ID",
       aiGatewayModelListCopyUpstreamAria: "Copy upstream model ID",
       aiGatewayModelListGoToProviders: "Configure upstream providers",
@@ -786,6 +787,8 @@ const resources = {
       aiGatewayModelPoolSourceSearch: "Search source models",
       aiGatewayModelPoolSourceSearchPlaceholder: "Search by provider or model",
       aiGatewayModelPoolNoSources: "No source models available.",
+      aiGatewayModelPoolSelectAllFiltered: "Select all ({{count}})",
+      aiGatewayModelPoolDeselectAllFiltered: "Deselect all ({{count}})",
       aiGatewayModelPoolSelectedTitle: "Selected candidates",
       aiGatewayModelPoolSelectedEmpty: "Select at least one source model.",
       aiGatewayModelPoolWeightLabel: "weight",
@@ -827,6 +830,15 @@ const resources = {
       aiGatewayModelPoolStatusNoUsableKey: "No usable key",
       aiGatewayModelPoolStatusUnsupportedProtocol: "Unsupported protocol",
       aiGatewayModelPoolReasonLabel: "Reason",
+      aiGatewayModelPoolsTab: "Model pools",
+      aiGatewayModelPoolsDesc:
+        "Aggregate upstream models into unified public model pools with failover.",
+      aiGatewayNoModelPools: "No model pools yet.",
+      aiGatewayNoModelPoolsGuide:
+        "Create a model pool to combine models from different providers into a single virtual model.",
+      aiGatewayNoMatchingModelPools: "No matching model pools",
+      aiGatewayNoMatchingModelPoolsGuide:
+        "No model pools match the selected status filter.",
       aiGatewayEditTemplate: "Edit template",
       aiGatewayNewTemplate: "New template",
       aiGatewayEditTemplateDesc:
@@ -4268,6 +4280,7 @@ const resources = {
       aiGatewayModelListClearSearch: "清空搜索",
       aiGatewayModelListClearFilters: "清空筛选条件",
       aiGatewayModelListCopySuccess: "模型 ID 已复制到剪贴板",
+      aiGatewayCopyFailed: "复制到剪贴板失败",
       aiGatewayModelListCopyAria: "复制模型 ID",
       aiGatewayModelListCopyUpstreamAria: "复制上游模型 ID",
       aiGatewayModelListGoToProviders: "前往配置上游服务商",
@@ -4569,6 +4582,8 @@ const resources = {
       aiGatewayModelPoolSourceSearch: "搜索来源模型",
       aiGatewayModelPoolSourceSearchPlaceholder: "按服务商或模型搜索",
       aiGatewayModelPoolNoSources: "暂无可用的来源模型。",
+      aiGatewayModelPoolSelectAllFiltered: "全选筛选结果 ({{count}})",
+      aiGatewayModelPoolDeselectAllFiltered: "取消全选筛选 ({{count}})",
       aiGatewayModelPoolSelectedTitle: "已选候选",
       aiGatewayModelPoolSelectedEmpty: "请至少选择一个来源模型。",
       aiGatewayModelPoolWeightLabel: "权重",
@@ -4608,6 +4623,15 @@ const resources = {
       aiGatewayModelPoolStatusNoUsableKey: "无可用密钥",
       aiGatewayModelPoolStatusUnsupportedProtocol: "不支持的协议",
       aiGatewayModelPoolReasonLabel: "原因",
+      aiGatewayModelPoolsTab: "模型池",
+      aiGatewayModelPoolsDesc:
+        "聚合多个上游服务商的模型为统一的公共模型，提供智能路由与故障转移。",
+      aiGatewayNoModelPools: "暂无模型池",
+      aiGatewayNoModelPoolsGuide:
+        "创建模型池将多个上游服务商的模型聚合为一个虚拟模型，支持负载均衡与故障转移。",
+      aiGatewayNoMatchingModelPools: "无匹配的模型池",
+      aiGatewayNoMatchingModelPoolsGuide:
+        "没有模型池符合当前状态筛选条件。",
       aiGatewayEditTemplate: "编辑服务商模板",
       aiGatewayNewTemplate: "新建服务商模板",
       aiGatewayEditTemplateDesc:

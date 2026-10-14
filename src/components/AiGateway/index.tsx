@@ -1395,6 +1395,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
               );
               if (pool) void handleTogglePoolEnabled(pool, enabled);
             }}
+            onAddPool={() => handleOpenNewPool()}
             onEditPool={(pool) => handleOpenEditPool(pool)}
             onDeletePool={(poolId) => void handleDeletePool(poolId)}
             onOpenPoolLogs={(model) => handleOpenPoolLogs(model)}
@@ -1597,6 +1598,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
             if (!open) setEditingPool(null);
           }}
           providers={config.providers}
+          templates={templates}
           pool={editingPool}
           poolStatus={
             poolStatuses.find((status) => status.id === editingPool?.id) ?? null
