@@ -138,7 +138,11 @@ const RESPONSES_ALLOWED: &[&str] = &[
 
 /// Validate a pool request against the portable contract before any candidate
 /// is selected. A field is either translated faithfully by [`convert_request`]
-/// or rejected by name; nothing is silently discarded.
+/// or rejected by name. The one recognized exception is the historical
+/// assistant `messages[].reasoning_content` trace (a string or `null`): it is a
+/// provider-specific reasoning trace rather than a caller request control, so a
+/// same-protocol Chat candidate keeps it exactly and a converted request omits
+/// it instead of fabricating reasoning.
 ///
 /// `messages_candidate` is `true` when the pool stores at least one candidate
 /// whose effective protocol is native Anthropic Messages. Only then must the
@@ -333,7 +337,10 @@ fn validate_chat_message(message: &Value) -> Result<(), String> {
         // `name` has no faithful representation in the opposite Responses
         // message shape, so it is not part of the portable Chat message
         // contract; it must be rejected rather than silently dropped.
-        if !matches!(key.as_str(), "role" | "content" | "tool_calls" | "tool_call_id") {
+        if !matches!(
+            key.as_str(),
+            "role" | "content" | "tool_calls" | "tool_call_id" | "reasoning_content"
+        ) {
             return Err(field_error(
                 format!("messages.{key}"),
                 "is not supported by the model-pool contract",
@@ -341,6 +348,23 @@ fn validate_chat_message(message: &Value) -> Result<(), String> {
         }
     }
     let role = required_str(object.get("role"), "messages.role")?;
+    // The historical assistant `reasoning_content` trace is the one
+    // provider-specific field the contract recognizes: assistant-only, a string
+    // (including empty or whitespace) or `null`, never a control surface.
+    if let Some(reasoning) = object.get("reasoning_content") {
+        if role != "assistant" {
+            return Err(field_error(
+                "messages.reasoning_content",
+                "is only supported on assistant messages",
+            ));
+        }
+        if !reasoning.is_null() && !reasoning.is_string() {
+            return Err(field_error(
+                "messages.reasoning_content",
+                "must be a string or null",
+            ));
+        }
+    }
     match role {
         "system" | "developer" | "user" => {
             if let Some(content) = object.get("content").filter(|value| !value.is_null()) {

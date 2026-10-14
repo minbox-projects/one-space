@@ -2500,3 +2500,279 @@ async fn strict_tool_control_passes_between_openai_protocols() {
 
     stop_server().await.expect("stop listener");
 }
+
+// ---------------------------------------------------------------------------
+// 20261014-free-model-reasoning: historical assistant `reasoning_content`
+// ---------------------------------------------------------------------------
+//
+// OpenCode replays a stored Chat assistant `reasoning_content` extension on
+// multi-turn history. The pool contract must accept that one assistant-only
+// field (a string, including empty, or `null`), preserve it exactly on a
+// same-protocol Chat candidate, and omit it without fabricating reasoning when
+// converting to a Responses or native Anthropic candidate. `reasoning_effort`,
+// unknown fields and opaque Responses reasoning keep their rejections.
+
+/// The two assistant turns of the replay history (one text turn, one tool-call
+/// turn), each carrying the historical `reasoning_content` value.
+fn reasoning_history_messages(reasoning_content: &Value) -> Value {
+    json!([
+        {"role": "user", "content": "weather?"},
+        {"role": "assistant", "content": "let me check", "reasoning_content": reasoning_content.clone()},
+        {"role": "assistant", "content": null, "reasoning_content": reasoning_content.clone(),
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"}
+            }]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "sunny"}
+    ])
+}
+
+/// The replay history request body, including the normal function tool
+/// definition a thinking-with-tools replay carries.
+fn reasoning_history_body(alias: &str, reasoning_content: &Value) -> Value {
+    json!({
+        "model": alias,
+        "messages": reasoning_history_messages(reasoning_content),
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"]
+                }
+            }
+        }]
+    })
+}
+
+/// A same-protocol Chat candidate must receive the full replay `messages`
+/// byte-for-byte, including a present `reasoning_content` key whose value is
+/// `null`, empty or nonempty.
+#[tokio::test]
+async fn pool_reasoning_content_is_preserved_on_same_protocol_chat() {
+    let _home = temp_home("pool-reasoning-content-same-chat");
+    let port = free_port().await;
+    let tag = tag();
+    let (alias, log) = chat_candidate_fixture(port, &tag).await;
+
+    for (name, reasoning_content) in [
+        ("null", Value::Null),
+        ("empty", json!("")),
+        ("nonempty", json!("step-by-step reasoning")),
+    ] {
+        let (status, _ct, text) = post(
+            port,
+            "/v1/chat/completions",
+            reasoning_history_body(&alias, &reasoning_content),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {name}: a same-protocol Chat pool must accept reasoning_content: {text}"
+        );
+
+        let sent = captured_body(&captured(&log).last().expect("one upstream attempt"));
+        assert_eq!(
+            sent["messages"],
+            reasoning_history_messages(&reasoning_content),
+            "case {name}: the full history, including a present null reasoning_content key, must be preserved exactly: {sent}"
+        );
+    }
+
+    stop_server().await.expect("stop listener");
+}
+
+/// A Responses candidate must receive the exact canonical stateless text/tool
+/// history with no reasoning item and no leaked reasoning text.
+#[tokio::test]
+async fn pool_reasoning_content_is_omitted_on_chat_to_responses_conversion() {
+    let _home = temp_home("pool-reasoning-content-to-responses");
+    let port = free_port().await;
+    let tag = tag();
+    let (alias, log) = responses_candidate_fixture(port, &tag).await;
+
+    const MARKER: &str = "hidden-chain-4f3a";
+    let (status, _ct, text) = post(
+        port,
+        "/v1/chat/completions",
+        reasoning_history_body(&alias, &json!(MARKER)),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "a Chat->Responses request carrying reasoning_content must be accepted: {text}"
+    );
+
+    let calls = captured(&log);
+    assert_eq!(calls.len(), 1, "exactly one upstream attempt");
+    assert_eq!(calls[0].path, "/v1/responses");
+    let sent = captured_body(&calls[0]);
+    assert_eq!(
+        sent["input"],
+        json!([
+            {"role": "user", "content": [{"type": "input_text", "text": "weather?"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "let me check"}]},
+            {"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "{\"city\":\"SF\"}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": "sunny"}
+        ]),
+        "the converted input must be the exact canonical stateless history: {sent}"
+    );
+    assert!(
+        !sent.to_string().contains(MARKER),
+        "the provider-specific reasoning text must be omitted, not leaked: {sent}"
+    );
+    assert!(
+        !sent["input"]
+            .as_array()
+            .expect("input array")
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("reasoning")),
+        "no reasoning item may be fabricated: {sent}"
+    );
+
+    stop_server().await.expect("stop listener");
+}
+
+/// A native Anthropic candidate must receive the exact canonical text/tool
+/// history with no fabricated reasoning block and no leaked reasoning text.
+#[tokio::test]
+async fn pool_reasoning_content_is_omitted_on_chat_to_anthropic_conversion() {
+    let _home = temp_home("pool-reasoning-content-to-anthropic");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let alias = format!("free-model-{tag}");
+    let (url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "remote-a",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 4, "output_tokens": 2},
+            }),
+        )
+    })
+    .await;
+    let provider = provider_value(
+        &provider_id,
+        &url,
+        "anthropic_messages",
+        vec![mapping("local-a", "remote-a", "anthropic_messages")],
+    );
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [candidate(&provider_id, "local-a", "remote-a", "anthropic_messages")],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start listener");
+
+    const MARKER: &str = "hidden-chain-9b2c";
+    let (status, _ct, text) = post(
+        port,
+        "/v1/chat/completions",
+        reasoning_history_body(&alias, &json!(MARKER)),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "a Chat->Anthropic request carrying reasoning_content must be accepted: {text}"
+    );
+
+    let calls = captured(&log);
+    assert_eq!(calls.len(), 1, "exactly one upstream attempt");
+    assert_eq!(calls[0].path, "/v1/messages");
+    let sent = captured_body(&calls[0]);
+    assert_eq!(
+        sent["messages"],
+        json!([
+            {"role": "user", "content": [{"type": "text", "text": "weather?"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "let me check"}]},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "SF"}}
+            ]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": "sunny"}]}
+        ]),
+        "the converted messages must be the exact canonical Anthropic history: {sent}"
+    );
+    assert!(
+        !sent.to_string().contains(MARKER),
+        "the provider-specific reasoning text must be omitted, not leaked: {sent}"
+    );
+    assert!(
+        !sent["messages"]
+            .as_array()
+            .expect("messages array")
+            .iter()
+            .any(
+                |message| message["content"].as_array().is_some_and(|blocks| {
+                    blocks
+                        .iter()
+                        .any(|block| block.get("type").and_then(Value::as_str) == Some("reasoning"))
+                })
+            ),
+        "no reasoning block may be fabricated: {sent}"
+    );
+
+    stop_server().await.expect("stop listener");
+}
+
+/// `reasoning_content` is assistant-only: a non-assistant role or a non-string,
+/// non-null value is a field-named 400 before any attempt.
+#[tokio::test]
+async fn pool_reasoning_content_on_non_assistant_or_nonstring_is_rejected() {
+    let _home = temp_home("pool-reasoning-content-rejected-shapes");
+    let port = free_port().await;
+    let tag = tag();
+    let (alias, log) = chat_candidate_fixture(port, &tag).await;
+
+    for role in ["system", "developer", "user", "tool"] {
+        let mut message =
+            json!({"role": role, "content": "hi", "reasoning_content": "step-by-step reasoning"});
+        if role == "tool" {
+            message["tool_call_id"] = json!("call_1");
+        }
+        let (status, _ct, text) = post(
+            port,
+            "/v1/chat/completions",
+            json!({"model": alias, "messages": [message]}),
+        )
+        .await;
+        assert_field_rejected(status, &text, &["messages.reasoning_content"]);
+        assert!(
+            captured(&log).is_empty(),
+            "reasoning_content on a {role} message must be rejected before any upstream attempt: {text}"
+        );
+    }
+
+    for (name, value) in [
+        ("number", json!(1)),
+        ("bool", json!(true)),
+        ("object", json!({})),
+        ("array", json!([])),
+    ] {
+        let (status, _ct, text) = post(
+            port,
+            "/v1/chat/completions",
+            reasoning_history_body(&alias, &value),
+        )
+        .await;
+        assert_field_rejected(status, &text, &["messages.reasoning_content"]);
+        assert!(
+            captured(&log).is_empty(),
+            "assistant reasoning_content {name} must be rejected before any upstream attempt: {text}"
+        );
+    }
+
+    stop_server().await.expect("stop listener");
+}
