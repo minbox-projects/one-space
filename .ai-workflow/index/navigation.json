@@ -1425,6 +1425,7 @@
         "src/components/AiGateway/ModelListPanel.tsx",
         "src/components/AiGateway/ModelPoolCard.tsx",
         "src/components/AiGateway/ModelPoolDialog.tsx",
+        "src/components/AiGateway/ModelPoolListPanel.tsx",
         "src/components/AiGateway/ProviderDetailDialog.tsx",
         "src/components/AiGateway/ProviderGoUsageBlock.tsx",
         "src/components/AiGateway/ProviderQuotaBlock.tsx",
@@ -1453,6 +1454,7 @@
         "src/components/AiGateway/ModelListPanel.test.tsx",
         "src/components/AiGateway/ModelPoolCard.test.tsx",
         "src/components/AiGateway/ModelPoolDialog.test.tsx",
+        "src/components/AiGateway/ModelPoolListPanel.test.tsx",
         "src/components/AiGateway/ProviderDetailDialog.test.tsx",
         "src/components/AiGateway/ProviderGoUsageBlock.test.tsx",
         "src/components/AiGateway/ProviderQuotaBlock.test.tsx",
@@ -2177,6 +2179,12 @@
           "name": "ModelPoolCard",
           "kind": "function",
           "visibility": "public"
+        },
+        {
+          "file": "src/components/AiGateway/ModelPoolListPanel.tsx",
+          "name": "ModelPoolListPanel",
+          "kind": "function",
+          "visibility": "public"
         }
       ],
       "depends_on": [],
@@ -2195,6 +2203,8 @@
         "src/components/AiGateway/ModelPoolCard.tsx",
         "src/components/AiGateway/ModelPoolDialog.test.tsx",
         "src/components/AiGateway/ModelPoolDialog.tsx",
+        "src/components/AiGateway/ModelPoolListPanel.test.tsx",
+        "src/components/AiGateway/ModelPoolListPanel.tsx",
         "src/components/AiGateway/ProviderDetailDialog.test.tsx",
         "src/components/AiGateway/ProviderDetailDialog.tsx",
         "src/components/AiGateway/ProviderGoUsageBlock.test.tsx",

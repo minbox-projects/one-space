@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Boxes,
   Check,
   Copy,
+  Cpu,
   Layers,
   Search,
   Server,
@@ -262,23 +262,30 @@ export function ModelListPanel({
   return (
     <div className="space-y-4" data-testid="ai-gateway-model-list">
       {/* 头部区域：对齐模块规范，增强视觉层次 */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-0.5">
-          <div className="flex items-center gap-2">
-            <Boxes className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-semibold text-foreground">
-              {t("aiGatewayModelListTab", "Model list")}
-            </h3>
-            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
-              {rows.length}
-            </span>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-1 border-b border-border/40">
+        <div className="flex items-center gap-2.5">
+          <div className="rounded-lg p-2 bg-primary/10 text-primary">
+            <Cpu className="h-5 w-5" />
           </div>
-          <p className="text-xs text-muted-foreground">
-            {t(
-              "aiGatewayModelListDesc",
-              "View local models exposed by the gateway, calling protocols, and mapped upstream routing sources.",
-            )}
-          </p>
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-semibold text-foreground">
+                {t("aiGatewayModelListTab", "Model list")}
+              </h2>
+              <span
+                data-testid="ai-gateway-models-count"
+                className="rounded-full bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground"
+              >
+                {rows.length}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "aiGatewayModelListDesc",
+                "View local models exposed by the gateway, calling protocols, and mapped upstream routing sources.",
+              )}
+            </p>
+          </div>
         </div>
 
         {/* 数量与筛选状态概览 */}
@@ -431,7 +438,7 @@ export function ModelListPanel({
           className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-muted/20 px-4 py-10 text-center"
         >
           <div className="rounded-full bg-muted/50 p-3 text-muted-foreground">
-            <Boxes className="h-6 w-6" />
+            <Cpu className="h-6 w-6" />
           </div>
           <p className="mt-3 text-xs font-medium text-foreground">
             {t(

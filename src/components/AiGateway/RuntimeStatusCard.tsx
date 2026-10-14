@@ -3,10 +3,10 @@ import { useTranslation } from "react-i18next";
 import {
   Activity,
   AlertTriangle,
-  Boxes,
   Check,
   CheckCircle2,
   Copy,
+  Cpu,
   Loader2,
   Play,
   RefreshCw,
@@ -327,7 +327,7 @@ export function RuntimeStatusCard({
             <span className="text-[11px] font-medium">
               {t("aiGatewayAggregatedModels", "Aggregated models")}
             </span>
-            <Boxes className="h-3.5 w-3.5 text-muted-foreground/70 group-hover:text-foreground" />
+            <Cpu className="h-3.5 w-3.5 text-muted-foreground/70 group-hover:text-foreground" />
           </div>
           <div className="mt-1.5 flex items-baseline gap-1.5">
             <span className="text-lg font-bold tracking-tight text-foreground">

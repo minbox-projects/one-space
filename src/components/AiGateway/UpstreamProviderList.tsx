@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
   ArrowRightLeft,
-  Boxes,
   Check,
   ChevronDown,
   Cpu,
@@ -39,12 +38,9 @@ import {
   providerMarkedKeys,
   PROVIDER_KEY_STATE_TRANSLATION_KEYS,
   resolveEffectiveTemplatePolicy,
-  type GatewayModelPool,
-  type GatewayModelPoolStatus,
   type GatewayProviderTemplateView,
   type GatewayUpstreamProvider,
 } from "@/lib/aiGateway";
-import { ModelPoolCard } from "./ModelPoolCard";
 import {
   autoDisabledAlertInstanceKey,
   dismissAlertInstanceKeys,
@@ -53,7 +49,6 @@ import {
 } from "@/lib/aiGatewayAlertBadges";
 
 export type ProviderStatusFilter = "all" | "enabled" | "disabled";
-export type ProviderViewMode = "all" | "providers" | "model_pools";
 
 type UpstreamProviderListProps = {
   providers: GatewayUpstreamProvider[];
@@ -67,14 +62,6 @@ type UpstreamProviderListProps = {
   onManageTemplates?: () => void;
   /** Re-enable one runtime-marked key of a provider. */
   onReenableKey?: (providerId: string, keyId: string) => void;
-  /** Saved virtual model-pool cards shown beside real providers. */
-  modelPools?: GatewayModelPool[];
-  poolStatuses?: GatewayModelPoolStatus[];
-  onTogglePoolEnabled?: (poolId: string, enabled: boolean) => void;
-  onAddPool?: () => void;
-  onEditPool?: (pool: GatewayModelPool) => void;
-  onDeletePool?: (poolId: string) => void;
-  onOpenPoolLogs?: (model: string) => void;
 };
 
 type UpstreamProviderCardItemProps = {
@@ -567,22 +554,13 @@ export function UpstreamProviderList({
   onAdd,
   onManageTemplates,
   onReenableKey,
-  modelPools = [],
-  poolStatuses = [],
-  onTogglePoolEnabled,
-  onAddPool,
-  onEditPool,
-  onDeletePool,
-  onOpenPoolLogs,
 }: UpstreamProviderListProps) {
   const { t } = useTranslation();
 
   // 计算所有服务商之前仅获取一次当前时间（有意读取时钟，providers 变化时重拍）
   // eslint-disable-next-line react-hooks/purity -- baseNow 需要在 providers 变化时快照 Date.now()
   const baseNow = useMemo(() => Date.now(), [providers]);
-  const [viewMode, setViewMode] = useState<ProviderViewMode>("all");
   const [statusFilter, setStatusFilter] = useState<ProviderStatusFilter>("all");
-  const [poolStatusFilter, setPoolStatusFilter] = useState<ProviderStatusFilter>("all");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [tagFilterOpen, setTagFilterOpen] = useState(false);
   const [quotaRefreshToken, setQuotaRefreshToken] = useState(0);
@@ -667,31 +645,6 @@ export function UpstreamProviderList({
     });
   }, [providers, statusFilter, selectedTags]);
 
-  const poolCounts = useMemo(() => {
-    let enabled = 0;
-    let disabled = 0;
-    for (const pool of modelPools) {
-      if (pool.enabled) {
-        enabled++;
-      } else {
-        disabled++;
-      }
-    }
-    return {
-      all: modelPools.length,
-      enabled,
-      disabled,
-    };
-  }, [modelPools]);
-
-  const filteredModelPools = useMemo(() => {
-    return modelPools.filter((pool) => {
-      if (poolStatusFilter === "enabled" && !pool.enabled) return false;
-      if (poolStatusFilter === "disabled" && pool.enabled) return false;
-      return true;
-    });
-  }, [modelPools, poolStatusFilter]);
-
   // Every currently actionable warning instance across all providers: auto-disabled
   // rows and template-retired rows. Dismissals are pruned against this set so a
   // resolved instance is forgotten and a later recurrence shows again.
@@ -775,6 +728,15 @@ export function UpstreamProviderList({
   const canRefreshQuota = refreshableProviderIds.size > 0;
   const [lastRefreshedAt, setLastRefreshedAt] = useState<number | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const bulkRefreshTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (bulkRefreshTimerRef.current !== null) {
+        window.clearTimeout(bulkRefreshTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleCardRefreshed = useCallback((ts: number) => {
     setLastRefreshedAt((prev) => (prev ? Math.max(prev, ts) : ts));
@@ -785,87 +747,42 @@ export function UpstreamProviderList({
     if (!canRefreshQuota) return;
     setIsRefreshing(true);
     setQuotaRefreshToken((v) => v + 1);
-    window.setTimeout(() => {
+    if (bulkRefreshTimerRef.current !== null) {
+      window.clearTimeout(bulkRefreshTimerRef.current);
+    }
+    bulkRefreshTimerRef.current = window.setTimeout(() => {
       setIsRefreshing(false);
+      bulkRefreshTimerRef.current = null;
     }, 1200);
   }, [canRefreshQuota]);
 
   return (
     <section className="space-y-5" data-testid="ai-gateway-providers">
-      {/* 顶部视图分段切换栏与全局快捷操作 */}
+      {/* 顶部标题与全局服务商操作栏 */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-1 border-b border-border/40">
-        <div
-          role="group"
-          aria-label={t("aiGatewayViewModeAria", "Select view mode")}
-          data-testid="ai-gateway-view-mode-selector"
-          className="inline-flex items-center rounded-lg border border-border/50 bg-muted/60 p-0.5 text-xs shadow-inner"
-        >
-          <button
-            type="button"
-            aria-pressed={viewMode === "all"}
-            data-testid="ai-gateway-view-mode-all"
-            onClick={() => setViewMode("all")}
-            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
-              viewMode === "all"
-                ? "bg-background text-foreground shadow-xs border border-border/40 font-semibold"
-                : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-            }`}
-          >
-            <span>{t("aiGatewayFilterAll", "All")}</span>
-            <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] text-muted-foreground">
-              {providers.length + modelPools.length}
-            </span>
-          </button>
-          <button
-            type="button"
-            aria-pressed={viewMode === "providers"}
-            data-testid="ai-gateway-view-mode-providers"
-            onClick={() => setViewMode("providers")}
-            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
-              viewMode === "providers"
-                ? "bg-background text-foreground shadow-xs border border-border/40 font-semibold"
-                : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-            }`}
-          >
-            <Server className="h-3.5 w-3.5 text-primary" />
-            <span>{t("aiGatewayProvidersSectionTitle", "Providers")}</span>
-            <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] text-muted-foreground">
-              {providers.length}
-            </span>
-          </button>
-          <button
-            type="button"
-            aria-pressed={viewMode === "model_pools"}
-            data-testid="ai-gateway-view-mode-model-pools"
-            onClick={() => setViewMode("model_pools")}
-            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
-              viewMode === "model_pools"
-                ? "bg-background text-foreground shadow-xs border border-border/40 font-semibold"
-                : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-            }`}
-          >
-            <Boxes className="h-3.5 w-3.5 text-violet-500" />
-            <span>{t("aiGatewayModelPoolsTab", "Model pools")}</span>
-            <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] text-muted-foreground">
-              {modelPools.length}
-            </span>
-          </button>
+        <div className="flex items-center gap-2.5">
+          <div className="rounded-lg p-2 bg-primary/10 text-primary">
+            <Server className="h-5 w-5" />
+          </div>
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-semibold text-foreground">
+                {t("aiGatewayProvidersSectionTitle", "Upstream providers")}
+              </h2>
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground">
+                {providers.length}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "aiGatewayProvidersDesc",
+                "Manage remote AI provider endpoints, protocols, and model route mappings.",
+              )}
+            </p>
+          </div>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {onAddPool ? (
-            <button
-              type="button"
-              onClick={onAddPool}
-              disabled={busy}
-              data-testid="ai-gateway-add-model-pool"
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 text-xs font-medium text-violet-700 dark:text-violet-300 shadow-xs transition hover:bg-violet-500/20 active:bg-violet-500/30 disabled:opacity-50"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {t("aiGatewayModelPoolCreate", "Create model pool")}
-            </button>
-          ) : null}
-
           {onManageTemplates ? (
             <button
               type="button"
@@ -882,6 +799,7 @@ export function UpstreamProviderList({
             type="button"
             onClick={onAdd}
             disabled={busy}
+            data-testid="ai-gateway-add-provider"
             className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
           >
             <Plus className="h-3.5 w-3.5" />
@@ -890,28 +808,8 @@ export function UpstreamProviderList({
         </div>
       </div>
 
-      {/* 上游服务商分区：在全部模式或服务商专属模式下展示 */}
-      {viewMode === "all" || viewMode === "providers" ? (
-        <div className="space-y-3.5" data-testid="ai-gateway-providers-section">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-2">
-                <Server className="h-4 w-4 text-primary" />
-                <h3 className="text-sm font-semibold text-foreground">
-                  {t("aiGatewayProvidersSectionTitle", "Providers")}
-                </h3>
-                <span className="rounded-full bg-muted px-2 py-0.2 text-[10px] font-semibold text-muted-foreground">
-                  {providers.length}
-                </span>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {t(
-                  "aiGatewayProvidersDesc",
-                  "Manage remote AI provider endpoints, protocols, and model route mappings.",
-                )}
-              </p>
-            </div>
-          </div>
+      {/* 上游服务商主体分区 */}
+      <div className="space-y-3.5" data-testid="ai-gateway-providers-section">
 
           {providers.length > 0 ? (
             <div
@@ -1202,195 +1100,6 @@ export function UpstreamProviderList({
             </div>
           )}
         </div>
-      ) : null}
-
-      {/* 模型池分区：在全部模式（有模型池时）或模型池专属模式下展示 */}
-      {(viewMode === "all" && modelPools.length > 0) || viewMode === "model_pools" ? (
-        <div className="space-y-3.5" data-testid="ai-gateway-model-pools-section">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-2">
-                <Boxes className="h-4 w-4 text-violet-500" />
-                <h3 className="text-sm font-semibold text-foreground">
-                  {t("aiGatewayModelPoolsTab", "Model pools")}
-                </h3>
-                <span className="rounded-full bg-violet-500/15 px-2 py-0.2 text-[10px] font-semibold text-violet-700 dark:text-violet-300">
-                  {modelPools.length}
-                </span>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {t(
-                  "aiGatewayModelPoolsDesc",
-                  "Aggregate upstream models into unified public model pools with failover.",
-                )}
-              </p>
-            </div>
-          </div>
-
-          {modelPools.length > 0 ? (
-            <div
-              data-testid="ai-gateway-model-pools-toolbar"
-              className="flex flex-wrap items-center justify-between gap-2.5 pt-0.5"
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                <div
-                  role="group"
-                  aria-label={t("aiGatewayFilterAria", "Filter model pools by status")}
-                  data-testid="ai-gateway-pool-status-filter"
-                  className="inline-flex items-center rounded-lg border border-border/50 bg-muted/60 p-0.5 text-xs shadow-inner"
-                >
-                  <button
-                    type="button"
-                    data-testid="filter-pool-status-all"
-                    aria-pressed={poolStatusFilter === "all"}
-                    onClick={() => setPoolStatusFilter("all")}
-                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
-                      poolStatusFilter === "all"
-                        ? "bg-background text-foreground shadow-sm border border-border/40"
-                        : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-                    }`}
-                  >
-                    <span>{t("aiGatewayFilterAll", "All")}</span>
-                    <span
-                      className={`rounded-full px-1.5 py-0.2 text-[10px] ${
-                        poolStatusFilter === "all"
-                          ? "bg-muted text-foreground"
-                          : "bg-background/60 text-muted-foreground"
-                      }`}
-                    >
-                      {poolCounts.all}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="filter-pool-status-enabled"
-                    aria-pressed={poolStatusFilter === "enabled"}
-                    onClick={() => setPoolStatusFilter("enabled")}
-                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
-                      poolStatusFilter === "enabled"
-                        ? "bg-background text-foreground shadow-sm border border-border/40"
-                        : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-                    }`}
-                  >
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                    <span>{t("aiGatewayFilterEnabled", "Enabled")}</span>
-                    <span
-                      className={`rounded-full px-1.5 py-0.2 text-[10px] ${
-                        poolStatusFilter === "enabled"
-                          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-semibold"
-                          : "bg-background/60 text-muted-foreground"
-                      }`}
-                    >
-                      {poolCounts.enabled}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="filter-pool-status-disabled"
-                    aria-pressed={poolStatusFilter === "disabled"}
-                    onClick={() => setPoolStatusFilter("disabled")}
-                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
-                      poolStatusFilter === "disabled"
-                        ? "bg-background text-foreground shadow-sm border border-border/40"
-                        : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-                    }`}
-                  >
-                    <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
-                    <span>{t("aiGatewayFilterDisabled", "Disabled")}</span>
-                    <span
-                      className={`rounded-full px-1.5 py-0.2 text-[10px] ${
-                        poolStatusFilter === "disabled"
-                          ? "bg-rose-500/15 text-rose-700 dark:text-rose-300 font-semibold"
-                          : "bg-background/60 text-muted-foreground"
-                      }`}
-                    >
-                      {poolCounts.disabled}
-                    </span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {modelPools.length === 0 ? (
-            <div
-              data-testid="ai-gateway-model-pools-empty"
-              className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/50 px-6 py-10 text-center"
-            >
-              <div className="rounded-full bg-violet-500/10 p-2.5 text-violet-600 dark:text-violet-400">
-                <Boxes className="h-5 w-5" />
-              </div>
-              <h4 className="mt-2.5 text-xs font-medium text-foreground">
-                {t("aiGatewayNoModelPools", "No model pools yet.")}
-              </h4>
-              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
-                {t(
-                  "aiGatewayNoModelPoolsGuide",
-                  "Create a model pool to combine models from different providers into a single virtual model.",
-                )}
-              </p>
-              {onAddPool ? (
-                <button
-                  type="button"
-                  onClick={onAddPool}
-                  disabled={busy}
-                  className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
-                >
-                  <Plus className="h-3 w-3" />
-                  {t("aiGatewayModelPoolCreate", "Create model pool")}
-                </button>
-              ) : null}
-            </div>
-          ) : filteredModelPools.length === 0 ? (
-            <div
-              data-testid="ai-gateway-model-pools-filter-empty"
-              className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/40 px-6 py-10 text-center"
-            >
-              <div className="rounded-full bg-muted/60 p-2.5 text-muted-foreground">
-                <Filter className="h-5 w-5 opacity-70" />
-              </div>
-              <h4 className="mt-2.5 text-xs font-medium text-foreground">
-                {t("aiGatewayNoMatchingModelPools", "No matching model pools")}
-              </h4>
-              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
-                {t(
-                  "aiGatewayNoMatchingModelPoolsGuide",
-                  "No model pools match the selected status filter.",
-                )}
-              </p>
-              <button
-                type="button"
-                onClick={() => setPoolStatusFilter("all")}
-                className="mt-3.5 inline-flex h-7.5 items-center gap-1.5 rounded-lg border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted"
-              >
-                <RotateCcw className="h-3 w-3" />
-                {t("aiGatewayClearFilter", "Show all")}
-              </button>
-            </div>
-          ) : (
-            <div
-              data-testid="ai-gateway-model-pools"
-              className="grid gap-3 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3 items-start"
-            >
-              {filteredModelPools.map((pool) => (
-                <ModelPoolCard
-                  key={pool.id}
-                  pool={pool}
-                  providers={providers}
-                  status={poolStatuses.find((item) => item.id === pool.id) ?? null}
-                  busy={busy}
-                  onToggleEnabled={(poolId, enabled) =>
-                    onTogglePoolEnabled?.(poolId, enabled)
-                  }
-                  onEdit={(target) => onEditPool?.(target)}
-                  onDelete={(poolId) => onDeletePool?.(poolId)}
-                  onOpenLogs={(model) => onOpenPoolLogs?.(model)}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      ) : null}
     </section>
   );
 }

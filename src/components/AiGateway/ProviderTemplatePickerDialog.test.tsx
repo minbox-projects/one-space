@@ -224,18 +224,12 @@ describe("ProviderTemplatePickerDialog", () => {
 // RED before implementation: the badge label is "Chat" for anything non-Responses.
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Step 3 (20261013-free-model-pool): the existing Add-provider picker gains a
-// "Create model pool" channel beside manual creation (REQ-008 / AC-013).
-// RED before implementation: the channel test id does not exist yet.
-// ---------------------------------------------------------------------------
-
-describe("ProviderTemplatePickerDialog model pool creation", () => {
+describe("ProviderTemplatePickerDialog model pool creation channel removed", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("en");
   });
 
-  it("offers a Create model pool channel beside manual creation", () => {
+  it("does not offer a Create model pool channel beside manual creation", () => {
     render(
       <ProviderTemplatePickerDialog
         open={true}
@@ -249,8 +243,8 @@ describe("ProviderTemplatePickerDialog model pool creation", () => {
 
     expect(screen.getByTestId("template-picker-blank-btn")).toBeInTheDocument();
     expect(
-      screen.getByTestId("template-picker-model-pool-btn"),
-    ).toBeInTheDocument();
+      screen.queryByTestId("template-picker-model-pool-btn"),
+    ).not.toBeInTheDocument();
   });
 });
 

@@ -30,35 +30,39 @@ export function LocalKeyList({
 
   return (
     <section className="space-y-3.5" data-testid="ai-gateway-keys">
-      {/* 头部说明与添加栏 */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="space-y-0.5">
-          <div className="flex items-center gap-2">
-            <KeyRound className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-semibold text-foreground">
-              {t("aiGatewayKeys", "API Keys")}
-            </h3>
-            <span className="rounded-full bg-muted px-2 py-0.2 text-[10px] font-semibold text-muted-foreground">
-              {keys.length}
-            </span>
+      {/* 顶部标题与全局密钥操作栏 */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-1 border-b border-border/40">
+        <div className="flex items-center gap-2.5">
+          <div className="rounded-lg p-2 bg-primary/10 text-primary">
+            <KeyRound className="h-5 w-5" />
           </div>
-          <p className="text-xs text-muted-foreground">
-            {t(
-              "aiGatewayKeysDesc",
-              "Manage local bearer tokens used by clients to authenticate with this relay.",
-            )}
-          </p>
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-semibold text-foreground">
+                {t("aiGatewayKeys", "API Keys")}
+              </h2>
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground">
+                {keys.length}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "aiGatewayKeysDesc",
+                "Manage local bearer tokens used by clients to authenticate with this relay.",
+              )}
+            </p>
+          </div>
         </div>
 
         {/* 新增 Key 按钮（点击后在对话框中输入名称） */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={onAdd}
             disabled={busy}
             className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
           >
-            <Plus className="h-3 w-3" />
+            <Plus className="h-3.5 w-3.5" />
             {t("aiGatewayAddKey", "Add key")}
           </button>
         </div>

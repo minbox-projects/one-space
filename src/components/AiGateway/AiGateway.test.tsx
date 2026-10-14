@@ -1767,11 +1767,15 @@ describe("AiGateway", () => {
     const providersIndex = tabNodes.findIndex((node) =>
       (node.textContent ?? "").includes("Upstream providers"),
     );
+    const modelPoolsIndex = tabNodes.findIndex((node) =>
+      (node.textContent ?? "").includes("Model pools"),
+    );
     const modelsIndex = tabNodes.findIndex((node) =>
       (node.textContent ?? "").includes("Model list"),
     );
     expect(providersIndex).toBeGreaterThanOrEqual(0);
-    expect(modelsIndex).toBe(providersIndex + 1);
+    expect(modelPoolsIndex).toBe(providersIndex + 1);
+    expect(modelsIndex).toBe(modelPoolsIndex + 1);
 
     const modelsTab = tabNodes[modelsIndex];
     const modelsTabBadge = within(modelsTab).getByText("3");
@@ -4204,6 +4208,22 @@ describe("AiGateway model pool integration", () => {
     fireEvent.click(screen.getByRole("button", { name: "show" }));
     await screen.findByTestId("ai-gateway-providers");
     await waitFor(() => expect(poolStatusCalls()).toBe(1));
+  });
+
+  it("switches to the dedicated model pools tab and renders model pool panel", async () => {
+    mockStore(poolStore([modelPoolFixture()]));
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Upstream A");
+
+    const poolTab = screen.getByRole("tab", { name: /Model pools/i });
+    expect(poolTab).toBeInTheDocument();
+    fireEvent.click(poolTab);
+
+    expect(poolTab).toHaveAttribute("aria-selected", "true");
+    const panel = screen.getByTestId("ai-gateway-model-pools-panel");
+    expect(panel).toBeInTheDocument();
+    expect(within(panel).getByText("Free Modle")).toBeInTheDocument();
   });
 });
 

@@ -489,7 +489,7 @@ const resources = {
       aiGatewayStart: "Start service",
       aiGatewayStop: "Stop service",
       aiGatewayProviders: "Upstream providers",
-      aiGatewayProvidersSectionTitle: "Providers",
+      aiGatewayProvidersSectionTitle: "Upstream providers",
       aiGatewayQuotaTitle: "CommandCode quota",
       aiGatewayQuotaCredits: "Credits remaining",
       aiGatewayQuotaWindow5h: "5-hour window",
@@ -773,10 +773,10 @@ const resources = {
       aiGatewayUseThisTemplate: "Use template",
       aiGatewayBlankProviderPresetDesc:
         "Skip presets and configure provider endpoint, protocol, and model mappings manually.",
-      aiGatewayModelPoolCreate: "Create model pool",
+      aiGatewayModelPoolCreate: "Add model pool",
       aiGatewayModelPoolCreateDesc:
         "Combine models from existing upstream providers behind one public model.",
-      aiGatewayModelPoolDialogTitle: "Create model pool",
+      aiGatewayModelPoolDialogTitle: "Add model pool",
       aiGatewayModelPoolDialogEditTitle: "Edit model pool",
       aiGatewayModelPoolDialogDesc:
         "Select source models and assign each candidate an integer weight.",
@@ -917,6 +917,8 @@ const resources = {
         "OpenCode and Codex are always listed; install the CLI if a tool is missing.",
       aiGatewayUsageTab: "Usage",
       aiGatewayUsageAndLogsTab: "Usage & Logs",
+      aiGatewayUsageAndLogsDesc:
+        "View token usage statistics, cost breakdowns, and granular request logs.",
       aiGatewayUsageStatsSubTab: "Usage stats",
       aiGatewayUsageLogsSubTab: "Request logs",
       aiGatewayUsageSubTabs: "Usage and logs subtabs",
@@ -4295,7 +4297,7 @@ const resources = {
       aiGatewayStart: "启动服务",
       aiGatewayStop: "停止服务",
       aiGatewayProviders: "上游服务商",
-      aiGatewayProvidersSectionTitle: "服务商",
+      aiGatewayProvidersSectionTitle: "上游服务商",
       aiGatewayQuotaTitle: "CommandCode 配额",
       aiGatewayQuotaCredits: "剩余额度",
       aiGatewayQuotaWindow5h: "5 小时额度",
@@ -4569,10 +4571,10 @@ const resources = {
       aiGatewayUseThisTemplate: "使用此模板",
       aiGatewayBlankProviderPresetDesc:
         "跳过预设模板，手动配置服务商地址、通信协议与模型路由映射。",
-      aiGatewayModelPoolCreate: "创建模型池",
+      aiGatewayModelPoolCreate: "新增模型池",
       aiGatewayModelPoolCreateDesc:
         "将现有上游服务商中的模型组合为一个对外模型。",
-      aiGatewayModelPoolDialogTitle: "创建模型池",
+      aiGatewayModelPoolDialogTitle: "新增模型池",
       aiGatewayModelPoolDialogEditTitle: "编辑模型池",
       aiGatewayModelPoolDialogDesc:
         "选择来源模型，并为每个候选分配 1-100 的整数权重。",
@@ -4708,6 +4710,8 @@ const resources = {
         "OpenCode 与 Codex 始终会列出；如缺少某个工具，请先安装对应的 CLI。",
       aiGatewayUsageTab: "用量统计",
       aiGatewayUsageAndLogsTab: "用量与日志",
+      aiGatewayUsageAndLogsDesc:
+        "查看 Token 用量统计、费用明细以及详细的请求日志。",
       aiGatewayUsageStatsSubTab: "用量统计",
       aiGatewayUsageLogsSubTab: "请求日志",
       aiGatewayUsageSubTabs: "用量与日志子标签",

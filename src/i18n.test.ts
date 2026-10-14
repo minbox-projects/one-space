@@ -227,8 +227,8 @@ describe("服务商模板国际化键", () => {
   });
 
   it.each([
-    ["en", "Provider Templates", "Upstream providers", "Providers"],
-    ["zh", "服务商模板", "上游服务商", "服务商"],
+    ["en", "Provider Templates", "Upstream providers", "Upstream providers"],
+    ["zh", "服务商模板", "上游服务商", "上游服务商"],
   ] as const)("为 %s 保留模板与上游服务商命名", async (language, templates, providers, sectionTitle) => {
     await i18n.changeLanguage(language);
     expect(i18n.t("aiGatewayProviderTemplates")).toBe(templates);

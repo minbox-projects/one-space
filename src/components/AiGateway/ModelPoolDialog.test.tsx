@@ -147,12 +147,12 @@ function installMock() {
   });
 }
 
-/** Open the Add-provider picker, then the Create-model-pool channel. */
+/** Open the Model pools tab, then click the Create-model-pool button. */
 async function openModelPoolDialog(firstProviderName = "Provider A") {
   renderWithProviders(<AiGateway />);
   await screen.findByText(firstProviderName);
-  fireEvent.click(screen.getByRole("button", { name: /Add provider/i }));
-  fireEvent.click(screen.getByTestId("template-picker-model-pool-btn"));
+  fireEvent.click(screen.getByRole("tab", { name: /Model pools/i }));
+  fireEvent.click(screen.getByTestId("ai-gateway-add-model-pool"));
   return screen.getByTestId("model-pool-dialog");
 }
 

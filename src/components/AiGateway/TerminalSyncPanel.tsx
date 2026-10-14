@@ -141,23 +141,27 @@ export function TerminalSyncPanel({
   return (
     <div className="space-y-3.5">
       {/* 头部：标题与说明 */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="space-y-0.5">
-          <div className="flex items-center gap-2">
-            <TerminalSquare className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-semibold text-foreground">
-              {t("aiGatewayTerminalSync", "AI terminal integration")}
-            </h3>
-            <span className="rounded-full bg-muted px-2 py-0.2 text-[10px] font-semibold text-muted-foreground">
-              {supportedTargets.length}
-            </span>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-1 border-b border-border/40">
+        <div className="flex items-center gap-2.5">
+          <div className="rounded-lg p-2 bg-primary/10 text-primary">
+            <TerminalSquare className="h-5 w-5" />
           </div>
-          <p className="text-xs text-muted-foreground">
-            {t(
-              "aiGatewayTerminalSyncDesc",
-              "Each tool shows Add or Sync on its right based on its state. Syncing writes the gateway endpoint, default key, and model mappings as an independent provider, and it is not activated automatically. If its gateway provider was deleted, syncing creates a new AI Gateway provider.",
-            )}
-          </p>
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-semibold text-foreground">
+                {t("aiGatewayTerminalSync", "AI terminal integration")}
+              </h2>
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground">
+                {supportedTargets.length}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "aiGatewayTerminalSyncDesc",
+                "Each tool shows Add or Sync on its right based on its state. Syncing writes the gateway endpoint, default key, and model mappings as an independent provider, and it is not activated automatically. If its gateway provider was deleted, syncing creates a new AI Gateway provider.",
+              )}
+            </p>
+          </div>
         </div>
       </div>
 

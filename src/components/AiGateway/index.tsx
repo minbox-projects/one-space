@@ -3,9 +3,10 @@ import { useTranslation } from "react-i18next";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   BarChart3,
-  Boxes,
   ChevronsUpDown,
+  Cpu,
   KeyRound,
+  Layers,
   Network,
   Plus,
   ScrollText,
@@ -84,6 +85,7 @@ import {
 } from "@/components/ui/dialog";
 import { RuntimeStatusCard } from "./RuntimeStatusCard";
 import { ModelListPanel } from "./ModelListPanel";
+import { ModelPoolListPanel } from "./ModelPoolListPanel";
 import { UpstreamProviderList } from "./UpstreamProviderList";
 import { ProviderDetailDialog } from "./ProviderDetailDialog";
 import { ProviderTemplateSection } from "./ProviderTemplateSection";
@@ -99,6 +101,7 @@ import { UsageLogsPanel } from "./UsageLogsPanel";
 
 type AiGatewayTab =
   | "providers"
+  | "model-pools"
   | "models"
   | "keys"
   | "terminals"
@@ -1231,9 +1234,15 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       hasAlert: autoDisabledCount > 0,
     },
     {
+      id: "model-pools",
+      label: t("aiGatewayModelPoolsTab", "Model pools"),
+      icon: Layers,
+      count: readModelPools(config).length,
+    },
+    {
       id: "models",
       label: t("aiGatewayModelListTab", "Model list"),
-      icon: Boxes,
+      icon: Cpu,
       count:
         aggregateModels(config.providers).length +
         readModelPools(config).filter((pool) => pool.enabled).length,
@@ -1387,15 +1396,27 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
             onReenableKey={(providerId, keyId) =>
               void handleReenableProviderKey(providerId, keyId)
             }
+          />
+        </div>
+
+        {/* Tab 2: 模型池 */}
+        <div
+          role="tabpanel"
+          aria-label={t("aiGatewayModelPoolsTab", "Model pools")}
+          className={activeTab === "model-pools" ? "block" : "hidden"}
+        >
+          <ModelPoolListPanel
             modelPools={readModelPools(config)}
+            providers={config.providers}
             poolStatuses={poolStatuses}
+            busy={busy}
+            onAddPool={() => handleOpenNewPool()}
             onTogglePoolEnabled={(poolId, enabled) => {
               const pool = readModelPools(config).find(
                 (item) => item.id === poolId,
               );
               if (pool) void handleTogglePoolEnabled(pool, enabled);
             }}
-            onAddPool={() => handleOpenNewPool()}
             onEditPool={(pool) => handleOpenEditPool(pool)}
             onDeletePool={(poolId) => void handleDeletePool(poolId)}
             onOpenPoolLogs={(model) => handleOpenPoolLogs(model)}
@@ -1462,12 +1483,32 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           aria-label={t("aiGatewayUsageAndLogsTab", "Usage & Logs")}
           className={activeTab === "usage" ? "space-y-4 block" : "hidden"}
         >
-          {/* 二级子标签切换（用量统计 / 请求日志） */}
-          <div className="flex items-center justify-between border-b pb-3">
+          {/* 顶部标题与二级子标签切换 */}
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-1 border-b border-border/40">
+            <div className="flex items-center gap-2.5">
+              <div className="rounded-lg p-2 bg-primary/10 text-primary">
+                <BarChart3 className="h-5 w-5" />
+              </div>
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base font-semibold text-foreground">
+                    {t("aiGatewayUsageAndLogsTab", "Usage & Logs")}
+                  </h2>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {t(
+                    "aiGatewayUsageAndLogsDesc",
+                    "View token usage statistics, cost breakdowns, and granular request logs.",
+                  )}
+                </p>
+              </div>
+            </div>
+
+            {/* 二级子标签切换（用量统计 / 请求日志） */}
             <div
               role="tablist"
               aria-label={t("aiGatewayUsageSubTabs", "Usage and logs subtabs")}
-              className="inline-flex items-center rounded-lg border bg-muted/40 p-1 text-xs"
+              className="inline-flex items-center rounded-lg border bg-muted/40 p-1 text-xs shrink-0"
             >
               <button
                 type="button"
@@ -1582,10 +1623,6 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           onNewTemplate={() => {
             setEditingTemplate(null);
             setIsTemplateEditOpen(true);
-          }}
-          onSelectModelPool={() => {
-            setIsTemplatePickerOpen(false);
-            handleOpenNewPool();
           }}
         />
 
