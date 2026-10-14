@@ -4,7 +4,6 @@ import { emit, listen } from "@tauri-apps/api/event";
 import {
   BarChart3,
   ChevronsUpDown,
-  Cpu,
   KeyRound,
   Layers,
   Network,
@@ -1242,7 +1241,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
     {
       id: "models",
       label: t("aiGatewayModelListTab", "Model list"),
-      icon: Cpu,
+      icon: Sparkles,
       count:
         aggregateModels(config.providers).length +
         readModelPools(config).filter((pool) => pool.enabled).length,

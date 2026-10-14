@@ -3,10 +3,10 @@ import { useTranslation } from "react-i18next";
 import {
   Check,
   Copy,
-  Cpu,
   Layers,
   Search,
   Server,
+  Sparkles,
   X,
   ArrowRight,
 } from "lucide-react";
@@ -265,7 +265,7 @@ export function ModelListPanel({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-1 border-b border-border/40">
         <div className="flex items-center gap-2.5">
           <div className="rounded-lg p-2 bg-primary/10 text-primary">
-            <Cpu className="h-5 w-5" />
+            <Sparkles className="h-5 w-5" />
           </div>
           <div className="space-y-0.5">
             <div className="flex items-center gap-2">
@@ -438,7 +438,7 @@ export function ModelListPanel({
           className="flex flex-col items-center justify-center rounded-xl border border-dashed bg-muted/20 px-4 py-10 text-center"
         >
           <div className="rounded-full bg-muted/50 p-3 text-muted-foreground">
-            <Cpu className="h-6 w-6" />
+            <Sparkles className="h-6 w-6" />
           </div>
           <p className="mt-3 text-xs font-medium text-foreground">
             {t(
