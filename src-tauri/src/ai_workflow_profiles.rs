@@ -547,19 +547,44 @@ fn opencode_declared_capability(model: &serde_json::Value) -> Option<ModelCapabi
     })
 }
 
+/// Resolves one provider object from the optional local catalog.
+/// A provider may sit under a top-level `providers` wrapper or directly at the
+/// root; a missing or non-object provider resolves to None.
+fn opencode_catalog_provider<'a>(
+    catalog: &'a serde_json::Value,
+    provider: &str,
+) -> Option<&'a serde_json::Value> {
+    catalog
+        .get("providers")
+        .and_then(|value| value.as_object())
+        .and_then(|providers| providers.get(provider))
+        .or_else(|| catalog.get(provider))
+}
+
+/// A dynamically discoverable self-operated model is free exactly when its
+/// declared `input` and `output` costs are both the number zero. A missing or
+/// non-object cost, a missing side, a non-zero value or an unparseable value
+/// (including a string) is not free. A `status` of `deprecated` excludes it.
+fn opencode_catalog_model_is_free(model: &serde_json::Value) -> bool {
+    if model.get("status").and_then(|value| value.as_str()) == Some("deprecated") {
+        return false;
+    }
+    let Some(cost) = model.get("cost").and_then(|value| value.as_object()) else {
+        return false;
+    };
+    ["input", "output"]
+        .iter()
+        .all(|key| cost.get(*key).and_then(|value| value.as_f64()) == Some(0.0))
+}
+
 /// Exact provider/model effort metadata from the optional local catalog.
-/// Catalog rows may sit under a top-level `providers` wrapper or directly at
-/// the root; only `type: "effort"` array values supply capabilities.
+/// Only `type: "effort"` array values supply capabilities.
 fn opencode_catalog_capability(
     catalog: &serde_json::Value,
     provider: &str,
     model: &str,
 ) -> Option<ModelCapability> {
-    let provider_value = catalog
-        .get("providers")
-        .and_then(|value| value.as_object())
-        .and_then(|providers| providers.get(provider))
-        .or_else(|| catalog.get(provider))?;
+    let provider_value = opencode_catalog_provider(catalog, provider)?;
     let model_value = provider_value.get("models")?.get(model)?;
     let options = model_value.get("reasoning_options")?.as_array()?;
     let mut efforts = Vec::new();
@@ -625,8 +650,9 @@ pub fn get_model_sources(home_override: Option<&Path>) -> Result<ModelSourcesRes
 
     // 1. OpenCode column
     let mut opencode = ColumnModelSource::default();
-    // The optional local catalog only fills effort metadata for models whose
-    // configuration declares no explicit reasoningEffort variant.
+    // The optional local catalog fills effort metadata for models whose
+    // configuration declares no explicit reasoningEffort variant, and also
+    // supplies the current free models of the self-operated providers.
     let mut opencode_catalog: Option<serde_json::Value> = None;
     let opencode_catalog_path = home.join(".cache/opencode/models.json");
     match read_optional_config(&opencode_catalog_path) {
@@ -643,13 +669,15 @@ pub fn get_model_sources(home_override: Option<&Path>) -> Result<ModelSourcesRes
                 Some("Failed to read opencode model catalog".to_string());
         }
     }
+
+    let mut models_vec: Vec<String> = Vec::new();
+    let mut capabilities: BTreeMap<String, ModelCapability> = BTreeMap::new();
+
     let opencode_path = home.join(".config/opencode/opencode.json");
     if opencode_path.exists() {
         match fs::read_to_string(&opencode_path) {
             Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
                 Ok(val) => {
-                    let mut models_vec = Vec::new();
-                    let mut capabilities: BTreeMap<String, ModelCapability> = BTreeMap::new();
                     if let Some(providers) = val.get("provider").and_then(|p| p.as_object()) {
                         for (provider_name, provider_data) in providers {
                             if let Some(models) =
@@ -678,10 +706,6 @@ pub fn get_model_sources(home_override: Option<&Path>) -> Result<ModelSourcesRes
                             }
                         }
                     }
-                    models_vec.sort();
-                    models_vec.dedup();
-                    opencode.models = models_vec;
-                    opencode.model_capabilities = capabilities;
                 }
                 Err(e) => {
                     opencode.error = Some(format!("Failed to parse opencode.json: {}", e));
@@ -692,6 +716,42 @@ pub fn get_model_sources(home_override: Option<&Path>) -> Result<ModelSourcesRes
             }
         }
     }
+
+    // Dynamically merge the current free models of the two self-operated
+    // providers, independent of any opencode.json declaration, so the merge
+    // still applies when opencode.json is missing or unreadable. A missing
+    // catalog yields no dynamic entries and no fabricated diagnostic.
+    if let Some(catalog) = opencode_catalog.as_ref() {
+        for provider in ["opencode", "opencode-go"] {
+            let Some(models) = opencode_catalog_provider(catalog, provider)
+                .and_then(|value| value.get("models"))
+                .and_then(|models| models.as_object())
+            else {
+                continue;
+            };
+            for (model_name, model_data) in models {
+                if !opencode_catalog_model_is_free(model_data) {
+                    continue;
+                }
+                let composite = format!("{}/{}", provider, model_name);
+                models_vec.push(composite.clone());
+                // A declared model's explicit variants declaration wins; the
+                // catalog only fills a capability the declaration left unset.
+                if !capabilities.contains_key(&composite) {
+                    if let Some(capability) =
+                        opencode_catalog_capability(catalog, provider, model_name)
+                    {
+                        capabilities.insert(composite, capability);
+                    }
+                }
+            }
+        }
+    }
+
+    models_vec.sort();
+    models_vec.dedup();
+    opencode.models = models_vec;
+    opencode.model_capabilities = capabilities;
 
     // Read existing profile models for codex and claude
     let profiles_dir = home.join(".config/ai-workflow/profiles");
