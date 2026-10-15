@@ -1899,6 +1899,83 @@ test(
 );
 
 test(
+  "compare bounds a stalled response with CACHE_DIAG_COMPARE_REQUEST_TIMEOUT_MS and stops as a transport failure",
+  { timeout: 15000 },
+  async (t) => {
+    // The gateway mock accepts and fully reads the request but never writes a
+    // response, so the attempt is awaiting response headers indefinitely. The
+    // process-environment override must bound that wait; the bounded spawn
+    // watchdog (5000ms) is what turns the current tool's unbounded hang into a
+    // fast failing assertion instead of blocking the whole runner.
+    const stallForever = () => {};
+    const { gatewayMock, upstreamMock, gatewayPort, upstreamPort } =
+      await startCompareMocks(t, {
+        gateway: stallForever,
+        upstream: validCompareHandler(UPSTREAM_ALL_MISS_MEASURED),
+      });
+    const result = await runCompare(
+      compareEnv(gatewayPort, upstreamPort, {
+        CACHE_DIAG_COMPARE_REQUEST_TIMEOUT_MS: "400",
+      }),
+      { timeout: 5000 },
+    );
+    const json = parseComparison(result.stdout);
+    assert.ok(
+      json,
+      `a bounded stalled attempt must still print a comparison event, output=${JSON.stringify(result.output)}`,
+    );
+
+    assert.equal(result.code, 1, "a bounded stalled run must exit 1");
+    assert.equal(result.signal, null, "the run must exit on its own, not be killed");
+    assert.equal(json.status, "incomplete");
+    assert.equal(json.reason, "transport-failure");
+    assert.equal(json.target_met, null);
+    assert.equal(
+      json.attempts,
+      1,
+      "a stalled attempt must be counted once and never retried",
+    );
+
+    assert.equal(
+      gatewayMock.requests.length,
+      1,
+      "the stalled attempt must not be retried within its series",
+    );
+    assert.equal(
+      upstreamMock.requests.length,
+      0,
+      "no later round or path may be attempted after the stalled failure",
+    );
+
+    assert.ok(Array.isArray(json.series), "series must be an array");
+    assert.equal(json.series.length, 1, "only the stalled series is reported");
+    const stalled = json.series[0];
+    assert.equal(stalled.path, "gateway");
+    assert.equal(stalled.round, 1);
+    assert.equal(stalled.attempts, 1);
+    assert.equal(
+      stalled.warmup.requests,
+      1,
+      "the stalled attempt is the first (warmup) request of its series",
+    );
+    assert.equal(
+      stalled.warmup.valid_usage,
+      0,
+      "a stalled attempt contributes no valid usage",
+    );
+    assert.equal(stalled.measurement.requests, 0);
+    assert.equal(stalled.measurement.valid_usage, 0);
+
+    assert.ok(result.output.length < 8192, "output must be bounded metadata");
+    assert.ok(
+      !result.output.includes(FIXTURE_GATEWAY_KEY) &&
+        !result.output.includes(FIXTURE_UPSTREAM_KEY),
+      "a stalled run must not leak credentials",
+    );
+  },
+);
+
+test(
   "compare reports a static missing-config incomplete result with zero attempts when any required env var is absent",
   { timeout: 30000 },
   async (t) => {

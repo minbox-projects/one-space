@@ -860,8 +860,23 @@ const COMPARE_ROUND_COUNT = 2;
 const COMPARE_EFFECTIVENESS_TARGET = 0.98;
 const COMPARE_MAX_ATTEMPTS = 40;
 
+// A `compare` POST against an accepted-but-unanswered endpoint would otherwise
+// wait indefinitely; this per-attempt bound may be overridden by
+// `CACHE_DIAG_COMPARE_REQUEST_TIMEOUT_MS`.
+const COMPARE_REQUEST_TIMEOUT_MS_DEFAULT = 600000;
+
 function isNonEmptyEnvValue(value) {
   return typeof value === "string" && value !== "";
+}
+
+// Strict positive-millisecond override; an absent, unparsable, zero or negative
+// value falls back to the default instead of failing the run.
+function compareRequestTimeoutMs() {
+  const parsed = strictNonNegativeInteger(
+    process.env.CACHE_DIAG_COMPARE_REQUEST_TIMEOUT_MS,
+  );
+  if (parsed === null || parsed <= 0) return COMPARE_REQUEST_TIMEOUT_MS_DEFAULT;
+  return parsed;
 }
 
 // Deterministic, public, ASCII-only prefix; it contains no environment,
@@ -1008,6 +1023,13 @@ function postChat(endpoint, key, bodyText) {
       finish({ kind: "transport" });
       return;
     }
+    // Socket-level idle bound: it covers both awaiting response headers and a
+    // stalled response body, resolving as the same `transport` outcome and
+    // destroying the request so the process can exit.
+    req.setTimeout(compareRequestTimeoutMs(), () => {
+      finish({ kind: "transport" });
+      req.destroy();
+    });
     req.on("error", () => finish({ kind: "transport" }));
     req.end(bodyText);
   });
