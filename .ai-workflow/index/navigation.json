@@ -4883,14 +4883,16 @@
       ],
       "module_root": "tooling",
       "owner_role": "backend",
-      "responsibility": "CLI 能力矩阵校验与网关脱敏校验脚本；`tools/measure-core-workflows.mjs` 用 node 内置模块运行 `core_workflows_perf` ignored 测试并解析 `CWF_METRIC` 行（cold + 5 warm，环境与维度，harness vs 原始 wall，缺失如实 not_measured）",
+      "responsibility": "CLI 能力矩阵校验与网关脱敏校验脚本；`tools/measure-core-workflows.mjs` 用 node 内置模块运行 `core_workflows_perf` ignored 测试并解析 `CWF_METRIC` 行（cold + 5 warm，环境与维度，harness vs 原始 wall，缺失如实 not_measured）；`tools/diagnose-deepseek-cache.mjs`（临时、按需）用 Node 内置模块提供 `observe`（回环绑定并将字节原样转发到命令行给定的回环网关，只观察选中会话与模型的 `/v1/chat/completions` 与 `/chat/completions`，元数据白名单 JSONL 输出）与 `compare`（六个 `CACHE_DIAG_*` 环境变量、256 KiB 公开合成前缀、每条路径 2 轮 × 10（2 warmup + 8 测量）、最多 40 次 POST 无重试、输出元数据 `comparison` JSON、绝不自我证明账户等价）",
       "entries": [
         "tools/check-cli-matrix.sh"
       ],
       "related_files": [
         "tools/check-cli-matrix.test.sh",
         "tools/check-ai-gateway-redaction.sh",
-        "tools/measure-core-workflows.mjs"
+        "tools/measure-core-workflows.mjs",
+        "tools/diagnose-deepseek-cache.mjs",
+        "tools/diagnose-deepseek-cache.test.mjs"
       ],
       "tests": [],
       "symbols": [],
@@ -4899,7 +4901,9 @@
         "tools/check-cli-matrix.sh",
         "tools/check-cli-matrix.test.sh",
         "tools/check-ai-gateway-redaction.sh",
-        "tools/measure-core-workflows.mjs"
+        "tools/measure-core-workflows.mjs",
+        "tools/diagnose-deepseek-cache.mjs",
+        "tools/diagnose-deepseek-cache.test.mjs"
       ],
       "relations": [],
       "shared_entry": false
