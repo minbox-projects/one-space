@@ -1534,6 +1534,122 @@ fn observer_recognizes_non_text_reasoning_tool_and_whitespace_output() {
     );
 }
 
+/// REQ-002 / AC-002: the deprecated Chat Completions `delta.function_call` shape
+/// (still raw-forwarded by same-protocol Chat upstreams) carries a generated
+/// function name/arguments and must set the first meaningful observation. First
+/// output at 1 s, stream end at 5 s and 200 reported tokens yield a 1000 ms first
+/// token and 50.00 t/s.
+#[test]
+fn observer_recognizes_deprecated_chat_function_call_name_and_arguments() {
+    let base = std::time::Instant::now();
+    let started = tokio::time::Instant::from_std(base);
+    let first = instant(base, Duration::from_millis(1_000));
+    let end = instant(base, Duration::from_millis(5_000));
+
+    let mut name = OutputTimingObserver::new(UpstreamProtocol::ChatCompletions, started);
+    name.feed_at(
+        &chat_event(json!({"function_call": {"name": "get_weather"}})),
+        first,
+    );
+    name.finish_at(end);
+    assert_eq!(
+        name.first_token_ms(),
+        Some(1_000.0),
+        "a deprecated function_call.name is generated output at ~1000 ms"
+    );
+    assert_eq!(
+        name.average_tps(Some(200)),
+        Some(50.0),
+        "200 tokens over the 5 s - 1 s window is 50.00 t/s"
+    );
+    assert_eq!(
+        name.timing(Some(200)),
+        (Some(1_000.0), Some(50.0)),
+        "timing() returns the same measured pair for the deprecated shape"
+    );
+
+    let mut arguments = OutputTimingObserver::new(UpstreamProtocol::ChatCompletions, started);
+    arguments.feed_at(
+        &chat_event(json!({"function_call": {"arguments": "{\"city\":\"SF\"}"}})),
+        first,
+    );
+    arguments.finish_at(end);
+    assert_eq!(
+        arguments.first_token_ms(),
+        Some(1_000.0),
+        "a deprecated function_call.arguments is generated output at ~1000 ms"
+    );
+    assert_eq!(arguments.average_tps(Some(200)), Some(50.0));
+}
+
+/// Counterexample guard for the deprecated shape: an empty or identifier-only
+/// `function_call` carries no generated output.
+#[test]
+fn observer_ignores_empty_and_identifier_only_deprecated_chat_function_call() {
+    assert!(
+        !observer_observes(
+            UpstreamProtocol::ChatCompletions,
+            &chat_event(json!({"function_call": {"name": "", "arguments": ""}}))
+        ),
+        "an empty deprecated function_call is not output"
+    );
+    assert!(
+        !observer_observes(
+            UpstreamProtocol::ChatCompletions,
+            &chat_event(json!({"function_call": {"id": "call_1"}}))
+        ),
+        "an identifier-only deprecated function_call is not output"
+    );
+}
+
+/// REQ-002 / AC-002: an initial Anthropic `content_block_start` thinking block
+/// that already carries reasoning text is meaningful output, while a
+/// signature-only or empty thinking block carries no content.
+#[test]
+fn observer_recognizes_initial_anthropic_thinking_block_but_not_signature_only() {
+    let base = std::time::Instant::now();
+    let started = tokio::time::Instant::from_std(base);
+    let first = instant(base, Duration::from_millis(1_000));
+    let end = instant(base, Duration::from_millis(5_000));
+
+    let mut thinking = OutputTimingObserver::new(UpstreamProtocol::AnthropicMessages, started);
+    thinking.feed_at(
+        &sse_event(
+            "{\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {\"type\": \"thinking\", \"thinking\": \"let me reason\"}}",
+            false,
+        ),
+        first,
+    );
+    thinking.finish_at(end);
+    assert_eq!(
+        thinking.first_token_ms(),
+        Some(1_000.0),
+        "an initial thinking content block with actual reasoning text is output"
+    );
+    assert_eq!(thinking.average_tps(Some(200)), Some(50.0));
+
+    assert!(
+        !observer_observes(
+            UpstreamProtocol::AnthropicMessages,
+            &sse_event(
+                "{\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {\"type\": \"thinking\", \"signature\": \"opaque\"}}",
+                false,
+            )
+        ),
+        "a signature-only thinking block carries no reasoning text"
+    );
+    assert!(
+        !observer_observes(
+            UpstreamProtocol::AnthropicMessages,
+            &sse_event(
+                "{\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {\"type\": \"thinking\", \"thinking\": \"\"}}",
+                false,
+            )
+        ),
+        "an empty thinking string is not output"
+    );
+}
+
 #[test]
 fn observer_interprets_events_with_the_actual_upstream_protocol() {
     let responses_event =

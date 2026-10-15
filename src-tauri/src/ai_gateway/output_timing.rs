@@ -184,9 +184,11 @@ fn is_meaningful_output(protocol: UpstreamProtocol, value: &Value) -> bool {
     }
 }
 
-/// Chat Completions: an ordinary text delta, a reasoning/thinking delta, or a
-/// generated tool name/arguments. A role-only or empty delta, a `usage`-only or
-/// `finish_reason`-only event and metadata envelopes carry no output.
+/// Chat Completions: an ordinary text delta, a reasoning/thinking delta, a
+/// generated tool name/arguments, or the deprecated same-protocol
+/// `delta.function_call` name/arguments. A role-only or empty delta, a
+/// `usage`-only or `finish_reason`-only event and metadata envelopes carry no
+/// output.
 fn chat_meaningful(value: &Value) -> bool {
     let Some(choices) = value.get("choices").and_then(Value::as_array) else {
         return false;
@@ -197,6 +199,11 @@ fn chat_meaningful(value: &Value) -> bool {
         };
         for key in ["content", "reasoning_content", "reasoning"] {
             if non_empty_str(delta.get(key)) {
+                return true;
+            }
+        }
+        if let Some(function) = delta.get("function_call") {
+            if non_empty_str(function.get("name")) || non_empty_str(function.get("arguments")) {
                 return true;
             }
         }
@@ -235,8 +242,9 @@ fn responses_meaningful(value: &Value) -> bool {
     }
 }
 
-/// Anthropic Messages: a non-empty text/thinking/partial-json delta or a
-/// `tool_use` content block that starts with a non-empty generated name.
+/// Anthropic Messages: a non-empty text/thinking/partial-json delta, a
+/// `tool_use` content block that starts with a non-empty generated name, or a
+/// `thinking` content block that starts with non-empty reasoning text.
 /// `message_start`, `message_delta`, `message_stop`, `ping` and error events are
 /// not output.
 fn anthropic_meaningful(value: &Value) -> bool {
@@ -246,6 +254,7 @@ fn anthropic_meaningful(value: &Value) -> bool {
             match block.get("type").and_then(Value::as_str) {
                 Some("tool_use") => non_empty_str(block.get("name")),
                 Some("text") => non_empty_str(block.get("text")),
+                Some("thinking") => non_empty_str(block.get("thinking")),
                 _ => false,
             }
         }
