@@ -58,11 +58,38 @@ CREATE INDEX IF NOT EXISTS idx_usage_logs_timestamp ON usage_logs(timestamp_ms);
 CREATE INDEX IF NOT EXISTS idx_usage_logs_local_model ON usage_logs(local_model);
 ";
 
+#[cfg(test)]
+thread_local! {
+    /// Deterministic test clock honored by [`now_millis`]. Set only through the
+    /// public test seams so migration, retention and reporting share one instant.
+    static USAGE_CLOCK_OVERRIDE_MS: std::cell::Cell<Option<i64>> = std::cell::Cell::new(None);
+}
+
+/// Current wall-clock time in epoch milliseconds, or the injected test clock
+/// when one is armed on the current thread.
 pub(in crate::ai_gateway) fn now_millis() -> i64 {
+    #[cfg(test)]
+    {
+        if let Some(millis) = USAGE_CLOCK_OVERRIDE_MS.with(|cell| cell.get()) {
+            return millis;
+        }
+    }
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Pin the current thread's deterministic usage clock (test seam).
+#[cfg(test)]
+pub(in crate::ai_gateway) fn set_usage_clock_for_test(millis: i64) {
+    USAGE_CLOCK_OVERRIDE_MS.with(|cell| cell.set(Some(millis)));
+}
+
+/// Clear the current thread's deterministic usage clock (test seam).
+#[cfg(test)]
+pub(in crate::ai_gateway) fn clear_usage_clock_for_test() {
+    USAGE_CLOCK_OVERRIDE_MS.with(|cell| cell.set(None));
 }
 
 fn utc8_offset() -> chrono::FixedOffset {
@@ -929,13 +956,21 @@ pub(in crate::ai_gateway) struct LogFilter {
 
 /// SQL predicate selecting a cache-eligible row (REQ-002/REQ-004): an in-range
 /// successful terminal row with a present, valid canonical decomposition and a
-/// positive cache denominator. Totals, buckets, models and providers all reuse
-/// this one predicate so no level can drift from another.
-const ELIGIBLE_ROW_SQL: &str = "result = 'success' \
+/// positive cache denominator. Totals, buckets, models, providers and the
+/// one-shot migration backfill all reuse this one predicate so no level can
+/// drift from another.
+pub(in crate::ai_gateway) const ELIGIBLE_ROW_SQL: &str = "result = 'success' \
     AND usage_semantics = 'canonical_v1' \
     AND usage_present = 1 \
     AND cache_accounting_valid = 1 \
     AND (input_tokens + cache_read_tokens + cache_write_tokens) > 0";
+
+/// SQL predicate selecting an unpriced billable row (REQ-003): a missing amount
+/// with a readable upstream model that is either successful or carries recorded
+/// total tokens. The metric projection and the migration backfill share it.
+pub(in crate::ai_gateway) const UNPRICED_ROW_SQL: &str = "amount IS NULL \
+    AND upstream_model <> '' \
+    AND (result = 'success' OR total_tokens > 0)";
 
 /// The shared metric projection, in [`metrics_from_row`] order. The final four
 /// aggregates are the additive cache fields; the percentage is derived from the
@@ -949,7 +984,7 @@ fn metric_columns() -> String {
          COALESCE(SUM(output_tokens), 0), \
          COALESCE(SUM(total_tokens), 0), \
          COALESCE(SUM(amount), 0.0), \
-         COALESCE(SUM(CASE WHEN amount IS NULL AND upstream_model <> '' AND (result = 'success' OR total_tokens > 0) THEN 1 ELSE 0 END), 0), \
+         COALESCE(SUM(CASE WHEN {UNPRICED_ROW_SQL} THEN 1 ELSE 0 END), 0), \
          COALESCE(SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END), 0), \
          COALESCE(SUM(CASE WHEN {ELIGIBLE_ROW_SQL} THEN cache_read_tokens ELSE 0 END), 0), \
          COALESCE(SUM(CASE WHEN {ELIGIBLE_ROW_SQL} THEN input_tokens + cache_read_tokens + cache_write_tokens ELSE 0 END), 0), \
@@ -971,7 +1006,7 @@ INSERT INTO usage_logs (
 ";
 
 /// Semantics marker persisted for every newly written row (REQ-004).
-const CANONICAL_USAGE_SEMANTICS: &str = "canonical_v1";
+pub(in crate::ai_gateway) const CANONICAL_USAGE_SEMANTICS: &str = "canonical_v1";
 
 /// Column list of every record-producing `SELECT`, in [`record_from_row`] order.
 const RECORD_COLUMNS: &str = "timestamp_ms, local_model, upstream_model, provider_id, provider_name, result, status, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, total_tokens, amount, duration_ms, error_message, terminal, reasoning_effort, cost_breakdown";
@@ -1039,11 +1074,14 @@ fn record_from_row(row: &Row<'_>) -> rusqlite::Result<UsageLogRecord> {
 /// Build the `WHERE` clause shared by every user-visible log query.
 ///
 /// `terminal_only` adds the statistics/grouping filter; the ungrouped list keeps
-/// every row that survives the filter.
-fn bind(
+/// every row that survives the filter. The optional `provider_id` boundary is
+/// composed with AND like every other selector so an exact provider/day
+/// drilldown reuses the same predicate for rows, groups and facets.
+fn bind_boundary(
     range: &TimeRange,
     filter: &LogFilter,
     terminal_only: bool,
+    provider_id: Option<&str>,
 ) -> (String, Vec<rusqlite::types::Value>) {
     let mut clauses: Vec<&str> = Vec::new();
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
@@ -1074,12 +1112,25 @@ fn bind(
         clauses.push("provider_name = ?");
         params.push(provider.to_string().into());
     }
+    if let Some(provider_id) = provider_id {
+        clauses.push("provider_id = ?");
+        params.push(provider_id.to_string().into());
+    }
     let where_sql = if clauses.is_empty() {
         String::new()
     } else {
         format!(" WHERE {}", clauses.join(" AND "))
     };
     (where_sql, params)
+}
+
+/// [`bind_boundary`] without a provider-id boundary; the ordinary query surface.
+fn bind(
+    range: &TimeRange,
+    filter: &LogFilter,
+    terminal_only: bool,
+) -> (String, Vec<rusqlite::types::Value>) {
+    bind_boundary(range, filter, terminal_only, None)
 }
 
 /// Run one additive `ALTER TABLE ... ADD COLUMN`, treating a concurrent
@@ -1301,7 +1352,7 @@ fn initialize_connection(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    let mut connection = Connection::open(path).map_err(|error| error.to_string())?;
     record_usage_log_db_open();
     connection
         .busy_timeout(std::time::Duration::from_secs(2))
@@ -1310,9 +1361,10 @@ fn initialize_connection(path: &Path) -> Result<Connection, String> {
         .execute_batch(SCHEMA)
         .map_err(|error| error.to_string())?;
     migrate_usage_logs(&connection)?;
-    // The version-gated one-time cleanup lives in the permanent migration
-    // module; a later open finds the marker advanced and deletes nothing.
-    super::migration::migrate_usage_database(&connection)?;
+    // The version-gated one-time cleanup and summary backfill live in the
+    // permanent migration module; a later open finds the marker advanced and
+    // changes nothing.
+    super::migration::migrate_usage_database(&mut connection)?;
     Ok(connection)
 }
 
@@ -1376,7 +1428,9 @@ impl UsageLogStore {
         Ok(Self::at(path))
     }
 
-    fn open(&self) -> Result<Connection, String> {
+    /// Opens and migrates the owned database for a read, returning a fresh
+    /// connection (query connections stay separate from the cached writer).
+    pub(in crate::ai_gateway) fn open(&self) -> Result<Connection, String> {
         initialize_connection(&self.path)
     }
 
@@ -1408,12 +1462,26 @@ impl UsageLogStore {
         accounting: UsageAccounting,
         retention_days: u32,
     ) -> Result<(), String> {
-        let connection = self.write_connection()?;
+        let mut connection = self.write_connection()?;
         {
-            let mut statement = connection
-                .prepare(INSERT_SQL)
+            let transaction = connection
+                .transaction()
                 .map_err(|error| error.to_string())?;
-            insert_record(&mut statement, record, accounting)?;
+            {
+                let mut statement = transaction
+                    .prepare(INSERT_SQL)
+                    .map_err(|error| error.to_string())?;
+                insert_record(&mut statement, record, accounting)?;
+            }
+            let entry = UsageLogEntry {
+                record: record.clone(),
+                accounting,
+            };
+            super::provider_usage::apply_summary_contributions(
+                &transaction,
+                std::slice::from_ref(&entry),
+            )?;
+            transaction.commit().map_err(|error| error.to_string())?;
         }
         record_usage_log_row_written();
         record_usage_log_transaction();
@@ -1469,6 +1537,9 @@ impl UsageLogStore {
                         insert_record(&mut statement, &entry.record, entry.accounting)?;
                     }
                 }
+                // Detail rows and their eligible provider/day contributions commit
+                // as one unit; a summary-update fault rolls the details back too.
+                super::provider_usage::apply_summary_contributions(&transaction, entries)?;
                 transaction.commit().map_err(|error| error.to_string())?;
             }
             record_usage_log_batch_write();
@@ -1516,8 +1587,36 @@ impl UsageLogStore {
         filter: &LogFilter,
         page: u32,
     ) -> Result<UsageLogsPage, String> {
+        self.query_logs_filtered(range, filter, None, page)
+    }
+
+    /// Exact provider/day page: the recorded provider-ID boundary composes with
+    /// the ordinary name/status/model filters and feeds the same predicate used
+    /// for the facets. A blank explicit id is an actionable error, never "no
+    /// filter"; an unknown nonblank id yields an empty page. A nonblank id is
+    /// matched verbatim so adjacent identities never collapse.
+    pub(in crate::ai_gateway) fn query_provider_logs(
+        &self,
+        range: &TimeRange,
+        filter: &LogFilter,
+        provider_id: &str,
+        page: u32,
+    ) -> Result<UsageLogsPage, String> {
+        if provider_id.trim().is_empty() {
+            return Err("a provider id must be nonblank".to_string());
+        }
+        self.query_logs_filtered(range, filter, Some(provider_id), page)
+    }
+
+    fn query_logs_filtered(
+        &self,
+        range: &TimeRange,
+        filter: &LogFilter,
+        provider_id: Option<&str>,
+        page: u32,
+    ) -> Result<UsageLogsPage, String> {
         let connection = self.open()?;
-        let (where_sql, params) = bind(range, filter, false);
+        let (where_sql, params) = bind_boundary(range, filter, false, provider_id);
         let total: i64 = connection
             .query_row(
                 &format!("SELECT COUNT(*) FROM usage_logs{where_sql}"),
@@ -1553,7 +1652,8 @@ impl UsageLogStore {
             model: None,
             provider: filter.provider.clone(),
         };
-        let (model_facet_where_sql, model_facet_params) = bind(range, &model_facet_filter, false);
+        let (model_facet_where_sql, model_facet_params) =
+            bind_boundary(range, &model_facet_filter, false, provider_id);
         let model_facet_where = if model_facet_where_sql.is_empty() {
             " WHERE local_model <> ''".to_string()
         } else {
@@ -1581,7 +1681,7 @@ impl UsageLogStore {
             provider: None,
         };
         let (provider_facet_where_sql, provider_facet_params) =
-            bind(range, &provider_facet_filter, false);
+            bind_boundary(range, &provider_facet_filter, false, provider_id);
         let provider_facet_where = if provider_facet_where_sql.is_empty() {
             " WHERE provider_name <> ''".to_string()
         } else {
@@ -1620,8 +1720,33 @@ impl UsageLogStore {
         filter: &LogFilter,
         group_by: &str,
     ) -> Result<Vec<UsageLogGroupRow>, String> {
+        self.group_logs_filtered(range, filter, None, group_by)
+    }
+
+    /// Grouped rows restricted by an exact provider-ID boundary that composes
+    /// with the ordinary group filters. A nonblank id is matched verbatim.
+    pub(in crate::ai_gateway) fn group_logs_with_provider(
+        &self,
+        range: &TimeRange,
+        filter: &LogFilter,
+        provider_id: &str,
+        group_by: &str,
+    ) -> Result<Vec<UsageLogGroupRow>, String> {
+        if provider_id.trim().is_empty() {
+            return Err("a provider id must be nonblank".to_string());
+        }
+        self.group_logs_filtered(range, filter, Some(provider_id), group_by)
+    }
+
+    fn group_logs_filtered(
+        &self,
+        range: &TimeRange,
+        filter: &LogFilter,
+        provider_id: Option<&str>,
+        group_by: &str,
+    ) -> Result<Vec<UsageLogGroupRow>, String> {
         let connection = self.open()?;
-        let (where_sql, params) = bind(range, filter, true);
+        let (where_sql, params) = bind_boundary(range, filter, true, provider_id);
         let mut groups = Vec::new();
         if group_by == "day" {
             let sql = format!(

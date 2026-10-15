@@ -297,6 +297,8 @@ pub fn run() {
             ai_gateway::ai_gateway_sync_terminal,
             ai_gateway::ai_gateway_usage_stats,
             ai_gateway::ai_gateway_request_logs,
+            ai_gateway::ai_gateway_usage_providers,
+            ai_gateway::ai_gateway_provider_usage_history,
             ai_gateway::ai_gateway_usage_retention_get,
             ai_gateway::ai_gateway_usage_retention_save,
             ai_gateway::ai_gateway_provider_templates,

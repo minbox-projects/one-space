@@ -8,12 +8,17 @@
 //! `serde_json::Value` plus raw bytes.
 
 use super::{config_path, isolated_temp_home};
+use crate::ai_gateway::migration::USAGE_DB_VERSION;
 use crate::ai_gateway::storage::read_config;
-use crate::ai_gateway::{LogFilter, ModelPrice, TimeRange, UsageLogStore};
+use crate::ai_gateway::{
+    clear_usage_clock_for_test, set_usage_clock_for_test, LogFilter, ModelPrice, TimeRange,
+    UsageLogStore,
+};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Barrier;
 
 const PROVIDER_RUNTIME_KEYS: [&str; 5] = [
     "auto_disabled",
@@ -1852,4 +1857,673 @@ fn gateway_config_schema_version_advances_to_three() {
         ZEN_TO_GO_SCHEMA_VERSION,
         "the Zen-to-Go migration must be gated by schema version 3"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Usage-database version 2: one-shot backfill, coverage and downgrade safety
+// (plan Step 1, REQ-004 / AC-004 / AC-005)
+// ---------------------------------------------------------------------------
+
+/// Create a raw usage database at an explicit `PRAGMA user_version` carrying
+/// every current column plus the additive accounting columns; the permanent
+/// migration itself adds any table or column it still needs.
+fn create_versioned_usage_db(path: &Path, user_version: i64) {
+    let connection = Connection::open(path).expect("open raw usage db");
+    connection
+        .execute_batch(
+            "CREATE TABLE usage_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_ms INTEGER NOT NULL,
+                local_model TEXT NOT NULL,
+                upstream_model TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                result TEXT NOT NULL,
+                status INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL,
+                cache_write_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                amount REAL,
+                duration_ms INTEGER NOT NULL,
+                error_message TEXT,
+                terminal INTEGER NOT NULL DEFAULT 1,
+                reasoning_effort TEXT,
+                usage_semantics TEXT NOT NULL DEFAULT 'legacy',
+                usage_present INTEGER NOT NULL DEFAULT 0,
+                cache_accounting_valid INTEGER NOT NULL DEFAULT 0,
+                cost_breakdown TEXT
+            );
+            CREATE INDEX idx_usage_logs_timestamp ON usage_logs(timestamp_ms);
+            CREATE INDEX idx_usage_logs_local_model ON usage_logs(local_model);",
+        )
+        .expect("create raw usage schema");
+    connection
+        .pragma_update(None, "user_version", user_version)
+        .expect("set usage db version");
+}
+
+/// A raw detail row used to construct pre-upgrade fixtures.
+struct RawUsageRow {
+    timestamp_ms: i64,
+    local_model: String,
+    upstream_model: String,
+    provider_id: String,
+    provider_name: String,
+    result: String,
+    terminal: bool,
+    amount: Option<f64>,
+    input_tokens: i64,
+    output_tokens: i64,
+    semantics: String,
+    present: i64,
+    valid: i64,
+}
+
+fn usage_row(
+    timestamp_ms: i64,
+    provider_id: &str,
+    result: &str,
+    terminal: bool,
+    amount: Option<f64>,
+    input_tokens: i64,
+    output_tokens: i64,
+) -> RawUsageRow {
+    RawUsageRow {
+        timestamp_ms,
+        local_model: "local-raw".to_string(),
+        upstream_model: "remote-raw".to_string(),
+        provider_id: provider_id.to_string(),
+        provider_name: if provider_id.is_empty() {
+            String::new()
+        } else {
+            format!("Provider {provider_id}")
+        },
+        result: result.to_string(),
+        terminal,
+        amount,
+        input_tokens,
+        output_tokens,
+        semantics: "canonical_v1".to_string(),
+        present: 1,
+        valid: 1,
+    }
+}
+
+fn insert_usage_row(path: &Path, row: &RawUsageRow) {
+    let connection = Connection::open(path).expect("open raw usage db");
+    let total_tokens = row.input_tokens + row.output_tokens;
+    connection
+        .execute(
+            "INSERT INTO usage_logs (
+                timestamp_ms, local_model, upstream_model, provider_id, provider_name,
+                result, status, input_tokens, cache_read_tokens, cache_write_tokens,
+                output_tokens, total_tokens, amount, duration_ms, error_message, terminal,
+                reasoning_effort, usage_semantics, usage_present, cache_accounting_valid, cost_breakdown
+            ) VALUES (?, ?, ?, ?, ?, ?, 200, ?, 0, 0, ?, ?, ?, 1, NULL, ?, NULL, ?, ?, ?, NULL)",
+            rusqlite::params![
+                row.timestamp_ms,
+                row.local_model,
+                row.upstream_model,
+                row.provider_id,
+                row.provider_name,
+                row.result,
+                row.input_tokens,
+                row.output_tokens,
+                total_tokens,
+                row.amount,
+                if row.terminal { 1i64 } else { 0i64 },
+                row.semantics,
+                row.present,
+                row.valid,
+            ],
+        )
+        .expect("insert raw usage row");
+}
+
+fn raw_user_version(path: &Path) -> i64 {
+    let connection = Connection::open(path).expect("open raw usage db");
+    connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read user_version")
+}
+
+fn has_table(path: &Path, name: &str) -> bool {
+    let connection = Connection::open(path).expect("open raw usage db");
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .unwrap_or(false)
+}
+
+/// Every distinct persisted summary provider ID, ascending.
+fn summary_provider_ids(path: &Path) -> Vec<String> {
+    let connection = Connection::open(path).expect("open raw usage db");
+    let mut statement = connection
+        .prepare("SELECT DISTINCT provider_id FROM provider_daily_usage ORDER BY provider_id ASC")
+        .expect("prepare summary ids");
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("query summary ids");
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .expect("collect summary ids")
+}
+
+/// Count of persisted summary rows for one provider ID.
+fn summary_row_count(path: &Path, provider_id: &str) -> i64 {
+    let connection = Connection::open(path).expect("open raw usage db");
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM provider_daily_usage WHERE provider_id = ?",
+            [provider_id],
+            |row| row.get(0),
+        )
+        .expect("count summary rows")
+}
+
+/// Count of retained detail rows, read without re-running the migration.
+fn raw_usage_log_count(path: &Path) -> i64 {
+    let connection = Connection::open(path).expect("open raw usage db");
+    connection
+        .query_row("SELECT COUNT(*) FROM usage_logs", [], |row| row.get(0))
+        .expect("count usage rows")
+}
+
+/// AC-005/AC-004: a version-0 database containing legacy and canonical terminal
+/// rows, superseded attempts, an empty-provider failure and a cancelled row is
+/// backfilled exactly once. Only retained terminal, valid-result, nonblank
+/// provider rows contribute; original fields are never rewritten; the version-0
+/// cancelled cleanup still runs; and the earliest available day and the
+/// continuity boundary become visible.
+#[test]
+fn usage_database_v0_backfills_once_and_preserves_original_fields() {
+    set_usage_clock_for_test(super::rfc3339_millis("2026-09-20T10:00:00+08:00"));
+    let dir = super::make_temp_dir("migration-v0-backfill");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("ai_gateway_usage.db");
+    create_versioned_usage_db(&path, 0);
+
+    let legacy_at = super::rfc3339_millis("2026-09-09T12:00:00+08:00");
+    let canonical_at = super::rfc3339_millis("2026-09-10T12:00:00+08:00");
+    let attempt_at = super::rfc3339_millis("2026-09-10T13:00:00+08:00");
+    let cancelled_at = super::rfc3339_millis("2026-09-10T14:00:00+08:00");
+    let failure_at = super::rfc3339_millis("2026-09-11T12:00:00+08:00");
+
+    let mut legacy = usage_row(legacy_at, "p1", "success", true, None, 4, 1);
+    legacy.semantics = "legacy".to_string();
+    legacy.present = 0;
+    legacy.valid = 0;
+    insert_usage_row(&path, &legacy);
+    insert_usage_row(
+        &path,
+        &usage_row(canonical_at, "p1", "success", true, Some(0.5), 10, 5),
+    );
+    insert_usage_row(&path, &usage_row(failure_at, "p1", "failure", true, None, 5, 0));
+    insert_usage_row(
+        &path,
+        &usage_row(attempt_at, "p1", "success", false, Some(9.9), 50, 50),
+    );
+    insert_usage_row(
+        &path,
+        &usage_row(
+            super::rfc3339_millis("2026-09-12T12:00:00+08:00"),
+            "",
+            "failure",
+            true,
+            None,
+            0,
+            0,
+        ),
+    );
+    // A whitespace-only provider id is not a real identity either: the backfill
+    // must skip it exactly like an empty id, never key a summary on it.
+    insert_usage_row(
+        &path,
+        &usage_row(
+            super::rfc3339_millis("2026-09-13T12:00:00+08:00"),
+            "   ",
+            "success",
+            true,
+            Some(0.5),
+            10,
+            5,
+        ),
+    );
+    insert_usage_row(
+        &path,
+        &usage_row(cancelled_at, "p1", "cancelled", true, None, 0, 0),
+    );
+    assert_eq!(count_cancelled(&path), 1, "the fixture carries a cancelled row");
+
+    assert_eq!(
+        USAGE_DB_VERSION, 2,
+        "Step 1 advances the usage database to version 2"
+    );
+
+    let store = UsageLogStore::at(&path);
+    let now = super::rfc3339_millis("2026-09-20T12:00:00+08:00");
+    let history = store
+        .provider_usage_history("p1", now)
+        .expect("backfilled provider history");
+
+    assert_eq!(raw_user_version(&path), 2, "the marker advances with the backfill");
+    assert_eq!(count_cancelled(&path), 0, "version 0 still runs the cancelled cleanup");
+    assert!(
+        has_table(&path, "provider_usage_metadata"),
+        "the migration records coverage metadata"
+    );
+    assert_eq!(
+        summary_provider_ids(&path),
+        vec!["p1".to_string()],
+        "a whitespace-only historical provider id must never be backfilled"
+    );
+
+    assert_eq!(history.earliest_available_day.as_deref(), Some("2026-09-09"));
+    assert_eq!(
+        history.continuity_start_day.as_deref(),
+        Some("2026-09-20"),
+        "the migration day is the continuous-recording boundary"
+    );
+    assert_eq!(history.end_day.as_deref(), Some("2026-09-20"));
+
+    let cumulative = history.cumulative.expect("cumulative");
+    assert_eq!(
+        cumulative.request_count, 3,
+        "legacy + canonical successes and the failure contribute; the attempt and the empty provider do not"
+    );
+    assert_eq!(cumulative.input_tokens, 19);
+    assert_eq!(cumulative.output_tokens, 6);
+    assert_eq!(cumulative.total_tokens, 25);
+    assert_eq!(cumulative.unpriced_count, 2);
+    assert_eq!(
+        cumulative.cache_eligible_tokens, 10,
+        "only the canonical valid row is cache eligible"
+    );
+    assert_eq!(cumulative.cache_hit_tokens, 0);
+    assert_eq!(cumulative.cache_hit_rate_percent, Some(0.0));
+
+    // Original detail fields are preserved untouched.
+    let detail = store.all_records().expect("detail rows");
+    assert_eq!(detail.len(), 6, "six rows survive the cancelled-row cleanup");
+    assert!(
+        detail.iter().any(|row| row.provider_id == "   "),
+        "the whitespace-only detail row must be preserved untouched"
+    );
+    let canonical = detail
+        .iter()
+        .find(|row| row.timestamp_ms == canonical_at)
+        .expect("canonical row");
+    assert_eq!(canonical.amount, Some(0.5));
+    assert_eq!(canonical.total_tokens, 15);
+    assert_eq!(canonical.provider_name, "Provider p1");
+    assert!(canonical.terminal);
+    assert!(detail.iter().any(|row| !row.terminal), "the attempt stays detail-only");
+
+    // A second open re-reads without backfilling twice.
+    let reopened = UsageLogStore::at(&path)
+        .provider_usage_history("p1", now)
+        .expect("reopened history");
+    assert_eq!(
+        reopened.cumulative.expect("cumulative").request_count,
+        3,
+        "the backfill is one-shot"
+    );
+
+    clear_usage_clock_for_test();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-005: a version-1 database already ran the cancelled cleanup, so its
+/// cancelled rows survive while the version-2 backfill still runs once.
+#[test]
+fn usage_database_v1_skips_cancelled_cleanup_and_backfills() {
+    set_usage_clock_for_test(super::rfc3339_millis("2026-09-20T10:00:00+08:00"));
+    let dir = super::make_temp_dir("migration-v1-backfill");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("ai_gateway_usage.db");
+    create_versioned_usage_db(&path, 1);
+    insert_usage_row(
+        &path,
+        &usage_row(
+            super::rfc3339_millis("2026-09-10T12:00:00+08:00"),
+            "p1",
+            "success",
+            true,
+            Some(0.5),
+            10,
+            5,
+        ),
+    );
+    insert_usage_row(
+        &path,
+        &usage_row(
+            super::rfc3339_millis("2026-09-10T14:00:00+08:00"),
+            "p1",
+            "cancelled",
+            true,
+            None,
+            0,
+            0,
+        ),
+    );
+
+    let store = UsageLogStore::at(&path);
+    let now = super::rfc3339_millis("2026-09-20T12:00:00+08:00");
+    let history = store
+        .provider_usage_history("p1", now)
+        .expect("backfilled history");
+
+    assert_eq!(raw_user_version(&path), 2);
+    assert_eq!(
+        count_cancelled(&path),
+        1,
+        "the version-0 cancelled cleanup must not rerun for version 1"
+    );
+    assert_eq!(history.earliest_available_day.as_deref(), Some("2026-09-10"));
+    assert_eq!(
+        history.cumulative.expect("cumulative").request_count,
+        1,
+        "only the retained terminal success counts"
+    );
+
+    clear_usage_clock_for_test();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-005: a controlled migration failure (read-only directory) leaves the
+/// version marker unadvanced and no summary table behind; restoring write
+/// access lets a later open complete the migration.
+#[cfg(unix)]
+#[test]
+fn failed_usage_migration_leaves_no_partial_summary_and_retries() {
+    use std::os::unix::fs::PermissionsExt;
+
+    set_usage_clock_for_test(super::rfc3339_millis("2026-09-20T10:00:00+08:00"));
+    let dir = super::make_temp_dir("migration-failed-retry");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("ai_gateway_usage.db");
+    create_versioned_usage_db(&path, 0);
+    insert_usage_row(
+        &path,
+        &usage_row(
+            super::rfc3339_millis("2026-09-10T12:00:00+08:00"),
+            "p1",
+            "success",
+            true,
+            Some(0.5),
+            10,
+            5,
+        ),
+    );
+
+    let store = UsageLogStore::at(&path);
+    let now = super::rfc3339_millis("2026-09-20T12:00:00+08:00");
+
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500))
+        .expect("make the temp directory read-only");
+    let restore = RestoreDirPermissions(dir.clone());
+    let failed = store
+        .provider_usage_history("p1", now)
+        .expect_err("a read-only database cannot complete the migration");
+    assert!(!failed.is_empty(), "the failure must carry a message");
+    assert_eq!(
+        raw_user_version(&path),
+        0,
+        "a failed migration must not advance the marker"
+    );
+    assert!(
+        !has_table(&path, "provider_daily_usage"),
+        "a failed migration must leave no summary table"
+    );
+
+    drop(restore);
+    let history = store
+        .provider_usage_history("p1", now)
+        .expect("the retried migration must succeed");
+    assert_eq!(raw_user_version(&path), 2);
+    assert_eq!(history.earliest_available_day.as_deref(), Some("2026-09-10"));
+    assert_eq!(history.cumulative.expect("cumulative").request_count, 1);
+
+    clear_usage_clock_for_test();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-005: a future database version is never downgraded and is not backfilled.
+#[test]
+fn future_usage_database_version_is_not_downgraded() {
+    set_usage_clock_for_test(super::rfc3339_millis("2026-09-20T10:00:00+08:00"));
+    let dir = super::make_temp_dir("migration-future-version");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("ai_gateway_usage.db");
+    create_versioned_usage_db(&path, 99);
+    let row_at = super::rfc3339_millis("2026-09-10T12:00:00+08:00");
+    insert_usage_row(&path, &usage_row(row_at, "p1", "success", true, Some(0.5), 10, 5));
+
+    let store = UsageLogStore::at(&path);
+    let now = super::rfc3339_millis("2026-09-20T12:00:00+08:00");
+    let history = store
+        .provider_usage_history("p1", now)
+        .expect("a future-version database stays readable");
+
+    assert_eq!(
+        raw_user_version(&path),
+        99,
+        "a future version must be preserved, never downgraded"
+    );
+    assert!(
+        history.days.is_empty(),
+        "a future-version database must not be backfilled: {history:?}"
+    );
+    assert!(
+        store
+            .all_records()
+            .expect("future-version detail rows")
+            .iter()
+            .any(|row| row.timestamp_ms == row_at),
+        "the future-version detail rows must be preserved"
+    );
+
+    clear_usage_clock_for_test();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-004/AC-005: concurrent first opens of the same version-0 database
+/// backfill once; the marker and the summary are never duplicated.
+#[test]
+fn concurrent_usage_backfill_is_idempotent() {
+    set_usage_clock_for_test(super::rfc3339_millis("2026-09-20T10:00:00+08:00"));
+    let dir = super::make_temp_dir("migration-concurrent-backfill");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("ai_gateway_usage.db");
+    create_versioned_usage_db(&path, 0);
+    insert_usage_row(
+        &path,
+        &usage_row(
+            super::rfc3339_millis("2026-09-10T12:00:00+08:00"),
+            "p1",
+            "success",
+            true,
+            Some(0.5),
+            10,
+            5,
+        ),
+    );
+
+    let now = super::rfc3339_millis("2026-09-20T12:00:00+08:00");
+    let barrier = Barrier::new(3);
+    let counts: Vec<Result<u32, String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..3)
+            .map(|_| {
+                scope.spawn(|| -> Result<u32, String> {
+                    let store = UsageLogStore::at(&path);
+                    barrier.wait();
+                    store.provider_usage_history("p1", now).map(|history| {
+                        history
+                            .cumulative
+                            .map(|metrics| metrics.request_count)
+                            .unwrap_or(0)
+                    })
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("a concurrent open must not panic"))
+            .collect()
+    });
+
+    for count in &counts {
+        assert_eq!(
+            *count.as_ref().expect("a concurrent open must succeed"),
+            1,
+            "every concurrent opener sees the single backfilled contribution"
+        );
+    }
+    assert_eq!(raw_user_version(&path), 2);
+    let final_history = UsageLogStore::at(&path)
+        .provider_usage_history("p1", now)
+        .expect("final history");
+    assert_eq!(
+        final_history.cumulative.expect("cumulative").request_count,
+        1,
+        "concurrent opens must not duplicate the backfill"
+    );
+
+    clear_usage_clock_for_test();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-005: a fault *during* the version-2 backfill — after one grouped
+/// contribution has already been inserted inside the migration transaction —
+/// rolls the whole transaction back: the version marker stays unadvanced and no
+/// partial summary row survives. Dropping the fault lets a later open backfill
+/// both providers exactly once.
+#[test]
+fn failed_backfill_after_partial_contributions_rolls_back_and_retries() {
+    set_usage_clock_for_test(super::rfc3339_millis("2026-09-20T10:00:00+08:00"));
+    let dir = super::make_temp_dir("migration-backfill-partial-abort");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("ai_gateway_usage.db");
+    create_versioned_usage_db(&path, 0);
+    insert_usage_row(
+        &path,
+        &usage_row(
+            super::rfc3339_millis("2026-09-10T12:00:00+08:00"),
+            "p1",
+            "success",
+            true,
+            Some(0.5),
+            10,
+            5,
+        ),
+    );
+    insert_usage_row(
+        &path,
+        &usage_row(
+            super::rfc3339_millis("2026-09-11T12:00:00+08:00"),
+            "p2",
+            "success",
+            true,
+            Some(0.5),
+            10,
+            5,
+        ),
+    );
+
+    // An already-initialized summary table (the state an interrupted attempt
+    // leaves) plus a trigger that aborts the second grouped contribution, so
+    // the fault lands after the first insert has already been applied.
+    let trigger = Connection::open(&path).expect("open raw usage db");
+    trigger
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS provider_daily_usage (
+                provider_id TEXT NOT NULL,
+                day TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                successful_request_count INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                amount REAL NOT NULL DEFAULT 0,
+                unpriced_count INTEGER NOT NULL DEFAULT 0,
+                cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_eligible_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_rate_eligible_count INTEGER NOT NULL DEFAULT 0,
+                first_request_at_ms INTEGER NOT NULL,
+                last_request_at_ms INTEGER NOT NULL,
+                PRIMARY KEY (provider_id, day)
+            );
+            CREATE TRIGGER abort_second_backfill_summary
+            AFTER INSERT ON provider_daily_usage
+            WHEN (SELECT COUNT(*) FROM provider_daily_usage) >= 2
+            BEGIN SELECT RAISE(ABORT, 'injected backfill abort'); END;",
+        )
+        .expect("arm the partial-backfill abort");
+    drop(trigger);
+
+    let store = UsageLogStore::at(&path);
+    let now = super::rfc3339_millis("2026-09-20T12:00:00+08:00");
+    let failed = store
+        .provider_usage_history("p1", now)
+        .expect_err("the injected backfill abort must fail the open");
+    assert!(!failed.is_empty(), "the failure must carry a message");
+    assert_eq!(
+        raw_user_version(&path),
+        0,
+        "a failed backfill must not advance the version marker"
+    );
+    assert_eq!(
+        summary_row_count(&path, "p1"),
+        0,
+        "the contribution applied before the abort must be rolled back"
+    );
+    assert_eq!(
+        summary_row_count(&path, "p2"),
+        0,
+        "the aborted contribution must not be stored"
+    );
+    assert_eq!(
+        raw_usage_log_count(&path),
+        2,
+        "the failed migration must leave the retained detail rows unchanged"
+    );
+
+    // Dropping the fault lets a later open backfill both providers once.
+    let clear = Connection::open(&path).expect("open raw usage db to drop the trigger");
+    clear
+        .execute_batch("DROP TRIGGER abort_second_backfill_summary")
+        .expect("drop the partial-backfill abort");
+    drop(clear);
+
+    let retried = store
+        .provider_usage_history("p1", now)
+        .expect("the retried migration must succeed");
+    assert_eq!(raw_user_version(&path), 2, "the retry advances the marker");
+    assert_eq!(summary_row_count(&path, "p1"), 1);
+    assert_eq!(summary_row_count(&path, "p2"), 1);
+    assert_eq!(
+        retried.cumulative.expect("p1 cumulative").request_count,
+        1,
+        "each provider is backfilled exactly once"
+    );
+    assert_eq!(
+        store
+            .provider_usage_history("p2", now)
+            .expect("p2 history")
+            .cumulative
+            .expect("p2 cumulative")
+            .request_count,
+        1
+    );
+
+    clear_usage_clock_for_test();
+    let _ = fs::remove_dir_all(&dir);
 }
