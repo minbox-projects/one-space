@@ -24,9 +24,11 @@ present 的原生 miss 必须等于报告的包含式输入减去已选缓存命
 
 本次交付还新增独立的按需 Node 工具 `tools/diagnose-deepseek-cache.mjs`，仅使用内置模块，且不安装进常态网关运行时。其 `observe --listen <port> --gateway <loopback-url> --model <id>` 入口在 `127.0.0.1` 绑定并把请求与响应字节原样转发到命令行显式给定的回环网关；非回环的 `--gateway` 会被拒绝。它只针对所请求模型观察原生 `/v1/chat/completions` 与 `/chat/completions` 两条 POST 路由，按与亲和解析器相同的头名优先级取首个非空已识别会话标识，只保留恰好一个前序完成样本，并为每个选中的完成请求输出一行 JSONL `observation` 事件。事件报告 `append-only`、带首个变化 JSON 路径的 `changed`，或 `unavailable` 分类（`overlap`、`no-predecessor`、`oversized-metadata` 或解析/编码失败），并附带上游 `http_status` 与数值 `usage` 结果；`usage.availability` 及其 `reason` 与 `usage.fields.native` / `usage.fields.nested` 记录哪些来源存在。输出是元数据白名单：正文、消息与工具值、头值、密钥、会话标识、错误文本与内容哈希绝不打印或持久化，且 JSON/字符比较绝不声称度量分词器实际的缓存单元边界。该工具只是可选临时路径；操作者把一台选定客户端连接指向它，随后恢复原始选择。
 
+观察器经本轮 review 的聚合修复加固，但其 CLI 契约与输出白名单不变。`--gateway` 同时接受 `http:` 与 `https:` URL，上游传输按配置的协议选择，因此同步的传输构造失败或异步 TLS 握手失败都会变成有界的 `HTTP 502`，同时进程与其 listener 存活、客户端得到应答而不是被丢弃。SSE 解析在累积 buffer 上把 `\r\n` 与 `\r` 规范化为 `\n` 并保留悬空的尾 `\r`，因此跨 chunk 切分的事件边界仍会折叠成真正的空行、被切分事件的 `usage` 仍被解析，`SSE_EVENT_LIMIT` 与转发字节均不变。overlap 从同会话 chat 请求开始传输的那一刻起跟踪，而不是等其 body 结束；诊断判决延迟到每个并发 peer 的 selected/unselected 状态都已知，而转发、管道与背压绝不延迟；overlap 是对称的，因此双方同时 selected 的请求都报告 `unavailable`/`overlap`、都不被保留为 predecessor、其后的顺序请求报告 `no-predecessor`，且不同 session、模型或路由绝不贡献 peer。保留的 body 样本仍以至多一个前序请求加上进行中的 selected 请求为界；nonselected、aborted 与 overlapped 的捕获会被释放。
+
 同一工具的 `compare` 入口不带参数，地址与凭据只从六个进程环境变量 `CACHE_DIAG_GATEWAY_BASE_URL`、`CACHE_DIAG_GATEWAY_MODEL`、`CACHE_DIAG_GATEWAY_KEY`、`CACHE_DIAG_UPSTREAM_BASE_URL`、`CACHE_DIAG_UPSTREAM_MODEL` 与 `CACHE_DIAG_UPSTREAM_KEY` 读取；凭据绝不进入参数或输出，且不发现、不修改任何配置。它从配置的基础 URL 组装每个端点且不重复版本段，对固定的公开 256 KiB 前缀执行每条系列十条追加式请求体、`thinking: {"type":"disabled"}` 与 `max_tokens: 32`、每条路径两轮、每个完成系列两次不计入的 warmup 与八次测量，且最多 40 次模型 POST 尝试、无重试。它输出一行 `comparison` JSON：`attempts`、`status`（`completed` / `incomplete`）、恒为 `false` 的 `comparable`、恒为 `unverified` 的 `effectiveness`、`target_met`、为 `unknown` 的 `cost.availability`、时间戳，以及每条系列的 `warmup` / `measurement` 覆盖：`requests`（实际尝试次数）、`valid_usage`、token 求和、`cache_hit_rate`（包含式求和为 0 时为 `null`）与 `fields.native` / `fields.nested` 计数。完成的运行只表示一条有效测量序列，绝不表示两条路径服务同一账户或模型。配置缺失时以 `attempts: 0`、`status` 为 `incomplete`、`reason` 为 `missing-config` 结束。
 
-行为测试位于 `src-tauri/src/ai_gateway/tests/deepseek_cache.rs`（在 `src-tauri/src/ai_gateway/tests.rs` 中注册为 `mod deepseek_cache;`），以及 `tools/diagnose-deepseek-cache.test.mjs`。
+行为测试位于 `src-tauri/src/ai_gateway/tests/deepseek_cache.rs`（在 `src-tauri/src/ai_gateway/tests.rs` 中注册为 `mod deepseek_cache;`），以及 `tools/diagnose-deepseek-cache.test.mjs`。本轮修复在 Rust 文件中新增 fragmented nested-only 与 consistent-dual 两种流式刻画，在 Node 文件中新增三个 review 回归用例（https 构造/握手 `502`、跨 chunk 的 CRLF 事件边界、传输开始的 overlap）；修复后两套测试分别以 Rust 20 与 Node 41 通过，修复前的 18 与 38 记为基线。
 
 ## Alternatives considered
 
@@ -47,6 +49,7 @@ present 的原生 miss 必须等于报告的包含式输入减去已选缓存命
 - 四个互斥档位、已存的 `usage_semantics`/`usage_present`/`cache_accounting_valid` 列、共享合格谓词与 token 加权缓存命中率均不变；原生字段只喂给既有的缓存读档位。
 - 诊断工具是临时且可选的：它不新增持久配置、schema 或后台服务，退出它即恢复操作者的连接选择，回滚会一并还原工具、其测试与交付文档，同时保留全部用量行。
 - 核算只新增了私有 helper，因此导航因 tooling/test 与文档路径及其语义而更新，而不是因为新增公开符号。
+- 本轮 review 的聚合修复只改变观察器的传输处理、拆分 SSE 规范化与 overlap 跟踪；Step 1 的原生核算契约、四个互斥档位、输出白名单与 CLI 契约均不变。
 - 交付的工具路径 `tools/diagnose-deepseek-cache.mjs` 与 `tools/diagnose-deepseek-cache.test.mjs` 登记在 `cli-matrix-check` 的 tooling 导航条目，`docs/deepseek-cache-diagnostics.md` 登记在 documentation 条目，工具标准记入 `MEMORY.md`；`navigation.md` 已按权威 JSON 重新生成。
 - 部分取代：[API Gateway Cache Hit Rate Normalizes Provider Usage Semantics](../bug-fix/2026-09-21-api-gateway-cache-hit-accounting.md) 被保留并交叉链接；本记录在其 `canonical_usage_from_value` 形态表中扩展原生 DeepSeek 命中/未命中字段并新增无内容泄露的观察器与有界对比 runner，而它的四档归一化、存储迁移、合格谓词与覆盖契约继续有效。
 - 路由无取代：[Gateway Session Affinity Pins a Session and Model to One Upstream](../architecture/2026-09-20-gateway-session-affinity-routing.md) 被保留并交叉链接；本变更扩展原生字段核算与诊断，不改变亲和策略、其头名优先级、其绑定规则或其仅进程内存状态。

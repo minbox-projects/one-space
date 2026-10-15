@@ -2,7 +2,7 @@
 
 This report tracks the `20261015-deepseek-cache-diagnostics` plan. It is maintained incrementally: it records delivered facts at each accepted boundary and states the remaining work and any blocked evidence explicitly.
 
-Delivered: Step 1 native DeepSeek cache accounting and the existing Chat forwarding characterization; Step 2 the standalone, content-free observation and bounded comparison tool with its local behavior tests. Blocked: Step 3, the controlled same-account live comparison, was attempted exactly once under explicit operator authorization and produced no valid measurement, so it remains **blocked / unverified**. Consequently the plan is **not complete**: the later simultaneous Spec Review and Standards Review batch has not been executed, so no merge or "all engineering complete" claim is made here, and the 98% token-weighted effectiveness target is still unmeasured and is not claimed as met.
+Delivered: Step 1 native DeepSeek cache accounting and the existing Chat forwarding characterization; Step 2 the standalone, content-free observation and bounded comparison tool with its local behavior tests; and the aggregate repair from the simultaneous Spec Review and Standards Review batch, which hardened the observer's transport handling, split-SSE normalization and overlap tracking without changing its CLI contract or output allowlist. Blocked: Step 3, the controlled same-account live comparison, was attempted exactly once under explicit operator authorization and produced no valid measurement, so it remains **blocked / unverified**. Consequently the plan is **not complete**: that Spec Review and Standards Review batch has run and its aggregate repair is recorded here, but integration and the merge decision remain pending, so no merge or "all engineering complete" claim is made here, and the 98% token-weighted effectiveness target is still unmeasured and is not claimed as met.
 
 ## Scope
 
@@ -47,6 +47,14 @@ node tools/diagnose-deepseek-cache.mjs observe \
 
 JSON/character comparison reports which fields changed; it never claims to measure the tokenizer's actual cache-unit boundary, and the reported counts are the upstream's own numbers, not a character-derived token estimate.
 
+### Observer robustness from the Spec/Standards aggregate repair
+
+The review's aggregate repair hardened the observer without changing its CLI contract or output allowlist:
+
+- `--gateway` accepts either an `http:` or an `https:` URL, and the upstream transport follows the configured protocol. A synchronous transport-construction failure or an asynchronous TLS handshake failure now becomes a bounded `HTTP 502` response, and the observer process and its listener stay alive, so the client is answered instead of being dropped or crashing the process. The output allowlist and the CLI contract are unchanged.
+- SSE parsing normalizes `\r\n` and `\r` to `\n` on the accumulated buffer and holds a dangling trailing `\r`, so an event boundary split across chunks (for example `...\r\n\r` then `\n...`) still collapses to a real blank line and a split event's `usage` is still parsed. `SSE_EVENT_LIMIT` is unchanged and forwarded bytes are never affected.
+- Overlap is tracked from the moment a same-session chat request starts rather than when its body ends. The comparison verdict is deferred until every concurrent peer's selected or unselected state is known, while forwarding, piping and backpressure are never delayed. Overlap is symmetric: both concurrently selected requests are reported `unavailable` with reason `overlap`, neither is retained as a predecessor, and the next sequential request reports `no-predecessor`. Different sessions, models or routes never contribute a peer. Retained body samples stay bounded to at most one previous request plus the in-flight selected requests; non-selected, aborted and overlapped captures are released.
+
 Natural-traffic observation through `observe` was **not selected and not run** for this plan, so no live observation evidence exists; the tool is delivered and its local behavior is verified (see Evidence).
 
 ## Delivered: bounded comparison runner (REQ-004 / AC-004)
@@ -90,14 +98,16 @@ When any required variable is absent or unusable, `compare` still prints a `comp
 
 | Check | Result |
 | --- | --- |
-| `deepseek_cache` RED | 18 selected tests: 14 fail on the old numeric result, 4 existing-behavior tests already pass |
-| `deepseek_cache` GREEN | exit 0, 18 pass |
+| `deepseek_cache` RED (Step 1 baseline) | 18 selected tests: 14 fail on the old numeric result, 4 existing-behavior tests already pass |
+| `deepseek_cache` GREEN (Step 1 baseline) | exit 0, 18 pass |
+| `cargo test --manifest-path src-tauri/Cargo.toml --lib ai_gateway::tests::deepseek_cache -- --test-threads=1` (repair round) | exit 0, 20 pass, 0 fail, 0 ignored; adds a fragmented nested-only and a fragmented consistent-dual stream characterization |
 | `canonical_` | exit 0, 16 selected: 15 pass, 1 pre-existing ignored |
 | `cachehit_` | exit 0, 9 pass |
 | `session_affinity_` | exit 0, 24 pass |
 | `streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavailable` | exit 0, 1 pass |
 | `forwarded_logs_never_contain_keys_headers_or_bodies` | exit 0, 1 pass |
-| `node --test tools/diagnose-deepseek-cache.test.mjs` | exit 0, 38 pass, 0 skipped, ~7.18s |
+| `node --test tools/diagnose-deepseek-cache.test.mjs` (pre-repair baseline) | exit 0, 38 pass, 0 skipped, ~7.18s |
+| `node --test tools/diagnose-deepseek-cache.test.mjs` (repair round) | exit 0, 41 pass, 0 fail, 0 skip (3 new RED cases turned GREEN: https construction/handshake `502`, split CRLF event boundary, transport-start overlap) |
 | `node tools/diagnose-deepseek-cache.mjs compare` (single authorized batch, operator-supplied environment) | exit 1 (nonzero); 1/40 attempts; `status: incomplete`, `reason: request-rejected`; gateway path 1 attempt with 0 valid usage, upstream path 0 requests, no rate |
 | read-only `onespace-dev` usage query (run window, target provider/upstream) | 1 row: `status 429`, `result failure`, `usage_present 0`, `cache_accounting_valid 0`, all token tiers `0` |
 | post-run dev comparison reload | failed with a fixed missing-source-key reason; credential-unchanged re-check not completed |

@@ -581,21 +581,41 @@ async fn buffered_native_nested_and_dual_usage_log_identical_exclusive_tiers() {
     drop(home);
 }
 
-/// AC-001: the same native-only decomposition survives a genuinely fragmented
-/// SSE stream; the forwarded bytes are identical to the upstream fragments and
-/// the persisted row matches the buffered path, including pricing.
-#[tokio::test]
-async fn fragmented_stream_native_usage_is_logged_once_and_bytes_are_preserved() {
-    let home = temp_home("deepseek-cache-stream");
+/// Splits one usage event into several flushed fragments (the same shape the
+/// original native case used), so the gateway observes a genuinely fragmented
+/// SSE stream for any native/nested/dual usage object. Every value serializes
+/// to ASCII, so byte slicing is also character slicing.
+fn fragmented_usage_fragments(usage: Value) -> Vec<String> {
+    let event = format!(
+        "data: {}\n\n",
+        serde_json::to_string(&json!({
+            "id": "x",
+            "choices": [{"delta": {}}],
+            "usage": usage,
+        }))
+        .unwrap()
+    );
+    let bytes = event.as_bytes();
+    let first = bytes.len() / 3;
+    let second = (bytes.len() * 2) / 3;
+    vec![
+        "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n".to_string(),
+        String::from_utf8(bytes[..first].to_vec()).expect("ascii fragment"),
+        String::from_utf8(bytes[first..second].to_vec()).expect("ascii fragment"),
+        String::from_utf8(bytes[second..].to_vec()).expect("ascii fragment"),
+        "data: [DONE]\n\n".to_string(),
+    ]
+}
+
+/// AC-001: one usage shape survives a genuinely fragmented SSE stream; the
+/// forwarded bytes are identical to the upstream fragments, the persisted row
+/// matches the buffered path (ordinary 2, cache read 98, output 7, a single
+/// charge on the cache-read tier) and the token-weighted aggregate is 98%.
+async fn fragmented_stream_shape_logs_once(home_name: &str, usage: Value) {
+    let home = temp_home(home_name);
     let port = free_port().await;
 
-    let fragments: Vec<String> = vec![
-        "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n".to_string(),
-        "data: {\"id\":\"x\",\"choices\":[{\"delta\":{}}],\"usage\":{\"prompt_tokens\":100,".to_string(),
-        "\"prompt_cache_hit_tokens\":98,\"prompt_cache_miss_tokens\":2,".to_string(),
-        "\"completion_tokens\":7}}\n\n".to_string(),
-        "data: [DONE]\n\n".to_string(),
-    ];
+    let fragments = fragmented_usage_fragments(usage);
     let expected_body: String = fragments.concat();
     let upstream_url = spawn_fragmented_sse_upstream(fragments).await;
 
@@ -626,18 +646,83 @@ async fn fragmented_stream_native_usage_is_logged_once_and_bytes_are_preserved()
     let record = &records[0];
     assert_eq!(record.result, UsageResult::Success);
     assert_eq!(record.input_tokens, 2, "ordinary = 100 - 98");
-    assert_eq!(record.cache_read_tokens, 98);
+    assert_eq!(record.cache_read_tokens, 98, "the cache read is counted once");
     assert_eq!(record.cache_write_tokens, 0);
     assert_eq!(record.output_tokens, 7);
     assert_eq!(record.total_tokens, 107);
     let expected_amount = (2.0 * 1.0 + 98.0 * 0.5 + 0.0 * 2.0 + 7.0 * 4.0) / 1_000_000.0;
     assert!(
         (record.amount.expect("priced row") - expected_amount).abs() < 1e-12,
-        "the streamed native hit is charged once on the cache-read tier"
+        "the streamed hit is charged once on the cache-read tier, never duplicated"
+    );
+
+    let stats = default_usage_store()
+        .usage_stats(&TimeRange::default(), false)
+        .unwrap();
+    assert_eq!(stats.totals.cache_hit_tokens, 98, "one row x 98 cached");
+    assert_eq!(
+        stats.totals.cache_eligible_tokens, 100,
+        "one row x (2 ordinary + 98 cached)"
+    );
+    let rate = stats
+        .totals
+        .cache_hit_rate_percent
+        .expect("a positive denominator exists");
+    assert!(
+        (rate - 98.0).abs() < 1e-9,
+        "the token-weighted aggregate is 98%: got {rate}"
     );
 
     stop_server().await.unwrap();
     drop(home);
+}
+
+/// AC-001: the native-only shape, streamed and fragmented (the original case).
+#[tokio::test]
+async fn fragmented_stream_native_usage_is_logged_once_and_bytes_are_preserved() {
+    fragmented_stream_shape_logs_once(
+        "deepseek-cache-stream-native",
+        json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 7,
+            "prompt_cache_hit_tokens": 98,
+            "prompt_cache_miss_tokens": 2,
+        }),
+    )
+    .await;
+}
+
+/// AC-001 / SPEC-004: the nested-only shape is the same exclusive decomposition,
+/// aggregate and single charge through the same fragmented stream.
+#[tokio::test]
+async fn fragmented_stream_nested_only_usage_is_logged_once_and_bytes_are_preserved() {
+    fragmented_stream_shape_logs_once(
+        "deepseek-cache-stream-nested",
+        json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 7,
+            "prompt_tokens_details": { "cached_tokens": 98 },
+        }),
+    )
+    .await;
+}
+
+/// AC-001 / SPEC-004: a consistent dual native+nested shape counts the 98 hit
+/// once through the fragmented stream, forwards the original bytes and produces
+/// the same exclusive tiers, 98% aggregate and a single charge.
+#[tokio::test]
+async fn fragmented_stream_consistent_dual_usage_is_logged_once_and_bytes_are_preserved() {
+    fragmented_stream_shape_logs_once(
+        "deepseek-cache-stream-dual",
+        json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 7,
+            "prompt_cache_hit_tokens": 98,
+            "prompt_cache_miss_tokens": 2,
+            "prompt_tokens_details": { "cached_tokens": 98 },
+        }),
+    )
+    .await;
 }
 
 // ---------------------------------------------------------------------------

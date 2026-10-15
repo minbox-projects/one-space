@@ -349,7 +349,14 @@ function processSseEvent(context, event) {
 }
 
 function feedSse(context, chunk) {
-  context.sseBuffer += chunk.toString("utf8").replace(/\r\n/g, "\n");
+  context.sseBuffer += chunk.toString("utf8");
+  // Normalize CR and CRLF to LF on the accumulated buffer so an event boundary
+  // split across chunks (for example `\r\n\r` then `\n`, or `\r` then `\n`)
+  // still collapses to a real blank line. A trailing lone CR is deliberately
+  // held back: converting it before its following `\n` arrives would turn the
+  // single CRLF terminator into a false `\n\n` boundary once the next chunk
+  // starts with `\n`. Forwarded bytes are never affected.
+  context.sseBuffer = context.sseBuffer.replace(/\r\n|\r(?!$)/g, "\n");
   let boundary;
   while ((boundary = context.sseBuffer.indexOf("\n\n")) >= 0) {
     const event = context.sseBuffer.slice(0, boundary);
@@ -454,23 +461,94 @@ function isOversizedIsolationMetadata(body) {
 
 // ---------------------------------------------------------------------------
 // Transparent loopback reverse proxy + observation
+//
+// Context lifetime: transport-level concurrency, deferred comparison + release
 // ---------------------------------------------------------------------------
 
-function releaseActive(context, state) {
-  if (!context.active) return;
-  context.active = false;
-  state.active -= 1;
-  state.selectedActive.delete(context);
+// Potential overlap is tracked from the moment a same-session chat request
+// arrives (its headers / first body byte), not only when its body finishes. A
+// request that starts while an earlier selected response is still held is
+// therefore known to be concurrent before its own body ends. The actual
+// comparison verdict is deferred until the peers' selected/unselected state is
+// known; forwarding, piping and backpressure are never delayed.
+function registerInflight(context, state) {
+  if (!context.chatRoute || context.session === null) return;
+  let inflight = state.sessionInflight.get(context.session);
+  if (!inflight) {
+    inflight = new Set();
+    state.sessionInflight.set(context.session, inflight);
+  }
+  for (const peer of inflight) {
+    peer.peers.add(context);
+    context.peers.add(peer);
+  }
+  inflight.add(context);
 }
 
-function finalizeObservation(context, state) {
-  releaseActive(context, state);
-  if (context.aborted || !context.selected) return;
+function unregisterInflight(context, state) {
+  if (!context.chatRoute || context.session === null) return;
+  const inflight = state.sessionInflight.get(context.session);
+  if (!inflight) return;
+  inflight.delete(context);
+  if (inflight.size === 0) state.sessionInflight.delete(context.session);
+}
 
-  const usage = usageFromContext(context);
+// ORCH-001: the bounded request copy exists only to classify the request and
+// the buffered response copy only to read usage. Both are freed as soon as that
+// work is done so no per-route/session sample lingers until process exit.
+function releaseRequestCapture(context) {
+  context.requestCapture = [];
+  context.requestCaptureBytes = 0;
+}
+
+function releaseResponseCapture(context) {
+  context.responseCapture = [];
+  context.responseCaptureBytes = 0;
+  context.sseBuffer = "";
+}
+
+// A resolved context has a known selected/unselected state: its body ended and
+// was classified, or it finished/aborted first. Resolving unblocks deferred
+// peer comparisons that were waiting on it.
+function resolveContext(context, state) {
+  if (context.resolved) return;
+  context.resolved = true;
+  context.resolvedSelected = context.selected === true;
+  flushDeferred(state);
+}
+
+function peersResolved(context) {
+  for (const peer of context.peers) {
+    if (!peer.resolved) return false;
+  }
+  return true;
+}
+
+// Emit deferred finalized observations strictly in completion order, so the
+// diagnostic stream stays ordered once every peer's selectedness is known.
+function flushDeferred(state) {
+  while (state.deferred.length > 0) {
+    const head = state.deferred[0];
+    if (!peersResolved(head)) break;
+    state.deferred.shift();
+    emitObservation(head, state);
+  }
+}
+
+function emitObservation(context, state) {
+  // Overlap is symmetric: a selected request is comparison-unavailable when any
+  // concurrent same-session peer was itself selected. Unrelated sessions, models
+  // and routes never contribute a peer, so they cannot fake an overlap.
+  let overlapped = false;
+  for (const peer of context.peers) {
+    if (peer.resolvedSelected) {
+      overlapped = true;
+      break;
+    }
+  }
+
   const event = { event: "observation" };
-
-  if (context.overlapped) {
+  if (overlapped) {
     event.comparison = "unavailable";
     event.reason = "overlap";
   } else if (!context.parseOk) {
@@ -490,14 +568,49 @@ function finalizeObservation(context, state) {
     }
   }
 
-  event.usage = usage;
+  event.usage = context.pendingUsage;
   event.http_status = context.status || 502;
 
   // Only a non-overlapped, successfully parsed request becomes the retained
-  // predecessor; an overlapped request never fabricates one.
-  if (!context.overlapped && context.parseOk) state.previous = context.body;
+  // predecessor; an overlapped request drops any predecessor instead of
+  // reusing or fabricating one.
+  if (overlapped) {
+    state.previous = null;
+  } else if (context.parseOk) {
+    state.previous = context.body;
+  }
 
   process.stdout.write(jsonLine(event));
+
+  // ORCH-001: after emission, only `state.previous` may retain a body sample.
+  context.body = null;
+  context.pendingUsage = null;
+}
+
+// One terminal path for a context: release the bounded copies, drop its
+// transport-level registration, resolve it for waiting peers and queue a
+// selected event for deferred, ordered emission. ORCH-001 bounds retained body
+// samples to one `state.previous` plus the still-in-flight selected requests;
+// aborted, unselected and overlapped contexts drop their body immediately.
+function finishContext(context, state, aborted) {
+  if (context.finished) return;
+  context.finished = true;
+  if (aborted) context.aborted = true;
+
+  releaseRequestCapture(context);
+  unregisterInflight(context, state);
+
+  if (!context.aborted && context.selected) {
+    context.pendingUsage = usageFromContext(context);
+    releaseResponseCapture(context);
+    state.deferred.push(context);
+  } else {
+    // ORCH-001: a non-selected or aborted context keeps no body sample.
+    context.body = null;
+    releaseResponseCapture(context);
+  }
+
+  resolveContext(context, state);
 }
 
 // The request body is forwarded byte-for-byte as it streams; a bounded copy is
@@ -526,6 +639,9 @@ function selectRequest(context, clientReq, opts, state) {
     }
   }
 
+  // ORCH-001: classification is complete; drop the bounded request copy now.
+  releaseRequestCapture(context);
+
   if (context.parseOk) {
     if (state.selectedSession === null) state.selectedSession = context.session;
     if (context.session !== state.selectedSession) return;
@@ -537,17 +653,6 @@ function selectRequest(context, clientReq, opts, state) {
   }
 
   context.selected = true;
-  if (state.active > 0) {
-    // Every request genuinely in flight concurrently is comparison-unavailable:
-    // mark the newcomer and all currently active selected requests, and drop any
-    // retained predecessor so a later request cannot reuse an overlapped sample.
-    for (const other of state.selectedActive) other.overlapped = true;
-    context.overlapped = true;
-    state.previous = null;
-  }
-  context.active = true;
-  state.active += 1;
-  state.selectedActive.add(context);
 }
 
 function handleRequest(clientReq, clientRes, opts, state) {
@@ -555,8 +660,6 @@ function handleRequest(clientReq, clientRes, opts, state) {
     chatRoute: isChatRoute(clientReq),
     session: resolveSessionId(clientReq.headers),
     selected: false,
-    overlapped: false,
-    active: false,
     aborted: false,
     finished: false,
     parseOk: false,
@@ -574,7 +677,17 @@ function handleRequest(clientReq, clientRes, opts, state) {
     requestTruncated: false,
     responseCapture: [],
     responseCaptureBytes: 0,
+    pendingUsage: null,
+    peers: new Set(),
+    resolved: false,
+    resolvedSelected: false,
   };
+
+  // Track concurrency from the transport start: this is what lets a later
+  // same-session request be recognised as overlapping an already held response
+  // before its own body ends. Diagnostics may resolve later; forwarding is
+  // untouched.
+  registerInflight(context, state);
 
   clientReq.on("data", (chunk) => {
     if (context.requestCaptureBytes >= REQUEST_CAPTURE_LIMIT) {
@@ -592,40 +705,58 @@ function handleRequest(clientReq, clientRes, opts, state) {
 
   const gatewayPort =
     opts.gateway.port || (opts.gateway.protocol === "https:" ? 443 : 80);
-  const upstream = http.request(
-    {
-      protocol: opts.gateway.protocol,
-      hostname: opts.gateway.hostname.replace(/^\[/, "").replace(/\]$/, ""),
-      port: gatewayPort,
-      method: clientReq.method,
-      path: clientReq.url || "/",
-      headers: forwardableRequestHeaders(clientReq.headers),
-    },
-    (upstreamRes) => {
-      context.status = upstreamRes.statusCode || 502;
-      context.responseContentType = String(upstreamRes.headers["content-type"] || "");
-      const contentEncoding = String(
-        upstreamRes.headers["content-encoding"] || "",
-      ).toLowerCase();
-      context.unsupportedResponseFormat =
-        contentEncoding !== "" && contentEncoding !== "identity";
-      context.responseIsSse = context.responseContentType.includes("text/event-stream");
-      upstreamRes.on("data", (chunk) => {
-        if (context.unsupportedResponseFormat) return;
-        if (context.responseIsSse) {
-          feedSse(context, chunk);
-          return;
-        }
-        if (context.responseCaptureBytes >= RESPONSE_CAPTURE_LIMIT) return;
-        const remaining = RESPONSE_CAPTURE_LIMIT - context.responseCaptureBytes;
-        const slice = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
-        context.responseCapture.push(slice);
-        context.responseCaptureBytes += slice.length;
-      });
-      clientRes.writeHead(context.status, forwardableResponseHeaders(upstreamRes.headers));
-      upstreamRes.pipe(clientRes);
-    },
-  );
+
+  // The transport module must match the configured protocol: the `http` module
+  // throws `ERR_INVALID_PROTOCOL` synchronously for an `https:` URL. Both a
+  // synchronous construction failure and an asynchronous TLS handshake failure
+  // become the same bounded bad-gateway response instead of an uncaught crash.
+  const transport = opts.gateway.protocol === "https:" ? https : http;
+  let upstream;
+  try {
+    upstream = transport.request(
+      {
+        protocol: opts.gateway.protocol,
+        hostname: opts.gateway.hostname.replace(/^\[/, "").replace(/\]$/, ""),
+        port: gatewayPort,
+        method: clientReq.method,
+        path: clientReq.url || "/",
+        headers: forwardableRequestHeaders(clientReq.headers),
+      },
+      (upstreamRes) => {
+        context.status = upstreamRes.statusCode || 502;
+        context.responseContentType = String(upstreamRes.headers["content-type"] || "");
+        const contentEncoding = String(
+          upstreamRes.headers["content-encoding"] || "",
+        ).toLowerCase();
+        context.unsupportedResponseFormat =
+          contentEncoding !== "" && contentEncoding !== "identity";
+        context.responseIsSse = context.responseContentType.includes("text/event-stream");
+        upstreamRes.on("data", (chunk) => {
+          if (context.unsupportedResponseFormat) return;
+          if (context.responseIsSse) {
+            feedSse(context, chunk);
+            return;
+          }
+          if (context.responseCaptureBytes >= RESPONSE_CAPTURE_LIMIT) return;
+          const remaining = RESPONSE_CAPTURE_LIMIT - context.responseCaptureBytes;
+          const slice = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
+          context.responseCapture.push(slice);
+          context.responseCaptureBytes += slice.length;
+        });
+        clientRes.writeHead(context.status, forwardableResponseHeaders(upstreamRes.headers));
+        upstreamRes.pipe(clientRes);
+      },
+    );
+  } catch {
+    // No URL, credential or stack trace is emitted; the listener keeps serving.
+    if (!clientRes.headersSent) {
+      context.status = 502;
+      clientRes.writeHead(502, { "content-type": "text/plain" });
+    }
+    clientRes.end();
+    finishContext(context, state, true);
+    return;
+  }
 
   upstream.on("error", () => {
     context.aborted = true;
@@ -636,16 +767,12 @@ function handleRequest(clientReq, clientRes, opts, state) {
     clientRes.end();
   });
 
-  clientRes.on("finish", () => {
-    context.finished = true;
-    finalizeObservation(context, state);
-  });
+  clientRes.on("finish", () => finishContext(context, state, false));
 
   clientReq.on("error", () => upstream.destroy());
   clientRes.on("close", () => {
     if (context.finished) return;
-    context.aborted = true;
-    releaseActive(context, state);
+    finishContext(context, state, true);
     upstream.destroy();
   });
 
@@ -655,9 +782,12 @@ function handleRequest(clientReq, clientRes, opts, state) {
 function startObserve(opts) {
   const state = {
     selectedSession: null,
-    selectedActive: new Set(),
-    active: 0,
+    // Same-session chat requests currently in flight, keyed by session identity.
+    // Used to link transport-level concurrency peers from arrival time.
+    sessionInflight: new Map(),
     previous: null,
+    // Finalized selected contexts whose comparison awaits peer resolution.
+    deferred: [],
   };
   const sockets = new Set();
   const server = http.createServer((req, res) => handleRequest(req, res, opts, state));

@@ -166,7 +166,7 @@ function createMockGateway() {
   };
 }
 
-function startObserver(gatewayPort) {
+function startObserver(gatewayPort, { gatewayUrl } = {}) {
   const child = spawn(
     process.execPath,
     [
@@ -175,7 +175,7 @@ function startObserver(gatewayPort) {
       "--listen",
       "0",
       "--gateway",
-      `http://127.0.0.1:${gatewayPort}`,
+      gatewayUrl ?? `http://127.0.0.1:${gatewayPort}`,
       "--model",
       MODEL,
     ],
@@ -2317,6 +2317,291 @@ test(
       0,
       "a native-only series reports no nested presence",
     );
+  },
+);
+
+// ===========================================================================
+// 14. Formal-review regressions: HTTPS gateway construction, split CRLF event
+//     boundaries and late-body overlap.
+//
+// Finding A / SPEC-001 / STD-001: `observe` accepts an `https:` `--gateway`
+//   URL, but `handleRequest` builds the upstream request with the `http` module
+//   regardless of protocol. `http.request({ protocol: "https:" })` throws
+//   `ERR_INVALID_PROTOCOL` synchronously inside the request listener, so the
+//   observer process crashes and drops the client instead of answering 502.
+// Finding B / SPEC-002: the SSE feeder normalizes `\r\n` to `\n` per chunk, so
+//   an event boundary whose `\r\n` is split across two chunks (`...\r\n\r` +
+//   `\n...`) never collapses to `\n\n`; the usage event and `[DONE]` merge into
+//   one unparsable event and the usage is lost.
+// Finding C / SPEC-003: a selected request that starts while an earlier
+//   selected response is still held is only detected once its own body ends,
+//   so a genuinely overlapping pair is misreported as a sequential chain.
+// ===========================================================================
+
+// Spawn the real `observe` CLI against a gateway URL derived from the mock's
+// port, so an `https:` target can be exercised without a certificate or any
+// extra dependency.
+async function setupGateway(t, handler, gatewayUrlFor) {
+  const mock = createMockGateway();
+  if (handler) mock.setHandler(handler);
+  const gatewayPort = await mock.listen();
+  const observer = startObserver(gatewayPort, {
+    gatewayUrl: gatewayUrlFor(gatewayPort),
+  });
+  t.after(async () => {
+    await observer.stop();
+    await mock.close();
+  });
+  const listening = await observer.waitListening();
+  return { mock, observer, port: listening.port, gatewayPort };
+}
+
+test(
+  "observe answers HTTP 502 for an https gateway whose TLS handshake fails instead of crashing or dropping the client",
+  { timeout: 15000 },
+  async (t) => {
+    // The mock is plain HTTP; pointing the observer at it as `https://` makes
+    // its real TLS handshake fail. The observer must surface a bounded 502, not
+    // throw an uncaught protocol error and die.
+    const { observer, port } = await setupGateway(
+      t,
+      jsonReply(VALID_NATIVE_USAGE),
+      (gatewayPort) => `https://127.0.0.1:${gatewayPort}`,
+    );
+
+    let firstOutcome;
+    try {
+      const response = await sendJson(port, {
+        session: "S1",
+        body: chatBody({ messages: MESSAGES }),
+      });
+      firstOutcome = {
+        kind: "response",
+        status: response.status,
+        body: response.body.toString("utf8"),
+      };
+    } catch (error) {
+      firstOutcome = { kind: "error", message: String(error && error.message) };
+    }
+    assert.equal(
+      firstOutcome.kind,
+      "response",
+      `the observer must answer the client with HTTP 502, not drop the socket or crash: ${JSON.stringify(firstOutcome)}`,
+    );
+    assert.equal(firstOutcome.status, 502, "a failed TLS handshake is a bad gateway");
+    assert.ok(
+      !/at .+\(.+:\d+:\d+\)/.test(firstOutcome.body),
+      "no raw stack trace may be forwarded to the client",
+    );
+
+    // The process must survive a gateway construction/handshake failure.
+    await delay(150);
+    assert.equal(
+      observer.child.exitCode,
+      null,
+      "the observer process must not exit on a TLS handshake failure",
+    );
+    assert.equal(
+      observer.child.signalCode,
+      null,
+      "the observer process must not be killed on a TLS handshake failure",
+    );
+    assert.ok(
+      !/at .+\(.+:\d+:\d+\)/.test(observer.stderrText()),
+      `no raw stack trace may be printed, stderr=${JSON.stringify(observer.stderrText())}`,
+    );
+
+    // The listener must still accept and serve the next connection.
+    const second = await sendJson(port, {
+      session: "S1",
+      body: chatBody({ messages: appended(MESSAGES) }),
+    });
+    assert.equal(second.status, 502, "the surviving listener must still answer");
+
+    // SIGTERM must release the listener cleanly.
+    observer.child.kill("SIGTERM");
+    await withTimeout(once(observer.child, "exit"), 3000, "observer SIGTERM exit");
+    assert.equal(
+      await connectRefused(port),
+      true,
+      "SIGTERM must release the loopback listener",
+    );
+  },
+);
+
+test(
+  "observe reads SSE usage when a CRLF event boundary is split across chunks and still forwards every byte",
+  { timeout: 15000 },
+  async (t) => {
+    // The separating `\r\n\r\n` is split as `\r\n\r` | `\n`: the first write
+    // ends mid-CRLF and the second begins with the final `\n`. Per-chunk `\r\n`
+    // normalization leaves `\n\r\n` between the two events instead of `\n\n`,
+    // so the usage event and `[DONE]` merge into one unparsable event and the
+    // usage is lost. There is exactly one case; the split constants are not
+    // enumerated.
+    const first = 'data: {"id":"c1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":7,"prompt_cache_hit_tokens":98,"prompt_cache_miss_tokens":2}}\r\n\r';
+    const second = "\ndata: [DONE]\r\n\r\n";
+    const sse = first + second;
+    const handler = async (record, res, index) => {
+      if (index === 2) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(first);
+        await delay(30);
+        res.end(second);
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(chatResponse(VALID_NATIVE_USAGE));
+    };
+    const { observer, port } = await setup(t, handler);
+
+    await sendJson(port, { session: "S1", body: chatBody({ messages: MESSAGES }) });
+    const response = await sendJson(port, {
+      session: "S1",
+      body: chatBody({ messages: appended(MESSAGES) }),
+    });
+    assert.equal(
+      response.body.toString("utf8"),
+      sse,
+      "the split SSE bytes must be forwarded unchanged",
+    );
+
+    const obs = await collect(observer, 2);
+    assert.equal(obs[1].comparison, "append-only");
+    assertAvailableUsage(obs[1].usage, {
+      inclusive: 100,
+      hit: 98,
+      miss: 2,
+      output: 7,
+      rate: 0.98,
+    });
+  },
+);
+
+// Opens a Chat request whose body is written in two parts: `first` is flushed
+// immediately and the remainder is sent by the caller later, so the request is
+// genuinely in flight (headers and a partial body) before `rest` is sent.
+function openDeferredChat(port, { session, bodyText, splitAt }) {
+  const headers = chatHeaders({ session });
+  headers["content-length"] = Buffer.byteLength(bodyText);
+  const req = http.request({
+    host: "127.0.0.1",
+    port,
+    method: "POST",
+    path: CHAT_PATH,
+    headers,
+    agent: false,
+  });
+  const response = new Promise((resolve, reject) => {
+    req.on("response", (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () =>
+        resolve({
+          status: res.statusCode,
+          headers: res.headers,
+          body: Buffer.concat(chunks),
+        }),
+      );
+    });
+    req.on("error", reject);
+  });
+  const bytes = Buffer.from(bodyText);
+  return {
+    req,
+    response,
+    first: bytes.subarray(0, splitAt),
+    rest: bytes.subarray(splitAt),
+  };
+}
+
+test(
+  "observe marks a selected request that starts while an earlier held response is in flight as overlap",
+  { timeout: 15000 },
+  async (t) => {
+    let releaseHeld;
+    const heldGate = new Promise((resolve) => {
+      releaseHeld = resolve;
+    });
+    const handler = async (record, res, index) => {
+      if (index === 2) await heldGate; // A: full body upstream, response held
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(chatResponse(VALID_NATIVE_USAGE));
+    };
+    const { mock, observer, port } = await setup(t, handler);
+
+    // Track upstream request headers so B's arrival at the observer is proven
+    // deterministically rather than by a fixed sleep.
+    let upstreamRequests = 0;
+    mock.server.on("request", () => {
+      upstreamRequests += 1;
+    });
+
+    // P: a prior completed selected request establishes a predecessor.
+    await sendJson(port, { session: "S1", body: chatBody({ messages: MESSAGES }) });
+    await waitFor(() => mock.requests.length >= 1, { label: "predecessor upstream request" });
+
+    // A: full body reaches upstream; its response is withheld.
+    const a = sendJson(port, {
+      session: "S1",
+      body: chatBody({ messages: appended(MESSAGES) }),
+    });
+    await waitFor(() => mock.requests.length >= 2, { label: "held upstream request" });
+
+    // B: starts while A is still active, sending headers and only a partial
+    // JSON body. Once the mock parses B's headers the overlap visibly exists,
+    // even though B's body has not ended.
+    const bBody = JSON.stringify(chatBody({ messages: appended(appended(MESSAGES)) }));
+    const b = openDeferredChat(port, { session: "S1", bodyText: bBody, splitAt: 12 });
+    await new Promise((resolve) => b.req.write(b.first, resolve));
+    await waitFor(() => upstreamRequests >= 3, {
+      label: "B upstream request headers while A is held",
+    });
+
+    // A completes first; only then is B's remaining body sent.
+    releaseHeld();
+    const aResponse = await a;
+    await delay(40);
+    b.req.end(b.rest);
+    const bResponse = await b.response;
+
+    // C: the next fully sequential request has no known predecessor.
+    await sendJson(port, {
+      session: "S1",
+      body: chatBody({ messages: appended(appended(appended(MESSAGES))) }),
+    });
+
+    const obs = await collect(observer, 4);
+    assert.equal(obs.length, 4);
+    assert.equal(obs[0].comparison, "unavailable");
+    assert.equal(obs[0].reason, "no-predecessor");
+    for (const overlapped of [obs[1], obs[2]]) {
+      assert.equal(
+        overlapped.comparison,
+        "unavailable",
+        "a request overlapping a held response must be comparison-unavailable",
+      );
+      assert.equal(
+        overlapped.reason,
+        "overlap",
+        "both overlapping requests must be marked overlap, not compared as a chain",
+      );
+    }
+    assert.equal(
+      obs[3].comparison,
+      "unavailable",
+      "the next sequential request must not invent a predecessor from an overlap",
+    );
+    assert.equal(obs[3].reason, "no-predecessor");
+    assert.equal(
+      obs.filter((event) => event.comparison === "append-only").length,
+      0,
+      "an overlapping pair must never be reported as a sequential append-only chain",
+    );
+
+    // Transport bytes are still preserved for the overlapping pair.
+    assert.equal(aResponse.body.toString("utf8"), chatResponse(VALID_NATIVE_USAGE));
+    assert.equal(bResponse.body.toString("utf8"), chatResponse(VALID_NATIVE_USAGE));
   },
 );
 

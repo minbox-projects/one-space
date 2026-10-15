@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-15-deepseek-cache-diagnostics.md
-2026-10-15-deepseek-cache-diagnostics.md: 8ce2b36beee55bfd1b95c637951a8e85acd64e06
-2026-10-15-deepseek-cache-diagnostics.zh.md: 445c0366fa9d95dfe3fc3c5a5f579fe4698ecee3
+2026-10-15-deepseek-cache-diagnostics.md: e20ae54d782cfbc5bbc3174d59ed823fb666424a
+2026-10-15-deepseek-cache-diagnostics.zh.md: 74c6c00e3402e67659f1512495015a4ddcf0bc05
