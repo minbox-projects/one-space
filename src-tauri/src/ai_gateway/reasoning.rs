@@ -16,9 +16,10 @@
 
 use super::{
     GatewayConfig, ModelPool, ModelPoolCandidate, PoolCandidateReasoning,
-    PoolDefaultReasoningEffort, PoolReasoningAction, PoolReasoningEffort, PoolReasoningProfile,
-    UpstreamProtocol,
+    PoolDefaultReasoningEffort, PoolNativeAction, PoolNativeReasoning, PoolReasoningAction,
+    PoolReasoningEffort, PoolReasoningProfile, UpstreamProtocol,
 };
+use serde_json::Value;
 
 /// Minimum native Anthropic thinking budget the adapter accepts (REQ-002).
 pub(in crate::ai_gateway) const MIN_MANUAL_REASONING_BUDGET_TOKENS: u32 = 1024;
@@ -352,4 +353,364 @@ fn profile_supports_protocol(profile: &PoolReasoningProfile, protocol: UpstreamP
         }
         PoolReasoningProfile::Unknown(_) => false,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Request-time parsing, classification and native injection (Step 2 of
+// `20261015-pool-only-reasoning`: REQ-001/REQ-003/REQ-006, AC-001/AC-005/AC-006).
+//
+// Everything below runs only after an exact current pool alias is recognized on
+// an OpenAI ingress. The parser and classifier never mutate scheduler, key,
+// probe or health state, and the injector shapes the constructed body from the
+// same resolved control recorded as attempt evidence.
+// ---------------------------------------------------------------------------
+
+/// The effective output cap of one pool request, used to filter Anthropic
+/// manual-budget mappings. `field` names the client-facing output-limit field
+/// the cap was taken from (or the target default field when the client omitted
+/// it) so the incompatibility error can name it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::ai_gateway) struct PoolOutputCap {
+    pub(in crate::ai_gateway) field: &'static str,
+    pub(in crate::ai_gateway) tokens: u64,
+}
+
+/// The pool reasoning context of one inbound request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::ai_gateway) struct PoolReasoningRequest {
+    /// The canonical preference the client explicitly requested, if any.
+    pub(in crate::ai_gateway) requested: Option<PoolReasoningEffort>,
+    pub(in crate::ai_gateway) cap: PoolOutputCap,
+}
+
+/// The request-time reasoning state of one pool candidate.
+pub(in crate::ai_gateway) enum CandidateReasoning {
+    /// The candidate stores no mapping for the resolved preference and is
+    /// excluded from the request.
+    Unmapped,
+    /// The declaration exists but cannot serve against the current source
+    /// identity/protocol or declared profile; the reason is nonsecret.
+    Invalid(String),
+    /// The mapping is valid but its native budget is not strictly below the
+    /// request's effective output cap.
+    CapIncompatible { budget: u32 },
+    /// The mapping is valid and usable; its wire control and evidence.
+    Control(PoolNativeReasoning),
+}
+
+fn field_error(field: impl AsRef<str>, message: impl Into<String>) -> String {
+    format!("field '{}': {}", field.as_ref(), message.into())
+}
+
+/// Parse the recognized pool reasoning entry control of one OpenAI ingress path.
+///
+/// Chat accepts `reasoning_effort` and the compatibility spelling
+/// `reasoningEffort`; Responses accepts `reasoning.effort`. Values are trimmed
+/// and checked against the canonical lowercase set; missing, null and blank mean
+/// unspecified. An unknown identifier, a literal `auto`, a case variant, a
+/// non-string value, conflicting Chat spellings and an opaque/extra Responses
+/// `reasoning` member are field-named errors returned before any state change.
+pub(in crate::ai_gateway) fn parse_pool_request_effort(
+    path: &str,
+    body: &Value,
+) -> Result<Option<PoolReasoningEffort>, String> {
+    match path.split('?').next().unwrap_or(path) {
+        "/v1/responses" => parse_responses_effort(body),
+        _ => parse_chat_effort(body),
+    }
+}
+
+fn parse_chat_effort(body: &Value) -> Result<Option<PoolReasoningEffort>, String> {
+    let mut agreed: Option<(&str, &'static str)> = None;
+    for field in ["reasoning_effort", "reasoningEffort"] {
+        let Some(raw) = body.get(field) else {
+            continue;
+        };
+        if raw.is_null() {
+            continue;
+        }
+        let Some(text) = raw.as_str() else {
+            return Err(field_error(field, "must be a string"));
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match agreed {
+            None => agreed = Some((trimmed, field)),
+            Some((existing, _)) if existing == trimmed => {}
+            Some(_) => {
+                return Err(field_error(
+                    "reasoning",
+                    "conflicting reasoning effort spellings",
+                ))
+            }
+        }
+    }
+    // The nested Responses `reasoning` object is not a Chat Completions control.
+    if body.get("reasoning").is_some_and(|value| !value.is_null()) {
+        return Err(field_error(
+            "reasoning",
+            "is not a Chat Completions reasoning control",
+        ));
+    }
+    match agreed {
+        Some((value, field)) => Ok(Some(canonical_effort(value, field)?)),
+        None => Ok(None),
+    }
+}
+
+fn parse_responses_effort(body: &Value) -> Result<Option<PoolReasoningEffort>, String> {
+    let Some(reasoning) = body.get("reasoning") else {
+        return Ok(None);
+    };
+    if reasoning.is_null() {
+        return Ok(None);
+    }
+    let Some(object) = reasoning.as_object() else {
+        return Err(field_error(
+            "reasoning",
+            "must be an object with an effort field; opaque reasoning state is not supported",
+        ));
+    };
+    for key in object.keys() {
+        if key != "effort" {
+            return Err(field_error(
+                "reasoning",
+                "opaque reasoning state is not supported by the model-pool contract",
+            ));
+        }
+    }
+    let Some(effort) = object.get("effort") else {
+        return Ok(None);
+    };
+    if effort.is_null() {
+        return Ok(None);
+    }
+    let Some(text) = effort.as_str() else {
+        return Err(field_error("reasoning", "effort must be a string"));
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(canonical_effort(trimmed, "reasoning")?))
+}
+
+fn canonical_effort(value: &str, field: &str) -> Result<PoolReasoningEffort, String> {
+    match value {
+        "low" => Ok(PoolReasoningEffort::Low),
+        "medium" => Ok(PoolReasoningEffort::Medium),
+        "high" => Ok(PoolReasoningEffort::High),
+        "xhigh" => Ok(PoolReasoningEffort::Xhigh),
+        "none" => Ok(PoolReasoningEffort::None),
+        other => Err(field_error(
+            field,
+            format!("unknown reasoning effort '{other}'"),
+        )),
+    }
+}
+
+/// Remove the recognized pool reasoning entry controls from one request body so
+/// the clean portable body can be validated and converted by the existing
+/// adapters.
+pub(in crate::ai_gateway) fn strip_pool_entry_controls(body: &Value) -> Value {
+    let Some(object) = body.as_object() else {
+        return body.clone();
+    };
+    let mut cleaned = object.clone();
+    cleaned.remove("reasoning_effort");
+    cleaned.remove("reasoningEffort");
+    cleaned.remove("reasoning");
+    Value::Object(cleaned)
+}
+
+/// Byte form of [`strip_pool_entry_controls`] for the forwarding path.
+pub(in crate::ai_gateway) fn strip_pool_entry_controls_bytes(
+    body: &[u8],
+) -> Result<Vec<u8>, String> {
+    let value: Value = serde_json::from_slice(body).map_err(|error| error.to_string())?;
+    serde_json::to_vec(&strip_pool_entry_controls(&value)).map_err(|error| error.to_string())
+}
+
+/// Merge one candidate's resolved native control into the constructed body.
+/// `auto` (`provider_default`) carries no parameters and leaves the body
+/// unchanged.
+pub(in crate::ai_gateway) fn inject_native_controls(
+    body: Vec<u8>,
+    native: &PoolNativeReasoning,
+) -> Result<Vec<u8>, String> {
+    let parameters = native.wire_parameters();
+    if parameters.is_empty() {
+        return Ok(body);
+    }
+    let mut value: Value = serde_json::from_slice(&body).map_err(|error| error.to_string())?;
+    let Some(object) = value.as_object_mut() else {
+        return Err("request body must be a JSON object".to_string());
+    };
+    for (key, control) in parameters {
+        object.insert(key, control);
+    }
+    serde_json::to_vec(&value).map_err(|error| error.to_string())
+}
+
+/// Resolve the request's preference: an explicit canonical preference wins,
+/// otherwise the pool default maps to a concrete preference or `auto`.
+pub(in crate::ai_gateway) fn resolve_pool_preference(
+    pool: &ModelPool,
+    requested: Option<PoolReasoningEffort>,
+) -> Option<PoolReasoningEffort> {
+    requested.or_else(|| concrete_default(&pool.default_reasoning_effort))
+}
+
+/// Canonical resolved token for logs and evidence: `auto` or a preference.
+pub(in crate::ai_gateway) fn resolved_effort_token(
+    pool: &ModelPool,
+    requested: Option<PoolReasoningEffort>,
+) -> String {
+    match resolve_pool_preference(pool, requested) {
+        Some(preference) => preference.as_str().to_string(),
+        None => "auto".to_string(),
+    }
+}
+
+/// Classify one candidate against the resolved preference and the request's
+/// effective output cap without mutating any state.
+pub(in crate::ai_gateway) fn classify_candidate_reasoning(
+    config: &GatewayConfig,
+    candidate: &ModelPoolCandidate,
+    preference: PoolReasoningEffort,
+    cap: &PoolOutputCap,
+) -> CandidateReasoning {
+    let Some(declared) = candidate.reasoning.as_ref() else {
+        return CandidateReasoning::Unmapped;
+    };
+    let Some(mapping) = declared
+        .mappings
+        .iter()
+        .find(|mapping| mapping.effort == preference)
+    else {
+        return CandidateReasoning::Unmapped;
+    };
+    if preference == PoolReasoningEffort::None
+        && !matches!(&mapping.action, PoolReasoningAction::Disable)
+    {
+        return CandidateReasoning::Invalid(candidate_reason(
+            candidate,
+            "the 'none' preference must map to an explicit disable action",
+        ));
+    }
+    if !super::model_pools::reference_resolves(config, candidate) {
+        return CandidateReasoning::Invalid(candidate_reason(
+            candidate,
+            "source mapping is missing or changed",
+        ));
+    }
+    if let PoolReasoningProfile::Unknown(raw) = &declared.profile {
+        return CandidateReasoning::Invalid(candidate_reason(
+            candidate,
+            &format!("unknown reasoning profile '{raw}'"),
+        ));
+    }
+    let profile = &declared.profile;
+    if !profile_supports_protocol(profile, candidate.protocol) {
+        return CandidateReasoning::Invalid(candidate_reason(
+            candidate,
+            &format!(
+                "reasoning profile '{}' is not supported on the '{}' protocol",
+                profile.as_str(),
+                candidate.protocol.endpoint_path()
+            ),
+        ));
+    }
+    match &mapping.action {
+        PoolReasoningAction::Enum { value } => {
+            // The declared value set and the positive/omission boundaries are
+            // enforced at save time by [`validate_pool_reasoning`]; the request
+            // path trusts the stored mapping and only requires the profile to be
+            // representable on the candidate's target protocol.
+            if !profile_accepts_enum(profile) {
+                return CandidateReasoning::Invalid(candidate_reason(
+                    candidate,
+                    "the profile does not support an enum mapping",
+                ));
+            }
+            CandidateReasoning::Control(PoolNativeReasoning {
+                resolved: preference.as_str().to_string(),
+                protocol: candidate.protocol,
+                action: PoolNativeAction::Enum {
+                    profile: profile.clone(),
+                    value: value.trim().to_string(),
+                },
+            })
+        }
+        PoolReasoningAction::Budget { budget_tokens } => {
+            if !matches!(profile, PoolReasoningProfile::AnthropicManualBudget) {
+                return CandidateReasoning::Invalid(candidate_reason(
+                    candidate,
+                    "the profile does not support a budget mapping",
+                ));
+            }
+            let Some(range) = declared.budget else {
+                return CandidateReasoning::Invalid(candidate_reason(
+                    candidate,
+                    "a budget mapping requires a declared budget range",
+                ));
+            };
+            if range.min > range.max || range.min < MIN_MANUAL_REASONING_BUDGET_TOKENS {
+                return CandidateReasoning::Invalid(candidate_reason(
+                    candidate,
+                    "the declared budget range is inconsistent or below the adapter minimum",
+                ));
+            }
+            if *budget_tokens < range.min || *budget_tokens > range.max {
+                return CandidateReasoning::Invalid(candidate_reason(
+                    candidate,
+                    "the budget token is outside the declared range",
+                ));
+            }
+            if u64::from(*budget_tokens) >= cap.tokens {
+                return CandidateReasoning::CapIncompatible {
+                    budget: *budget_tokens,
+                };
+            }
+            CandidateReasoning::Control(PoolNativeReasoning {
+                resolved: preference.as_str().to_string(),
+                protocol: candidate.protocol,
+                action: PoolNativeAction::Budget {
+                    budget_tokens: *budget_tokens,
+                },
+            })
+        }
+        PoolReasoningAction::Disable => {
+            if preference != PoolReasoningEffort::None {
+                return CandidateReasoning::Invalid(candidate_reason(
+                    candidate,
+                    "a disable mapping may only serve the 'none' preference",
+                ));
+            }
+            if !declared.supports_disable {
+                return CandidateReasoning::Invalid(candidate_reason(
+                    candidate,
+                    "a disable mapping requires supports_disable = true",
+                ));
+            }
+            CandidateReasoning::Control(PoolNativeReasoning {
+                resolved: preference.as_str().to_string(),
+                protocol: candidate.protocol,
+                action: PoolNativeAction::Disable {
+                    profile: profile.clone(),
+                },
+            })
+        }
+    }
+}
+
+/// A bounded, nonsecret reason naming one candidate's source identity.
+fn candidate_reason(candidate: &ModelPoolCandidate, message: &str) -> String {
+    format!(
+        "{} -> {}: {message}",
+        candidate.local_model.trim(),
+        candidate.upstream_model.trim()
+    )
 }

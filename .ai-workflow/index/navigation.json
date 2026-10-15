@@ -3877,6 +3877,12 @@
         },
         {
           "file": "src-tauri/src/ai_gateway/usage_log.rs",
+          "name": "NativeReasoningSnapshot",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/usage_log.rs",
           "name": "UsageStats",
           "kind": "type",
           "visibility": "public"

@@ -21,6 +21,7 @@ use crate::ai_gateway::usage_log::{
     usage_log_write_stats, UsageAccounting, UsageLogEntry, UsageLogRecord, UsageLogStore,
     UsageLogWriteStats, UsageResult,
 };
+use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -385,4 +386,106 @@ fn core_workflows_perf_usage_log_atomic_batch() {
 
     let _ = fs::remove_dir_all(&dir_one);
     let _ = fs::remove_dir_all(&dir_two);
+}
+
+// ---------------------------------------------------------------------------
+// Step 2 (20261015-pool-only-reasoning) / AC-011: additive nullable pool
+// evidence columns are added idempotently and never rewrite history.
+// ---------------------------------------------------------------------------
+
+/// AC-011: a pre-change `usage_logs` database opens twice without duplicating or
+/// rewriting history; the historical row keeps its original tokens, amount and
+/// effort, and reads back with present-null pool evidence; the two nullable
+/// evidence columns exist after the additive migration.
+#[test]
+fn additive_pool_evidence_columns_open_twice_without_rewriting_history() {
+    let (dir, db_path) = temp_db("usage-pool-evidence-additive");
+
+    // A pre-change database: the historical column set carries no pool evidence.
+    {
+        let connection = rusqlite::Connection::open(&db_path).expect("open legacy db");
+        connection
+            .execute_batch(
+                "CREATE TABLE usage_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_ms INTEGER NOT NULL,
+                    local_model TEXT NOT NULL,
+                    upstream_model TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    provider_name TEXT NOT NULL,
+                    result TEXT NOT NULL,
+                    status INTEGER NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    cache_read_tokens INTEGER NOT NULL,
+                    cache_write_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL,
+                    amount REAL,
+                    duration_ms INTEGER NOT NULL,
+                    error_message TEXT,
+                    terminal INTEGER NOT NULL DEFAULT 1,
+                    reasoning_effort TEXT,
+                    cost_breakdown TEXT,
+                    first_token_ms REAL,
+                    avg_tps REAL
+                );
+                INSERT INTO usage_logs (
+                    timestamp_ms, local_model, upstream_model, provider_id, provider_name,
+                    result, status, input_tokens, cache_read_tokens, cache_write_tokens,
+                    output_tokens, total_tokens, amount, duration_ms, error_message, terminal,
+                    reasoning_effort, cost_breakdown, first_token_ms, avg_tps
+                ) VALUES (1000, 'legacy-model', 'legacy-up', 'p-legacy', 'Legacy', 'success', 200,
+                    10, 2, 0, 5, 17, 0.25, 7, NULL, 1, 'high', NULL, NULL, NULL);",
+            )
+            .expect("create and seed the pre-change database");
+    }
+
+    let store = UsageLogStore::at(&db_path);
+    let first_open = store.all_records().expect("first open reads history");
+    let second_open = store.all_records().expect("second open reads history");
+    assert_eq!(first_open.len(), 1, "the legacy row must survive");
+    assert_eq!(second_open.len(), 1, "a reopen must not duplicate history");
+
+    let record = &first_open[0];
+    assert_eq!(record.local_model, "legacy-model");
+    assert_eq!(
+        record.reasoning_effort.as_deref(),
+        Some("high"),
+        "the historical effort must stay intact: {record:?}"
+    );
+    assert_eq!(record.input_tokens, 10, "historical tokens must not be rewritten");
+    assert_eq!(record.total_tokens, 17);
+    assert_eq!(record.amount, Some(0.25), "the historical amount must not be rewritten");
+
+    let json = serde_json::to_value(record).expect("record serializes");
+    assert_eq!(
+        json.get("resolved_reasoning_effort"),
+        Some(&Value::Null),
+        "a historical row must carry a present-null resolved effort: {json}"
+    );
+    assert_eq!(
+        json.get("native_reasoning"),
+        Some(&Value::Null),
+        "a historical row must carry a null native snapshot: {json}"
+    );
+
+    let connection = rusqlite::Connection::open(&db_path).expect("open for schema check");
+    let mut statement = connection
+        .prepare("PRAGMA table_info(usage_logs)")
+        .expect("pragma table_info");
+    let columns: Vec<String> = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("query table_info")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("collect table_info");
+    assert!(
+        columns.iter().any(|column| column == "resolved_reasoning_effort"),
+        "the additive resolved-effort column must exist: {columns:?}"
+    );
+    assert!(
+        columns.iter().any(|column| column == "native_reasoning"),
+        "the additive native-snapshot column must exist: {columns:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
 }

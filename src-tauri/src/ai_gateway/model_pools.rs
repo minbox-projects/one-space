@@ -25,7 +25,8 @@ use super::selection::{
 };
 use super::{
     now_ts, GatewayConfig, GatewayUpstreamProvider, ModelMapping, ModelPool, ModelPoolCandidate,
-    PoolCandidateIdentity, UpstreamProtocol, MAX_PROVIDER_WEIGHT, MIN_PROVIDER_WEIGHT,
+    PoolCandidateIdentity, PoolNativeReasoning, UpstreamProtocol, MAX_PROVIDER_WEIGHT,
+    MIN_PROVIDER_WEIGHT,
 };
 use serde::Serialize;
 use std::cmp::Reverse;
@@ -119,6 +120,14 @@ pub(in crate::ai_gateway) enum PoolPlan {
     },
     /// The alias fails closed before any ordinary route is considered.
     Fenced { message: String },
+    /// The request is rejected before any selection, scheduler, key, probe or
+    /// health mutation: an unsupported preference, a declared-but-unavailable
+    /// preference, or an output-cap-incompatible preference.
+    Rejected {
+        status: u16,
+        code: &'static str,
+        message: String,
+    },
 }
 
 /// One resolved pool candidate: its exact stored identity, the prepared routing
@@ -135,6 +144,9 @@ pub(in crate::ai_gateway) struct ResolvedCandidate {
     pub(in crate::ai_gateway) availability: &'static str,
     pub(in crate::ai_gateway) reason: Option<String>,
     pub(in crate::ai_gateway) cooling_until: Option<u64>,
+    /// The pool-only native reasoning control resolved for this candidate and
+    /// request; `None` when the candidate cannot serve the resolved preference.
+    pub(in crate::ai_gateway) native: Option<PoolNativeReasoning>,
 }
 
 /// Whether a stored candidate protocol can serve an inbound OpenAI/Chat request
@@ -169,6 +181,7 @@ fn resolve_candidate(
     alias: &str,
     candidate: &ModelPoolCandidate,
     ingress: Option<UpstreamProtocol>,
+    native: Option<PoolNativeReasoning>,
     now: u64,
 ) -> ResolvedCandidate {
     let identity = PoolCandidateIdentity {
@@ -177,6 +190,7 @@ fn resolve_candidate(
         local_model: candidate.local_model.trim().to_string(),
         upstream_model: candidate.upstream_model.trim().to_string(),
         protocol: candidate.protocol,
+        reasoning: native.clone(),
     };
     let mut prepared = None;
     let mut available = false;
@@ -254,6 +268,7 @@ fn resolve_candidate(
         availability,
         reason,
         cooling_until,
+        native,
     }
 }
 
@@ -287,11 +302,18 @@ fn resolve_pool_candidates(
     pool: &ModelPool,
     alias: &str,
     ingress: Option<UpstreamProtocol>,
+    natives: Option<&[Option<PoolNativeReasoning>]>,
     now: u64,
 ) -> Vec<ResolvedCandidate> {
     pool.candidates
         .iter()
-        .map(|candidate| resolve_candidate(config, pool, alias, candidate, ingress, now))
+        .enumerate()
+        .map(|(index, candidate)| {
+            let native = natives
+                .and_then(|natives| natives.get(index))
+                .and_then(|native| native.clone());
+            resolve_candidate(config, pool, alias, candidate, ingress, native, now)
+        })
         .collect()
 }
 
@@ -302,6 +324,7 @@ pub(in crate::ai_gateway) fn plan_pool_request(
     config: &GatewayConfig,
     alias: &str,
     protocol: UpstreamProtocol,
+    request: &super::reasoning::PoolReasoningRequest,
     now: u64,
 ) -> Option<PoolPlan> {
     let alias = alias.trim();
@@ -331,12 +354,105 @@ pub(in crate::ai_gateway) fn plan_pool_request(
             message: format!("model pool '{alias}' is disabled"),
         });
     }
-    let resolved = resolve_pool_candidates(config, pool, alias, Some(protocol), now);
+    // Resolve each candidate's native reasoning control (or rejection) before
+    // any scheduler/health mutation. An `auto` preference keeps every candidate
+    // and injects no control.
+    let preference = super::reasoning::resolve_pool_preference(pool, request.requested);
+    let mut natives: Vec<Option<PoolNativeReasoning>> = Vec::with_capacity(pool.candidates.len());
+    if let Some(preference) = preference {
+        let mut declarations = 0usize;
+        let mut valid = 0usize;
+        let mut compatible = 0usize;
+        let mut cap_budget: Option<u32> = None;
+        let mut reasons: Vec<String> = Vec::new();
+        for candidate in &pool.candidates {
+            match super::reasoning::classify_candidate_reasoning(
+                config,
+                candidate,
+                preference,
+                &request.cap,
+            ) {
+                super::reasoning::CandidateReasoning::Unmapped => natives.push(None),
+                super::reasoning::CandidateReasoning::Invalid(reason) => {
+                    declarations += 1;
+                    reasons.push(reason);
+                    natives.push(None);
+                }
+                super::reasoning::CandidateReasoning::CapIncompatible { budget } => {
+                    declarations += 1;
+                    valid += 1;
+                    cap_budget.get_or_insert(budget);
+                    natives.push(None);
+                }
+                super::reasoning::CandidateReasoning::Control(control) => {
+                    declarations += 1;
+                    valid += 1;
+                    compatible += 1;
+                    natives.push(Some(control));
+                }
+            }
+        }
+        if declarations == 0 {
+            return Some(PoolPlan::Rejected {
+                status: 400,
+                code: "unsupported_reasoning_effort",
+                message: format!(
+                    "model pool '{alias}' does not support reasoning effort '{}': no selected candidate declares a mapping for it",
+                    preference.as_str()
+                ),
+            });
+        }
+        if valid == 0 {
+            let detail = if reasons.is_empty() {
+                "no candidate mapping is currently valid".to_string()
+            } else {
+                reasons.join("; ")
+            };
+            return Some(PoolPlan::Rejected {
+                status: 502,
+                code: "all_providers_unavailable",
+                message: format!(
+                    "model pool '{alias}' has no candidate that can serve reasoning effort '{}' ({detail})",
+                    preference.as_str()
+                ),
+            });
+        }
+        if compatible == 0 {
+            let budget = cap_budget.unwrap_or(0);
+            return Some(PoolPlan::Rejected {
+                status: 400,
+                code: "reasoning_output_limit_incompatible",
+                message: format!(
+                    "field '{}': the configured reasoning budget {budget} is not below the request's effective output limit {}",
+                    request.cap.field, request.cap.tokens
+                ),
+            });
+        }
+    } else {
+        natives = pool
+            .candidates
+            .iter()
+            .map(|candidate| {
+                Some(PoolNativeReasoning::provider_default(candidate.protocol))
+            })
+            .collect();
+    }
+    let resolved = resolve_pool_candidates(
+        config,
+        pool,
+        alias,
+        Some(protocol),
+        Some(&natives),
+        now,
+    );
     // Healthy candidates: usable key, enabled provider/mapping, supported
-    // protocol and not cooling. Only these consume a primary SWRR slot.
+    // protocol, not cooling and able to serve the resolved preference. Only
+    // these consume a primary SWRR slot.
     let healthy: Vec<ResolvedCandidate> = resolved
         .iter()
-        .filter(|candidate| candidate.available && candidate.prepared.is_some())
+        .filter(|candidate| {
+            candidate.available && candidate.prepared.is_some() && candidate.native.is_some()
+        })
         .cloned()
         .collect();
     let mut ordered = pool_weighted_order(&healthy, &pool.id, protocol.endpoint_path());
@@ -347,6 +463,7 @@ pub(in crate::ai_gateway) fn plan_pool_request(
         if candidate.available
             || candidate.availability != "no_usable_key"
             || candidate.prepared.is_none()
+            || candidate.native.is_none()
         {
             continue;
         }
@@ -518,6 +635,11 @@ fn pool_probe(
     // earliest candidate exactly as the ordinary single call did.
     let mut best: Option<((u64, String, String, String), ProbeCandidate)> = None;
     for candidate in resolved {
+        // A candidate that cannot serve the resolved preference is excluded from
+        // the request entirely, including the half-open probe.
+        if candidate.native.is_none() {
+            continue;
+        }
         if pool_candidate_cooling(&candidate.identity).is_some() {
             continue;
         }
@@ -695,6 +817,7 @@ pub(in crate::ai_gateway) fn prune_removed_pools(before: &[ModelPool], after: &[
                                 local_model: candidate.local_model.trim().to_string(),
                                 upstream_model: candidate.upstream_model.trim().to_string(),
                                 protocol: candidate.protocol,
+                                reasoning: None,
                             },
                         ));
                     }
@@ -920,7 +1043,7 @@ pub(in crate::ai_gateway) fn pool_status(config: &GatewayConfig) -> Vec<ModelPoo
         .map(|pool| {
             let alias = pool.model.trim();
             let resolved =
-                resolve_pool_candidates(config, pool, alias, None, now);
+                resolve_pool_candidates(config, pool, alias, None, None, now);
             let candidates = pool
                 .candidates
                 .iter()

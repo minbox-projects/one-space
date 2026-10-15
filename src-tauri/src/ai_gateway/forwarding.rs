@@ -123,12 +123,30 @@ fn build_request(
         path
     };
     let url = join_url(&provider.base_url, upstream_path);
+    // A pool candidate removes its recognized reasoning entry controls before
+    // the adapter sees them, so the ordinary Anthropic adapter keeps rejecting
+    // the controls on every ordinary route.
+    let native = provider
+        .pool_candidate
+        .as_ref()
+        .and_then(|identity| identity.reasoning.as_ref());
+    let stripped = match native {
+        Some(_) => Some(super::reasoning::strip_pool_entry_controls_bytes(body)?),
+        None => None,
+    };
+    let body: &[u8] = stripped.as_deref().unwrap_or(body);
     let rewritten = if converted {
         convert_request(path, body, model)?
     } else if openai_converted {
         openai_conversion::convert_request(path, body, model, upstream_protocol)?
     } else {
         rewrite_body_model(body, model)?
+    };
+    // Inject exactly this candidate's native control after conversion. `auto`
+    // carries no parameters and leaves the body unchanged.
+    let rewritten = match native {
+        Some(native) => super::reasoning::inject_native_controls(rewritten, native)?,
+        None => rewritten,
     };
     let mut request = shared_client().post(url);
     // Forward unknown client headers (e.g. vendor session headers) so upstream

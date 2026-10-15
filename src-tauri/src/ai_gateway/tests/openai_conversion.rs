@@ -2776,3 +2776,192 @@ async fn pool_reasoning_content_on_non_assistant_or_nonstring_is_rejected() {
 
     stop_server().await.expect("stop listener");
 }
+
+// ===========================================================================
+// Step 2 (20261015-pool-only-reasoning): recognized entry controls are removed
+// before the candidate's native control is injected (AC-006/AC-012).
+// ===========================================================================
+
+/// AC-006: a recognized pool reasoning entry control is extracted and removed
+/// before conversion, and the selected candidate's native control is injected in
+/// its canonical field, so no leftover client spelling reaches the upstream.
+#[tokio::test]
+async fn pool_reasoning_entry_controls_are_stripped_before_native_injection() {
+    let _home = temp_home("pool-reasoning-strip");
+    let port = free_port().await;
+    let tag = tag();
+    let alias = format!("free-strip-{tag}");
+    let provider_id = format!("p-{tag}");
+    let (url, log) = spawn_mock_upstream(|captured| {
+        if captured.path.ends_with("/responses") {
+            MockReply::Json(200, responses_json("ok"))
+        } else {
+            MockReply::Json(200, chat_json("ok"))
+        }
+    })
+    .await;
+
+    let provider = provider_value(
+        &provider_id,
+        &url,
+        "chat_completions",
+        vec![mapping("local-c", "remote-c", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Strip",
+        "model": alias,
+        "enabled": true,
+        "candidates": [{
+            "provider_id": provider_id,
+            "local_model": "local-c",
+            "upstream_model": "remote-c",
+            "protocol": "chat_completions",
+            "weight": 1,
+            "reasoning": {
+                "profile": "openai_effort",
+                "values": ["high"],
+                "mappings": [{"effort": "high", "action": {"kind": "enum", "value": "max"}}],
+            },
+        }],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start listener");
+
+    let mut failures: Vec<String> = Vec::new();
+
+    let (status, _ct, text) = post(
+        port,
+        "/v1/chat/completions",
+        json!({
+            "model": alias,
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoningEffort": "high",
+        }),
+    )
+    .await;
+    if status != 200 {
+        failures.push(format!("chat compat spelling: expected 200, got {status}: {text}"));
+    }
+    let calls = captured(&log);
+    if let Some(call) = calls.last() {
+        let sent = captured_body(call);
+        if sent.get("reasoning_effort").and_then(Value::as_str) != Some("max") {
+            failures.push(format!("the native field must carry the mapped value: {sent}"));
+        }
+        if sent.get("reasoningEffort").is_some() {
+            failures.push(format!("the compat entry spelling must be stripped: {sent}"));
+        }
+    } else {
+        failures.push("the Chat request must reach an upstream attempt".to_string());
+    }
+
+    let before = captured(&log).len();
+    let (status, _ct, text) = post(
+        port,
+        "/v1/responses",
+        json!({
+            "model": alias,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "high"},
+        }),
+    )
+    .await;
+    if status != 200 {
+        failures.push(format!("responses entry control: expected 200, got {status}: {text}"));
+    }
+    let calls = captured(&log);
+    if calls.len() > before {
+        let sent = captured_body(&calls[before]);
+        if sent.get("reasoning").is_some() {
+            failures.push(format!("the Responses entry control must be stripped on conversion: {sent}"));
+        }
+        if sent.get("reasoning_effort").and_then(Value::as_str) != Some("max") {
+            failures.push(format!("the converted attempt must inject the native field: {sent}"));
+        }
+    } else {
+        failures.push("the converted request must reach an upstream attempt".to_string());
+    }
+
+    assert!(
+        failures.is_empty(),
+        "pool reasoning entry-control stripping mismatches: {failures:#?}"
+    );
+    stop_server().await.expect("stop listener");
+}
+
+/// AC-012: an ordinary (non-pool) Chat or Responses request forwards its
+/// provider-specific reasoning fields unchanged, and an effort identifier
+/// outside the canonical pool set is neither canonicalized nor newly rejected.
+#[tokio::test]
+async fn ordinary_requests_preserve_provider_reasoning_fields() {
+    let _home = temp_home("reasoning-ordinary-isolation");
+    let port = free_port().await;
+    let tag = tag();
+    let (url, log) = spawn_mock_upstream(|captured| {
+        if captured.path.ends_with("/responses") {
+            MockReply::Json(200, responses_json("ok"))
+        } else {
+            MockReply::Json(200, chat_json("ok"))
+        }
+    })
+    .await;
+    let chat_provider = provider_value(
+        &format!("p-chat-{tag}"),
+        &url,
+        "chat_completions",
+        vec![mapping("local-oc", "remote-oc", "chat_completions")],
+    );
+    let resp_provider = provider_value(
+        &format!("p-resp-{tag}"),
+        &url,
+        "responses",
+        vec![mapping("local-or", "remote-or", "responses")],
+    );
+    write_raw_gateway_config(&pool_config_v3(port, vec![chat_provider, resp_provider], vec![]));
+    start_server(None).await.expect("start listener");
+
+    let (status, _ct, text) = post(
+        port,
+        "/v1/chat/completions",
+        json!({
+            "model": "local-oc",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "max",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "an ordinary provider effort outside the canonical set must stay accepted: {text}"
+    );
+    let calls = captured(&log);
+    let sent = captured_body(calls.last().expect("one ordinary Chat attempt"));
+    assert_eq!(
+        sent.get("reasoning_effort").and_then(Value::as_str),
+        Some("max"),
+        "an ordinary request must forward its provider-specific effort unchanged: {sent}"
+    );
+
+    let before = captured(&log).len();
+    let (status, _ct, text) = post(
+        port,
+        "/v1/responses",
+        json!({
+            "model": "local-or",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "max"},
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "an ordinary Responses request must stay accepted: {text}");
+    let calls = captured(&log);
+    let sent = captured_body(&calls[before]);
+    assert_eq!(
+        sent.pointer("/reasoning/effort").and_then(Value::as_str),
+        Some("max"),
+        "an ordinary Responses body must be forwarded unchanged: {sent}"
+    );
+
+    stop_server().await.expect("stop listener");
+}

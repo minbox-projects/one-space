@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(in crate::ai_gateway) const CONFIG_FILE: &str = "ai_gateway.json";
@@ -404,6 +405,118 @@ pub struct PoolCandidateIdentity {
     pub local_model: String,
     pub upstream_model: String,
     pub protocol: UpstreamProtocol,
+    /// The pool-only native reasoning control resolved for the current request
+    /// (transport-only; never serialized). `None` when the request carries no
+    /// pool reasoning policy for this candidate.
+    pub(in crate::ai_gateway) reasoning: Option<PoolNativeReasoning>,
+}
+
+/// The concrete native action a pool candidate resolves to for one request.
+///
+/// Bounded to the shapes REQ-002 permits; the target protocol is carried on the
+/// enclosing [`PoolNativeReasoning`] and shapes the wire control.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::ai_gateway) enum PoolNativeAction {
+    /// A positive enum-shaped control carrying the native value for the
+    /// candidate's declared profile.
+    Enum {
+        profile: PoolReasoningProfile,
+        value: String,
+    },
+    /// An Anthropic manual-budget control.
+    Budget { budget_tokens: u32 },
+    /// An explicit disable/omission control.
+    Disable { profile: PoolReasoningProfile },
+    /// The `auto` policy: no control is injected and the provider default is
+    /// retained.
+    ProviderDefault,
+}
+
+/// One pool candidate's resolved native reasoning control for a request.
+///
+/// Built once per candidate so the upstream body and the recorded attempt
+/// evidence are derived from the same constructed value; the allowlisted wire
+/// controls are produced only by [`Self::wire_parameters`] and never carry
+/// bodies, headers or credentials.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::ai_gateway) struct PoolNativeReasoning {
+    /// Canonical resolved preference token: `low|medium|high|xhigh|none|auto`.
+    pub(in crate::ai_gateway) resolved: String,
+    /// The candidate's target upstream protocol, which shapes the wire control.
+    pub(in crate::ai_gateway) protocol: UpstreamProtocol,
+    pub(in crate::ai_gateway) action: PoolNativeAction,
+}
+
+impl PoolNativeReasoning {
+    /// The `auto` provider-default control for one candidate.
+    pub(in crate::ai_gateway) fn provider_default(protocol: UpstreamProtocol) -> Self {
+        Self {
+            resolved: "auto".to_string(),
+            protocol,
+            action: PoolNativeAction::ProviderDefault,
+        }
+    }
+
+    /// Snapshot mode token for the attempt evidence.
+    pub(in crate::ai_gateway) fn mode(&self) -> &'static str {
+        match self.action {
+            PoolNativeAction::Enum { .. } => "enum",
+            PoolNativeAction::Budget { .. } => "budget",
+            PoolNativeAction::Disable { .. } => "disable",
+            PoolNativeAction::ProviderDefault => "provider_default",
+        }
+    }
+
+    /// The allowlisted wire controls actually sent to the candidate, keyed by
+    /// their top-level field so the caller can merge them into the constructed
+    /// body and record them verbatim as evidence.
+    pub(in crate::ai_gateway) fn wire_parameters(
+        &self,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        match &self.action {
+            PoolNativeAction::ProviderDefault => serde_json::Map::new(),
+            PoolNativeAction::Enum { profile, value } => match profile {
+                PoolReasoningProfile::OpenaiEffort => match self.protocol {
+                    UpstreamProtocol::Responses => {
+                        wire_object(json!({ "reasoning": { "effort": value } }))
+                    }
+                    _ => wire_object(json!({ "reasoning_effort": value })),
+                },
+                PoolReasoningProfile::ChatThinkingSwitch => {
+                    wire_object(json!({ "thinking": { "type": "enabled" } }))
+                }
+                PoolReasoningProfile::AnthropicEffortInherit => {
+                    wire_object(json!({ "output_config": { "effort": value } }))
+                }
+                PoolReasoningProfile::AnthropicEffortAdaptive => wire_object(json!({
+                    "output_config": { "effort": value },
+                    "thinking": { "type": "adaptive" },
+                })),
+                PoolReasoningProfile::AnthropicManualBudget
+                | PoolReasoningProfile::Unknown(_) => serde_json::Map::new(),
+            },
+            PoolNativeAction::Budget { budget_tokens } => wire_object(json!({
+                "thinking": { "type": "enabled", "budget_tokens": budget_tokens },
+            })),
+            PoolNativeAction::Disable { profile } => match profile {
+                PoolReasoningProfile::OpenaiEffort => match self.protocol {
+                    UpstreamProtocol::Responses => {
+                        wire_object(json!({ "reasoning": { "effort": "none" } }))
+                    }
+                    _ => wire_object(json!({ "reasoning_effort": "none" })),
+                },
+                _ => wire_object(json!({ "thinking": { "type": "disabled" } })),
+            },
+        }
+    }
+}
+
+/// Wrap a `json!({..})` object literal into its map form.
+fn wire_object(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    value
+        .as_object()
+        .cloned()
+        .unwrap_or_else(serde_json::Map::new)
 }
 
 /// One public reasoning preference a model pool maps to a native action. The
