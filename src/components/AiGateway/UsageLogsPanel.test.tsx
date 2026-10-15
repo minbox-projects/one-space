@@ -2780,6 +2780,60 @@ describe("UsageLogsPanel 池尝试推理证据展示（Step 4）", () => {
     expect(control.closest("td")?.contains(detail)).toBe(true);
     expect(detail).toHaveTextContent("budget_tokens");
   });
+
+  it("池行的请求徽章标题使用 aiGatewayLogsReasoningRequested，普通行保留 reasoningEffort", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          poolRecord({
+            timestamp_ms: Date.UTC(2026, 8, 17, 4, 0),
+            local_model: "pool-alias",
+            reasoning_effort: "high",
+            resolved_reasoning_effort: "high",
+            native_reasoning: {
+              protocol: "chat_completions",
+              mode: "enum",
+              parameters: { reasoning_effort: "high" },
+            },
+          }),
+          record({
+            timestamp_ms: Date.UTC(2026, 8, 17, 3, 0),
+            local_model: "ordinary-model",
+            reasoning_effort: "high",
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("ai-gateway-logs-ungrouped");
+
+    const rows = screen.getAllByTestId("ai-gateway-logs-row");
+    expect(rows).toHaveLength(2);
+
+    // Pool row: the requested chip is titled with the pool-only requested key.
+    const poolRequested = within(rows[0]).getByTestId(
+      "ai-gateway-logs-reasoning-effort",
+    );
+    expect(poolRequested).toHaveTextContent("high");
+    expect(poolRequested).toHaveAttribute(
+      "title",
+      `${i18n.t("aiGatewayLogsReasoningRequested")}: high`,
+    );
+
+    // Ordinary row with a non-null effort keeps the pre-existing title key.
+    const ordinaryRequested = within(rows[1]).getByTestId(
+      "ai-gateway-logs-reasoning-effort",
+    );
+    expect(ordinaryRequested).toHaveTextContent("high");
+    expect(ordinaryRequested).toHaveAttribute(
+      "title",
+      `${i18n.t("reasoningEffort")}: high`,
+    );
+  });
 });
 
 

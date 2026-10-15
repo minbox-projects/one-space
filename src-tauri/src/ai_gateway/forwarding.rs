@@ -131,7 +131,7 @@ fn build_request(
         .as_ref()
         .and_then(|identity| identity.reasoning.as_ref());
     let stripped = match native {
-        Some(_) => Some(super::reasoning::strip_pool_entry_controls_bytes(body)?),
+        Some(_) => Some(super::reasoning::strip_pool_entry_controls_bytes(path, body)?),
         None => None,
     };
     let body: &[u8] = stripped.as_deref().unwrap_or(body);

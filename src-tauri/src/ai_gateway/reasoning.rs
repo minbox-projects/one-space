@@ -512,26 +512,41 @@ fn canonical_effort(value: &str, field: &str) -> Result<PoolReasoningEffort, Str
     }
 }
 
-/// Remove the recognized pool reasoning entry controls from one request body so
-/// the clean portable body can be validated and converted by the existing
-/// adapters.
-pub(in crate::ai_gateway) fn strip_pool_entry_controls(body: &Value) -> Value {
+/// The reasoning entry controls recognized on one OpenAI ingress path, matching
+/// [`parse_pool_request_effort`]'s ingress classification. Chat Completions
+/// recognizes exactly `reasoning_effort`/`reasoningEffort`; Responses recognizes
+/// exactly the nested `reasoning` control. Any other spelling is an unrecognized
+/// field the portable contract must still validate, so it is deliberately never
+/// stripped.
+fn recognized_entry_controls(path: &str) -> &'static [&'static str] {
+    match path.split('?').next().unwrap_or(path) {
+        "/v1/responses" => &["reasoning"],
+        _ => &["reasoning_effort", "reasoningEffort"],
+    }
+}
+
+/// Remove only the recognized pool reasoning entry controls of one ingress from
+/// a request body, so the clean portable body can be validated and converted by
+/// the existing adapters while any unrecognized reasoning field keeps its
+/// ordinary portable-contract rejection.
+pub(in crate::ai_gateway) fn strip_pool_entry_controls(path: &str, body: &Value) -> Value {
     let Some(object) = body.as_object() else {
         return body.clone();
     };
     let mut cleaned = object.clone();
-    cleaned.remove("reasoning_effort");
-    cleaned.remove("reasoningEffort");
-    cleaned.remove("reasoning");
+    for field in recognized_entry_controls(path) {
+        cleaned.remove(*field);
+    }
     Value::Object(cleaned)
 }
 
 /// Byte form of [`strip_pool_entry_controls`] for the forwarding path.
 pub(in crate::ai_gateway) fn strip_pool_entry_controls_bytes(
+    path: &str,
     body: &[u8],
 ) -> Result<Vec<u8>, String> {
     let value: Value = serde_json::from_slice(body).map_err(|error| error.to_string())?;
-    serde_json::to_vec(&strip_pool_entry_controls(&value)).map_err(|error| error.to_string())
+    serde_json::to_vec(&strip_pool_entry_controls(path, &value)).map_err(|error| error.to_string())
 }
 
 /// Merge one candidate's resolved native control into the constructed body.

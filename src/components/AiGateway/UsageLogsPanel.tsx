@@ -1050,7 +1050,12 @@ export function UsageLogsPanel({
                           <span
                             className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-normal leading-none bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20"
                             data-testid="ai-gateway-logs-reasoning-effort"
-                            title={`${t("reasoningEffort", "Reasoning Effort")}: ${item.reasoning_effort}`}
+                            title={`${
+                              (item.resolved_reasoning_effort?.trim() ?? "") !== "" ||
+                              item.native_reasoning != null
+                                ? t("aiGatewayLogsReasoningRequested", "Requested")
+                                : t("reasoningEffort", "Reasoning Effort")
+                            }: ${item.reasoning_effort}`}
                           >
                             {item.reasoning_effort}
                           </span>

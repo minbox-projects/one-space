@@ -3227,9 +3227,11 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                     .candidates
                     .iter()
                     .any(|candidate| candidate.protocol == UpstreamProtocol::AnthropicMessages);
-                // Validate the clean portable body with the recognized controls
-                // removed, so the existing adapters keep their ordinary contract.
-                let cleaned = strip_pool_entry_controls(&body_value);
+                // Validate the clean portable body with only this ingress's
+                // recognized controls removed, so the existing adapters keep
+                // their ordinary contract and every unrecognized reasoning
+                // field is still rejected by name.
+                let cleaned = strip_pool_entry_controls(path, &body_value);
                 if let Err(error) =
                     openai_conversion::validate_pool_request(path, &cleaned, messages_candidate)
                 {

@@ -1628,6 +1628,193 @@ async fn pool_reasoning_parses_both_ingress_effort_controls() {
 }
 
 // ---------------------------------------------------------------------------
+// AC-001 / REQ-001 / REQ-007: a pool ingress preserves the pre-existing
+// portable contract for every reasoning field the ingress does not recognize.
+//
+// Chat Completions recognizes exactly `reasoning_effort` and `reasoningEffort`;
+// Responses recognizes exactly `reasoning.effort`. Any other spelling (a
+// top-level `reasoning_effort`/`reasoningEffort` on Responses, or a
+// top-level/opaque `reasoning` on Chat) is a field-named `400 invalid_request`
+// before any attempt, key or probe, even when its value is null or blank. A
+// recognized canonical control still resolves, and an accepted omission uses
+// the pool's concrete `medium` default whose mapping is currently valid.
+// ---------------------------------------------------------------------------
+
+/// The expected result of one ingress-spelling row.
+enum ContractOutcome {
+    /// A recognized control resolves; the upstream body must carry this JSON
+    /// pointer and string value (the `medium` default maps to native `medium`).
+    Accepted {
+        pointer: &'static str,
+        value: &'static str,
+    },
+    /// A field-named `400 invalid_request` naming `field`, with no attempt.
+    Rejected { field: &'static str },
+}
+
+struct ContractRow {
+    label: &'static str,
+    path: &'static str,
+    extra: Value,
+    outcome: ContractOutcome,
+}
+
+/// AC-001 / REQ-007: the pool ingress keeps the ordinary portable contract for
+/// unrecognized reasoning fields, so a wrong spelling or an opaque `reasoning`
+/// member is rejected by name before any state change instead of being stripped
+/// and default-substituted, while both recognized ingress spellings still serve.
+#[tokio::test]
+async fn pool_reasoning_preserves_portable_contract_for_unrecognized_reasoning_fields() {
+    let _home = temp_home("pool-reasoning-contract");
+    let port = free_port().await;
+    let tag = new_tag();
+    let alias = format!("free-contract-{tag}");
+    let (url, log) = spawn_reasoning_upstream().await;
+    // A concrete `medium` default with a currently valid mapping: an unrecognized
+    // field that is silently stripped and default-substituted would attempt
+    // upstream with the `medium` control, which the invalid rows below reject.
+    let pool = pool(
+        &format!("pool-contract-{tag}"),
+        "Contract",
+        &alias,
+        Some("medium"),
+        vec![candidate(
+            "p-shared",
+            "local-chat",
+            "remote-chat",
+            "chat_completions",
+            Some(valid_chat_reasoning()),
+        )],
+    );
+    write_raw_gateway_config(&http_config(
+        port,
+        vec![reasoning_provider(&url)],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    use ContractOutcome::{Accepted, Rejected};
+    let rows = vec![
+        // Chat Completions: both spellings are recognized controls.
+        ContractRow { label: "chat canonical high", path: CHAT, extra: json!({"reasoning_effort": "high"}), outcome: Accepted { pointer: "/reasoning_effort", value: "high" } },
+        ContractRow { label: "chat compat high", path: CHAT, extra: json!({"reasoningEffort": "high"}), outcome: Accepted { pointer: "/reasoning_effort", value: "high" } },
+        ContractRow { label: "chat equal spellings", path: CHAT, extra: json!({"reasoning_effort": "high", "reasoningEffort": "high"}), outcome: Accepted { pointer: "/reasoning_effort", value: "high" } },
+        ContractRow { label: "chat canonical null", path: CHAT, extra: json!({"reasoning_effort": null}), outcome: Accepted { pointer: "/reasoning_effort", value: "medium" } },
+        ContractRow { label: "chat compat null", path: CHAT, extra: json!({"reasoningEffort": null}), outcome: Accepted { pointer: "/reasoning_effort", value: "medium" } },
+        ContractRow { label: "chat canonical blank", path: CHAT, extra: json!({"reasoning_effort": "   "}), outcome: Accepted { pointer: "/reasoning_effort", value: "medium" } },
+        ContractRow { label: "chat missing", path: CHAT, extra: json!({}), outcome: Accepted { pointer: "/reasoning_effort", value: "medium" } },
+        ContractRow { label: "chat unknown identifier", path: CHAT, extra: json!({"reasoning_effort": "turbo"}), outcome: Rejected { field: "reasoning_effort" } },
+        ContractRow { label: "chat case variant", path: CHAT, extra: json!({"reasoning_effort": "High"}), outcome: Rejected { field: "reasoning_effort" } },
+        ContractRow { label: "chat literal auto", path: CHAT, extra: json!({"reasoning_effort": "auto"}), outcome: Rejected { field: "reasoning_effort" } },
+        ContractRow { label: "chat non-string", path: CHAT, extra: json!({"reasoning_effort": 42}), outcome: Rejected { field: "reasoning_effort" } },
+        ContractRow { label: "chat conflicting spellings", path: CHAT, extra: json!({"reasoning_effort": "high", "reasoningEffort": "low"}), outcome: Rejected { field: "reasoning" } },
+        ContractRow { label: "chat nested reasoning object", path: CHAT, extra: json!({"reasoning": {"effort": "high"}}), outcome: Rejected { field: "reasoning" } },
+        ContractRow { label: "chat opaque reasoning null", path: CHAT, extra: json!({"reasoning": null}), outcome: Rejected { field: "reasoning" } },
+        // Responses: only `reasoning.effort` is recognized; a top-level
+        // `reasoning_effort`/`reasoningEffort` stays an unknown field.
+        ContractRow { label: "responses canonical high", path: RESP, extra: json!({"reasoning": {"effort": "high"}}), outcome: Accepted { pointer: "/reasoning_effort", value: "high" } },
+        ContractRow { label: "responses canonical blank", path: RESP, extra: json!({"reasoning": {"effort": "   "}}), outcome: Accepted { pointer: "/reasoning_effort", value: "medium" } },
+        ContractRow { label: "responses null", path: RESP, extra: json!({"reasoning": null}), outcome: Accepted { pointer: "/reasoning_effort", value: "medium" } },
+        ContractRow { label: "responses missing", path: RESP, extra: json!({}), outcome: Accepted { pointer: "/reasoning_effort", value: "medium" } },
+        ContractRow { label: "responses wrong spelling reasoning_effort high", path: RESP, extra: json!({"reasoning_effort": "high"}), outcome: Rejected { field: "reasoning_effort" } },
+        ContractRow { label: "responses wrong spelling reasoningEffort high", path: RESP, extra: json!({"reasoningEffort": "high"}), outcome: Rejected { field: "reasoningEffort" } },
+        ContractRow { label: "responses wrong spelling reasoning_effort null", path: RESP, extra: json!({"reasoning_effort": null}), outcome: Rejected { field: "reasoning_effort" } },
+        ContractRow { label: "responses wrong spelling reasoningEffort blank", path: RESP, extra: json!({"reasoningEffort": "   "}), outcome: Rejected { field: "reasoningEffort" } },
+        ContractRow { label: "responses wrong spelling unknown", path: RESP, extra: json!({"reasoning_effort": "turbo"}), outcome: Rejected { field: "reasoning_effort" } },
+        ContractRow { label: "responses reasoning extra member", path: RESP, extra: json!({"reasoning": {"effort": "high", "summary": "auto"}}), outcome: Rejected { field: "reasoning" } },
+        ContractRow { label: "responses reasoning wrong type", path: RESP, extra: json!({"reasoning": {"effort": 42}}), outcome: Rejected { field: "reasoning" } },
+        ContractRow { label: "responses reasoning case variant", path: RESP, extra: json!({"reasoning": {"effort": "High"}}), outcome: Rejected { field: "reasoning" } },
+        ContractRow { label: "responses reasoning literal auto", path: RESP, extra: json!({"reasoning": {"effort": "auto"}}), outcome: Rejected { field: "reasoning" } },
+    ];
+
+    let mut failures: Vec<String> = Vec::new();
+    for row in rows {
+        let before = captured_len(&log);
+        let body = if row.path == CHAT {
+            chat_body(&alias, row.extra.clone())
+        } else {
+            responses_body(&alias, row.extra.clone())
+        };
+        let (status, text) = post_json(port, row.path, body).await;
+        let after = captured_len(&log);
+        match row.outcome {
+            Accepted { pointer, value } => {
+                if status != 200 {
+                    failures.push(format!("{}: expected 200, got {status}: {text}", row.label));
+                } else if after != before + 1 {
+                    failures.push(format!(
+                        "{}: expected exactly one upstream attempt, observed {}",
+                        row.label,
+                        after - before
+                    ));
+                } else {
+                    let expected = json!(value);
+                    match captured_bodies(&log).get(before) {
+                        Some(captured) if captured.pointer(pointer) == Some(&expected) => {}
+                        captured => failures.push(format!(
+                            "{}: expected {pointer}={value} in the upstream body, got {captured:?}",
+                            row.label
+                        )),
+                    }
+                }
+            }
+            Rejected { field } => {
+                if status != 400 {
+                    failures.push(format!("{}: expected 400, got {status}: {text}", row.label));
+                } else {
+                    if error_code(&text) != "invalid_request" {
+                        failures.push(format!(
+                            "{}: expected code 'invalid_request', got '{}': {text}",
+                            row.label,
+                            error_code(&text)
+                        ));
+                    }
+                    let named = format!("field '{field}'");
+                    if !error_text(&text).contains(&named) {
+                        failures.push(format!(
+                            "{}: the 400 must name '{named}': {}",
+                            row.label,
+                            error_text(&text)
+                        ));
+                    }
+                }
+                if after != before {
+                    failures.push(format!(
+                        "{}: a rejected reasoning field must not attempt upstream",
+                        row.label
+                    ));
+                }
+            }
+        }
+    }
+
+    // No rejected row may settle key or source health before selection.
+    let raw = read_raw_gateway_config();
+    if let Some(keys) = raw["providers"][0]["keys"].as_array() {
+        for key in keys {
+            if key["auto_marked"] != json!(false) || key["failure_kind"] != Value::Null {
+                failures.push(format!("a request mutated source key health: {key}"));
+            }
+        }
+    }
+    if let Some(mappings) = raw["providers"][0]["mappings"].as_array() {
+        for mapping in mappings {
+            if mapping["auto_disabled"] == json!(true)
+                || mapping["consecutive_failures"].as_u64().unwrap_or(0) != 0
+            {
+                failures.push(format!("a request mutated source mapping health: {mapping}"));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "pool reasoning ingress portable-contract mismatches: {failures:#?}"
+    );
+    stop_server().await.expect("stop the listener");
+}
+
+// ---------------------------------------------------------------------------
 // AC-002: explicit effort overrides the stored default; auto omits controls
 // ---------------------------------------------------------------------------
 

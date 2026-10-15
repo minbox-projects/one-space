@@ -1497,25 +1497,6 @@ export function isModelPoolReasoningMappingValid(
   return false;
 }
 
-/**
- * The canonical preferences a pool advertises from its own valid mappings,
- * derived independently of runtime readiness and never from source metadata.
- */
-export function resolveModelPoolReasoningEfforts(
-  pool: GatewayModelPool | null | undefined,
-): string[] {
-  const supported = new Set<string>();
-  for (const candidate of pool?.candidates ?? []) {
-    const reasoning = candidate.reasoning ?? null;
-    for (const mapping of reasoning?.mappings ?? []) {
-      if (isModelPoolReasoningMappingValid(reasoning, mapping)) {
-        supported.add(mapping.effort);
-      }
-    }
-  }
-  return CANONICAL_REASONING_EFFORTS.filter((effort) => supported.has(effort));
-}
-
 /** The concrete pool default preference, mapping a missing value to `auto`. */
 export function resolveModelPoolDefaultEffort(
   pool: Pick<GatewayModelPool, "default_reasoning_effort"> | null | undefined,
