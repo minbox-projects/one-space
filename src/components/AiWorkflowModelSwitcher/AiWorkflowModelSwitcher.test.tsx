@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AiWorkflowModelSwitcher } from "./AiWorkflowModelSwitcher";
@@ -77,6 +77,121 @@ const mockActivationReport: ProfileActivationReport = {
     },
   ],
 };
+
+// ---------------------------------------------------------------------------
+// Step 2 (REQ-001~REQ-005): model-capability fixtures and mock installers.
+// These fixtures deliberately omit `model_capabilities` for unknown models and
+// keep explicit entries for known ones. They are independent expected values,
+// not imports from the product's private helpers.
+// ---------------------------------------------------------------------------
+
+type CapabilityEntryFixture = { efforts: string[]; default_effort?: string };
+
+const capabilityModelSources = {
+  opencode: {
+    models: [
+      "apigateway/GLM-5",
+      "known-a/opencode",
+      "known-b/opencode",
+      "known-c/opencode",
+      "keep/opencode",
+      "def/opencode",
+      "only-high/opencode",
+      "mid-max/opencode",
+      "unknown/opencode",
+      "cap/one",
+      "cap/two",
+      "cap/low",
+      "cap/medium",
+      "cap/empty",
+      "row/shared",
+      "col/shared",
+    ],
+    model_capabilities: {
+      "apigateway/GLM-5": { efforts: ["low", "high"] },
+      "known-a/opencode": { efforts: ["none", "low", "high", "low"] },
+      "known-b/opencode": { efforts: ["medium", "max"] },
+      "known-c/opencode": { efforts: ["none", "minimal"] },
+      "keep/opencode": { efforts: ["low", "high"] },
+      "def/opencode": { efforts: ["low", "high"], default_effort: "high" },
+      "only-high/opencode": { efforts: ["high"] },
+      "mid-max/opencode": { efforts: ["medium", "max"] },
+      "cap/one": { efforts: ["medium", "high"] },
+      "cap/two": { efforts: ["low", "high"] },
+      "cap/low": { efforts: ["low"] },
+      "cap/medium": { efforts: ["medium"] },
+      "cap/empty": { efforts: ["none", "minimal"] },
+      "row/shared": { efforts: ["high"] },
+      "col/shared": { efforts: ["high"] },
+    } satisfies Record<string, CapabilityEntryFixture>,
+  },
+  codex: {
+    models: ["gpt-5", "keep-codex", "row/shared"],
+    model_capabilities: {
+      "keep-codex": { efforts: ["low", "high"] },
+      "row/shared": { efforts: ["high"] },
+    } satisfies Record<string, CapabilityEntryFixture>,
+  },
+  claude: {
+    models: ["claude-3-7-sonnet", "keep-claude", "row/shared"],
+    model_capabilities: {
+      "keep-claude": { efforts: ["medium", "high"] },
+      "row/shared": { efforts: ["high"] },
+    } satisfies Record<string, CapabilityEntryFixture>,
+  },
+};
+
+function singleCellMatrix(
+  effort: string,
+  model = "keep/opencode",
+): ProfileMatrix {
+  return {
+    name: "model-aware",
+    rows: [{ role: "backend", opencode: { model, reasoning_effort: effort } }],
+  };
+}
+
+function installModelAwareMock(config: {
+  profiles: ProfileSummary[];
+  matrixByName: Record<string, ProfileMatrix>;
+  sources?: unknown;
+}) {
+  invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+    const payload = args as Record<string, unknown> | undefined;
+    if (command === "ai_workflow_list_profiles") return config.profiles;
+    if (command === "ai_workflow_get_profile_matrix") {
+      const name = String(payload?.name ?? "");
+      const matrix = config.matrixByName[name];
+      if (!matrix) {
+        throw new Error(`Failed to parse profile ${name}: not found`);
+      }
+      return matrix;
+    }
+    if (command === "ai_workflow_get_model_sources") {
+      return config.sources ?? capabilityModelSources;
+    }
+    if (command === "ai_workflow_save_profile") return null;
+    if (command === "ai_workflow_activate_profile") return mockActivationReport;
+    return null;
+  });
+}
+
+function installSingleProfileMock(
+  matrix: ProfileMatrix,
+  sources: unknown = capabilityModelSources,
+) {
+  installModelAwareMock({
+    profiles: [{ name: matrix.name, active: true }],
+    matrixByName: { [matrix.name]: matrix },
+    sources,
+  });
+}
+
+function selectedOptionValues(select: HTMLElement): string[] {
+  return within(select)
+    .getAllByRole("option")
+    .map((option) => (option as HTMLOptionElement).value);
+}
 
 describe("AiWorkflowModelSwitcher 行为测试", () => {
   beforeEach(async () => {
@@ -356,21 +471,27 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       expect(screen.getByTestId("cell-backend-opencode")).toHaveTextContent("unified/model-42");
     });
 
-    it("支持全部应用 reasoning_effort，并拒绝超出六值的非法 effort", async () => {
+    it("批量应用推理强度：仅对已知目标应用当前共同 effort（取代静态六值）", async () => {
       const user = userEvent.setup();
+      installSingleProfileMock({
+        name: "batch-profile",
+        rows: [
+          { role: "backend", opencode: { model: "cap/one", reasoning_effort: "low" } },
+          { role: "frontend", opencode: { model: "cap/two", reasoning_effort: "low" } },
+        ],
+      });
       renderWithProviders(<AiWorkflowModelSwitcher />);
 
       await screen.findByTestId("cell-backend-opencode");
 
-      // 批量将 effort 应用为 xhigh
+      // cap/one = medium/high, cap/two = low/high => 交集仅 high
       await user.click(screen.getByTestId("batch-apply-effort-trigger"));
-      await user.click(screen.getByRole("option", { name: "xhigh" }));
+      await user.click(screen.getByRole("option", { name: "high" }));
       await user.click(screen.getByTestId("batch-apply-effort-submit"));
 
-      // 验证所有单元格 effort 更新为 xhigh
-      expect(screen.getByTestId("cell-backend-codex")).toHaveTextContent("xhigh");
-      expect(screen.getByTestId("cell-backend-claude")).toHaveTextContent("xhigh");
-      expect(screen.getByTestId("cell-backend-opencode")).toHaveTextContent("xhigh");
+      // 仅已知目标更新为共同 effort
+      expect(screen.getByTestId("cell-backend-opencode")).toHaveTextContent("high");
+      expect(screen.getByTestId("cell-frontend-opencode")).toHaveTextContent("high");
     });
   });
 
@@ -1329,6 +1450,525 @@ describe("AiWorkflowModelSwitcher 行为测试", () => {
       renderWithProviders(<AiWorkflowModelSwitcher />);
 
       expect(await screen.findByText("共 12 个方案")).toBeInTheDocument();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Step 2: model-aware effort editor, normalization, persistence and batch.
+  // RED before implementation: the current editor always renders the static
+  // six-value select with no capability restriction, hints or batch limits.
+  // -------------------------------------------------------------------------
+  describe("REQ-002~REQ-004: 模型感知的推理强度编辑与批量约束", () => {
+    it("已知模型 A（none/low/high）仅提供 low/high，并展示 profile schema 排除提示", async () => {
+      const user = userEvent.setup();
+      installSingleProfileMock(singleCellMatrix("low", "known-a/opencode"));
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      await user.click(await screen.findByTestId("cell-backend-opencode"));
+
+      const select = await screen.findByTestId("effort-select-backend-opencode");
+      expect(select).toBeEnabled();
+      expect(selectedOptionValues(select)).toEqual(["low", "high"]);
+      expect(
+        within(select).queryByRole("option", { name: "none" }),
+      ).not.toBeInTheDocument();
+      expect(
+        within(select).queryByRole("option", { name: "medium" }),
+      ).not.toBeInTheDocument();
+      expect(
+        within(select).queryByRole("option", { name: "xhigh" }),
+      ).not.toBeInTheDocument();
+
+      // none 属于发现值但被 profile schema 排除，必须可见说明
+      expect(
+        screen.getByTestId("effort-schema-exclusion-backend-opencode"),
+      ).not.toBeEmptyDOMElement();
+    });
+
+    it("已知模型 B（medium/max）仅提供 medium/max，不出现未列出值", async () => {
+      const user = userEvent.setup();
+      installSingleProfileMock(singleCellMatrix("low", "known-a/opencode"));
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      await user.click(await screen.findByTestId("cell-backend-opencode"));
+      const modelInput = await screen.findByTestId(
+        "manual-model-input-backend-opencode",
+      );
+      await user.clear(modelInput);
+      await user.type(modelInput, "known-b/opencode");
+
+      const select = await screen.findByTestId("effort-select-backend-opencode");
+      expect(selectedOptionValues(select)).toEqual(["medium", "max"]);
+      expect(
+        within(select).queryByRole("option", { name: "low" }),
+      ).not.toBeInTheDocument();
+      expect(
+        within(select).queryByRole("option", { name: "ultra" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("已知模型 C（none/minimal）禁用 effort 控件、说明不兼容并阻止保存", async () => {
+      const user = userEvent.setup();
+      installSingleProfileMock(singleCellMatrix("low", "known-a/opencode"));
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      await user.click(await screen.findByTestId("cell-backend-opencode"));
+      const modelInput = await screen.findByTestId(
+        "manual-model-input-backend-opencode",
+      );
+      await user.clear(modelInput);
+      await user.type(modelInput, "known-c/opencode");
+
+      expect(
+        await screen.findByTestId("effort-select-backend-opencode"),
+      ).toBeDisabled();
+      expect(
+        screen.getByTestId("effort-incompatibility-backend-opencode"),
+      ).not.toBeEmptyDOMElement();
+      expect(screen.getByRole("button", { name: /^(保存|Save)$/i })).toBeDisabled();
+    });
+
+    it("未知模型使用带提示的手动输入：xhigh 可保存，任意 token 或空白被阻止", async () => {
+      const user = userEvent.setup();
+      installSingleProfileMock(singleCellMatrix("medium", "unknown/opencode"));
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      await user.click(await screen.findByTestId("cell-backend-opencode"));
+
+      const effortInput = await screen.findByTestId(
+        "effort-manual-input-backend-opencode",
+      );
+      expect(
+        screen.getByTestId("effort-unknown-hint-backend-opencode"),
+      ).not.toBeEmptyDOMElement();
+
+      // schema 内手动值可保存
+      await user.clear(effortInput);
+      await user.type(effortInput, "xhigh");
+      const save = screen.getByRole("button", { name: /^(保存|Save)$/i });
+      expect(save).toBeEnabled();
+      await user.click(save);
+      await waitFor(() =>
+        expect(invokeMock).toHaveBeenCalledWith(
+          "ai_workflow_save_profile",
+          expect.objectContaining({
+            matrix: expect.arrayContaining([
+              expect.objectContaining({
+                role: "backend",
+                opencode: expect.objectContaining({ reasoning_effort: "xhigh" }),
+              }),
+            ]),
+          }),
+        ),
+      );
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /^(保存|Save)$/i })).toBeEnabled(),
+      );
+
+      // 任意 token 被阻止
+      await user.clear(effortInput);
+      await user.type(effortInput, "turbo");
+      expect(
+        screen.getByRole("button", { name: /^(保存|Save)$/i }),
+      ).toBeDisabled();
+
+      // 空白被阻止
+      await user.clear(effortInput);
+      expect(
+        screen.getByRole("button", { name: /^(保存|Save)$/i }),
+      ).toBeDisabled();
+    });
+
+    it("新填充的未知模型单元格默认使用 medium 且不宣称支持", async () => {
+      const user = userEvent.setup();
+      installSingleProfileMock({ name: "model-aware", rows: [] });
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      await user.click(await screen.findByTestId("cell-backend-opencode"));
+      const modelInput = await screen.findByTestId(
+        "manual-model-input-backend-opencode",
+      );
+      await user.type(modelInput, "unknown/opencode");
+
+      const effortInput = (await screen.findByTestId(
+        "effort-manual-input-backend-opencode",
+      )) as HTMLInputElement;
+      expect(effortInput.value).toBe("medium");
+      expect(
+        screen.getByTestId("effort-unknown-hint-backend-opencode"),
+      ).toBeInTheDocument();
+    });
+
+    it("打开未配置单元格与加载 profile 均不创建值或产生 dirty", async () => {
+      const user = userEvent.setup();
+      installSingleProfileMock(singleCellMatrix("low", "keep/opencode"));
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      await user.click(await screen.findByTestId("cell-frontend-codex"));
+      expect(screen.queryByTestId("matrix-dirty-indicator")).not.toBeInTheDocument();
+      await user.click(screen.getByTestId("cell-close-frontend-codex"));
+
+      expect(screen.queryByTestId("matrix-dirty-indicator")).not.toBeInTheDocument();
+      expect(screen.getByTestId("cell-frontend-codex")).toHaveTextContent(
+        /未设置|not set/i,
+      );
+      expect(invokeMock).not.toHaveBeenCalledWith(
+        "ai_workflow_save_profile",
+        expect.anything(),
+      );
+    });
+
+    it("加载的已知非法 effort（max）原样显示、基线干净，保存被阻止直到修正", async () => {
+      const user = userEvent.setup();
+      installSingleProfileMock(singleCellMatrix("max", "keep/opencode"));
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      const cell = await screen.findByTestId("cell-backend-opencode");
+      expect(cell).toHaveTextContent("max");
+      expect(screen.queryByTestId("matrix-dirty-indicator")).not.toBeInTheDocument();
+
+      await user.click(cell);
+      expect(
+        await screen.findByTestId("effort-invalid-backend-opencode"),
+      ).not.toBeEmptyDOMElement();
+      expect(screen.getByRole("button", { name: /^(保存|Save)$/i })).toBeDisabled();
+
+      // 操作者修正为受支持值后恢复可保存
+      const select = await screen.findByTestId("effort-select-backend-opencode");
+      await user.selectOptions(select, "low");
+      expect(
+        screen.queryByTestId("effort-invalid-backend-opencode"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /^(保存|Save)$/i }),
+      ).toBeEnabled();
+    });
+
+    it.each([
+      ["合法值被保留", "low", "keep/opencode", "low"],
+      ["非法值优先使用声明默认值", "medium", "def/opencode", "high"],
+      ["非法值且无默认值回退 medium", "low", "mid-max/opencode", "medium"],
+      ["非法值且无默认值回退首个可写值", "medium", "only-high/opencode", "high"],
+    ])(
+      "逐格模型变更归一化：%s",
+      async (_label, currentEffort, targetModel, expectedEffort) => {
+        const user = userEvent.setup();
+        installSingleProfileMock(singleCellMatrix(currentEffort, "known-a/opencode"));
+        renderWithProviders(<AiWorkflowModelSwitcher />);
+
+        await user.click(await screen.findByTestId("cell-backend-opencode"));
+        const modelInput = await screen.findByTestId(
+          "manual-model-input-backend-opencode",
+        );
+        await user.clear(modelInput);
+        await user.type(modelInput, targetModel);
+
+        const select = (await screen.findByTestId(
+          "effort-select-backend-opencode",
+        )) as HTMLSelectElement;
+        expect(select.value).toBe(expectedEffort);
+      },
+    );
+
+    it("整行填充对同一模型的每列执行相同的归一化链", async () => {
+      const user = userEvent.setup();
+      installSingleProfileMock({
+        name: "model-aware",
+        rows: [
+          {
+            role: "backend",
+            codex: { model: "keep-codex", reasoning_effort: "low" },
+            claude: { model: "keep-claude", reasoning_effort: "medium" },
+            opencode: { model: "keep/opencode", reasoning_effort: "low" },
+          },
+        ],
+      });
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      await screen.findByTestId("matrix-row-role-backend");
+      await user.click(screen.getByTestId("batch-fill-row-backend"));
+      const input = await screen.findByTestId("batch-fill-row-input-backend");
+      await user.type(input, "row/shared");
+      await user.click(screen.getByTestId("batch-fill-row-apply-backend"));
+
+      await user.click(screen.getByTestId("cell-backend-codex"));
+      expect(
+        ((await screen.findByTestId(
+          "effort-select-backend-codex",
+        )) as HTMLSelectElement).value,
+      ).toBe("high");
+      await user.click(screen.getByTestId("cell-close-backend-codex"));
+
+      await user.click(screen.getByTestId("cell-backend-claude"));
+      expect(
+        ((await screen.findByTestId(
+          "effort-select-backend-claude",
+        )) as HTMLSelectElement).value,
+      ).toBe("high");
+      await user.click(screen.getByTestId("cell-close-backend-claude"));
+
+      await user.click(screen.getByTestId("cell-backend-opencode"));
+      expect(
+        ((await screen.findByTestId(
+          "effort-select-backend-opencode",
+        )) as HTMLSelectElement).value,
+      ).toBe("high");
+    });
+
+    it("整列填充对同一模型的每格执行相同的归一化链", async () => {
+      const user = userEvent.setup();
+      installSingleProfileMock({
+        name: "model-aware",
+        rows: [
+          { role: "backend", opencode: { model: "keep/opencode", reasoning_effort: "low" } },
+          { role: "frontend", opencode: { model: "keep/opencode", reasoning_effort: "medium" } },
+        ],
+      });
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      await screen.findByTestId("cell-backend-opencode");
+      await user.click(screen.getByTestId("batch-fill-column-opencode"));
+      const input = await screen.findByTestId("batch-fill-input-opencode");
+      await user.type(input, "col/shared");
+      await user.click(screen.getByTestId("batch-fill-apply-opencode"));
+
+      await user.click(screen.getByTestId("cell-backend-opencode"));
+      expect(
+        ((await screen.findByTestId(
+          "effort-select-backend-opencode",
+        )) as HTMLSelectElement).value,
+      ).toBe("high");
+      await user.click(screen.getByTestId("cell-close-backend-opencode"));
+
+      await user.click(screen.getByTestId("cell-frontend-opencode"));
+      expect(
+        ((await screen.findByTestId(
+          "effort-select-frontend-opencode",
+        )) as HTMLSelectElement).value,
+      ).toBe("high");
+    });
+
+    it("保存负载与可见矩阵一致", async () => {
+      const user = userEvent.setup();
+      installSingleProfileMock(singleCellMatrix("low", "known-a/opencode"));
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      await user.click(await screen.findByTestId("cell-backend-opencode"));
+      const modelInput = await screen.findByTestId(
+        "manual-model-input-backend-opencode",
+      );
+      await user.clear(modelInput);
+      await user.type(modelInput, "mid-max/opencode");
+
+      const select = (await screen.findByTestId(
+        "effort-select-backend-opencode",
+      )) as HTMLSelectElement;
+      expect(select.value).toBe("medium");
+
+      await user.click(screen.getByRole("button", { name: /^(保存|Save)$/i }));
+      await waitFor(() =>
+        expect(invokeMock).toHaveBeenCalledWith(
+          "ai_workflow_save_profile",
+          expect.objectContaining({
+            matrix: expect.arrayContaining([
+              expect.objectContaining({
+                role: "backend",
+                opencode: { model: "mid-max/opencode", reasoning_effort: "medium" },
+              }),
+            ]),
+          }),
+        ),
+      );
+    });
+
+    it("批量菜单仅提供已知目标的共同 effort，未知单元格跳过且未配置单元格保持缺失", async () => {
+      const user = userEvent.setup();
+      installSingleProfileMock({
+        name: "batch-profile",
+        rows: [
+          { role: "backend", opencode: { model: "cap/one", reasoning_effort: "low" } },
+          { role: "frontend", opencode: { model: "cap/two", reasoning_effort: "low" } },
+          { role: "test", opencode: { model: "unknown/opencode", reasoning_effort: "medium" } },
+        ],
+      });
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      await user.click(await screen.findByTestId("batch-apply-effort-trigger"));
+
+      const options = screen.getAllByRole("option").map((option) => option.textContent);
+      expect(options).toEqual(["high"]);
+      expect(
+        screen.getByTestId("batch-effort-skipped-unknown"),
+      ).toHaveTextContent(/1/);
+      expect(
+        screen.getByTestId("batch-effort-skipped-unknown"),
+      ).not.toBeEmptyDOMElement();
+
+      await user.click(screen.getByRole("option", { name: "high" }));
+      await user.click(screen.getByTestId("batch-apply-effort-submit"));
+
+      expect(screen.getByTestId("cell-backend-opencode")).toHaveTextContent("high");
+      expect(screen.getByTestId("cell-frontend-opencode")).toHaveTextContent("high");
+      // 未知单元格保持不变
+      expect(screen.getByTestId("cell-test-opencode")).toHaveTextContent("medium");
+      // 未配置单元格不得因 effort 批量而创建
+      expect(
+        screen.getByTestId("cell-documentation-maintainer-opencode"),
+      ).toHaveTextContent(/未设置|not set/i);
+
+      await user.click(screen.getByRole("button", { name: /^(保存|Save)$/i }));
+      await waitFor(() => {
+        const call = invokeMock.mock.calls.find(
+          ([command]) => command === "ai_workflow_save_profile",
+        );
+        const matrix = (call?.[1] as { matrix: AgentMatrixRow[] }).matrix;
+        expect(
+          matrix.find((row) => row.role === "documentation-maintainer")?.opencode,
+        ).toBeUndefined();
+        expect(
+          matrix.find((row) => row.role === "test")?.opencode?.reasoning_effort,
+        ).toBe("medium");
+      });
+    });
+
+    it("目标交集为空（disjoint）时禁用 Apply 并说明原因", async () => {
+      const user = userEvent.setup();
+      installSingleProfileMock({
+        name: "batch-disjoint",
+        rows: [
+          { role: "backend", opencode: { model: "cap/one", reasoning_effort: "medium" } },
+          { role: "frontend", opencode: { model: "cap/low", reasoning_effort: "low" } },
+        ],
+      });
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      await user.click(await screen.findByTestId("batch-apply-effort-trigger"));
+      expect(await screen.findByTestId("batch-apply-effort-submit")).toBeDisabled();
+      expect(
+        screen.getByTestId("batch-effort-disabled-reason"),
+      ).not.toBeEmptyDOMElement();
+    });
+
+    it("已知空可写集目标参与空交集并禁用 Apply", async () => {
+      const user = userEvent.setup();
+      installSingleProfileMock({
+        name: "batch-empty",
+        rows: [
+          { role: "backend", opencode: { model: "cap/empty", reasoning_effort: "low" } },
+          { role: "frontend", opencode: { model: "cap/one", reasoning_effort: "medium" } },
+        ],
+      });
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      await user.click(await screen.findByTestId("batch-apply-effort-trigger"));
+      expect(await screen.findByTestId("batch-apply-effort-submit")).toBeDisabled();
+      expect(
+        screen.getByTestId("batch-effort-disabled-reason"),
+      ).not.toBeEmptyDOMElement();
+    });
+
+    it("没有任何已知目标时禁用 Apply 并说明原因", async () => {
+      const user = userEvent.setup();
+      installSingleProfileMock({
+        name: "batch-unknown",
+        rows: [
+          { role: "backend", opencode: { model: "unknown/opencode", reasoning_effort: "medium" } },
+          { role: "frontend", opencode: { model: "also-unknown/opencode", reasoning_effort: "high" } },
+        ],
+      });
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      await user.click(await screen.findByTestId("batch-apply-effort-trigger"));
+      expect(await screen.findByTestId("batch-apply-effort-submit")).toBeDisabled();
+      expect(
+        screen.getByTestId("batch-effort-disabled-reason"),
+      ).not.toBeEmptyDOMElement();
+    });
+
+    it("切换 profile 后不能应用过期的批量选择", async () => {
+      const user = userEvent.setup();
+      installModelAwareMock({
+        profiles: [
+          { name: "p-profile", active: true },
+          { name: "q-profile", active: false },
+        ],
+        matrixByName: {
+          "p-profile": {
+            name: "p-profile",
+            rows: [
+              { role: "backend", opencode: { model: "cap/one", reasoning_effort: "medium" } },
+              { role: "frontend", opencode: { model: "cap/two", reasoning_effort: "low" } },
+            ],
+          },
+          "q-profile": {
+            name: "q-profile",
+            rows: [
+              { role: "backend", opencode: { model: "cap/medium", reasoning_effort: "low" } },
+              { role: "frontend", opencode: { model: "cap/medium", reasoning_effort: "low" } },
+            ],
+          },
+        },
+      });
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      // 在 p-profile 选择 high（交集 {high}）
+      await user.click(await screen.findByTestId("batch-apply-effort-trigger"));
+      await user.click(await screen.findByRole("option", { name: "high" }));
+      await user.click(screen.getByTestId("batch-apply-effort-trigger"));
+
+      // 切换到交集仅为 {medium} 的 profile
+      await user.click(await screen.findByRole("button", { name: /q-profile/ }));
+      await waitFor(() =>
+        expect(invokeMock).toHaveBeenCalledWith("ai_workflow_get_profile_matrix", {
+          name: "q-profile",
+        }),
+      );
+
+      await screen.findByTestId("cell-backend-opencode");
+      await user.click(screen.getByTestId("batch-apply-effort-trigger"));
+
+      // 过期 high 不再作为可选项出现
+      expect(
+        screen.queryByRole("option", { name: "high" }),
+      ).not.toBeInTheDocument();
+
+      // 无论当前选择是否被重置，过期 high 都不得被应用
+      const submit = screen.getByTestId(
+        "batch-apply-effort-submit",
+      ) as HTMLButtonElement;
+      if (!submit.disabled) {
+        await user.click(submit);
+      }
+      expect(screen.getByTestId("cell-backend-opencode")).not.toHaveTextContent(
+        "high",
+      );
+
+      // 显式选择当前交集值后应用，结果为新 profile 的支持值
+      await user.click(screen.getByRole("option", { name: "medium" }));
+      await user.click(screen.getByTestId("batch-apply-effort-submit"));
+      expect(screen.getByTestId("cell-backend-opencode")).toHaveTextContent("medium");
+    });
+
+    it("能力读取警告可见，且不影响同列模型候选", async () => {
+      const user = userEvent.setup();
+      const sources = {
+        ...capabilityModelSources,
+        codex: {
+          ...capabilityModelSources.codex,
+          capability_warning: "codex cache unreadable",
+        },
+      };
+      installSingleProfileMock(singleCellMatrix("low", "keep/opencode"), sources);
+      renderWithProviders(<AiWorkflowModelSwitcher />);
+
+      expect(
+        await screen.findByTestId("column-capability-warning-codex"),
+      ).toHaveTextContent(/codex cache unreadable/);
+
+      await user.click(screen.getByTestId("cell-backend-codex"));
+      expect(await screen.findByTestId("model-options-codex")).toHaveTextContent(
+        "gpt-5",
+      );
     });
   });
 });

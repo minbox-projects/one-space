@@ -2861,7 +2861,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "AI Workflow subagent 角色模型切换工具箱工具：9×3 矩阵编辑、自动模型源候选与手动输入降级；Activate 只激活已保存 YAML，Save 仅保存既有 profile，新建 profile 首次保存时提供一次 Yes/No 保存后激活确认，保存成功更新 dirty baseline；`getActiveModels` 经 `ai_workflow_get_active_models` 读取当前已安装快照（绝不读已保存 profile YAML），`AI_WORKFLOW_PROFILE_UPDATED_EVENT` 在激活成功后发出以通知托盘等消费者刷新",
+      "responsibility": "AI Workflow subagent 角色模型切换工具箱工具：9×3 矩阵编辑（`model` 与 `reasoning_effort`）与按本地声明能力感知的推理强度编辑——已知模型只提供 `ModelCapability` 声明 ∩ 六值 profile 枚举的交集可用档位（`resolveWritableEfforts`，枚举顺序去重）并以 `resolveExcludedEfforts` 展示被 schema 排除的原始 token，交集为空时禁用控件、显示不兼容说明并让该已填单元格在 Save 前无效，未知能力模型用带未知提示的手动输入并按六值枚举校验（`isKnownEffort`）；四条模型编辑路径（候选点选、手动输入、整行填充、整列填充）共用 `normalizeEffortForModel`（保留可写值→声明默认→`medium`→首个可写值，未知保留已输入文本、新填以 `medium` 起步但绝不宣称支持）；批量推理强度只覆盖已填且已知的单元格并取可写交集、跳过未知并显示数量、交集为空或无目标时禁用 Apply、模型/方案变化后按当前交集重算；列 `capability_warning` 与列 `error` 独立可见且绝不隐藏候选（`getModelCapability`）；Activate 只激活已保存 YAML，Save 仅保存既有 profile、校验整份配置且后端按当前本地能力拒绝已知不支持的 effort，新建 profile 首次保存时提供一次 Yes/No 保存后激活确认，保存成功更新 dirty baseline；`getActiveModels` 经 `ai_workflow_get_active_models` 读取当前已安装快照（绝不读已保存 profile YAML），`AI_WORKFLOW_PROFILE_UPDATED_EVENT` 在激活成功后发出以通知托盘等消费者刷新；能力为本地声明快照，未知手动值不代表模型确实支持",
       "entries": [
         "src/components/AiWorkflowModelSwitcher/index.ts"
       ],
@@ -2870,7 +2870,10 @@
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.tsx",
         "src/components/AiWorkflowModelSwitcher/SearchableModelCombobox.tsx",
         "src/lib/aiWorkflowProfiles.ts",
-        "src-tauri/src/ai_workflow_profiles.rs"
+        "src-tauri/src/ai_workflow_profiles.rs",
+        "src/i18n.ts",
+        "en_keys.txt",
+        "zh_keys.txt"
       ],
       "tests": [
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx",
@@ -2898,6 +2901,48 @@
         {
           "file": "src/lib/aiWorkflowProfiles.ts",
           "name": "getModelSources",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "ModelCapability",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "ColumnModelSource",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "isKnownEffort",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "getModelCapability",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "resolveWritableEfforts",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "resolveExcludedEfforts",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "normalizeEffortForModel",
           "kind": "function",
           "visibility": "public"
         },
@@ -2953,7 +2998,10 @@
         "src/lib/aiWorkflowProfiles.ts",
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx",
         "src-tauri/src/ai_workflow_profiles.rs",
-        "src/lib/aiWorkflowProfiles.test.ts"
+        "src/lib/aiWorkflowProfiles.test.ts",
+        "src/i18n.ts",
+        "en_keys.txt",
+        "zh_keys.txt"
       ],
       "relations": [],
       "shared_entry": false
