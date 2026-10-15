@@ -1056,6 +1056,90 @@ export function UsageLogsPanel({
                           </span>
                         ) : null}
                       </div>
+                      {(() => {
+                        const resolved = item.resolved_reasoning_effort?.trim() ?? "";
+                        const native = item.native_reasoning ?? null;
+                        if (!resolved && !native) return null;
+                        const nativeDetailId = `ai-gateway-logs-native-reasoning-detail-${item.timestamp_ms}-${index}`;
+                        const parameterEntries = native?.parameters
+                          ? Object.entries(native.parameters)
+                          : [];
+                        return (
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px]">
+                            {resolved ? (
+                              <span
+                                className="inline-flex items-center rounded border border-indigo-500/20 bg-indigo-500/10 px-1.5 py-0.5 leading-none text-indigo-600 dark:text-indigo-400"
+                                data-testid="ai-gateway-logs-resolved-reasoning-effort"
+                                title={`${t("aiGatewayLogsReasoningResolved", "Resolved")}: ${resolved}`}
+                              >
+                                {resolved}
+                              </span>
+                            ) : null}
+                            <div className="relative group inline-flex items-center group-hover:z-50 focus-within:z-50">
+                              <button
+                                type="button"
+                                data-testid="ai-gateway-logs-native-reasoning"
+                                aria-label={`${t("aiGatewayLogsReasoningNative", "Native control")}: ${native ? native.mode : t("aiGatewayLogsReasoningNativeUnavailable", "Unavailable")}`}
+                                aria-describedby={nativeDetailId}
+                                className="inline-flex items-center rounded border border-border/70 bg-muted/50 px-1.5 py-0.5 font-mono leading-none text-foreground/85 transition hover:bg-muted focus:outline-none focus:ring-1 focus:ring-primary/40"
+                              >
+                                {native
+                                  ? native.mode
+                                  : t(
+                                      "aiGatewayLogsReasoningNativeUnavailable",
+                                      "Unavailable",
+                                    )}
+                              </button>
+                              <div
+                                id={nativeDetailId}
+                                role="tooltip"
+                                data-testid="ai-gateway-logs-native-reasoning-detail"
+                                className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-max min-w-[180px] max-w-[320px] flex-col gap-1 rounded-md border bg-popover p-2.5 text-left text-xs text-popover-foreground shadow-lg group-hover:flex group-focus-within:flex"
+                              >
+                                <div className="border-b pb-1 text-[11px] font-semibold text-muted-foreground">
+                                  {t("aiGatewayLogsReasoningNative", "Native control")}
+                                </div>
+                                {native ? (
+                                  <>
+                                    <div className="flex items-center justify-between gap-3">
+                                      <span className="text-muted-foreground">
+                                        {t("aiGatewayLogsReasoningNative", "Native control")}
+                                      </span>
+                                      <span className="font-mono">{native.protocol}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-3">
+                                      <span className="text-muted-foreground">mode</span>
+                                      <span className="font-mono">{native.mode}</span>
+                                    </div>
+                                    {parameterEntries.length > 0 ? (
+                                      <div
+                                        data-testid="ai-gateway-logs-native-reasoning-parameters"
+                                        className="space-y-0.5 border-t border-border/50 pt-1 font-mono text-[10px]"
+                                      >
+                                        {parameterEntries.map(([key, value]) => (
+                                          <div key={key} className="break-all">
+                                            {key}:{" "}
+                                            {typeof value === "string"
+                                              ? value
+                                              : JSON.stringify(value)}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : null}
+                                  </>
+                                ) : (
+                                  <div className="text-[11px] text-muted-foreground">
+                                    {t(
+                                      "aiGatewayLogsReasoningNativeUnavailable",
+                                      "Unavailable",
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
                       {(item.provider_name || item.upstream_model) ? (
                         <div className="text-[10px] text-muted-foreground flex items-center gap-1 whitespace-nowrap">
                           {item.provider_name ? (

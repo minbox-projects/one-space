@@ -711,6 +711,24 @@ export interface UsageLogRecord {
   terminal?: boolean;
   /** Reasoning effort level (e.g. "low", "medium", "high") requested by client; null/absent when none was specified. */
   reasoning_effort?: string | null;
+  /**
+   * Pool-only resolved preference (`low`..`none` or `auto`). Absent/`null` for
+   * ordinary or historical rows; never inferred from the requested value.
+   */
+  resolved_reasoning_effort?: string | null;
+  /** Pool-only allowlisted native control snapshot; absent/`null` when unavailable. */
+  native_reasoning?: ModelPoolNativeReasoning | null;
+}
+
+/**
+ * The allowlisted native control evidence recorded for one pool attempt. It
+ * carries only the target protocol, the resolved mode and the small set of
+ * native parameters actually sent; never a request/response body or credential.
+ */
+export interface ModelPoolNativeReasoning {
+  protocol: string;
+  mode: string;
+  parameters?: Record<string, unknown> | null;
 }
 
 export interface UsageLogGroup {
@@ -1230,9 +1248,113 @@ export function aiGatewayTemplateAutoRefreshStatus() {
 // ---------------------------------------------------------------------------
 
 /**
+ * The public canonical reasoning preferences a pool client can request, in
+ * canonical order. `none` is an explicit disable and `auto` is never a request.
+ */
+export const CANONICAL_REASONING_EFFORTS = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "none",
+] as const;
+
+export type CanonicalReasoningEffort = (typeof CANONICAL_REASONING_EFFORTS)[number];
+
+/** The bounded native reasoning profile identifiers a pool candidate declares. */
+export type ModelPoolReasoningProfile =
+  | "openai_effort"
+  | "anthropic_effort_inherit"
+  | "anthropic_effort_adaptive"
+  | "anthropic_manual_budget"
+  | "chat_thinking_switch";
+
+const MODEL_POOL_REASONING_PROFILES: ReadonlySet<string> = new Set([
+  "openai_effort",
+  "anthropic_effort_inherit",
+  "anthropic_effort_adaptive",
+  "anthropic_manual_budget",
+  "chat_thinking_switch",
+]);
+
+/** Profiles whose positive action is a native enum value rather than a budget. */
+const MODEL_POOL_ENUM_REASONING_PROFILES: ReadonlySet<string> = new Set([
+  "openai_effort",
+  "anthropic_effort_inherit",
+  "anthropic_effort_adaptive",
+  "chat_thinking_switch",
+]);
+
+/** Internal minimum budget an Anthropic manual-budget mapping may declare. */
+export const MODEL_POOL_MIN_REASONING_BUDGET = 1024;
+
+/** Whether a stored profile identifier is one of the bounded supported shapes. */
+export function isKnownModelPoolReasoningProfile(
+  profile: string | null | undefined,
+): profile is ModelPoolReasoningProfile {
+  return typeof profile === "string" && MODEL_POOL_REASONING_PROFILES.has(profile);
+}
+
+/**
+ * Whether a declared profile may target one stored effective protocol. The
+ * bounded profiles are protocol-family specific, so a profile on the wrong
+ * ingress family never contributes a mapping.
+ */
+export function isModelPoolReasoningProfileSupportedOnProtocol(
+  profile: string | null | undefined,
+  protocol: GatewayUpstreamProtocol,
+): boolean {
+  switch (profile) {
+    case "openai_effort":
+      return protocol === "chat_completions" || protocol === "responses";
+    case "chat_thinking_switch":
+      return protocol === "chat_completions";
+    case "anthropic_effort_inherit":
+    case "anthropic_effort_adaptive":
+    case "anthropic_manual_budget":
+      return protocol === "anthropic_messages";
+    default:
+      return false;
+  }
+}
+
+/** An inclusive integer budget range declared by an Anthropic manual-budget candidate. */
+export interface ModelPoolReasoningBudget {
+  min?: number | null;
+  max?: number | null;
+}
+
+/** A typed native action a public preference maps to; shape depends on `kind`. */
+export interface ModelPoolReasoningAction {
+  kind: string;
+  value?: string;
+  budget_tokens?: number;
+}
+
+/** One public-preference -> typed-native-action mapping owned by a pool candidate. */
+export interface ModelPoolReasoningMapping {
+  effort: string;
+  action: ModelPoolReasoningAction;
+}
+
+/**
+ * A pool candidate's declared native reasoning capability. Every field is
+ * optional so legacy pools and old payloads stay assignable; a missing
+ * declaration stays unknown and no mapping is inferred from source metadata.
+ */
+export interface GatewayModelPoolReasoning {
+  profile?: string | null;
+  values?: string[] | null;
+  budget?: ModelPoolReasoningBudget | null;
+  supports_disable?: boolean;
+  mappings?: ModelPoolReasoningMapping[] | null;
+}
+
+/**
  * One source candidate of a model pool: an exact reference to a real provider
  * mapping. It never carries a source key or endpoint — the referenced mapping
- * remains authoritative for endpoint, credential and health.
+ * remains authoritative for endpoint, credential and health. The optional
+ * pool-local `reasoning` declaration is the only place new policy lives.
  */
 export interface GatewayModelPoolCandidate {
   provider_id: string;
@@ -1241,17 +1363,22 @@ export interface GatewayModelPoolCandidate {
   protocol: GatewayUpstreamProtocol;
   /** Integer 1-100; default 1. */
   weight: number;
+  /** Pool-local native reasoning declaration; absent/`null` stays unknown. */
+  reasoning?: GatewayModelPoolReasoning | null;
 }
 
 /**
  * An operator-defined pool exposed through one public model id. The default
  * display name is the user's `Free Modle` and the default id is `free-model`.
+ * `default_reasoning_effort` is one of the five canonical tokens or `auto`
+ * (absent/`null` reads as `auto`); it never lives on the source provider.
  */
 export interface GatewayModelPool {
   id: string;
   name: string;
   model: string;
   enabled: boolean;
+  default_reasoning_effort?: string | null;
   candidates: GatewayModelPoolCandidate[];
 }
 
@@ -1275,12 +1402,25 @@ export interface GatewayModelPoolCandidateStatus extends GatewayModelPoolCandida
   cooling_until: number | null;
 }
 
+/** One public preference's static pool coverage, independent of readiness. */
+export interface ModelPoolReasoningCoverage {
+  effort: string;
+  mapped_candidates: number;
+  total_candidates: number;
+}
+
 /** Nonsecret pool status snapshot derived from current source config. */
 export interface GatewayModelPoolStatus {
   id: string;
   name: string;
   model: string;
   enabled: boolean;
+  /** Pool default preference; absent/`null` reads as `auto`. */
+  default_reasoning_effort?: string | null;
+  /** Canonical preferences currently supported by valid pool mappings. */
+  reasoning_efforts?: string[];
+  /** Per-preference static coverage; absent for legacy pools. */
+  reasoning_coverage?: ModelPoolReasoningCoverage[];
   candidates: GatewayModelPoolCandidateStatus[];
 }
 
@@ -1303,6 +1443,196 @@ export function modelPoolReservedModels(
   config: GatewayConfig | null | undefined,
 ): string[] {
   return config?.model_pool_reserved_models ?? [];
+}
+
+/**
+ * Whether one candidate-local mapping is structurally valid for its declared
+ * profile. Unknown profiles and unsupported action shapes never produce a
+ * mapping, so no support is inferred from source metadata.
+ */
+export function isModelPoolReasoningMappingValid(
+  reasoning: GatewayModelPoolReasoning | null | undefined,
+  mapping: ModelPoolReasoningMapping,
+): boolean {
+  const profile = reasoning?.profile;
+  if (!isKnownModelPoolReasoningProfile(profile)) return false;
+  const effort = mapping.effort;
+  if (!(CANONICAL_REASONING_EFFORTS as readonly string[]).includes(effort)) {
+    return false;
+  }
+  const action = mapping.action;
+  if (!action || typeof action.kind !== "string") return false;
+
+  if (action.kind === "disable") {
+    return effort === "none" && reasoning?.supports_disable === true;
+  }
+  if (effort === "none") return false;
+
+  if (action.kind === "enum") {
+    // Only an enum-capable profile may carry a positive native value; a
+    // manual-budget candidate never does.
+    if (!MODEL_POOL_ENUM_REASONING_PROFILES.has(profile)) return false;
+    if (typeof action.value !== "string") return false;
+    const trimmed = action.value.trim();
+    if (trimmed === "") return false;
+    // A positive preference must never target the reserved disable/omission
+    // value.
+    if (trimmed.toLowerCase() === "none") return false;
+    // A switch profile selects one intensity: its positive value is `enabled`.
+    if (profile === "chat_thinking_switch") return trimmed === "enabled";
+    // An effort-profile value must stay inside the candidate's declared set.
+    return (reasoning?.values ?? []).includes(action.value);
+  }
+  if (action.kind === "budget") {
+    if (profile !== "anthropic_manual_budget") return false;
+    const min = reasoning?.budget?.min;
+    const max = reasoning?.budget?.max;
+    if (typeof min !== "number" || typeof max !== "number") return false;
+    if (!Number.isInteger(min) || !Number.isInteger(max)) return false;
+    if (min < MODEL_POOL_MIN_REASONING_BUDGET || max < min) return false;
+    const tokens = action.budget_tokens;
+    if (typeof tokens !== "number" || !Number.isInteger(tokens)) return false;
+    return tokens >= min && tokens <= max;
+  }
+  return false;
+}
+
+/**
+ * The canonical preferences a pool advertises from its own valid mappings,
+ * derived independently of runtime readiness and never from source metadata.
+ */
+export function resolveModelPoolReasoningEfforts(
+  pool: GatewayModelPool | null | undefined,
+): string[] {
+  const supported = new Set<string>();
+  for (const candidate of pool?.candidates ?? []) {
+    const reasoning = candidate.reasoning ?? null;
+    for (const mapping of reasoning?.mappings ?? []) {
+      if (isModelPoolReasoningMappingValid(reasoning, mapping)) {
+        supported.add(mapping.effort);
+      }
+    }
+  }
+  return CANONICAL_REASONING_EFFORTS.filter((effort) => supported.has(effort));
+}
+
+/** The concrete pool default preference, mapping a missing value to `auto`. */
+export function resolveModelPoolDefaultEffort(
+  pool: Pick<GatewayModelPool, "default_reasoning_effort"> | null | undefined,
+): string {
+  const value = pool?.default_reasoning_effort;
+  return typeof value === "string" && value.trim() !== "" ? value : "auto";
+}
+
+/**
+ * Whether one candidate's exact source reference currently resolves against the
+ * given providers: the provider id, the original trimmed mapping pair and the
+ * mapping's effective protocol. Availability and key state never enter.
+ */
+export function modelPoolCandidateResolves(
+  providers: GatewayUpstreamProvider[] | null | undefined,
+  candidate: Pick<
+    GatewayModelPoolCandidate,
+    "provider_id" | "local_model" | "upstream_model" | "protocol"
+  >,
+): boolean {
+  return (providers ?? []).some(
+    (provider) =>
+      provider.id === candidate.provider_id &&
+      (provider.mappings ?? []).some(
+        (mapping) =>
+          mapping.local_model.trim() === candidate.local_model &&
+          mapping.upstream_model.trim() === candidate.upstream_model &&
+          (mapping.protocol ?? provider.protocol ?? "chat_completions") ===
+            candidate.protocol,
+      ),
+  );
+}
+
+/**
+ * Whether one candidate statically serves `effort`: its exact source reference
+ * resolves, its profile is representable on its effective protocol and it
+ * declares a structurally valid mapping for the preference. Runtime readiness
+ * and key state are deliberately excluded.
+ */
+export function modelPoolCandidateServesEffort(
+  providers: GatewayUpstreamProvider[] | null | undefined,
+  candidate: GatewayModelPoolCandidate,
+  effort: string,
+): boolean {
+  const reasoning = candidate.reasoning;
+  if (!reasoning) return false;
+  const mapping = (reasoning.mappings ?? []).find(
+    (item) => item.effort === effort,
+  );
+  if (!mapping) return false;
+  if (!modelPoolCandidateResolves(providers, candidate)) return false;
+  if (
+    !isModelPoolReasoningProfileSupportedOnProtocol(
+      reasoning.profile,
+      candidate.protocol,
+    )
+  ) {
+    return false;
+  }
+  return isModelPoolReasoningMappingValid(reasoning, mapping);
+}
+
+/** One pool's configuration-derived static reasoning catalog. */
+export interface ModelPoolReasoningCatalog {
+  reasoning_efforts: string[];
+  default_reasoning_effort: string;
+  reasoning_coverage: ModelPoolReasoningCoverage[];
+}
+
+/**
+ * Derive one pool's static reasoning catalog from the current provider list,
+ * mirroring the backend `pool_reasoning_catalog`: the supported canonical
+ * preferences in canonical order, the pool default and the five canonical
+ * coverage rows. Readiness, cooldown, key and source-enable state never move the
+ * counts; a dangling or protocol-changed reference stops being advertised.
+ */
+export function poolReasoningCatalog(
+  providers: GatewayUpstreamProvider[] | null | undefined,
+  pool: Pick<GatewayModelPool, "candidates" | "default_reasoning_effort">,
+): ModelPoolReasoningCatalog {
+  const total = pool.candidates.length;
+  const reasoning_coverage = CANONICAL_REASONING_EFFORTS.map((effort) => ({
+    effort,
+    mapped_candidates: pool.candidates.filter((candidate) =>
+      modelPoolCandidateServesEffort(providers, candidate, effort),
+    ).length,
+    total_candidates: total,
+  }));
+  return {
+    reasoning_efforts: reasoning_coverage
+      .filter((row) => row.mapped_candidates > 0)
+      .map((row) => row.effort),
+    default_reasoning_effort: resolveModelPoolDefaultEffort(pool),
+    reasoning_coverage,
+  };
+}
+
+/**
+ * The coverage row a pool capability block surfaces: the concrete default's row
+ * when one is set, otherwise the first advertised labeled preference. It never
+ * silently falls back to an unlabeled canonical `low` row while a labeled tier
+ * is mapped, and only falls back to the first canonical row when nothing at all
+ * is advertised (so the denominator stays visible).
+ */
+export function selectPoolReasoningCoverageRow(
+  coverage: ModelPoolReasoningCoverage[] | null | undefined,
+  defaultEffort: string,
+  supportedEfforts: string[],
+): ModelPoolReasoningCoverage | null {
+  const rows = coverage ?? [];
+  if (rows.length === 0) return null;
+  if (defaultEffort && defaultEffort !== "auto") {
+    const exact = rows.find((row) => row.effort === defaultEffort);
+    if (exact) return exact;
+  }
+  const advertised = rows.find((row) => supportedEfforts.includes(row.effort));
+  return advertised ?? rows[0] ?? null;
 }
 
 /**

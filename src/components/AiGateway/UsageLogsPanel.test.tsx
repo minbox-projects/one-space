@@ -2568,5 +2568,219 @@ describe("UsageLogsPanel", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Step 4 (20261015-pool-only-reasoning) REQ-006 / AC-011 / AC-014: pool attempt
+// rows show the requested, resolved and allowlisted native control evidence;
+// ordinary/historical rows gain no pool detail and never infer a value, and the
+// native detail is keyboard reachable.
+//
+// Public contract this block fixes for the frontend:
+//   - resolved value:   data-testid="ai-gateway-logs-resolved-reasoning-effort"
+//   - native control:   data-testid="ai-gateway-logs-native-reasoning" (focusable)
+//   - native detail:    role="tooltip" inside the same row (t("aiGatewayLogsReasoningNative"))
+//   - native params:    data-testid="ai-gateway-logs-native-reasoning-parameters"
+// ---------------------------------------------------------------------------
+
+/** Build a row carrying the optional pool attempt-evidence fields. */
+function poolRecord(overrides: Record<string, unknown>): UsageLogRecord {
+  return { ...record(), ...overrides } as UsageLogRecord;
+}
+
+function nativeControl(row: HTMLElement): HTMLElement {
+  return within(row).getByTestId("ai-gateway-logs-native-reasoning");
+}
+
+function nativeDetail(row: HTMLElement): HTMLElement {
+  // The row also renders the cost and upstream-error `role="tooltip"` elements,
+  // so query the native control's own `aria-describedby`-linked detail rather
+  // than any tooltip found in the row.
+  const control = within(row).getByTestId("ai-gateway-logs-native-reasoning");
+  const detailId = control.getAttribute("aria-describedby");
+  const detail = detailId ? document.getElementById(detailId) : null;
+  if (!(detail instanceof HTMLElement)) {
+    throw new Error("native reasoning detail is not associated with its control");
+  }
+  return detail;
+}
+
+describe("UsageLogsPanel 池尝试推理证据展示（Step 4）", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("池行同时展示请求、解析与允许清单内的原生控制字段", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          poolRecord({
+            local_model: "pool-alias",
+            reasoning_effort: "high",
+            resolved_reasoning_effort: "high",
+            native_reasoning: {
+              protocol: "chat_completions",
+              mode: "enum",
+              parameters: { reasoning_effort: "high" },
+            },
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const row = await screen.findByTestId("ai-gateway-logs-row");
+
+    expect(
+      within(row).getByTestId("ai-gateway-logs-reasoning-effort"),
+    ).toHaveTextContent("high");
+    expect(
+      within(row).getByTestId("ai-gateway-logs-resolved-reasoning-effort"),
+    ).toHaveTextContent("high");
+
+    const detail = nativeDetail(row);
+    expect(detail).toHaveTextContent("chat_completions");
+    expect(detail).toHaveTextContent("enum");
+    const parameters = within(row).getByTestId(
+      "ai-gateway-logs-native-reasoning-parameters",
+    );
+    expect(parameters).toHaveTextContent("reasoning_effort");
+    expect(parameters).toHaveTextContent("high");
+    // No request/response body, header or credential leaks into evidence.
+    expect(detail).not.toHaveTextContent(/authorization|bearer|api[_-]?key|sk-/i);
+  });
+
+  it("auto 尝试记录 provider_default 且参数为空，绝不推断档位", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          poolRecord({
+            local_model: "auto-pool",
+            reasoning_effort: null,
+            resolved_reasoning_effort: "auto",
+            native_reasoning: {
+              protocol: "responses",
+              mode: "provider_default",
+              parameters: {},
+            },
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const row = await screen.findByTestId("ai-gateway-logs-row");
+
+    expect(
+      within(row).getByTestId("ai-gateway-logs-resolved-reasoning-effort"),
+    ).toHaveTextContent("auto");
+    const detail = nativeDetail(row);
+    expect(detail).toHaveTextContent("provider_default");
+    expect(
+      within(row).queryByTestId("ai-gateway-logs-native-reasoning-parameters"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("历史行缺少原生快照时显示不可用而不是推断值", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          poolRecord({
+            local_model: "historical-pool",
+            resolved_reasoning_effort: "medium",
+            native_reasoning: null,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const row = await screen.findByTestId("ai-gateway-logs-row");
+
+    expect(
+      within(row).getByTestId("ai-gateway-logs-resolved-reasoning-effort"),
+    ).toHaveTextContent("medium");
+    const detail = nativeDetail(row);
+    expect(detail).toHaveTextContent(
+      i18n.t("aiGatewayLogsReasoningNativeUnavailable"),
+    );
+    expect(
+      within(row).queryByTestId("ai-gateway-logs-native-reasoning-parameters"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("普通行不新增任何池详情，也不显示解析或原生证据", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({ records: [record({ reasoning_effort: "high" })] });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const row = await screen.findByTestId("ai-gateway-logs-row");
+
+    expect(
+      within(row).getByTestId("ai-gateway-logs-reasoning-effort"),
+    ).toHaveTextContent("high");
+    expect(
+      within(row).queryByTestId("ai-gateway-logs-resolved-reasoning-effort"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(row).queryByTestId("ai-gateway-logs-native-reasoning"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("原生证据控件可通过键盘聚焦并与同行的明细关联", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          poolRecord({
+            local_model: "keyboard-pool",
+            resolved_reasoning_effort: "high",
+            native_reasoning: {
+              protocol: "anthropic_messages",
+              mode: "budget",
+              parameters: { thinking: { type: "enabled", budget_tokens: 2048 } },
+            },
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const row = await screen.findByTestId("ai-gateway-logs-row");
+
+    const control = nativeControl(row);
+    expectKeyboardFocusable(control);
+
+    let reachedByKeyboard = false;
+    for (let step = 0; step < 40; step += 1) {
+      await user.tab();
+      if (document.activeElement === control) {
+        reachedByKeyboard = true;
+        break;
+      }
+    }
+    expect(reachedByKeyboard).toBe(true);
+
+    const detail = nativeDetail(row);
+    expect(control.closest("td")?.contains(detail)).toBe(true);
+    expect(detail).toHaveTextContent("budget_tokens");
+  });
+});
+
 
 

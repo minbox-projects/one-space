@@ -201,3 +201,91 @@ describe("ModelPoolListPanel", () => {
     expect(onOpenPoolLogs).toHaveBeenCalledWith("anthropic/claude-sonnet-pool");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 4 (20261015-pool-only-reasoning) REQ-005 / AC-009 (UI): the pool panel
+// forwards each pool's status so its card can advertise the configured
+// canonical support/coverage; a pool without any status keeps no reasoning
+// block. Nothing is inferred inside the panel.
+// ---------------------------------------------------------------------------
+
+describe("ModelPoolListPanel 模型池推理能力透传（Step 4）", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  const reasoningPool = {
+    id: "pool-reasoning",
+    name: "Reasoning Pool",
+    model: "reasoning-pool",
+    enabled: true,
+    candidates: [
+      {
+        provider_id: "p-a",
+        local_model: "claude-sonnet",
+        upstream_model: "claude-3-5-sonnet",
+        protocol: "chat_completions",
+        weight: 1,
+      },
+    ],
+  };
+
+  const reasoningStatus = {
+    id: "pool-reasoning",
+    name: "Reasoning Pool",
+    model: "reasoning-pool",
+    enabled: true,
+    default_reasoning_effort: "high",
+    reasoning_efforts: ["high"],
+    reasoning_coverage: [
+      { effort: "high", mapped_candidates: 2, total_candidates: 3 },
+    ],
+    candidates: [],
+  };
+
+  it("把状态透传给卡片展示配置支持与静态覆盖", () => {
+    renderWithProviders(
+      <ModelPoolListPanel
+        modelPools={[reasoningPool as unknown as GatewayModelPool]}
+        providers={mockProviders}
+        poolStatuses={[reasoningStatus as unknown as GatewayModelPoolStatus]}
+      />,
+    );
+
+    expect(
+      screen.getByTestId(
+        "ai-gateway-model-pool-reasoning-support-pool-reasoning",
+      ),
+    ).toHaveTextContent("high");
+    expect(
+      screen.getByTestId(
+        "ai-gateway-model-pool-reasoning-coverage-pool-reasoning",
+      ),
+    ).toHaveTextContent(
+      i18n.t("aiGatewayModelPoolReasoningCoverageValue", {
+        mapped: 2,
+        total: 3,
+      }),
+    );
+  });
+
+  it("没有状态数据的池不展示推理块", () => {
+    renderWithProviders(
+      <ModelPoolListPanel
+        modelPools={[reasoningPool as unknown as GatewayModelPool]}
+        providers={mockProviders}
+      />,
+    );
+
+    expect(
+      screen.queryByTestId(
+        "ai-gateway-model-pool-reasoning-support-pool-reasoning",
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId(
+        "ai-gateway-model-pool-reasoning-coverage-pool-reasoning",
+      ),
+    ).not.toBeInTheDocument();
+  });
+});

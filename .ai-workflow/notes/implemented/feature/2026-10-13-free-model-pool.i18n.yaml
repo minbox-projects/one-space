@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-13-free-model-pool.md
-2026-10-13-free-model-pool.md: 2bcac104bfc851575fca107295e055691d048a13
-2026-10-13-free-model-pool.zh.md: 74424c049e3d38f33338cb10beb19028fe0c161b
+2026-10-13-free-model-pool.md: 137fec05858e470ef434486a262f09bc0f842c0a
+2026-10-13-free-model-pool.zh.md: 26cfb64276330ab86f62975ca9d5bc944f0eee2e

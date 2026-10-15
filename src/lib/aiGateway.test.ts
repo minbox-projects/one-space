@@ -2424,3 +2424,195 @@ describe("AI Gateway anthropic_messages 协议与 Claude 四选择 wrapper", () 
   });
 });
 
+// ---------------------------------------------------------------------------
+// Step 4 (20261015-pool-only-reasoning) REQ-002 / REQ-007 / REQ-005: the shared
+// DTO helpers tolerate the new pool-local reasoning fields and keep ordinary
+// provider reasoning identifiers exact. These are regression guards: they pass
+// against the pre-Step-4 helpers and must keep passing after the frontend adds
+// the pool DTO fields.
+// ---------------------------------------------------------------------------
+
+describe("AI Gateway 模型池推理 DTO 容错与普通档位隔离（Step 4 guard）", () => {
+  it("modelPools 原样保留池局部默认与候选推理声明，不写入服务商记录", () => {
+    const pool = {
+      id: "pool-1",
+      name: "Pool",
+      model: "pool-model",
+      enabled: true,
+      default_reasoning_effort: "high",
+      candidates: [
+        {
+          provider_id: "p1",
+          local_model: "l",
+          upstream_model: "u",
+          protocol: "chat_completions",
+          weight: 1,
+          reasoning: {
+            profile: "openai_effort",
+            values: ["high"],
+            supports_disable: false,
+            mappings: [
+              { effort: "high", action: { kind: "enum", value: "high" } },
+            ],
+          },
+        },
+      ],
+    };
+    const cfg = config({ model_pools: [pool as never] });
+
+    const [stored] = aiGatewayModule.modelPools(cfg);
+    const storedRecord = stored as unknown as Record<string, unknown>;
+    expect(storedRecord.default_reasoning_effort).toBe("high");
+    const storedCandidates = storedRecord.candidates as Array<
+      Record<string, unknown>
+    >;
+    expect(storedCandidates[0].reasoning).toEqual(pool.candidates[0].reasoning);
+    // No persistent pool field leaks onto the provider/source contract.
+    expect(cfg.providers).toEqual([]);
+  });
+
+  it("普通推理档位联合去重保留原始标识而不规范化", () => {
+    const [entry] = aggregateModels([
+      provider({
+        mappings: [
+          {
+            local_model: "m",
+            upstream_model: "u",
+            reasoning_efforts: ["max", "minimal", "AUTO", "max"],
+          },
+        ],
+      }),
+    ]);
+
+    expect(resolveAggregatedReasoningEfforts(entry)).toEqual([
+      "max",
+      "minimal",
+      "AUTO",
+    ]);
+  });
+
+  it("候选状态解析忽略新增 reasoning 字段而保持服务商/映射/密钥判定", () => {
+    const candidate = {
+      provider_id: "p1",
+      local_model: "l",
+      upstream_model: "u",
+      protocol: "chat_completions",
+      weight: 1,
+      reasoning: { profile: "openai_effort" },
+    };
+
+    const state = aiGatewayModule.resolveModelPoolCandidateState(
+      candidate as never,
+      [provider({ mappings: [{ local_model: "l", upstream_model: "u" }] })],
+    );
+
+    expect(state.availability).toBe("ready");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 4 repair (20261015-pool-only-reasoning) REQ-002 / AC-002 / AC-004: the
+// exported candidate-local mapping helper is the one shared native-shape rule
+// the pool editor guard, the catalog projection and the model list all reuse.
+// It must reject the shapes the backend refuses (see `candidate_serves_effort`):
+// an enum on a manual-budget profile, a positive preference mapped to the
+// reserved `none`, a switch value other than `enabled`, and a budget action
+// without a `budget_tokens` integer inside the declared range.
+//
+// RED: the pre-repair helper accepts every invalid row below because it only
+// validates the declared range and never the mapped budget value.
+// ---------------------------------------------------------------------------
+
+describe("模型池推理映射有效性边界（Step 4 repair）", () => {
+  function valid(
+    reasoning: Record<string, unknown>,
+    mapping: Record<string, unknown>,
+  ): boolean {
+    return aiGatewayModule.isModelPoolReasoningMappingValid(
+      reasoning as never,
+      mapping as never,
+    );
+  }
+
+  const manualRange = { min: 1024, max: 8192 };
+
+  it("manual-budget 配置拒绝 enum 正向动作", () => {
+    expect(
+      valid(
+        {
+          profile: "anthropic_manual_budget",
+          values: ["high"],
+          budget: manualRange,
+          mappings: [],
+        },
+        { effort: "high", action: { kind: "enum", value: "high" } },
+      ),
+    ).toBe(false);
+  });
+
+  it("正向档位不得映射到保留字 none", () => {
+    expect(
+      valid(
+        { profile: "openai_effort", values: ["none"], mappings: [] },
+        { effort: "high", action: { kind: "enum", value: "none" } },
+      ),
+    ).toBe(false);
+  });
+
+  it("switch 配置只接受 enabled 开关取值", () => {
+    const reasoning = {
+      profile: "chat_thinking_switch",
+      values: [],
+      supports_disable: true,
+      mappings: [],
+    };
+    expect(
+      valid(reasoning, {
+        effort: "high",
+        action: { kind: "enum", value: "high" },
+      }),
+    ).toBe(false);
+    expect(
+      valid(reasoning, {
+        effort: "high",
+        action: { kind: "enum", value: "enabled" },
+      }),
+    ).toBe(true);
+  });
+
+  it("manual-budget 动作必须携带落在声明区间内的整数预算", () => {
+    const reasoning = {
+      profile: "anthropic_manual_budget",
+      values: [],
+      budget: manualRange,
+      mappings: [],
+    };
+    const mapping = (budget_tokens?: number) => ({
+      effort: "high",
+      action: {
+        kind: "budget",
+        ...(budget_tokens === undefined ? {} : { budget_tokens }),
+      },
+    });
+
+    expect(valid(reasoning, mapping(undefined))).toBe(false);
+    expect(valid(reasoning, mapping(1023))).toBe(false);
+    expect(valid(reasoning, mapping(8193))).toBe(false);
+    expect(valid(reasoning, mapping(3072))).toBe(true);
+  });
+
+  it("非 manual-budget 配置不接受 budget 动作", () => {
+    expect(
+      valid(
+        {
+          profile: "anthropic_effort_adaptive",
+          values: [],
+          budget: manualRange,
+          mappings: [],
+        },
+        { effort: "high", action: { kind: "budget", budget_tokens: 3072 } },
+      ),
+    ).toBe(false);
+  });
+});
+

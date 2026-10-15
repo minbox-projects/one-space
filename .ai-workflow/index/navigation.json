@@ -2215,6 +2215,126 @@
           "name": "getGatewayTpsColorClass",
           "kind": "function",
           "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "CANONICAL_REASONING_EFFORTS",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "CanonicalReasoningEffort",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ModelPoolReasoningProfile",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "MODEL_POOL_MIN_REASONING_BUDGET",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "isKnownModelPoolReasoningProfile",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ModelPoolReasoningBudget",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ModelPoolReasoningAction",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ModelPoolReasoningMapping",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "GatewayModelPoolReasoning",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ModelPoolReasoningCoverage",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ModelPoolNativeReasoning",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "isModelPoolReasoningMappingValid",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "resolveModelPoolReasoningEfforts",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "resolveModelPoolDefaultEffort",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "isModelPoolReasoningProfileSupportedOnProtocol",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "modelPoolCandidateResolves",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "modelPoolCandidateServesEffort",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ModelPoolReasoningCatalog",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "poolReasoningCatalog",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "selectPoolReasoningCoverageRow",
+          "kind": "function",
+          "visibility": "public"
         }
       ],
       "depends_on": [],

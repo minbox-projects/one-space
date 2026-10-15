@@ -17,12 +17,15 @@ import {
   aggregateModels,
   AI_GATEWAY_DEFAULT_PORT,
   localBaseUrl,
+  poolReasoningCatalog,
   resolveAggregatedModelName,
   resolveAggregatedReasoningEfforts,
+  selectPoolReasoningCoverageRow,
   type AggregatedModel,
   type GatewayModelPool,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
+  type ModelPoolReasoningCoverage,
 } from "@/lib/aiGateway";
 import { protocolShortLabel } from "./gatewayShared";
 
@@ -101,6 +104,8 @@ export function ModelListPanel({
       ) as GatewayUpstreamProtocol[],
       reasoningEfforts: resolveAggregatedReasoningEfforts(entry),
       pool: undefined as GatewayModelPool | undefined,
+      poolDefault: undefined as string | undefined,
+      poolCoverage: undefined as ModelPoolReasoningCoverage[] | undefined,
     }));
 
     // Each enabled pool is advertised exactly once, including while all of its
@@ -120,6 +125,13 @@ export function ModelListPanel({
             isDefault: false,
           })),
         };
+        // Canonical pool support comes from the pool's own static catalog
+        // derived from the current provider list, never from the referenced
+        // source's native effort identifiers, readiness or key state.
+        const catalog = poolReasoningCatalog(providers, pool);
+        const poolHasReasoning =
+          pool.candidates.some((candidate) => candidate.reasoning != null) ||
+          catalog.default_reasoning_effort !== "auto";
         return {
           entry,
           name: pool.name,
@@ -130,8 +142,12 @@ export function ModelListPanel({
             "chat_completions",
             "responses",
           ] as GatewayUpstreamProtocol[],
-          reasoningEfforts: [] as string[],
+          reasoningEfforts: catalog.reasoning_efforts,
           pool,
+          poolDefault: catalog.default_reasoning_effort,
+          poolCoverage: poolHasReasoning
+            ? catalog.reasoning_coverage
+            : undefined,
         };
       });
 
@@ -294,10 +310,23 @@ export function ModelListPanel({
     protocols,
     reasoningEfforts,
     pool,
+    poolDefault,
+    poolCoverage,
   }: (typeof rows)[number]) => {
     const localTargetKey = `local:${entry.model}`;
     const isCopied = copiedTarget === localTargetKey;
     const isPool = Boolean(pool);
+    const coverageRow = isPool
+      ? selectPoolReasoningCoverageRow(
+          poolCoverage,
+          poolDefault ?? "auto",
+          reasoningEfforts,
+        )
+      : null;
+    const defaultLabel =
+      poolDefault && poolDefault !== "auto"
+        ? poolDefault
+        : t("aiGatewayModelPoolReasoningDefaultAuto", "Provider default (auto)");
 
     return (
       <tr
@@ -414,6 +443,33 @@ export function ModelListPanel({
                     {effort}
                   </span>
                 ))}
+              </div>
+            ) : null}
+            {isPool && poolCoverage ? (
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-0.5 text-[10px] text-muted-foreground">
+                <span>{t("aiGatewayModelPoolReasoningDefaultLabel", "Reasoning default")}:</span>
+                <span
+                  data-testid="ai-gateway-model-list-reasoning-default"
+                  className="rounded bg-muted/60 px-1.5 py-0.2 font-mono font-medium text-foreground/85"
+                >
+                  {defaultLabel}
+                </span>
+                {coverageRow ? (
+                  <>
+                    <span>{t("aiGatewayModelPoolReasoningCoverageLabel", "Static coverage")}:</span>
+                    <span
+                      data-testid="ai-gateway-model-list-reasoning-coverage"
+                      className="font-medium text-foreground/85"
+                    >
+                      <span className="font-mono">{coverageRow.effort}</span>{" "}
+                      {t("aiGatewayModelPoolReasoningCoverageValue", {
+                        mapped: coverageRow.mapped_candidates,
+                        total: coverageRow.total_candidates,
+                        defaultValue: "{{mapped}}/{{total}} candidates mapped",
+                      })}
+                    </span>
+                  </>
+                ) : null}
               </div>
             ) : null}
           </div>

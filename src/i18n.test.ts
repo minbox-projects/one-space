@@ -1233,3 +1233,173 @@ describe("AI 网关延迟指标国际化键", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 4 (REQ-004 / REQ-006): pool reasoning policy editor copy and pool
+// attempt-evidence log copy. These exact accessible labels are the contract the
+// Step 4 frontend implements and the RTL suites query by name.
+// RED assertions: Frontend must add every key below to both dictionaries and
+// both key manifests.
+// ---------------------------------------------------------------------------
+
+const POOL_REASONING_UI_COPY: Record<string, Record<"en" | "zh", string>> = {
+  aiGatewayModelPoolReasoningDefaultLabel: {
+    en: "Reasoning default",
+    zh: "默认推理偏好",
+  },
+  aiGatewayModelPoolReasoningProfileLabel: {
+    en: "Native reasoning profile",
+    zh: "原生推理配置",
+  },
+  aiGatewayModelPoolReasoningValuesLabel: {
+    en: "Declared values",
+    zh: "声明的取值",
+  },
+  aiGatewayModelPoolReasoningBudgetMinLabel: {
+    en: "Minimum budget",
+    zh: "最小预算",
+  },
+  aiGatewayModelPoolReasoningBudgetMaxLabel: {
+    en: "Maximum budget",
+    zh: "最大预算",
+  },
+  aiGatewayModelPoolReasoningSupportsDisableLabel: {
+    en: "Supports explicit disable",
+    zh: "支持显式禁用",
+  },
+  aiGatewayModelPoolReasoningMappingLabel: {
+    en: "Mapping matrix",
+    zh: "映射矩阵",
+  },
+  aiGatewayModelPoolReasoningMappingUnmapped: {
+    en: "Unmapped",
+    zh: "未映射",
+  },
+  aiGatewayModelPoolReasoningSwitchNoGradient: {
+    en: "This profile selects one intensity: every positive mapping sends the same switch, so there is no intensity gradient.",
+    zh: "该配置只选择一个强度：每个正向映射发送相同的开关，因此没有强度梯度。",
+  },
+  aiGatewayModelPoolReasoningCoverageLabel: {
+    en: "Static coverage",
+    zh: "静态覆盖",
+  },
+  aiGatewayModelPoolReasoningRuntimeReadinessLabel: {
+    en: "Runtime readiness",
+    zh: "运行时就绪",
+  },
+  aiGatewayModelPoolReasoningDefaultAuto: {
+    en: "Provider default (auto)",
+    zh: "服务商默认（auto）",
+  },
+  // Step 4 repair: the per-effort manual-budget control and the localized
+  // profile/action option labels. Option *values* stay the stable product
+  // tokens (`openai_effort`…, `budget`, `disable`); only the visible labels are
+  // localized, so the operator never reads a raw token in either language.
+  aiGatewayModelPoolReasoningBudgetLabel: {
+    en: "Reasoning budget",
+    zh: "推理预算",
+  },
+  aiGatewayModelPoolReasoningActionBudget: { en: "Budget", zh: "预算" },
+  aiGatewayModelPoolReasoningActionDisable: { en: "Disable", zh: "禁用" },
+  aiGatewayModelPoolReasoningProfileOpenaiEffort: {
+    en: "OpenAI effort",
+    zh: "OpenAI 推理档位",
+  },
+  aiGatewayModelPoolReasoningProfileAnthropicEffortInherit: {
+    en: "Anthropic effort (inherit thinking)",
+    zh: "Anthropic 推理档位（继承思考）",
+  },
+  aiGatewayModelPoolReasoningProfileAnthropicEffortAdaptive: {
+    en: "Anthropic effort (adaptive thinking)",
+    zh: "Anthropic 推理档位（自适应思考）",
+  },
+  aiGatewayModelPoolReasoningProfileAnthropicManualBudget: {
+    en: "Anthropic manual budget",
+    zh: "Anthropic 手动预算",
+  },
+  aiGatewayModelPoolReasoningProfileChatThinkingSwitch: {
+    en: "Chat thinking switch",
+    zh: "Chat 思考开关",
+  },
+  aiGatewayLogsReasoningRequested: { en: "Requested", zh: "请求" },
+  aiGatewayLogsReasoningResolved: { en: "Resolved", zh: "解析" },
+  aiGatewayLogsReasoningNative: { en: "Native control", zh: "原生控制" },
+  aiGatewayLogsReasoningNativeUnavailable: { en: "Unavailable", zh: "不可用" },
+};
+
+const POOL_REASONING_UI_COUNT_COPY: Record<
+  string,
+  Record<"en" | "zh", string>
+> = {
+  aiGatewayModelPoolReasoningCoverageValue: {
+    en: "{{mapped}}/{{total}} candidates mapped",
+    zh: "{{mapped}}/{{total}} 个候选已映射",
+  },
+  aiGatewayModelPoolReasoningRuntimeReadyCount: {
+    en: "{{ready}}/{{total}} candidates ready",
+    zh: "{{ready}}/{{total}} 个候选就绪",
+  },
+};
+
+describe("AI 网关模型池推理策略 UI 国际化键", () => {
+  it.each(["en", "zh"] as const)(
+    "为 %s 提供推理策略编辑器的精确无障碍文案",
+    (language) => {
+      for (const [key, copy] of Object.entries(POOL_REASONING_UI_COPY)) {
+        const translation = i18n.getResource(language, "translation", key);
+        expect(typeof translation, `${language}:${key} 应为字符串`).toBe(
+          "string",
+        );
+        expect(translation, `${language}:${key} 文案不匹配`).toBe(
+          copy[language],
+        );
+      }
+    },
+  );
+
+  it.each(["en", "zh"] as const)(
+    "为 %s 的覆盖与就绪计数文案保留占位符并正常插值",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      for (const [key, copy] of Object.entries(POOL_REASONING_UI_COUNT_COPY)) {
+        const raw = i18n.getResource(language, "translation", key);
+        expect(typeof raw, `${language}:${key} 应为字符串`).toBe("string");
+        expect(raw as string, `${language}:${key} 文案不匹配`).toBe(
+          copy[language],
+        );
+        const rendered = i18n.t(key, { mapped: 2, total: 3, ready: 1 });
+        expect(rendered, `${language}:${key} 不应残留占位符`).not.toContain("{{");
+      }
+    },
+  );
+
+  it("新增推理策略 UI 键后 en 与 zh 的键路径集合仍完全一致", () => {
+    const enPaths = collectKeyPaths(resourceBundle("en"));
+    const zhPaths = collectKeyPaths(resourceBundle("zh"));
+    const enSet = new Set(enPaths);
+    const zhSet = new Set(zhPaths);
+    expect({
+      onlyEn: enPaths.filter((path) => !zhSet.has(path)),
+      onlyZh: zhPaths.filter((path) => !enSet.has(path)),
+    }).toEqual({ onlyEn: [], onlyZh: [] });
+  });
+
+  it("en_keys.txt 与 zh_keys.txt 收录推理策略 UI 键且键集合保持一致", () => {
+    const enKeys = readKeyListFile("en_keys.txt");
+    const zhKeys = readKeyListFile("zh_keys.txt");
+
+    expect({
+      onlyEn: [...enKeys].filter((key) => !zhKeys.has(key)),
+      onlyZh: [...zhKeys].filter((key) => !enKeys.has(key)),
+    }).toEqual({ onlyEn: [], onlyZh: [] });
+
+    const pinned = [
+      ...Object.keys(POOL_REASONING_UI_COPY),
+      ...Object.keys(POOL_REASONING_UI_COUNT_COPY),
+    ];
+    for (const key of pinned) {
+      expect(enKeys.has(key), `en_keys.txt 缺少 ${key}`).toBe(true);
+      expect(zhKeys.has(key), `zh_keys.txt 缺少 ${key}`).toBe(true);
+    }
+  });
+});

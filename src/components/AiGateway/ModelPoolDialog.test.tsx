@@ -21,6 +21,7 @@
 //   - upsert command:      invoke("ai_gateway_upsert_model_pool", { pool })
 
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { AiGateway } from "@/components/AiGateway";
@@ -202,6 +203,14 @@ describe("ModelPoolDialog", () => {
       target: { value: "1" },
     });
 
+    // A new pool starts at the concrete `medium` default, which requires at
+    // least one valid candidate mapping. Select `auto` so this pre-existing
+    // test still covers the original save/payload behavior; the new default and
+    // its save guard keep their dedicated coverage in the Step 4 tests below.
+    fireEvent.change(screen.getByTestId("model-pool-reasoning-default"), {
+      target: { value: "auto" },
+    });
+
     fireEvent.click(screen.getByTestId("model-pool-save"));
 
     await waitFor(() => expect(upsertCalls()).toHaveLength(1));
@@ -320,6 +329,13 @@ describe("ModelPoolDialog", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /local-a1/i }));
     fireEvent.change(screen.getByRole("spinbutton", { name: /local-a1/i }), {
       target: { value: "9" },
+    });
+
+    // Select `auto` so the new concrete-default save guard does not preempt the
+    // mocked backend failure this test exercises; the draft and error
+    // assertions below are unchanged.
+    fireEvent.change(screen.getByTestId("model-pool-reasoning-default"), {
+      target: { value: "auto" },
     });
 
     mockState.upsertError =
@@ -753,5 +769,788 @@ describe("ModelPoolDialog", () => {
     expect(screen.getByTestId("model-pool-source-group-p-enabled-2")).toBeInTheDocument();
     expect(screen.queryByTestId("model-pool-source-group-p-disabled")).not.toBeInTheDocument();
   });
+});
+
+// ---------------------------------------------------------------------------
+// Step 4 (20261015-pool-only-reasoning) REQ-004 / REQ-001 / REQ-002:
+// pool-only reasoning policy editor. REQ-005/REQ-006 capability + coverage
+// surfacing, REQ-007 pool-subtree isolation; AC-008 / AC-009 (UI) / AC-011
+// (presentation) / AC-012 / AC-014.
+//
+// Public contract this block fixes for the frontend:
+//   - pool default control: a labelled native <select> whose accessible name is
+//       t("aiGatewayModelPoolReasoningDefaultLabel"); option values are the six
+//       canonical tokens (auto|low|medium|high|xhigh|none).
+//   - candidate profile control: a labelled native <select> whose accessible
+//       name is t("aiGatewayModelPoolReasoningProfileLabel"); option values are
+//       "" (unknown, not declared) plus the five profile tokens
+//       (openai_effort|anthropic_effort_inherit|anthropic_effort_adaptive|
+//       anthropic_manual_budget|chat_thinking_switch).
+//   - declared values: an input named t("aiGatewayModelPoolReasoningValuesLabel")
+//       holding the comma+space joined declared native values.
+//   - budget range: number inputs named
+//       t("aiGatewayModelPoolReasoningBudgetMinLabel" / ...MaxLabel).
+//   - supports disable: a checkbox named
+//       t("aiGatewayModelPoolReasoningSupportsDisableLabel").
+//   - mapping matrix: per-effort native <select> with
+//       data-testid="model-pool-reasoning-mapping-<effort>"; option value "" is
+//       t("aiGatewayModelPoolReasoningMappingUnmapped"), otherwise
+//       "enum:<value>" | "budget" | "disable".
+//   - persisted pool payload gains pool.default_reasoning_effort and
+//       candidate.reasoning {profile,values,budget,supports_disable,mappings}.
+// ---------------------------------------------------------------------------
+
+function reasoningDefaultSelect(): HTMLSelectElement {
+  return screen.getByLabelText(
+    i18n.t("aiGatewayModelPoolReasoningDefaultLabel"),
+  ) as HTMLSelectElement;
+}
+
+function candidateProfileSelect(): HTMLSelectElement {
+  return screen.getByLabelText(
+    i18n.t("aiGatewayModelPoolReasoningProfileLabel"),
+  ) as HTMLSelectElement;
+}
+
+function mappingSelect(effort: string): HTMLSelectElement {
+  return screen.getByTestId(
+    `model-pool-reasoning-mapping-${effort}`,
+  ) as HTMLSelectElement;
+}
+
+function reasoningOf(
+  pool: Record<string, unknown>,
+  index = 0,
+): Record<string, unknown> {
+  const candidates = (pool.candidates ?? []) as Array<Record<string, unknown>>;
+  return (candidates[index]?.reasoning ?? {}) as Record<string, unknown>;
+}
+
+describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+    mockState.config = buildConfig([]);
+    mockState.statusPayload = [];
+    mockState.upsertError = null;
+    mockState.deleted = [];
+    installMock();
+  });
+
+  it("新池默认选中 medium，可显式改为 auto 并按池局部默认值保存", async () => {
+    const user = userEvent.setup();
+    await openModelPoolDialog();
+
+    expect(reasoningDefaultSelect()).toHaveValue("medium");
+
+    await user.selectOptions(reasoningDefaultSelect(), "auto");
+    fireEvent.click(screen.getByRole("checkbox", { name: /local-a1/i }));
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+    expect(upsertCalls()[0].default_reasoning_effort).toBe("auto");
+    // A pool save never touches the referenced providers.
+    expect(
+      invokeMock.mock.calls.some(
+        ([command]) => command === "ai_gateway_upsert_provider",
+      ),
+    ).toBe(false);
+  });
+
+  it("编辑遗留池时默认读取 auto，且不推断任何映射", async () => {
+    mockState.config = buildConfig([
+      {
+        id: "pool-legacy",
+        name: "Legacy Pool",
+        model: "legacy-model",
+        enabled: true,
+        candidates: [
+          {
+            provider_id: "p-a",
+            local_model: "local-a1",
+            upstream_model: "remote-a1",
+            protocol: "chat_completions",
+            weight: 1,
+          },
+        ],
+      },
+    ]);
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Provider A");
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-legacy"));
+
+    expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
+    expect(reasoningDefaultSelect()).toHaveValue("auto");
+    // A legacy candidate has an unknown profile: no mapping may be invented.
+    expect(mappingSelect("high")).toHaveValue("");
+  });
+
+  it("展示候选声明的原生配置、取值范围与映射矩阵，未映射档位保持显式未映射", async () => {
+    mockState.config = buildConfig([
+      {
+        id: "pool-declared",
+        name: "Declared Pool",
+        model: "declared-model",
+        enabled: true,
+        default_reasoning_effort: "high",
+        candidates: [
+          {
+            provider_id: "p-a",
+            local_model: "local-a1",
+            upstream_model: "remote-a1",
+            protocol: "chat_completions",
+            weight: 1,
+            reasoning: {
+              profile: "openai_effort",
+              values: ["low", "medium", "high"],
+              supports_disable: false,
+              mappings: [
+                { effort: "high", action: { kind: "enum", value: "high" } },
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Provider A");
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-declared"));
+
+    expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
+    expect(candidateProfileSelect()).toHaveValue("openai_effort");
+    expect(
+      screen.getByLabelText(i18n.t("aiGatewayModelPoolReasoningValuesLabel")),
+    ).toHaveValue("low, medium, high");
+    expect(
+      screen.getByLabelText(
+        i18n.t("aiGatewayModelPoolReasoningSupportsDisableLabel"),
+      ),
+    ).not.toBeChecked();
+
+    // The five canonical preferences each expose an explicit unmapped option.
+    for (const effort of ["low", "medium", "high", "xhigh", "none"]) {
+      const select = mappingSelect(effort);
+      expect(
+        within(select).getByRole("option", {
+          name: i18n.t("aiGatewayModelPoolReasoningMappingUnmapped"),
+        }),
+      ).toBeInTheDocument();
+    }
+    expect(mappingSelect("high")).toHaveValue("enum:high");
+    expect(mappingSelect("low")).toHaveValue("");
+  });
+
+  it("编辑遗留/未知 profile 的候选时不推断映射也不生成声明值", async () => {
+    mockState.config = buildConfig([
+      {
+        id: "pool-unknown",
+        name: "Unknown Pool",
+        model: "unknown-model",
+        enabled: true,
+        default_reasoning_effort: "auto",
+        candidates: [
+          {
+            provider_id: "p-a",
+            local_model: "local-a1",
+            upstream_model: "remote-a1",
+            protocol: "chat_completions",
+            weight: 1,
+            reasoning: {
+              profile: "legacy_unknown_profile",
+              values: [],
+              supports_disable: false,
+              mappings: [],
+            },
+          },
+        ],
+      },
+    ]);
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Provider A");
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-unknown"));
+
+    expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
+    expect(candidateProfileSelect()).toHaveValue("legacy_unknown_profile");
+    expect(mappingSelect("high")).toHaveValue("");
+    // No declared value is fabricated from the unknown profile.
+    expect(
+      screen.getByLabelText(i18n.t("aiGatewayModelPoolReasoningValuesLabel")),
+    ).toHaveValue("");
+  });
+
+  it("多档位共享同一原生动作可往返保存；switch 配置说明其没有强度梯度", async () => {
+    const sharedAction = { kind: "enum", value: "enabled" };
+    mockState.config = buildConfig([
+      {
+        id: "pool-switch",
+        name: "Switch Pool",
+        model: "switch-model",
+        enabled: true,
+        default_reasoning_effort: "medium",
+        candidates: [
+          {
+            provider_id: "p-a",
+            local_model: "local-a1",
+            upstream_model: "remote-a1",
+            protocol: "chat_completions",
+            weight: 1,
+            reasoning: {
+              profile: "chat_thinking_switch",
+              values: [],
+              supports_disable: true,
+              mappings: [
+                { effort: "low", action: { ...sharedAction } },
+                { effort: "medium", action: { ...sharedAction } },
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Provider A");
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-switch"));
+
+    expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
+    expect(
+      screen.getByText(i18n.t("aiGatewayModelPoolReasoningSwitchNoGradient")),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+    const mappings = reasoningOf(upsertCalls()[0]).mappings as Array<
+      Record<string, unknown>
+    >;
+    const low = mappings.find((row) => row.effort === "low");
+    const medium = mappings.find((row) => row.effort === "medium");
+    expect(low?.action).toEqual(sharedAction);
+    expect(medium?.action).toEqual(sharedAction);
+  });
+
+  it("同一次保存删除默认档最后一条映射被原子拒绝并保留草稿", async () => {
+    const user = userEvent.setup();
+    mockState.config = buildConfig([
+      {
+        id: "pool-guard",
+        name: "Guard Pool",
+        model: "guard-model",
+        enabled: true,
+        default_reasoning_effort: "medium",
+        candidates: [
+          {
+            provider_id: "p-a",
+            local_model: "local-a1",
+            upstream_model: "remote-a1",
+            protocol: "chat_completions",
+            weight: 1,
+            reasoning: {
+              profile: "openai_effort",
+              values: ["medium"],
+              supports_disable: false,
+              mappings: [
+                { effort: "medium", action: { kind: "enum", value: "medium" } },
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Provider A");
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-guard"));
+
+    expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
+    await user.selectOptions(mappingSelect("medium"), "");
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+
+    expect(await screen.findByTestId("model-pool-error")).toBeInTheDocument();
+    expect(upsertCalls()).toHaveLength(0);
+    // The rejected draft is preserved: default stays medium and the mapping row
+    // keeps the operator's explicit unmapped selection.
+    expect(reasoningDefaultSelect()).toHaveValue("medium");
+    expect(mappingSelect("medium")).toHaveValue("");
+  });
+
+  it("保存失败与运行时刷新都保留推理草稿", async () => {
+    const user = userEvent.setup();
+    const configHandlers: Array<(event: unknown) => void> = [];
+    (
+      listenMock as unknown as {
+        mockImplementation: (
+          fn: (
+            eventName: string,
+            handler: (event: unknown) => void,
+          ) => Promise<() => void>,
+        ) => void;
+      }
+    ).mockImplementation(
+      async (eventName: string, handler: (event: unknown) => void) => {
+        if (eventName === AI_GATEWAY_CONFIG_UPDATED_EVENT) {
+          configHandlers.push(handler);
+        }
+        return vi.fn();
+      },
+    );
+
+    await openModelPoolDialog();
+    await user.selectOptions(reasoningDefaultSelect(), "high");
+
+    // A runtime config refresh must not overwrite the unsaved reasoning draft.
+    mockState.config = buildConfig([]);
+    await act(async () => {
+      for (const handler of configHandlers) handler({ payload: undefined });
+    });
+    expect(reasoningDefaultSelect()).toHaveValue("high");
+
+    // A rejected save keeps the same reasoning draft visible.
+    mockState.upsertError = "invalid model pool reasoning policy";
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+    expect(await screen.findByTestId("model-pool-error")).toHaveTextContent(
+      /invalid model pool reasoning policy/i,
+    );
+    expect(reasoningDefaultSelect()).toHaveValue("high");
+    expect(upsertCalls()).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 4 repair (20261015-pool-only-reasoning) REQ-001 / REQ-002 / REQ-004 /
+// AC-002 / AC-004 / AC-008:
+//   (A) each manual-budget mapping keeps its own native `budget_tokens` through
+//       an unrelated save and stays independently editable, and an invalid
+//       budget is refused without clearing the draft;
+//   (D) the dialog shows a live static coverage summary separated from runtime
+//       readiness, a new/changed concrete default needs a currently resolvable
+//       mapping, while an unchanged default + declaration stays retainable;
+//   (E) profile/action option labels are localized in both locales while their
+//       option values stay the stable product tokens.
+//
+// New public interfaces pinned for Frontend:
+//   - per-effort budget value input for a `budget` mapping:
+//       data-testid="model-pool-reasoning-budget-<effort>" (type="number"),
+//       accessible label = `${t("aiGatewayModelPoolReasoningBudgetLabel")}: <effort>`.
+//   - live static coverage value: data-testid="model-pool-reasoning-static-coverage"
+//       (label text keeps aiGatewayModelPoolReasoningCoverageLabel).
+//   - live runtime readiness value: data-testid="model-pool-reasoning-runtime-readiness"
+//       (label text keeps aiGatewayModelPoolReasoningRuntimeReadinessLabel).
+// ---------------------------------------------------------------------------
+
+type PoolCandidatePayload = {
+  effort: string;
+  action: Record<string, unknown>;
+};
+
+describe("ModelPoolDialog 模型池推理策略回归（Step 4 repair）", () => {
+  const PROFILE_LABEL_KEYS: Array<[string, string]> = [
+    ["openai_effort", "aiGatewayModelPoolReasoningProfileOpenaiEffort"],
+    [
+      "anthropic_effort_inherit",
+      "aiGatewayModelPoolReasoningProfileAnthropicEffortInherit",
+    ],
+    [
+      "anthropic_effort_adaptive",
+      "aiGatewayModelPoolReasoningProfileAnthropicEffortAdaptive",
+    ],
+    [
+      "anthropic_manual_budget",
+      "aiGatewayModelPoolReasoningProfileAnthropicManualBudget",
+    ],
+    [
+      "chat_thinking_switch",
+      "aiGatewayModelPoolReasoningProfileChatThinkingSwitch",
+    ],
+  ];
+
+  const ANTHROPIC_PROVIDERS = [
+    {
+      id: "p-a",
+      name: "Provider A",
+      protocol: "anthropic_messages",
+      enabled: true,
+      mappings: [
+        {
+          local_model: "local-a1",
+          upstream_model: "remote-a1",
+          protocol: "anthropic_messages",
+        },
+      ],
+    },
+    {
+      id: "p-b",
+      name: "Provider B",
+      protocol: "chat_completions",
+      enabled: true,
+      mappings: [{ local_model: "local-b1", upstream_model: "remote-b1" }],
+    },
+  ] as unknown as ProviderFixture[];
+
+  const manualBudgetPool: Record<string, unknown> = {
+    id: "pool-manual-budget",
+    name: "Manual Budget Pool",
+    model: "manual-budget-model",
+    enabled: true,
+    default_reasoning_effort: "high",
+    candidates: [
+      {
+        provider_id: "p-a",
+        local_model: "local-a1",
+        upstream_model: "remote-a1",
+        protocol: "anthropic_messages",
+        weight: 1,
+        reasoning: {
+          profile: "anthropic_manual_budget",
+          values: [],
+          budget: { min: 1024, max: 8192 },
+          supports_disable: false,
+          mappings: [
+            { effort: "low", action: { kind: "budget", budget_tokens: 1536 } },
+            { effort: "high", action: { kind: "budget", budget_tokens: 3072 } },
+          ],
+        },
+      },
+    ],
+  };
+
+  const liveCoveragePool: Record<string, unknown> = {
+    id: "pool-live-coverage",
+    name: "Live Coverage Pool",
+    model: "live-coverage-model",
+    enabled: true,
+    default_reasoning_effort: "high",
+    candidates: [
+      {
+        provider_id: "p-a",
+        local_model: "local-a1",
+        upstream_model: "remote-a1",
+        protocol: "chat_completions",
+        weight: 1,
+        reasoning: {
+          profile: "openai_effort",
+          values: ["high"],
+          supports_disable: false,
+          mappings: [
+            { effort: "high", action: { kind: "enum", value: "high" } },
+          ],
+        },
+      },
+      {
+        provider_id: "p-b",
+        local_model: "local-b1",
+        upstream_model: "remote-b1",
+        protocol: "responses",
+        weight: 1,
+      },
+    ],
+  };
+
+  const danglingDeclarationPool: Record<string, unknown> = {
+    id: "pool-dangling",
+    name: "Dangling Pool",
+    model: "dangling-model",
+    enabled: true,
+    default_reasoning_effort: "auto",
+    candidates: [
+      {
+        provider_id: "p-gone",
+        local_model: "gone",
+        upstream_model: "gone-remote",
+        protocol: "chat_completions",
+        weight: 1,
+        reasoning: {
+          profile: "openai_effort",
+          values: ["high"],
+          supports_disable: false,
+          mappings: [
+            { effort: "high", action: { kind: "enum", value: "high" } },
+          ],
+        },
+      },
+    ],
+  };
+
+  async function openForEdit(
+    pool: Record<string, unknown>,
+    providers: unknown[] = PROVIDERS,
+  ) {
+    mockState.config = buildConfig([pool], providers);
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Provider A");
+    fireEvent.click(screen.getByTestId(`ai-gateway-model-pool-edit-${pool.id}`));
+    await screen.findByTestId("model-pool-dialog");
+  }
+
+  function budgetInput(effort: string): HTMLInputElement {
+    return screen.getByTestId(
+      `model-pool-reasoning-budget-${effort}`,
+    ) as HTMLInputElement;
+  }
+
+  function mappingAction(
+    pool: Record<string, unknown>,
+    effort: string,
+  ): Record<string, unknown> | undefined {
+    const mappings = (reasoningOf(pool).mappings ?? []) as PoolCandidatePayload[];
+    return mappings.find((row) => row.effort === effort)?.action;
+  }
+
+  function coverageCopy(mapped: number, total: number): string {
+    return i18n.t("aiGatewayModelPoolReasoningCoverageValue", { mapped, total });
+  }
+
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+    mockState.config = buildConfig([]);
+    mockState.statusPayload = [];
+    mockState.upsertError = null;
+    mockState.deleted = [];
+    installMock();
+  });
+
+  it("无关改名保存保留每个档位各自的预算", async () => {
+    const user = userEvent.setup();
+    await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
+
+    expect(budgetInput("low")).toHaveValue(1536);
+    expect(budgetInput("high")).toHaveValue(3072);
+
+    const nameInput = screen.getByTestId("model-pool-name-input");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Renamed Budget Pool");
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+    const saved = upsertCalls()[0];
+    expect(saved.default_reasoning_effort).toBe("high");
+    expect(mappingAction(saved, "low")).toEqual({
+      kind: "budget",
+      budget_tokens: 1536,
+    });
+    expect(mappingAction(saved, "high")).toEqual({
+      kind: "budget",
+      budget_tokens: 3072,
+    });
+  });
+
+  it("键盘修改 high 档预算不影响 low 档预算", async () => {
+    const user = userEvent.setup();
+    await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
+
+    const high = budgetInput("high");
+    await user.clear(high);
+    await user.type(high, "4096");
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+    const saved = upsertCalls()[0];
+    expect(mappingAction(saved, "high")).toEqual({
+      kind: "budget",
+      budget_tokens: 4096,
+    });
+    expect(mappingAction(saved, "low")).toEqual({
+      kind: "budget",
+      budget_tokens: 1536,
+    });
+  });
+
+  it("拒绝小数预算并保留草稿", async () => {
+    await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
+
+    fireEvent.change(budgetInput("high"), { target: { value: "4096.5" } });
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+
+    expect(await screen.findByTestId("model-pool-error")).toBeInTheDocument();
+    expect(upsertCalls()).toHaveLength(0);
+    expect(budgetInput("high").value).toBe("4096.5");
+  });
+
+  it("拒绝超出声明上限的预算并保留草稿", async () => {
+    await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
+
+    fireEvent.change(budgetInput("high"), { target: { value: "32768" } });
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+
+    expect(await screen.findByTestId("model-pool-error")).toBeInTheDocument();
+    expect(upsertCalls()).toHaveLength(0);
+    expect(budgetInput("high").value).toBe("32768");
+  });
+
+  it("拒绝低于 1024 的预算并保留草稿", async () => {
+    await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
+
+    fireEvent.change(budgetInput("high"), { target: { value: "512" } });
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+
+    expect(await screen.findByTestId("model-pool-error")).toBeInTheDocument();
+    expect(upsertCalls()).toHaveLength(0);
+    expect(budgetInput("high").value).toBe("512");
+  });
+
+  it("拒绝低于适配器下限的声明区间并保留草稿", async () => {
+    const user = userEvent.setup();
+    await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
+
+    // `auto` removes the structural default guard so only the range check can
+    // reject this save.
+    await user.selectOptions(reasoningDefaultSelect(), "auto");
+    fireEvent.change(
+      screen.getByLabelText(
+        i18n.t("aiGatewayModelPoolReasoningBudgetMinLabel"),
+      ),
+      { target: { value: "100" } },
+    );
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+
+    expect(await screen.findByTestId("model-pool-error")).toBeInTheDocument();
+    expect(upsertCalls()).toHaveLength(0);
+    expect(
+      screen.getByLabelText(i18n.t("aiGatewayModelPoolReasoningBudgetMinLabel")),
+    ).toHaveValue(100);
+  });
+
+  it("草稿态静态覆盖随声明编辑实时更新", async () => {
+    await openForEdit(liveCoveragePool);
+
+    expect(
+      screen.getByTestId("model-pool-reasoning-static-coverage"),
+    ).toHaveTextContent(coverageCopy(1, 2));
+
+    const editor = screen.getByTestId("model-pool-reasoning-editor-p-b-local-b1");
+    fireEvent.change(
+      within(editor).getByLabelText(
+        i18n.t("aiGatewayModelPoolReasoningProfileLabel"),
+      ),
+      { target: { value: "openai_effort" } },
+    );
+    fireEvent.change(
+      within(editor).getByLabelText(
+        i18n.t("aiGatewayModelPoolReasoningValuesLabel"),
+      ),
+      { target: { value: "high" } },
+    );
+    fireEvent.change(
+      within(editor).getByTestId("model-pool-reasoning-mapping-high"),
+      { target: { value: "enum:high" } },
+    );
+
+    expect(
+      screen.getByTestId("model-pool-reasoning-static-coverage"),
+    ).toHaveTextContent(coverageCopy(2, 2));
+  });
+
+  it("静态覆盖不读取密钥状态，运行时就绪单独展示", async () => {
+    const degradedProviders = [
+      {
+        id: "p-a",
+        name: "Provider A",
+        protocol: "chat_completions",
+        enabled: true,
+        keys: [
+          {
+            id: "k1",
+            name: "Default",
+            value: "********",
+            enabled: false,
+            auto_marked: true,
+            failure_kind: "quota",
+            marked_at: 1,
+            reason: "quota",
+          },
+        ],
+        mappings: [{ local_model: "local-a1", upstream_model: "remote-a1" }],
+      },
+      PROVIDERS[1],
+    ];
+
+    await openForEdit(liveCoveragePool, degradedProviders);
+
+    expect(
+      screen.getByTestId("model-pool-reasoning-static-coverage"),
+    ).toHaveTextContent(coverageCopy(1, 2));
+    expect(
+      screen.getByTestId("model-pool-reasoning-runtime-readiness"),
+    ).toHaveTextContent(
+      i18n.t("aiGatewayModelPoolReasoningRuntimeReadyCount", {
+        ready: 1,
+        total: 2,
+      }),
+    );
+  });
+
+  it("把默认改为只有失效来源的档位时在保存前拒绝", async () => {
+    const user = userEvent.setup();
+    await openForEdit(danglingDeclarationPool);
+
+    await user.selectOptions(reasoningDefaultSelect(), "high");
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+
+    expect(await screen.findByTestId("model-pool-error")).toBeInTheDocument();
+    expect(upsertCalls()).toHaveLength(0);
+    expect(reasoningDefaultSelect()).toHaveValue("high");
+  });
+
+  it("默认与声明都未变时，失效来源可在无关编辑中保留", async () => {
+    const user = userEvent.setup();
+    const pool = { ...danglingDeclarationPool, default_reasoning_effort: "high" };
+    await openForEdit(pool);
+
+    const nameInput = screen.getByTestId("model-pool-name-input");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Renamed Dangling Pool");
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+    const saved = upsertCalls()[0];
+    expect(saved.default_reasoning_effort).toBe("high");
+    const candidates = saved.candidates as Array<Record<string, unknown>>;
+    expect(candidates[0].reasoning).toEqual(
+      (danglingDeclarationPool.candidates as Array<Record<string, unknown>>)[0]
+        .reasoning,
+    );
+  });
+
+  it.each(["en", "zh"] as const)(
+    "%s 下 profile 与 budget/disable 选项显示本地化名称且取值仍是稳定 token",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
+
+      const profileSelect = candidateProfileSelect();
+      for (const [token, key] of PROFILE_LABEL_KEYS) {
+        const option = within(profileSelect).getByRole("option", {
+          name: i18n.t(key),
+        }) as HTMLOptionElement;
+        expect(option.value).toBe(token);
+      }
+
+      const highSelect = mappingSelect("high");
+      expect(
+        (
+          within(highSelect).getByRole("option", {
+            name: i18n.t("aiGatewayModelPoolReasoningActionBudget"),
+          }) as HTMLOptionElement
+        ).value,
+      ).toBe("budget");
+      expect(
+        (
+          within(highSelect).getByRole("option", {
+            name: i18n.t("aiGatewayModelPoolReasoningActionDisable"),
+          }) as HTMLOptionElement
+        ).value,
+      ).toBe("disable");
+
+      expect(
+        screen.getByLabelText(
+          `${i18n.t("aiGatewayModelPoolReasoningBudgetLabel")}: high`,
+        ),
+      ).toHaveValue(3072);
+    },
+  );
 });
 
