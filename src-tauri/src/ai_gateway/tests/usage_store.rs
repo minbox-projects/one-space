@@ -21,6 +21,11 @@ use crate::ai_gateway::usage_log::{
     usage_log_write_stats, UsageAccounting, UsageLogEntry, UsageLogRecord, UsageLogStore,
     UsageLogWriteStats, UsageResult,
 };
+use crate::ai_gateway::{
+    clear_provider_usage_summary_failure, clear_usage_clock_for_test,
+    inject_provider_usage_summary_failure, set_usage_clock_for_test,
+};
+use rusqlite::Connection;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -385,4 +390,356 @@ fn core_workflows_perf_usage_log_atomic_batch() {
 
     let _ = fs::remove_dir_all(&dir_one);
     let _ = fs::remove_dir_all(&dir_two);
+}
+
+// ---------------------------------------------------------------------------
+// REQ-003 / REQ-004 / AC-003 / AC-004: daily-summary atomicity and retention
+// ---------------------------------------------------------------------------
+
+/// One terminal-or-attempt row for provider `provider_id` on a single UTC+8 day
+/// (record timestamps are absolute, so the day is independent of the clock).
+fn provider_entry(provider_id: &str, timestamp_ms: i64, terminal: bool) -> UsageLogEntry {
+    UsageLogEntry {
+        record: super::sample_attempt_record(
+            timestamp_ms,
+            "local-p",
+            "remote-p",
+            provider_id,
+            "Provider P",
+            UsageResult::Success,
+            terminal,
+            None,
+            Some(0.5),
+            super::tokens(2, 0, 0, 2),
+        ),
+        accounting: UsageAccounting::CANONICAL,
+    }
+}
+
+fn provider_batch(provider_id: &str, timestamp_ms: i64, count: usize) -> Vec<UsageLogEntry> {
+    (0..count)
+        .map(|index| provider_entry(provider_id, timestamp_ms + index as i64, index + 1 == count))
+        .collect()
+}
+
+/// REQ-004/AC-004: a mid-batch insert fault rolls back the request's detail rows
+/// *and* its daily-summary contribution together. The provider history shows no
+/// day for the failed request, and clearing the seam lets the same batch commit
+/// exactly once.
+#[test]
+fn append_batch_rolls_back_summary_contribution_on_mid_batch_failure() {
+    let _seam = lock_seam();
+    set_usage_clock_for_test(super::rfc3339_millis("2026-09-20T10:00:00+08:00"));
+    let (dir, db_path) = temp_db("provider-summary-mid-batch");
+    let store = UsageLogStore::at(&db_path);
+    let day = super::rfc3339_millis("2026-09-20T11:00:00+08:00");
+    let now = super::rfc3339_millis("2026-09-20T12:00:00+08:00");
+    let entries = provider_batch("txn-p", day, SEALED_BATCH_LEN);
+    assert!(entries.len() > INJECTED_INDEX, "the seam must fire mid-batch");
+
+    let before = store
+        .provider_usage_history("txn-p", now)
+        .expect("baseline history");
+    assert!(before.days.is_empty(), "a fresh provider has no history");
+
+    inject_usage_log_insert_failure_at(INJECTED_INDEX);
+    let error = store
+        .append_batch_with_accounting(&entries, 365)
+        .expect_err("the injected failure must return an error");
+    clear_usage_log_insert_failure();
+    assert!(!error.is_empty());
+
+    assert_eq!(store.count().expect("no detail rows"), 0);
+    let after_failure = store
+        .provider_usage_history("txn-p", now)
+        .expect("history after failure");
+    assert!(
+        after_failure.days.is_empty(),
+        "a failed batch must contribute no daily summary: {after_failure:?}"
+    );
+    assert!(after_failure.cumulative.is_none());
+
+    // The cleared seam commits both the detail rows and the summary once.
+    store
+        .append_batch_with_accounting(&entries, 365)
+        .expect("a cleared seam must let the batch commit");
+    assert_eq!(
+        store.count().expect("detail rows after retry") as usize,
+        SEALED_BATCH_LEN
+    );
+    let after_success = store
+        .provider_usage_history("txn-p", now)
+        .expect("history after retry");
+    assert_eq!(
+        after_success.days.len(),
+        1,
+        "the retried batch contributes exactly one day"
+    );
+    assert_eq!(
+        after_success
+            .days[0]
+            .metrics
+            .as_ref()
+            .map(|metrics| metrics.request_count),
+        Some(1),
+        "only the terminal row of the request accrues"
+    );
+
+    clear_usage_clock_for_test();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// REQ-004/AC-004: a daily-summary update failure rolls back the whole append
+/// unit, leaving neither detail rows nor a summary contribution, and a later
+/// successful append contributes exactly once.
+#[test]
+fn append_batch_rolls_back_on_summary_update_failure() {
+    let _seam = lock_seam();
+    set_usage_clock_for_test(super::rfc3339_millis("2026-09-20T10:00:00+08:00"));
+    let (dir, db_path) = temp_db("provider-summary-fault");
+    let store = UsageLogStore::at(&db_path);
+    let day = super::rfc3339_millis("2026-09-20T11:00:00+08:00");
+    let now = super::rfc3339_millis("2026-09-20T12:00:00+08:00");
+    let entries = provider_batch("summary-p", day, 3);
+
+    inject_provider_usage_summary_failure();
+    let error = store
+        .append_batch_with_accounting(&entries, 365)
+        .expect_err("the injected summary failure must return an error");
+    clear_provider_usage_summary_failure();
+    assert!(!error.is_empty(), "the failure must carry a message");
+
+    assert_eq!(
+        store.count().expect("no partial detail rows"),
+        0,
+        "a summary-update failure must roll the detail rows back"
+    );
+    assert!(
+        store
+            .provider_usage_history("summary-p", now)
+            .expect("history after failure")
+            .days
+            .is_empty(),
+        "a summary-update failure must leave no contribution"
+    );
+
+    store
+        .append_batch_with_accounting(&entries, 365)
+        .expect("the retried append must succeed");
+    assert_eq!(store.count().expect("detail rows after retry"), 3);
+    let history = store
+        .provider_usage_history("summary-p", now)
+        .expect("history after retry");
+    assert_eq!(history.days.len(), 1);
+    assert_eq!(
+        history.days[0]
+            .metrics
+            .as_ref()
+            .map(|metrics| metrics.request_count),
+        Some(1)
+    );
+
+    clear_usage_clock_for_test();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// REQ-004/AC-004: retention 1 and 365 delete only detail rows. Expired details
+/// disappear while the persisted daily summaries and the earliest available day
+/// survive, including for a row that was already outside the window when it was
+/// written.
+#[test]
+fn retention_one_and_365_bound_detail_rows_and_keep_daily_summaries() {
+    set_usage_clock_for_test(super::rfc3339_millis("2026-09-20T10:00:00+08:00"));
+    let (dir, db_path) = temp_db("provider-retention-boundary");
+    let store = UsageLogStore::at(&db_path);
+
+    // Written 384 days before "now": retention 365 expires its detail row
+    // immediately, but the daily summary is committed with the append unit.
+    store
+        .append_batch_with_accounting(
+            &[provider_entry(
+                "ret-p",
+                super::rfc3339_millis("2025-09-01T12:00:00+08:00"),
+                true,
+            )],
+            365,
+        )
+        .expect("an out-of-window append still records its summary");
+    // Inside the 365-day window: detail and summary both stay.
+    store
+        .append_batch_with_accounting(
+            &[provider_entry(
+                "ret-p",
+                super::rfc3339_millis("2026-09-19T05:00:00+08:00"),
+                true,
+            )],
+            365,
+        )
+        .expect("an in-window append");
+    assert_eq!(store.count().expect("detail rows"), 1, "only the 2025 detail expired");
+
+    // A one-day retention deletes the 09-19 detail but keeps 09-20.
+    store
+        .append_batch_with_accounting(
+            &[provider_entry(
+                "ret-p",
+                super::rfc3339_millis("2026-09-20T12:00:00+08:00"),
+                true,
+            )],
+            1,
+        )
+        .expect("a one-day retention append");
+    assert_eq!(store.count().expect("detail rows after 1-day retention"), 1);
+    assert!(
+        store
+            .all_records()
+            .expect("remaining details")
+            .iter()
+            .all(|row| row.timestamp_ms > super::rfc3339_millis("2026-09-19T10:00:00+08:00")),
+        "retention 1 keeps only the current day's detail"
+    );
+
+    let history = store
+        .provider_usage_history("ret-p", super::rfc3339_millis("2026-09-20T13:00:00+08:00"))
+        .expect("history after retention");
+    assert_eq!(
+        history.earliest_available_day.as_deref(),
+        Some("2025-09-01"),
+        "the earliest available day survives detail expiry"
+    );
+    assert_eq!(history.end_day.as_deref(), Some("2026-09-20"));
+    let cumulative = history.cumulative.expect("cumulative survives");
+    assert_eq!(
+        cumulative.request_count, 3,
+        "every retained summary day still contributes"
+    );
+    for expected_day in ["2025-09-01", "2026-09-19", "2026-09-20"] {
+        let entry = history
+            .days
+            .iter()
+            .find(|entry| entry.day == expected_day)
+            .unwrap_or_else(|| panic!("day {expected_day} missing"));
+        assert_eq!(
+            entry.metrics.as_ref().map(|metrics| metrics.request_count),
+            Some(1),
+            "day {expected_day} keeps its summary"
+        );
+    }
+
+    clear_usage_clock_for_test();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// REQ-004/AC-004: a summary-write fault that fires *after* an earlier
+/// contribution of the same batch has already been applied still rolls the whole
+/// unit back. A real SQLite trigger aborts the target provider's summary insert
+/// mid-batch, leaving the earlier contribution, every detail row and a prior
+/// request's values unchanged; clearing the fault lets the same batch contribute
+/// exactly once.
+#[test]
+fn append_batch_rolls_back_after_prior_summary_contribution() {
+    let _seam = lock_seam();
+    set_usage_clock_for_test(super::rfc3339_millis("2026-09-16T10:00:00+08:00"));
+    let (dir, db_path) = temp_db("provider-summary-abort-prior");
+    let store = UsageLogStore::at(&db_path);
+    let now = super::rfc3339_millis("2026-09-16T12:00:00+08:00");
+    let day = super::rfc3339_millis("2026-09-16T11:00:00+08:00");
+
+    // A prior successful request establishes observable summary values.
+    store
+        .append_batch_with_accounting(&provider_batch("prior-p", day, 2), 365)
+        .expect("the prior request must commit");
+    let prior_before = store
+        .provider_usage_history("prior-p", now)
+        .expect("prior history before the fault");
+    assert_eq!(
+        prior_before
+            .cumulative
+            .as_ref()
+            .map(|metrics| metrics.request_count),
+        Some(1)
+    );
+
+    // The trigger aborts only the target contributor's summary insert, so the
+    // other contributor has already been applied inside the batch transaction.
+    let trigger = Connection::open(&db_path).expect("open raw db to arm the trigger");
+    trigger
+        .execute_batch(
+            "CREATE TRIGGER abort_target_summary
+             AFTER INSERT ON provider_daily_usage
+             WHEN NEW.provider_id = 'target-p'
+             BEGIN SELECT RAISE(ABORT, 'injected summary abort'); END;",
+        )
+        .expect("arm the summary abort trigger");
+    drop(trigger);
+
+    let failing: Vec<UsageLogEntry> = provider_batch("first-p", day, 1)
+        .into_iter()
+        .chain(provider_batch("target-p", day, 1))
+        .collect();
+    let error = store
+        .append_batch_with_accounting(&failing, 365)
+        .expect_err("the summary abort must fail the batch");
+    assert!(!error.is_empty(), "the failure must carry a message");
+
+    // No detail row and no summary contribution of the failed batch remains,
+    // including the earlier contributor applied before the abort.
+    assert_eq!(
+        store.count().expect("detail rows after the fault"),
+        2,
+        "only the prior request's rows may remain"
+    );
+    assert!(
+        store
+            .all_records()
+            .expect("records after the fault")
+            .iter()
+            .all(|row| row.provider_id != "first-p" && row.provider_id != "target-p"),
+        "no row of the failed batch may remain"
+    );
+    for provider_id in ["first-p", "target-p"] {
+        assert!(
+            store
+                .provider_usage_history(provider_id, now)
+                .expect("provider history after the fault")
+                .days
+                .is_empty(),
+            "{provider_id} must contribute no daily summary"
+        );
+    }
+    let prior_after = store
+        .provider_usage_history("prior-p", now)
+        .expect("prior history after the fault");
+    assert_eq!(
+        prior_after.cumulative, prior_before.cumulative,
+        "a rolled-back batch must not perturb prior summary values"
+    );
+
+    // Clearing the fault lets the same batch contribute exactly once.
+    let clear = Connection::open(&db_path).expect("open raw db to drop the trigger");
+    clear
+        .execute_batch("DROP TRIGGER abort_target_summary")
+        .expect("drop the summary abort trigger");
+    drop(clear);
+    store
+        .append_batch_with_accounting(&failing, 365)
+        .expect("the retried batch must commit");
+    assert_eq!(store.count().expect("detail rows after retry"), 4);
+    for provider_id in ["first-p", "target-p"] {
+        let history = store
+            .provider_usage_history(provider_id, now)
+            .expect("provider history after retry");
+        assert_eq!(history.days.len(), 1, "{provider_id} must contribute one day");
+        assert_eq!(
+            history.days[0]
+                .metrics
+                .as_ref()
+                .map(|metrics| metrics.request_count),
+            Some(1),
+            "{provider_id} must contribute exactly one terminal request"
+        );
+    }
+
+    clear_usage_clock_for_test();
+    let _ = fs::remove_dir_all(&dir);
 }

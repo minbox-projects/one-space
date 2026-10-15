@@ -6,10 +6,12 @@
 //! once with its global price rows scoped, its singular `off_peak` window folded
 //! into `off_peaks` and its provider-level runtime fields cleared; a usage
 //! database older than [`USAGE_DB_VERSION`] has its legacy `cancelled` rows
-//! deleted once. The legacy file renames and the legacy gateway-marker predicate
+//! deleted once (version below 1), then gains the durable provider/day summary
+//! tables, the one-shot retained-row backfill and the continuity boundary
+//! (version 2). The legacy file renames and the legacy gateway-marker predicate
 //! stay as this module's permanent compatibility surface.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::path::Path;
@@ -22,8 +24,10 @@ pub(in crate::ai_gateway) const LEGACY_USAGE_DB_FILE_NAME: &str = "api_gateway_u
 /// `commands::build_gateway_provider`.
 pub(in crate::ai_gateway) const LEGACY_GATEWAY_MARKER_KEY: &str = "api_gateway_gateway";
 
-/// Usage-database version reached after the one-time cancelled-row cleanup.
-pub(in crate::ai_gateway) const USAGE_DB_VERSION: u32 = 1;
+/// Current usage-database version: the one-time cancelled-row cleanup (version
+/// 1) plus the additive provider/day summary tables, one-shot backfill and the
+/// continuity boundary (version 2).
+pub(in crate::ai_gateway) const USAGE_DB_VERSION: u32 = 2;
 
 /// Provider-level runtime health keys that only mapping rows may carry now.
 const LEGACY_PROVIDER_RUNTIME_KEYS: [&str; 5] = [
@@ -541,21 +545,47 @@ pub(in crate::ai_gateway) fn migrate_legacy_config(config: &mut Value) -> bool {
     changed || dropped
 }
 
-/// Delete every legacy `result = 'cancelled'` row once, transactionally, and
-/// advance the database-level version marker; a later open does nothing.
-pub(in crate::ai_gateway) fn migrate_usage_database(connection: &Connection) -> Result<(), String> {
+/// Bring an older usage database to the current version in one serialized write
+/// transaction, and recheck the marker after acquiring the write boundary so
+/// repeated or concurrent opens never duplicate the work.
+///
+/// Version below 1 deletes every legacy `result = 'cancelled'` row once; a
+/// version-1 database skips that step. Every older database then gains the
+/// additive provider/day summary tables, backfills retained terminal
+/// valid-result nonblank-provider rows exactly once and stamps the migration
+/// UTC+8 day as the continuous-recording boundary. A future version is left
+/// untouched and never downgraded. Any failure rolls the whole transaction back,
+/// leaving no partial summary table and no advanced marker so a later open can
+/// retry.
+pub(in crate::ai_gateway) fn migrate_usage_database(
+    connection: &mut Connection,
+) -> Result<(), String> {
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|error| error.to_string())?;
     if version >= USAGE_DB_VERSION as i64 {
         return Ok(());
     }
+    // BEGIN IMMEDIATE acquires the write boundary up front; the recheck below
+    // then observes any migration another opener committed while we waited.
     let transaction = connection
-        .unchecked_transaction()
+        .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| error.to_string())?;
-    transaction
-        .execute("DELETE FROM usage_logs WHERE result = 'cancelled'", [])
+    let current: i64 = transaction
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|error| error.to_string())?;
+    if current >= USAGE_DB_VERSION as i64 {
+        transaction.rollback().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    if current < 1 {
+        transaction
+            .execute("DELETE FROM usage_logs WHERE result = 'cancelled'", [])
+            .map_err(|error| error.to_string())?;
+    }
+    super::provider_usage::create_summary_tables(&transaction)?;
+    super::provider_usage::backfill_provider_summaries(&transaction)?;
+    super::provider_usage::stamp_continuity_boundary(&transaction)?;
     transaction
         .pragma_update(None, "user_version", USAGE_DB_VERSION as i64)
         .map_err(|error| error.to_string())?;

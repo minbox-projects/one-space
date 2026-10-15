@@ -2424,3 +2424,111 @@ describe("AI Gateway anthropic_messages 协议与 Claude 四选择 wrapper", () 
   });
 });
 
+// ---------------------------------------------------------------------------
+// Step 2 (20261014-ai-gateway-provider-usage-history): provider-history wrappers
+// and the additive providerId/day request-log selectors. These assertions are
+// the wrapper-level RED contract for the frontend implementation.
+// ---------------------------------------------------------------------------
+
+describe("服务商历史命令封装", () => {
+  beforeEach(() => {
+    resetTauriMocks();
+  });
+
+  it("provider-history wrappers call the exact new commands", async () => {
+    const gateway = await import("@/lib/aiGateway");
+    expect("aiGatewayUsageProviders" in gateway).toBe(true);
+    expect("aiGatewayProviderUsageHistory" in gateway).toBe(true);
+
+    const usageProviders = (
+      gateway as unknown as {
+        aiGatewayUsageProviders: () => Promise<unknown>;
+      }
+    ).aiGatewayUsageProviders;
+    const providerUsageHistory = (
+      gateway as unknown as {
+        aiGatewayProviderUsageHistory: (query: {
+          providerId: string;
+        }) => Promise<unknown>;
+      }
+    ).aiGatewayProviderUsageHistory;
+
+    await usageProviders();
+    await providerUsageHistory({ providerId: "p-a" });
+
+    expect(invokeMock).toHaveBeenCalledWith("ai_gateway_usage_providers");
+    expect(invokeMock).toHaveBeenCalledWith(
+      "ai_gateway_provider_usage_history",
+      { providerId: "p-a" },
+    );
+  });
+
+  it("omitted providerId/day keep the exact existing six-key log payload", async () => {
+    await aiGatewayRequestLogs({ range: "today" });
+    expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+      range: "today",
+      groupBy: null,
+      status: null,
+      model: null,
+      provider: null,
+      page: 1,
+    });
+  });
+
+  it("adds providerId/day only when set and never uses a separate log command", async () => {
+    await aiGatewayRequestLogs({
+      range: "today",
+      providerId: "p-a",
+      day: "2026-09-17",
+    } as never);
+
+    expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+      range: "today",
+      groupBy: null,
+      status: null,
+      model: null,
+      provider: null,
+      page: 1,
+      providerId: "p-a",
+      day: "2026-09-17",
+    });
+    expect(
+      invokeMock.mock.calls.some(
+        ([command]) => command === "ai_gateway_provider_request_logs",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps each optional selector absent when only the other is set", async () => {
+    await aiGatewayRequestLogs({ range: "today", providerId: "p-a" } as never);
+    const providerIdOnly = invokeMock.mock.calls[
+      invokeMock.mock.calls.length - 1
+    ][1] as Record<string, unknown>;
+    expect(providerIdOnly).toEqual({
+      range: "today",
+      groupBy: null,
+      status: null,
+      model: null,
+      provider: null,
+      page: 1,
+      providerId: "p-a",
+    });
+    expect("day" in providerIdOnly).toBe(false);
+
+    await aiGatewayRequestLogs({ range: "today", day: "2026-09-17" } as never);
+    const dayOnly = invokeMock.mock.calls[
+      invokeMock.mock.calls.length - 1
+    ][1] as Record<string, unknown>;
+    expect(dayOnly).toEqual({
+      range: "today",
+      groupBy: null,
+      status: null,
+      model: null,
+      provider: null,
+      page: 1,
+      day: "2026-09-17",
+    });
+    expect("providerId" in dayOnly).toBe(false);
+  });
+});
+

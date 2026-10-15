@@ -42,6 +42,7 @@ mod daily_reset;
 mod model_pools;
 mod openai_conversion;
 mod model_pool_terminal_sync;
+mod provider_usage;
 mod output_timing;
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -14047,7 +14048,7 @@ fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
             super::commands::ai_gateway_usage_stats(Some("today".to_string())).unwrap();
         assert_eq!(today.granularity, "hour", "today buckets by hour");
 
-        let page = super::commands::ai_gateway_request_logs(None, None, None, None, None, None).unwrap();
+        let page = super::commands::ai_gateway_request_logs(None, None, None, None, None, None, None, None).unwrap();
         assert_eq!(page.total, 2);
         assert_eq!(page.page, 1);
         assert_eq!(page.page_size, 50);
@@ -14064,6 +14065,8 @@ fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
             None,
             None,
             None,
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(failed.total, 1);
@@ -14072,6 +14075,8 @@ fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         let by_model = super::commands::ai_gateway_request_logs(
             None,
             Some("model".to_string()),
+            None,
+            None,
             None,
             None,
             None,
@@ -14089,6 +14094,8 @@ fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
             None,
             None,
             None,
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(by_day.groups.len(), 1);
@@ -14102,6 +14109,8 @@ fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
             None,
             None,
             Some(99),
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(clamped.page, 1, "page clamps to the only page");
@@ -14114,6 +14123,8 @@ fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
             Some("does-not-exist".to_string()),
             None,
             None,
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(empty.total, 0);
@@ -14123,6 +14134,8 @@ fn ai_gateway_usage_stats_and_request_logs_commands_aggregate_and_paginate() {
         assert!(super::commands::ai_gateway_request_logs(
             None,
             Some("bogus".to_string()),
+            None,
+            None,
             None,
             None,
             None,
@@ -14204,6 +14217,8 @@ fn ai_gateway_yesterday_range_counts_only_yesterday_hourly() {
             None,
             None,
             None,
+            None,
+            None,
         )
         .expect("yesterday request logs");
         assert_eq!(page.total, 2);
@@ -14275,6 +14290,8 @@ fn ai_gateway_usage_range_selector_rejects_unknown_and_accepts_all_time() {
                 None,
                 None,
                 None,
+                None,
+                None,
             )
             .is_err(),
             "3d must fail for request logs too"
@@ -14286,6 +14303,8 @@ fn ai_gateway_usage_range_selector_rejects_unknown_and_accepts_all_time() {
         assert!(
             super::commands::ai_gateway_request_logs(
                 Some("bogus".to_string()),
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -14304,7 +14323,7 @@ fn ai_gateway_usage_range_selector_rejects_unknown_and_accepts_all_time() {
                 "all-time must include the day-before-yesterday record"
             );
             let page =
-                super::commands::ai_gateway_request_logs(all, None, None, None, None, None)
+                super::commands::ai_gateway_request_logs(all, None, None, None, None, None, None, None)
                     .expect("all-time request logs");
             assert_eq!(page.total, 3);
         }
@@ -14362,6 +14381,8 @@ fn ai_gateway_seven_day_range_matches_previous_days_window() {
             None,
             None,
             None,
+            None,
+            None,
         )
         .expect("7d request logs");
         assert_eq!(page.total, 2);
@@ -14371,6 +14392,302 @@ fn ai_gateway_seven_day_range_matches_previous_days_window() {
                 .all(|record| record.timestamp_ms >= window_start),
             "no record before the inclusive 7d window start may appear"
         );
+    });
+}
+
+/// AC-006 / REQ-005 (plan Step 1): the existing `ai_gateway_request_logs`
+/// command carries the additive optional provider-ID and UTC+8 day selectors at
+/// the end of its signature — `(range, group_by, status, model, provider, page,
+/// provider_id, day)`. An explicit day owns a strict half-open window that
+/// excludes the following midnight and takes precedence over the quick range,
+/// even an otherwise unsupported selector; an omitted day keeps the quick
+/// range. The recorded ID/day boundary composes with the name/status/model
+/// filters and with grouping, keeps the 50-row pagination, and the facets stay
+/// ID-scoped; blank explicit arguments are actionable errors while an unknown
+/// nonblank id is empty.
+#[test]
+fn ai_gateway_request_logs_composes_exact_provider_id_and_day() {
+    with_temp_home("request-logs-provider-day", |_home| {
+        let store = UsageLogStore::default_store().expect("usage store");
+        let today_start = utc8_day_start(super::now_millis());
+        let day_label = {
+            let offset = chrono::FixedOffset::east_opt(8 * 3600).expect("UTC+8");
+            chrono::DateTime::from_timestamp_millis(today_start)
+                .expect("today instant")
+                .with_timezone(&offset)
+                .format("%Y-%m-%d")
+                .to_string()
+        };
+
+        // 55 alpha requests on the day, plus a next-midnight alpha request and a
+        // same-day beta request that must never leak into alpha's exact day.
+        for index in 0..55i64 {
+            let result = if index % 5 == 0 {
+                UsageResult::Failure
+            } else {
+                UsageResult::Success
+            };
+            let model = if index % 2 == 0 { "m1" } else { "m2" };
+            store
+                .append(
+                    &sample_record(
+                        today_start + index * 1_000,
+                        model,
+                        "remote-a",
+                        "alpha",
+                        "Alpha",
+                        result,
+                        Some(0.1),
+                        tokens(1, 0, 0, 1),
+                    ),
+                    365,
+                )
+                .unwrap();
+        }
+        store
+            .append(
+                &sample_record(
+                    today_start + DAY_MS,
+                    "m1",
+                    "remote-a",
+                    "alpha",
+                    "Alpha",
+                    UsageResult::Success,
+                    Some(0.1),
+                    tokens(1, 0, 0, 1),
+                ),
+                365,
+            )
+            .unwrap();
+        store
+            .append(
+                &sample_record(
+                    today_start + 2_000,
+                    "m1",
+                    "remote-b",
+                    "beta",
+                    "Beta",
+                    UsageResult::Success,
+                    Some(0.1),
+                    tokens(1, 0, 0, 1),
+                ),
+                365,
+            )
+            .unwrap();
+
+        // The exact ID/day window is half-open and excludes the next midnight.
+        let page = super::commands::ai_gateway_request_logs(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("alpha".to_string()),
+            Some(day_label.clone()),
+        )
+        .expect("exact provider/day page");
+        assert_eq!(page.page, 1, "the action starts at page 1");
+        assert_eq!(page.page_size, 50);
+        assert_eq!(page.total, 55, "the next midnight and beta are excluded");
+        assert_eq!(page.total_pages, 2);
+        assert_eq!(page.records.len(), 50);
+        assert!(
+            page.records.iter().all(|row| row.provider_id == "alpha"
+                && row.timestamp_ms >= today_start
+                && row.timestamp_ms < today_start + DAY_MS),
+            "the exact day stays within its half-open UTC+8 window"
+        );
+
+        // 50-row pagination and ID-scoped facets.
+        let second = super::commands::ai_gateway_request_logs(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(2),
+            Some("alpha".to_string()),
+            Some(day_label.clone()),
+        )
+        .expect("page two");
+        assert_eq!(second.page, 2);
+        assert_eq!(second.records.len(), 5);
+        assert_eq!(
+            page.models,
+            vec!["m1".to_string(), "m2".to_string()],
+            "the model facet spans the whole day"
+        );
+        assert_eq!(
+            page.providers,
+            vec!["Alpha".to_string()],
+            "the provider facet stays scoped to the exact id"
+        );
+
+        // Grouping composes with the exact ID/day boundary.
+        let grouped = super::commands::ai_gateway_request_logs(
+            None,
+            Some("day".to_string()),
+            None,
+            None,
+            None,
+            None,
+            Some("alpha".to_string()),
+            Some(day_label.clone()),
+        )
+        .expect("grouped day page");
+        assert_eq!(grouped.group_by.as_deref(), Some("day"));
+        assert_eq!(grouped.groups.len(), 1);
+        assert_eq!(grouped.groups[0].request_count, 55);
+        assert_eq!(grouped.groups[0].error_count, 11, "indices 0,5,...,50");
+
+        // The ID/day boundary composes with the status, model and name filters.
+        let failures = super::commands::ai_gateway_request_logs(
+            None,
+            None,
+            Some("failure".to_string()),
+            None,
+            None,
+            None,
+            Some("alpha".to_string()),
+            Some(day_label.clone()),
+        )
+        .expect("day failures");
+        assert_eq!(failures.total, 11);
+        assert!(failures
+            .records
+            .iter()
+            .all(|row| row.provider_id == "alpha" && row.result == UsageResult::Failure));
+        let m1 = super::commands::ai_gateway_request_logs(
+            None,
+            None,
+            None,
+            Some("m1".to_string()),
+            None,
+            None,
+            Some("alpha".to_string()),
+            Some(day_label.clone()),
+        )
+        .expect("day m1");
+        assert!(m1.records.iter().all(|row| row.local_model == "m1"));
+        let by_name = super::commands::ai_gateway_request_logs(
+            None,
+            None,
+            None,
+            None,
+            Some("Alpha".to_string()),
+            None,
+            Some("alpha".to_string()),
+            Some(day_label.clone()),
+        )
+        .expect("day by recorded name");
+        assert_eq!(by_name.total, 55);
+
+        // An explicit day takes precedence over the quick range, even a
+        // selector the range vocabulary does not support.
+        let overridden = super::commands::ai_gateway_request_logs(
+            Some("bogus".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("alpha".to_string()),
+            Some(day_label.clone()),
+        )
+        .expect("an explicit day overrides an otherwise invalid quick range");
+        assert_eq!(overridden.total, 55);
+
+        // With no day the quick range still applies to the id query.
+        let today = super::commands::ai_gateway_request_logs(
+            Some("today".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("alpha".to_string()),
+            None,
+        )
+        .expect("today by id");
+        assert_eq!(today.total, 55);
+        let yesterday = super::commands::ai_gateway_request_logs(
+            Some("yesterday".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("alpha".to_string()),
+            None,
+        )
+        .expect("yesterday by id");
+        assert_eq!(yesterday.total, 0);
+
+        // Blank explicit arguments reject; an unknown nonblank id is empty.
+        assert!(super::commands::ai_gateway_request_logs(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("   ".to_string()),
+            Some(day_label.clone()),
+        )
+        .is_err());
+        assert!(super::commands::ai_gateway_request_logs(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("alpha".to_string()),
+            Some("   ".to_string()),
+        )
+        .is_err());
+        assert!(super::commands::ai_gateway_request_logs(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("alpha".to_string()),
+            Some("2026-02-30".to_string()),
+        )
+        .is_err());
+        let unknown = super::commands::ai_gateway_request_logs(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("ghost".to_string()),
+            Some(day_label.clone()),
+        )
+        .expect("an unknown nonblank id is empty, not an error");
+        assert_eq!(unknown.total, 0);
+    });
+}
+
+/// AC-001 / REQ-001 (plan Step 1): the provider-history command rejects an
+/// explicitly blank provider id and returns empty history, never an error, for
+/// an unknown nonblank id.
+#[test]
+fn ai_gateway_provider_usage_history_command_rejects_blank_and_unknown_is_empty() {
+    with_temp_home("provider-history-command", |_home| {
+        assert!(
+            super::commands::ai_gateway_provider_usage_history("   ".to_string()).is_err(),
+            "an explicitly blank provider id must be an actionable error"
+        );
+        let unknown = super::commands::ai_gateway_provider_usage_history("ghost".to_string())
+            .expect("an unknown nonblank id is empty, not an error");
+        assert!(unknown.days.is_empty());
+        assert!(unknown.earliest_available_day.is_none());
+        assert!(unknown.cumulative.is_none());
     });
 }
 
@@ -17635,7 +17952,7 @@ fn usage_store_migrates_pre_upgrade_database_and_exposes_new_fields() {
         );
 
         // The request-log command payload carries both stored fields.
-        let command_page = super::commands::ai_gateway_request_logs(None, None, None, None, None, None)
+        let command_page = super::commands::ai_gateway_request_logs(None, None, None, None, None, None, None, None)
             .expect("request-log command");
         let payload = serde_json::to_value(&command_page).expect("serialize the command payload");
         assert_eq!(payload["total"], json!(4));
@@ -31925,6 +32242,8 @@ fn ac002_unsupported_group_by_is_rejected_with_supported_vocabulary() {
             None,
             None,
             None,
+            None,
+            None,
         );
         let error = match result {
             Ok(_) => panic!("an unsupported group_by must not yield a page"),
@@ -32356,6 +32675,8 @@ fn ac007_provider_facet_ignores_own_filter_and_model_facet_honors_it() {
             None,
             Some("Beta".to_string()),
             None,
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(page.total, 2, "only the selected provider's rows are returned");
@@ -32419,6 +32740,8 @@ fn ac008_grouped_responses_keep_empty_facets() {
             let page = super::commands::ai_gateway_request_logs(
                 None,
                 Some(group_by.to_string()),
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -34571,7 +34894,7 @@ async fn gateway_cost_breakdown_records_snapshot_for_priced_success_and_freezes_
     );
 
     // The public request-log command payload carries the snapshot.
-    let page = super::commands::ai_gateway_request_logs(None, None, None, None, None, None)
+    let page = super::commands::ai_gateway_request_logs(None, None, None, None, None, None, None, None)
         .expect("request-log command");
     let payload = serde_json::to_value(page).expect("serialize the request-log command payload");
     let row = &payload["records"][0];

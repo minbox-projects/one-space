@@ -4,6 +4,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import {
   BarChart3,
   ChevronsUpDown,
+  History as HistoryIcon,
   KeyRound,
   Layers,
   Network,
@@ -97,6 +98,7 @@ import { LocalKeyList } from "./LocalKeyList";
 import { TerminalSyncPanel } from "./TerminalSyncPanel";
 import { UsageStatsPanel } from "./UsageStatsPanel";
 import { UsageLogsPanel } from "./UsageLogsPanel";
+import { ProviderUsageHistoryPanel } from "./ProviderUsageHistoryPanel";
 
 type AiGatewayTab =
   | "providers"
@@ -106,7 +108,7 @@ type AiGatewayTab =
   | "terminals"
   | "usage";
 
-type UsageSubTab = "stats" | "logs";
+type UsageSubTab = "stats" | "logs" | "history";
 
 function emptyProvider(): GatewayUpstreamProviderWithKeys {
   return {
@@ -167,6 +169,10 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const [editingPool, setEditingPool] = useState<GatewayModelPool | null>(null);
   const [poolDialogKey, setPoolDialogKey] = useState(0);
   const [usageFocusModel, setUsageFocusModel] = useState<string | null>(null);
+  const [usageFocusProviderId, setUsageFocusProviderId] = useState<string | null>(
+    null,
+  );
+  const [usageFocusDay, setUsageFocusDay] = useState<string | null>(null);
   const [usageFocusToken, setUsageFocusToken] = useState(0);
 
   const allTemplatesExpanded = useMemo(() => {
@@ -770,11 +776,47 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
 
   const handleOpenPoolLogs = (model: string) => {
     // Reuse the existing request-log query state: switch to the logs subtab and
-    // seed the alias filter; no new trace-ID or log format is introduced.
+    // seed the alias filter; no new trace-ID or log format is introduced. A pool
+    // alias shortcut clears any exact provider/day focus.
+    setUsageFocusProviderId(null);
+    setUsageFocusDay(null);
     setUsageFocusModel(model);
     setUsageFocusToken((token) => token + 1);
     setUsageSubTab("logs");
     setActiveTab("usage");
+  };
+
+  // A Provider history daily row opens the existing request-log view focused on
+  // one exact provider ID and UTC+8 day; the alias focus is cleared so the
+  // recorded-name/model/status selections cannot compete.
+  const handleOpenProviderDay = (request: { providerId: string; day: string }) => {
+    setUsageFocusModel(null);
+    setUsageFocusProviderId(request.providerId);
+    setUsageFocusDay(request.day);
+    setUsageFocusToken((token) => token + 1);
+    setUsageSubTab("logs");
+    setActiveTab("usage");
+  };
+
+  // Returning restores the Provider history subtab; its mounted selection is
+  // retained, and the one-shot provider/day focus is released so later ordinary
+  // request-log browsing starts from the quick range again.
+  const handleReturnToProviderHistory = () => {
+    setUsageFocusModel(null);
+    setUsageFocusProviderId(null);
+    setUsageFocusDay(null);
+    setUsageFocusToken((token) => token + 1);
+    setUsageSubTab("history");
+  };
+
+  // Clearing the exact provider/day focus stays in the request-log view and
+  // releases the one-shot focus (and any stale alias), so the retained quick
+  // range applies again on the next ordinary request.
+  const handleClearProviderDayFocus = () => {
+    setUsageFocusModel(null);
+    setUsageFocusProviderId(null);
+    setUsageFocusDay(null);
+    setUsageFocusToken((token) => token + 1);
   };
 
   const syncEditingProvider = (
@@ -1540,6 +1582,23 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
                 <ScrollText className="h-3.5 w-3.5" />
                 <span>{t("aiGatewayUsageLogsSubTab", "Request logs")}</span>
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={usageSubTab === "history"}
+                onClick={() => setUsageSubTab("history")}
+                data-testid="ai-gateway-subtab-usage-history"
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition-all ${
+                  usageSubTab === "history"
+                    ? "bg-background text-foreground font-semibold shadow-xs"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <HistoryIcon className="h-3.5 w-3.5" />
+                <span>
+                  {t("aiGatewayProviderHistorySubTab", "Provider history")}
+                </span>
+              </button>
             </div>
           </div>
 
@@ -1552,6 +1611,17 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
               isActive={activeTab === "usage" && usageSubTab === "logs"}
               focusModel={usageFocusModel}
               focusToken={usageFocusToken}
+              focusProviderId={usageFocusProviderId}
+              focusDay={usageFocusDay}
+              onReturnToProviderHistory={handleReturnToProviderHistory}
+              onClearProviderDayFocus={handleClearProviderDayFocus}
+            />
+          </div>
+
+          <div className={usageSubTab === "history" ? "block" : "hidden"}>
+            <ProviderUsageHistoryPanel
+              isActive={activeTab === "usage" && usageSubTab === "history"}
+              onOpenDay={handleOpenProviderDay}
             />
           </div>
         </div>

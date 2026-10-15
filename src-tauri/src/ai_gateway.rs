@@ -10,6 +10,7 @@ mod model_pools;
 mod openai_conversion;
 mod openai_sse;
 mod output_timing;
+mod provider_usage;
 mod quota;
 mod runtime_http;
 mod selection;
@@ -30,6 +31,7 @@ pub use go_usage::ai_gateway_provider_go_usage;
 pub(crate) use go_usage::__cmd__ai_gateway_provider_go_usage;
 pub use auto_refresh::TemplateAutoRefreshStatus;
 pub(crate) use daily_reset::{start_daily_reset_scanner, stop_daily_reset_scanner};
+pub use provider_usage::*;
 pub use types_config::*;
 pub use usage_log::*;
 
