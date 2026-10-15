@@ -61,6 +61,10 @@ import {
   type ModelPrice,
   type UsageMetrics,
 } from "@/lib/aiGateway";
+// Namespace import for the Step 2 latency helpers: the module is always loaded,
+// so a missing named export fails only its own callable assertion instead of
+// aborting the whole file and hiding the rendered behavior RED.
+import * as aiGatewayModule from "@/lib/aiGateway";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
 function key(overrides: Partial<GatewayKey> = {}): GatewayKey {
@@ -409,34 +413,141 @@ describe("金额格式化与未定价判定", () => {
   });
 });
 
-describe("formatGatewayDuration 耗时格式化", () => {
+describe("formatGatewayDuration 秒格式化", () => {
   it("空值、非有限数字或负数返回破折号", () => {
     expect(formatGatewayDuration(null)).toBe("—");
     expect(formatGatewayDuration(undefined)).toBe("—");
     expect(formatGatewayDuration(Number.NaN)).toBe("—");
     expect(formatGatewayDuration(Number.POSITIVE_INFINITY)).toBe("—");
+    expect(formatGatewayDuration(Number.NEGATIVE_INFINITY)).toBe("—");
     expect(formatGatewayDuration(-1)).toBe("—");
   });
 
-  it("小于 1 分钟时单位为 s，且按四舍五入整秒计算", () => {
-    expect(formatGatewayDuration(0)).toBe("0s");
-    expect(formatGatewayDuration(300)).toBe("0s");
-    expect(formatGatewayDuration(500)).toBe("1s");
-    expect(formatGatewayDuration(1200)).toBe("1s");
-    expect(formatGatewayDuration(1600)).toBe("2s");
-    expect(formatGatewayDuration(2000)).toBe("2s");
-    expect(formatGatewayDuration(45200)).toBe("45s");
-    expect(formatGatewayDuration(59400)).toBe("59s");
+  it("按毫秒除以 1000，保留三位小数（单位由调用方单独渲染）", () => {
+    expect(formatGatewayDuration(0)).toBe("0.000");
+    expect(formatGatewayDuration(120)).toBe("0.120");
+    expect(formatGatewayDuration(1000)).toBe("1.000");
+    expect(formatGatewayDuration(5000)).toBe("5.000");
+    expect(formatGatewayDuration(62000)).toBe("62.000");
+    expect(formatGatewayDuration(3661000)).toBe("3661.000");
   });
 
-  it("达到或超过 1 分钟时单位为 1m 2s 格式", () => {
-    // 59600ms 四舍五入为 60s，即 1m 0s
-    expect(formatGatewayDuration(59600)).toBe("1m 0s");
-    expect(formatGatewayDuration(60000)).toBe("1m 0s");
-    expect(formatGatewayDuration(62000)).toBe("1m 2s");
-    expect(formatGatewayDuration(62800)).toBe("1m 3s");
-    expect(formatGatewayDuration(125000)).toBe("2m 5s");
-    expect(formatGatewayDuration(3661000)).toBe("61m 1s");
+  it("三地小数舍入与原始毫秒分辨率无关，跨阈值显示值可相同", () => {
+    // 2.9996s 与 3.0000s 显示相同，但颜色区间按原始毫秒判定。
+    expect(formatGatewayDuration(2999.6)).toBe("3.000");
+    expect(formatGatewayDuration(3000)).toBe("3.000");
+    expect(formatGatewayDuration(15000.4)).toBe("15.000");
+  });
+});
+
+/**
+ * Resolve a Step 2 helper through the namespace so a missing export produces a
+ * bounded message on its own assertion rather than a module-load failure.
+ */
+function latencyHelper(name: string): (value: number | null | undefined) => unknown {
+  const candidate = (aiGatewayModule as Record<string, unknown>)[name];
+  expect(
+    typeof candidate,
+    `aiGateway 未导出可调用的 ${name}（Steps 2 公共 helper）`,
+  ).toBe("function");
+  return candidate as (value: number | null | undefined) => unknown;
+}
+
+const GREEN_TONE = /(emerald|green)/;
+const ORANGE_TONE = /(amber|orange)/;
+const RED_TONE = /(rose|red)/;
+
+const TONE_FAMILIES = {
+  green: GREEN_TONE,
+  orange: ORANGE_TONE,
+  red: RED_TONE,
+} as const;
+
+/**
+ * REQ-004 / Step 2: an available metric color must use a readable light-theme
+ * shade (shade number >= 500) and carry a matching `dark:` variant in the SAME
+ * color family. Exact shade numbers are intentionally not pinned, so
+ * `text-emerald-600 dark:text-emerald-400` and `text-emerald-500 dark:text-emerald-400`
+ * both pass.
+ */
+function expectReadableColorFamily(
+  color: unknown,
+  family: keyof typeof TONE_FAMILIES,
+) {
+  expect(typeof color, "颜色 helper 应返回类名字符串").toBe("string");
+  const raw = String(color);
+  const classes = raw.split(/\s+/).filter(Boolean);
+  const tone = TONE_FAMILIES[family];
+  const lightShades = classes.filter(
+    (cls) => /^text-[a-z]+-\d{2,3}$/.test(cls) && tone.test(cls),
+  );
+  expect(
+    lightShades.some((cls) => Number(cls.split("-").pop()) >= 500),
+    `${family} 家族应提供 >= 500 的亮色主题色阶，实际类名：${raw}`,
+  ).toBe(true);
+  const darkShades = classes.filter(
+    (cls) => /^dark:text-[a-z]+-\d{2,3}$/.test(cls) && tone.test(cls),
+  );
+  expect(
+    darkShades.length,
+    `${family} 家族应提供同色系 dark: 变体，实际类名：${raw}`,
+  ).toBeGreaterThan(0);
+}
+
+describe("AI 网关延迟指标格式化与颜色 helper", () => {
+  it("formatGatewayTps 以两位小数展示每秒 token，非法值返回破折号", () => {
+    const formatGatewayTps = latencyHelper("formatGatewayTps");
+    expect(formatGatewayTps(null)).toBe("—");
+    expect(formatGatewayTps(undefined)).toBe("—");
+    expect(formatGatewayTps(Number.NaN)).toBe("—");
+    expect(formatGatewayTps(Number.POSITIVE_INFINITY)).toBe("—");
+    expect(formatGatewayTps(-1)).toBe("—");
+    expect(formatGatewayTps(0)).toBe("0.00");
+    expect(formatGatewayTps(20)).toBe("20.00");
+    expect(formatGatewayTps(50)).toBe("50.00");
+    expect(formatGatewayTps(59.999)).toBe("60.00");
+    expect(formatGatewayTps(200)).toBe("200.00");
+  });
+
+  it("getGatewayFirstTokenColorClass 按原始首字毫秒独立分档（<1s 绿，1~3s 橙，>3s 红）", () => {
+    const color = latencyHelper("getGatewayFirstTokenColorClass");
+    expect(color(null)).toBe("text-muted-foreground");
+    expect(color(undefined)).toBe("text-muted-foreground");
+    expect(color(Number.NaN)).toBe("text-muted-foreground");
+    expect(color(Number.POSITIVE_INFINITY)).toBe("text-muted-foreground");
+    expect(color(-1)).toBe("text-muted-foreground");
+    expect(color(0)).toMatch(GREEN_TONE);
+    expect(color(999)).toMatch(GREEN_TONE);
+    // 999.6ms 显示为 1.000s，但原始值仍 < 1000ms，必须取绿色。
+    expect(color(999.6)).toMatch(GREEN_TONE);
+    expect(color(1000)).toMatch(ORANGE_TONE);
+    expect(color(3000)).toMatch(ORANGE_TONE);
+    expect(color(3000.4)).toMatch(RED_TONE);
+    expect(color(3001)).toMatch(RED_TONE);
+    // REQ-004: each available band must be readable in light and dark themes.
+    expectReadableColorFamily(color(0), "green");
+    expectReadableColorFamily(color(1000), "orange");
+    expectReadableColorFamily(color(3001), "red");
+  });
+
+  it("getGatewayTpsColorClass 按原始 TPS 独立分档（>=60 绿，20~<60 橙，<20 红）", () => {
+    const color = latencyHelper("getGatewayTpsColorClass");
+    expect(color(null)).toBe("text-muted-foreground");
+    expect(color(undefined)).toBe("text-muted-foreground");
+    expect(color(Number.NaN)).toBe("text-muted-foreground");
+    expect(color(Number.POSITIVE_INFINITY)).toBe("text-muted-foreground");
+    expect(color(-1)).toBe("text-muted-foreground");
+    expect(color(60)).toMatch(GREEN_TONE);
+    expect(color(600)).toMatch(GREEN_TONE);
+    // 59.999 显示为 60.00，但原始值仍 < 60，必须取橙色。
+    expect(color(59.999)).toMatch(ORANGE_TONE);
+    expect(color(20)).toMatch(ORANGE_TONE);
+    expect(color(19.999)).toMatch(RED_TONE);
+    expect(color(0)).toMatch(RED_TONE);
+    // REQ-004: each available band must be readable in light and dark themes.
+    expectReadableColorFamily(color(60), "green");
+    expectReadableColorFamily(color(20), "orange");
+    expectReadableColorFamily(color(0), "red");
   });
 });
 
@@ -449,21 +560,27 @@ describe("getGatewayDurationColorClass 耗时颜色类名映射", () => {
     expect(getGatewayDurationColorClass(-1)).toBe("text-muted-foreground");
   });
 
-  it("小于 3 秒 (< 3000ms) 返回绿色 text-emerald-500", () => {
-    expect(getGatewayDurationColorClass(0)).toBe("text-emerald-500");
-    expect(getGatewayDurationColorClass(500)).toBe("text-emerald-500");
-    expect(getGatewayDurationColorClass(2999)).toBe("text-emerald-500");
+  it("小于 3 秒 (< 3000ms) 使用绿色系并带同色系亮/暗可读色阶", () => {
+    expect(getGatewayDurationColorClass(0)).toMatch(GREEN_TONE);
+    expect(getGatewayDurationColorClass(500)).toMatch(GREEN_TONE);
+    expect(getGatewayDurationColorClass(2999)).toMatch(GREEN_TONE);
+    expectReadableColorFamily(getGatewayDurationColorClass(0), "green");
+    expectReadableColorFamily(getGatewayDurationColorClass(2999), "green");
   });
 
-  it("3 秒至 15 秒 (3000ms <= ms <= 15000ms) 返回琥珀黄色 text-amber-500", () => {
-    expect(getGatewayDurationColorClass(3000)).toBe("text-amber-500");
-    expect(getGatewayDurationColorClass(8000)).toBe("text-amber-500");
-    expect(getGatewayDurationColorClass(15000)).toBe("text-amber-500");
+  it("3 秒至 15 秒 (3000ms <= ms <= 15000ms) 使用橙色系并带同色系亮/暗可读色阶", () => {
+    expect(getGatewayDurationColorClass(3000)).toMatch(ORANGE_TONE);
+    expect(getGatewayDurationColorClass(8000)).toMatch(ORANGE_TONE);
+    expect(getGatewayDurationColorClass(15000)).toMatch(ORANGE_TONE);
+    expectReadableColorFamily(getGatewayDurationColorClass(3000), "orange");
+    expectReadableColorFamily(getGatewayDurationColorClass(15000), "orange");
   });
 
-  it("超过 15 秒 (> 15000ms) 返回玫瑰红色 text-rose-500", () => {
-    expect(getGatewayDurationColorClass(15001)).toBe("text-rose-500");
-    expect(getGatewayDurationColorClass(60000)).toBe("text-rose-500");
+  it("超过 15 秒 (> 15000ms) 使用红色系并带同色系亮/暗可读色阶", () => {
+    expect(getGatewayDurationColorClass(15001)).toMatch(RED_TONE);
+    expect(getGatewayDurationColorClass(60000)).toMatch(RED_TONE);
+    expectReadableColorFamily(getGatewayDurationColorClass(15001), "red");
+    expectReadableColorFamily(getGatewayDurationColorClass(60000), "red");
   });
 });
 
