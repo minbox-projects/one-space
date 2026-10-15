@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { ConfirmDialogProvider } from "@/components/ConfirmDialogProvider";
 import { ToastProvider } from "@/components/ToastProvider";
-import type { GatewayUpstreamProvider } from "@/lib/aiGateway";
+import type {
+  GatewayModelPool,
+  GatewayUpstreamProvider,
+} from "@/lib/aiGateway";
 import { AI_GATEWAY_DEFAULT_PORT } from "@/lib/aiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 import { resetTauriMocks } from "@/test/mocks/tauri";
@@ -1052,6 +1055,329 @@ describe("ModelListPanel 模型池与服务商模型区分（形态 A 分组分�
     await act(async () => {
       await i18n.changeLanguage("en");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 4 (20261015-pool-only-reasoning) REQ-005 / AC-009 (UI) / AC-012: the
+// model list advertises a pool's configured canonical preferences only, while
+// ordinary provider model rows keep their exact native effort identifiers.
+// ---------------------------------------------------------------------------
+
+describe("ModelListPanel 模型池推理变体与普通档位隔离（Step 4）", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  const provider = makeProvider({
+    id: "p1",
+    name: "Provider 1",
+    mappings: [{ local_model: "gpt-4o", upstream_model: "gpt-4o-2024" }],
+  });
+
+  const mappedPool: GatewayModelPool = {
+    id: "pool-mapped",
+    name: "Mapped Pool",
+    model: "mapped-pool",
+    enabled: true,
+    candidates: [
+      {
+        provider_id: "p1",
+        local_model: "gpt-4o",
+        upstream_model: "gpt-4o-2024",
+        protocol: "chat_completions",
+        weight: 1,
+        reasoning: {
+          profile: "openai_effort",
+          values: ["low", "medium", "high"],
+          supports_disable: false,
+          mappings: [
+            { effort: "high", action: { kind: "enum", value: "high" } },
+            { effort: "medium", action: { kind: "enum", value: "medium" } },
+          ],
+        },
+      },
+    ],
+  };
+
+  const legacyPool: GatewayModelPool = {
+    id: "pool-legacy",
+    name: "Legacy Pool",
+    model: "legacy-pool",
+    enabled: true,
+    candidates: [
+      {
+        provider_id: "p1",
+        local_model: "gpt-4o",
+        upstream_model: "gpt-4o-2024",
+        protocol: "chat_completions",
+        weight: 1,
+      },
+    ],
+  };
+
+  function findPoolRow(model: string): HTMLElement {
+    const row = screen
+      .getAllByTestId("ai-gateway-model-list-row")
+      .find((item) => item.getAttribute("data-model") === model);
+    if (!row) throw new Error(`missing pool row ${model}`);
+    return row;
+  }
+
+  it("池行仅展示配置的规范偏好，遗留池没有任何推理变体", () => {
+    renderWithProviders(
+      <ModelListPanel
+        providers={[provider]}
+        modelPools={[mappedPool, legacyPool]}
+      />,
+    );
+
+    const mapped = findPoolRow("mapped-pool");
+    expect(
+      within(mapped).getByTestId("ai-gateway-model-list-effort-medium"),
+    ).toHaveTextContent("medium");
+    expect(
+      within(mapped).getByTestId("ai-gateway-model-list-effort-high"),
+    ).toHaveTextContent("high");
+
+    const legacy = findPoolRow("legacy-pool");
+    expect(
+      within(legacy).queryByTestId("ai-gateway-model-list-reasoning-efforts"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("普通服务商行保留原生档位标识，绝不规范化或新增拒绝", () => {
+    renderWithProviders(
+      <ModelListPanel
+        providers={[
+          makeProvider({
+            id: "p-native",
+            name: "Native Provider",
+            mappings: [
+              {
+                local_model: "native-model",
+                upstream_model: "native-remote",
+                reasoning_efforts: ["max", "minimal", "AUTO"],
+              },
+            ],
+          }),
+        ]}
+      />,
+    );
+
+    const row = screen
+      .getAllByTestId("ai-gateway-model-list-row")
+      .find((item) => item.getAttribute("data-model") === "native-model");
+    expect(row).toBeDefined();
+    expect(
+      within(row!).getByTestId("ai-gateway-model-list-effort-max"),
+    ).toHaveTextContent("max");
+    expect(
+      within(row!).getByTestId("ai-gateway-model-list-effort-minimal"),
+    ).toHaveTextContent("minimal");
+    expect(
+      within(row!).getByTestId("ai-gateway-model-list-effort-AUTO"),
+    ).toHaveTextContent("AUTO");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 4 repair (20261015-pool-only-reasoning) REQ-005 / AC-009: a pool row in
+// the model list must expose the same static catalog the backend derives from
+// the stored configuration (`pool_reasoning_catalog`): the canonical support
+// set of candidates whose exact source reference still resolves and whose
+// declaration its own profile/protocol makes valid, plus the pool default and
+// the static coverage. Keys, health, cooldown and enable state never move that
+// count; a dangling or protocol-changed reference stops being advertised.
+//
+// New public interfaces pinned for Frontend:
+//   - default value:   data-testid="ai-gateway-model-list-reasoning-default"
+//   - coverage value:  data-testid="ai-gateway-model-list-reasoning-coverage"
+//     (inside a pool row; label text keeps aiGatewayModelPoolReasoningCoverageLabel)
+// ---------------------------------------------------------------------------
+
+describe("ModelListPanel 模型池静态目录与候选项隔离（Step 4 repair）", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  const staticProvider = makeProvider({
+    id: "p-static",
+    name: "Static Provider",
+    mappings: [
+      { local_model: "gpt-4o", upstream_model: "gpt-4o-2024" },
+      { local_model: "gpt-4o-mini", upstream_model: "gpt-4o-mini-2024" },
+    ],
+  });
+
+  function openaiPin(effort: string, value: string) {
+    return {
+      profile: "openai_effort" as const,
+      values: [value],
+      supports_disable: false,
+      mappings: [{ effort, action: { kind: "enum", value } }],
+    };
+  }
+
+  // Two candidates resolve and map `high`; the third declaration is valid but
+  // its source no longer resolves, so it must not widen the advertised set.
+  const twoOfThreePool: GatewayModelPool = {
+    id: "pool-two-of-three",
+    name: "Two of Three",
+    model: "two-of-three",
+    enabled: true,
+    default_reasoning_effort: "auto",
+    candidates: [
+      {
+        provider_id: "p-static",
+        local_model: "gpt-4o",
+        upstream_model: "gpt-4o-2024",
+        protocol: "chat_completions",
+        weight: 1,
+        reasoning: openaiPin("high", "high"),
+      },
+      {
+        provider_id: "p-static",
+        local_model: "gpt-4o-mini",
+        upstream_model: "gpt-4o-mini-2024",
+        protocol: "chat_completions",
+        weight: 1,
+        reasoning: openaiPin("high", "high"),
+      },
+      {
+        provider_id: "p-gone",
+        local_model: "gone",
+        upstream_model: "gone-remote",
+        protocol: "chat_completions",
+        weight: 1,
+        reasoning: openaiPin("medium", "medium"),
+      },
+    ],
+  };
+
+  function findPoolRow(model: string): HTMLElement {
+    const row = screen
+      .queryAllByTestId("ai-gateway-model-list-row")
+      .find((item) => item.getAttribute("data-model") === model);
+    if (!row) throw new Error(`missing pool row ${model}`);
+    return row;
+  }
+
+  function coverageValue(mapped: number, total: number): string {
+    return i18n.t("aiGatewayModelPoolReasoningCoverageValue", { mapped, total });
+  }
+
+  it("只广告当前可解析的有效映射，并展示默认与静态覆盖", () => {
+    renderWithProviders(
+      <ModelListPanel
+        providers={[staticProvider]}
+        modelPools={[twoOfThreePool]}
+      />,
+    );
+
+    const row = findPoolRow("two-of-three");
+    expect(
+      within(row).getByTestId("ai-gateway-model-list-effort-high"),
+    ).toHaveTextContent("high");
+    // The dangling candidate's `medium` declaration is not advertised.
+    expect(
+      within(row).queryByTestId("ai-gateway-model-list-effort-medium"),
+    ).not.toBeInTheDocument();
+
+    expect(
+      within(row).getByTestId("ai-gateway-model-list-reasoning-default"),
+    ).toHaveTextContent(i18n.t("aiGatewayModelPoolReasoningDefaultAuto"));
+    expect(
+      within(row).getByTestId("ai-gateway-model-list-reasoning-coverage"),
+    ).toHaveTextContent(coverageValue(2, 3));
+  });
+
+  it("密钥、健康与启用状态都不改变静态广告集合与计数", () => {
+    const degradedProvider = {
+      ...staticProvider,
+      enabled: false,
+      keys: [
+        {
+          id: "k1",
+          name: "Default",
+          value: "********",
+          enabled: false,
+          auto_marked: true,
+          failure_kind: "quota",
+          marked_at: 1,
+          reason: "quota",
+        },
+      ],
+    } as unknown as GatewayUpstreamProvider;
+
+    renderWithProviders(
+      <ModelListPanel
+        providers={[degradedProvider]}
+        modelPools={[twoOfThreePool]}
+      />,
+    );
+
+    const row = findPoolRow("two-of-three");
+    expect(
+      within(row).getByTestId("ai-gateway-model-list-effort-high"),
+    ).toHaveTextContent("high");
+    expect(
+      within(row).getByTestId("ai-gateway-model-list-reasoning-coverage"),
+    ).toHaveTextContent(coverageValue(2, 3));
+  });
+
+  it("配置与协议不匹配时不广告该档位", () => {
+    const mismatchPool: GatewayModelPool = {
+      id: "pool-protocol-mismatch",
+      name: "Protocol Mismatch",
+      model: "protocol-mismatch",
+      enabled: true,
+      default_reasoning_effort: "high",
+      candidates: [
+        {
+          provider_id: "p-anthropic",
+          local_model: "claude",
+          upstream_model: "claude-remote",
+          protocol: "anthropic_messages",
+          weight: 1,
+          reasoning: openaiPin("high", "high"),
+        },
+      ],
+    };
+    const anthropicProvider = makeProvider({
+      id: "p-anthropic",
+      name: "Anthropic Provider",
+      protocol: "anthropic_messages",
+      mappings: [{ local_model: "claude", upstream_model: "claude-remote" }],
+    });
+
+    renderWithProviders(
+      <ModelListPanel
+        providers={[anthropicProvider]}
+        modelPools={[mismatchPool]}
+      />,
+    );
+
+    const row = findPoolRow("protocol-mismatch");
+    expect(
+      within(row).queryByTestId("ai-gateway-model-list-reasoning-efforts"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("最后一个可解析来源消失后停止广告该档位但保留计数分母", () => {
+    renderWithProviders(
+      <ModelListPanel providers={[]} modelPools={[twoOfThreePool]} />,
+    );
+
+    const row = findPoolRow("two-of-three");
+    expect(
+      within(row).queryByTestId("ai-gateway-model-list-reasoning-efforts"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(row).getByTestId("ai-gateway-model-list-reasoning-coverage"),
+    ).toHaveTextContent(coverageValue(0, 3));
   });
 });
 

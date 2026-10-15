@@ -3503,3 +3503,70 @@ describe("ProviderDetailDialog anthropic_messages 协议选项", () => {
     ).toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 4 (20261015-pool-only-reasoning) REQ-007 / AC-012 negative isolation:
+// the upstream-provider editor gains no pool reasoning controls or persistent
+// pool fields, and ordinary provider effort identifiers keep their exact values
+// (no canonicalization, no new rejection).
+// ---------------------------------------------------------------------------
+
+describe("ProviderDetailDialog 池推理隔离（Step 4）", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("上游服务商编辑器不新增任何池推理控件", async () => {
+    renderProviderDialog({ provider: makeProvider() });
+
+    for (const key of [
+      "aiGatewayModelPoolReasoningDefaultLabel",
+      "aiGatewayModelPoolReasoningProfileLabel",
+      "aiGatewayModelPoolReasoningMappingLabel",
+      "aiGatewayModelPoolReasoningSupportsDisableLabel",
+    ]) {
+      expect(
+        screen.queryByLabelText(i18n.t(key)),
+        `服务商编辑器不应包含 ${key}`,
+      ).not.toBeInTheDocument();
+    }
+    expect(
+      document.querySelector('[data-testid^="ai-gateway-model-pool-"]'),
+    ).toBeNull();
+  });
+
+  it("普通服务商映射保留任意原生档位标识，不做规范化或拒绝", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const provider = makeProvider({
+      mappings: [
+        {
+          local_model: "local-a",
+          upstream_model: "remote-a",
+          reasoning_efforts: ["max", "minimal", "AUTO"],
+        },
+      ],
+    });
+
+    renderWithProviders(
+      <ProviderDetailDialog
+        open
+        provider={provider}
+        busy={false}
+        onSave={onSave}
+        onDelete={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as GatewayUpstreamProvider;
+    expect(saved.mappings[0].reasoning_efforts).toEqual([
+      "max",
+      "minimal",
+      "AUTO",
+    ]);
+  });
+});

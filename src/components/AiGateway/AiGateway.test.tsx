@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { act, fireEvent, renderHook, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { AiGateway } from "@/components/AiGateway";
@@ -4393,6 +4394,134 @@ describe("AiGateway model pool integration", () => {
     // 验证全部查询条件已被清空，恢复为默认的 Today
     await waitFor(() => {
       expect(within(logsPanel).getByTestId("ai-gateway-logs-range-trigger")).toHaveTextContent(/Today|今日/i);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 4 (20261015-pool-only-reasoning) vertical UI acceptance slice:
+// AC-008 (pool-only editing + persisted defaults), AC-009 UI (configured pool
+// capability), AC-012 (no provider mutation / ordinary isolation) and AC-014
+// (keyboard-driven bilingual accessible names) in one console interaction.
+// ---------------------------------------------------------------------------
+
+describe("AiGateway 模型池推理纵向切片（Step 4）", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("新池默认 medium、可改 auto 保存、重开保留且不触碰服务商，键盘与双语可用", async () => {
+    const user = userEvent.setup();
+    const provider = makeProvider({
+      id: "p-a",
+      name: "Provider A",
+      protocol: "chat_completions",
+      mappings: [{ local_model: "local-a1", upstream_model: "remote-a1" }],
+    });
+
+    const store: { config: GatewayConfig; poolStatus: unknown[] } = {
+      config: makeConfig({ providers: [provider], model_pools: [] }),
+      poolStatus: [],
+    };
+
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      switch (command) {
+        case "ai_gateway_get_config":
+          return store.config;
+        case "ai_gateway_status":
+          return makeStatus({ provider_count: 1 });
+        case "ai_gateway_provider_templates":
+          return [];
+        case "ai_gateway_terminal_targets":
+          return [];
+        case "ai_gateway_model_pools_status":
+          return store.poolStatus;
+        case "ai_gateway_upsert_model_pool": {
+          const pool = args?.pool as Record<string, unknown>;
+          store.config = makeConfig({
+            providers: [provider],
+            model_pools: [pool as unknown as GatewayModelPool],
+          });
+          store.poolStatus = [
+            {
+              id: pool.id,
+              name: pool.name,
+              model: pool.model,
+              enabled: true,
+              default_reasoning_effort: "auto",
+              reasoning_efforts: [],
+              reasoning_coverage: [],
+              candidates: [],
+            },
+          ];
+          return store.config;
+        }
+        default:
+          return undefined;
+      }
+    });
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Provider A");
+    fireEvent.click(screen.getByRole("tab", { name: /Model pools/i }));
+    await user.click(screen.getByTestId("ai-gateway-add-model-pool"));
+
+    const dialog = await screen.findByTestId("model-pool-dialog");
+    const defaultSelect = screen.getByLabelText(
+      i18n.t("aiGatewayModelPoolReasoningDefaultLabel"),
+    );
+    expect(defaultSelect).toHaveValue("medium");
+
+    await user.selectOptions(defaultSelect, "auto");
+    await user.click(
+      within(dialog).getByRole("checkbox", { name: /local-a1/i }),
+    );
+    await user.click(screen.getByTestId("model-pool-save"));
+
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.some(
+          ([command]) => command === "ai_gateway_upsert_model_pool",
+        ),
+      ).toBe(true),
+    );
+
+    const upsertCall = invokeMock.mock.calls.find(
+      ([command]) => command === "ai_gateway_upsert_model_pool",
+    );
+    const payload = (upsertCall?.[1] as { pool: Record<string, unknown> }).pool;
+    expect(payload.default_reasoning_effort).toBe("auto");
+    // AC-012: the pool save must not mutate the referenced provider.
+    expect(
+      invokeMock.mock.calls.some(
+        ([command]) => command === "ai_gateway_upsert_provider",
+      ),
+    ).toBe(false);
+
+    // Reopen the saved pool: the pool-local default round-trips.
+    const card = await screen.findByTestId(
+      `ai-gateway-model-pool-${String(payload.id)}`,
+    );
+    await user.click(
+      within(card).getByTestId(
+        `ai-gateway-model-pool-edit-${String(payload.id)}`,
+      ),
+    );
+    await screen.findByTestId("model-pool-dialog");
+    expect(
+      screen.getByLabelText(i18n.t("aiGatewayModelPoolReasoningDefaultLabel")),
+    ).toHaveValue("auto");
+
+    // AC-014: the accessible name is localized in Chinese.
+    await act(async () => {
+      await i18n.changeLanguage("zh");
+    });
+    expect(
+      screen.getByLabelText(i18n.t("aiGatewayModelPoolReasoningDefaultLabel")),
+    ).toHaveValue("auto");
+    await act(async () => {
+      await i18n.changeLanguage("en");
     });
   });
 });

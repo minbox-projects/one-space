@@ -40,6 +40,7 @@ mod anthropic_conversion;
 mod claude_terminal_sync;
 mod daily_reset;
 mod model_pools;
+mod model_pool_reasoning;
 mod openai_conversion;
 mod model_pool_terminal_sync;
 mod provider_usage;
@@ -10989,6 +10990,11 @@ fn sample_attempt_record(
         error_message: error_message.map(str::to_string),
         terminal,
         reasoning_effort: None,
+        // Step 2 (20261015-pool-only-reasoning) mechanical fixture preparation:
+        // these optional pool-evidence fields are added to the product record in
+        // the same step; keep this literal exhaustive.
+        resolved_reasoning_effort: None,
+        native_reasoning: None,
         cost_breakdown: None,
         first_token_ms: None,
         avg_tps: None,

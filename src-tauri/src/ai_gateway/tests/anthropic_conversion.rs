@@ -2879,3 +2879,94 @@ async fn pool_messages_candidate_rejects_strict_tool_control_before_attempt() {
 
     stop_server().await.expect("stop the listener");
 }
+
+// ---------------------------------------------------------------------------
+// Step 2 (20261015-pool-only-reasoning): a pool Anthropic candidate receives its
+// declared native controls after conversion, while the ordinary adapter keeps
+// rejecting unsupported reasoning controls (`unsupported_chat_conversion_fields_
+// fail_field_specifically` above is the retained ordinary guard).
+// ---------------------------------------------------------------------------
+
+/// AC-006: a Chat request routed to a pool Anthropic candidate with an adaptive
+/// effort profile is converted, then injected with `output_config.effort` and
+/// `thinking.type = "adaptive"` while the recognized entry control is removed.
+#[tokio::test]
+async fn pool_anthropic_candidate_receives_native_controls_after_conversion() {
+    let home = temp_home("pool-anth-native-controls");
+    let port = free_port().await;
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let alias = format!("free-anth-{tag}");
+    let provider_id = format!("p-anth-{tag}");
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            anthropic_message(
+                json!([{"type": "text", "text": "ok"}]),
+                "end_turn",
+                json!({"input_tokens": 1, "output_tokens": 1}),
+            ),
+        )
+    })
+    .await;
+
+    let provider = anthropic_provider_value(
+        &provider_id,
+        &upstream_url,
+        LOCAL_MODEL,
+        UPSTREAM_MODEL,
+        UPSTREAM_SECRET,
+    );
+    let pool = json!({
+        "id": format!("pool-anth-{tag}"),
+        "name": "Anthropic",
+        "model": alias,
+        "enabled": true,
+        "candidates": [{
+            "provider_id": provider_id,
+            "local_model": LOCAL_MODEL,
+            "upstream_model": UPSTREAM_MODEL,
+            "protocol": "anthropic_messages",
+            "weight": 1,
+            "reasoning": {
+                "profile": "anthropic_effort_adaptive",
+                "values": ["high"],
+                "mappings": [{"effort": "high", "action": {"kind": "enum", "value": "high"}}],
+            },
+        }],
+    });
+    let mut config = raw_config(port, vec![provider]);
+    config["model_pools"] = json!([pool]);
+    config["model_pool_reserved_models"] = json!([]);
+    write_raw_gateway_config(&config);
+    start_server(None).await.expect("start the listener");
+
+    let sent = converted_body(
+        port,
+        &log,
+        "/v1/chat/completions",
+        json!({
+            "model": alias,
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "high",
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        sent.pointer("/output_config/effort").and_then(Value::as_str),
+        Some("high"),
+        "the native effort control must be injected: {sent}"
+    );
+    assert_eq!(
+        sent.pointer("/thinking/type").and_then(Value::as_str),
+        Some("adaptive"),
+        "the adaptive thinking control must be injected: {sent}"
+    );
+    assert!(
+        sent.get("reasoning_effort").is_none(),
+        "the recognized entry control must be stripped before conversion: {sent}"
+    );
+
+    stop_server().await.expect("stop the listener");
+    drop(home);
+}

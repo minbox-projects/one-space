@@ -6,8 +6,8 @@
 //! a temp directory and never touch real application data.
 
 use super::{
-    default_true, ModelPrice, DEFAULT_USAGE_RETENTION_DAYS, MAX_USAGE_RETENTION_DAYS,
-    MIN_USAGE_RETENTION_DAYS,
+    default_true, ModelPrice, UpstreamProtocol, DEFAULT_USAGE_RETENTION_DAYS,
+    MAX_USAGE_RETENTION_DAYS, MIN_USAGE_RETENTION_DAYS,
 };
 use chrono::{Datelike, Timelike};
 use rusqlite::{params_from_iter, Connection, Row};
@@ -54,7 +54,9 @@ CREATE TABLE IF NOT EXISTS usage_logs (
     reasoning_effort TEXT,
     cost_breakdown TEXT,
     first_token_ms REAL,
-    avg_tps REAL
+    avg_tps REAL,
+    resolved_reasoning_effort TEXT,
+    native_reasoning TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_usage_logs_timestamp ON usage_logs(timestamp_ms);
 CREATE INDEX IF NOT EXISTS idx_usage_logs_local_model ON usage_logs(local_model);
@@ -164,6 +166,19 @@ pub struct UsageCostBreakdown {
     pub cache_write_cost: f64,
 }
 
+/// Pool-only native reasoning evidence recorded for one attempt (REQ-006).
+///
+/// `protocol` is the attempt's actual upstream protocol, `mode` is one of
+/// `enum | budget | disable | provider_default`, and `parameters` carries only
+/// the allowlisted wire controls actually sent. It never contains request or
+/// response bodies, headers or credentials.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NativeReasoningSnapshot {
+    pub protocol: UpstreamProtocol,
+    pub mode: String,
+    pub parameters: serde_json::Map<String, serde_json::Value>,
+}
+
 /// One persisted request-log row. Contains no bodies, headers or credentials.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageLogRecord {
@@ -208,6 +223,14 @@ pub struct UsageLogRecord {
     /// over a positive window is `Some(0.0)`.
     #[serde(default)]
     pub avg_tps: Option<f64>,
+    /// Pool-only resolved preference (`low|medium|high|xhigh|none|auto`);
+    /// `None` for ordinary, historical and synthetic rows without a pool policy.
+    #[serde(default)]
+    pub resolved_reasoning_effort: Option<String>,
+    /// Pool-only native-control snapshot actually sent upstream (REQ-006);
+    /// `None` for ordinary/historical rows and for a synthetic no-attempt row.
+    #[serde(default)]
+    pub native_reasoning: Option<NativeReasoningSnapshot>,
 }
 
 /// Validate a user-provided retention value: only 1-365 days are accepted.
@@ -1052,15 +1075,15 @@ INSERT INTO usage_logs (
     result, status, input_tokens, cache_read_tokens, cache_write_tokens,
     output_tokens, total_tokens, amount, duration_ms, error_message, terminal,
     reasoning_effort, usage_semantics, usage_present, cache_accounting_valid,
-    cost_breakdown, first_token_ms, avg_tps
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    cost_breakdown, first_token_ms, avg_tps, resolved_reasoning_effort, native_reasoning
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ";
 
 /// Semantics marker persisted for every newly written row (REQ-004).
 pub(in crate::ai_gateway) const CANONICAL_USAGE_SEMANTICS: &str = "canonical_v1";
 
 /// Column list of every record-producing `SELECT`, in [`record_from_row`] order.
-const RECORD_COLUMNS: &str = "timestamp_ms, local_model, upstream_model, provider_id, provider_name, result, status, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, total_tokens, amount, duration_ms, error_message, terminal, reasoning_effort, cost_breakdown, first_token_ms, avg_tps";
+const RECORD_COLUMNS: &str = "timestamp_ms, local_model, upstream_model, provider_id, provider_name, result, status, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, total_tokens, amount, duration_ms, error_message, terminal, reasoning_effort, cost_breakdown, first_token_ms, avg_tps, resolved_reasoning_effort, native_reasoning";
 
 fn metrics_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<UsageMetrics> {
     let cache_hit_tokens = row.get::<_, i64>(offset + 9)? as u64;
@@ -1100,6 +1123,17 @@ fn record_from_row(row: &Row<'_>) -> rusqlite::Result<UsageLogRecord> {
                 Box::new(error),
             )
         })?;
+    let native_reasoning = row
+        .get::<_, Option<String>>(21)?
+        .map(|value| serde_json::from_str(&value))
+        .transpose()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                21,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
     Ok(UsageLogRecord {
         timestamp_ms: row.get(0)?,
         local_model: row.get(1)?,
@@ -1121,6 +1155,8 @@ fn record_from_row(row: &Row<'_>) -> rusqlite::Result<UsageLogRecord> {
         reasoning_effort: row.get::<_, Option<String>>(16)?,
         first_token_ms: row.get::<_, Option<f64>>(18)?,
         avg_tps: row.get::<_, Option<f64>>(19)?,
+        resolved_reasoning_effort: row.get::<_, Option<String>>(20)?,
+        native_reasoning,
     })
 }
 
@@ -1268,6 +1304,20 @@ fn migrate_usage_logs(connection: &Connection) -> Result<(), String> {
     if !has_column("avg_tps") {
         add_usage_log_column(connection, "ALTER TABLE usage_logs ADD COLUMN avg_tps REAL")?;
     }
+    // Nullable pool-only evidence columns (REQ-006). Added additively and never
+    // backfilled: historical rows stay null and are never inferred.
+    if !has_column("resolved_reasoning_effort") {
+        add_usage_log_column(
+            connection,
+            "ALTER TABLE usage_logs ADD COLUMN resolved_reasoning_effort TEXT",
+        )?;
+    }
+    if !has_column("native_reasoning") {
+        add_usage_log_column(
+            connection,
+            "ALTER TABLE usage_logs ADD COLUMN native_reasoning TEXT",
+        )?;
+    }
     Ok(())
 }
 
@@ -1287,6 +1337,12 @@ fn insert_record(
 ) -> Result<(), String> {
     let cost_breakdown = record
         .cost_breakdown
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let native_reasoning = record
+        .native_reasoning
         .as_ref()
         .map(serde_json::to_string)
         .transpose()
@@ -1316,6 +1372,8 @@ fn insert_record(
             cost_breakdown,
             record.first_token_ms,
             record.avg_tps,
+            record.resolved_reasoning_effort,
+            native_reasoning,
         ])
         .map_err(|error| error.to_string())?;
     Ok(())

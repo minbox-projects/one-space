@@ -60,6 +60,11 @@ fn attempt_record(request: usize, attempt: usize, base_ms: i64) -> UsageLogRecor
         error_message: None,
         terminal: attempt + 1 == ATTEMPTS_PER_REQUEST,
         reasoning_effort: None,
+        // Step 2 (20261015-pool-only-reasoning) mechanical fixture preparation:
+        // these optional pool-evidence fields are added to the product record in
+        // the same step; keep this literal exhaustive.
+        resolved_reasoning_effort: None,
+        native_reasoning: None,
         first_token_ms: None,
         avg_tps: None,
     }

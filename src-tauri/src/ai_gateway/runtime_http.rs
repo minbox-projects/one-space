@@ -31,12 +31,16 @@ use super::storage::{local_base_url, read_config};
 use super::usage_log::{
     compute_cost_at_time_with_breakdown, extract_upstream_error_text, match_price_for_provider,
     normalize_retention_days, now_millis, parse_usage_from_response, CanonicalUsage,
-    SseUsageAccumulator, UsageAccounting, UsageLogEntry, UsageLogRecord, UsageLogStore,
-    UsageResult, UsageTokens,
+    NativeReasoningSnapshot, SseUsageAccumulator, UsageAccounting, UsageLogEntry, UsageLogRecord,
+    UsageLogStore, UsageResult, UsageTokens,
+};
+use super::reasoning::{
+    parse_pool_request_effort, resolved_effort_token, strip_pool_entry_controls, PoolOutputCap,
+    PoolReasoningRequest,
 };
 use super::{
     now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, ModelPool,
-    UpstreamProtocol,
+    PoolReasoningEffort, UpstreamProtocol,
 };
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -555,6 +559,12 @@ pub(in crate::ai_gateway) struct AttemptLog {
     /// Average output tokens per second over the unrounded generation window;
     /// `None` when unavailable (REQ-002/REQ-003).
     pub(in crate::ai_gateway) avg_tps: Option<f64>,
+    /// Pool-only resolved preference (`low|medium|high|xhigh|none|auto`); `None`
+    /// for an ordinary attempt (REQ-006).
+    pub(in crate::ai_gateway) resolved_reasoning_effort: Option<String>,
+    /// Pool-only allowlisted native-control snapshot actually sent upstream;
+    /// `None` for an ordinary attempt (REQ-006).
+    pub(in crate::ai_gateway) native_reasoning: Option<NativeReasoningSnapshot>,
 }
 
 /// Buffer one completed upstream attempt with its own elapsed time. The parsed
@@ -575,6 +585,30 @@ fn build_attempt_log(
     first_token_ms: Option<f64>,
     avg_tps: Option<f64>,
 ) -> AttemptLog {
+    // Pool-only attempt evidence derived from the same resolved control that
+    // shaped the upstream body; an ordinary attempt records none (REQ-006).
+    let (resolved_reasoning_effort, native_reasoning) = match provider
+        .pool_candidate
+        .as_ref()
+        .and_then(|identity| identity.reasoning.as_ref())
+    {
+        Some(native) => {
+            let protocol = provider
+                .pool_candidate
+                .as_ref()
+                .map(|identity| identity.protocol)
+                .unwrap_or(protocol);
+            (
+                Some(native.resolved.clone()),
+                Some(NativeReasoningSnapshot {
+                    protocol,
+                    mode: native.mode().to_string(),
+                    parameters: native.wire_parameters(),
+                }),
+            )
+        }
+        None => (None, None),
+    };
     AttemptLog {
         provider_id: provider.id.clone(),
         provider_name: provider.name.clone(),
@@ -588,6 +622,8 @@ fn build_attempt_log(
         duration_ms: started.elapsed().as_millis().max(1) as u64,
         first_token_ms,
         avg_tps,
+        resolved_reasoning_effort,
+        native_reasoning,
     }
 }
 
@@ -788,13 +824,17 @@ pub(in crate::ai_gateway) fn models_payload(config: &GatewayConfig) -> Value {
     json!({ "object": "list", "data": data })
 }
 
-/// The `/v1/models` row for one enabled configured pool (REQ-008/AC-011).
+/// The `/v1/models` row for one enabled configured pool (REQ-008/AC-011,
+/// REQ-005/AC-009).
 ///
 /// It advertises the pool's own public id and display name, the two OpenAI
 /// ingress protocols it supports and its real selected source identities. It
-/// never carries a source key, endpoint, price, reasoning variant or a
-/// readiness/cooldown flag, so a temporarily all-unready or cooling pool stays
-/// advertised and no capability is guessed from a source model.
+/// additionally publishes the pool's *static* reasoning capability — the
+/// supported canonical preferences, the canonical default and the five canonical
+/// coverage rows — derived only from the stored configuration, so a temporarily
+/// all-unready or cooling pool keeps the same advertised support. It never
+/// carries a source key, endpoint, price, native mapped value or a
+/// readiness/cooldown flag, so no capability is guessed from a source model.
 fn pool_discovery_entry(config: &GatewayConfig, pool: &ModelPool) -> Value {
     let model = pool.model.trim();
     let name = pool.name.trim();
@@ -816,6 +856,18 @@ fn pool_discovery_entry(config: &GatewayConfig, pool: &ModelPool) -> Value {
             })
         })
         .collect();
+    let catalog = super::reasoning::pool_reasoning_catalog(&config.providers, pool);
+    let reasoning_coverage: Vec<Value> = catalog
+        .reasoning_coverage
+        .iter()
+        .map(|row| {
+            json!({
+                "effort": row.effort,
+                "mapped_candidates": row.mapped_candidates,
+                "total_candidates": row.total_candidates,
+            })
+        })
+        .collect();
     json!({
         "id": model,
         "object": "model",
@@ -823,6 +875,9 @@ fn pool_discovery_entry(config: &GatewayConfig, pool: &ModelPool) -> Value {
         "protocols": ["chat_completions", "responses"],
         "source_count": pool.candidates.len(),
         "sources": sources,
+        "reasoning_efforts": catalog.reasoning_efforts,
+        "default_reasoning_effort": catalog.default_reasoning_effort,
+        "reasoning_coverage": reasoning_coverage,
     })
 }
 
@@ -3129,9 +3184,15 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    // REQ-005/AC-007: a current pool alias on an OpenAI endpoint validates the
-    // full portable contract before any selection, SWRR mutation, attempt or
-    // probe. A native Messages alias stays on its fenced 502 path below.
+    // The effective output cap of this request, used only to filter pool budget
+    // mappings; computed before any selection.
+    let pool_cap = pool_output_cap(path, &body_value);
+    let mut pool_requested_pref: Option<PoolReasoningEffort> = None;
+    let mut pool_resolved: Option<String> = None;
+    // REQ-001/AC-001: recognize a current pool alias first, then parse its
+    // reasoning intent and validate the cleaned portable contract before any
+    // selection, SWRR mutation, key/probe or health change. A native Messages
+    // alias stays on its fenced 502 path below.
     if let Some(alias) = pool_alias {
         if !is_messages_path(path) {
             if let Some(pool) = config
@@ -3139,6 +3200,26 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                 .iter()
                 .find(|pool| pool.model.trim() == alias)
             {
+                match parse_pool_request_effort(path, &body_value) {
+                    Ok(preference) => pool_requested_pref = preference,
+                    Err(message) => {
+                        let response = json_response(
+                            400,
+                            local_error_payload(
+                                path,
+                                message,
+                                "invalid_request_error",
+                                "invalid_request",
+                            ),
+                        );
+                        stream
+                            .write_all(&http_response_bytes(response))
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        return Ok(());
+                    }
+                }
+                pool_resolved = Some(resolved_effort_token(pool, pool_requested_pref));
                 // A pool that stores at least one native Messages candidate must
                 // also satisfy the existing adapter's contract, and a `strict`
                 // function control it cannot carry is rejected before selection.
@@ -3146,8 +3227,13 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                     .candidates
                     .iter()
                     .any(|candidate| candidate.protocol == UpstreamProtocol::AnthropicMessages);
+                // Validate the clean portable body with only this ingress's
+                // recognized controls removed, so the existing adapters keep
+                // their ordinary contract and every unrecognized reasoning
+                // field is still rejected by name.
+                let cleaned = strip_pool_entry_controls(path, &body_value);
                 if let Err(error) =
-                    openai_conversion::validate_pool_request(path, &body_value, messages_candidate)
+                    openai_conversion::validate_pool_request(path, &cleaned, messages_candidate)
                 {
                     let response = json_response(
                         400,
@@ -3162,8 +3248,55 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
             }
         }
     }
-    let pool_plan = pool_alias
-        .and_then(|alias| plan_pool_request(&config, alias, protocol, now_ts()));
+    let pool_reasoning_request = PoolReasoningRequest {
+        requested: pool_requested_pref,
+        cap: pool_cap,
+    };
+    let pool_plan = pool_alias.and_then(|alias| {
+        plan_pool_request(&config, alias, protocol, &pool_reasoning_request, now_ts())
+    });
+    // The ordered runtime classification (REQ-003/AC-004/AC-005): an unsupported
+    // preference, a declared-but-unavailable preference and an output-cap
+    // incompatibility are each answered before any attempt. A 400 is a request
+    // validation error like every other local 400; the 502 unavailability shares
+    // the fenced boundary's synthetic terminal row.
+    if let Some(PoolPlan::Rejected {
+        status,
+        code,
+        message,
+    }) = &pool_plan
+    {
+        let error_type = if *status == 502 {
+            "server_error"
+        } else {
+            "invalid_request_error"
+        };
+        let response = json_response(
+            *status,
+            local_error_payload(path, message.clone(), error_type, code),
+        );
+        stream
+            .write_all(&http_response_bytes(response))
+            .await
+            .map_err(|e| e.to_string())?;
+        if *status == 502 {
+            record_usage_log(
+                &config,
+                &synthetic_terminal_row(
+                    &config,
+                    requested.as_deref().unwrap_or_default(),
+                    UsageResult::Failure,
+                    *status,
+                    started.elapsed().as_millis().max(1) as u64,
+                    Some(message),
+                    reasoning_effort,
+                    pool_resolved.clone(),
+                ),
+            )
+            .await;
+        }
+        return Ok(());
+    }
     if let Some(PoolPlan::Fenced { message }) = &pool_plan {
         let status = 502;
         let response = json_response(
@@ -3187,6 +3320,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                 started.elapsed().as_millis().max(1) as u64,
                 Some(message),
                 reasoning_effort,
+                pool_resolved.clone(),
             ),
         )
         .await;
@@ -3281,6 +3415,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                 started.elapsed().as_millis().max(1) as u64,
                 Some(&message),
                 reasoning_effort,
+                None,
             ),
         )
         .await;
@@ -3435,6 +3570,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                     started.elapsed().as_millis().max(1) as u64,
                     capture.message.as_deref(),
                     reasoning_effort.clone(),
+                    pool_resolved.clone(),
                 );
                 record_usage_log(&config, &record).await;
             } else {
@@ -3485,6 +3621,39 @@ fn extract_reasoning_effort(body: &Value) -> Option<String> {
     None
 }
 
+/// The effective output cap of one pool request, used only to filter Anthropic
+/// manual-budget mappings (REQ-003/AC-006). Chat applies `max_completion_tokens`
+/// precedence over `max_tokens`; Responses uses `max_output_tokens`; an omitted
+/// cap keeps the Anthropic adapter's 4096 default. The field name travels with
+/// the value so an incompatibility error can name the relevant field.
+fn pool_output_cap(path: &str, body: &Value) -> PoolOutputCap {
+    if path.split('?').next().unwrap_or(path) == "/v1/responses" {
+        return PoolOutputCap {
+            field: "max_output_tokens",
+            tokens: body
+                .get("max_output_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(4096),
+        };
+    }
+    if let Some(tokens) = body.get("max_completion_tokens").and_then(Value::as_u64) {
+        return PoolOutputCap {
+            field: "max_completion_tokens",
+            tokens,
+        };
+    }
+    if let Some(tokens) = body.get("max_tokens").and_then(Value::as_u64) {
+        return PoolOutputCap {
+            field: "max_tokens",
+            tokens,
+        };
+    }
+    PoolOutputCap {
+        field: "max_tokens",
+        tokens: 4096,
+    }
+}
+
 /// Persist the request's buffered attempt rows with exactly one terminal row.
 ///
 /// `terminal_index` names the buffered attempt that is the request's terminal
@@ -3523,6 +3692,8 @@ async fn record_request_usage_logs(
                 attempt.error_message.clone(),
                 index == terminal_index,
                 reasoning_effort.clone(),
+                attempt.resolved_reasoning_effort.clone(),
+                attempt.native_reasoning.clone(),
             ),
             accounting: UsageAccounting {
                 present: attempt.usage.is_some(),
@@ -3544,6 +3715,7 @@ fn synthetic_terminal_row(
     duration_ms: u64,
     error_message: Option<&str>,
     reasoning_effort: Option<String>,
+    resolved_reasoning_effort: Option<String>,
 ) -> UsageLogRecord {
     build_usage_log_row(
         config,
@@ -3560,6 +3732,8 @@ fn synthetic_terminal_row(
         error_message.map(str::to_string),
         true,
         reasoning_effort,
+        resolved_reasoning_effort,
+        None,
     )
 }
 
@@ -3581,6 +3755,8 @@ fn build_usage_log_row(
     error_message: Option<String>,
     terminal: bool,
     reasoning_effort: Option<String>,
+    resolved_reasoning_effort: Option<String>,
+    native_reasoning: Option<NativeReasoningSnapshot>,
 ) -> UsageLogRecord {
     let timestamp_ms = now_millis();
     let tokens = usage.unwrap_or_default();
@@ -3617,6 +3793,8 @@ fn build_usage_log_row(
         error_message,
         terminal,
         reasoning_effort,
+        resolved_reasoning_effort,
+        native_reasoning,
     }
 }
 

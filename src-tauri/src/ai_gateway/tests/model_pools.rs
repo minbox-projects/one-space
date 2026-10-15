@@ -2119,3 +2119,286 @@ async fn pool_cross_protocol_probe_only_candidate_serves_selected_mapping() {
 
     stop_server().await.expect("stop the listener");
 }
+
+// ===========================================================================
+// Step 2 (20261015-pool-only-reasoning): only reasoning-compatible candidates
+// consume weighted scheduler slots (AC-005).
+// ===========================================================================
+
+/// One Chat request carrying an explicit `high` preference and an output cap.
+async fn post_chat_capped(port: u16, alias: &str, max_tokens: u64) -> (u16, String) {
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-opencode-session", "sess-same"),
+        ],
+        Some(json!({
+            "model": alias,
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "high",
+            "max_tokens": max_tokens,
+        })),
+    )
+    .await;
+    (status, text)
+}
+
+/// AC-005: a candidate whose declared budget cannot fit the request's effective
+/// output cap is filtered before weighted selection, so it never consumes a
+/// scheduler slot; once the cap admits it, the same weights make it participate.
+#[tokio::test]
+async fn pool_reasoning_incompatible_candidates_are_filtered_before_weighted_selection() {
+    let _home = temp_home("pool-reasoning-swr-filter");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let alias = format!("free-cap-{tag}");
+    let (provider_url, log) = spawn_mock_upstream(|captured| {
+        if captured.path.ends_with("/messages") {
+            MockReply::Json(
+                200,
+                json!({
+                    "id": "msg_1", "type": "message", "role": "assistant", "model": "remote-cap-b",
+                    "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }),
+            )
+        } else {
+            MockReply::Json(
+                200,
+                json!({
+                    "id": "ok", "object": "chat.completion",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }),
+            )
+        }
+    })
+    .await;
+
+    let provider = pool_provider(
+        &provider_id,
+        "Provider One",
+        &provider_url,
+        vec![pool_key("key-default", "Default", "sk-upstream", true)],
+        vec![
+            provider_mapping("local-a", "remote-cap-a", "chat_completions"),
+            provider_mapping("local-b", "remote-cap-b", "anthropic_messages"),
+        ],
+    );
+    let pool = json!({
+        "id": format!("pool-cap-{tag}"),
+        "name": "Cap",
+        "model": alias,
+        "enabled": true,
+        "default_reasoning_effort": "auto",
+        "candidates": [
+            {
+                "provider_id": provider_id,
+                "local_model": "local-a",
+                "upstream_model": "remote-cap-a",
+                "protocol": "chat_completions",
+                "weight": 3,
+                "reasoning": {
+                    "profile": "openai_effort",
+                    "values": ["high"],
+                    "mappings": [{"effort": "high", "action": {"kind": "enum", "value": "high"}}],
+                },
+            },
+            {
+                "provider_id": provider_id,
+                "local_model": "local-b",
+                "upstream_model": "remote-cap-b",
+                "protocol": "anthropic_messages",
+                "weight": 1,
+                "reasoning": {
+                    "profile": "anthropic_manual_budget",
+                    "budget": {"min": 1024, "max": 16384},
+                    "mappings": [{"effort": "high", "action": {"kind": "budget", "budget_tokens": 8192}}],
+                },
+            },
+        ],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start the listener");
+
+    // The small cap excludes the budget candidate entirely.
+    for _ in 0..4 {
+        let (status, text) = post_chat_capped(port, &alias, 1024).await;
+        assert_eq!(
+            status, 200,
+            "the compatible candidate must serve under a small cap: {text}"
+        );
+    }
+    let models = models_of(&log);
+    assert_eq!(
+        models.len(),
+        4,
+        "only the compatible candidate may serve: {models:?}"
+    );
+    assert!(
+        models.iter().all(|model| model == "remote-cap-a"),
+        "a cap-incompatible candidate must never consume a slot: {models:?}"
+    );
+
+    // A large cap admits the budget candidate under its own weight.
+    for _ in 0..4 {
+        let (status, text) = post_chat_capped(port, &alias, 16384).await;
+        assert_eq!(
+            status, 200,
+            "both compatible candidates must serve under a large cap: {text}"
+        );
+    }
+    let models = models_of(&log);
+    assert!(
+        models
+            .iter()
+            .filter(|model| model.as_str() == "remote-cap-b")
+            .count()
+            >= 1,
+        "a now-compatible candidate must participate under its weight: {models:?}"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+// ===========================================================================
+// Step 2 (20261015-pool-only-reasoning): a compatible selected probe and
+// weighted selection obey the pool reasoning mapping (AC-007).
+// ===========================================================================
+
+/// One Chat request carrying an explicit `high` pool preference.
+async fn post_chat_effort(port: u16, alias: &str, effort: &str) -> (u16, String, String) {
+    call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("authorization", "Bearer local-key"),
+            ("x-opencode-session", "sess-same"),
+        ],
+        Some(json!({
+            "model": alias,
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": effort,
+        })),
+    )
+    .await
+}
+
+/// AC-007: the reasoning filter decides the selected set before weighted
+/// selection. A currently healthy candidate that declares no `high` mapping must
+/// not consume the slot, so the only compatible candidate is the auto-disabled
+/// half-open probe; it serves with its own candidate-native control and its
+/// successful probe clears the row's runtime health.
+#[tokio::test]
+async fn pool_reasoning_compatible_probe_serves_and_incompatible_candidate_is_excluded() {
+    let _home = temp_home("pool-reasoning-probe-filter");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let alias = format!("free-model-{tag}");
+    let (provider_url, log) = spawn_mock_upstream(|captured| {
+        match captured_model(captured).as_str() {
+            "remote-probe" => MockReply::Json(200, json!({"id": "served-by-probe", "choices": []})),
+            "remote-sibling" => {
+                MockReply::Json(200, json!({"id": "served-by-sibling", "choices": []}))
+            }
+            _ => MockReply::Json(500, json!({"error": {"message": "unexpected model"}})),
+        }
+    })
+    .await;
+
+    let mut probe_mapping = provider_mapping("local-probe", "remote-probe", "chat_completions");
+    probe_mapping["auto_disabled"] = json!(true);
+    probe_mapping["disabled_reason"] = json!("HTTP 500 upstream error");
+    probe_mapping["disabled_at"] = json!(1);
+    probe_mapping["consecutive_failures"] = json!(3);
+
+    let provider = pool_provider(
+        &provider_id,
+        "Probe Provider",
+        &provider_url,
+        vec![pool_key("key-default", "Default", "sk-upstream", true)],
+        vec![
+            probe_mapping,
+            provider_mapping("local-sibling", "remote-sibling", "chat_completions"),
+        ],
+    );
+
+    let mut probe_candidate = pool_candidate(
+        provider_id.as_str(),
+        "local-probe",
+        "remote-probe",
+        "chat_completions",
+        Some(1),
+    );
+    probe_candidate["reasoning"] = json!({
+        "profile": "openai_effort",
+        "values": ["high"],
+        "mappings": [{"effort": "high", "action": {"kind": "enum", "value": "probe-native"}}],
+    });
+    // The healthy sibling carries the dominant weight, so a baseline without the
+    // reasoning filter deterministically selects it instead of the probe.
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Probe Filter",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            probe_candidate,
+            pool_candidate(provider_id.as_str(), "local-sibling", "remote-sibling", "chat_completions", Some(100)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = post_chat_effort(port, &alias, "high").await;
+    let captured = log.lock().expect("mock log").clone();
+    let stored = stored_provider(&provider_id);
+    stop_server().await.expect("stop the listener");
+
+    let models: Vec<String> = captured.iter().map(captured_model).collect();
+    let mut failures: Vec<String> = Vec::new();
+    if status != 200 {
+        failures.push(format!(
+            "the compatible selected probe must serve the pool: {status}: {text}"
+        ));
+    }
+    if models != vec!["remote-probe".to_string()] {
+        failures.push(format!(
+            "only the compatible probe may be attempted: {models:?}"
+        ));
+    }
+    if let Some(first) = captured.first() {
+        let body: Value = serde_json::from_slice(&first.body).unwrap_or(Value::Null);
+        if body.get("reasoning_effort").and_then(Value::as_str) != Some("probe-native") {
+            failures.push(format!(
+                "the probe must forward its candidate-native control: {body}"
+            ));
+        }
+    }
+    let mapping = stored
+        .mappings
+        .iter()
+        .find(|mapping| mapping.local_model == "local-probe")
+        .expect("the probed mapping must persist");
+    if mapping.auto_disabled {
+        failures.push(format!(
+            "a successful probe must clear the row health: {mapping:?}"
+        ));
+    }
+    if mapping.consecutive_failures != 0 {
+        failures.push(format!(
+            "a successful probe must reset the row failure counter: {mapping:?}"
+        ));
+    }
+    assert!(
+        failures.is_empty(),
+        "compatible probe selection mismatches: {failures:#?}"
+    );
+}

@@ -24,9 +24,13 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { AiGateway } from "@/components/AiGateway";
+import { ModelPoolCard } from "./ModelPoolCard";
 import {
   type GatewayConfig,
+  type GatewayModelPool,
+  type GatewayModelPoolStatus,
   type GatewayStatus,
+  type GatewayUpstreamProvider,
 } from "@/lib/aiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
@@ -374,5 +378,253 @@ describe("ModelPoolCard", () => {
       within(card).getByTestId(`ai-gateway-model-pool-copy-${POOL_ID}`),
     );
     await waitFor(() => expect(execCommand).toHaveBeenCalledWith("copy"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 4 (20261015-pool-only-reasoning) REQ-005 / AC-009 (UI): the saved pool
+// card advertises only the configured canonical support, default and static
+// coverage read from the pool status; a legacy pool keeps its prior lack of
+// reasoning variants and nothing is inferred from source metadata.
+//
+// Public contract this block fixes for the frontend:
+//   - support container:  data-testid="ai-gateway-model-pool-reasoning-support-<id>"
+//   - default token:      data-testid="ai-gateway-model-pool-reasoning-default-<id>"
+//   - static coverage:    data-testid="ai-gateway-model-pool-reasoning-coverage-<id>"
+// Coverage text uses t("aiGatewayModelPoolReasoningCoverageValue", {mapped,total}).
+// ---------------------------------------------------------------------------
+
+function cardPool(): GatewayModelPool {
+  const pool = {
+    id: "pool-reasoning",
+    name: "Reasoning Pool",
+    model: "reasoning-model",
+    enabled: true,
+    candidates: [
+      {
+        provider_id: "p-a",
+        local_model: "local-a1",
+        upstream_model: "remote-a1",
+        protocol: "chat_completions",
+        weight: 1,
+      },
+    ],
+  };
+  return pool as unknown as GatewayModelPool;
+}
+
+function cardStatus(): GatewayModelPoolStatus {
+  const status = {
+    id: "pool-reasoning",
+    name: "Reasoning Pool",
+    model: "reasoning-model",
+    enabled: true,
+    default_reasoning_effort: "high",
+    reasoning_efforts: ["medium", "high"],
+    reasoning_coverage: [
+      { effort: "low", mapped_candidates: 0, total_candidates: 3 },
+      { effort: "medium", mapped_candidates: 1, total_candidates: 3 },
+      { effort: "high", mapped_candidates: 2, total_candidates: 3 },
+      { effort: "xhigh", mapped_candidates: 0, total_candidates: 3 },
+      { effort: "none", mapped_candidates: 0, total_candidates: 3 },
+    ],
+    candidates: [],
+  };
+  return status as unknown as GatewayModelPoolStatus;
+}
+
+function renderCard(overrides: {
+  pool?: GatewayModelPool;
+  providers?: GatewayUpstreamProvider[];
+  status?: GatewayModelPoolStatus | null;
+}) {
+  return renderWithProviders(
+    <ModelPoolCard
+      pool={overrides.pool ?? cardPool()}
+      providers={overrides.providers ?? []}
+      status={overrides.status ?? cardStatus()}
+      onToggleEnabled={vi.fn()}
+      onEdit={vi.fn()}
+      onDelete={vi.fn()}
+      onOpenLogs={vi.fn()}
+    />,
+  );
+}
+
+describe("ModelPoolCard 模型池推理能力展示（Step 4）", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("按状态展示配置支持集合、默认偏好与静态覆盖", () => {
+    renderCard({});
+
+    const support = screen.getByTestId(
+      "ai-gateway-model-pool-reasoning-support-pool-reasoning",
+    );
+    // Only the configured canonical preferences, in canonical order.
+    expect(support).toHaveTextContent("medium");
+    expect(support).toHaveTextContent("high");
+    expect(support).not.toHaveTextContent("low");
+    expect(support).not.toHaveTextContent("xhigh");
+
+    expect(
+      screen.getByTestId(
+        "ai-gateway-model-pool-reasoning-default-pool-reasoning",
+      ),
+    ).toHaveTextContent("high");
+
+    expect(
+      screen.getByTestId(
+        "ai-gateway-model-pool-reasoning-coverage-pool-reasoning",
+      ),
+    ).toHaveTextContent(
+      i18n.t("aiGatewayModelPoolReasoningCoverageValue", {
+        mapped: 2,
+        total: 3,
+      }),
+    );
+  });
+
+  it("遗留池没有有效映射时不展示任何推理变体或覆盖标记", () => {
+    const legacyStatus = {
+      id: "pool-reasoning",
+      name: "Reasoning Pool",
+      model: "reasoning-model",
+      enabled: true,
+      candidates: [],
+    } as unknown as GatewayModelPoolStatus;
+
+    renderCard({ status: legacyStatus });
+
+    expect(
+      screen.queryByTestId(
+        "ai-gateway-model-pool-reasoning-support-pool-reasoning",
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId(
+        "ai-gateway-model-pool-reasoning-default-pool-reasoning",
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId(
+        "ai-gateway-model-pool-reasoning-coverage-pool-reasoning",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("来源映射上的原生档位不会被当作池能力展示", () => {
+    const providers = [
+      {
+        id: "p-a",
+        name: "Provider A",
+        protocol: "chat_completions",
+        mappings: [
+          {
+            local_model: "local-a1",
+            upstream_model: "remote-a1",
+            reasoning_efforts: ["source-only-max"],
+          },
+        ],
+        enabled: true,
+      },
+    ] as unknown as GatewayUpstreamProvider[];
+
+    renderCard({ providers });
+
+    const support = screen.getByTestId(
+      "ai-gateway-model-pool-reasoning-support-pool-reasoning",
+    );
+    expect(support).not.toHaveTextContent("source-only-max");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 4 repair (20261015-pool-only-reasoning) REQ-005 / AC-009: the backend
+// coverage table always carries the five canonical rows (`low`, `medium`,
+// `high`, `xhigh`, `none`) and the support set is the non-zero subset. With a
+// pool default of `auto` there is no `auto` coverage row, so the card must show
+// the coverage of the advertised, labeled preference (here `high` 2/3) instead
+// of silently rendering the first row (an unlabeled `low` 0/3). Static coverage
+// stays independent of runtime candidate readiness.
+// ---------------------------------------------------------------------------
+
+describe("ModelPoolCard 静态覆盖标注与就绪隔离（Step 4 repair）", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  function autoDefaultStatus(): GatewayModelPoolStatus {
+    return {
+      id: "pool-reasoning",
+      name: "Reasoning Pool",
+      model: "reasoning-model",
+      enabled: true,
+      default_reasoning_effort: "auto",
+      reasoning_efforts: ["high"],
+      reasoning_coverage: [
+        { effort: "low", mapped_candidates: 0, total_candidates: 3 },
+        { effort: "medium", mapped_candidates: 1, total_candidates: 3 },
+        { effort: "high", mapped_candidates: 2, total_candidates: 3 },
+        { effort: "xhigh", mapped_candidates: 0, total_candidates: 3 },
+        { effort: "none", mapped_candidates: 0, total_candidates: 3 },
+      ],
+      candidates: [],
+    } as unknown as GatewayModelPoolStatus;
+  }
+
+  it("auto 默认下展示带档位标签的 2/3 覆盖，而不是未标注的 low 0/3", () => {
+    renderCard({ status: autoDefaultStatus() });
+
+    const coverage = screen.getByTestId(
+      "ai-gateway-model-pool-reasoning-coverage-pool-reasoning",
+    );
+    expect(coverage).toHaveTextContent("high");
+    expect(coverage).toHaveTextContent(
+      i18n.t("aiGatewayModelPoolReasoningCoverageValue", {
+        mapped: 2,
+        total: 3,
+      }),
+    );
+    expect(coverage).not.toHaveTextContent("low");
+    expect(coverage).not.toHaveTextContent(/0\/3/);
+
+    expect(
+      screen.getByTestId(
+        "ai-gateway-model-pool-reasoning-default-pool-reasoning",
+      ),
+    ).toHaveTextContent(i18n.t("aiGatewayModelPoolReasoningDefaultAuto"));
+  });
+
+  it("候选运行时就绪变化不改变静态覆盖", () => {
+    const cooling = autoDefaultStatus();
+    cooling.candidates = [
+      {
+        provider_id: "p-a",
+        provider_name: "Provider A",
+        local_model: "local-a1",
+        upstream_model: "remote-a1",
+        protocol: "chat_completions",
+        weight: 1,
+        ready: false,
+        availability: "cooling",
+        reason: "cooling",
+        cooling_until: 1_900_000_000,
+      },
+    ] as unknown as GatewayModelPoolStatus["candidates"];
+
+    renderCard({ status: cooling });
+
+    expect(
+      screen.getByTestId(
+        "ai-gateway-model-pool-reasoning-coverage-pool-reasoning",
+      ),
+    ).toHaveTextContent(
+      i18n.t("aiGatewayModelPoolReasoningCoverageValue", {
+        mapped: 2,
+        total: 3,
+      }),
+    );
   });
 });

@@ -12,6 +12,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ToastProvider";
 import {
+  selectPoolReasoningCoverageRow,
   type GatewayModelPool,
   type GatewayModelPoolStatus,
   type GatewayUpstreamProvider,
@@ -30,6 +31,7 @@ type ModelPoolCardProps = {
 
 export function ModelPoolCard({
   pool,
+  status = null,
   busy = false,
   onToggleEnabled,
   onEdit,
@@ -85,6 +87,24 @@ export function ModelPoolCard({
 
   const candidateCount = pool.candidates.length;
   const sourceCount = new Set(pool.candidates.map((c) => c.provider_id)).size;
+
+  // Pool capability is read only from this pool's own status snapshot; source
+  // metadata is never promoted into a pool reasoning variant.
+  const reasoningEfforts = status?.reasoning_efforts ?? [];
+  const defaultEffortRaw = status?.default_reasoning_effort?.trim() ?? "";
+  const coverage = status?.reasoning_coverage ?? [];
+  // Surface the concrete default's row, else the first advertised labeled tier;
+  // never silently fall back to the unlabeled canonical `low` row while another
+  // tier is mapped.
+  const coverageRow = selectPoolReasoningCoverageRow(
+    coverage,
+    defaultEffortRaw || "auto",
+    reasoningEfforts,
+  );
+  const defaultLabel =
+    defaultEffortRaw && defaultEffortRaw !== "auto"
+      ? defaultEffortRaw
+      : t("aiGatewayModelPoolReasoningDefaultAuto", "Provider default (auto)");
 
   return (
     <div
@@ -239,6 +259,59 @@ export function ModelPoolCard({
             </div>
           </div>
         </div>
+
+        {/* Pool-configured reasoning capability; nothing is inferred from sources */}
+        {reasoningEfforts.length > 0 ||
+        defaultEffortRaw !== "" ||
+        coverageRow ? (
+          <div className="mt-2.5 space-y-1.5 rounded-lg border border-border/60 bg-muted/20 p-2">
+            {reasoningEfforts.length > 0 ? (
+              <div
+                data-testid={`ai-gateway-model-pool-reasoning-support-${pool.id}`}
+                className="flex flex-wrap items-center gap-1"
+              >
+                <span className="text-[10px] font-medium text-muted-foreground">
+                  {t("aiGatewayReasoningEfforts", "Reasoning efforts")}:
+                </span>
+                {reasoningEfforts.map((effort) => (
+                  <span
+                    key={effort}
+                    className="inline-flex items-center rounded border border-border/80 bg-background px-1.5 py-0.2 font-mono text-[10px] font-medium text-foreground/85 leading-tight"
+                  >
+                    {effort}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {defaultEffortRaw !== "" ? (
+              <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <span>{t("aiGatewayModelPoolReasoningDefaultLabel", "Reasoning default")}:</span>
+                <span
+                  data-testid={`ai-gateway-model-pool-reasoning-default-${pool.id}`}
+                  className="rounded bg-background px-1.5 py-0.2 font-mono font-medium text-foreground/85"
+                >
+                  {defaultLabel}
+                </span>
+              </div>
+            ) : null}
+            {coverageRow ? (
+              <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <span>{t("aiGatewayModelPoolReasoningCoverageLabel", "Static coverage")}:</span>
+                <span
+                  data-testid={`ai-gateway-model-pool-reasoning-coverage-${pool.id}`}
+                  className="font-medium text-foreground/85"
+                >
+                  <span className="font-mono">{coverageRow.effort}</span>{" "}
+                  {t("aiGatewayModelPoolReasoningCoverageValue", {
+                    mapped: coverageRow.mapped_candidates,
+                    total: coverageRow.total_candidates,
+                    defaultValue: "{{mapped}}/{{total}} candidates mapped",
+                  })}
+                </span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* Delete confirmation */}
         {confirmingDelete ? (

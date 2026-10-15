@@ -2265,6 +2265,120 @@
           "name": "getGatewayTpsColorClass",
           "kind": "function",
           "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "CANONICAL_REASONING_EFFORTS",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "CanonicalReasoningEffort",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ModelPoolReasoningProfile",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "MODEL_POOL_MIN_REASONING_BUDGET",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "isKnownModelPoolReasoningProfile",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ModelPoolReasoningBudget",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ModelPoolReasoningAction",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ModelPoolReasoningMapping",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "GatewayModelPoolReasoning",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ModelPoolReasoningCoverage",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ModelPoolNativeReasoning",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "isModelPoolReasoningMappingValid",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "resolveModelPoolDefaultEffort",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "isModelPoolReasoningProfileSupportedOnProtocol",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "modelPoolCandidateResolves",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "modelPoolCandidateServesEffort",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ModelPoolReasoningCatalog",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "poolReasoningCatalog",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "selectPoolReasoningCoverageRow",
+          "kind": "function",
+          "visibility": "public"
         }
       ],
       "depends_on": [],
@@ -3894,6 +4008,7 @@
         "src-tauri/src/ai_gateway/provider_templates.json",
         "src-tauri/src/ai_gateway/provider_usage.rs",
         "src-tauri/src/ai_gateway/quota.rs",
+        "src-tauri/src/ai_gateway/reasoning.rs",
         "src-tauri/src/ai_gateway/runtime_http.rs",
         "src-tauri/src/ai_gateway/selection.rs",
         "src-tauri/src/ai_gateway/storage.rs",
@@ -3914,6 +4029,7 @@
         "src-tauri/src/ai_gateway/tests/daily_reset.rs",
         "src-tauri/src/ai_gateway/tests/go_usage.rs",
         "src-tauri/src/ai_gateway/tests/migration.rs",
+        "src-tauri/src/ai_gateway/tests/model_pool_reasoning.rs",
         "src-tauri/src/ai_gateway/tests/model_pool_terminal_sync.rs",
         "src-tauri/src/ai_gateway/tests/model_pools.rs",
         "src-tauri/src/ai_gateway/tests/openai_conversion.rs",
@@ -3984,6 +4100,12 @@
         {
           "file": "src-tauri/src/ai_gateway/usage_log.rs",
           "name": "UsageLogRecord",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/usage_log.rs",
+          "name": "NativeReasoningSnapshot",
           "kind": "type",
           "visibility": "public"
         },
@@ -4534,6 +4656,48 @@
           "visibility": "public"
         },
         {
+          "file": "src-tauri/src/ai_gateway/types_config.rs",
+          "name": "PoolReasoningEffort",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/types_config.rs",
+          "name": "PoolDefaultReasoningEffort",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/types_config.rs",
+          "name": "PoolReasoningProfile",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/types_config.rs",
+          "name": "PoolReasoningAction",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/types_config.rs",
+          "name": "PoolReasoningBudget",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/types_config.rs",
+          "name": "PoolReasoningMapping",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/types_config.rs",
+          "name": "PoolCandidateReasoning",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
           "file": "src-tauri/src/ai_gateway/model_pools.rs",
           "name": "ModelPoolStatus",
           "kind": "type",
@@ -4542,6 +4706,12 @@
         {
           "file": "src-tauri/src/ai_gateway/model_pools.rs",
           "name": "ModelPoolCandidateStatus",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/model_pools.rs",
+          "name": "ModelPoolReasoningCoverage",
           "kind": "type",
           "visibility": "public"
         },
@@ -4682,6 +4852,7 @@
         "src-tauri/src/ai_gateway/provider_templates.json",
         "src-tauri/src/ai_gateway/provider_usage.rs",
         "src-tauri/src/ai_gateway/quota.rs",
+        "src-tauri/src/ai_gateway/reasoning.rs",
         "src-tauri/src/ai_gateway/runtime_http.rs",
         "src-tauri/src/ai_gateway/selection.rs",
         "src-tauri/src/ai_gateway/storage.rs",
@@ -4695,6 +4866,7 @@
         "src-tauri/src/ai_gateway/tests/daily_reset.rs",
         "src-tauri/src/ai_gateway/tests/go_usage.rs",
         "src-tauri/src/ai_gateway/tests/migration.rs",
+        "src-tauri/src/ai_gateway/tests/model_pool_reasoning.rs",
         "src-tauri/src/ai_gateway/tests/model_pool_terminal_sync.rs",
         "src-tauri/src/ai_gateway/tests/model_pools.rs",
         "src-tauri/src/ai_gateway/tests/openai_conversion.rs",

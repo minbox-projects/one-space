@@ -12,6 +12,7 @@ mod openai_sse;
 mod output_timing;
 mod provider_usage;
 mod quota;
+mod reasoning;
 mod runtime_http;
 mod selection;
 mod storage;

@@ -364,10 +364,14 @@ fn build_gateway_provider_with_pools(
             }
         }
         // Every enabled configured pool contributes its public alias exactly
-        // once as a Chat-compatible row. A pool never borrows a source model's
-        // reasoning variants and is never given the Responses npm override, so
-        // no `variants`/`reasoning`/`provider` is guessed from its candidates
-        // (REQ-008/AC-011). A disabled pool is never exposed.
+        // once as a Chat-compatible row. The row publishes the pool's static
+        // reasoning capability: canonical variants (the preference as both the
+        // variant name and `reasoningEffort`) plus the same support/default/
+        // coverage metadata as discovery. A pool never borrows a source model's
+        // reasoning variants, never exposes a native mapped value, is never given
+        // the Responses npm override, and fabricates no price/credential field. An
+        // unmapped legacy pool keeps no `variants` (REQ-005/AC-009). A disabled
+        // pool is never exposed.
         for pool in pools.iter().filter(|pool| pool.enabled) {
             let Some(local_model) = non_empty(Some(pool.model.as_str())) else {
                 continue;
@@ -376,8 +380,49 @@ fn build_gateway_provider_with_pools(
                 continue;
             }
             let name = non_empty(Some(pool.name.as_str())).unwrap_or_else(|| local_model.clone());
+            let catalog = super::reasoning::pool_reasoning_catalog(gateways, pool);
             let mut model = Map::new();
             model.insert("name".to_string(), Value::String(name));
+            if !catalog.reasoning_efforts.is_empty() {
+                let mut variants = Map::new();
+                for effort in &catalog.reasoning_efforts {
+                    let mut variant = Map::new();
+                    variant.insert("reasoningEffort".to_string(), Value::String(effort.clone()));
+                    variants.insert(effort.clone(), Value::Object(variant));
+                }
+                model.insert("reasoning".to_string(), Value::Bool(true));
+                model.insert("variants".to_string(), Value::Object(variants));
+            }
+            model.insert(
+                "reasoning_efforts".to_string(),
+                Value::Array(
+                    catalog
+                        .reasoning_efforts
+                        .iter()
+                        .map(|effort| Value::String(effort.clone()))
+                        .collect(),
+                ),
+            );
+            model.insert(
+                "default_reasoning_effort".to_string(),
+                Value::String(catalog.default_reasoning_effort),
+            );
+            model.insert(
+                "reasoning_coverage".to_string(),
+                Value::Array(
+                    catalog
+                        .reasoning_coverage
+                        .iter()
+                        .map(|row| {
+                            json!({
+                                "effort": row.effort,
+                                "mapped_candidates": row.mapped_candidates,
+                                "total_candidates": row.total_candidates,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
             models.insert(local_model, Value::Object(model));
         }
         tool_config.insert("models".to_string(), Value::Object(models));

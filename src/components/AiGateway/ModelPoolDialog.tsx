@@ -20,20 +20,235 @@ import {
 } from "@/components/ui/dialog";
 import { errorToMessage } from "@/lib/messages";
 import {
+  CANONICAL_REASONING_EFFORTS,
   MODEL_POOL_AVAILABILITY_LABEL_KEYS,
+  MODEL_POOL_MIN_REASONING_BUDGET,
   modelPoolCandidateKey,
+  modelPoolCandidateServesEffort,
   newModelPoolId,
   resolveModelPoolCandidateState,
+  resolveModelPoolDefaultEffort,
+  selectPoolReasoningCoverageRow,
   type GatewayModelPool,
   type GatewayModelPoolCandidate,
+  type GatewayModelPoolReasoning,
   type GatewayModelPoolStatus,
   type GatewayProviderTemplateView,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
+  type ModelPoolReasoningAction,
 } from "@/lib/aiGateway";
 import { protocolBadgeClass, protocolShortLabel } from "./gatewayShared";
 
 type DraftCandidate = GatewayModelPoolCandidate & { key: string };
+
+/** The five bounded native reasoning profiles the editor can declare. */
+const REASONING_PROFILE_VALUES = [
+  "openai_effort",
+  "anthropic_effort_inherit",
+  "anthropic_effort_adaptive",
+  "anthropic_manual_budget",
+  "chat_thinking_switch",
+] as const;
+
+/** Localized visible labels for the bounded profiles; values stay the tokens. */
+const REASONING_PROFILE_LABEL_KEYS: Record<string, string> = {
+  openai_effort: "aiGatewayModelPoolReasoningProfileOpenaiEffort",
+  anthropic_effort_inherit:
+    "aiGatewayModelPoolReasoningProfileAnthropicEffortInherit",
+  anthropic_effort_adaptive:
+    "aiGatewayModelPoolReasoningProfileAnthropicEffortAdaptive",
+  anthropic_manual_budget:
+    "aiGatewayModelPoolReasoningProfileAnthropicManualBudget",
+  chat_thinking_switch:
+    "aiGatewayModelPoolReasoningProfileChatThinkingSwitch",
+};
+
+/** Editable candidate-local reasoning draft; every field is a string in the UI. */
+type ReasoningDraft = {
+  profile: string;
+  values: string;
+  budgetMin: string;
+  budgetMax: string;
+  supportsDisable: boolean;
+  /** public effort -> mapping option (`""` unmapped, `enum:<v>`, `budget`, `disable`). */
+  mappings: Record<string, string>;
+  /** public effort -> the mapping's own native budget tokens (as typed). */
+  budgetTokens: Record<string, string>;
+};
+
+function actionToOptionValue(action: ModelPoolReasoningAction): string {
+  if (action?.kind === "enum" && typeof action.value === "string") {
+    return `enum:${action.value}`;
+  }
+  if (action?.kind === "budget") return "budget";
+  if (action?.kind === "disable") return "disable";
+  return "";
+}
+
+function reasoningDraftFrom(
+  reasoning: GatewayModelPoolReasoning | null | undefined,
+): ReasoningDraft {
+  const mappings: Record<string, string> = {};
+  const budgetTokens: Record<string, string> = {};
+  for (const mapping of reasoning?.mappings ?? []) {
+    const option = actionToOptionValue(mapping.action);
+    if (option !== "") mappings[mapping.effort] = option;
+    if (mapping.action?.kind === "budget") {
+      const tokens = mapping.action.budget_tokens;
+      budgetTokens[mapping.effort] =
+        typeof tokens === "number" ? String(tokens) : "";
+    }
+  }
+  return {
+    profile: reasoning?.profile ?? "",
+    values: (reasoning?.values ?? []).join(", "),
+    budgetMin:
+      reasoning?.budget?.min != null ? String(reasoning.budget.min) : "",
+    budgetMax:
+      reasoning?.budget?.max != null ? String(reasoning.budget.max) : "",
+    supportsDisable: reasoning?.supports_disable === true,
+    mappings,
+    budgetTokens,
+  };
+}
+
+function splitDeclaredValues(values: string): string[] {
+  const result: string[] = [];
+  for (const part of values.split(",")) {
+    const trimmed = part.trim();
+    if (trimmed !== "" && !result.includes(trimmed)) result.push(trimmed);
+  }
+  return result;
+}
+
+function parseOptionalInt(value: string): number | null {
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  const parsed = Number(trimmed);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+/** Convert one mapping option back into its typed native action. */
+function optionValueToAction(
+  option: string,
+  draft: ReasoningDraft,
+  effort: string,
+): ModelPoolReasoningAction | null {
+  if (option.startsWith("enum:")) {
+    return { kind: "enum", value: option.slice("enum:".length) };
+  }
+  if (option === "budget") {
+    // Each manual-budget mapping owns its own native token count; the declared
+    // range only constrains it. The count is never substituted with the range.
+    const tokens = parseOptionalInt(draft.budgetTokens[effort] ?? "");
+    return tokens != null
+      ? { kind: "budget", budget_tokens: tokens }
+      : { kind: "budget" };
+  }
+  if (option === "disable") return { kind: "disable" };
+  return null;
+}
+
+/** Build a candidate's persisted reasoning payload from its draft. */
+function reasoningDraftPayload(draft: ReasoningDraft): GatewayModelPoolReasoning {
+  const values = splitDeclaredValues(draft.values);
+  const min = parseOptionalInt(draft.budgetMin);
+  const max = parseOptionalInt(draft.budgetMax);
+  const mappings = CANONICAL_REASONING_EFFORTS.flatMap((effort) => {
+    const option = draft.mappings[effort] ?? "";
+    const action = optionValueToAction(option, draft, effort);
+    return action ? [{ effort, action }] : [];
+  });
+  return {
+    profile: draft.profile,
+    values,
+    ...(min != null || max != null
+      ? { budget: { min: min ?? undefined, max: max ?? undefined } }
+      : {}),
+    supports_disable: draft.supportsDisable,
+    mappings,
+  };
+}
+
+/** Whether a draft declares anything at all; an untouched candidate stays unknown. */
+function hasDeclaredReasoning(draft: ReasoningDraft): boolean {
+  return (
+    draft.profile !== "" ||
+    splitDeclaredValues(draft.values).length > 0 ||
+    draft.supportsDisable ||
+    Object.values(draft.mappings).some((option) => option !== "")
+  );
+}
+
+/** The declared manual-budget range of one draft, distinguishing absent from invalid. */
+function declaredBudgetRange(draft: ReasoningDraft): {
+  min: number | null;
+  max: number | null;
+  declared: boolean;
+  invalid: boolean;
+} {
+  const minRaw = draft.budgetMin.trim();
+  const maxRaw = draft.budgetMax.trim();
+  const declared = minRaw !== "" || maxRaw !== "";
+  const min = minRaw === "" ? null : parseOptionalInt(minRaw);
+  const max = maxRaw === "" ? null : parseOptionalInt(maxRaw);
+  return {
+    min,
+    max,
+    declared,
+    invalid: declared && (min === null || max === null),
+  };
+}
+
+/**
+ * The localizable key of the first declaration the backend would refuse, or
+ * `null`. It rejects a fractional/absent/out-of-range budget token, a declared
+ * range below the adapter minimum and an inverted range before any write, so the
+ * operator keeps the whole draft and sees a localized reason.
+ */
+function draftReasoningError(
+  drafts: ReasoningDraft[],
+): "aiGatewayModelPoolErrorReasoningDefaultUnmapped" | null {
+  const key = "aiGatewayModelPoolErrorReasoningDefaultUnmapped" as const;
+  for (const draft of drafts) {
+    if (!hasDeclaredReasoning(draft)) continue;
+    const range = declaredBudgetRange(draft);
+    if (range.declared) {
+      if (range.invalid) return key;
+      if ((range.min as number) < MODEL_POOL_MIN_REASONING_BUDGET) return key;
+      if ((range.max as number) < (range.min as number)) return key;
+    }
+    const budgetEfforts = CANONICAL_REASONING_EFFORTS.filter(
+      (effort) => draft.mappings[effort] === "budget",
+    );
+    if (budgetEfforts.length > 0) {
+      if (!range.declared || range.invalid) return key;
+      for (const effort of budgetEfforts) {
+        const tokens = parseOptionalInt(draft.budgetTokens[effort] ?? "");
+        if (tokens === null) return key;
+        if (tokens < (range.min as number) || tokens > (range.max as number)) {
+          return key;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** Stable full-identity declaration signature for one effort, order-independent. */
+function effortDeclarationSignature(
+  rows: Array<{ key: string; action: ModelPoolReasoningAction | null }>,
+): string {
+  const entries = rows
+    .filter(
+      (row): row is { key: string; action: ModelPoolReasoningAction } =>
+        row.action != null,
+    )
+    .map((row) => [row.key, JSON.stringify(row.action)] as const)
+    .sort((a, b) => a[0].localeCompare(b[0]));
+  return JSON.stringify(entries);
+}
 
 type ModelPoolDialogProps = {
   open: boolean;
@@ -85,6 +300,21 @@ export function ModelPoolDialog({
     const initial: Record<string, string> = {};
     for (const candidate of pool?.candidates ?? []) {
       initial[modelPoolCandidateKey(candidate)] = String(candidate.weight);
+    }
+    return initial;
+  });
+  // Pool default preference; a new pool starts at `medium`, a legacy pool at `auto`.
+  const [defaultEffort, setDefaultEffort] = useState<string>(() =>
+    pool ? resolveModelPoolDefaultEffort(pool) : "medium",
+  );
+  const [reasoningDrafts, setReasoningDrafts] = useState<
+    Record<string, ReasoningDraft>
+  >(() => {
+    const initial: Record<string, ReasoningDraft> = {};
+    for (const candidate of pool?.candidates ?? []) {
+      initial[modelPoolCandidateKey(candidate)] = reasoningDraftFrom(
+        candidate.reasoning,
+      );
     }
     return initial;
   });
@@ -183,6 +413,75 @@ export function ModelPoolDialog({
     );
   }, [filteredCandidates, selectedKeys]);
 
+  // Live static coverage derived from the current draft declarations and the
+  // current provider list; readiness stays a separate, key/health-aware count.
+  const draftReasoningCatalog = useMemo(() => {
+    const candidates = selected.map((candidate) => {
+      const draft =
+        reasoningDrafts[candidate.key] ??
+        reasoningDraftFrom(candidate.reasoning);
+      const reasoning = hasDeclaredReasoning(draft)
+        ? reasoningDraftPayload(draft)
+        : undefined;
+      return { ...candidate, reasoning };
+    });
+    const coverage = CANONICAL_REASONING_EFFORTS.map((effort) => ({
+      effort,
+      mapped_candidates: candidates.filter((candidate) =>
+        modelPoolCandidateServesEffort(providers, candidate, effort),
+      ).length,
+      total_candidates: candidates.length,
+    }));
+    return {
+      coverage,
+      supported: coverage
+        .filter((row) => row.mapped_candidates > 0)
+        .map((row) => row.effort),
+    };
+  }, [providers, reasoningDrafts, selected]);
+
+  const coverageRow = selectPoolReasoningCoverageRow(
+    draftReasoningCatalog.coverage,
+    defaultEffort,
+    draftReasoningCatalog.supported,
+  );
+  const readyCount = selected.filter(
+    (candidate) =>
+      resolveModelPoolCandidateState(
+        candidate,
+        providers,
+        statusByKey.get(candidate.key) ?? null,
+      ).ready,
+  ).length;
+
+  const ensureReasoningDrafts = (candidates: GatewayModelPoolCandidate[]) => {
+    setReasoningDrafts((previous) => {
+      let next = previous;
+      for (const candidate of candidates) {
+        const key = modelPoolCandidateKey(candidate);
+        if (next[key] === undefined) {
+          if (next === previous) next = { ...previous };
+          next[key] = reasoningDraftFrom(candidate.reasoning);
+        }
+      }
+      return next;
+    });
+  };
+
+  const updateReasoning = (
+    candidate: DraftCandidate,
+    patch: Partial<ReasoningDraft>,
+  ) => {
+    setReasoningDrafts((previous) => ({
+      ...previous,
+      [candidate.key]: {
+        ...(previous[candidate.key] ?? reasoningDraftFrom(candidate.reasoning)),
+        ...patch,
+      },
+    }));
+    setError(null);
+  };
+
   const toggleSelectAllFiltered = () => {
     if (filteredCandidates.length === 0) return;
     if (allFilteredSelected) {
@@ -208,6 +507,7 @@ export function ModelPoolDialog({
       if (Object.keys(newWeights).length > 0) {
         setWeights((prev) => ({ ...prev, ...newWeights }));
       }
+      ensureReasoningDrafts(newItems);
     }
     setError(null);
   };
@@ -224,12 +524,248 @@ export function ModelPoolDialog({
       if (previous[key] !== undefined) return previous;
       return { ...previous, [key]: "1" };
     });
+    ensureReasoningDrafts([candidate]);
     setError(null);
   };
 
   const removeCandidate = (key: string) => {
     setSelected((previous) => previous.filter((item) => item.key !== key));
     setError(null);
+  };
+
+  const reasoningEditor = (candidate: DraftCandidate) => {
+    const draft =
+      reasoningDrafts[candidate.key] ??
+      reasoningDraftFrom(candidate.reasoning);
+    const declaredValues = splitDeclaredValues(draft.values);
+    const enumOptions = Array.from(
+      new Set([
+        ...declaredValues,
+        ...Object.values(draft.mappings)
+          .filter((option) => option.startsWith("enum:"))
+          .map((option) => option.slice("enum:".length)),
+      ]),
+    );
+    const fieldClass =
+      "h-8 rounded-lg border border-border/80 bg-background px-2 text-xs text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50";
+    return (
+      <div
+        data-testid={`model-pool-reasoning-editor-${candidate.provider_id}-${candidate.local_model}`}
+        className="mt-0.5 space-y-2.5 border-t border-border/50 pt-2.5"
+      >
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="flex flex-col gap-1 text-[10px] font-medium text-muted-foreground">
+            <span>
+              {t(
+                "aiGatewayModelPoolReasoningProfileLabel",
+                "Native reasoning profile",
+              )}
+            </span>
+            <select
+              aria-label={t(
+                "aiGatewayModelPoolReasoningProfileLabel",
+                "Native reasoning profile",
+              )}
+              value={draft.profile}
+              onChange={(event) =>
+                updateReasoning(candidate, { profile: event.target.value })
+              }
+              disabled={busy || saving}
+              className={fieldClass}
+            >
+              <option value="">
+                {t("aiGatewayModelPoolReasoningProfileUnknown", "Unknown")}
+              </option>
+              {REASONING_PROFILE_VALUES.map((profile) => (
+                <option key={profile} value={profile}>
+                  {t(REASONING_PROFILE_LABEL_KEYS[profile] ?? profile, profile)}
+                </option>
+              ))}
+              {draft.profile !== "" &&
+              !(REASONING_PROFILE_VALUES as readonly string[]).includes(
+                draft.profile,
+              ) ? (
+                <option value={draft.profile}>{draft.profile}</option>
+              ) : null}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-[10px] font-medium text-muted-foreground">
+            <span>
+              {t(
+                "aiGatewayModelPoolReasoningValuesLabel",
+                "Declared values",
+              )}
+            </span>
+            <input
+              type="text"
+              aria-label={t(
+                "aiGatewayModelPoolReasoningValuesLabel",
+                "Declared values",
+              )}
+              value={draft.values}
+              onChange={(event) =>
+                updateReasoning(candidate, { values: event.target.value })
+              }
+              disabled={busy || saving}
+              className={fieldClass}
+            />
+          </label>
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex flex-col gap-1 text-[10px] font-medium text-muted-foreground">
+            <span>
+              {t(
+                "aiGatewayModelPoolReasoningBudgetMinLabel",
+                "Minimum budget",
+              )}
+            </span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              aria-label={t(
+                "aiGatewayModelPoolReasoningBudgetMinLabel",
+                "Minimum budget",
+              )}
+              value={draft.budgetMin}
+              onChange={(event) =>
+                updateReasoning(candidate, { budgetMin: event.target.value })
+              }
+              disabled={busy || saving}
+              className={`${fieldClass} w-28`}
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-[10px] font-medium text-muted-foreground">
+            <span>
+              {t(
+                "aiGatewayModelPoolReasoningBudgetMaxLabel",
+                "Maximum budget",
+              )}
+            </span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              aria-label={t(
+                "aiGatewayModelPoolReasoningBudgetMaxLabel",
+                "Maximum budget",
+              )}
+              value={draft.budgetMax}
+              onChange={(event) =>
+                updateReasoning(candidate, { budgetMax: event.target.value })
+              }
+              disabled={busy || saving}
+              className={`${fieldClass} w-28`}
+            />
+          </label>
+          <label className="inline-flex items-center gap-1.5 pb-1.5 text-[10px] font-medium text-muted-foreground">
+            <input
+              type="checkbox"
+              aria-label={t(
+                "aiGatewayModelPoolReasoningSupportsDisableLabel",
+                "Supports explicit disable",
+              )}
+              checked={draft.supportsDisable}
+              onChange={(event) =>
+                updateReasoning(candidate, {
+                  supportsDisable: event.target.checked,
+                })
+              }
+              disabled={busy || saving}
+              className="h-3.5 w-3.5 rounded border-border accent-primary"
+            />
+            <span>
+              {t(
+                "aiGatewayModelPoolReasoningSupportsDisableLabel",
+                "Supports explicit disable",
+              )}
+            </span>
+          </label>
+        </div>
+        {draft.profile === "chat_thinking_switch" ? (
+          <p className="text-[10px] text-amber-600 dark:text-amber-400">
+            {t(
+              "aiGatewayModelPoolReasoningSwitchNoGradient",
+              "This profile selects one intensity: every positive mapping sends the same switch, so there is no intensity gradient.",
+            )}
+          </p>
+        ) : null}
+        <div className="space-y-1">
+          <div className="text-[10px] font-medium text-muted-foreground">
+            {t("aiGatewayModelPoolReasoningMappingLabel", "Mapping matrix")}
+          </div>
+          <div className="grid gap-1.5 sm:grid-cols-5">
+            {CANONICAL_REASONING_EFFORTS.map((effort) => (
+              <label
+                key={effort}
+                className="flex flex-col gap-1 text-[10px] text-muted-foreground"
+              >
+                <span>{effort}</span>
+                <select
+                  data-testid={`model-pool-reasoning-mapping-${effort}`}
+                  aria-label={`${t(
+                    "aiGatewayModelPoolReasoningMappingLabel",
+                    "Mapping matrix",
+                  )}: ${effort}`}
+                  value={draft.mappings[effort] ?? ""}
+                  onChange={(event) =>
+                    updateReasoning(candidate, {
+                      mappings: {
+                        ...draft.mappings,
+                        [effort]: event.target.value,
+                      },
+                    })
+                  }
+                  disabled={busy || saving}
+                  className={fieldClass}
+                >
+                  <option value="">
+                    {t(
+                      "aiGatewayModelPoolReasoningMappingUnmapped",
+                      "Unmapped",
+                    )}
+                  </option>
+                  {enumOptions.map((value) => (
+                    <option key={`enum:${value}`} value={`enum:${value}`}>
+                      {`enum:${value}`}
+                    </option>
+                  ))}
+                  <option value="budget">
+                    {t("aiGatewayModelPoolReasoningActionBudget", "Budget")}
+                  </option>
+                  <option value="disable">
+                    {t("aiGatewayModelPoolReasoningActionDisable", "Disable")}
+                  </option>
+                </select>
+                {draft.mappings[effort] === "budget" ? (
+                  <input
+                    type="number"
+                    min={MODEL_POOL_MIN_REASONING_BUDGET}
+                    step={1}
+                    data-testid={`model-pool-reasoning-budget-${effort}`}
+                    aria-label={`${t(
+                      "aiGatewayModelPoolReasoningBudgetLabel",
+                      "Reasoning budget",
+                    )}: ${effort}`}
+                    value={draft.budgetTokens[effort] ?? ""}
+                    onChange={(event) =>
+                      updateReasoning(candidate, {
+                        budgetTokens: {
+                          ...draft.budgetTokens,
+                          [effort]: event.target.value,
+                        },
+                      })
+                    }
+                    disabled={busy || saving}
+                    className={`${fieldClass} w-full`}
+                  />
+                ) : null}
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
   };
 
   const handleSave = async () => {
@@ -245,6 +781,89 @@ export function ModelPoolDialog({
         t("aiGatewayModelPoolErrorModelRequired", "Enter a public model ID."),
       );
       return;
+    }
+    // Reject a declaration the backend would refuse before any write, so the
+    // whole draft is retained and the operator sees a localized reason.
+    const selectedDrafts = selected.map((candidate) => ({
+      candidate,
+      draft:
+        reasoningDrafts[candidate.key] ??
+        reasoningDraftFrom(candidate.reasoning),
+    }));
+    const reasoningErrorKey = draftReasoningError(
+      selectedDrafts.map((entry) => entry.draft),
+    );
+    if (reasoningErrorKey) {
+      setError(t(reasoningErrorKey));
+      return;
+    }
+    // A concrete default preference requires at least one currently valid
+    // candidate mapping; `auto` omits the controls. The same save may not delete
+    // the retained default's last declaration, while a retained, unchanged
+    // declaration may survive an unavailable source in an unrelated edit.
+    if (defaultEffort !== "auto") {
+      const defaultUnmapped = () =>
+        t(
+          "aiGatewayModelPoolErrorReasoningDefaultUnmapped",
+          "Invalid model pool reasoning policy: the default preference needs at least one valid candidate mapping.",
+        );
+      const declaresDefault = selectedDrafts.some(({ draft }) =>
+        Boolean(draft.mappings[defaultEffort]),
+      );
+      if (!declaresDefault) {
+        setError(defaultUnmapped());
+        return;
+      }
+      const currentlyValid = selectedDrafts.some(({ candidate, draft }) =>
+        modelPoolCandidateServesEffort(
+          providers,
+          {
+            provider_id: candidate.provider_id,
+            local_model: candidate.local_model,
+            upstream_model: candidate.upstream_model,
+            protocol: candidate.protocol,
+            weight: candidate.weight,
+            ...(hasDeclaredReasoning(draft)
+              ? { reasoning: reasoningDraftPayload(draft) }
+              : {}),
+          },
+          defaultEffort,
+        ),
+      );
+      const existingDefault = pool
+        ? resolveModelPoolDefaultEffort(pool)
+        : null;
+      const retained = pool != null && existingDefault === defaultEffort;
+      const submittedSignature = effortDeclarationSignature(
+        selectedDrafts.map(({ candidate, draft }) => ({
+          key: candidate.key,
+          action: draft.mappings[defaultEffort]
+            ? optionValueToAction(
+                draft.mappings[defaultEffort],
+                draft,
+                defaultEffort,
+              )
+            : null,
+        })),
+      );
+      const declarationUnchanged =
+        retained &&
+        submittedSignature ===
+          effortDeclarationSignature(
+            (pool?.candidates ?? []).map((stored) => {
+              const mapping = (stored.reasoning?.mappings ?? []).find(
+                (item) => item.effort === defaultEffort,
+              );
+              return {
+                key: modelPoolCandidateKey(stored),
+                action: mapping ? mapping.action : null,
+              };
+            }),
+          );
+      if (!currentlyValid && (!retained || !declarationUnchanged)) {
+        setError(defaultUnmapped());
+        return;
+      }
     }
     if (selected.length === 0) {
       setError(
@@ -267,12 +886,18 @@ export function ModelPoolDialog({
         );
         return;
       }
+      const draft =
+        reasoningDrafts[candidate.key] ??
+        reasoningDraftFrom(candidate.reasoning);
       candidates.push({
         provider_id: candidate.provider_id,
         local_model: candidate.local_model,
         upstream_model: candidate.upstream_model,
         protocol: candidate.protocol,
         weight,
+        ...(hasDeclaredReasoning(draft)
+          ? { reasoning: reasoningDraftPayload(draft) }
+          : {}),
       });
     }
     setError(null);
@@ -283,6 +908,7 @@ export function ModelPoolDialog({
         name: trimmedName,
         model: trimmedModel,
         enabled: pool?.enabled ?? true,
+        default_reasoning_effort: defaultEffort,
         candidates,
       });
       onOpenChange(false);
@@ -352,6 +978,77 @@ export function ModelPoolDialog({
                 className="h-9 rounded-lg border border-border/80 bg-background px-3 font-mono text-sm text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
               />
             </label>
+          </div>
+
+          {/* Pool default reasoning preference */}
+          <label className="flex flex-col gap-1.5 text-xs font-medium text-foreground sm:max-w-xs">
+            <span>
+              {t("aiGatewayModelPoolReasoningDefaultLabel", "Reasoning default")}
+            </span>
+            <select
+              data-testid="model-pool-reasoning-default"
+              aria-label={t(
+                "aiGatewayModelPoolReasoningDefaultLabel",
+                "Reasoning default",
+              )}
+              value={defaultEffort}
+              onChange={(event) => {
+                setDefaultEffort(event.target.value);
+                setError(null);
+              }}
+              disabled={busy || saving}
+              className="h-9 rounded-lg border border-border/80 bg-background px-2 text-sm text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
+            >
+              <option value="auto">
+                {t(
+                  "aiGatewayModelPoolReasoningDefaultAuto",
+                  "Provider default (auto)",
+                )}
+              </option>
+              {CANONICAL_REASONING_EFFORTS.map((effort) => (
+                <option key={effort} value={effort}>
+                  {effort}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {/* Live static coverage (config-derived) separated from runtime readiness */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
+            <span className="inline-flex items-center gap-1">
+              <span>
+                {t("aiGatewayModelPoolReasoningCoverageLabel", "Static coverage")}:
+              </span>
+              <span
+                data-testid="model-pool-reasoning-static-coverage"
+                className="font-medium text-foreground/85"
+              >
+                {t("aiGatewayModelPoolReasoningCoverageValue", {
+                  mapped: coverageRow?.mapped_candidates ?? 0,
+                  total: coverageRow?.total_candidates ?? selected.length,
+                  defaultValue: "{{mapped}}/{{total}} candidates mapped",
+                })}
+              </span>
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span>
+                {t(
+                  "aiGatewayModelPoolReasoningRuntimeReadinessLabel",
+                  "Runtime readiness",
+                )}
+                :
+              </span>
+              <span
+                data-testid="model-pool-reasoning-runtime-readiness"
+                className="font-medium text-foreground/85"
+              >
+                {t("aiGatewayModelPoolReasoningRuntimeReadyCount", {
+                  ready: readyCount,
+                  total: selected.length,
+                  defaultValue: "{{ready}}/{{total}} candidates ready",
+                })}
+              </span>
+            </span>
           </div>
 
           {/* Source search */}
@@ -589,7 +1286,7 @@ export function ModelPoolDialog({
                 return (
                   <div
                     key={candidate.key}
-                    className="flex items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/70 p-2.5 transition hover:bg-card/90"
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/70 p-2.5 transition hover:bg-card/90"
                   >
                     {/* 左侧信息区：分为上下两行，层次分明 */}
                     <div className="min-w-0 flex-1 space-y-1.5">
@@ -696,6 +1393,7 @@ export function ModelPoolDialog({
                         <Trash2 className="h-4 w-4" />
                       </button>
                     </div>
+                    {reasoningEditor(candidate)}
                   </div>
                 );
               })
