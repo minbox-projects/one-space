@@ -39,7 +39,7 @@ Status: implemented
 - 两张汇总表与用量库版本 2 都是只增的；加密配置 schema 保持 3，请求日志列与普通查询语义不变，不维护汇总的旧二进制在写入期间会暂停连续性保证。
 - 明细保留仍在配置的 1–365 天窗口（默认 90）内永久删除请求日志行，但不再删除任何日汇总，因此按服务商日历与累计总量会保留到数据库本身被删除为止。
 - 回滚会移除功能代码而不做破坏性降级迁移并保留只增表；降级前必须保存一份匹配的当前 profile 数据库备份，回到新二进制时需要显式把降级区间视为连续性保证之外，或恢复该备份，因为降级区间内被删除的流量无法恢复，且本变更不新增任何自动降级对账或缺口记录 API。
-- 六个命令 `ai_gateway_usage_stats`、`ai_gateway_request_logs`、`ai_gateway_usage_retention_get`、`ai_gateway_usage_retention_save`、`ai_gateway_usage_providers` 与 `ai_gateway_provider_usage_history` 由 `lib.rs` 导出并在 `app_runtime/run_app.rs` 注册；前端使用类型化封装与 DTO，不直接拼装命令字符串。
+- 六个命令 `ai_gateway_usage_stats`、`ai_gateway_request_logs`、`ai_gateway_usage_retention_get`、`ai_gateway_usage_retention_save`、`ai_gateway_usage_providers` 与 `ai_gateway_provider_usage_history` 经 `ai_gateway` 模块暴露并在 `app_runtime/run_app.rs` 注册；前端使用类型化封装与 DTO，不直接拼装命令字符串。
 - `MEMORY.md` 与 `ai-gateway` / `ai-gateway-backend` 的导航职责描述该存储、身份、覆盖与命令契约，`navigation.md` 由权威 JSON 重新生成；`docs/USAGE.md` 说明第三个子页签、最早可用日并非服务商实际首次使用、只有保留历史可恢复、普通统计仍受明细保留限制，以及日历史是持久的。
 - 部分取代：[API Gateway Usage Stats and Request Logs](../architecture/2026-09-17-ai-gateway-usage-logs.md) 保留并交叉链接；本记录只取代其中记录的统计生命期边界——普通统计仍由保留的明细行计算，而新的 provider/day 汇总独立于明细清理而持久存在——其 SQLite 日志、记录时价格冻结、保留、`group_by` 契约与 `local_model` 面决策仍然有效。
 - [Gateway Request Logs Group and Filter by Provider Name](2026-09-28-gateway-log-provider-grouping-filter.md) 的记录名服务商分组与筛选决策继续支配普通请求日志分组与筛选；此处的稳定 ID 历史是补充，不改变该契约。

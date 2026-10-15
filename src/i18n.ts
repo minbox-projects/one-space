@@ -986,7 +986,7 @@ const resources = {
       aiGatewayProviderHistoryEndLabel: "Through",
       aiGatewayProviderHistoryHistoricalNote:
         "Earlier retained history describes available records only and may be incomplete; missing dates are unavailable.",
-      aiGatewayProviderHistoryChartTitle: "Daily token trend",
+      aiGatewayProviderHistoryChartTitle: "Daily trend",
       aiGatewayProviderHistoryDaysTitle: "Daily history",
       aiGatewayProviderHistoryDateColumn: "Date",
       aiGatewayProviderHistoryCoverageColumn: "Coverage",
@@ -4836,7 +4836,7 @@ const resources = {
       aiGatewayProviderHistoryEndLabel: "截至",
       aiGatewayProviderHistoryHistoricalNote:
         "更早的留存历史仅描述可用记录，可能不完整；缺失日期为不可用。",
-      aiGatewayProviderHistoryChartTitle: "每日 Token 趋势",
+      aiGatewayProviderHistoryChartTitle: "每日趋势",
       aiGatewayProviderHistoryDaysTitle: "每日历史",
       aiGatewayProviderHistoryDateColumn: "日期",
       aiGatewayProviderHistoryCoverageColumn: "覆盖",
