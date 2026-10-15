@@ -11,6 +11,7 @@ mod openai_conversion;
 mod openai_sse;
 mod output_timing;
 mod quota;
+mod reasoning;
 mod runtime_http;
 mod selection;
 mod storage;

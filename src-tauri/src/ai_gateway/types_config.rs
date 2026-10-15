@@ -406,12 +406,200 @@ pub struct PoolCandidateIdentity {
     pub protocol: UpstreamProtocol,
 }
 
+/// One public reasoning preference a model pool maps to a native action. The
+/// five canonical values are the only ones a mapping row declares; `none` is the
+/// explicit disable preference and is never a positive control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PoolReasoningEffort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    None,
+}
+
+impl PoolReasoningEffort {
+    /// Canonical lowercase JSON token for this preference.
+    pub(in crate::ai_gateway) fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::None => "none",
+        }
+    }
+}
+
+/// The pool-owned default policy. `auto` (the serde default, and the meaning of a
+/// missing persisted value) omits every reasoning control and is never sent as an
+/// effort string. [`Self::Unknown`] only ever round-trips a value written by
+/// another build so an unrelated edit cannot silently rewrite it; it is always
+/// rejected on a new save.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PoolDefaultReasoningEffort {
+    Auto,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    None,
+    Unknown(String),
+}
+
+impl Default for PoolDefaultReasoningEffort {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl PoolDefaultReasoningEffort {
+    /// Canonical lowercase JSON token; a retained unknown value keeps its bytes.
+    pub(in crate::ai_gateway) fn as_str(&self) -> &str {
+        match self {
+            Self::Auto => "auto",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::None => "none",
+            Self::Unknown(raw) => raw.as_str(),
+        }
+    }
+}
+
+impl Serialize for PoolDefaultReasoningEffort {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PoolDefaultReasoningEffort {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(match raw.as_str() {
+            "auto" => Self::Auto,
+            "low" => Self::Low,
+            "medium" => Self::Medium,
+            "high" => Self::High,
+            "xhigh" => Self::Xhigh,
+            "none" => Self::None,
+            _ => Self::Unknown(raw),
+        })
+    }
+}
+
+/// The deliberately bounded pool candidate native control profile (REQ-002). An
+/// unknown profile is retained for a tolerant read and rejected on a new save.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PoolReasoningProfile {
+    OpenaiEffort,
+    AnthropicEffortInherit,
+    AnthropicEffortAdaptive,
+    AnthropicManualBudget,
+    ChatThinkingSwitch,
+    Unknown(String),
+}
+
+impl PoolReasoningProfile {
+    /// Canonical lowercase JSON token for this profile.
+    pub(in crate::ai_gateway) fn as_str(&self) -> &str {
+        match self {
+            Self::OpenaiEffort => "openai_effort",
+            Self::AnthropicEffortInherit => "anthropic_effort_inherit",
+            Self::AnthropicEffortAdaptive => "anthropic_effort_adaptive",
+            Self::AnthropicManualBudget => "anthropic_manual_budget",
+            Self::ChatThinkingSwitch => "chat_thinking_switch",
+            Self::Unknown(raw) => raw.as_str(),
+        }
+    }
+}
+
+impl Serialize for PoolReasoningProfile {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PoolReasoningProfile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(match raw.as_str() {
+            "openai_effort" => Self::OpenaiEffort,
+            "anthropic_effort_inherit" => Self::AnthropicEffortInherit,
+            "anthropic_effort_adaptive" => Self::AnthropicEffortAdaptive,
+            "anthropic_manual_budget" => Self::AnthropicManualBudget,
+            "chat_thinking_switch" => Self::ChatThinkingSwitch,
+            _ => Self::Unknown(raw),
+        })
+    }
+}
+
+/// One typed native action a public preference maps to. The serde tag is `kind`,
+/// producing `{kind:"enum",value}`, `{kind:"budget",budget_tokens}` or
+/// `{kind:"disable"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PoolReasoningAction {
+    Enum { value: String },
+    Budget { budget_tokens: u32 },
+    Disable,
+}
+
+/// A candidate-declared inclusive native budget range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoolReasoningBudget {
+    pub min: u32,
+    pub max: u32,
+}
+
+/// One public-preference-to-native-action mapping row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoolReasoningMapping {
+    pub effort: PoolReasoningEffort,
+    pub action: PoolReasoningAction,
+}
+
+/// Pool-owned, candidate-local native reasoning declaration. Absence means the
+/// candidate's capabilities are unknown and must never be inferred from source
+/// metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoolCandidateReasoning {
+    pub profile: PoolReasoningProfile,
+    /// Declared native enum value set for an enum-shaped profile.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
+    /// Declared native budget range for the manual-budget profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<PoolReasoningBudget>,
+    /// Whether the candidate supports an explicit disable operation.
+    #[serde(default)]
+    pub supports_disable: bool,
+    /// The public-to-native mapping matrix; a missing effort means unsupported.
+    #[serde(default)]
+    pub mappings: Vec<PoolReasoningMapping>,
+}
+
 /// One candidate of an operator-defined model pool.
 ///
 /// A candidate is an explicit reference to one real provider mapping row: the
 /// real provider id plus the original trimmed `(local_model, upstream_model)`
 /// pair and effective protocol, with an integer weight from 1 to 100 defaulting
-/// to 1. It never copies a source key or endpoint.
+/// to 1. It never copies a source key or endpoint. Its optional `reasoning`
+/// declaration is pool-local and additive under schema 3.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelPoolCandidate {
     pub provider_id: String,
@@ -420,6 +608,9 @@ pub struct ModelPoolCandidate {
     pub protocol: UpstreamProtocol,
     #[serde(default = "default_provider_weight")]
     pub weight: u32,
+    /// Pool-owned native reasoning declaration; absent means unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<PoolCandidateReasoning>,
 }
 
 impl Default for ModelPoolCandidate {
@@ -430,6 +621,7 @@ impl Default for ModelPoolCandidate {
             upstream_model: String::new(),
             protocol: UpstreamProtocol::ChatCompletions,
             weight: 1,
+            reasoning: None,
         }
     }
 }
@@ -440,6 +632,11 @@ impl Default for ModelPoolCandidate {
 /// public model id clients request, `enabled` carries the operator's intent, and
 /// `candidates` are the exact selected source references. A missing field in an
 /// older configuration reads as an empty collection. Always serialized.
+///
+/// `default_reasoning_effort` is the pool-owned default policy: a canonical
+/// preference or `auto`, where a missing persisted value reads as `auto`. It is
+/// always serialized so a legacy pool persists as `auto` without inferring a
+/// capability.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelPool {
     pub id: String,
@@ -451,6 +648,8 @@ pub struct ModelPool {
     pub enabled: bool,
     #[serde(default)]
     pub candidates: Vec<ModelPoolCandidate>,
+    #[serde(default)]
+    pub default_reasoning_effort: PoolDefaultReasoningEffort,
 }
 
 impl Default for ModelPool {
@@ -461,6 +660,7 @@ impl Default for ModelPool {
             model: String::new(),
             enabled: true,
             candidates: Vec::new(),
+            default_reasoning_effort: PoolDefaultReasoningEffort::Auto,
         }
     }
 }

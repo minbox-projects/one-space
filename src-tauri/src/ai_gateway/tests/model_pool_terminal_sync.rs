@@ -50,6 +50,7 @@ fn pool_candidate(
         upstream_model: upstream_model.to_string(),
         protocol,
         weight,
+        ..ModelPoolCandidate::default()
     }
 }
 
@@ -68,6 +69,7 @@ fn enabled_pool() -> ModelPool {
             UpstreamProtocol::ChatCompletions,
             1,
         )],
+        ..ModelPool::default()
     }
 }
 

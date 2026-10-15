@@ -747,7 +747,10 @@ pub(in crate::ai_gateway) fn failure_label(provider: &GatewayUpstreamProvider) -
 
 /// Whether one new candidate reference exists in the latest configuration: the
 /// provider, the original trimmed mapping pair and its effective protocol.
-fn reference_resolves(config: &GatewayConfig, candidate: &ModelPoolCandidate) -> bool {
+pub(in crate::ai_gateway) fn reference_resolves(
+    config: &GatewayConfig,
+    candidate: &ModelPoolCandidate,
+) -> bool {
     config.providers.iter().any(|provider| {
         provider.id == candidate.provider_id
             && provider.mappings.iter().any(|mapping| {
@@ -857,6 +860,7 @@ pub(in crate::ai_gateway) fn validate_pool_upsert(
             ));
         }
     }
+    super::reasoning::validate_pool_reasoning(config, existing, &pool)?;
     Ok(pool)
 }
 

@@ -40,6 +40,7 @@ mod anthropic_conversion;
 mod claude_terminal_sync;
 mod daily_reset;
 mod model_pools;
+mod model_pool_reasoning;
 mod openai_conversion;
 mod model_pool_terminal_sync;
 mod output_timing;
