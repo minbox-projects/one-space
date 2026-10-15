@@ -1481,6 +1481,319 @@ fn test_ai_workflow_model_sources_opencode_catalog_effort_fallback() {
     });
 }
 
+// ============================================================================
+// 9. Dynamic free-model discovery for the self-operated OpenCode providers
+//
+// The two self-operated providers (`opencode`, `opencode-go`) must contribute
+// their current free models from `~/.cache/opencode/models.json` to the
+// OpenCode candidate list without hardcoding any model id and without relying
+// on user declarations in `opencode.json`.
+// ============================================================================
+
+#[test]
+fn test_ai_workflow_model_sources_opencode_merges_free_catalog_provider_models() {
+    with_temp_test_home("cap-opencode-free", |home| {
+        // No opencode.json at all: the dynamic merge must stand on its own.
+        // `opencode` sits under the `providers` wrapper while `opencode-go`
+        // sits directly at the root, proving both resolutions in one pass.
+        let catalog = r#"{
+  "providers": {
+    "opencode": {
+      "id": "opencode",
+      "models": {
+        "cat-jam-free": { "cost": { "input": 0, "output": 0 } },
+        "big-pickle": { "cost": { "input": 0.0, "output": 0 } },
+        "pricey-input": { "cost": { "input": 0.5, "output": 0 } },
+        "pricey-output": { "cost": { "input": 0, "output": 0.25 } },
+        "retired-free": {
+          "cost": { "input": 0, "output": 0 },
+          "status": "deprecated"
+        }
+      }
+    },
+    "unrelated": {
+      "models": { "should-not-appear": { "cost": { "input": 0, "output": 0 } } }
+    }
+  },
+  "opencode-go": {
+    "id": "opencode-go",
+    "models": {
+      "step-5-preview-free": { "cost": { "input": 0, "output": 0 } }
+    }
+  }
+}"#;
+        write_env_file(home, ".cache/opencode/models.json", catalog);
+
+        let value = model_sources_json(home);
+        let models: Vec<String> = value["opencode"]["models"]
+            .as_array()
+            .expect("opencode.models must be an array")
+            .iter()
+            .filter_map(|model| model.as_str().map(str::to_string))
+            .collect();
+
+        assert!(
+            models.contains(&"opencode/cat-jam-free".to_string()),
+            "the wrapped free provider model must be discovered: {:?}",
+            models
+        );
+        assert!(
+            models.contains(&"opencode-go/step-5-preview-free".to_string()),
+            "the root-level free provider model must be discovered: {:?}",
+            models
+        );
+        assert!(
+            models.contains(&"opencode/big-pickle".to_string()),
+            "a free model id without a '-free' suffix must still be discovered: {:?}",
+            models
+        );
+        assert!(
+            !models.contains(&"opencode/pricey-input".to_string()),
+            "a non-zero input cost must be excluded: {:?}",
+            models
+        );
+        assert!(
+            !models.contains(&"opencode/pricey-output".to_string()),
+            "a non-zero output cost must be excluded: {:?}",
+            models
+        );
+        assert!(
+            !models.contains(&"opencode/retired-free".to_string()),
+            "a deprecated free model must be excluded: {:?}",
+            models
+        );
+        assert!(
+            !models.contains(&"unrelated/should-not-appear".to_string()),
+            "only the two self-operated providers may contribute dynamic models: {:?}",
+            models
+        );
+        assert_eq!(value["opencode"]["error"], serde_json::Value::Null);
+    });
+}
+
+#[test]
+fn test_ai_workflow_model_sources_opencode_requires_exact_zero_cost() {
+    with_temp_test_home("cap-opencode-cost", |home| {
+        let catalog = r#"{
+  "providers": {
+    "opencode": {
+      "id": "opencode",
+      "models": {
+        "missing-cost": {},
+        "cost-not-object": { "cost": "free" },
+        "cost-array": { "cost": [0, 0] },
+        "empty-cost": { "cost": {} },
+        "input-string": { "cost": { "input": "0", "output": 0 } },
+        "output-string": { "cost": { "input": 0, "output": "0" } },
+        "input-missing": { "cost": { "output": 0 } },
+        "genuinely-free": { "cost": { "input": 0, "output": 0 } }
+      }
+    }
+  }
+}"#;
+        write_env_file(home, ".cache/opencode/models.json", catalog);
+
+        let value = model_sources_json(home);
+        let models: Vec<String> = value["opencode"]["models"]
+            .as_array()
+            .expect("opencode.models must be an array")
+            .iter()
+            .filter_map(|model| model.as_str().map(str::to_string))
+            .collect();
+
+        for excluded in [
+            "opencode/missing-cost",
+            "opencode/cost-not-object",
+            "opencode/cost-array",
+            "opencode/empty-cost",
+            "opencode/input-string",
+            "opencode/output-string",
+            "opencode/input-missing",
+        ] {
+            assert!(
+                !models.contains(&excluded.to_string()),
+                "{} must not be treated as free: {:?}",
+                excluded,
+                models
+            );
+        }
+        assert!(
+            models.contains(&"opencode/genuinely-free".to_string()),
+            "an exactly-zero input and output cost must be free: {:?}",
+            models
+        );
+    });
+}
+
+#[test]
+fn test_ai_workflow_model_sources_opencode_free_catalog_supplies_capabilities() {
+    with_temp_test_home("cap-opencode-free-effort", |home| {
+        let catalog = r#"{
+  "providers": {
+    "opencode": {
+      "id": "opencode",
+      "models": {
+        "cat-jam-free": {
+          "cost": { "input": 0, "output": 0 },
+          "reasoning_options": [
+            { "type": "budget_tokens", "values": ["1000"] },
+            { "type": "effort", "values": ["low", "high"] }
+          ]
+        },
+        "no-effort-free": { "cost": { "input": 0, "output": 0 } }
+      }
+    },
+    "opencode-go": {
+      "id": "opencode-go",
+      "models": {
+        "step-5-preview-free": {
+          "cost": { "input": 0, "output": 0 },
+          "reasoning_options": [ { "type": "effort", "values": ["medium"] } ]
+        }
+      }
+    }
+  }
+}"#;
+        write_env_file(home, ".cache/opencode/models.json", catalog);
+
+        let value = model_sources_json(home);
+
+        let jam = capability_entry(&value, "opencode", "opencode/cat-jam-free")
+            .expect("a free dynamic model must expose its catalog efforts");
+        assert_eq!(
+            sorted_efforts(effort_strings(jam)),
+            vec!["high".to_string(), "low".to_string()],
+            "only type=effort option values may supply dynamic capabilities"
+        );
+
+        let step = capability_entry(&value, "opencode", "opencode-go/step-5-preview-free")
+            .expect("the second provider keeps its own catalog capability");
+        assert_eq!(
+            sorted_efforts(effort_strings(step)),
+            vec!["medium".to_string()]
+        );
+
+        assert!(
+            capability_entry(&value, "opencode", "opencode/no-effort-free").is_none(),
+            "a free model without reasoning options stays unknown"
+        );
+    });
+}
+
+#[test]
+fn test_ai_workflow_model_sources_opencode_declared_model_dedups_and_keeps_variant_priority() {
+    with_temp_test_home("cap-opencode-free-dedup", |home| {
+        let config = r#"{
+  "provider": {
+    "opencode": {
+      "models": {
+        "cat-jam-free": { "variants": { "fast": { "reasoningEffort": "low" } } }
+      }
+    }
+  }
+}"#;
+        write_env_file(home, ".config/opencode/opencode.json", config);
+
+        let catalog = r#"{
+  "providers": {
+    "opencode": {
+      "id": "opencode",
+      "models": {
+        "cat-jam-free": {
+          "cost": { "input": 0, "output": 0 },
+          "reasoning_options": [ { "type": "effort", "values": ["low", "high", "ultra"] } ]
+        }
+      }
+    }
+  }
+}"#;
+        write_env_file(home, ".cache/opencode/models.json", catalog);
+
+        let value = model_sources_json(home);
+        let models: Vec<String> = value["opencode"]["models"]
+            .as_array()
+            .expect("opencode.models must be an array")
+            .iter()
+            .filter_map(|model| model.as_str().map(str::to_string))
+            .collect();
+
+        assert_eq!(
+            models
+                .iter()
+                .filter(|model| model.as_str() == "opencode/cat-jam-free")
+                .count(),
+            1,
+            "a declared model that is also free in the catalog must appear exactly once: {:?}",
+            models
+        );
+
+        let entry = capability_entry(&value, "opencode", "opencode/cat-jam-free")
+            .expect("the declared model keeps a capability entry");
+        assert_eq!(
+            sorted_efforts(effort_strings(entry)),
+            vec!["low".to_string()],
+            "an explicit declared variant must win over the catalog fallback"
+        );
+    });
+}
+
+#[test]
+fn test_ai_workflow_model_sources_opencode_catalog_missing_or_corrupt_behavior() {
+    with_temp_test_home("cap-opencode-catalog-state", |home| {
+        write_env_file(
+            home,
+            ".config/opencode/opencode.json",
+            r#"{"provider":{"apigateway":{"models":{"deepseek-chat":{}}}}}"#,
+        );
+
+        // A missing catalog is normal: declared candidates only, no warning.
+        let missing = model_sources_json(home);
+        let missing_models: Vec<String> = missing["opencode"]["models"]
+            .as_array()
+            .expect("opencode.models must be an array")
+            .iter()
+            .filter_map(|model| model.as_str().map(str::to_string))
+            .collect();
+        assert_eq!(
+            missing_models,
+            vec!["apigateway/deepseek-chat".to_string()],
+            "without a catalog the candidates are exactly the declared models"
+        );
+        assert_eq!(missing["opencode"]["error"], serde_json::Value::Null);
+        assert!(
+            !has_extra_diagnostic(&missing["opencode"]),
+            "a missing catalog must not fabricate a warning: {}",
+            missing["opencode"]
+        );
+
+        // A corrupt catalog must warn, keep declared candidates and add nothing.
+        write_env_file(home, ".cache/opencode/models.json", "{ not json :::");
+
+        let corrupt = model_sources_json(home);
+        let corrupt_models: Vec<String> = corrupt["opencode"]["models"]
+            .as_array()
+            .expect("opencode.models must be an array")
+            .iter()
+            .filter_map(|model| model.as_str().map(str::to_string))
+            .collect();
+        assert_eq!(
+            corrupt_models,
+            vec!["apigateway/deepseek-chat".to_string()],
+            "a corrupt catalog must not drop or fabricate candidates"
+        );
+        assert!(
+            has_extra_diagnostic(&corrupt["opencode"]),
+            "a corrupt catalog must surface a capability warning: {}",
+            corrupt["opencode"]
+        );
+        assert_eq!(
+            corrupt["opencode"]["error"],
+            serde_json::Value::Null,
+            "a corrupt catalog is a capability warning, not a column error"
+        );
+    });
+}
+
 #[test]
 fn test_ai_workflow_model_sources_capability_failures_keep_candidates_and_columns() {
     with_temp_test_home("cap-warning", |home| {
