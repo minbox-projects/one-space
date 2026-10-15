@@ -4225,5 +4225,72 @@ describe("AiGateway model pool integration", () => {
     expect(panel).toBeInTheDocument();
     expect(within(panel).getByText("Free Modle")).toBeInTheDocument();
   });
+
+  it("Usage and logs expose a provider-history subtab and keep the existing subtabs", async () => {
+    const store: Store = {
+      config: makeConfig({ providers: [makeProvider()] }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [],
+    };
+    invokeMock.mockImplementation(async (command: string) => {
+      switch (command) {
+        case "ai_gateway_get_config":
+          return store.config;
+        case "ai_gateway_status":
+          return store.status;
+        case "ai_gateway_terminal_targets":
+          return store.targets;
+        case "ai_gateway_model_pools_status":
+          return [];
+        case "ai_gateway_provider_templates":
+          return [];
+        case "ai_gateway_template_auto_refresh_status":
+          return { failures: [] };
+        case "ai_gateway_usage_stats":
+          return emptyUsageStats();
+        case "ai_gateway_request_logs":
+          return usageLogsPage();
+        case "ai_gateway_usage_providers":
+          return [];
+        case "ai_gateway_provider_usage_history":
+          return {
+            provider_id: "p1",
+            earliest_available_day: null,
+            continuity_start_day: null,
+            end_day: null,
+            cumulative: null,
+            days: [],
+          };
+        default:
+          return undefined;
+      }
+    });
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByTestId("ai-gateway-providers");
+
+    const tabsList = screen.getByRole("tablist", { name: /AI Gateway tabs/i });
+    fireEvent.click(within(tabsList).getByRole("tab", { name: /Usage & Logs/i }));
+
+    const statsSubTab = screen.getByTestId("ai-gateway-subtab-usage-stats");
+    const logsSubTab = screen.getByTestId("ai-gateway-subtab-usage-logs");
+    const historySubTab = screen.getByTestId("ai-gateway-subtab-usage-history");
+    expect(statsSubTab).toHaveAttribute("aria-selected", "true");
+    expect(historySubTab).toHaveAttribute("aria-selected", "false");
+
+    fireEvent.click(historySubTab);
+    expect(historySubTab).toHaveAttribute("aria-selected", "true");
+    expect(statsSubTab).toHaveAttribute("aria-selected", "false");
+    expect(logsSubTab).toHaveAttribute("aria-selected", "false");
+
+    expect(
+      await screen.findByTestId("ai-gateway-provider-usage-history"),
+    ).toBeInTheDocument();
+
+    // Switching back keeps the existing request-log subtab reachable.
+    fireEvent.click(logsSubTab);
+    expect(logsSubTab).toHaveAttribute("aria-selected", "true");
+    await screen.findByTestId("ai-gateway-logs-ungrouped");
+  });
 });
 

@@ -4,11 +4,13 @@ import type { TFunction } from "i18next";
 import {
   AlertCircle,
   ArrowDown,
+  ArrowLeft,
   ArrowUp,
   ChevronDown,
   Filter,
   Info,
   RefreshCw,
+  X,
   Zap,
 } from "lucide-react";
 import { SelectDropdown } from "./SelectDropdown";
@@ -28,6 +30,7 @@ import {
   type UsageLogRecord,
   type UsageLogResult,
   type UsageLogsPage,
+  type UsageLogsQuery,
   type UsageRangeKey,
 } from "@/lib/aiGateway";
 import { errorToMessage } from "@/lib/messages";
@@ -366,12 +369,30 @@ export function UsageLogsPanel({
   isActive = true,
   focusModel = null,
   focusToken = 0,
+  focusProviderId = null,
+  focusDay = null,
+  onReturnToProviderHistory,
+  onClearProviderDayFocus,
 }: {
   isActive?: boolean;
   /** Alias filter requested by an external shortcut (e.g. a pool card log button). */
   focusModel?: string | null;
   /** Bumped by the external shortcut; each new value re-applies `focusModel`. */
   focusToken?: number;
+  /**
+   * One-shot exact provider-ID/day focus handed down by a Provider history daily
+   * row. When set, the query carries the exact ID/day and starts ungrouped on
+   * page 1 with the competing status/model/recorded-name selections cleared.
+   */
+  focusProviderId?: string | null;
+  focusDay?: string | null;
+  /** Restores the originating Provider history view (same selection). */
+  onReturnToProviderHistory?: () => void;
+  /**
+   * Exits the exact provider/day focus while staying in the request-log view so
+   * ordinary quick-range browsing resumes on the next request.
+   */
+  onClearProviderDayFocus?: () => void;
 }) {
   const { t } = useTranslation();
   const [range, setRange] = useState<UsageRangeKey>("today");
@@ -390,9 +411,28 @@ export function UsageLogsPanel({
   const [draftProvider, setDraftProvider] = useState<string | null>(null);
   const requestSeqRef = useRef(0);
   const filterRef = useRef<HTMLDivElement>(null);
-  // Highest `focusToken` already reflected in the local model filter: the
-  // external-focus guard is one-shot and releases once this value catches up.
+  // Highest `focusToken` already reflected in the local filters: the external
+  // focus guard is one-shot and releases once this value catches up.
   const appliedFocusTokenRef = useRef(0);
+
+  // A provider/day focus owns a strict exact-day query; an ordinary model-alias
+  // focus is the existing pool-card shortcut.
+  const providerDayFocused = focusProviderId !== null || focusDay !== null;
+
+  // Identity of the exact provider/day query context currently painted. A change
+  // (entering, leaving or moving the focus) must immediately drop the previous
+  // boundary's rows and invalidate any in-flight request, so a pending fetch for
+  // the new boundary reports loading instead of painting a stale snapshot.
+  const focusBoundaryKey = `${focusProviderId ?? ""}\u0000${focusDay ?? ""}`;
+  const paintedFocusBoundaryRef = useRef(focusBoundaryKey);
+
+  useEffect(() => {
+    if (paintedFocusBoundaryRef.current === focusBoundaryKey) return;
+    paintedFocusBoundaryRef.current = focusBoundaryKey;
+    requestSeqRef.current += 1;
+    setPageData(null);
+    setError("");
+  }, [focusBoundaryKey]);
 
   useEffect(() => {
     if (!filterOpen) return;
@@ -425,14 +465,19 @@ export function UsageLogsPanel({
       if (options?.refresh) setRefreshing(true);
       else setLoading(true);
       try {
-        const next = await aiGatewayRequestLogs({
+        const query: UsageLogsQuery = {
           range,
           groupBy,
           status,
           model,
           provider,
           page,
-        });
+        };
+        // Only a configured provider/day focus is added; the wrapper omits the
+        // keys entirely for every ordinary quick-range caller.
+        if (focusProviderId !== null) query.providerId = focusProviderId;
+        if (focusDay !== null) query.day = focusDay;
+        const next = await aiGatewayRequestLogs(query);
         if (requestSeqRef.current !== seq) return;
         const clamped = clampUsagePage(next.page, next.total_pages);
         if (clamped !== next.page) {
@@ -450,34 +495,75 @@ export function UsageLogsPanel({
         }
       }
     },
-    [groupBy, model, page, provider, range, status],
+    [groupBy, model, page, provider, range, status, focusProviderId, focusDay],
   );
 
   // External shortcut (e.g. a model-pool card log button): apply the alias
   // filter through the existing query state without inventing a new log format.
+  // A provider/day focus instead clears the competing selections and starts
+  // ungrouped on page 1.
   useEffect(() => {
     if (focusToken === 0) return;
+    if (focusProviderId !== null || focusDay !== null) {
+      setGroupBy("none");
+      setStatus(null);
+      setDraftStatus(null);
+      setModel(null);
+      setDraftModel(null);
+      setProvider(null);
+      setDraftProvider(null);
+      setPage(1);
+      return;
+    }
     setModel(focusModel);
     setDraftModel(focusModel);
     setPage(1);
-  }, [focusToken, focusModel]);
+  }, [focusToken, focusModel, focusProviderId, focusDay]);
 
   useEffect(() => {
     if (!isActive) return;
-    // Avoid a transient null-filter request while an external focus is pending,
-    // but only until the focused alias has been applied to the local model
-    // filter once. Afterwards every normal query-state change loads exactly as
-    // before this feature (the parent never clears focusModel/focusToken).
-    const focusPending =
+    // Avoid a transient stale-filter request while an external focus is still
+    // being applied, then load exactly once the applied state catches up.
+    const providerDayPending =
+      (focusProviderId !== null || focusDay !== null) &&
+      (groupBy !== "none" ||
+        status !== null ||
+        model !== null ||
+        provider !== null ||
+        page !== 1);
+    const modelPending =
+      focusProviderId === null &&
+      focusDay === null &&
       focusModel !== null &&
-      focusToken > appliedFocusTokenRef.current &&
       model !== focusModel;
-    if (focusPending) return;
-    if (focusModel !== null && model === focusModel) {
+    if (
+      focusToken > appliedFocusTokenRef.current &&
+      (providerDayPending || modelPending)
+    ) {
+      return;
+    }
+    if (focusToken > appliedFocusTokenRef.current) {
       appliedFocusTokenRef.current = focusToken;
     }
     void load();
-  }, [focusModel, focusToken, isActive, load, model]);
+    // Leaving the view, or a superseding query, invalidates the in-flight
+    // request so a hidden or replaced answer can never commit its snapshot.
+    return () => {
+      requestSeqRef.current += 1;
+    };
+  }, [
+    focusModel,
+    focusProviderId,
+    focusDay,
+    focusToken,
+    isActive,
+    load,
+    model,
+    groupBy,
+    status,
+    provider,
+    page,
+  ]);
 
   const visibleRecords = pageData?.records ?? [];
 
@@ -773,6 +859,47 @@ export function UsageLogsPanel({
         </div>
       </div>
 
+      {providerDayFocused ? (
+        <div
+          data-testid="ai-gateway-logs-day-context"
+          className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 px-3 py-2"
+        >
+          <div className="flex flex-wrap items-baseline gap-2 text-xs">
+            <span className="font-medium text-foreground">
+              {t("aiGatewayLogsDayContextTitle", "Exact provider/day focus")}
+            </span>
+            {focusProviderId ? (
+              <span className="font-mono text-muted-foreground">{focusProviderId}</span>
+            ) : null}
+            {focusDay ? (
+              <span className="font-mono text-muted-foreground">{focusDay}</span>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="ai-gateway-logs-return-history"
+              onClick={() => onReturnToProviderHistory?.()}
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium transition hover:bg-muted"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              <span>{t("aiGatewayLogsReturnHistory", "Back to provider history")}</span>
+            </button>
+            <button
+              type="button"
+              data-testid="ai-gateway-logs-clear-focus"
+              onClick={() => onClearProviderDayFocus?.()}
+              aria-label={t("aiGatewayLogsClearFocus", "Clear provider/day focus")}
+              title={t("aiGatewayLogsClearFocus", "Clear provider/day focus")}
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium transition hover:bg-muted"
+            >
+              <X className="h-3.5 w-3.5" />
+              <span>{t("aiGatewayLogsClearFocus", "Clear provider/day focus")}</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {refreshing ? (
         <div role="status" className="mt-3 text-xs text-muted-foreground">
           {t("aiGatewayRefreshing", "Refreshing...")}
@@ -847,9 +974,21 @@ export function UsageLogsPanel({
           </div>
         )
       ) : records.length === 0 ? (
-        <p className="mt-4 rounded-xl border border-dashed bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
-          {t("aiGatewayLogsEmpty", "No matching requests.")}
-        </p>
+        providerDayFocused && !hasActiveFilter ? (
+          <p
+            data-testid="ai-gateway-logs-day-empty"
+            className="mt-4 rounded-xl border border-dashed bg-muted/20 px-4 py-5 text-sm text-muted-foreground"
+          >
+            {t(
+              "aiGatewayLogsDayEmpty",
+              "No request details are retained for this provider and day.",
+            )}
+          </p>
+        ) : (
+          <p className="mt-4 rounded-xl border border-dashed bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
+            {t("aiGatewayLogsEmpty", "No matching requests.")}
+          </p>
+        )
       ) : (
         <div className="mt-4 space-y-2">
           <div className="overflow-x-auto rounded-lg border min-h-[220px]">

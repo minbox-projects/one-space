@@ -738,6 +738,64 @@ export interface UsageLogsQuery {
   model?: string | null;
   provider?: string | null;
   page?: number;
+  /**
+   * Optional exact provider-ID focus (Step 2). It is only sent when it holds a
+   * non-null value, so callers that omit it keep the exact existing six-key
+   * invoke payload.
+   */
+  providerId?: string | null;
+  /**
+   * Optional strict `YYYY-MM-DD` UTC+8 day focus (Step 2). Like `providerId`,
+   * the key is only added when set.
+   */
+  day?: string | null;
+}
+
+/**
+ * One selectable provider identity for the history selector, keyed by exact
+ * nonblank provider ID. `deleted` marks a historical identity absent from the
+ * current configuration; `has_usage` is false for a configured-but-unused
+ * provider that must not be given a fabricated first-use date.
+ */
+export interface ProviderUsageIdentity {
+  provider_id: string;
+  provider_name: string;
+  deleted: boolean;
+  has_usage: boolean;
+}
+
+/**
+ * Coverage classification of one UTC+8 calendar day in a provider history:
+ * `retainedHistorical` may be incomplete, `continuous` makes a no-request day a
+ * genuine zero, and `unavailable` has no metrics at all.
+ */
+export type ProviderDayCoverage =
+  | "retained_historical"
+  | "continuous"
+  | "unavailable";
+
+/**
+ * One calendar day of a provider history; `metrics` is `null` only when the
+ * date is unavailable (never a fabricated zero).
+ */
+export interface ProviderDailyEntry {
+  day: string;
+  coverage: ProviderDayCoverage;
+  ongoing: boolean;
+  metrics: UsageMetrics | null;
+}
+
+/**
+ * A provider's complete UTC+8 daily calendar, coverage and cumulative values
+ * through the current reporting day, as returned by the backend.
+ */
+export interface ProviderUsageHistory {
+  provider_id: string;
+  earliest_available_day: string | null;
+  continuity_start_day: string | null;
+  end_day: string | null;
+  cumulative: UsageMetrics | null;
+  days: ProviderDailyEntry[];
 }
 
 export interface OffPeakPrice {
@@ -1096,6 +1154,27 @@ export function aiGatewayRequestLogs(query: UsageLogsQuery) {
     model: query.model ?? null,
     provider: query.provider ?? null,
     page: query.page ?? 1,
+    // Add the exact focus selectors only when set, so ordinary callers keep the
+    // byte-identical six-key payload they had before this feature.
+    ...(query.providerId !== undefined && query.providerId !== null
+      ? { providerId: query.providerId }
+      : {}),
+    ...(query.day !== undefined && query.day !== null ? { day: query.day } : {}),
+  });
+}
+
+/**
+ * The union of configured and historical provider identities for the history
+ * selector. It takes no payload.
+ */
+export function aiGatewayUsageProviders() {
+  return invoke<ProviderUsageIdentity[]>("ai_gateway_usage_providers");
+}
+
+/** One provider's complete UTC+8 daily calendar, coverage and cumulative stats. */
+export function aiGatewayProviderUsageHistory(query: { providerId: string }) {
+  return invoke<ProviderUsageHistory>("ai_gateway_provider_usage_history", {
+    providerId: query.providerId,
   });
 }
 

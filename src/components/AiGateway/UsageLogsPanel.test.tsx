@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { UsageLogsPanel } from "@/components/AiGateway/UsageLogsPanel";
 import type {
@@ -71,6 +72,54 @@ function page(overrides: Partial<UsageLogsPage> = {}): UsageLogsPage {
     groups: [],
     ...overrides,
   };
+}
+
+/**
+ * A controllable promise: the external IPC boundary is held open so a test can
+ * observe the pending state and then resolve/reject it explicitly.
+ */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+type FocusBoundary = {
+  providerId: string | null;
+  day: string | null;
+  token: number;
+};
+
+/**
+ * Keeps one `UsageLogsPanel` instance mounted while its provider/day focus
+ * props change. Rerendering the panel directly would replace the provider
+ * wrapper and remount it, which is not what a focus-boundary change does.
+ */
+function FocusBoundaryHost({
+  initial,
+  next,
+}: {
+  initial: FocusBoundary;
+  next: FocusBoundary;
+}) {
+  const [focus, setFocus] = useState<FocusBoundary>(initial);
+  return (
+    <>
+      <button type="button" onClick={() => setFocus(next)}>
+        switch-focus
+      </button>
+      <UsageLogsPanel
+        isActive
+        focusProviderId={focus.providerId}
+        focusDay={focus.day}
+        focusToken={focus.token}
+      />
+    </>
+  );
 }
 
 /** The ungrouped row's cost cell is the last public table cell. */
@@ -2115,6 +2164,408 @@ describe("UsageLogsPanel", () => {
         page: 1,
       }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 2 (20261014-ai-gateway-provider-usage-history): the one-shot provider/day
+// focus handed to the existing request-log view by the Provider history daily
+// rows. The panel must query one exact UTC+8 provider/day, start ungrouped on
+// page 1 with the conflicting name/model/status selections cleared, expose a
+// dated context and return control, and restore ordinary quick-range browsing
+// when the focus is cleared.
+// ---------------------------------------------------------------------------
+
+describe("UsageLogsPanel 服务商/日期聚焦", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  function mockLogs() {
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      const grouped = args?.groupBy === "day";
+      return page({
+        total: 120,
+        total_pages: 3,
+        group_by: grouped ? "day" : null,
+      });
+    });
+  }
+
+  it("以精确 providerId/day、无分组、第 1 页取数并清除既有分组与页码", async () => {
+    const user = userEvent.setup();
+    mockLogs();
+
+    const { rerender } = renderWithProviders(<UsageLogsPanel isActive />);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "none",
+        status: null,
+        model: null,
+        provider: null,
+        page: 1,
+      }),
+    );
+
+    // Seed a conflicting grouping selection before the day focus arrives.
+    await user.click(screen.getByTestId("ai-gateway-logs-group-trigger"));
+    await user.click(screen.getByRole("option", { name: "Day (UTC+8)" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "day",
+        status: null,
+        model: null,
+        provider: null,
+        page: 1,
+      }),
+    );
+
+    rerender(
+      <UsageLogsPanel
+        isActive
+        focusProviderId="p-a"
+        focusDay="2026-09-17"
+        focusToken={1}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "none",
+        status: null,
+        model: null,
+        provider: null,
+        page: 1,
+        providerId: "p-a",
+        day: "2026-09-17",
+      }),
+    );
+
+    // Dated context is user-visible.
+    expect(screen.getByTestId("ai-gateway-logs-day-context")).toBeInTheDocument();
+  });
+
+  it("移除聚焦后恢复普通快捷范围的六键请求", async () => {
+    mockLogs();
+    const { rerender } = renderWithProviders(
+      <UsageLogsPanel
+        isActive
+        focusProviderId="p-a"
+        focusDay="2026-09-17"
+        focusToken={1}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "none",
+        status: null,
+        model: null,
+        provider: null,
+        page: 1,
+        providerId: "p-a",
+        day: "2026-09-17",
+      }),
+    );
+
+    rerender(
+      <UsageLogsPanel
+        isActive
+        focusProviderId={null}
+        focusDay={null}
+        focusToken={2}
+      />,
+    );
+
+    await waitFor(() => {
+      const last = invokeMock.mock.calls[
+        invokeMock.mock.calls.length - 1
+      ][1] as Record<string, unknown>;
+      expect(last).toEqual({
+        range: "today",
+        groupBy: "none",
+        status: null,
+        model: null,
+        provider: null,
+        page: 1,
+      });
+    });
+  });
+
+  it("返回控件回到同一服务商历史", async () => {
+    mockLogs();
+    const onReturn = vi.fn();
+    const user = userEvent.setup();
+
+    renderWithProviders(
+      <UsageLogsPanel
+        isActive
+        focusProviderId="p-a"
+        focusDay="2026-09-17"
+        focusToken={1}
+        onReturnToProviderHistory={onReturn}
+      />,
+    );
+
+    const returnControl = await screen.findByTestId(
+      "ai-gateway-logs-return-history",
+    );
+    await user.click(returnControl);
+    expect(onReturn).toHaveBeenCalledTimes(1);
+  });
+
+  it("日期聚焦下无保留明细时给出专属说明而非普通空态", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({ total: 0, total_pages: 1, records: [] });
+    });
+
+    renderWithProviders(
+      <UsageLogsPanel
+        isActive
+        focusProviderId="p-a"
+        focusDay="2026-09-17"
+        focusToken={1}
+      />,
+    );
+
+    expect(
+      await screen.findByTestId("ai-gateway-logs-day-empty"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("ai-gateway-logs-return-history"),
+    ).toBeInTheDocument();
+  });
+
+  it("聚焦边界变化时清除旧记录并在新请求挂起时显示加载态", async () => {
+    const first = deferred<UsageLogsPage>();
+    const second = deferred<UsageLogsPage>();
+    let call = 0;
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      call += 1;
+      return call === 1 ? first.promise : second.promise;
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders(
+      <FocusBoundaryHost
+        initial={{ providerId: "p-a", day: "2026-09-17", token: 1 }}
+        next={{ providerId: "p-b", day: "2026-09-18", token: 2 }}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "none",
+        status: null,
+        model: null,
+        provider: null,
+        page: 1,
+        providerId: "p-a",
+        day: "2026-09-17",
+      }),
+    );
+
+    await act(async () => {
+      first.resolve(
+        page({
+          total: 1,
+          total_pages: 1,
+          records: [record({ local_model: "A-day-row" })],
+        }),
+      );
+    });
+    await screen.findByText("A-day-row");
+
+    // The focus boundary moves to another provider/day in the same instance.
+    await user.click(screen.getByRole("button", { name: "switch-focus" }));
+
+    const context = await screen.findByTestId("ai-gateway-logs-day-context");
+    expect(context).toHaveTextContent("p-b");
+    expect(context).toHaveTextContent("2026-09-18");
+
+    // While B is pending, A's records must not linger under B's context, and
+    // the panel must report loading rather than showing stale data.
+    expect(screen.queryByText("A-day-row")).not.toBeInTheDocument();
+    expect(screen.getByText("Loading...")).toBeInTheDocument();
+
+    await act(async () => {
+      second.resolve(
+        page({
+          total: 1,
+          total_pages: 1,
+          records: [record({ local_model: "B-day-row" })],
+        }),
+      );
+    });
+    await screen.findByText("B-day-row");
+    expect(screen.queryByText("A-day-row")).not.toBeInTheDocument();
+  });
+
+  it("被取代的过期响应最后返回也不能恢复错误数据集", async () => {
+    const first = deferred<UsageLogsPage>();
+    const second = deferred<UsageLogsPage>();
+    let call = 0;
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      call += 1;
+      return call === 1 ? first.promise : second.promise;
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders(
+      <FocusBoundaryHost
+        initial={{ providerId: "p-a", day: "2026-09-17", token: 1 }}
+        next={{ providerId: "p-b", day: "2026-09-18", token: 2 }}
+      />,
+    );
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "none",
+        status: null,
+        model: null,
+        provider: null,
+        page: 1,
+        providerId: "p-a",
+        day: "2026-09-17",
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "switch-focus" }));
+    await waitFor(() => {
+      const last = invokeMock.mock.calls[
+        invokeMock.mock.calls.length - 1
+      ][1] as Record<string, unknown>;
+      expect(last.providerId).toBe("p-b");
+      expect(last.day).toBe("2026-09-18");
+    });
+
+    await act(async () => {
+      second.resolve(
+        page({
+          total: 1,
+          total_pages: 1,
+          records: [record({ local_model: "B-day-row" })],
+        }),
+      );
+    });
+    await screen.findByText("B-day-row");
+
+    // The superseded A response resolves last and must never overwrite B.
+    await act(async () => {
+      first.resolve(
+        page({
+          total: 1,
+          total_pages: 1,
+          records: [record({ local_model: "A-day-row" })],
+        }),
+      );
+    });
+    await waitFor(() => expect(screen.getByText("B-day-row")).toBeInTheDocument());
+    expect(screen.queryByText("A-day-row")).not.toBeInTheDocument();
+  });
+
+  it("聚焦新边界请求失败时给出错误并清除旧记录，而非保留明细空态", async () => {
+    let call = 0;
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      call += 1;
+      if (call === 1) {
+        return page({
+          total: 1,
+          total_pages: 1,
+          records: [record({ local_model: "A-day-row" })],
+        });
+      }
+      throw new Error("focus query failed");
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders(
+      <FocusBoundaryHost
+        initial={{ providerId: "p-a", day: "2026-09-17", token: 1 }}
+        next={{ providerId: "p-b", day: "2026-09-18", token: 2 }}
+      />,
+    );
+    await screen.findByText("A-day-row");
+
+    await user.click(screen.getByRole("button", { name: "switch-focus" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("focus query failed");
+    // The stale A row must not survive a failed boundary change.
+    expect(screen.queryByText("A-day-row")).not.toBeInTheDocument();
+    // An error is not the retained-details empty state.
+    expect(
+      screen.queryByTestId("ai-gateway-logs-day-empty"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("聚焦日期内普通筛选无匹配显示普通空态而非保留明细说明", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({ total: 0, total_pages: 1, records: [] });
+    });
+
+    renderWithProviders(
+      <UsageLogsPanel
+        isActive
+        focusProviderId="p-a"
+        focusDay="2026-09-17"
+        focusToken={1}
+      />,
+    );
+
+    // With no filter, a genuinely empty retained day keeps the dedicated message.
+    expect(
+      await screen.findByTestId("ai-gateway-logs-day-empty"),
+    ).toBeInTheDocument();
+
+    // A normal status filter narrowed the populated day to no matches.
+    await user.click(screen.getByTestId("ai-gateway-logs-filter-trigger"));
+    const panel = await screen.findByTestId("ai-gateway-logs-filter-panel");
+    await user.click(within(panel).getByRole("button", { name: "Success" }));
+    await user.click(within(panel).getByRole("button", { name: "Apply" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "none",
+        status: "success",
+        model: null,
+        provider: null,
+        page: 1,
+        providerId: "p-a",
+        day: "2026-09-17",
+      }),
+    );
+
+    expect(await screen.findByText("No matching requests.")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("ai-gateway-logs-day-empty"),
+    ).not.toBeInTheDocument();
   });
 });
 
