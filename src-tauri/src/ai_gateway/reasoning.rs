@@ -15,10 +15,11 @@
 //! or transport logic yet.
 
 use super::{
-    GatewayConfig, ModelPool, ModelPoolCandidate, PoolCandidateReasoning,
+    GatewayConfig, GatewayUpstreamProvider, ModelPool, ModelPoolCandidate, PoolCandidateReasoning,
     PoolDefaultReasoningEffort, PoolNativeAction, PoolNativeReasoning, PoolReasoningAction,
     PoolReasoningEffort, PoolReasoningProfile, UpstreamProtocol,
 };
+use serde::Serialize;
 use serde_json::Value;
 
 /// Minimum native Anthropic thinking budget the adapter accepts (REQ-002).
@@ -713,4 +714,131 @@ fn candidate_reason(candidate: &ModelPoolCandidate, message: &str) -> String {
         candidate.local_model.trim(),
         candidate.upstream_model.trim()
     )
+}
+
+// ---------------------------------------------------------------------------
+// Static pool reasoning capability catalogs (Step 3 of
+// `20261015-pool-only-reasoning`: REQ-005/REQ-007, AC-009/AC-012).
+//
+// Discovery rows, pool status rows and terminal pool rows share these helpers so
+// the advertised support set, default and coverage are identical everywhere and
+// derive only from the stored configuration. Temporary readiness (cooldown, key
+// availability, health, source enable state) and the request-time output cap
+// never enter the count.
+// ---------------------------------------------------------------------------
+
+/// The canonical public pool preferences in canonical order. Every catalog
+/// surface (`reasoning_efforts`, coverage rows, OpenCode variants) derives its
+/// order from this list.
+pub(in crate::ai_gateway) const CANONICAL_POOL_EFFORTS: [PoolReasoningEffort; 5] = [
+    PoolReasoningEffort::Low,
+    PoolReasoningEffort::Medium,
+    PoolReasoningEffort::High,
+    PoolReasoningEffort::Xhigh,
+    PoolReasoningEffort::None,
+];
+
+/// One configuration-derived row of a pool's static reasoning coverage table.
+#[derive(Debug, Clone, Serialize)]
+pub(in crate::ai_gateway) struct PoolReasoningCoverage {
+    pub(in crate::ai_gateway) effort: String,
+    pub(in crate::ai_gateway) mapped_candidates: usize,
+    pub(in crate::ai_gateway) total_candidates: usize,
+}
+
+/// The static, configuration-derived reasoning capability of one pool: the
+/// supported canonical preferences in canonical order, the canonical default and
+/// the five canonical coverage rows.
+#[derive(Debug, Clone)]
+pub(in crate::ai_gateway) struct PoolReasoningCatalog {
+    pub(in crate::ai_gateway) reasoning_efforts: Vec<String>,
+    pub(in crate::ai_gateway) default_reasoning_effort: String,
+    pub(in crate::ai_gateway) reasoning_coverage: Vec<PoolReasoningCoverage>,
+}
+
+/// Whether one candidate statically serves `effort`: its exact source identity
+/// currently resolves and it declares a mapping the candidate's own profile makes
+/// valid. Runtime readiness and the request output cap are deliberately excluded,
+/// so the advertised support set and coverage stay stable through cooldown, key
+/// exhaustion, health changes and source enable toggles.
+pub(in crate::ai_gateway) fn candidate_serves_effort(
+    providers: &[GatewayUpstreamProvider],
+    candidate: &ModelPoolCandidate,
+    effort: PoolReasoningEffort,
+) -> bool {
+    let Some(declared) = candidate.reasoning.as_ref() else {
+        return false;
+    };
+    let Some(mapping) = declared
+        .mappings
+        .iter()
+        .find(|mapping| mapping.effort == effort)
+    else {
+        return false;
+    };
+    if !super::model_pools::reference_resolves_in(providers, candidate) {
+        return false;
+    }
+    if !profile_supports_protocol(&declared.profile, candidate.protocol) {
+        return false;
+    }
+    if effort == PoolReasoningEffort::None {
+        return matches!(mapping.action, PoolReasoningAction::Disable) && declared.supports_disable;
+    }
+    match &mapping.action {
+        // A positive preference can never be a disable action.
+        PoolReasoningAction::Disable => false,
+        PoolReasoningAction::Enum { value } => {
+            if !profile_accepts_enum(&declared.profile) {
+                return false;
+            }
+            let trimmed = value.trim();
+            !trimmed.is_empty()
+                && !trimmed.eq_ignore_ascii_case("none")
+                && !(matches!(declared.profile, PoolReasoningProfile::ChatThinkingSwitch)
+                    && trimmed != "enabled")
+        }
+        PoolReasoningAction::Budget { budget_tokens } => {
+            if !matches!(declared.profile, PoolReasoningProfile::AnthropicManualBudget) {
+                return false;
+            }
+            let Some(range) = declared.budget else {
+                return false;
+            };
+            range.min <= range.max
+                && range.min >= MIN_MANUAL_REASONING_BUDGET_TOKENS
+                && *budget_tokens >= range.min
+                && *budget_tokens <= range.max
+        }
+    }
+}
+
+/// Derive one pool's static reasoning catalog from the current provider list.
+pub(in crate::ai_gateway) fn pool_reasoning_catalog(
+    providers: &[GatewayUpstreamProvider],
+    pool: &ModelPool,
+) -> PoolReasoningCatalog {
+    let total_candidates = pool.candidates.len();
+    let reasoning_coverage: Vec<PoolReasoningCoverage> = CANONICAL_POOL_EFFORTS
+        .iter()
+        .map(|effort| PoolReasoningCoverage {
+            effort: effort.as_str().to_string(),
+            mapped_candidates: pool
+                .candidates
+                .iter()
+                .filter(|candidate| candidate_serves_effort(providers, candidate, *effort))
+                .count(),
+            total_candidates,
+        })
+        .collect();
+    let reasoning_efforts = reasoning_coverage
+        .iter()
+        .filter(|row| row.mapped_candidates > 0)
+        .map(|row| row.effort.clone())
+        .collect();
+    PoolReasoningCatalog {
+        reasoning_efforts,
+        default_reasoning_effort: pool.default_reasoning_effort.as_str().to_string(),
+        reasoning_coverage,
+    }
 }

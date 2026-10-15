@@ -29,7 +29,7 @@ use super::{
     spawn_mock_upstream, temp_home, wait_for_usage_logs, write_raw_gateway_config, CapturedLog,
     MockReply,
 };
-use crate::ai_gateway::commands::ai_gateway_upsert_model_pool;
+use crate::ai_gateway::commands::{ai_gateway_model_pools_status, ai_gateway_upsert_model_pool};
 use crate::ai_gateway::runtime_http::{start_server, stop_server};
 use crate::ai_gateway::storage::{config_path, modify_config};
 use crate::ai_gateway::{
@@ -3142,4 +3142,75 @@ async fn pool_reasoning_cancelled_mapped_request_writes_no_rows_and_no_health() 
         failures.is_empty(),
         "cancelled mapped request evidence mismatches: {failures:#?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Step 3 of `20261015-pool-only-reasoning` (REQ-005 / REQ-007, AC-009 / AC-012):
+// the status surface exposes the same static reasoning capability metadata
+// ---------------------------------------------------------------------------
+
+/// AC-009 / AC-012: `ai_gateway_model_pools_status` reports the pool's static
+/// support, default and five-row coverage independently of candidate readiness,
+/// using the same keys as the discovery catalog. The 2/3 coverage counts only
+/// candidates whose source identity currently resolves.
+#[test]
+fn pool_status_reports_static_reasoning_capability() {
+    super::with_temp_home("pool-reasoning-status", |_home| {
+        let high = reasoning(
+            "openai_effort",
+            Some(vec!["high"]),
+            None,
+            false,
+            vec![enum_mapping("high", "high")],
+        );
+        let pool_value = json!({
+            "id": "pool-status",
+            "name": "Status",
+            "model": "status-model",
+            "enabled": true,
+            "default_reasoning_effort": "auto",
+            "candidates": [
+                candidate("p-shared", "local-chat", "remote-chat", "chat_completions", Some(high.clone())),
+                candidate("p-shared", "local-switch", "remote-switch", "chat_completions", Some(high.clone())),
+                candidate("p-shared", "missing-local", "missing-upstream", "chat_completions", Some(high)),
+            ],
+        });
+        write_raw_gateway_config(&config_with(vec![shared_provider()], vec![], vec![pool_value]));
+
+        let statuses = ai_gateway_model_pools_status().expect("pool status");
+        let value = serde_json::to_value(&statuses).expect("serialize pool status");
+        let entry = value
+            .as_array()
+            .expect("status array")
+            .iter()
+            .find(|pool| pool["id"] == "pool-status")
+            .unwrap_or_else(|| panic!("missing pool status row: {value}"));
+
+        assert_eq!(
+            entry["default_reasoning_effort"], "auto",
+            "the status surface must expose the canonical default: {entry}"
+        );
+        assert_eq!(
+            entry["reasoning_efforts"],
+            json!(["high"]),
+            "the status surface must expose the support set: {entry}"
+        );
+        let coverage = entry["reasoning_coverage"]
+            .as_array()
+            .unwrap_or_else(|| panic!("status must expose reasoning_coverage: {entry}"));
+        assert_eq!(
+            coverage
+                .iter()
+                .map(|row| row["effort"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["low", "medium", "high", "xhigh", "none"],
+            "all five rows in canonical order: {entry}"
+        );
+        let high_row = coverage
+            .iter()
+            .find(|row| row["effort"] == "high")
+            .expect("high coverage row");
+        assert_eq!(high_row["mapped_candidates"], 2, "{entry}");
+        assert_eq!(high_row["total_candidates"], 3, "{entry}");
+    });
 }

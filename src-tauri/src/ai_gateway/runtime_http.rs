@@ -824,13 +824,17 @@ pub(in crate::ai_gateway) fn models_payload(config: &GatewayConfig) -> Value {
     json!({ "object": "list", "data": data })
 }
 
-/// The `/v1/models` row for one enabled configured pool (REQ-008/AC-011).
+/// The `/v1/models` row for one enabled configured pool (REQ-008/AC-011,
+/// REQ-005/AC-009).
 ///
 /// It advertises the pool's own public id and display name, the two OpenAI
 /// ingress protocols it supports and its real selected source identities. It
-/// never carries a source key, endpoint, price, reasoning variant or a
-/// readiness/cooldown flag, so a temporarily all-unready or cooling pool stays
-/// advertised and no capability is guessed from a source model.
+/// additionally publishes the pool's *static* reasoning capability — the
+/// supported canonical preferences, the canonical default and the five canonical
+/// coverage rows — derived only from the stored configuration, so a temporarily
+/// all-unready or cooling pool keeps the same advertised support. It never
+/// carries a source key, endpoint, price, native mapped value or a
+/// readiness/cooldown flag, so no capability is guessed from a source model.
 fn pool_discovery_entry(config: &GatewayConfig, pool: &ModelPool) -> Value {
     let model = pool.model.trim();
     let name = pool.name.trim();
@@ -852,6 +856,18 @@ fn pool_discovery_entry(config: &GatewayConfig, pool: &ModelPool) -> Value {
             })
         })
         .collect();
+    let catalog = super::reasoning::pool_reasoning_catalog(&config.providers, pool);
+    let reasoning_coverage: Vec<Value> = catalog
+        .reasoning_coverage
+        .iter()
+        .map(|row| {
+            json!({
+                "effort": row.effort,
+                "mapped_candidates": row.mapped_candidates,
+                "total_candidates": row.total_candidates,
+            })
+        })
+        .collect();
     json!({
         "id": model,
         "object": "model",
@@ -859,6 +875,9 @@ fn pool_discovery_entry(config: &GatewayConfig, pool: &ModelPool) -> Value {
         "protocols": ["chat_completions", "responses"],
         "source_count": pool.candidates.len(),
         "sources": sources,
+        "reasoning_efforts": catalog.reasoning_efforts,
+        "default_reasoning_effort": catalog.default_reasoning_effort,
+        "reasoning_coverage": reasoning_coverage,
     })
 }
 

@@ -874,7 +874,16 @@ pub(in crate::ai_gateway) fn reference_resolves(
     config: &GatewayConfig,
     candidate: &ModelPoolCandidate,
 ) -> bool {
-    config.providers.iter().any(|provider| {
+    reference_resolves_in(&config.providers, candidate)
+}
+
+/// [`reference_resolves`] against an explicit provider list, so a catalog path
+/// that already holds the provider slice never needs the full configuration.
+pub(in crate::ai_gateway) fn reference_resolves_in(
+    providers: &[GatewayUpstreamProvider],
+    candidate: &ModelPoolCandidate,
+) -> bool {
+    providers.iter().any(|provider| {
         provider.id == candidate.provider_id
             && provider.mappings.iter().any(|mapping| {
                 mapping.local_model.trim() == candidate.local_model
@@ -1022,6 +1031,16 @@ pub struct ModelPoolCandidateStatus {
     pub cooling_until: Option<u64>,
 }
 
+/// One canonical row of a pool's static reasoning coverage (REQ-005). The count
+/// is configuration-derived and never reflects cooldown, key availability,
+/// health or source enable state.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelPoolReasoningCoverage {
+    pub effort: String,
+    pub mapped_candidates: usize,
+    pub total_candidates: usize,
+}
+
 /// Nonsecret readiness of one stored pool for the UI.
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelPoolStatus {
@@ -1029,6 +1048,12 @@ pub struct ModelPoolStatus {
     pub name: String,
     pub model: String,
     pub enabled: bool,
+    /// Canonical pool default token (`auto` or a preference).
+    pub default_reasoning_effort: String,
+    /// Supported canonical preferences in canonical order.
+    pub reasoning_efforts: Vec<String>,
+    /// The five canonical coverage rows.
+    pub reasoning_coverage: Vec<ModelPoolReasoningCoverage>,
     pub candidates: Vec<ModelPoolCandidateStatus>,
 }
 
@@ -1044,6 +1069,8 @@ pub(in crate::ai_gateway) fn pool_status(config: &GatewayConfig) -> Vec<ModelPoo
             let alias = pool.model.trim();
             let resolved =
                 resolve_pool_candidates(config, pool, alias, None, None, now);
+            let reasoning_catalog =
+                super::reasoning::pool_reasoning_catalog(&config.providers, pool);
             let candidates = pool
                 .candidates
                 .iter()
@@ -1073,6 +1100,17 @@ pub(in crate::ai_gateway) fn pool_status(config: &GatewayConfig) -> Vec<ModelPoo
                 name: pool.name.trim().to_string(),
                 model: alias.to_string(),
                 enabled: pool.enabled,
+                default_reasoning_effort: reasoning_catalog.default_reasoning_effort,
+                reasoning_efforts: reasoning_catalog.reasoning_efforts,
+                reasoning_coverage: reasoning_catalog
+                    .reasoning_coverage
+                    .into_iter()
+                    .map(|row| ModelPoolReasoningCoverage {
+                        effort: row.effort,
+                        mapped_candidates: row.mapped_candidates,
+                        total_candidates: row.total_candidates,
+                    })
+                    .collect(),
                 candidates,
             }
         })

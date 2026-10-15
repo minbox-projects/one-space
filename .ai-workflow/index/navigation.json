@@ -4482,6 +4482,12 @@
           "visibility": "public"
         },
         {
+          "file": "src-tauri/src/ai_gateway/model_pools.rs",
+          "name": "ModelPoolReasoningCoverage",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
           "file": "src-tauri/src/ai_gateway/commands.rs",
           "name": "ai_gateway_upsert_model_pool",
           "kind": "function",
