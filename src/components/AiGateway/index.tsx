@@ -172,6 +172,9 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const [usageFocusProviderId, setUsageFocusProviderId] = useState<string | null>(
     null,
   );
+  const [usageFocusProviderName, setUsageFocusProviderName] = useState<string | null>(
+    null,
+  );
   const [usageFocusDay, setUsageFocusDay] = useState<string | null>(null);
   const [usageFocusToken, setUsageFocusToken] = useState(0);
 
@@ -779,6 +782,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
     // seed the alias filter; no new trace-ID or log format is introduced. A pool
     // alias shortcut clears any exact provider/day focus.
     setUsageFocusProviderId(null);
+    setUsageFocusProviderName(null);
     setUsageFocusDay(null);
     setUsageFocusModel(model);
     setUsageFocusToken((token) => token + 1);
@@ -789,9 +793,14 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   // A Provider history daily row opens the existing request-log view focused on
   // one exact provider ID and UTC+8 day; the alias focus is cleared so the
   // recorded-name/model/status selections cannot compete.
-  const handleOpenProviderDay = (request: { providerId: string; day: string }) => {
+  const handleOpenProviderDay = (request: {
+    providerId: string;
+    providerName?: string;
+    day: string;
+  }) => {
     setUsageFocusModel(null);
     setUsageFocusProviderId(request.providerId);
+    setUsageFocusProviderName(request.providerName ?? null);
     setUsageFocusDay(request.day);
     setUsageFocusToken((token) => token + 1);
     setUsageSubTab("logs");
@@ -804,6 +813,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const handleReturnToProviderHistory = () => {
     setUsageFocusModel(null);
     setUsageFocusProviderId(null);
+    setUsageFocusProviderName(null);
     setUsageFocusDay(null);
     setUsageFocusToken((token) => token + 1);
     setUsageSubTab("history");
@@ -815,6 +825,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const handleClearProviderDayFocus = () => {
     setUsageFocusModel(null);
     setUsageFocusProviderId(null);
+    setUsageFocusProviderName(null);
     setUsageFocusDay(null);
     setUsageFocusToken((token) => token + 1);
   };
@@ -1612,6 +1623,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
               focusModel={usageFocusModel}
               focusToken={usageFocusToken}
               focusProviderId={usageFocusProviderId}
+              focusProviderName={usageFocusProviderName}
               focusDay={usageFocusDay}
               onReturnToProviderHistory={handleReturnToProviderHistory}
               onClearProviderDayFocus={handleClearProviderDayFocus}
@@ -1622,6 +1634,8 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
             <ProviderUsageHistoryPanel
               isActive={activeTab === "usage" && usageSubTab === "history"}
               onOpenDay={handleOpenProviderDay}
+              providers={config.providers}
+              templates={templates}
             />
           </div>
         </div>

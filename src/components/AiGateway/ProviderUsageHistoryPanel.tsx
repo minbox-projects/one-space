@@ -1,21 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Activity,
   AlertCircle,
+  ArrowDownRight,
+  ArrowUpRight,
   BarChart3,
-  History as HistoryIcon,
+  CheckCircle2,
+  Database,
+  DollarSign,
+  HardDrive,
+  HelpCircle,
+  Layers,
   RefreshCw,
+  ShieldCheck,
+  XCircle,
+  Zap,
 } from "lucide-react";
 import {
   aiGatewayProviderUsageHistory,
   aiGatewayUsageProviders,
   formatGatewayTokens,
   formatUsageAmount,
+  resolveProviderTemplate,
+  type GatewayProviderTemplateView,
+  type GatewayUpstreamProvider,
   type ProviderDailyEntry,
   type ProviderUsageHistory,
   type ProviderUsageIdentity,
 } from "@/lib/aiGateway";
 import { errorToMessage } from "@/lib/messages";
+import { ProviderTemplateIcon } from "./ProviderTemplateIcon";
 import { SelectDropdown } from "./SelectDropdown";
 
 /**
@@ -24,6 +39,7 @@ import { SelectDropdown } from "./SelectDropdown";
  */
 export interface ProviderHistoryOpenDayRequest {
   providerId: string;
+  providerName?: string;
   day: string;
 }
 
@@ -75,9 +91,13 @@ function formatAmount(amount: number | null | undefined): string {
 export function ProviderUsageHistoryPanel({
   isActive = true,
   onOpenDay,
+  providers,
+  templates,
 }: {
   isActive?: boolean;
   onOpenDay?: (request: ProviderHistoryOpenDayRequest) => void;
+  providers?: GatewayUpstreamProvider[];
+  templates?: GatewayProviderTemplateView[];
 }) {
   const { t } = useTranslation();
   const [identities, setIdentities] = useState<ProviderUsageIdentity[]>([]);
@@ -88,6 +108,7 @@ export function ProviderUsageHistoryPanel({
   const [historyRefreshing, setHistoryRefreshing] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [metric, setMetric] = useState<ProviderHistoryMetric>("tokens");
+
   const providersSeqRef = useRef(0);
   const historySeqRef = useRef(0);
 
@@ -202,6 +223,27 @@ export function ProviderUsageHistoryPanel({
   const activeHistory =
     history && history.provider_id === selectedProviderId ? history : null;
 
+  const currentIdentity = useMemo(
+    () =>
+      identities.find((item) => item.provider_id === selectedProviderId) ?? null,
+    [identities, selectedProviderId],
+  );
+
+  const currentConfigProvider = useMemo(
+    () => providers?.find((p) => p.id === selectedProviderId) ?? null,
+    [providers, selectedProviderId],
+  );
+
+  const boundTemplateView = useMemo(() => {
+    if (!currentConfigProvider?.template_id) return null;
+    return resolveProviderTemplate(templates, currentConfigProvider);
+  }, [currentConfigProvider, templates]);
+
+  const templateName = boundTemplateView?.template.name || null;
+  const templateIcon = boundTemplateView?.template.icon || null;
+  const templateId =
+    boundTemplateView?.template.id || currentConfigProvider?.template_id || null;
+
   const hasHistoricalGap = useMemo(() => {
     if (!activeHistory || activeHistory.earliest_available_day === null) {
       return false;
@@ -267,22 +309,12 @@ export function ProviderUsageHistoryPanel({
       className="rounded-2xl border bg-card p-5"
       data-testid="ai-gateway-provider-usage-history"
     >
+      {/* 顶部主标题栏：与用量统计与请求日志保持完全一致的设计语言 */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="rounded-lg bg-primary/10 p-2 text-primary">
-            <HistoryIcon className="h-4.5 w-4.5" />
-          </div>
-          <div className="space-y-0.5">
-            <h2 className="text-base font-semibold text-foreground">
-              {t("aiGatewayProviderHistorySubTab", "Provider history")}
-            </h2>
-            <p className="text-xs text-muted-foreground">
-              {t(
-                "aiGatewayProviderHistoryDesc",
-                "Inspect one provider's daily usage through today, with retained-history coverage.",
-              )}
-            </p>
-          </div>
+        <div className="space-y-0.5">
+          <h2 className="text-base font-semibold text-foreground">
+            {t("aiGatewayProviderHistorySubTab", "Provider history")}
+          </h2>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <SelectDropdown
@@ -367,6 +399,7 @@ export function ProviderUsageHistoryPanel({
         </div>
       ) : null}
 
+      {/* 用量详情主内容区 */}
       {selectedProviderId === null ? (
         <p className="mt-4 rounded-xl border border-dashed bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
           {t(
@@ -393,41 +426,76 @@ export function ProviderUsageHistoryPanel({
         </p>
       ) : activeHistory ? (
         <div className="mt-4 space-y-5">
-          <div
-            data-testid="ai-gateway-provider-history-coverage"
-            className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-lg border border-border/60 bg-muted/20 px-3.5 py-2.5 text-xs"
-          >
-            <span className="font-medium text-muted-foreground">
-              {t("aiGatewayProviderHistoryCoverageLabel", "Available range")}
-            </span>
-            <span className="inline-flex items-baseline gap-1.5">
-              <span className="text-muted-foreground">
-                {t("aiGatewayProviderHistoryEarliestLabel", "Earliest available")}
+          {/* 服务商详情头部概览与可用范围 */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b pb-4">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-base font-bold text-foreground">
+                  {currentIdentity?.provider_name || activeHistory.provider_id}
+                </h3>
+                {templateName ? (
+                  <span
+                    data-testid="ai-gateway-provider-history-template-tag"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-primary/20 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary shadow-xs"
+                    title={`Template: ${templateName}`}
+                  >
+                    <ProviderTemplateIcon
+                      icon={templateIcon}
+                      templateId={templateId}
+                      templateName={templateName}
+                      className="h-3.5 w-3.5 shrink-0"
+                    />
+                    <span>{templateName}</span>
+                  </span>
+                ) : null}
+                {currentIdentity?.deleted ? (
+                  <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                    {t("aiGatewayProviderHistoryDeletedTag", "Deleted")}
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground font-mono">
+                <span>ID: {activeHistory.provider_id}</span>
+              </div>
+            </div>
+
+            {/* 可用范围胶囊 */}
+            <div
+              data-testid="ai-gateway-provider-history-coverage"
+              className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-lg border border-border/60 bg-muted/20 px-3.5 py-2 text-xs"
+            >
+              <span className="font-medium text-muted-foreground">
+                {t("aiGatewayProviderHistoryCoverageLabel", "Available range")}
               </span>
-              <span className="font-mono font-medium text-foreground">
-                {activeHistory.earliest_available_day}
-              </span>
-            </span>
-            {activeHistory.continuity_start_day ? (
               <span className="inline-flex items-baseline gap-1.5">
                 <span className="text-muted-foreground">
-                  {t("aiGatewayProviderHistoryContinuityLabel", "Continuous since")}
+                  {t("aiGatewayProviderHistoryEarliestLabel", "Earliest available")}
                 </span>
                 <span className="font-mono font-medium text-foreground">
-                  {activeHistory.continuity_start_day}
+                  {activeHistory.earliest_available_day}
                 </span>
               </span>
-            ) : null}
-            {activeHistory.end_day ? (
-              <span className="inline-flex items-baseline gap-1.5">
-                <span className="text-muted-foreground">
-                  {t("aiGatewayProviderHistoryEndLabel", "Through")}
+              {activeHistory.continuity_start_day ? (
+                <span className="inline-flex items-baseline gap-1.5">
+                  <span className="text-muted-foreground">
+                    {t("aiGatewayProviderHistoryContinuityLabel", "Continuous since")}
+                  </span>
+                  <span className="font-mono font-medium text-foreground">
+                    {activeHistory.continuity_start_day}
+                  </span>
                 </span>
-                <span className="font-mono font-medium text-foreground">
-                  {activeHistory.end_day}
+              ) : null}
+              {activeHistory.end_day ? (
+                <span className="inline-flex items-baseline gap-1.5">
+                  <span className="text-muted-foreground">
+                    {t("aiGatewayProviderHistoryEndLabel", "Through")}
+                  </span>
+                  <span className="font-mono font-medium text-foreground">
+                    {activeHistory.end_day}
+                  </span>
                 </span>
-              </span>
-            ) : null}
+              ) : null}
+            </div>
           </div>
 
           {hasHistoricalGap ? (
@@ -442,16 +510,18 @@ export function ProviderUsageHistoryPanel({
             </p>
           ) : null}
 
+          {/* 累计指标概览卡片区域（与用量统计统一风格） */}
           {activeHistory.cumulative ? (
             <div
               data-testid="ai-gateway-provider-history-cumulative"
-              className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4"
+              className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6"
             >
               {[
                 {
                   key: "requests",
                   label: t("aiGatewayProviderHistoryRequests", "Requests"),
                   value: formatCount(activeHistory.cumulative.request_count),
+                  icon: Activity,
                 },
                 {
                   key: "success",
@@ -459,6 +529,7 @@ export function ProviderUsageHistoryPanel({
                   value: formatCount(
                     activeHistory.cumulative.successful_request_count,
                   ),
+                  icon: CheckCircle2,
                 },
                 {
                   key: "failure",
@@ -467,11 +538,13 @@ export function ProviderUsageHistoryPanel({
                     activeHistory.cumulative.request_count -
                       activeHistory.cumulative.successful_request_count,
                   ),
+                  icon: XCircle,
                 },
                 {
                   key: "input",
                   label: t("aiGatewayProviderHistoryInput", "Input"),
                   value: formatGatewayTokens(activeHistory.cumulative.input_tokens),
+                  icon: ArrowDownRight,
                 },
                 {
                   key: "cacheRead",
@@ -479,6 +552,7 @@ export function ProviderUsageHistoryPanel({
                   value: formatGatewayTokens(
                     activeHistory.cumulative.cache_read_tokens,
                   ),
+                  icon: Database,
                 },
                 {
                   key: "cacheWrite",
@@ -486,31 +560,37 @@ export function ProviderUsageHistoryPanel({
                   value: formatGatewayTokens(
                     activeHistory.cumulative.cache_write_tokens,
                   ),
+                  icon: HardDrive,
                 },
                 {
                   key: "output",
                   label: t("aiGatewayProviderHistoryOutput", "Output"),
                   value: formatGatewayTokens(activeHistory.cumulative.output_tokens),
+                  icon: ArrowUpRight,
                 },
                 {
                   key: "stored",
-                  label: t("aiGatewayProviderHistoryStoredTotal", "Stored total"),
+                  label: t("aiGatewayProviderHistoryStoredTotal", "Tokens"),
                   value: formatGatewayTokens(activeHistory.cumulative.total_tokens),
+                  icon: Layers,
                 },
                 {
                   key: "amount",
                   label: t("aiGatewayProviderHistoryAmount", "Amount ($)"),
                   value: formatAmount(activeHistory.cumulative.amount),
+                  icon: DollarSign,
                 },
                 {
                   key: "unpriced",
                   label: t("aiGatewayProviderHistoryUnpriced", "Unpriced"),
                   value: formatCount(activeHistory.cumulative.unpriced_count),
+                  icon: HelpCircle,
                 },
                 {
                   key: "rate",
                   label: t("aiGatewayProviderHistoryCacheRate", "Cache hit rate"),
                   value: rateText(activeHistory.cumulative.cache_hit_rate_percent),
+                  icon: Zap,
                 },
                 {
                   key: "coverage",
@@ -520,16 +600,20 @@ export function ProviderUsageHistoryPanel({
                   )} / ${formatCount(
                     activeHistory.cumulative.successful_request_count,
                   )}`,
+                  icon: ShieldCheck,
                 },
               ].map((card) => (
                 <div
                   key={card.key}
-                  className="flex flex-col justify-between rounded-lg border border-border/60 bg-muted/20 p-3"
+                  className="group flex flex-col justify-between rounded-lg border border-border/60 bg-muted/20 p-3 transition-colors hover:border-border hover:bg-muted/30"
                 >
-                  <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                    {card.label}
-                  </span>
-                  <span className="mt-1.5 text-lg font-bold tracking-tight text-foreground">
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span className="text-[11px] font-medium uppercase tracking-wider truncate">
+                      {card.label}
+                    </span>
+                    <card.icon className="h-3.5 w-3.5 text-muted-foreground/60 transition-colors group-hover:text-foreground shrink-0" />
+                  </div>
+                  <span className="mt-1.5 text-lg font-bold tracking-tight text-foreground font-mono">
                     {card.value}
                   </span>
                 </div>
@@ -537,6 +621,7 @@ export function ProviderUsageHistoryPanel({
             </div>
           ) : null}
 
+          {/* 每日用量趋势图表 */}
           {activeHistory.days.length > 0 ? (
             <div
               data-testid="ai-gateway-provider-history-chart"
@@ -564,7 +649,7 @@ export function ProviderUsageHistoryPanel({
                 />
               </div>
               <div className="overflow-x-auto pb-1">
-                <div className="flex h-32 items-end gap-1.5 px-1">
+                <div className="flex h-32 items-end gap-1.5 px-1 min-w-[20rem]">
                   {activeHistory.days.map((entry) => {
                     const value = trendValue(entry);
                     const valueText =
@@ -575,7 +660,9 @@ export function ProviderUsageHistoryPanel({
                           )
                         : metric === "cost"
                           ? formatAmount(value)
-                          : formatCount(value);
+                          : metric === "tokens"
+                            ? formatGatewayTokens(value)
+                            : formatCount(value);
                     const height =
                       value === null
                         ? 4
@@ -599,7 +686,7 @@ export function ProviderUsageHistoryPanel({
                             style={{ height: `${height}%` }}
                           />
                         </div>
-                        <span className="whitespace-nowrap text-[10px] text-muted-foreground">
+                        <span className="whitespace-nowrap text-[10px] text-muted-foreground font-mono">
                           {entry.day}
                         </span>
                       </div>
@@ -610,6 +697,7 @@ export function ProviderUsageHistoryPanel({
             </div>
           ) : null}
 
+          {/* 每日历史明细表格（彻底解决列换行，各列全部加 whitespace-nowrap 且支持平滑横向滚动） */}
           {activeHistory.days.length > 0 ? (
             <div>
               <h3 className="mb-2 text-sm font-semibold">
@@ -618,125 +706,125 @@ export function ProviderUsageHistoryPanel({
               <div className="overflow-x-auto rounded-lg border">
                 <table
                   data-testid="ai-gateway-provider-history-days"
-                  className="w-full text-left text-xs"
+                  className="min-w-full text-left text-xs whitespace-nowrap"
                 >
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
-                      <th className="px-3 py-2 font-medium">
+                      <th className="px-3.5 py-2.5 font-medium whitespace-nowrap">
                         {t("aiGatewayProviderHistoryDateColumn", "Date")}
                       </th>
-                      <th className="px-3 py-2 font-medium">
+                      <th className="px-3.5 py-2.5 font-medium whitespace-nowrap">
                         {t("aiGatewayProviderHistoryCoverageColumn", "Coverage")}
                       </th>
-                      <th className="px-3 py-2 text-right font-medium">
+                      <th className="px-3.5 py-2.5 text-right font-medium whitespace-nowrap">
                         {t("aiGatewayProviderHistoryRequests", "Requests")}
                       </th>
-                      <th className="px-3 py-2 text-right font-medium">
+                      <th className="px-3.5 py-2.5 text-right font-medium whitespace-nowrap">
                         {t("aiGatewayProviderHistorySuccess", "Success")}
                       </th>
-                      <th className="px-3 py-2 text-right font-medium">
+                      <th className="px-3.5 py-2.5 text-right font-medium whitespace-nowrap">
                         {t("aiGatewayProviderHistoryFailure", "Failure")}
                       </th>
-                      <th className="px-3 py-2 text-right font-medium">
+                      <th className="px-3.5 py-2.5 text-right font-medium whitespace-nowrap">
                         {t("aiGatewayProviderHistoryInput", "Input")}
                       </th>
-                      <th className="px-3 py-2 text-right font-medium">
+                      <th className="px-3.5 py-2.5 text-right font-medium whitespace-nowrap">
                         {t("aiGatewayProviderHistoryCacheRead", "Cache read")}
                       </th>
-                      <th className="px-3 py-2 text-right font-medium">
+                      <th className="px-3.5 py-2.5 text-right font-medium whitespace-nowrap">
                         {t("aiGatewayProviderHistoryCacheWrite", "Cache write")}
                       </th>
-                      <th className="px-3 py-2 text-right font-medium">
+                      <th className="px-3.5 py-2.5 text-right font-medium whitespace-nowrap">
                         {t("aiGatewayProviderHistoryOutput", "Output")}
                       </th>
-                      <th className="px-3 py-2 text-right font-medium">
-                        {t("aiGatewayProviderHistoryStoredTotal", "Stored total")}
+                      <th className="px-3.5 py-2.5 text-right font-medium whitespace-nowrap">
+                        {t("aiGatewayProviderHistoryStoredTotal", "Tokens")}
                       </th>
-                      <th className="px-3 py-2 text-right font-medium">
+                      <th className="px-3.5 py-2.5 text-right font-medium whitespace-nowrap">
                         {t("aiGatewayProviderHistoryAmount", "Amount ($)")}
                       </th>
-                      <th className="px-3 py-2 text-right font-medium">
+                      <th className="px-3.5 py-2.5 text-right font-medium whitespace-nowrap">
                         {t("aiGatewayProviderHistoryUnpriced", "Unpriced")}
                       </th>
-                      <th className="px-3 py-2 text-right font-medium">
+                      <th className="px-3.5 py-2.5 text-right font-medium whitespace-nowrap">
                         {t("aiGatewayProviderHistoryCacheRate", "Cache hit rate")}
                       </th>
-                      <th className="px-3 py-2 text-right font-medium">
+                      <th className="px-3.5 py-2.5 text-right font-medium whitespace-nowrap">
                         <span className="sr-only">
                           {t("aiGatewayProviderHistoryOpenDayColumn", "Open day")}
                         </span>
                       </th>
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody className="divide-y divide-border/60">
                     {activeHistory.days.map((entry) => (
                       <tr
                         key={entry.day}
                         data-testid={`ai-gateway-provider-history-day-${entry.day}`}
                         data-coverage={entry.coverage}
                         data-ongoing={entry.ongoing ? "true" : "false"}
-                        className="border-t"
+                        className="hover:bg-muted/40 transition-colors"
                       >
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          <span className="font-mono">{entry.day}</span>
+                        <td className="px-3.5 py-2.5 whitespace-nowrap">
+                          <span className="font-mono font-medium">{entry.day}</span>
                           {entry.ongoing ? (
-                            <span className="ml-2 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                            <span className="ml-2 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary whitespace-nowrap">
                               {t("aiGatewayProviderHistoryOngoing", "Ongoing")}
                             </span>
                           ) : null}
                         </td>
-                        <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">
+                        <td className="px-3.5 py-2.5 whitespace-nowrap text-muted-foreground">
                           {coverageLabel(entry)}
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3.5 py-2.5 text-right font-mono tabular-nums whitespace-nowrap">
                           {renderMetricCell(entry, (m) =>
                             formatCount(m.request_count),
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3.5 py-2.5 text-right font-mono tabular-nums whitespace-nowrap">
                           {renderMetricCell(entry, (m) =>
                             formatCount(m.successful_request_count),
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3.5 py-2.5 text-right font-mono tabular-nums whitespace-nowrap">
                           {renderMetricCell(entry, (m) =>
                             formatCount(m.request_count - m.successful_request_count),
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3.5 py-2.5 text-right font-mono tabular-nums whitespace-nowrap">
                           {renderMetricCell(entry, (m) =>
                             formatGatewayTokens(m.input_tokens),
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3.5 py-2.5 text-right font-mono tabular-nums whitespace-nowrap">
                           {renderMetricCell(entry, (m) =>
                             formatGatewayTokens(m.cache_read_tokens),
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3.5 py-2.5 text-right font-mono tabular-nums whitespace-nowrap">
                           {renderMetricCell(entry, (m) =>
                             formatGatewayTokens(m.cache_write_tokens),
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3.5 py-2.5 text-right font-mono tabular-nums whitespace-nowrap">
                           {renderMetricCell(entry, (m) =>
                             formatGatewayTokens(m.output_tokens),
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3.5 py-2.5 text-right font-mono tabular-nums whitespace-nowrap">
                           {renderMetricCell(entry, (m) =>
                             formatGatewayTokens(m.total_tokens),
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3.5 py-2.5 text-right font-mono tabular-nums whitespace-nowrap">
                           {renderMetricCell(entry, (m) => formatAmount(m.amount))}
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3.5 py-2.5 text-right font-mono tabular-nums whitespace-nowrap">
                           {renderMetricCell(entry, (m) =>
                             formatCount(m.unpriced_count),
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right whitespace-nowrap">
+                        <td className="px-3.5 py-2.5 text-right whitespace-nowrap font-mono tabular-nums">
                           {renderMetricCell(
                             entry,
                             (m) =>
@@ -745,22 +833,27 @@ export function ProviderUsageHistoryPanel({
                               )} / ${formatCount(m.successful_request_count)})`,
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3.5 py-2.5 text-right whitespace-nowrap">
                           <button
                             type="button"
                             data-testid={`ai-gateway-provider-history-open-day-${entry.day}`}
-                            onClick={() =>
+                            onClick={() => {
+                              const activeProviderName =
+                                currentIdentity?.provider_name ??
+                                currentConfigProvider?.name ??
+                                activeHistory.provider_id;
                               onOpenDay?.({
                                 providerId: activeHistory.provider_id,
+                                providerName: activeProviderName,
                                 day: entry.day,
-                              })
-                            }
+                              });
+                            }}
                             aria-label={t(
                               "aiGatewayProviderHistoryOpenDayAria",
                               "Open requests for {{day}}",
                               { day: entry.day },
                             )}
-                            className="inline-flex h-7 items-center rounded-md border bg-background px-2.5 text-xs font-medium transition hover:bg-muted"
+                            className="inline-flex h-7 items-center rounded-md border bg-background px-2.5 text-xs font-medium transition hover:bg-muted whitespace-nowrap"
                           >
                             {t("aiGatewayProviderHistoryViewDay", "View")}
                           </button>

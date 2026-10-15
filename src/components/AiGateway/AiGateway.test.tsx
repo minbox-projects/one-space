@@ -4292,5 +4292,108 @@ describe("AiGateway model pool integration", () => {
     expect(logsSubTab).toHaveAttribute("aria-selected", "true");
     await screen.findByTestId("ai-gateway-logs-ungrouped");
   });
+
+  it("从每日历史跳转到请求日志列表后，切换到其他 tab 会自动清空全部选择的查询条件", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [makeProvider({ id: "p1", name: "Upstream A" })],
+        keys: [],
+      }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    invokeMock.mockImplementation(async (command: string) => {
+      switch (command) {
+        case "ai_gateway_get_config":
+          return store.config;
+        case "ai_gateway_status":
+          return store.status;
+        case "ai_gateway_terminal_targets":
+          return store.targets;
+        case "ai_gateway_model_pools_status":
+          return [];
+        case "ai_gateway_template_auto_refresh_status":
+          return { failures: [] };
+        case "ai_gateway_provider_templates":
+          return [];
+        case "ai_gateway_usage_stats":
+          return emptyUsageStats();
+        case "ai_gateway_request_logs":
+          return usageLogsPage();
+        case "ai_gateway_usage_providers":
+          return [{ provider_id: "p1", provider_name: "Upstream A" }];
+        case "ai_gateway_provider_usage_history":
+          return {
+            provider_id: "p1",
+            earliest_available_day: "2026-09-17",
+            continuity_start_day: "2026-09-17",
+            end_day: "2026-09-17",
+            cumulative: null,
+            days: [
+              {
+                day: "2026-09-17",
+                metrics: {
+                  request_count: 1,
+                  error_count: 0,
+                  input_tokens: 10,
+                  output_tokens: 20,
+                  cache_read_tokens: 0,
+                  cache_write_tokens: 0,
+                  total_tokens: 30,
+                  amount: 0.001,
+                  unpriced_token_requests: 0,
+                  cache_coverage: 1.0,
+                },
+              },
+            ],
+          };
+        default:
+          return undefined;
+      }
+    });
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByTestId("ai-gateway-providers");
+
+    const tabsList = screen.getByRole("tablist", { name: /AI Gateway tabs/i });
+    fireEvent.click(within(tabsList).getByRole("tab", { name: /Usage & Logs/i }));
+
+    const statsSubTab = screen.getByTestId("ai-gateway-subtab-usage-stats");
+    const logsSubTab = screen.getByTestId("ai-gateway-subtab-usage-logs");
+    const historySubTab = screen.getByTestId("ai-gateway-subtab-usage-history");
+
+    fireEvent.click(historySubTab);
+    const historyPanel = await screen.findByTestId("ai-gateway-provider-usage-history");
+
+    fireEvent.click(within(historyPanel).getByTestId("ai-gateway-provider-history-provider-trigger"));
+    fireEvent.click(within(historyPanel).getByRole("option", { name: "Upstream A" }));
+
+    const viewButton = await within(historyPanel).findByTestId(
+      "ai-gateway-provider-history-open-day-2026-09-17",
+    );
+    fireEvent.click(viewButton);
+
+    expect(logsSubTab).toHaveAttribute("aria-selected", "true");
+    const logsPanel = await screen.findByTestId("ai-gateway-usage-logs");
+
+    await waitFor(() => {
+      expect(within(logsPanel).getByTestId("ai-gateway-logs-range-trigger")).toHaveTextContent("2026-09-17");
+    });
+
+    // 切换到其他 tab
+    fireEvent.click(statsSubTab);
+    expect(statsSubTab).toHaveAttribute("aria-selected", "true");
+
+    // 再次切回 logsSubTab
+    fireEvent.click(logsSubTab);
+    expect(logsSubTab).toHaveAttribute("aria-selected", "true");
+
+    // 验证全部查询条件已被清空，恢复为默认的 Today
+    await waitFor(() => {
+      expect(within(logsPanel).getByTestId("ai-gateway-logs-range-trigger")).toHaveTextContent(/Today|今日/i);
+    });
+  });
 });
 

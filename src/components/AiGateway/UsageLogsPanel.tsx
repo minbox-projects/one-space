@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
@@ -414,11 +414,16 @@ function LatencyMetricRow({
   );
 }
 
+function isDayString(value: string | null | undefined): boolean {
+  return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value));
+}
+
 export function UsageLogsPanel({
   isActive = true,
   focusModel = null,
   focusToken = 0,
   focusProviderId = null,
+  focusProviderName = null,
   focusDay = null,
   onReturnToProviderHistory,
   onClearProviderDayFocus,
@@ -429,11 +434,11 @@ export function UsageLogsPanel({
   /** Bumped by the external shortcut; each new value re-applies `focusModel`. */
   focusToken?: number;
   /**
-   * One-shot exact provider-ID/day focus handed down by a Provider history daily
-   * row. When set, the query carries the exact ID/day and starts ungrouped on
-   * page 1 with the competing status/model/recorded-name selections cleared.
+   * One-shot provider and day focus handed down by a Provider history daily row.
+   * When set, directly sets provider and range to reuse existing log filters.
    */
   focusProviderId?: string | null;
+  focusProviderName?: string | null;
   focusDay?: string | null;
   /** Restores the originating Provider history view (same selection). */
   onReturnToProviderHistory?: () => void;
@@ -444,11 +449,12 @@ export function UsageLogsPanel({
   onClearProviderDayFocus?: () => void;
 }) {
   const { t } = useTranslation();
-  const [range, setRange] = useState<UsageRangeKey>("today");
+  const [range, setRange] = useState<string>("today");
   const [groupBy, setGroupBy] = useState<UsageGroupBy>("none");
   const [status, setStatus] = useState<UsageLogResult | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [provider, setProvider] = useState<string | null>(null);
+  const [appliedProviderId, setAppliedProviderId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageData, setPageData] = useState<UsageLogsPage | null>(null);
   const [loading, setLoading] = useState(false);
@@ -458,21 +464,18 @@ export function UsageLogsPanel({
   const [draftStatus, setDraftStatus] = useState<UsageLogResult | null>(null);
   const [draftModel, setDraftModel] = useState<string | null>(null);
   const [draftProvider, setDraftProvider] = useState<string | null>(null);
+  const [focusDismissed, setFocusDismissed] = useState(false);
   const requestSeqRef = useRef(0);
   const filterRef = useRef<HTMLDivElement>(null);
   // Highest `focusToken` already reflected in the local filters: the external
   // focus guard is one-shot and releases once this value catches up.
   const appliedFocusTokenRef = useRef(0);
 
-  // A provider/day focus owns a strict exact-day query; an ordinary model-alias
-  // focus is the existing pool-card shortcut.
-  const providerDayFocused = focusProviderId !== null || focusDay !== null;
+  const activeFocusProviderId = focusDismissed ? null : focusProviderId;
+  const activeFocusDay = focusDismissed ? null : focusDay;
 
-  // Identity of the exact provider/day query context currently painted. A change
-  // (entering, leaving or moving the focus) must immediately drop the previous
-  // boundary's rows and invalidate any in-flight request, so a pending fetch for
-  // the new boundary reports loading instead of painting a stale snapshot.
-  const focusBoundaryKey = `${focusProviderId ?? ""}\u0000${focusDay ?? ""}`;
+  // Identity of the exact provider/day query context currently painted.
+  const focusBoundaryKey = `${activeFocusProviderId ?? ""}\u0000${focusProviderName ?? ""}\u0000${activeFocusDay ?? ""}`;
   const paintedFocusBoundaryRef = useRef(focusBoundaryKey);
 
   useEffect(() => {
@@ -514,18 +517,21 @@ export function UsageLogsPanel({
       if (options?.refresh) setRefreshing(true);
       else setLoading(true);
       try {
+        const hasExactDay = isDayString(range);
         const query: UsageLogsQuery = {
-          range,
+          range: hasExactDay ? "today" : (range as UsageRangeKey),
           groupBy,
           status,
           model,
           provider,
           page,
         };
-        // Only a configured provider/day focus is added; the wrapper omits the
-        // keys entirely for every ordinary quick-range caller.
-        if (focusProviderId !== null) query.providerId = focusProviderId;
-        if (focusDay !== null) query.day = focusDay;
+        if (hasExactDay) {
+          query.day = range;
+        }
+        if (appliedProviderId) {
+          query.providerId = appliedProviderId;
+        }
         const next = await aiGatewayRequestLogs(query);
         if (requestSeqRef.current !== seq) return;
         const clamped = clampUsagePage(next.page, next.total_pages);
@@ -544,41 +550,78 @@ export function UsageLogsPanel({
         }
       }
     },
-    [groupBy, model, page, provider, range, status, focusProviderId, focusDay],
+    [
+      groupBy,
+      model,
+      page,
+      provider,
+      range,
+      status,
+      appliedProviderId,
+    ],
   );
 
-  // External shortcut (e.g. a model-pool card log button): apply the alias
-  // filter through the existing query state without inventing a new log format.
-  // A provider/day focus instead clears the competing selections and starts
-  // ungrouped on page 1.
+  const isFromProviderHistoryRef = useRef(false);
+
+  // External shortcut: model-pool card log button or provider history view day button.
+  // Reuses the existing request-log filter state without inventing a new format.
   useEffect(() => {
     if (focusToken === 0) return;
-    if (focusProviderId !== null || focusDay !== null) {
-      setGroupBy("none");
-      setStatus(null);
-      setDraftStatus(null);
+    setFocusDismissed(false);
+    if (
+      focusProviderId !== null ||
+      focusProviderName !== null ||
+      focusDay !== null
+    ) {
+      isFromProviderHistoryRef.current = true;
+      if (focusDay) {
+        setRange(focusDay);
+      }
+      const activeProviderLabel = focusProviderName ?? null;
+      setProvider(activeProviderLabel);
+      setDraftProvider(activeProviderLabel);
+      setAppliedProviderId(focusProviderId);
       setModel(null);
       setDraftModel(null);
-      setProvider(null);
-      setDraftProvider(null);
+      setStatus(null);
+      setDraftStatus(null);
+      setGroupBy("none");
       setPage(1);
       return;
     }
-    setModel(focusModel);
-    setDraftModel(focusModel);
+    if (focusModel) {
+      isFromProviderHistoryRef.current = false;
+      setModel(focusModel);
+      setDraftModel(focusModel);
+      setPage(1);
+      return;
+    }
+    // Reset to ordinary quick-range browsing when all focus props are cleared
+    isFromProviderHistoryRef.current = false;
+    setProvider(null);
+    setDraftProvider(null);
+    setAppliedProviderId(null);
+    setModel(null);
+    setDraftModel(null);
+    setStatus(null);
+    setDraftStatus(null);
+    setGroupBy("none");
+    setRange("today");
     setPage(1);
-  }, [focusToken, focusModel, focusProviderId, focusDay]);
+  }, [focusToken, focusModel, focusProviderId, focusProviderName, focusDay]);
 
   useEffect(() => {
     if (!isActive) return;
     // Avoid a transient stale-filter request while an external focus is still
     // being applied, then load exactly once the applied state catches up.
     const providerDayPending =
-      (focusProviderId !== null || focusDay !== null) &&
+      (focusProviderId !== null ||
+        focusDay !== null ||
+        focusProviderName !== null) &&
       (groupBy !== "none" ||
         status !== null ||
         model !== null ||
-        provider !== null ||
+        (focusDay !== null && range !== focusDay) ||
         page !== 1);
     const modelPending =
       focusProviderId === null &&
@@ -603,6 +646,7 @@ export function UsageLogsPanel({
   }, [
     focusModel,
     focusProviderId,
+    focusProviderName,
     focusDay,
     focusToken,
     isActive,
@@ -611,8 +655,20 @@ export function UsageLogsPanel({
     groupBy,
     status,
     provider,
+    range,
     page,
   ]);
+
+  const rangeOptions = useMemo(() => {
+    const base = USAGE_RANGE_KEYS.map((key) => ({
+      value: key as string,
+      label: t(RANGE_LABEL_KEYS[key], RANGE_LABEL_FALLBACKS[key]),
+    }));
+    if (isDayString(range)) {
+      return [{ value: range, label: range }, ...base];
+    }
+    return base;
+  }, [range, t]);
 
   const visibleRecords = pageData?.records ?? [];
 
@@ -621,7 +677,11 @@ export function UsageLogsPanel({
       Array.from(new Set(visibleRecords.map((item) => item.local_model)))),
   ].sort();
 
-  const providerOptions = [...(pageData?.providers ?? [])].sort();
+  const providerOptions = useMemo(() => {
+    const set = new Set(pageData?.providers ?? []);
+    if (provider) set.add(provider);
+    return Array.from(set).sort();
+  }, [pageData?.providers, provider]);
 
   const records = [...visibleRecords].sort(
     (first, second) => second.timestamp_ms - first.timestamp_ms,
@@ -652,6 +712,9 @@ export function UsageLogsPanel({
   const selectProvider = (newProvider: string | null) => {
     setDraftProvider(newProvider);
     setProvider(newProvider);
+    if (newProvider !== (focusProviderName || focusProviderId)) {
+      setAppliedProviderId(null);
+    }
     setPage(1);
   };
 
@@ -659,6 +722,9 @@ export function UsageLogsPanel({
     setStatus(draftStatus);
     setModel(draftModel);
     setProvider(draftProvider);
+    if (draftProvider !== (focusProviderName || focusProviderId)) {
+      setAppliedProviderId(null);
+    }
     setPage(1);
     setFilterOpen(false);
   };
@@ -670,15 +736,57 @@ export function UsageLogsPanel({
     setStatus(null);
     setModel(null);
     setProvider(null);
+    setAppliedProviderId(null);
     setPage(1);
     setFilterOpen(false);
   };
+
+  const resetAllFilters = useCallback(() => {
+    isFromProviderHistoryRef.current = false;
+    setFocusDismissed(true);
+    setRange("today");
+    setGroupBy("none");
+    setStatus(null);
+    setDraftStatus(null);
+    setModel(null);
+    setDraftModel(null);
+    setProvider(null);
+    setDraftProvider(null);
+    setAppliedProviderId(null);
+    setPage(1);
+    setFilterOpen(false);
+    onClearProviderDayFocus?.();
+  }, [onClearProviderDayFocus]);
+
+  const prevActiveRef = useRef(isActive);
+  useEffect(() => {
+    if (prevActiveRef.current && !isActive) {
+      if (
+        isFromProviderHistoryRef.current ||
+        activeFocusProviderId !== null ||
+        activeFocusDay !== null
+      ) {
+        resetAllFilters();
+      }
+    }
+    prevActiveRef.current = isActive;
+  }, [isActive, activeFocusProviderId, activeFocusDay, resetAllFilters]);
 
   const activeStatus = draftStatus ?? status;
   const activeModel = draftModel ?? model;
   const activeProvider = draftProvider ?? provider;
   const hasActiveFilter =
     activeStatus !== null || activeModel !== null || activeProvider !== null;
+
+  const hasActiveQuery =
+    range !== "today" ||
+    groupBy !== "none" ||
+    status !== null ||
+    model !== null ||
+    provider !== null ||
+    appliedProviderId !== null ||
+    activeFocusProviderId !== null ||
+    activeFocusDay !== null;
 
   const filterLabel = (() => {
     const parts: string[] = [];
@@ -697,18 +805,29 @@ export function UsageLogsPanel({
   return (
     <div className="rounded-2xl border bg-card p-5" data-testid="ai-gateway-usage-logs">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-0.5">
-          <h2 className="text-base font-semibold text-foreground">
-            {t("aiGatewayLogsTab", "Request logs")}
-          </h2>
+        <div className="flex items-center gap-2">
+          {activeFocusProviderId || activeFocusDay ? (
+            <button
+              type="button"
+              data-testid="ai-gateway-logs-return-history"
+              onClick={() => onReturnToProviderHistory?.()}
+              aria-label={t("aiGatewayLogsReturnHistory", "Back to provider history")}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-2.5 text-xs font-medium transition hover:bg-muted"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              <span>{t("aiGatewayLogsReturnHistory", "Back to provider history")}</span>
+            </button>
+          ) : null}
+          <div className="space-y-0.5">
+            <h2 className="text-base font-semibold text-foreground">
+              {t("aiGatewayLogsTab", "Request logs")}
+            </h2>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <SelectDropdown
             value={range}
-            options={USAGE_RANGE_KEYS.map((key) => ({
-              value: key,
-              label: t(RANGE_LABEL_KEYS[key], RANGE_LABEL_FALLBACKS[key]),
-            }))}
+            options={rangeOptions}
             onChange={(nextRange) => {
               setRange(nextRange);
               setPage(1);
@@ -895,6 +1014,19 @@ export function UsageLogsPanel({
               </div>
             ) : null}
           </div>
+          {hasActiveQuery ? (
+            <button
+              type="button"
+              data-testid="ai-gateway-logs-reset-filters"
+              onClick={resetAllFilters}
+              aria-label={t("aiGatewayLogsResetFilters", "Clear filters")}
+              title={t("aiGatewayLogsResetFilters", "Clear filters")}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-dashed px-3 text-xs whitespace-nowrap text-muted-foreground transition hover:bg-muted hover:text-foreground shadow-xs"
+            >
+              <X className="h-3.5 w-3.5" />
+              <span>{t("aiGatewayLogsResetFilters", "Clear filters")}</span>
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => void load({ refresh: true })}
@@ -908,46 +1040,6 @@ export function UsageLogsPanel({
         </div>
       </div>
 
-      {providerDayFocused ? (
-        <div
-          data-testid="ai-gateway-logs-day-context"
-          className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 px-3 py-2"
-        >
-          <div className="flex flex-wrap items-baseline gap-2 text-xs">
-            <span className="font-medium text-foreground">
-              {t("aiGatewayLogsDayContextTitle", "Exact provider/day focus")}
-            </span>
-            {focusProviderId ? (
-              <span className="font-mono text-muted-foreground">{focusProviderId}</span>
-            ) : null}
-            {focusDay ? (
-              <span className="font-mono text-muted-foreground">{focusDay}</span>
-            ) : null}
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              data-testid="ai-gateway-logs-return-history"
-              onClick={() => onReturnToProviderHistory?.()}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium transition hover:bg-muted"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              <span>{t("aiGatewayLogsReturnHistory", "Back to provider history")}</span>
-            </button>
-            <button
-              type="button"
-              data-testid="ai-gateway-logs-clear-focus"
-              onClick={() => onClearProviderDayFocus?.()}
-              aria-label={t("aiGatewayLogsClearFocus", "Clear provider/day focus")}
-              title={t("aiGatewayLogsClearFocus", "Clear provider/day focus")}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium transition hover:bg-muted"
-            >
-              <X className="h-3.5 w-3.5" />
-              <span>{t("aiGatewayLogsClearFocus", "Clear provider/day focus")}</span>
-            </button>
-          </div>
-        </div>
-      ) : null}
 
       {refreshing ? (
         <div role="status" className="mt-3 text-xs text-muted-foreground">
@@ -1023,7 +1115,10 @@ export function UsageLogsPanel({
           </div>
         )
       ) : records.length === 0 ? (
-        providerDayFocused && !hasActiveFilter ? (
+        (isDayString(range) || activeFocusDay !== null) &&
+        (provider !== null || activeFocusProviderId !== null) &&
+        !status &&
+        !model ? (
           <p
             data-testid="ai-gateway-logs-day-empty"
             className="mt-4 rounded-xl border border-dashed bg-muted/20 px-4 py-5 text-sm text-muted-foreground"

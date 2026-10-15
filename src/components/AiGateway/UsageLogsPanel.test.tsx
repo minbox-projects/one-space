@@ -2699,8 +2699,8 @@ describe("UsageLogsPanel 服务商/日期聚焦", () => {
       }),
     );
 
-    // Dated context is user-visible.
-    expect(screen.getByTestId("ai-gateway-logs-day-context")).toBeInTheDocument();
+    // Dated range is user-visible in range dropdown.
+    expect(screen.getByTestId("ai-gateway-logs-range-trigger")).toHaveTextContent("2026-09-17");
   });
 
   it("移除聚焦后恢复普通快捷范围的六键请求", async () => {
@@ -2845,9 +2845,9 @@ describe("UsageLogsPanel 服务商/日期聚焦", () => {
     // The focus boundary moves to another provider/day in the same instance.
     await user.click(screen.getByRole("button", { name: "switch-focus" }));
 
-    const context = await screen.findByTestId("ai-gateway-logs-day-context");
-    expect(context).toHaveTextContent("p-b");
-    expect(context).toHaveTextContent("2026-09-18");
+    await waitFor(() =>
+      expect(screen.getByTestId("ai-gateway-logs-range-trigger")).toHaveTextContent("2026-09-18"),
+    );
 
     // While B is pending, A's records must not linger under B's context, and
     // the panel must report loading rather than showing stale data.
@@ -3017,6 +3017,96 @@ describe("UsageLogsPanel 服务商/日期聚焦", () => {
     expect(
       screen.queryByTestId("ai-gateway-logs-day-empty"),
     ).not.toBeInTheDocument();
+  });
+
+  it("清空查询条件按钮在默认状态下不显示，存在条件时显示，点击后清空全部条件", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 1,
+        total_pages: 1,
+        records: [record({ timestamp_ms: Date.UTC(2026, 8, 17, 4, 0) })],
+      });
+    });
+
+    const onClearFocus = vi.fn();
+    renderWithProviders(
+      <UsageLogsPanel
+        isActive
+        focusProviderId="p-a"
+        focusProviderName="Provider A"
+        focusDay="2026-09-17"
+        focusToken={1}
+        onClearProviderDayFocus={onClearFocus}
+      />,
+    );
+
+    await screen.findByTestId("ai-gateway-logs-ungrouped");
+    const resetBtn = screen.getByTestId("ai-gateway-logs-reset-filters");
+    expect(resetBtn).toBeInTheDocument();
+
+    await user.click(resetBtn);
+
+    expect(onClearFocus).toHaveBeenCalled();
+    expect(
+      screen.queryByTestId("ai-gateway-logs-reset-filters"),
+    ).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenLastCalledWith("ai_gateway_request_logs", {
+        range: "today",
+        groupBy: "none",
+        status: null,
+        model: null,
+        provider: null,
+        page: 1,
+      });
+    });
+  });
+
+  it("从每日历史聚焦跳转进入后离开 tab 会自动清空全部查询条件并通知清除聚焦", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 1,
+        total_pages: 1,
+        records: [record({ timestamp_ms: Date.UTC(2026, 8, 17, 4, 0) })],
+      });
+    });
+
+    const onClearFocus = vi.fn();
+    let setHostActive: (active: boolean) => void = () => {};
+    function TabHost() {
+      const [active, setActive] = useState(true);
+      setHostActive = setActive;
+      return (
+        <UsageLogsPanel
+          isActive={active}
+          focusProviderId="p-a"
+          focusProviderName="Provider A"
+          focusDay="2026-09-17"
+          focusToken={1}
+          onClearProviderDayFocus={onClearFocus}
+        />
+      );
+    }
+
+    renderWithProviders(<TabHost />);
+
+    await screen.findByTestId("ai-gateway-logs-ungrouped");
+
+    act(() => {
+      setHostActive(false);
+    });
+
+    await waitFor(() => {
+      expect(onClearFocus).toHaveBeenCalled();
+    });
   });
 });
 

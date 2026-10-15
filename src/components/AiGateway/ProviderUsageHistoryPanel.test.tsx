@@ -38,6 +38,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import i18n from "@/i18n";
 import { AiGateway } from "@/components/AiGateway";
+import { ProviderUsageHistoryPanel } from "@/components/AiGateway/ProviderUsageHistoryPanel";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
@@ -495,7 +496,7 @@ describe("ProviderUsageHistoryPanel", () => {
         groupBy: "none",
         status: null,
         model: null,
-        provider: null,
+        provider: "Acme",
         page: 1,
         providerId: "p-a",
         day: "2026-09-17",
@@ -1152,7 +1153,7 @@ describe("ProviderUsageHistoryPanel", () => {
     const user = userEvent.setup();
     await chooseProvider(panel, /Acme/);
 
-    // Opening an exact day stays inside the request-log view with a dated context.
+    // Opening an exact day reuses the existing request-log view filters.
     await user.click(
       panel.getByTestId("ai-gateway-provider-history-open-day-2026-09-17"),
     );
@@ -1162,19 +1163,18 @@ describe("ProviderUsageHistoryPanel", () => {
         groupBy: "none",
         status: null,
         model: null,
-        provider: null,
+        provider: "Acme",
         page: 1,
         providerId: "p-a",
         day: "2026-09-17",
       }),
     );
 
-    const context = screen.getByTestId("ai-gateway-logs-day-context");
-    expect(context).toHaveTextContent("p-a");
-    expect(context).toHaveTextContent("2026-09-17");
+    // Filter trigger highlights the active provider, range selector shows the day.
+    expect(screen.getByTestId("ai-gateway-logs-filter-trigger")).toHaveTextContent("Acme");
+    expect(screen.getByTestId("ai-gateway-logs-range-trigger")).toHaveTextContent("2026-09-17");
 
-    // A quick range chosen while focused is retained but cannot take effect,
-    // because the explicit day takes precedence.
+    // Switching range to 30d directly updates the query range.
     await user.click(screen.getByTestId("ai-gateway-logs-range-trigger"));
     await user.click(screen.getByRole("option", { name: "30d" }));
     await waitFor(() =>
@@ -1183,25 +1183,15 @@ describe("ProviderUsageHistoryPanel", () => {
         groupBy: "none",
         status: null,
         model: null,
-        provider: null,
+        provider: "Acme",
         page: 1,
         providerId: "p-a",
-        day: "2026-09-17",
       }),
     );
 
-    // The explicit clear-focus control exits the dated context while staying in
-    // the request-log view, and the next request is the exact ordinary
-    // six-key payload with the now-active quick range.
-    const clearControl = screen.getByTestId("ai-gateway-logs-clear-focus");
-    expect(clearControl).toHaveAttribute(
-      "aria-label",
-      "Clear provider/day focus",
-    );
-    await user.click(clearControl);
-    expect(
-      screen.queryByTestId("ai-gateway-logs-day-context"),
-    ).not.toBeInTheDocument();
+    // Clearing filters in the filter panel restores ordinary quick-range browsing.
+    await user.click(screen.getByTestId("ai-gateway-logs-filter-trigger"));
+    await user.click(screen.getByText("Clear"));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
         range: "30d",
@@ -1226,5 +1216,105 @@ describe("ProviderUsageHistoryPanel", () => {
         page: 1,
       }),
     );
+  });
+
+  it("如果服务商基于模板创建展示模板名称 tag 徽标，未基于模板则不展示，且每日历史表格列不换行", async () => {
+    const user = userEvent.setup();
+    const testIdentities = [
+      { provider_id: "p-tpl", provider_name: "DeepSeek Provider", deleted: false, has_usage: true },
+      { provider_id: "p-manual", provider_name: "Manual Provider", deleted: false, has_usage: true },
+    ];
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "ai_gateway_usage_providers") return testIdentities;
+      if (command === "ai_gateway_provider_usage_history") {
+        return {
+          provider_id: args?.providerId as string,
+          earliest_available_day: "2026-10-01",
+          continuity_start_day: "2026-10-01",
+          end_day: "2026-10-15",
+          cumulative: metrics({ request_count: 10 }),
+          days: [
+            {
+              day: "2026-10-15",
+              coverage: "continuous",
+              ongoing: true,
+              metrics: metrics({ request_count: 10 }),
+            },
+          ],
+        };
+      }
+      return undefined;
+    });
+
+    const mockProviders = [
+      {
+        id: "p-tpl",
+        name: "DeepSeek Provider",
+        base_url: "https://api.deepseek.com",
+        default_model: null,
+        mappings: [],
+        enabled: true,
+        template_id: "deepseek-template",
+      },
+      {
+        id: "p-manual",
+        name: "Manual Provider",
+        base_url: "https://api.manual.com",
+        default_model: null,
+        mappings: [],
+        enabled: true,
+      },
+    ];
+
+    const mockTemplates = [
+      {
+        template: {
+          id: "deepseek-template",
+          name: "DeepSeek Official",
+          icon: "builtin:deepseek",
+          official: true,
+          description: "DeepSeek API",
+          base_url: "https://api.deepseek.com",
+          protocol: "chat_completions" as const,
+          default_models: [],
+        },
+        models: [],
+        synced_at: null,
+        source: "bundled",
+        from_snapshot: true,
+      },
+    ];
+
+    renderWithProviders(
+      <ProviderUsageHistoryPanel
+        isActive={true}
+        providers={mockProviders as any}
+        templates={mockTemplates as any}
+      />,
+    );
+
+    const trigger = await screen.findByTestId("ai-gateway-provider-history-provider-trigger");
+    await user.click(trigger);
+    const options = await screen.findAllByRole("option");
+    // 选择 p-tpl
+    await user.click(options[1]);
+
+    // 应该展示模板 tag 徽标并且包含模板名称 "DeepSeek Official"
+    const templateTag = await screen.findByTestId("ai-gateway-provider-history-template-tag");
+    expect(templateTag).toBeInTheDocument();
+    expect(templateTag).toHaveTextContent("DeepSeek Official");
+
+    // 验证每日历史表格具有 whitespace-nowrap 样式，确保列内文本不换行
+    const daysTable = screen.getByTestId("ai-gateway-provider-history-days");
+    expect(daysTable).toHaveClass("whitespace-nowrap");
+
+    // 切换到 p-manual (未基于模板创建)
+    await user.click(trigger);
+    const optionsAfter = await screen.findAllByRole("option");
+    await user.click(optionsAfter[2]);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("ai-gateway-provider-history-template-tag")).not.toBeInTheDocument();
+    });
   });
 });
