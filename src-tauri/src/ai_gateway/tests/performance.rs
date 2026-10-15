@@ -60,6 +60,8 @@ fn attempt_record(request: usize, attempt: usize, base_ms: i64) -> UsageLogRecor
         error_message: None,
         terminal: attempt + 1 == ATTEMPTS_PER_REQUEST,
         reasoning_effort: None,
+        first_token_ms: None,
+        avg_tps: None,
     }
 }
 

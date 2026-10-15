@@ -42,6 +42,7 @@ mod daily_reset;
 mod model_pools;
 mod openai_conversion;
 mod model_pool_terminal_sync;
+mod output_timing;
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -10988,6 +10989,8 @@ fn sample_attempt_record(
         terminal,
         reasoning_effort: None,
         cost_breakdown: None,
+        first_token_ms: None,
+        avg_tps: None,
     }
 }
 
