@@ -458,6 +458,21 @@ fn nested_token(usage: &Value, object: &str, key: &str) -> Option<u64> {
         .map(|value| token_number(Some(value)))
 }
 
+/// Strictly read one native DeepSeek cache count (REQ-001).
+///
+/// `Some(None)` means the key is absent or `null`; `Some(Some(n))` means a
+/// present non-negative integer or its supported numeric-string form; `None`
+/// means the key carries a present value that is not an acceptable count. The
+/// generic [`token_number`] coercion is deliberately not reused for these new
+/// fields, so a negative, fractional or malformed claim is never coerced.
+fn native_cache_token(usage: &Value, key: &str) -> Option<Option<u64>> {
+    match usage.get(key) {
+        None => Some(None),
+        Some(value) if value.is_null() => Some(None),
+        Some(value) => strict_non_negative_integer(value).map(Some),
+    }
+}
+
 fn top_field_present(usage: &Value, key: &str) -> bool {
     usage.get(key).is_some_and(|value| !value.is_null())
 }
@@ -506,6 +521,26 @@ impl UsageAccounting {
     };
 }
 
+/// The conservative fallback for an invalid cache decomposition: the reported
+/// inclusive input is billed once as ordinary with no cache tiers, so no token
+/// is double counted and no ordinary count goes negative.
+fn invalid_canonical_usage(
+    reported: u64,
+    output_tokens: u64,
+    reported_output_tokens: Option<u64>,
+) -> CanonicalUsage {
+    CanonicalUsage {
+        tokens: UsageTokens {
+            input_tokens: reported,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens,
+        },
+        valid: false,
+        reported_output_tokens,
+    }
+}
+
 /// Map an upstream `usage` object to the four exclusive token tiers (REQ-001).
 ///
 /// Missing fields become 0; the caller decides whether usage was present at all.
@@ -516,6 +551,11 @@ impl UsageAccounting {
 ///   `prompt_tokens_details` / `input_tokens_details`. The stored ordinary
 ///   tier is the checked remainder `reported - read - write`; each tier is
 ///   billed exactly once by `total()` and `compute_cost_at_time_with_breakdown`.
+/// - Native DeepSeek reports the inclusive input with `prompt_cache_hit_tokens`
+///   as the cached subset and an optional `prompt_cache_miss_tokens` equal to
+///   `reported - hit`. A present native hit is the fallback when nested details
+///   are absent, must equal a coexisting nested read (counted once) and, like a
+///   nested read, conflicts with the independent Anthropic read tier.
 /// - Anthropic-style split has no nested cache details: the top-level input
 ///   is already ordinary and the flat `cache_read_input_tokens` /
 ///   `cache_creation_input_tokens` tiers are independent.
@@ -548,23 +588,44 @@ pub(in crate::ai_gateway) fn canonical_usage_from_value(usage: &Value) -> Canoni
     let top_read = token_number(usage.get("cache_read_input_tokens"));
     let top_creation = token_number(usage.get("cache_creation_input_tokens"));
 
-    // Conflicting shape: nested cache read coexists with the top-level
-    // cache-read tier. Never merge; fall back with no cache tiers.
-    if nested_read.is_some() && has_top_read {
-        return CanonicalUsage {
-            tokens: UsageTokens {
-                input_tokens: reported,
-                cache_read_tokens: 0,
-                cache_write_tokens: 0,
-                output_tokens,
-            },
-            valid: false,
-            reported_output_tokens,
-        };
+    // Native DeepSeek cache fields (REQ-001). A present value must be a
+    // non-negative integer or its supported numeric-string form; `null` is
+    // absent. A present but malformed value is an invalid decomposition.
+    let (native_hit, native_miss) = match (
+        native_cache_token(usage, "prompt_cache_hit_tokens"),
+        native_cache_token(usage, "prompt_cache_miss_tokens"),
+    ) {
+        (Some(native_hit), Some(native_miss)) => (native_hit, native_miss),
+        _ => return invalid_canonical_usage(reported, output_tokens, reported_output_tokens),
+    };
+
+    // Conflicting shape: a nested or native cache hit coexists with the
+    // independent top-level cache-read tier. Never merge; fall back.
+    if has_top_read && (nested_read.is_some() || native_hit.is_some()) {
+        return invalid_canonical_usage(reported, output_tokens, reported_output_tokens);
     }
 
-    if has_nested {
-        let cache_read_tokens = nested_read.unwrap_or(0);
+    // Resolve the exclusive cache-hit tier. The native hit is the fallback when
+    // the nested read is absent; an equal nested+native pair counts the hit
+    // once, while an unequal pair is a contradictory shape.
+    let cache_read_tokens = match (nested_read, native_hit) {
+        (Some(nested), Some(native)) if nested == native => nested,
+        (Some(nested), None) => nested,
+        (None, Some(native)) => native,
+        (None, None) => 0,
+        _ => return invalid_canonical_usage(reported, output_tokens, reported_output_tokens),
+    };
+
+    // A present native miss must equal `reported - selected hit`; a miss-only
+    // field therefore never invents a cached count.
+    if let Some(miss) = native_miss {
+        if reported.checked_sub(cache_read_tokens) != Some(miss) {
+            return invalid_canonical_usage(reported, output_tokens, reported_output_tokens);
+        }
+    }
+
+    let has_inclusive_cache = has_nested || native_hit.is_some();
+    if has_inclusive_cache {
         // Nested cache write wins; otherwise the top-level creation value is
         // the compatible fallback deducted from the inclusive total.
         let cache_write_tokens = nested_write.unwrap_or(top_creation);
@@ -582,18 +643,9 @@ pub(in crate::ai_gateway) fn canonical_usage_from_value(usage: &Value) -> Canoni
                 valid: true,
                 reported_output_tokens,
             },
-            // Illegal decomposition: nested components exceed reported input.
+            // Illegal decomposition: cache components exceed reported input.
             // Never produce negative ordinary input via saturating subtraction.
-            None => CanonicalUsage {
-                tokens: UsageTokens {
-                    input_tokens: reported,
-                    cache_read_tokens: 0,
-                    cache_write_tokens: 0,
-                    output_tokens,
-                },
-                valid: false,
-                reported_output_tokens,
-            },
+            None => invalid_canonical_usage(reported, output_tokens, reported_output_tokens),
         }
     } else {
         // Anthropic-style split: the reported input is already ordinary.

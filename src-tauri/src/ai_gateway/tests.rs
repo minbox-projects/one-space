@@ -45,6 +45,7 @@ mod openai_conversion;
 mod model_pool_terminal_sync;
 mod provider_usage;
 mod output_timing;
+mod deepseek_cache;
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
