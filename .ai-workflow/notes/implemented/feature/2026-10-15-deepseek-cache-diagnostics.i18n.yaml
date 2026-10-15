@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (.ai-workflow/notes/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+# ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-15-deepseek-cache-diagnostics.md
+2026-10-15-deepseek-cache-diagnostics.md: f98c2308207280d05b1de81a83171bae7cdb6b52
+2026-10-15-deepseek-cache-diagnostics.zh.md: 471f87ff8ac385710c4f0686cfe46a71de16e19f
