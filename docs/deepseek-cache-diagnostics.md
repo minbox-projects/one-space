@@ -2,7 +2,7 @@
 
 This report tracks the `20261015-deepseek-cache-diagnostics` plan. It is maintained incrementally: it records delivered facts at each accepted boundary and states the remaining work and any blocked evidence explicitly.
 
-Delivered: Step 1 native DeepSeek cache accounting and the existing Chat forwarding characterization; Step 2 the standalone, content-free observation and bounded comparison tool with its local behavior tests. Blocked: Step 3, the controlled same-account live comparison, which has not run. Consequently the plan is **not complete**: the later simultaneous Spec Review and Standards Review batch has not been executed, so no merge or "all engineering complete" claim is made here, and the 98% token-weighted effectiveness target is still unmeasured and is not claimed as met.
+Delivered: Step 1 native DeepSeek cache accounting and the existing Chat forwarding characterization; Step 2 the standalone, content-free observation and bounded comparison tool with its local behavior tests. Blocked: Step 3, the controlled same-account live comparison, was attempted exactly once under explicit operator authorization and produced no valid measurement, so it remains **blocked / unverified**. Consequently the plan is **not complete**: the later simultaneous Spec Review and Standards Review batch has not been executed, so no merge or "all engineering complete" claim is made here, and the 98% token-weighted effectiveness target is still unmeasured and is not claimed as met.
 
 ## Scope
 
@@ -98,6 +98,9 @@ When any required variable is absent or unusable, `compare` still prints a `comp
 | `streaming_forward_preserves_bytes_captures_usage_and_fails_all_unavailable` | exit 0, 1 pass |
 | `forwarded_logs_never_contain_keys_headers_or_bodies` | exit 0, 1 pass |
 | `node --test tools/diagnose-deepseek-cache.test.mjs` | exit 0, 38 pass, 0 skipped, ~7.18s |
+| `node tools/diagnose-deepseek-cache.mjs compare` (single authorized batch, operator-supplied environment) | exit 1 (nonzero); 1/40 attempts; `status: incomplete`, `reason: request-rejected`; gateway path 1 attempt with 0 valid usage, upstream path 0 requests, no rate |
+| read-only `onespace-dev` usage query (run window, target provider/upstream) | 1 row: `status 429`, `result failure`, `usage_present 0`, `cache_accounting_valid 0`, all token tiers `0` |
+| post-run dev comparison reload | failed with a fixed missing-source-key reason; credential-unchanged re-check not completed |
 
 The behavior tests for Step 1 live in `src-tauri/src/ai_gateway/tests/deepseek_cache.rs`, registered as `mod deepseek_cache;` in `src-tauri/src/ai_gateway/tests.rs`. The Step 2 behavior tests live in `tools/diagnose-deepseek-cache.test.mjs`; they use local mocks and make no external provider calls, covering unchanged bytes/headers, split SSE and JSON usage, append/change/unavailable classification, identities, overlap, cancellation, exit cleanup, echoed-secret suppression, weighting, zero-versus-missing usage, warmup exclusion and the 40-attempt cap.
 
@@ -105,18 +108,23 @@ Bounded numeric finding (Step 1): for the synthetic native fixture described abo
 
 ## Blocked: controlled same-account live comparison (REQ-004 / AC-004)
 
-Step 3 has not run. The six `CACHE_DIAG_*` variables were all absent, so the comparison made **0 actual model POST attempts**, produced no timestamps, no token sums and no live coverage, and AC-004 remains **blocked / unverified** rather than passed.
+Step 3 ran its single authorized live batch exactly once and produced no valid measurement, so AC-004 remains **blocked / unverified** rather than passed.
 
-The controlled comparison requires precise, reproducible operator preparation:
+Preparation was operator-authorized and plan-scoped. A temporary preparation helper (a plan artifact, not a product feature) read only the `onespace-dev` profile's `.local_key` and `ai_gateway.json` and supplied the six `CACHE_DIAG_*` values to the child process in memory; it made no network call and wrote no project artifact. The delivered tool was unchanged: `compare` still reads only its process environment and performs no configuration discovery or mutation. For the batch the selected environment was the `onespace-dev` profile with one usable-source-key provider `gw-52efa67c8afb4687b251132fe12c1e72` mapping local `deepseek-v4.1-flash` to upstream `deepseek/deepseek-v4.1-flash` over `chat_completions`; the direct upstream credential was that same configured source key, so the account under test was the one the gateway serves. The single authorized non-target provider was temporarily disabled for the window and restored afterwards (the enabled count returned from `1` to `2` on restore and the latest safe check reports it restored); the target provider stayed enabled throughout, no service was restarted and no release configuration changed.
 
-- Provide an isolated gateway that exposes only the intended source account, and pass the matching upstream credential only through the environment.
-- State the selected application profile (`onespace` or `onespace-dev`), the expected provider id, the model and the upstream identity, and confirm it is the same-key account as the direct path.
-- Do not infer same-account equivalence from a URL, a model name or a historical account name. A successful HTTP response and a matching model id are not evidence of account identity.
-- After the run, verify the gateway log rows for the actual run window against that provider/model identity.
+The sole `node tools/diagnose-deepseek-cache.mjs compare` invocation ran `2026-10-15T09:15:18.078Z`–`2026-10-15T09:15:21.111Z` (`17:15:18.078`–`17:15:21.111` UTC+08:00) and exited nonzero with:
 
-If preparation cannot establish equivalence, the live step stays blocked rather than changing production configuration automatically.
+- `attempts: 1` of the 40 allowed; `status: incomplete`, `reason: request-rejected`; `comparable: false`, `effectiveness: unverified`, `target_met: null`, `cost.availability: unknown`.
+- one `series` entry — `path: gateway`, `round: 1`, `attempts: 1`; its `warmup` reports `requests: 1` with `valid_usage: 0`, its `measurement` reports `requests: 0`, every token sum is `0`, every `cache_hit_rate` is `null`, and `fields.native` / `fields.nested` are both `0`.
+- the direct upstream path sent **no** request, because the gateway path stopped on its first attempt.
 
-This plan's own natural-traffic observation also remains unrun: the operator did not select that temporary path. The cause of the observed historical mutation is therefore still unknown, and the `>= 98%` cache effect remains **unproven**.
+Because neither path yielded valid warmup or measured usage, there is no coverage from which to compute a rate. The batch therefore cannot be read as "the target was not met", and it is not a `0%` cold-cache observation either: a rejected request with no usage is unmeasured, not a miss.
+
+The read-only `onespace-dev` usage check for the run window and the target provider/upstream identity found exactly **one** row — the rejected attempt: `timestamp_ms` `1792055721108`, `result: failure`, `status: 429`, `terminal: 1`, `usage_semantics: canonical_v1`, `usage_present: 0`, `cache_accounting_valid: 0`, every token tier `0`, `amount: 0.0`, `duration_ms` `1769`, and `first_token_ms` / `avg_tps` `null`. The window held one row, matched one expected identity and had no non-terminal row. This records the rejection truthfully but supplies no comparison cost or rate: the stored `0.0` fee is not a measured cost of the comparison, and the planned 4 warmups / 16 measurements were never reached.
+
+A credential-unchanged re-check did not complete: reloading the dev comparison state after the run failed with a fixed missing-source-key reason, so the same-source-credential-unchanged verification could not be reconfirmed. A failed re-check is not evidence that a credential value changed. A later read-only inspection confirmed the target key was still present, enabled and value-bearing, but also that the gateway had set its own runtime quota flag on it from the `429` (`auto_marked: true`, `failure_kind: quota`, `marked_at` `1792055719`) without exposing a raw reason or key value. That mark is the gateway's natural runtime response to the rejection, not a diagnostic-tool leak and not a manual edit; clearing it is outside this plan's authorization, and the only state restored was the non-target provider's `enabled` flag.
+
+No retry, second live batch, extra warmup or live `observe` ran. The plan's single authorized batch is spent: further measurement needs a new explicit authorization and a valid account or quota, and the remaining attempt budget must not be silently used up or the fixture changed. The same-account preconditions still hold for any future run — do not infer equivalence from a URL, a model name or a historical account name, and verify the gateway log rows for the run window against the expected provider/model identity. This plan's own natural-traffic observation also remains unrun: the operator did not select that temporary path, so the cause of the observed historical mutation is still unknown and the `>= 98%` cache effect remains **unproven**.
 
 ### Read-only usage verification template
 
@@ -143,10 +151,10 @@ Substitute `:window_start`, `:window_end`, `:provider_id` and `:upstream_model` 
 
 ## Effectiveness target
 
-The 98% token-weighted cache-hit target for warmed requests with a stable long prefix is **not met, not measured and not claimed**. It cannot be established from the accounting or local mock tests alone, and a corrected accounting percentage is not evidence of improved physical cache reuse.
+The 98% token-weighted cache-hit target for warmed requests with a stable long prefix is **not measured and not claimed as met**: the single authorized comparison batch produced no valid measurement, so the target was neither met nor missed. It cannot be established from the accounting or local mock tests alone, and a corrected accounting percentage is not evidence of improved physical cache reuse.
 
 - Engineering: the Step 1 accounting correction and the Step 2 tooling and local behavior tests are delivered.
-- Effectiveness: unverified until the bounded comparison runs with verified account equivalence.
+- Effectiveness: unverified. The one authorized comparison batch produced no valid measurement, so the target was neither met nor missed.
 
 ## Interpretation limits
 
@@ -163,6 +171,7 @@ The 98% token-weighted cache-hit target for warmed requests with a stable long p
 | A newly evidenced gateway mutation outside the delivered scope | Gateway mutation | Scoped repair decision before any edit |
 | Fresh-input growth with a growing prefix | Reported separately from cache reuse | Not a cache verdict |
 | Missing account evidence, rejected options, failed calls or absent/invalid measured usage | Not comparable | Remains unverified or blocked; never a passing comparison |
+| A first request rejected before any valid usage (the observed `429`) | Unmeasured, not a miss and not below target | Needs a new authorization and a usable account before any re-measurement |
 
 ## References
 
