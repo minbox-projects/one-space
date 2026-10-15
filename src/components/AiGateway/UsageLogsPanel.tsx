@@ -19,7 +19,10 @@ import {
   clampUsagePage,
   formatCacheTokensK,
   formatGatewayDuration,
+  formatGatewayTps,
   getGatewayDurationColorClass,
+  getGatewayFirstTokenColorClass,
+  getGatewayTpsColorClass,
   formatUsageAmount,
   formatUsageCurrency,
   formatUsageGroupLabel,
@@ -361,6 +364,52 @@ function CostDetail({
           </p>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/**
+ * One aligned latency line: a muted short label on the left and a
+ * right-aligned tabular value (plus a muted, separate unit) on the right. Only
+ * the numeric value carries the performance color; an unavailable value renders
+ * a single muted em dash with no unit.
+ */
+function LatencyMetricRow({
+  labelTestId,
+  valueTestId,
+  unitTestId,
+  label,
+  value,
+  unit,
+  colorClass,
+}: {
+  labelTestId: string;
+  valueTestId: string;
+  unitTestId: string;
+  label: string;
+  value: string;
+  unit: string;
+  colorClass: string;
+}) {
+  const available = value !== "—";
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-muted-foreground" data-testid={labelTestId}>
+        {label}
+      </span>
+      <span className="inline-flex items-baseline justify-end gap-1">
+        <span
+          className={`tabular-nums font-medium ${colorClass}`}
+          data-testid={valueTestId}
+        >
+          {value}
+        </span>
+        {available ? (
+          <span className="text-muted-foreground" data-testid={unitTestId}>
+            {unit}
+          </span>
+        ) : null}
+      </span>
     </div>
   );
 }
@@ -1008,7 +1057,7 @@ export function UsageLogsPanel({
                     {t("aiGatewayLogsModelColumn", "Model")}
                   </th>
                   <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
-                    {t("aiGatewayLogsDurationColumn", "Duration")}
+                    {t("aiGatewayLogsDurationColumn", "Latency")}
                   </th>
                   <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
                     {t("aiGatewayLogsTokensColumn", "Tokens")}
@@ -1171,10 +1220,38 @@ export function UsageLogsPanel({
                       ) : null}
                     </td>
                     <td
-                      className={`px-3 py-2 text-left font-mono text-xs whitespace-nowrap ${getGatewayDurationColorClass(item.duration_ms)}`}
+                      className="px-3 py-2 text-left text-xs whitespace-nowrap"
                       data-testid="ai-gateway-logs-duration-cell"
                     >
-                      {formatGatewayDuration(item.duration_ms)}
+                      <div className="flex flex-col gap-0.5">
+                        <LatencyMetricRow
+                          labelTestId="ai-gateway-logs-latency-total-label"
+                          valueTestId="ai-gateway-logs-latency-total-value"
+                          unitTestId="ai-gateway-logs-latency-total-unit"
+                          label={t("aiGatewayLogsLatencyTotal", "Total")}
+                          value={formatGatewayDuration(item.duration_ms)}
+                          unit="s"
+                          colorClass={getGatewayDurationColorClass(item.duration_ms)}
+                        />
+                        <LatencyMetricRow
+                          labelTestId="ai-gateway-logs-latency-first-token-label"
+                          valueTestId="ai-gateway-logs-latency-first-token-value"
+                          unitTestId="ai-gateway-logs-latency-first-token-unit"
+                          label={t("aiGatewayLogsLatencyFirstToken", "First token")}
+                          value={formatGatewayDuration(item.first_token_ms)}
+                          unit="s"
+                          colorClass={getGatewayFirstTokenColorClass(item.first_token_ms)}
+                        />
+                        <LatencyMetricRow
+                          labelTestId="ai-gateway-logs-latency-avg-tps-label"
+                          valueTestId="ai-gateway-logs-latency-avg-tps-value"
+                          unitTestId="ai-gateway-logs-latency-avg-tps-unit"
+                          label={t("aiGatewayLogsLatencyAverageTps", "Average TPS")}
+                          value={formatGatewayTps(item.avg_tps)}
+                          unit="t/s"
+                          colorClass={getGatewayTpsColorClass(item.avg_tps)}
+                        />
+                      </div>
                     </td>
                     <td className="px-3 py-2 text-left font-mono" data-testid="ai-gateway-logs-tokens-cell">
                       {(() => {

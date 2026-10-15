@@ -52,9 +52,92 @@ export interface ProfileMatrix {
   rows: AgentMatrixRow[];
 }
 
+export interface ModelCapability {
+  efforts: string[];
+  default_effort?: string;
+}
+
 export interface ColumnModelSource {
   models: string[];
   error?: string;
+  // Additive capability metadata. An omitted map (or omitted entry) means the
+  // exact host-local model capability is unknown; an explicit empty entry means
+  // the capability is known to have no writable values.
+  model_capabilities?: Record<string, ModelCapability>;
+  // Independent diagnostic kept separate from the column `error`. A capability
+  // read failure must not drop candidate models or degrade healthy columns.
+  capability_warning?: string;
+}
+
+const DEFAULT_REASONING_EFFORT: ValidEffort = "medium";
+
+export function isKnownEffort(value: string): value is ValidEffort {
+  return (VALID_EFFORTS as readonly string[]).includes(value);
+}
+
+export function getModelCapability(
+  source: ColumnModelSource | undefined,
+  model: string,
+): ModelCapability | undefined {
+  if (!source?.model_capabilities) return undefined;
+  return source.model_capabilities[model];
+}
+
+// Intersection of the declared raw efforts with the profile enum, deduplicated
+// and returned in profile enum order. The raw list may include values the
+// profile schema does not allow (for example `none` or `minimal`).
+export function resolveWritableEfforts(
+  capability: ModelCapability | undefined,
+): ValidEffort[] {
+  if (!capability) return [];
+  const declared = new Set(capability.efforts);
+  return VALID_EFFORTS.filter((effort) => declared.has(effort));
+}
+
+// Raw discovered tokens that the profile schema excludes, deduplicated in
+// first-seen order and used for the visible schema-limit explanation.
+export function resolveExcludedEfforts(
+  capability: ModelCapability | undefined,
+): string[] {
+  if (!capability) return [];
+  const seen = new Set<string>();
+  const excluded: string[] = [];
+  for (const raw of capability.efforts) {
+    if (isKnownEffort(raw) || seen.has(raw)) continue;
+    seen.add(raw);
+    excluded.push(raw);
+  }
+  return excluded;
+}
+
+// Shared normalization for every model mutation path (single-cell model change,
+// typed model entry, row fill and column fill).
+// - Known model: keep a currently writable effort, else the declared default,
+//   else `medium` when writable, else the first writable effort. A known model
+//   with no writable values has no automatic default and keeps the raw value.
+// - Unknown model: keep a non-empty entered effort, else start at `medium`
+//   without claiming support.
+export function normalizeEffortForModel(
+  currentEffort: string,
+  capability: ModelCapability | undefined,
+): string {
+  const trimmed = (currentEffort ?? "").trim();
+  if (!capability) {
+    return trimmed ? currentEffort : DEFAULT_REASONING_EFFORT;
+  }
+  const writable = resolveWritableEfforts(capability);
+  if (writable.length === 0) return currentEffort;
+  if (isKnownEffort(trimmed) && writable.includes(trimmed)) return trimmed;
+  const declaredDefault = capability.default_effort;
+  if (
+    declaredDefault &&
+    isKnownEffort(declaredDefault) &&
+    writable.includes(declaredDefault)
+  ) {
+    return declaredDefault;
+  }
+  if (writable.includes("medium")) return "medium";
+  return writable[0];
 }
 
 export interface ModelSourcesResult {

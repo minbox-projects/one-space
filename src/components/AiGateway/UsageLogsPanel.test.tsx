@@ -40,8 +40,11 @@ function costBreakdown(overrides: Partial<CostBreakdown> = {}): CostBreakdown {
 function record(
   overrides: Partial<UsageLogRecord> & {
     cost_breakdown?: CostBreakdown | null;
+    /** Step 1 nullable per-attempt measurements (absent mirrors a legacy row). */
+    first_token_ms?: number | null;
+    avg_tps?: number | null;
   } = {},
-): UsageLogRecord {
+): UsageLogRecord & { first_token_ms?: number | null; avg_tps?: number | null } {
   return {
     timestamp_ms: Date.UTC(2026, 8, 17, 2, 30),
     local_model: "gpt-4o",
@@ -126,6 +129,104 @@ function FocusBoundaryHost({
 function rowCostCell(row: HTMLElement): HTMLElement {
   const cells = row.querySelectorAll("td");
   return cells[cells.length - 1] as HTMLElement;
+}
+
+// ---------------------------------------------------------------------------
+// Step 2 (REQ-001/REQ-002/REQ-003/REQ-004): the latency cell keeps its existing
+// whole-cell marker and exposes stable per-metric label/value/unit markers.
+// These marker names are the proposed contract for Frontend.
+// ---------------------------------------------------------------------------
+const LATENCY_CELL = "ai-gateway-logs-duration-cell";
+const LATENCY_TOTAL_LABEL = "ai-gateway-logs-latency-total-label";
+const LATENCY_TOTAL_VALUE = "ai-gateway-logs-latency-total-value";
+const LATENCY_TOTAL_UNIT = "ai-gateway-logs-latency-total-unit";
+const LATENCY_FIRST_TOKEN_LABEL = "ai-gateway-logs-latency-first-token-label";
+const LATENCY_FIRST_TOKEN_VALUE = "ai-gateway-logs-latency-first-token-value";
+const LATENCY_FIRST_TOKEN_UNIT = "ai-gateway-logs-latency-first-token-unit";
+const LATENCY_AVG_TPS_LABEL = "ai-gateway-logs-latency-avg-tps-label";
+const LATENCY_AVG_TPS_VALUE = "ai-gateway-logs-latency-avg-tps-value";
+const LATENCY_AVG_TPS_UNIT = "ai-gateway-logs-latency-avg-tps-unit";
+
+const LATENCY_GREEN = /(emerald|green)/;
+const LATENCY_ORANGE = /(amber|orange)/;
+const LATENCY_RED = /(rose|red)/;
+const LATENCY_MUTED = /text-muted-foreground/;
+
+const LATENCY_FAMILY_TONES = {
+  green: LATENCY_GREEN,
+  orange: LATENCY_ORANGE,
+  red: LATENCY_RED,
+} as const;
+
+/**
+ * REQ-004 / Step 2: an available rendered metric value must carry a readable
+ * light-theme shade (shade number >= 500) and a matching `dark:` variant in the
+ * same color family. Exact shade numbers are intentionally not pinned.
+ */
+function expectReadableLatencyVariant(
+  value: HTMLElement,
+  family: keyof typeof LATENCY_FAMILY_TONES,
+) {
+  const tone = LATENCY_FAMILY_TONES[family];
+  const classes = value.className.split(/\s+/).filter(Boolean);
+  const lightShades = classes.filter(
+    (cls) => /^text-[a-z]+-\d{2,3}$/.test(cls) && tone.test(cls),
+  );
+  expect(
+    lightShades.some((cls) => Number(cls.split("-").pop()) >= 500),
+    `可用指标值应使用 >= 500 的亮色主题色阶，实际类名：${value.className}`,
+  ).toBe(true);
+  const darkShades = classes.filter(
+    (cls) => /^dark:text-[a-z]+-\d{2,3}$/.test(cls) && tone.test(cls),
+  );
+  expect(
+    darkShades.length,
+    `可用指标值应提供同色系 dark: 变体，实际类名：${value.className}`,
+  ).toBeGreaterThan(0);
+}
+
+function latencyCell(row: HTMLElement): HTMLElement {
+  return within(row).getByTestId(LATENCY_CELL);
+}
+
+function latencyValue(cell: HTMLElement, marker: string): HTMLElement {
+  return within(cell).getByTestId(marker);
+}
+
+function expectMutedMetric(cell: HTMLElement, valueMarker: string, unitMarker: string) {
+  const value = latencyValue(cell, valueMarker);
+  expect(value.textContent, "不可用指标应显示单个破折号").toBe("—");
+  expect(value.className).toMatch(LATENCY_MUTED);
+  expect(value.className).not.toMatch(LATENCY_GREEN);
+  expect(value.className).not.toMatch(LATENCY_ORANGE);
+  expect(value.className).not.toMatch(LATENCY_RED);
+  // A single muted dash carries no unit suffix.
+  expect(within(cell).queryByTestId(unitMarker)?.textContent ?? "").toBe("");
+}
+
+function expectPerformanceValue(
+  cell: HTMLElement,
+  valueMarker: string,
+  text: string,
+  tone: RegExp,
+) {
+  const value = latencyValue(cell, valueMarker);
+  expect(value.textContent).toBe(text);
+  expect(value.className).toMatch(tone);
+  expect(value.className).not.toMatch(LATENCY_MUTED);
+  expect(
+    value.className,
+    "数值应使用对齐的表格数字（tabular-nums 或等宽字体）",
+  ).toMatch(/tabular-nums|font-mono/);
+}
+
+function expectAlignedRight(value: HTMLElement) {
+  const line = value.parentElement as HTMLElement | null;
+  const combined = `${value.className} ${line?.className ?? ""}`;
+  expect(
+    /text-right|justify-end|justify-between|ml-auto/.test(combined),
+    "数值应在行内右对齐",
+  ).toBe(true);
 }
 
 /** The keyboard-accessible cost-detail control rendered next to the cost. */
@@ -281,7 +382,7 @@ describe("UsageLogsPanel", () => {
     expect(within(table).getByText("Time")).toBeInTheDocument();
     expect(within(table).getByText("Status")).toBeInTheDocument();
     expect(within(table).getByText("Model")).toBeInTheDocument();
-    expect(within(table).getByText("Duration")).toBeInTheDocument();
+    expect(within(table).getByText("Latency")).toBeInTheDocument();
     expect(within(table).getByText("Tokens")).toBeInTheDocument();
     expect(within(table).getByText("Cost ($)")).toBeInTheDocument();
 
@@ -299,27 +400,28 @@ describe("UsageLogsPanel", () => {
     expect(within(rows[0]).getByText("Success")).toBeInTheDocument();
     expect(within(rows[0]).getByTestId("ai-gateway-logs-status-badge")).toHaveClass("bg-emerald-500/10");
     expect(within(rows[0]).getByText("newest")).toBeInTheDocument();
-    expect(
-      within(rows[0]).getByTestId("ai-gateway-logs-duration-cell"),
-    ).toHaveTextContent("1m 2s");
-    expect(
-      within(rows[0]).getByTestId("ai-gateway-logs-duration-cell"),
-    ).toHaveClass("text-rose-500");
-    expect(
-      within(rows[1]).getByTestId("ai-gateway-logs-duration-cell"),
-    ).toHaveTextContent("2s");
-    expect(
-      within(rows[1]).getByTestId("ai-gateway-logs-duration-cell"),
-    ).toHaveClass("text-emerald-500");
-    expect(
-      within(rows[2]).getByTestId("ai-gateway-logs-duration-cell"),
-    ).toHaveTextContent("1s");
-    expect(
-      within(rows[2]).getByTestId("ai-gateway-logs-duration-cell"),
-    ).toHaveClass("text-emerald-500");
+    // Total duration keeps its raw-ms color: 62s is red, 2s / 0.5s are green.
+    expectPerformanceValue(
+      latencyCell(rows[0]),
+      LATENCY_TOTAL_VALUE,
+      "62.000",
+      LATENCY_RED,
+    );
+    expectPerformanceValue(
+      latencyCell(rows[1]),
+      LATENCY_TOTAL_VALUE,
+      "2.000",
+      LATENCY_GREEN,
+    );
+    expectPerformanceValue(
+      latencyCell(rows[2]),
+      LATENCY_TOTAL_VALUE,
+      "0.500",
+      LATENCY_GREEN,
+    );
   });
 
-  it("中文环境下不分组表格展示中文列头耗时", async () => {
+  it("中文环境下不分组表格展示中文列头 延迟", async () => {
     await i18n.changeLanguage("zh");
     invokeMock.mockImplementation(async (command: string) => {
       if (command !== "ai_gateway_request_logs") {
@@ -334,10 +436,13 @@ describe("UsageLogsPanel", () => {
     renderWithProviders(<UsageLogsPanel />);
 
     const table = await screen.findByTestId("ai-gateway-logs-ungrouped");
-    expect(within(table).getByText("耗时")).toBeInTheDocument();
-    expect(
-      within(table).getByTestId("ai-gateway-logs-duration-cell"),
-    ).toHaveTextContent("1m 5s");
+    expect(within(table).getByText("延迟")).toBeInTheDocument();
+    expectPerformanceValue(
+      latencyCell(within(table).getAllByTestId("ai-gateway-logs-row")[0]),
+      LATENCY_TOTAL_VALUE,
+      "65.000",
+      LATENCY_RED,
+    );
   });
 
   it("切换为 Day（UTC+8）分组展示分组列与错误数", async () => {
@@ -1351,7 +1456,7 @@ describe("UsageLogsPanel", () => {
     expect(tooltip).toHaveTextContent("HTTP 504: Gateway timeout");
   });
 
-  it("耗时列值根据耗时区间展示不同颜色（<3s 绿，3~15s 黄，>15s 红，空值灰）", async () => {
+  it("REQ-004 总耗时数值按原始毫秒分档（<3s 绿，3~15s 橙，>15s 红，非法灰）", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command !== "ai_gateway_request_logs") {
         throw new Error(`Unhandled command: ${command}`);
@@ -1373,21 +1478,11 @@ describe("UsageLogsPanel", () => {
     const rows = within(table).getAllByTestId("ai-gateway-logs-row");
     expect(rows).toHaveLength(4);
 
-    const d1 = within(rows[0]).getByTestId("ai-gateway-logs-duration-cell");
-    expect(d1).toHaveTextContent("1s");
-    expect(d1).toHaveClass("text-emerald-500");
-
-    const d2 = within(rows[1]).getByTestId("ai-gateway-logs-duration-cell");
-    expect(d2).toHaveTextContent("5s");
-    expect(d2).toHaveClass("text-amber-500");
-
-    const d3 = within(rows[2]).getByTestId("ai-gateway-logs-duration-cell");
-    expect(d3).toHaveTextContent("20s");
-    expect(d3).toHaveClass("text-rose-500");
-
-    const d4 = within(rows[3]).getByTestId("ai-gateway-logs-duration-cell");
-    expect(d4).toHaveTextContent("—");
-    expect(d4).toHaveClass("text-muted-foreground");
+    // Independent stored values -> three-decimal seconds with raw-value colors.
+    expectPerformanceValue(latencyCell(rows[0]), LATENCY_TOTAL_VALUE, "1.200", LATENCY_GREEN);
+    expectPerformanceValue(latencyCell(rows[1]), LATENCY_TOTAL_VALUE, "5.000", LATENCY_ORANGE);
+    expectPerformanceValue(latencyCell(rows[2]), LATENCY_TOTAL_VALUE, "20.000", LATENCY_RED);
+    expectMutedMetric(latencyCell(rows[3]), LATENCY_TOTAL_VALUE, LATENCY_TOTAL_UNIT);
   });
 
   it("当记录为 429 额度耗尽或网络错误时在详情中展示对应排查建议", async () => {
@@ -2164,6 +2259,361 @@ describe("UsageLogsPanel", () => {
         page: 1,
       }),
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Step 2 (REQ-001/REQ-002/REQ-003/REQ-004): the rendered latency cell.
+  // -------------------------------------------------------------------------
+
+  it("REQ-001/REQ-002 延迟单元格展示三条对齐指标、独立颜色与可见单位（英文）", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      // Approved example: start 0s, first output 1s, end 5s, 200 output tokens.
+      return page({
+        total: 1,
+        records: [
+          record({
+            duration_ms: 5000,
+            first_token_ms: 1000,
+            avg_tps: 50,
+            output_tokens: 200,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const table = await screen.findByTestId("ai-gateway-logs-ungrouped");
+
+    // REQ-001: the column is labeled Latency; the other five columns survive.
+    expect(within(table).getByText("Latency")).toBeInTheDocument();
+    for (const header of ["Time", "Status", "Model", "Tokens", "Cost ($)"]) {
+      expect(within(table).getByText(header)).toBeInTheDocument();
+    }
+    expect(table.querySelectorAll("th").length).toBe(6);
+
+    const rows = within(table).getAllByTestId("ai-gateway-logs-row");
+    expect(rows).toHaveLength(1);
+    const cell = latencyCell(rows[0]);
+
+    // Exactly three labeled lines.
+    expect(within(cell).getAllByTestId(/-label$/)).toHaveLength(3);
+    expect(latencyValue(cell, LATENCY_TOTAL_LABEL).textContent?.trim()).toBe("Total");
+    expect(latencyValue(cell, LATENCY_FIRST_TOKEN_LABEL).textContent?.trim()).toBe("First token");
+    expect(latencyValue(cell, LATENCY_AVG_TPS_LABEL).textContent?.trim()).toBe("Average TPS");
+
+    // Stored measurements render at three-decimal seconds / two-decimal TPS.
+    // 5s and 1s fall in the orange band; 50 t/s is orange too.
+    expectPerformanceValue(cell, LATENCY_TOTAL_VALUE, "5.000", LATENCY_ORANGE);
+    expectPerformanceValue(cell, LATENCY_FIRST_TOKEN_VALUE, "1.000", LATENCY_ORANGE);
+    expectPerformanceValue(cell, LATENCY_AVG_TPS_VALUE, "50.00", LATENCY_ORANGE);
+
+    // Units are separate, visible and muted; they never carry a performance color.
+    for (const [marker, unit] of [
+      [LATENCY_TOTAL_UNIT, "s"],
+      [LATENCY_FIRST_TOKEN_UNIT, "s"],
+      [LATENCY_AVG_TPS_UNIT, "t/s"],
+    ] as const) {
+      const unitEl = latencyValue(cell, marker);
+      expect(unitEl.textContent).toBe(unit);
+      expect(unitEl.className).toMatch(LATENCY_MUTED);
+      expect(unitEl.className).not.toMatch(LATENCY_GREEN);
+      expect(unitEl.className).not.toMatch(LATENCY_ORANGE);
+      expect(unitEl.className).not.toMatch(LATENCY_RED);
+    }
+
+    // Labels are muted and never carry a performance color.
+    for (const marker of [
+      LATENCY_TOTAL_LABEL,
+      LATENCY_FIRST_TOKEN_LABEL,
+      LATENCY_AVG_TPS_LABEL,
+    ]) {
+      const label = latencyValue(cell, marker);
+      expect(label.className).toMatch(LATENCY_MUTED);
+      expect(label.className).not.toMatch(LATENCY_GREEN);
+      expect(label.className).not.toMatch(LATENCY_ORANGE);
+      expect(label.className).not.toMatch(LATENCY_RED);
+    }
+
+    // Values are right-aligned and use tabular numerals.
+    for (const marker of [
+      LATENCY_TOTAL_VALUE,
+      LATENCY_FIRST_TOKEN_VALUE,
+      LATENCY_AVG_TPS_VALUE,
+    ]) {
+      expectAlignedRight(latencyValue(cell, marker));
+    }
+
+    // Exactly three metric values inside the whole cell marker.
+    expect(within(cell).getAllByTestId(/-value$/)).toHaveLength(3);
+  });
+
+  it("REQ-001 延迟单元格与三条指标标签提供中文文案", async () => {
+    await i18n.changeLanguage("zh");
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 1,
+        records: [
+          record({ duration_ms: 5000, first_token_ms: 1000, avg_tps: 50 }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const table = await screen.findByTestId("ai-gateway-logs-ungrouped");
+
+    expect(within(table).getByText("延迟")).toBeInTheDocument();
+    const row = within(table).getAllByTestId("ai-gateway-logs-row")[0];
+    const cell = latencyCell(row);
+    expect(latencyValue(cell, LATENCY_TOTAL_LABEL).textContent?.trim()).toBe("总耗时");
+    expect(latencyValue(cell, LATENCY_FIRST_TOKEN_LABEL).textContent?.trim()).toBe("首字");
+    expect(latencyValue(cell, LATENCY_AVG_TPS_LABEL).textContent?.trim()).toBe("平均 TPS");
+    expectPerformanceValue(cell, LATENCY_TOTAL_VALUE, "5.000", LATENCY_ORANGE);
+    expectPerformanceValue(cell, LATENCY_FIRST_TOKEN_VALUE, "1.000", LATENCY_ORANGE);
+    expectPerformanceValue(cell, LATENCY_AVG_TPS_VALUE, "50.00", LATENCY_ORANGE);
+  });
+
+  it("REQ-003 缺失/非法指标显示单个静音破折号，显式零仍显示数值", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 6,
+        records: [
+          record({
+            timestamp_ms: 6000,
+            local_model: "null-metrics",
+            duration_ms: 5000,
+            first_token_ms: null,
+            avg_tps: null,
+          }),
+          record({
+            timestamp_ms: 5000,
+            local_model: "missing-metrics",
+            duration_ms: 5000,
+          }),
+          record({
+            timestamp_ms: 4000,
+            local_model: "negative-metrics",
+            duration_ms: 5000,
+            first_token_ms: -1,
+            avg_tps: -5,
+          }),
+          record({
+            timestamp_ms: 3000,
+            local_model: "nonfinite-metrics",
+            duration_ms: 5000,
+            first_token_ms: Number.NaN,
+            avg_tps: Number.POSITIVE_INFINITY,
+          }),
+          record({
+            timestamp_ms: 2000,
+            local_model: "zero-metrics",
+            duration_ms: 5000,
+            first_token_ms: 0,
+            avg_tps: 0,
+          }),
+          record({
+            timestamp_ms: 1000,
+            local_model: "invalid-total",
+            duration_ms: Number.NaN,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const table = await screen.findByTestId("ai-gateway-logs-ungrouped");
+    const rows = within(table).getAllByTestId("ai-gateway-logs-row");
+    expect(rows).toHaveLength(6);
+
+    // Null, missing, negative and non-finite first-token/TPS render one muted dash.
+    for (const row of rows.slice(0, 4)) {
+      const cell = latencyCell(row);
+      expectMutedMetric(cell, LATENCY_FIRST_TOKEN_VALUE, LATENCY_FIRST_TOKEN_UNIT);
+      expectMutedMetric(cell, LATENCY_AVG_TPS_VALUE, LATENCY_AVG_TPS_UNIT);
+      // The total duration stays an available measurement.
+      expect(latencyValue(cell, LATENCY_TOTAL_VALUE).textContent).not.toBe("—");
+    }
+
+    // Explicit zero is a measured value, distinct from unknown: not a dash, not muted.
+    const zeroCell = latencyCell(rows[4]);
+    const zeroFirst = latencyValue(zeroCell, LATENCY_FIRST_TOKEN_VALUE);
+    const zeroTps = latencyValue(zeroCell, LATENCY_AVG_TPS_VALUE);
+    expect(zeroFirst.textContent).toBe("0.000");
+    expect(zeroTps.textContent).toBe("0.00");
+    expect(zeroFirst.className).not.toMatch(LATENCY_MUTED);
+    expect(zeroTps.className).not.toMatch(LATENCY_MUTED);
+
+    // An invalid total also renders one muted dash.
+    expectMutedMetric(latencyCell(rows[5]), LATENCY_TOTAL_VALUE, LATENCY_TOTAL_UNIT);
+  });
+
+  it("REQ-004 三个指标各自按原始值取色，含显示相同但原始跨阈值的值", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 5,
+        records: [
+          record({
+            timestamp_ms: 5000,
+            local_model: "below",
+            duration_ms: 2999.6,
+            first_token_ms: 999.6,
+            avg_tps: 59.999,
+          }),
+          record({
+            timestamp_ms: 4000,
+            local_model: "at-low",
+            duration_ms: 3000,
+            first_token_ms: 1000,
+            avg_tps: 60,
+          }),
+          record({
+            timestamp_ms: 3000,
+            local_model: "at-high",
+            duration_ms: 15000,
+            first_token_ms: 3000,
+            avg_tps: 20,
+          }),
+          record({
+            timestamp_ms: 2000,
+            local_model: "above",
+            duration_ms: 15000.4,
+            first_token_ms: 3000.4,
+            avg_tps: 19.999,
+          }),
+          record({
+            timestamp_ms: 1000,
+            local_model: "high",
+            duration_ms: 15001,
+            first_token_ms: 3001,
+            avg_tps: 600,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const table = await screen.findByTestId("ai-gateway-logs-ungrouped");
+    const rows = within(table).getAllByTestId("ai-gateway-logs-row");
+    expect(rows).toHaveLength(5);
+
+    // Row 0: each value rounds up across a threshold but keeps its raw segment.
+    const c0 = latencyCell(rows[0]);
+    expectPerformanceValue(c0, LATENCY_TOTAL_VALUE, "3.000", LATENCY_GREEN);
+    expectPerformanceValue(c0, LATENCY_FIRST_TOKEN_VALUE, "1.000", LATENCY_GREEN);
+    expectPerformanceValue(c0, LATENCY_AVG_TPS_VALUE, "60.00", LATENCY_ORANGE);
+
+    // Row 1: exact inclusive lower boundaries -> orange / orange / green.
+    const c1 = latencyCell(rows[1]);
+    expectPerformanceValue(c1, LATENCY_TOTAL_VALUE, "3.000", LATENCY_ORANGE);
+    expectPerformanceValue(c1, LATENCY_FIRST_TOKEN_VALUE, "1.000", LATENCY_ORANGE);
+    expectPerformanceValue(c1, LATENCY_AVG_TPS_VALUE, "60.00", LATENCY_GREEN);
+
+    // Row 2: inclusive upper orange boundaries (15s, 3s) and 60 is not; 20 t/s is orange.
+    const c2 = latencyCell(rows[2]);
+    expectPerformanceValue(c2, LATENCY_TOTAL_VALUE, "15.000", LATENCY_ORANGE);
+    expectPerformanceValue(c2, LATENCY_FIRST_TOKEN_VALUE, "3.000", LATENCY_ORANGE);
+    expectPerformanceValue(c2, LATENCY_AVG_TPS_VALUE, "20.00", LATENCY_ORANGE);
+
+    // Row 3: rounded-lookalike values just above -> red / red / red.
+    const c3 = latencyCell(rows[3]);
+    expectPerformanceValue(c3, LATENCY_TOTAL_VALUE, "15.000", LATENCY_RED);
+    expectPerformanceValue(c3, LATENCY_FIRST_TOKEN_VALUE, "3.000", LATENCY_RED);
+    expectPerformanceValue(c3, LATENCY_AVG_TPS_VALUE, "20.00", LATENCY_RED);
+
+    // Row 4: whole values above the boundary -> red / red / green.
+    const c4 = latencyCell(rows[4]);
+    expectPerformanceValue(c4, LATENCY_TOTAL_VALUE, "15.001", LATENCY_RED);
+    expectPerformanceValue(c4, LATENCY_FIRST_TOKEN_VALUE, "3.001", LATENCY_RED);
+    expectPerformanceValue(c4, LATENCY_AVG_TPS_VALUE, "600.00", LATENCY_GREEN);
+  });
+
+  it("REQ-004 可用指标值提供同色系亮/暗主题可读色阶，不可用值保持静音", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        total: 4,
+        records: [
+          record({
+            timestamp_ms: 4000,
+            local_model: "green",
+            duration_ms: 1200,
+            first_token_ms: 500,
+            avg_tps: 100,
+          }),
+          record({
+            timestamp_ms: 3000,
+            local_model: "orange",
+            duration_ms: 5000,
+            first_token_ms: 1000,
+            avg_tps: 50,
+          }),
+          record({
+            timestamp_ms: 2000,
+            local_model: "red",
+            duration_ms: 20000,
+            first_token_ms: 4000,
+            avg_tps: 10,
+          }),
+          record({
+            timestamp_ms: 1000,
+            local_model: "unavailable",
+            duration_ms: Number.NaN,
+            first_token_ms: null,
+            avg_tps: null,
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    const table = await screen.findByTestId("ai-gateway-logs-ungrouped");
+    const rows = within(table).getAllByTestId("ai-gateway-logs-row");
+    expect(rows).toHaveLength(4);
+
+    const expectRow = (
+      row: HTMLElement,
+      family: keyof typeof LATENCY_FAMILY_TONES,
+    ) => {
+      const cell = latencyCell(row);
+      expectReadableLatencyVariant(
+        latencyValue(cell, LATENCY_TOTAL_VALUE),
+        family,
+      );
+      expectReadableLatencyVariant(
+        latencyValue(cell, LATENCY_FIRST_TOKEN_VALUE),
+        family,
+      );
+      expectReadableLatencyVariant(
+        latencyValue(cell, LATENCY_AVG_TPS_VALUE),
+        family,
+      );
+    };
+
+    expectRow(rows[0], "green");
+    expectRow(rows[1], "orange");
+    expectRow(rows[2], "red");
+
+    const unavailable = latencyCell(rows[3]);
+    expectMutedMetric(unavailable, LATENCY_TOTAL_VALUE, LATENCY_TOTAL_UNIT);
+    expectMutedMetric(
+      unavailable,
+      LATENCY_FIRST_TOKEN_VALUE,
+      LATENCY_FIRST_TOKEN_UNIT,
+    );
+    expectMutedMetric(unavailable, LATENCY_AVG_TPS_VALUE, LATENCY_AVG_TPS_UNIT);
   });
 });
 

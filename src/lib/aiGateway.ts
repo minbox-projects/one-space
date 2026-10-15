@@ -689,6 +689,18 @@ export interface UsageLogRecord {
   /** Record-time pricing details; absent for legacy or unpriced rows. */
   cost_breakdown?: UsageCostBreakdown | null;
   duration_ms: number;
+  /**
+   * Per-attempt milliseconds from the attempt's monotonic start to its first
+   * meaningful upstream output. Absent or `null` when unmeasured (non-streaming,
+   * no output or a pre-output failure); a measured `0` is a valid observation.
+   */
+  first_token_ms?: number | null;
+  /**
+   * Gateway-observed average output tokens per second over the attempt's
+   * generation window. Absent or `null` when unavailable; the frontend renders
+   * the stored value directly and never reconstructs it from displayed times.
+   */
+  avg_tps?: number | null;
   /** Sanitized upstream error text of a failed attempt; `null`/absent when none was recorded. */
   error_message?: string | null;
   /**
@@ -1011,29 +1023,24 @@ export function formatUsageCurrency(amount: number | null | undefined): string {
 }
 
 /**
- * Format request duration in milliseconds.
- * - Under 1 minute (< 60s): formatted with "s" unit (e.g. "0s", "2s", "59s").
- * - 1 minute or more (>= 60s): formatted as "Xm Ys" (e.g. "1m 2s", "2m 5s").
- * - Returns "—" for null, undefined, NaN or negative values.
+ * Format a per-attempt latency in milliseconds as value-only seconds with
+ * three decimals (e.g. `5.000`); the unit is rendered separately by the caller
+ * so it can stay muted and independent of the value color.
+ * - Returns "—" for null, undefined, non-finite or negative values.
  */
 export function formatGatewayDuration(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) {
     return "—";
   }
-  const totalSeconds = Math.round(ms / 1000);
-  if (totalSeconds < 60) {
-    return `${totalSeconds}s`;
-  }
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}m ${seconds}s`;
+  return (ms / 1000).toFixed(3);
 }
 
 /**
  * Returns Tailwind text color classes for request duration based on latency.
- * - < 3s (< 3000ms): green (text-emerald-500)
- * - 3s ~ 15s (3000ms ~ 15000ms): amber/yellow (text-amber-500)
- * - > 15s (> 15000ms): red/rose (text-rose-500)
+ * Each band carries a readable light-theme shade plus a matching dark: variant.
+ * - < 3s (< 3000ms): green (text-emerald-600 dark:text-emerald-400)
+ * - 3s ~ 15s (3000ms ~ 15000ms): amber/yellow (text-amber-600 dark:text-amber-400)
+ * - > 15s (> 15000ms): red/rose (text-rose-600 dark:text-rose-400)
  * - null/undefined/negative: muted foreground (text-muted-foreground)
  */
 export function getGatewayDurationColorClass(ms: number | null | undefined): string {
@@ -1041,12 +1048,67 @@ export function getGatewayDurationColorClass(ms: number | null | undefined): str
     return "text-muted-foreground";
   }
   if (ms < 3000) {
-    return "text-emerald-500";
+    return "text-emerald-600 dark:text-emerald-400";
   }
   if (ms <= 15000) {
-    return "text-amber-500";
+    return "text-amber-600 dark:text-amber-400";
   }
-  return "text-rose-500";
+  return "text-rose-600 dark:text-rose-400";
+}
+
+/**
+ * Format an average output rate in tokens per second as value-only two-decimal
+ * text (e.g. `50.00`); the `t/s` unit is rendered separately by the caller.
+ * - Returns "—" for null, undefined, non-finite or negative values, so an
+ *   explicit `0` stays a measured value distinct from unavailable.
+ */
+export function formatGatewayTps(tps: number | null | undefined): string {
+  if (tps === null || tps === undefined || !Number.isFinite(tps) || tps < 0) {
+    return "—";
+  }
+  return tps.toFixed(2);
+}
+
+/**
+ * Returns Tailwind text color classes for first-token latency, classified on
+ * the raw millisecond value (never the display-rounded seconds).
+ * - < 1000ms: green (text-emerald-600 dark:text-emerald-400)
+ * - 1000ms ~ 3000ms inclusive: amber (text-amber-600 dark:text-amber-400)
+ * - > 3000ms: rose (text-rose-600 dark:text-rose-400)
+ * - null/undefined/non-finite/negative: muted foreground
+ */
+export function getGatewayFirstTokenColorClass(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) {
+    return "text-muted-foreground";
+  }
+  if (ms < 1000) {
+    return "text-emerald-600 dark:text-emerald-400";
+  }
+  if (ms <= 3000) {
+    return "text-amber-600 dark:text-amber-400";
+  }
+  return "text-rose-600 dark:text-rose-400";
+}
+
+/**
+ * Returns Tailwind text color classes for average TPS, classified on the raw
+ * value (never the display-rounded text).
+ * - >= 60: green (text-emerald-600 dark:text-emerald-400)
+ * - 20 ~ < 60: amber (text-amber-600 dark:text-amber-400)
+ * - < 20: rose (text-rose-600 dark:text-rose-400)
+ * - null/undefined/non-finite/negative: muted foreground
+ */
+export function getGatewayTpsColorClass(tps: number | null | undefined): string {
+  if (tps === null || tps === undefined || !Number.isFinite(tps) || tps < 0) {
+    return "text-muted-foreground";
+  }
+  if (tps >= 60) {
+    return "text-emerald-600 dark:text-emerald-400";
+  }
+  if (tps >= 20) {
+    return "text-amber-600 dark:text-amber-400";
+  }
+  return "text-rose-600 dark:text-rose-400";
 }
 
 /**

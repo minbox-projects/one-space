@@ -1176,3 +1176,60 @@ describe("AI 网关页面副标题国际化文案", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 2 (REQ-001): the latency cell's three line labels are bilingual and are
+// mirrored into en_keys.txt / zh_keys.txt. The column label copy (Latency /
+// 延迟) is proven by the rendered UsageLogsPanel behavior test.
+// RED assertions: Frontend must add these exact keys to both dictionaries and
+// both key manifests.
+// ---------------------------------------------------------------------------
+
+const GATEWAY_LATENCY_LABEL_COPY: Record<
+  string,
+  Record<"en" | "zh", string>
+> = {
+  aiGatewayLogsLatencyTotal: { en: "Total", zh: "总耗时" },
+  aiGatewayLogsLatencyFirstToken: { en: "First token", zh: "首字" },
+  aiGatewayLogsLatencyAverageTps: { en: "Average TPS", zh: "平均 TPS" },
+};
+
+describe("AI 网关延迟指标国际化键", () => {
+  it.each(["en", "zh"] as const)(
+    "为 %s 提供三条延迟指标的真实文案",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      for (const [key, copy] of Object.entries(GATEWAY_LATENCY_LABEL_COPY)) {
+        const translation = i18n.getResource(language, "translation", key);
+        expect(typeof translation, `${language}:${key} 应为字符串`).toBe("string");
+        expect(translation, `${language}:${key} 文案不匹配`).toBe(copy[language]);
+      }
+    },
+  );
+
+  it("新增延迟指标键后 en 与 zh 的键路径集合仍完全一致", () => {
+    const enPaths = collectKeyPaths(resourceBundle("en"));
+    const zhPaths = collectKeyPaths(resourceBundle("zh"));
+    const enSet = new Set(enPaths);
+    const zhSet = new Set(zhPaths);
+    expect({
+      onlyEn: enPaths.filter((path) => !zhSet.has(path)),
+      onlyZh: zhPaths.filter((path) => !enSet.has(path)),
+    }).toEqual({ onlyEn: [], onlyZh: [] });
+  });
+
+  it("en_keys.txt 与 zh_keys.txt 收录三条延迟指标键且键集合保持一致", () => {
+    const enKeys = readKeyListFile("en_keys.txt");
+    const zhKeys = readKeyListFile("zh_keys.txt");
+
+    expect({
+      onlyEn: [...enKeys].filter((key) => !zhKeys.has(key)),
+      onlyZh: [...zhKeys].filter((key) => !enKeys.has(key)),
+    }).toEqual({ onlyEn: [], onlyZh: [] });
+
+    for (const key of Object.keys(GATEWAY_LATENCY_LABEL_COPY)) {
+      expect(enKeys.has(key), `en_keys.txt 缺少 ${key}`).toBe(true);
+      expect(zhKeys.has(key), `zh_keys.txt 缺少 ${key}`).toBe(true);
+    }
+  });
+});

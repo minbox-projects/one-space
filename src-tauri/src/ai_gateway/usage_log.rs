@@ -52,7 +52,9 @@ CREATE TABLE IF NOT EXISTS usage_logs (
     error_message TEXT,
     terminal INTEGER NOT NULL DEFAULT 1,
     reasoning_effort TEXT,
-    cost_breakdown TEXT
+    cost_breakdown TEXT,
+    first_token_ms REAL,
+    avg_tps REAL
 );
 CREATE INDEX IF NOT EXISTS idx_usage_logs_timestamp ON usage_logs(timestamp_ms);
 CREATE INDEX IF NOT EXISTS idx_usage_logs_local_model ON usage_logs(local_model);
@@ -195,6 +197,17 @@ pub struct UsageLogRecord {
     /// `None` when not specified.
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// Measured first meaningful upstream output latency in milliseconds,
+    /// unrounded (20261014-gateway-request-latency: REQ-002/AC-002). `None` for
+    /// non-streaming, synthetic no-upstream, no-output and historical rows; a
+    /// measured zero offset stays `Some(0.0)`.
+    #[serde(default)]
+    pub first_token_ms: Option<f64>,
+    /// Average output tokens per second over the unrounded generation window
+    /// (REQ-002/REQ-003). `None` when unavailable; an explicit valid zero count
+    /// over a positive window is `Some(0.0)`.
+    #[serde(default)]
+    pub avg_tps: Option<f64>,
 }
 
 /// Validate a user-provided retention value: only 1-365 days are accepted.
@@ -389,6 +402,28 @@ fn token_number(value: Option<&Value>) -> u64 {
     }
 }
 
+/// Independently validated explicitly reported output count (REQ-003/AC-003).
+///
+/// Only a non-negative integer, or its supported numeric-string form, of the
+/// selected raw `output_tokens` (falling back to `completion_tokens`) is
+/// accepted. Missing, null, negative, fractional and malformed values yield
+/// `None`, so none of them can masquerade as an explicitly reported zero, and
+/// this result is independent of the input/cache decomposition validity.
+fn reported_output_count(usage: &Value) -> Option<u64> {
+    usage
+        .get("output_tokens")
+        .or_else(|| usage.get("completion_tokens"))
+        .and_then(strict_non_negative_integer)
+}
+
+fn strict_non_negative_integer(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(number) => number.as_u64(),
+        Value::String(text) => text.trim().parse::<u64>().ok(),
+        _ => None,
+    }
+}
+
 /// A nested cache field when its key is present with a non-null value.
 /// A present field that parses to zero stays `Some(0)` so shape detection can
 /// distinguish "present" from "absent"; `null` counts as absent.
@@ -416,6 +451,14 @@ fn top_field_present(usage: &Value, key: &str) -> bool {
 pub(in crate::ai_gateway) struct CanonicalUsage {
     pub tokens: UsageTokens,
     pub valid: bool,
+    /// Independently validated explicitly reported cumulative output count
+    /// (20261014-gateway-request-latency: REQ-003/AC-003). `Some` only for a
+    /// non-negative integer `output_tokens` (falling back to `completion_tokens`)
+    /// or its supported numeric-string form; missing, null, negative,
+    /// fractional or malformed values stay `None`. This is derived directly from
+    /// the selected raw field, so it is independent of the input/cache
+    /// decomposition validity and never changes billing tokens or costs.
+    pub reported_output_tokens: Option<u64>,
 }
 
 /// Persisted usage classification of one new request-log row (REQ-004).
@@ -469,6 +512,10 @@ pub(in crate::ai_gateway) fn canonical_usage_from_value(usage: &Value) -> Canoni
         .or_else(|| usage.get("completion_tokens"))
         .map(|value| token_number(Some(value)))
         .unwrap_or(0);
+    // Independently validated reported output count (REQ-003): the selected raw
+    // field (output_tokens before completion_tokens) must be a non-negative
+    // integer or its numeric-string form; any other shape stays unknown.
+    let reported_output_tokens = reported_output_count(usage);
     let nested_read = nested_token(usage, "prompt_tokens_details", "cached_tokens")
         .or_else(|| nested_token(usage, "input_tokens_details", "cached_tokens"));
     let nested_write = nested_token(usage, "prompt_tokens_details", "cache_write_tokens")
@@ -489,6 +536,7 @@ pub(in crate::ai_gateway) fn canonical_usage_from_value(usage: &Value) -> Canoni
                 output_tokens,
             },
             valid: false,
+            reported_output_tokens,
         };
     }
 
@@ -509,6 +557,7 @@ pub(in crate::ai_gateway) fn canonical_usage_from_value(usage: &Value) -> Canoni
                     output_tokens,
                 },
                 valid: true,
+                reported_output_tokens,
             },
             // Illegal decomposition: nested components exceed reported input.
             // Never produce negative ordinary input via saturating subtraction.
@@ -520,6 +569,7 @@ pub(in crate::ai_gateway) fn canonical_usage_from_value(usage: &Value) -> Canoni
                     output_tokens,
                 },
                 valid: false,
+                reported_output_tokens,
             },
         }
     } else {
@@ -532,6 +582,7 @@ pub(in crate::ai_gateway) fn canonical_usage_from_value(usage: &Value) -> Canoni
                 output_tokens,
             },
             valid: true,
+            reported_output_tokens,
         }
     }
 }
@@ -1001,15 +1052,15 @@ INSERT INTO usage_logs (
     result, status, input_tokens, cache_read_tokens, cache_write_tokens,
     output_tokens, total_tokens, amount, duration_ms, error_message, terminal,
     reasoning_effort, usage_semantics, usage_present, cache_accounting_valid,
-    cost_breakdown
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    cost_breakdown, first_token_ms, avg_tps
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ";
 
 /// Semantics marker persisted for every newly written row (REQ-004).
 pub(in crate::ai_gateway) const CANONICAL_USAGE_SEMANTICS: &str = "canonical_v1";
 
 /// Column list of every record-producing `SELECT`, in [`record_from_row`] order.
-const RECORD_COLUMNS: &str = "timestamp_ms, local_model, upstream_model, provider_id, provider_name, result, status, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, total_tokens, amount, duration_ms, error_message, terminal, reasoning_effort, cost_breakdown";
+const RECORD_COLUMNS: &str = "timestamp_ms, local_model, upstream_model, provider_id, provider_name, result, status, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, total_tokens, amount, duration_ms, error_message, terminal, reasoning_effort, cost_breakdown, first_token_ms, avg_tps";
 
 fn metrics_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<UsageMetrics> {
     let cache_hit_tokens = row.get::<_, i64>(offset + 9)? as u64;
@@ -1068,6 +1119,8 @@ fn record_from_row(row: &Row<'_>) -> rusqlite::Result<UsageLogRecord> {
         error_message: row.get::<_, Option<String>>(14)?,
         terminal: row.get::<_, i64>(15)? != 0,
         reasoning_effort: row.get::<_, Option<String>>(16)?,
+        first_token_ms: row.get::<_, Option<f64>>(18)?,
+        avg_tps: row.get::<_, Option<f64>>(19)?,
     })
 }
 
@@ -1206,6 +1259,15 @@ fn migrate_usage_logs(connection: &Connection) -> Result<(), String> {
             "ALTER TABLE usage_logs ADD COLUMN cache_accounting_valid INTEGER NOT NULL DEFAULT 0",
         )?;
     }
+    // Nullable stream-timing measurements (REQ-002/REQ-003). Added additively and
+    // never backfilled: pre-existing rows stay unknown (null) and are never
+    // treated as an observed zero.
+    if !has_column("first_token_ms") {
+        add_usage_log_column(connection, "ALTER TABLE usage_logs ADD COLUMN first_token_ms REAL")?;
+    }
+    if !has_column("avg_tps") {
+        add_usage_log_column(connection, "ALTER TABLE usage_logs ADD COLUMN avg_tps REAL")?;
+    }
     Ok(())
 }
 
@@ -1252,6 +1314,8 @@ fn insert_record(
             accounting.present as i64,
             accounting.valid as i64,
             cost_breakdown,
+            record.first_token_ms,
+            record.avg_tps,
         ])
         .map_err(|error| error.to_string())?;
     Ok(())

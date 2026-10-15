@@ -17,6 +17,7 @@ use super::anthropic::{
 use super::anthropic_sse::{AnthropicSseConverter, AnthropicSseObserver};
 use super::openai_conversion::{self, include_usage_requested};
 use super::openai_sse::OpenAiSseConverter;
+use super::output_timing::OutputTimingObserver;
 use super::selection::{
     candidate_providers, classify_failure_with_message, clear_key_runtime_state,
     default_retry_delay, find_probe_candidate, is_quota_exceeded_message,
@@ -548,10 +549,20 @@ pub(in crate::ai_gateway) struct AttemptLog {
     /// (`false` for a missing or invalid/conflicting usage object).
     pub(in crate::ai_gateway) usage_valid: bool,
     pub(in crate::ai_gateway) duration_ms: u64,
+    /// Measured first meaningful upstream output latency in milliseconds,
+    /// unrounded; `None` when unavailable (REQ-002).
+    pub(in crate::ai_gateway) first_token_ms: Option<f64>,
+    /// Average output tokens per second over the unrounded generation window;
+    /// `None` when unavailable (REQ-002/REQ-003).
+    pub(in crate::ai_gateway) avg_tps: Option<f64>,
 }
 
 /// Buffer one completed upstream attempt with its own elapsed time. The parsed
-/// canonical usage carries both the persisted tiers and their validity.
+/// canonical usage carries both the persisted tiers and their validity. The
+/// independent stream-timing measurements are supplied only by the streaming
+/// path (fresh per attempt); every non-streaming or no-output attempt passes
+/// `None`.
+#[allow(clippy::too_many_arguments)]
 fn build_attempt_log(
     provider: &GatewayUpstreamProvider,
     protocol: UpstreamProtocol,
@@ -561,6 +572,8 @@ fn build_attempt_log(
     result: UsageResult,
     error_message: Option<String>,
     usage: Option<CanonicalUsage>,
+    first_token_ms: Option<f64>,
+    avg_tps: Option<f64>,
 ) -> AttemptLog {
     AttemptLog {
         provider_id: provider.id.clone(),
@@ -573,6 +586,8 @@ fn build_attempt_log(
         usage: usage.map(|canonical| canonical.tokens),
         usage_valid: usage.is_some_and(|canonical| canonical.valid),
         duration_ms: started.elapsed().as_millis().max(1) as u64,
+        first_token_ms,
+        avg_tps,
     }
 }
 
@@ -1066,6 +1081,8 @@ async fn attempt_candidate(
                 },
                 error_message.clone(),
                 usage,
+                None,
+                None,
             );
             let capture = ForwardCapture {
                 status: response.status,
@@ -1103,6 +1120,8 @@ async fn attempt_candidate(
                                 UsageResult::Failure,
                                 Some(error.clone()),
                                 usage,
+                                None,
+                                None,
                             );
                             return (
                                 AttemptResult::ReturnToClient(json_response(
@@ -1195,6 +1214,8 @@ async fn attempt_candidate(
                 0,
                 UsageResult::Failure,
                 sanitize_provider_error_text(&reason, provider),
+                None,
+                None,
                 None,
             );
             (
@@ -1985,6 +2006,11 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         capture.protocol = upstream_protocol;
         let provider = &candidate.provider;
         let started = Instant::now();
+        // Fresh per-attempt observation of the raw upstream protocol bytes. It
+        // is fed the same chunks used for usage capture, before awaited writes,
+        // and is finished before health settlement and persistence so the
+        // generation window excludes downstream and bookkeeping time.
+        let mut output_timing = OutputTimingObserver::new(upstream_protocol, started);
         let (
             class,
             retryable,
@@ -2017,6 +2043,8 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         0,
                         UsageResult::Failure,
                         sanitize_provider_error_text(&reason, provider),
+                        None,
+                        None,
                         None,
                     ));
                     break 'attempt (
@@ -2067,6 +2095,8 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         UsageResult::Failure,
                         error_message,
                         None,
+                        None,
+                        None,
                     ));
                     // Byte-for-byte only when the upstream body is already a
                     // standard error; otherwise keep the status and wrap it
@@ -2116,6 +2146,8 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     UsageResult::Failure,
                     error_message,
                     None,
+                    None,
+                    None,
                 ));
                 break 'attempt (
                     class,
@@ -2138,6 +2170,10 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             let mut chunks = response.bytes_stream();
             match chunks.next().await {
                 Some(Ok(first)) => {
+                    // Timestamp receipt before any awaited downstream write or
+                    // conversion so the observation reflects the real upstream
+                    // arrival of this chunk.
+                    output_timing.feed_at(&first, Instant::now());
                     // A pool conversion reads the stream incrementally, so a
                     // first chunk fragmented inside an event's `event:` field
                     // (e.g. `even`) must not be rejected; a declared SSE content
@@ -2165,6 +2201,8 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                 &extract_upstream_error_text(&first).unwrap_or_default(),
                                 provider,
                             ),
+                            None,
+                            None,
                             None,
                         ));
                         break 'attempt (
@@ -2239,6 +2277,10 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         // The failed attempt keeps the usage accumulated so far
                         // (REQ-004/REQ-005/AC-009).
                         if let Some(reason) = stream_error.take() {
+                            // The generation window ends at the failure, before
+                            // health settlement, persistence or the downstream
+                            // error fragment.
+                            output_timing.finish_at(Instant::now());
                             if let Some(target) = &probe_target {
                                 // A mid-stream probe failure re-arms the
                                 // cooldown; it is never retried and no
@@ -2271,6 +2313,13 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                             } else {
                                 usage.canonical_usage()
                             };
+                            // A failed stream keeps the first-output measurement
+                            // and any TPS derivable from the cumulative output
+                            // usage actually observed before it failed.
+                            let (first_token_ms, avg_tps) = output_timing.timing(
+                                failed_usage
+                                    .and_then(|canonical| canonical.reported_output_tokens),
+                            );
                             attempts.push(build_attempt_log(
                                 provider,
                                 protocol,
@@ -2279,7 +2328,9 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                 502,
                                 UsageResult::Failure,
                                 sanitize_provider_error_text(&reason, provider),
-                                failed_usage.clone(),
+                                failed_usage,
+                                first_token_ms,
+                                avg_tps,
                             ));
                             // Complete the SSE event boundary so the error
                             // fragment parses standalone even when the last
@@ -2321,6 +2372,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         }
                         match chunks.next().await {
                             Some(Ok(chunk)) => {
+                                output_timing.feed_at(&chunk, Instant::now());
                                 usage.feed(&chunk);
                                 if let Some(observer) = native_sse.as_mut() {
                                     observer.feed(&chunk);
@@ -2364,11 +2416,17 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     .or(last_forwarded);
                             }
                             Some(Err(error)) => {
+                                output_timing.finish_at(Instant::now());
                                 stream_error =
                                     Some(format!("stream failed after first byte: {error}"));
                                 continue;
                             }
                             None => {
+                                // The upstream stream ended: close the
+                                // generation window before health settlement,
+                                // persistence and downstream completion
+                                // bookkeeping.
+                                output_timing.finish_at(Instant::now());
                                 let native_usage = if native_messages {
                                     let mut observer = native_sse
                                         .take()
@@ -2414,6 +2472,12 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                         }
                                         health.apply();
                                         let canonical = observer.canonical_usage();
+                                        let (first_token_ms, avg_tps) =
+                                            output_timing.timing(
+                                                canonical.and_then(|usage| {
+                                                    usage.reported_output_tokens
+                                                }),
+                                            );
                                         attempts.push(build_attempt_log(
                                             provider,
                                             protocol,
@@ -2423,6 +2487,8 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                             UsageResult::Failure,
                                             sanitize_provider_error_text(&reason, provider),
                                             canonical,
+                                            first_token_ms,
+                                            avg_tps,
                                         ));
                                         if !observer.has_in_band_error() {
                                             if is_messages_path(path) {
@@ -2501,6 +2567,10 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                         }
                                         health.apply();
                                         let failed_usage = usage.canonical_usage();
+                                        let (first_token_ms, avg_tps) = output_timing.timing(
+                                            failed_usage
+                                                .and_then(|canonical| canonical.reported_output_tokens),
+                                        );
                                         attempts.push(build_attempt_log(
                                             provider,
                                             protocol,
@@ -2510,6 +2580,8 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                             UsageResult::Failure,
                                             sanitize_provider_error_text(&reason, provider),
                                             failed_usage,
+                                            first_token_ms,
+                                            avg_tps,
                                         ));
                                         if last_forwarded != Some(b'\n') {
                                             let _ = writer.write_all(b"\n").await;
@@ -2560,7 +2632,16 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     .map(|canonical| canonical.tokens)
                                     .or_else(|| usage.usage());
                                 // A normally ended stream is the served success
-                                // of this attempt (REQ-001/REQ-003).
+                                // of this attempt (REQ-001/REQ-003). TPS uses the
+                                // same authoritative cumulative usage selection
+                                // as logging and its independently validated
+                                // reported output count.
+                                let success_usage =
+                                    native_usage.or_else(|| usage.canonical_usage());
+                                let (first_token_ms, avg_tps) = output_timing.timing(
+                                    success_usage
+                                        .and_then(|canonical| canonical.reported_output_tokens),
+                                );
                                 attempts.push(build_attempt_log(
                                     provider,
                                     protocol,
@@ -2569,7 +2650,9 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     status,
                                     UsageResult::Success,
                                     None,
-                                    native_usage.or_else(|| usage.canonical_usage()),
+                                    success_usage,
+                                    first_token_ms,
+                                    avg_tps,
                                 ));
                                 return Ok(capture);
                             }
@@ -2587,6 +2670,8 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         0,
                         UsageResult::Failure,
                         sanitize_provider_error_text(&reason, provider),
+                        None,
+                        None,
                         None,
                     ));
                     break 'attempt (
@@ -2612,6 +2697,8 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         started,
                         502,
                         UsageResult::Failure,
+                        None,
+                        None,
                         None,
                         None,
                     ));
@@ -3431,6 +3518,8 @@ async fn record_request_usage_logs(
                 attempt.status,
                 attempt.usage,
                 attempt.duration_ms,
+                attempt.first_token_ms,
+                attempt.avg_tps,
                 attempt.error_message.clone(),
                 index == terminal_index,
                 reasoning_effort.clone(),
@@ -3466,6 +3555,8 @@ fn synthetic_terminal_row(
         status,
         None,
         duration_ms,
+        None,
+        None,
         error_message.map(str::to_string),
         true,
         reasoning_effort,
@@ -3485,6 +3576,8 @@ fn build_usage_log_row(
     status: u16,
     usage: Option<UsageTokens>,
     duration_ms: u64,
+    first_token_ms: Option<f64>,
+    avg_tps: Option<f64>,
     error_message: Option<String>,
     terminal: bool,
     reasoning_effort: Option<String>,
@@ -3519,6 +3612,8 @@ fn build_usage_log_row(
         amount,
         cost_breakdown,
         duration_ms,
+        first_token_ms,
+        avg_tps,
         error_message,
         terminal,
         reasoning_effort,

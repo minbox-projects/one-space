@@ -9,6 +9,7 @@ mod migration;
 mod model_pools;
 mod openai_conversion;
 mod openai_sse;
+mod output_timing;
 mod provider_usage;
 mod quota;
 mod runtime_http;

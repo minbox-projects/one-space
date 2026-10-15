@@ -21,10 +21,15 @@ import {
   activateProfile,
   createProfile,
   deleteProfile,
+  getModelCapability,
   getModelSources,
   getProfileMatrix,
+  isKnownEffort,
   listProfiles,
+  normalizeEffortForModel,
   renameProfile,
+  resolveExcludedEfforts,
+  resolveWritableEfforts,
   saveProfile,
 
   type AgentMatrixRow,
@@ -54,7 +59,6 @@ export interface AiWorkflowModelSwitcherProps {
 }
 
 const PROFILE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/i;
-const DEFAULT_REASONING_EFFORT: ValidEffort = "medium";
 
 const ROLE_BADGE_STYLES: Record<SupportedRole, { badge: string; dot: string }> =
   {
@@ -264,79 +268,167 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = () => {
     return JSON.stringify(matrix) !== JSON.stringify(originalMatrix);
   }, [matrix, originalMatrix]);
 
+  // A populated configured cell is invalid when its known model has no writable
+  // profile effort, or when its effort is not writable for that model, or when
+  // an unknown model holds a value outside the six-value profile schema
+  // (including blank). Save stays blocked until every configured cell is valid.
+  const hasInvalidConfiguredCell = useMemo(() => {
+    for (const row of matrix) {
+      for (const tool of SUPPORTED_TOOLS) {
+        const cell = row[tool];
+        if (!cell || !cell.model.trim()) continue;
+        const capability = getModelCapability(
+          modelSources?.[tool],
+          cell.model.trim(),
+        );
+        if (!capability) {
+          if (!isKnownEffort(cell.reasoning_effort)) return true;
+          continue;
+        }
+        const writable = resolveWritableEfforts(capability);
+        if (writable.length === 0) return true;
+        if (!writable.includes(cell.reasoning_effort as ValidEffort)) return true;
+      }
+    }
+    return false;
+  }, [matrix, modelSources]);
+
+  // Batch effort targets are the currently populated known cells. Unknown cells
+  // are skipped with a visible count; missing cells are never created. Every
+  // target's writable list participates in the intersection, so a known empty
+  // set yields an empty intersection.
+  const batchEffort = useMemo(() => {
+    const writables: ValidEffort[][] = [];
+    let unknownCount = 0;
+    for (const row of matrix) {
+      for (const tool of SUPPORTED_TOOLS) {
+        const cell = row[tool];
+        if (!cell || !cell.model.trim()) continue;
+        const capability = getModelCapability(
+          modelSources?.[tool],
+          cell.model.trim(),
+        );
+        if (!capability) {
+          unknownCount += 1;
+          continue;
+        }
+        writables.push(resolveWritableEfforts(capability));
+      }
+    }
+    let intersection: ValidEffort[] =
+      writables.length > 0 ? [...VALID_EFFORTS] : [];
+    for (const writable of writables) {
+      intersection = intersection.filter((effort) => writable.includes(effort));
+    }
+    return { hasTargets: writables.length > 0, intersection, unknownCount };
+  }, [matrix, modelSources]);
+
+  // The current selection must stay inside the current intersection. A stale
+  // selection carried over from a previous profile/model change is not
+  // receivable: this clears the effective value so Apply disables until the
+  // operator picks a currently common effort.
+  const effectiveSelectedEffort = useMemo<ValidEffort | null>(
+    () =>
+      batchEffort.intersection.includes(selectedEffort)
+        ? selectedEffort
+        : null,
+    [batchEffort, selectedEffort],
+  );
+
   const handleReset = () => {
     setMatrix(JSON.parse(JSON.stringify(originalMatrix)));
     setEditingCell(null);
     setError(null);
   };
 
-  const handleUpdateCell = (
+  // Model mutation path: applies the shared normalization chain so every
+  // model change (typed, candidate click, row/column fill) keeps a valid
+  // effort or falls back to the supported default / medium / first writable.
+  const handleModelChange = (
     role: string,
     tool: SupportedTool,
-    updates: { model?: string; reasoning_effort?: string },
+    model: string,
   ) => {
+    const capability = getModelCapability(modelSources?.[tool], model);
     setMatrix((prev) =>
       prev.map((row) => {
         if (row.role !== role) return row;
-        const current = row[tool] || {
-          model: "",
-          reasoning_effort: DEFAULT_REASONING_EFFORT,
-        };
+        const current = row[tool];
         return {
           ...row,
           [tool]: {
-            model: updates.model !== undefined ? updates.model : current.model,
-            reasoning_effort:
-              updates.reasoning_effort !== undefined
-                ? updates.reasoning_effort
-                : current.reasoning_effort,
+            model,
+            reasoning_effort: normalizeEffortForModel(
+              current?.reasoning_effort ?? "",
+              capability,
+            ),
           },
         };
       }),
     );
   };
 
-  const handleApplyColumnBatch = (tool: SupportedTool) => {
-    if (!batchColumnValue.trim()) return;
+  // Effort mutation path: unknown cells keep the operator's raw entry, including
+  // values outside the profile enum, so it stays visibly invalid instead of
+  // being silently clamped. Known cells only offer writable values.
+  const handleEffortChange = (
+    role: string,
+    tool: SupportedTool,
+    reasoning_effort: string,
+  ) => {
     setMatrix((prev) =>
-      prev.map((row) => {
-        const current = row[tool] || {
-          model: "",
-          reasoning_effort: DEFAULT_REASONING_EFFORT,
-        };
-        return {
-          ...row,
-          [tool]: {
-            ...current,
-            model: batchColumnValue.trim(),
-          },
-        };
-      }),
+      prev.map((row) =>
+        row.role !== role
+          ? row
+          : {
+              ...row,
+              [tool]: {
+                model: row[tool]?.model ?? "",
+                reasoning_effort,
+              },
+            },
+      ),
+    );
+  };
+
+  const handleApplyColumnBatch = (tool: SupportedTool) => {
+    const model = batchColumnValue.trim();
+    if (!model) return;
+    const capability = getModelCapability(modelSources?.[tool], model);
+    setMatrix((prev) =>
+      prev.map((row) => ({
+        ...row,
+        [tool]: {
+          model,
+          reasoning_effort: normalizeEffortForModel(
+            row[tool]?.reasoning_effort ?? "",
+            capability,
+          ),
+        },
+      })),
     );
     setBatchColumnTool(null);
     setBatchColumnValue("");
   };
 
   const handleApplyRowBatch = (role: string) => {
-    if (!batchRowValue.trim()) return;
+    const model = batchRowValue.trim();
+    if (!model) return;
     setMatrix((prev) =>
       prev.map((row) => {
         if (row.role !== role) return row;
-        return {
-          ...row,
-          codex: {
-            model: batchRowValue.trim(),
-            reasoning_effort: row.codex?.reasoning_effort || DEFAULT_REASONING_EFFORT,
-          },
-          claude: {
-            model: batchRowValue.trim(),
-            reasoning_effort: row.claude?.reasoning_effort || DEFAULT_REASONING_EFFORT,
-          },
-          opencode: {
-            model: batchRowValue.trim(),
-            reasoning_effort: row.opencode?.reasoning_effort || DEFAULT_REASONING_EFFORT,
-          },
-        };
+        const next = { ...row };
+        for (const tool of SUPPORTED_TOOLS) {
+          const capability = getModelCapability(modelSources?.[tool], model);
+          next[tool] = {
+            model,
+            reasoning_effort: normalizeEffortForModel(
+              row[tool]?.reasoning_effort ?? "",
+              capability,
+            ),
+          };
+        }
+        return next;
       }),
     );
     setBatchRowRole(null);
@@ -344,19 +436,23 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = () => {
   };
 
   const handleApplyEffortBatch = () => {
+    const effort = effectiveSelectedEffort;
+    if (!effort) return;
     setMatrix((prev) =>
-      prev.map((row) => ({
-        ...row,
-        codex: row.codex
-          ? { ...row.codex, reasoning_effort: selectedEffort }
-          : { model: "", reasoning_effort: selectedEffort },
-        claude: row.claude
-          ? { ...row.claude, reasoning_effort: selectedEffort }
-          : { model: "", reasoning_effort: selectedEffort },
-        opencode: row.opencode
-          ? { ...row.opencode, reasoning_effort: selectedEffort }
-          : { model: "", reasoning_effort: selectedEffort },
-      })),
+      prev.map((row) => {
+        const next = { ...row };
+        for (const tool of SUPPORTED_TOOLS) {
+          const cell = row[tool];
+          if (!cell || !cell.model.trim()) continue;
+          const capability = getModelCapability(
+            modelSources?.[tool],
+            cell.model.trim(),
+          );
+          if (!capability) continue;
+          next[tool] = { ...cell, reasoning_effort: effort };
+        }
+        return next;
+      }),
     );
     setIsEffortDropdownOpen(false);
   };
@@ -818,35 +914,67 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = () => {
               {isEffortDropdownOpen ? (
                 <div
                   role="listbox"
-                  className="absolute right-0 top-full z-20 mt-1 w-44 rounded-lg border bg-popover p-1.5 shadow-lg"
+                  className="absolute right-0 top-full z-20 mt-1 w-60 rounded-lg border bg-popover p-1.5 shadow-lg"
                 >
-                <div className="mb-1 px-2 py-1 text-[11px] font-medium text-muted-foreground">
-                  {t("aiWorkflow.reasoningEffort", "推理强度")}
-                </div>
-                  {VALID_EFFORTS.map((effort) => (
+                  <div className="mb-1 px-2 py-1 text-[11px] font-medium text-muted-foreground">
+                    {t("aiWorkflow.reasoningEffort", "推理强度")}
+                  </div>
+
+                  {batchEffort.intersection.map((effort) => (
                     <button
                       key={effort}
                       role="option"
-                      aria-selected={selectedEffort === effort}
+                      aria-selected={effectiveSelectedEffort === effort}
                       onClick={() => setSelectedEffort(effort)}
                       className={`flex w-full items-center justify-between rounded px-2 py-1 text-xs transition-colors ${
-                        selectedEffort === effort
+                        effectiveSelectedEffort === effort
                           ? "bg-primary text-primary-foreground font-medium"
                           : "hover:bg-muted"
                       }`}
                     >
                       <span>{effort}</span>
-                      {selectedEffort === effort ? (
+                      {effectiveSelectedEffort === effort ? (
                         <CheckCircle2 className="h-3.5 w-3.5" />
                       ) : null}
                     </button>
                   ))}
+
+                  {batchEffort.unknownCount > 0 ? (
+                    <div
+                      data-testid="batch-effort-skipped-unknown"
+                      className="mt-1 rounded border border-border/60 bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground"
+                    >
+                      {t("aiWorkflow.batchEffortSkippedUnknown", {
+                        count: batchEffort.unknownCount,
+                        defaultValue: "{{count}} unknown model cell(s) skipped",
+                      })}
+                    </div>
+                  ) : null}
+
+                  {!effectiveSelectedEffort ? (
+                    <div
+                      data-testid="batch-effort-disabled-reason"
+                      className="mt-1 rounded border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-400"
+                    >
+                      {batchEffort.hasTargets
+                        ? t(
+                            "aiWorkflow.batchEffortNoCommon",
+                            "The known model cells have no common supported inference effort.",
+                          )
+                        : t(
+                            "aiWorkflow.batchEffortNoTargets",
+                            "No known model cell to apply the inference effort to.",
+                          )}
+                    </div>
+                  ) : null}
+
                   <div className="mt-2 border-t pt-1.5">
                     <button
                       type="button"
                       data-testid="batch-apply-effort-submit"
+                      disabled={!effectiveSelectedEffort}
                       onClick={handleApplyEffortBatch}
-                      className="w-full rounded bg-primary py-1 text-center text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                      className="w-full rounded bg-primary py-1 text-center text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {t("aiWorkflow.apply", "应用")}
                     </button>
@@ -887,7 +1015,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = () => {
             <button
               type="button"
               aria-label={t("aiWorkflow.save", "保存")}
-              disabled={isActivating || !selectedProfile}
+              disabled={isActivating || !selectedProfile || hasInvalidConfiguredCell}
               onClick={() => void handleSaveProfile()}
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-50"
             >
@@ -992,6 +1120,8 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = () => {
                   </th>
                   {SUPPORTED_TOOLS.map((tool) => {
                     const degradedError = modelSources?.[tool]?.error;
+                    const capabilityWarning =
+                      modelSources?.[tool]?.capability_warning;
                     const isBatchActive = batchColumnTool === tool;
                     const candidateModels = modelSources?.[tool]?.models || [];
 
@@ -1027,6 +1157,19 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = () => {
                             >
                               <AlertTriangle className="h-3 w-3 shrink-0" />
                               <span className="truncate">{degradedError}</span>
+                            </div>
+                          ) : null}
+
+                          {/* Capability-read warning stays separate from the
+                              column error and never hides the model candidates. */}
+                          {capabilityWarning ? (
+                            <div
+                              data-testid={`column-capability-warning-${tool}`}
+                              className="flex items-center gap-1 text-[11px] font-normal text-amber-600 dark:text-amber-400"
+                              title={capabilityWarning}
+                            >
+                              <AlertTriangle className="h-3 w-3 shrink-0" />
+                              <span className="truncate">{capabilityWarning}</span>
                             </div>
                           ) : null}
 
@@ -1205,6 +1348,27 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = () => {
                         const candidateModels =
                           modelSources?.[tool]?.models || [];
 
+                        const trimmedModel = cellData?.model?.trim() ?? "";
+                        const isCellConfigured = trimmedModel !== "";
+                        const capability = isCellConfigured
+                          ? getModelCapability(modelSources?.[tool], trimmedModel)
+                          : undefined;
+                        const writableEfforts =
+                          resolveWritableEfforts(capability);
+                        const excludedEfforts =
+                          resolveExcludedEfforts(capability);
+                        const cellEffort = cellData?.reasoning_effort ?? "";
+                        const knownIncompatible =
+                          !!capability && writableEfforts.length === 0;
+                        const knownInvalid =
+                          !!capability &&
+                          writableEfforts.length > 0 &&
+                          !writableEfforts.includes(cellEffort as ValidEffort);
+                        const unknownInvalid =
+                          !capability &&
+                          isCellConfigured &&
+                          !isKnownEffort(cellEffort);
+
                         return (
                           <td
                             key={tool}
@@ -1272,9 +1436,11 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = () => {
                                       data-testid={`manual-model-input-${role}-${tool}`}
                                       value={cellData?.model || ""}
                                       onChange={(e) => {
-                                        handleUpdateCell(role, tool, {
-                                          model: e.target.value,
-                                        });
+                                        handleModelChange(
+                                          role,
+                                          tool,
+                                          e.target.value,
+                                        );
                                         setCellSearchFilter(e.target.value);
                                       }}
                                       placeholder={t(
@@ -1292,23 +1458,98 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = () => {
                                         "推理强度",
                                       )}
                                     </label>
-                                    <select
-                                      value={
-                                        cellData?.reasoning_effort || DEFAULT_REASONING_EFFORT
-                                      }
-                                      onChange={(e) =>
-                                        handleUpdateCell(role, tool, {
-                                          reasoning_effort: e.target.value,
-                                        })
-                                      }
-                                      className="h-8 w-full rounded border bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
-                                    >
-                                      {VALID_EFFORTS.map((eff) => (
-                                        <option key={eff} value={eff}>
-                                          {eff}
-                                        </option>
-                                      ))}
-                                    </select>
+
+                                    {capability ? (
+                                      <select
+                                        data-testid={`effort-select-${role}-${tool}`}
+                                        disabled={writableEfforts.length === 0}
+                                        value={
+                                          writableEfforts.includes(
+                                            cellEffort as ValidEffort,
+                                          )
+                                            ? cellEffort
+                                            : ""
+                                        }
+                                        onChange={(e) =>
+                                          handleEffortChange(
+                                            role,
+                                            tool,
+                                            e.target.value,
+                                          )
+                                        }
+                                        className="h-8 w-full rounded border bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
+                                      >
+                                        {writableEfforts.map((eff) => (
+                                          <option key={eff} value={eff}>
+                                            {eff}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    ) : (
+                                      <input
+                                        type="text"
+                                        data-testid={`effort-manual-input-${role}-${tool}`}
+                                        value={cellEffort}
+                                        onChange={(e) =>
+                                          handleEffortChange(
+                                            role,
+                                            tool,
+                                            e.target.value,
+                                          )
+                                        }
+                                        placeholder="low | medium | high | xhigh | max | ultra"
+                                        className="h-8 w-full rounded border bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+                                      />
+                                    )}
+
+                                    {excludedEfforts.length > 0 ? (
+                                      <p
+                                        data-testid={`effort-schema-exclusion-${role}-${tool}`}
+                                        className="mt-1 text-[11px] text-amber-600 dark:text-amber-400"
+                                      >
+                                        {t("aiWorkflow.effortSchemaExcluded", {
+                                          values: excludedEfforts.join(", "),
+                                          defaultValue:
+                                            "Profile schema excludes: {{values}}",
+                                        })}
+                                      </p>
+                                    ) : null}
+
+                                    {knownIncompatible ? (
+                                      <p
+                                        data-testid={`effort-incompatibility-${role}-${tool}`}
+                                        className="mt-1 text-[11px] text-destructive"
+                                      >
+                                        {t(
+                                          "aiWorkflow.effortIncompatibility",
+                                          "This model has no inference effort supported by the profile schema.",
+                                        )}
+                                      </p>
+                                    ) : null}
+
+                                    {!capability ? (
+                                      <p
+                                        data-testid={`effort-unknown-hint-${role}-${tool}`}
+                                        className="mt-1 text-[11px] text-muted-foreground"
+                                      >
+                                        {t("aiWorkflow.effortUnknownHint", {
+                                          defaultValue:
+                                            "Model capability unknown. Enter a schema effort: low, medium, high, xhigh, max, ultra.",
+                                        })}
+                                      </p>
+                                    ) : null}
+
+                                    {knownInvalid || unknownInvalid ? (
+                                      <p
+                                        data-testid={`effort-invalid-${role}-${tool}`}
+                                        className="mt-1 text-[11px] text-destructive"
+                                      >
+                                        {t(
+                                          "aiWorkflow.effortInvalid",
+                                          "Unsupported inference effort for the selected model.",
+                                        )}
+                                      </p>
+                                    ) : null}
                                   </div>
 
                                   {/* 候选模型列表：支持输入模糊过滤高亮 */}
@@ -1343,9 +1584,7 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = () => {
                                               key={m}
                                               type="button"
                                               onClick={() => {
-                                                handleUpdateCell(role, tool, {
-                                                  model: m,
-                                                });
+                                                handleModelChange(role, tool, m);
                                                 setCellSearchFilter(m);
                                               }}
                                               className={`block w-full truncate rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
