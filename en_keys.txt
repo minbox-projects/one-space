@@ -848,3 +848,10 @@ aiGatewayModelPoolReasonLabel
 aiGatewayLogsLatencyTotal
 aiGatewayLogsLatencyFirstToken
 aiGatewayLogsLatencyAverageTps
+aiWorkflow.effortSchemaExcluded
+aiWorkflow.effortIncompatibility
+aiWorkflow.effortUnknownHint
+aiWorkflow.effortInvalid
+aiWorkflow.batchEffortSkippedUnknown
+aiWorkflow.batchEffortNoCommon
+aiWorkflow.batchEffortNoTargets

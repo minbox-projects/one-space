@@ -1093,3 +1093,677 @@ fn test_ai_workflow_get_active_models_corrupt_installed_host_is_error() {
     });
 }
 
+// ============================================================================
+// 8. Local model capability discovery and atomic Save refusal
+//
+// The capability DTO is additive, so these tests assert it through the
+// serialized public `get_model_sources` boundary: a missing field is a
+// behavioral RED, never a compile error. No private parser shape is mirrored.
+// ============================================================================
+
+fn model_sources_json(home: &Path) -> serde_json::Value {
+    let result = get_model_sources(Some(home)).expect("get_model_sources must succeed");
+    serde_json::to_value(&result).expect("model sources must serialize to JSON")
+}
+
+fn capability_entry<'a>(
+    value: &'a serde_json::Value,
+    host: &str,
+    model_id: &str,
+) -> Option<&'a serde_json::Value> {
+    value.get(host)?.get("model_capabilities")?.get(model_id)
+}
+
+fn effort_strings(entry: &serde_json::Value) -> Vec<String> {
+    entry
+        .get("efforts")
+        .and_then(|efforts| efforts.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn sorted_efforts(mut values: Vec<String>) -> Vec<String> {
+    values.sort();
+    values
+}
+
+/// True when a column surfaces any non-empty diagnostic string besides `models`.
+/// The exact field name is deliberately not hard-coded; the contract only
+/// requires that a capability-read failure produces a useful warning.
+fn has_extra_diagnostic(column: &serde_json::Value) -> bool {
+    column
+        .as_object()
+        .map(|map| {
+            map.iter().any(|(key, value)| {
+                key != "models"
+                    && value
+                        .as_str()
+                        .map(|text| !text.trim().is_empty())
+                        .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn write_env_file(home: &Path, relative: &str, contents: &str) {
+    let path = home.join(relative);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("create fixture parent dir");
+    }
+    fs::write(&path, contents).expect("write fixture file");
+}
+
+#[test]
+fn test_ai_workflow_model_sources_codex_reports_exact_slug_capabilities() {
+    with_temp_test_home("cap-codex", |home| {
+        // The exact slug stays a name candidate as well.
+        write_env_file(home, ".codex/config.toml", "model = \"gpt-5.6-astra\"\n");
+
+        let cache = r#"{
+  "fetched_at": "2026-10-15T00:00:00Z",
+  "api_key": "sk-fixture-codex-secret-000",
+  "instructions": "SECRET-RAW-CONFIG-MARKER",
+  "models": [
+    {
+      "slug": "gpt-5.6-astra",
+      "display_name": "Astra",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        { "effort": "none", "description": "no reasoning" },
+        { "effort": "low", "description": "light" },
+        { "effort": "high", "description": "deep" }
+      ]
+    },
+    {
+      "slug": "gpt-empty-fallback",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": []
+    },
+    {
+      "slug": "gpt-default-only",
+      "default_reasoning_level": "medium"
+    },
+    {
+      "slug": "gpt-malformed",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": "not-an-array"
+    },
+    {
+      "slug": "gpt-blank-efforts",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [ { "effort": "" }, { "effort": "   " } ]
+    }
+  ]
+}"#;
+        write_env_file(home, ".codex/models_cache.json", cache);
+
+        let value = model_sources_json(home);
+
+        let codex_models: Vec<String> = value["codex"]["models"]
+            .as_array()
+            .expect("codex.models must be an array")
+            .iter()
+            .filter_map(|model| model.as_str().map(str::to_string))
+            .collect();
+        assert!(
+            codex_models.contains(&"gpt-5.6-astra".to_string()),
+            "codex name candidates must survive capability discovery: {:?}",
+            codex_models
+        );
+
+        let entry = capability_entry(&value, "codex", "gpt-5.6-astra")
+            .expect("an exact declared slug must expose a capability entry");
+        assert_eq!(
+            effort_strings(entry),
+            vec!["none".to_string(), "low".to_string(), "high".to_string()],
+            "raw declared efforts must follow the source declaration order"
+        );
+        assert_eq!(
+            entry.get("default_effort").and_then(|value| value.as_str()),
+            Some("high"),
+            "the declared default_reasoning_level must surface as default_effort"
+        );
+
+        for unknown in [
+            "gpt-empty-fallback",
+            "gpt-default-only",
+            "gpt-malformed",
+            "gpt-blank-efforts",
+            "gpt-absent-from-cache",
+        ] {
+            assert!(
+                capability_entry(&value, "codex", unknown).is_none(),
+                "{} must remain unknown (no capability entry)",
+                unknown
+            );
+        }
+
+        let serialized = value.to_string();
+        assert!(
+            !serialized.contains("sk-fixture-codex-secret-000"),
+            "serialized capability output must never include fixture credentials"
+        );
+        assert!(
+            !serialized.contains("SECRET-RAW-CONFIG-MARKER"),
+            "serialized capability output must never include raw configuration"
+        );
+        assert!(
+            !serialized.contains("api_key"),
+            "serialized capability output must not carry raw configuration keys"
+        );
+    });
+}
+
+#[test]
+fn test_ai_workflow_model_sources_opencode_reads_variant_effort_values() {
+    with_temp_test_home("cap-opencode-variants", |home| {
+        let config = r#"{
+  "provider": {
+    "apigateway": {
+      "models": {
+        "deepseek-v4": {
+          "variants": {
+            "fast": { "reasoningEffort": "low" },
+            "strong": { "reasoningEffort": "high" },
+            "maxed": { "reasoningEffort": "xhigh", "disabled": true }
+          }
+        },
+        "deepseek/r1": {
+          "variants": { "only": { "reasoningEffort": "medium" } }
+        },
+        "scalar-default": { "reasoningEffort": "high" },
+        "bad-variant": { "variants": { "weird": { "reasoningEffort": 42 } } }
+      }
+    },
+    "other": {
+      "models": {
+        "deepseek/r1": {
+          "variants": { "only": { "reasoningEffort": "ultra" } }
+        }
+      }
+    }
+  }
+}"#;
+        write_env_file(home, ".config/opencode/opencode.json", config);
+
+        let value = model_sources_json(home);
+
+        let v4 = capability_entry(&value, "opencode", "apigateway/deepseek-v4")
+            .expect("declared variants must expose an effort list");
+        assert_eq!(
+            sorted_efforts(effort_strings(v4)),
+            vec!["high".to_string(), "low".to_string()],
+            "effort values (not variant keys) must be read and disabled variants excluded"
+        );
+
+        let triple = capability_entry(&value, "opencode", "apigateway/deepseek/r1")
+            .expect("a slash-containing model id must stay intact");
+        assert_eq!(
+            sorted_efforts(effort_strings(triple)),
+            vec!["medium".to_string()]
+        );
+
+        let other = capability_entry(&value, "opencode", "other/deepseek/r1")
+            .expect("a distinct provider/model identity must keep its own capabilities");
+        assert_eq!(
+            sorted_efforts(effort_strings(other)),
+            vec!["ultra".to_string()],
+            "capabilities must not be merged across providers or similar ids"
+        );
+
+        for unknown in ["apigateway/scalar-default", "apigateway/bad-variant"] {
+            assert!(
+                capability_entry(&value, "opencode", unknown).is_none(),
+                "{} must remain unknown without an explicit effort declaration",
+                unknown
+            );
+        }
+    });
+}
+
+#[test]
+fn test_ai_workflow_model_sources_opencode_declarations_override_catalog() {
+    with_temp_test_home("cap-opencode-precedence", |home| {
+        let config = r#"{
+  "provider": {
+    "apigateway": {
+      "models": {
+        "declared-wins": { "variants": { "fast": { "reasoningEffort": "low" } } },
+        "all-disabled": {
+          "variants": {
+            "low-tier": { "reasoningEffort": "low", "disabled": true },
+            "high-tier": { "reasoningEffort": "high", "disabled": true }
+          }
+        }
+      }
+    }
+  }
+}"#;
+        write_env_file(home, ".config/opencode/opencode.json", config);
+
+        // The optional local catalog may be keyed by provider id directly or
+        // carry the same rows under a `providers` wrapper; both mirrors hold
+        // identical rows so the assertion targets behavior, not an envelope.
+        let catalog = r#"{
+  "apigateway": {
+    "id": "apigateway",
+    "models": {
+      "declared-wins": { "reasoning_options": [ { "type": "effort", "values": ["low", "high", "ultra"] } ] },
+      "all-disabled": { "reasoning_options": [ { "type": "effort", "values": ["low", "high"] } ] }
+    }
+  },
+  "providers": {
+    "apigateway": {
+      "id": "apigateway",
+      "models": {
+        "declared-wins": { "reasoning_options": [ { "type": "effort", "values": ["low", "high", "ultra"] } ] },
+        "all-disabled": { "reasoning_options": [ { "type": "effort", "values": ["low", "high"] } ] }
+      }
+    }
+  }
+}"#;
+        write_env_file(home, ".cache/opencode/models.json", catalog);
+
+        let value = model_sources_json(home);
+
+        let declared = capability_entry(&value, "opencode", "apigateway/declared-wins")
+            .expect("declared variants must win over the catalog");
+        assert_eq!(
+            sorted_efforts(effort_strings(declared)),
+            vec!["low".to_string()],
+            "explicit configuration declarations must take precedence over catalog fallback"
+        );
+
+        let disabled = capability_entry(&value, "opencode", "apigateway/all-disabled")
+            .expect("an all-disabled declaration is a known entry with no writable values");
+        assert!(
+            effort_strings(disabled).is_empty(),
+            "declared-but-all-disabled variants must not regain catalog efforts: {:?}",
+            effort_strings(disabled)
+        );
+    });
+}
+
+#[test]
+fn test_ai_workflow_model_sources_opencode_catalog_effort_fallback() {
+    with_temp_test_home("cap-opencode-catalog", |home| {
+        let config = r#"{
+  "provider": {
+    "apigateway": {
+      "models": {
+        "deepseek-v4": {},
+        "deepseek-v4-mini": {},
+        "glm-5": {}
+      }
+    },
+    "other": {
+      "models": { "deepseek-v4": {} }
+    }
+  }
+}"#;
+        write_env_file(home, ".config/opencode/opencode.json", config);
+
+        let catalog = r#"{
+  "apigateway": {
+    "id": "apigateway",
+    "models": {
+      "deepseek-v4": {
+        "reasoning_options": [
+          { "type": "budget_tokens", "values": ["1000"] },
+          { "type": "effort", "values": ["low", "high"] }
+        ]
+      },
+      "glm-5": {
+        "reasoning_options": [ { "type": "effort", "values": "low" } ]
+      }
+    }
+  },
+  "other": {
+    "id": "other",
+    "models": {
+      "deepseek-v4": { "reasoning_options": [ { "type": "effort", "values": ["ultra"] } ] }
+    }
+  },
+  "providers": {
+    "apigateway": {
+      "id": "apigateway",
+      "models": {
+        "deepseek-v4": {
+          "reasoning_options": [
+            { "type": "budget_tokens", "values": ["1000"] },
+            { "type": "effort", "values": ["low", "high"] }
+          ]
+        },
+        "glm-5": {
+          "reasoning_options": [ { "type": "effort", "values": "low" } ]
+        }
+      }
+    },
+    "other": {
+      "id": "other",
+      "models": {
+        "deepseek-v4": { "reasoning_options": [ { "type": "effort", "values": ["ultra"] } ] }
+      }
+    }
+  }
+}"#;
+        write_env_file(home, ".cache/opencode/models.json", catalog);
+
+        let value = model_sources_json(home);
+
+        let matched = capability_entry(&value, "opencode", "apigateway/deepseek-v4")
+            .expect("an exact provider/model match may supply otherwise undeclared efforts");
+        assert_eq!(
+            sorted_efforts(effort_strings(matched)),
+            vec!["high".to_string(), "low".to_string()],
+            "only the type=effort option values may supply capabilities"
+        );
+
+        let other = capability_entry(&value, "opencode", "other/deepseek-v4")
+            .expect("the other provider keeps its own catalog row");
+        assert_eq!(
+            sorted_efforts(effort_strings(other)),
+            vec!["ultra".to_string()]
+        );
+
+        for unknown in ["apigateway/deepseek-v4-mini", "apigateway/glm-5"] {
+            assert!(
+                capability_entry(&value, "opencode", unknown).is_none(),
+                "{} must not borrow a catalog row (similar name or malformed values)",
+                unknown
+            );
+        }
+    });
+}
+
+#[test]
+fn test_ai_workflow_model_sources_capability_failures_keep_candidates_and_columns() {
+    with_temp_test_home("cap-warning", |home| {
+        write_env_file(home, ".codex/config.toml", "model = \"gpt-5.6-sol\"\n");
+        write_env_file(
+            home,
+            ".config/opencode/opencode.json",
+            r#"{"provider":{"apigateway":{"models":{"deepseek-chat":{}}}}}"#,
+        );
+        write_env_file(
+            home,
+            ".claude/settings.json",
+            r#"{"env":{"ANTHROPIC_MODEL":"claude-3-7-sonnet"}}"#,
+        );
+
+        // A missing capability cache is a normal case: candidates stay and no
+        // warning is fabricated.
+        let absent = model_sources_json(home);
+        assert!(
+            absent["codex"]["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model.as_str() == Some("gpt-5.6-sol")),
+            "a missing capability cache must not drop codex name candidates"
+        );
+        assert!(
+            !has_extra_diagnostic(&absent["codex"]),
+            "a missing capability cache is normal and must not warn: {}",
+            absent["codex"]
+        );
+
+        // A corrupt capability cache must warn while preserving candidates and
+        // the healthy columns.
+        write_env_file(home, ".codex/models_cache.json", "{ this is not json :::");
+
+        let value = model_sources_json(home);
+        assert!(
+            value["codex"]["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model.as_str() == Some("gpt-5.6-sol")),
+            "a corrupt capability cache must not drop codex name candidates"
+        );
+        assert!(
+            has_extra_diagnostic(&value["codex"]),
+            "a corrupt capability cache must surface a useful warning: {}",
+            value["codex"]
+        );
+        assert!(
+            capability_entry(&value, "codex", "gpt-5.6-sol").is_none(),
+            "a corrupt capability cache yields unknown, never fabricated efforts"
+        );
+        assert_eq!(
+            value["opencode"]["error"],
+            serde_json::Value::Null,
+            "the opencode column must stay healthy when the codex cache is corrupt"
+        );
+        assert_eq!(
+            value["claude"]["error"],
+            serde_json::Value::Null,
+            "the claude column must stay healthy when the codex cache is corrupt"
+        );
+        assert!(
+            value["opencode"]["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model.as_str() == Some("apigateway/deepseek-chat")),
+            "a healthy column must keep its candidates"
+        );
+    });
+}
+
+#[test]
+fn test_ai_workflow_model_sources_claude_effort_is_not_a_capability_list() {
+    with_temp_test_home("cap-claude-unknown", |home| {
+        write_env_file(
+            home,
+            ".claude/settings.json",
+            r#"{"env":{"ANTHROPIC_MODEL":"claude-3-7-sonnet","CLAUDE_CODE_EFFORT_LEVEL":"xhigh"}}"#,
+        );
+
+        let value = model_sources_json(home);
+        let claude_unknown = value
+            .get("claude")
+            .and_then(|column| column.get("model_capabilities"))
+            .map(|map| map.as_object().map(|entries| entries.is_empty()).unwrap_or(true))
+            .unwrap_or(true);
+        assert!(
+            claude_unknown,
+            "a scalar Claude effort must never become a capability list: {}",
+            value["claude"]
+        );
+    });
+}
+
+#[test]
+fn test_ai_workflow_save_profile_rejects_known_unsupported_effort_atomically() {
+    with_temp_test_home("save-unsupported", |home| {
+        write_env_file(
+            home,
+            ".codex/models_cache.json",
+            r#"{"models":[{"slug":"gpt-5.6-astra","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]}]}"#,
+        );
+
+        let profiles_dir = home.join(".config/ai-workflow/profiles");
+        fs::create_dir_all(&profiles_dir).expect("create profiles dir");
+        let profile_path = profiles_dir.join("draft.yaml");
+        fs::write(
+            &profile_path,
+            "version: 1.0.0\nagents:\n  backend:\n    codex: { model: gpt-5.6-astra, reasoning_effort: low }\n",
+        )
+        .expect("write existing profile");
+        let original_profile_bytes = fs::read(&profile_path).expect("read profile bytes");
+
+        let config_path = home.join(".config/ai-workflow/config.yaml");
+        fs::write(&config_path, "active_profile: draft\n").expect("write config");
+        let original_config_bytes = fs::read(&config_path).expect("read config bytes");
+
+        let rows = vec![AgentMatrixRow {
+            role: "backend".to_string(),
+            codex: Some(ModelEffort {
+                model: "gpt-5.6-astra".to_string(),
+                reasoning_effort: "max".to_string(),
+            }),
+            claude: None,
+            opencode: None,
+        }];
+
+        let err = save_profile("draft", &rows, Some(home))
+            .expect_err("a schema-valid but declared-unsupported effort must be rejected");
+        let lower = err.to_lowercase();
+        assert!(lower.contains("backend"), "error must name the role: {}", err);
+        assert!(lower.contains("codex"), "error must name the host: {}", err);
+        assert!(
+            lower.contains("gpt-5.6-astra"),
+            "error must name the model: {}",
+            err
+        );
+        assert!(
+            lower.contains("max"),
+            "error must mention the rejected effort: {}",
+            err
+        );
+
+        assert_eq!(
+            fs::read(&profile_path).expect("read profile after refusal"),
+            original_profile_bytes,
+            "an unsupported effort must leave the existing profile bytes unchanged"
+        );
+        assert_eq!(
+            fs::read(&config_path).expect("read config after refusal"),
+            original_config_bytes,
+            "an unsupported effort must leave the active-profile configuration unchanged"
+        );
+    });
+}
+
+#[test]
+fn test_ai_workflow_save_profile_reloads_changed_capabilities_before_write() {
+    with_temp_test_home("save-reload", |home| {
+        write_env_file(
+            home,
+            ".codex/models_cache.json",
+            r#"{"models":[{"slug":"gpt-5.6-astra","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]}]}"#,
+        );
+
+        let config_path = home.join(".config/ai-workflow/config.yaml");
+        fs::create_dir_all(home.join(".config/ai-workflow")).expect("create config dir");
+        fs::write(&config_path, "active_profile: elsewhere\n").expect("write config");
+        let original_config_bytes = fs::read(&config_path).expect("read config bytes");
+
+        let rows = vec![AgentMatrixRow {
+            role: "backend".to_string(),
+            codex: Some(ModelEffort {
+                model: "gpt-5.6-astra".to_string(),
+                reasoning_effort: "high".to_string(),
+            }),
+            claude: None,
+            opencode: None,
+        }];
+
+        save_profile("draft", &rows, Some(home))
+            .expect("a currently declared supported effort must save");
+        let profile_path = home.join(".config/ai-workflow/profiles/draft.yaml");
+        let saved_bytes = fs::read(&profile_path).expect("read saved profile bytes");
+
+        // The local capability snapshot changes: 'high' is no longer declared.
+        write_env_file(
+            home,
+            ".codex/models_cache.json",
+            r#"{"models":[{"slug":"gpt-5.6-astra","default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}]}]}"#,
+        );
+
+        let err = save_profile("draft", &rows, Some(home))
+            .expect_err("Save must reload capabilities and reject a now-unsupported effort");
+        assert!(
+            err.to_lowercase().contains("gpt-5.6-astra"),
+            "the reload refusal must name the model: {}",
+            err
+        );
+
+        assert_eq!(
+            fs::read(&profile_path).expect("read profile after refusal"),
+            saved_bytes,
+            "a capability change before Save must preserve the existing profile bytes"
+        );
+        assert_eq!(
+            fs::read(&config_path).expect("read config after refusal"),
+            original_config_bytes,
+            "a capability change before Save must preserve the active-profile configuration"
+        );
+    });
+}
+
+#[test]
+fn test_ai_workflow_save_profile_allows_unknown_manual_and_rejects_invalid() {
+    with_temp_test_home("save-unknown-manual", |home| {
+        // No capability source declares this model, so it is unknown.
+        let manual_rows = vec![AgentMatrixRow {
+            role: "backend".to_string(),
+            codex: Some(ModelEffort {
+                model: "custom/mystery-model".to_string(),
+                reasoning_effort: "xhigh".to_string(),
+            }),
+            claude: None,
+            opencode: None,
+        }];
+        save_profile("manual-profile", &manual_rows, Some(home))
+            .expect("an unknown model with a schema-valid manual effort must still save");
+
+        let saved =
+            fs::read_to_string(home.join(".config/ai-workflow/profiles/manual-profile.yaml"))
+                .expect("read manual profile");
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&saved).expect("persisted YAML");
+        assert_eq!(
+            yaml["agents"]["backend"]["codex"]["reasoning_effort"].as_str(),
+            Some("xhigh")
+        );
+
+        let invalid_effort = vec![AgentMatrixRow {
+            role: "backend".to_string(),
+            codex: Some(ModelEffort {
+                model: "custom/mystery-model".to_string(),
+                reasoning_effort: "bogus".to_string(),
+            }),
+            claude: None,
+            opencode: None,
+        }];
+        assert!(
+            save_profile("manual-profile", &invalid_effort, Some(home)).is_err(),
+            "a schema-invalid manual effort must be rejected for unknown models too"
+        );
+
+        let blank_effort = vec![AgentMatrixRow {
+            role: "backend".to_string(),
+            codex: Some(ModelEffort {
+                model: "custom/mystery-model".to_string(),
+                reasoning_effort: "   ".to_string(),
+            }),
+            claude: None,
+            opencode: None,
+        }];
+        assert!(
+            save_profile("manual-profile", &blank_effort, Some(home)).is_err(),
+            "a blank effort must be rejected"
+        );
+
+        let blank_model = vec![AgentMatrixRow {
+            role: "backend".to_string(),
+            codex: Some(ModelEffort {
+                model: "   ".to_string(),
+                reasoning_effort: "high".to_string(),
+            }),
+            claude: None,
+            opencode: None,
+        }];
+        assert!(
+            save_profile("manual-profile", &blank_model, Some(home)).is_err(),
+            "a blank model must be rejected"
+        );
+    });
+}
+

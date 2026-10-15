@@ -3472,6 +3472,16 @@ const resources = {
         searchOrEnterModel: "Search or enter model...",
         noMatchingModels: "No matching models (custom input supported)",
         customModelLabel: "Use custom model",
+        effortSchemaExcluded: "Profile schema excludes: {{values}}",
+        effortIncompatibility:
+          "This model has no inference effort supported by the profile schema.",
+        effortUnknownHint:
+          "Model capability unknown. Enter a schema effort: low, medium, high, xhigh, max, ultra.",
+        effortInvalid: "Unsupported inference effort for the selected model.",
+        batchEffortSkippedUnknown: "{{count}} unknown model cell(s) skipped",
+        batchEffortNoCommon:
+          "The known model cells have no common supported inference effort.",
+        batchEffortNoTargets: "No known model cell to apply the inference effort to.",
       },
       shortLinkCredentialTitle: "TinyURL credentials",
       shortLinkCredentialDesc:
@@ -6973,6 +6983,14 @@ const resources = {
         searchOrEnterModel: "搜索或输入模型...",
         noMatchingModels: "无匹配候选模型（支持自定义输入）",
         customModelLabel: "使用自定义模型",
+        effortSchemaExcluded: "Profile schema 已排除：{{values}}",
+        effortIncompatibility: "该模型没有 profile schema 支持的推理强度。",
+        effortUnknownHint:
+          "模型能力未知，请输入 schema 内推理强度：low、medium、high、xhigh、max、ultra。",
+        effortInvalid: "所选模型不支持该推理强度。",
+        batchEffortSkippedUnknown: "已跳过 {{count}} 个未知模型单元格",
+        batchEffortNoCommon: "已知模型单元格之间没有共同支持的推理强度。",
+        batchEffortNoTargets: "没有可应用推理强度的已知模型单元格。",
       },
       shortLinkCredentialTitle: "TinyURL 凭据",
       shortLinkCredentialDesc:

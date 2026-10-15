@@ -2891,7 +2891,7 @@
       ],
       "module_root": "frontend",
       "owner_role": "frontend",
-      "responsibility": "AI Workflow subagent 角色模型切换工具箱工具：9×3 矩阵编辑、自动模型源候选与手动输入降级；Activate 只激活已保存 YAML，Save 仅保存既有 profile，新建 profile 首次保存时提供一次 Yes/No 保存后激活确认，保存成功更新 dirty baseline；`getActiveModels` 经 `ai_workflow_get_active_models` 读取当前已安装快照（绝不读已保存 profile YAML），`AI_WORKFLOW_PROFILE_UPDATED_EVENT` 在激活成功后发出以通知托盘等消费者刷新",
+      "responsibility": "AI Workflow subagent 角色模型切换工具箱工具：9×3 矩阵编辑（`model` 与 `reasoning_effort`）与按本地声明能力感知的推理强度编辑——已知模型只提供 `ModelCapability` 声明 ∩ 六值 profile 枚举的交集可用档位（`resolveWritableEfforts`，枚举顺序去重）并以 `resolveExcludedEfforts` 展示被 schema 排除的原始 token，交集为空时禁用控件、显示不兼容说明并让该已填单元格在 Save 前无效，未知能力模型用带未知提示的手动输入并按六值枚举校验（`isKnownEffort`）；四条模型编辑路径（候选点选、手动输入、整行填充、整列填充）共用 `normalizeEffortForModel`（保留可写值→声明默认→`medium`→首个可写值，未知保留已输入文本、新填以 `medium` 起步但绝不宣称支持）；批量推理强度只覆盖已填且已知的单元格并取可写交集、跳过未知并显示数量、交集为空或无目标时禁用 Apply、模型/方案变化后按当前交集重算；列 `capability_warning` 与列 `error` 独立可见且绝不隐藏候选（`getModelCapability`）；Activate 只激活已保存 YAML，Save 仅保存既有 profile、校验整份配置且后端按当前本地能力拒绝已知不支持的 effort，新建 profile 首次保存时提供一次 Yes/No 保存后激活确认，保存成功更新 dirty baseline；`getActiveModels` 经 `ai_workflow_get_active_models` 读取当前已安装快照（绝不读已保存 profile YAML），`AI_WORKFLOW_PROFILE_UPDATED_EVENT` 在激活成功后发出以通知托盘等消费者刷新；能力为本地声明快照，未知手动值不代表模型确实支持",
       "entries": [
         "src/components/AiWorkflowModelSwitcher/index.ts"
       ],
@@ -2900,7 +2900,10 @@
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.tsx",
         "src/components/AiWorkflowModelSwitcher/SearchableModelCombobox.tsx",
         "src/lib/aiWorkflowProfiles.ts",
-        "src-tauri/src/ai_workflow_profiles.rs"
+        "src-tauri/src/ai_workflow_profiles.rs",
+        "src/i18n.ts",
+        "en_keys.txt",
+        "zh_keys.txt"
       ],
       "tests": [
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx",
@@ -2928,6 +2931,48 @@
         {
           "file": "src/lib/aiWorkflowProfiles.ts",
           "name": "getModelSources",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "ModelCapability",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "ColumnModelSource",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "isKnownEffort",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "getModelCapability",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "resolveWritableEfforts",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "resolveExcludedEfforts",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkflowProfiles.ts",
+          "name": "normalizeEffortForModel",
           "kind": "function",
           "visibility": "public"
         },
@@ -2983,7 +3028,10 @@
         "src/lib/aiWorkflowProfiles.ts",
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx",
         "src-tauri/src/ai_workflow_profiles.rs",
-        "src/lib/aiWorkflowProfiles.test.ts"
+        "src/lib/aiWorkflowProfiles.test.ts",
+        "src/i18n.ts",
+        "en_keys.txt",
+        "zh_keys.txt"
       ],
       "relations": [],
       "shared_entry": false
@@ -2997,7 +3045,7 @@
       ],
       "module_root": "tauri-backend",
       "owner_role": "backend",
-      "responsibility": "AI Workflow profile 与模型源后端：规范化 profile 矩阵，严格校验并原子保存 YAML；save-only 保存不运行 CLI 或改变 active profile，激活由独立命令执行且激活失败不丢弃已保存的 profile；原子 save-and-activate 命令及其回滚链已移除；`ai_workflow_get_active_models` 只读读取 `config.yaml` 的 `active_profile`（缺失或空白返回 None）与三 host 的固定 9 角色已安装文件（Codex `.codex/agents/<role>.toml` 的 `model`/`model_reasoning_effort`；Claude `.claude/agents/<role>.md` frontmatter 的 `model`/`effort`；OpenCode `.config/opencode/agents/<role>.md` 的 `model`/`reasoningEffort`），绝不读取已保存 profile YAML 或运行 CLI；缺失文件按可选 host 返回 None，字段缺失或空白返回空串，已存在但损坏的文件返回错误，读取过程不做任何变更",
+      "responsibility": "AI Workflow profile 与模型源后端：规范化 profile 矩阵，严格校验并原子保存 YAML；save-only 保存不运行 CLI 或改变 active profile，激活由独立命令执行且激活失败不丢弃已保存的 profile；原子 save-and-activate 命令及其回滚链已移除；`ai_workflow_get_active_models` 只读读取 `config.yaml` 的 `active_profile`（缺失或空白返回 None）与三 host 的固定 9 角色已安装文件（Codex `.codex/agents/<role>.toml` 的 `model`/`model_reasoning_effort`；Claude `.claude/agents/<role>.md` frontmatter 的 `model`/`effort`；OpenCode `.config/opencode/agents/<role>.md` 的 `model`/`reasoningEffort`），绝不读取已保存 profile YAML 或运行 CLI；缺失文件按可选 host 返回 None，字段缺失或空白返回空串，已存在但损坏的文件返回错误，读取过程不做任何变更；`ai_workflow_get_model_sources` 在各列既有 `models` 候选与独立列 `error` 之外新增可缺省 `model_capabilities`（公开 `ModelCapability { efforts: Vec<String>, default_effort: Option<String> }`，按精确 host 本地模型 id 键控，`skip_serializing_if` 空映射省略即未知）与独立 `capability_warning`（与列 `error` 分离、绝不含配置或凭据）：Codex 取 `~/.codex/models_cache.json` 的 `models[].slug` 精确 slug 及非空 `supported_reasoning_levels[].effort` 与 `default_reasoning_level`，OpenCode 取显式 variant `reasoningEffort`（`disabled` 排除、显式声明优先且全禁用得到已知空列表、绝不回退缓存），无声明时按精确 `provider/model` 回退 `~/.cache/opencode/models.json` 的 `reasoning_options`（仅 `type: \"effort\"` 的字符串 `values`）并保留含斜杠的完整复合 id，Claude 与无显式来源者为未知；原始 effort 与 profile 可写六值枚举分离，候选列表与列错误行为不变；`ai_workflow_save_profile` 在 schema 校验通过后写入前按同一 home 重解析本地能力，拒绝已知模型中不受支持的 effort（即便 schema 合法）并返回含 role/host/model 的错误、绝不改写 profile 或 active-profile 配置，未知模型的 schema 合法手动值仍可保存",
       "entries": [
         "src-tauri/src/ai_workflow_profiles.rs"
       ],
@@ -3031,6 +3079,18 @@
           "file": "src-tauri/src/ai_workflow_profiles.rs",
           "name": "get_active_models",
           "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_workflow_profiles.rs",
+          "name": "ModelCapability",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_workflow_profiles.rs",
+          "name": "ColumnModelSource",
+          "kind": "type",
           "visibility": "public"
         }
       ],
