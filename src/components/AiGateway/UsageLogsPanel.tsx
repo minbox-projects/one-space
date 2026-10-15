@@ -849,7 +849,7 @@ export function UsageLogsPanel({
             {t("aiGatewayLogsEmpty", "No matching requests.")}
           </p>
         ) : (
-          <div className="mt-4 overflow-x-auto rounded-lg border">
+          <div className="mt-4 overflow-x-hidden rounded-lg border">
             <table
               className="w-full text-left text-xs"
               data-testid="ai-gateway-logs-grouped"
@@ -901,7 +901,7 @@ export function UsageLogsPanel({
         </p>
       ) : (
         <div className="mt-4 space-y-2">
-          <div className="overflow-x-auto rounded-lg border min-h-[220px]">
+          <div className="overflow-x-hidden rounded-lg border min-h-[220px]">
             <table
               className="w-full text-left text-xs"
               data-testid="ai-gateway-logs-ungrouped"
@@ -1043,12 +1043,12 @@ export function UsageLogsPanel({
                         );
                       })()}
                     </td>
-                    <td className="px-3 py-2">
-                      <div className="flex items-center gap-1.5 whitespace-nowrap">
-                        <span className="font-medium">{item.local_model}</span>
+                    <td className="px-3 py-2 min-w-0">
+                      <div className="flex items-center gap-1.5 whitespace-nowrap min-w-0">
+                        <span className="font-medium truncate" title={item.local_model}>{item.local_model}</span>
                         {item.reasoning_effort ? (
                           <span
-                            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-normal leading-none bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20"
+                            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-normal leading-none bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 shrink-0"
                             data-testid="ai-gateway-logs-reasoning-effort"
                             title={`${t("reasoningEffort", "Reasoning Effort")}: ${item.reasoning_effort}`}
                           >
@@ -1057,20 +1057,21 @@ export function UsageLogsPanel({
                         ) : null}
                       </div>
                       {(item.provider_name || item.upstream_model) ? (
-                        <div className="text-[10px] text-muted-foreground flex items-center gap-1 whitespace-nowrap">
+                        <div className="text-[10px] text-muted-foreground flex items-center gap-1 whitespace-nowrap min-w-0">
                           {item.provider_name ? (
                             <span
-                              className="font-medium"
+                              className="font-medium shrink-0"
                               data-testid="ai-gateway-logs-provider-name"
                             >
                               {item.provider_name}
                             </span>
                           ) : null}
                           {item.provider_name && item.upstream_model ? (
-                            <span className="opacity-40">·</span>
+                            <span className="opacity-40 shrink-0">·</span>
                           ) : null}
                           {item.upstream_model ? (
                             <span
+                              className="truncate"
                               title={item.upstream_model}
                               data-testid="ai-gateway-logs-upstream-model"
                             >
@@ -1081,7 +1082,7 @@ export function UsageLogsPanel({
                       ) : null}
                     </td>
                     <td
-                      className="px-3 py-2 text-left text-xs whitespace-nowrap"
+                      className="px-3 py-2 text-left text-[11px] whitespace-nowrap"
                       data-testid="ai-gateway-logs-duration-cell"
                     >
                       <div className="flex flex-col gap-0.5">

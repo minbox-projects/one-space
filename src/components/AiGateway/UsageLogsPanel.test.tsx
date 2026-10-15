@@ -2248,6 +2248,7 @@ describe("UsageLogsPanel", () => {
     const rows = within(table).getAllByTestId("ai-gateway-logs-row");
     expect(rows).toHaveLength(1);
     const cell = latencyCell(rows[0]);
+    expect(cell).toHaveClass("text-[11px]");
 
     // Exactly three labeled lines.
     expect(within(cell).getAllByTestId(/-label$/)).toHaveLength(3);
