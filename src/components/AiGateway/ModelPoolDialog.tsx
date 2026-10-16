@@ -6,6 +6,7 @@ import {
   Layers,
   Search,
   Server,
+  SlidersHorizontal,
   Sparkles,
   Trash2,
   X,
@@ -332,6 +333,10 @@ export function ModelPoolDialog({
     return initial;
   });
   const [saving, setSaving] = useState(false);
+  // 单个候选模型的推理策略面板展开状态（默认收起）
+  const [expandedReasoning, setExpandedReasoning] = useState<
+    Record<string, boolean>
+  >({});
 
   // 来源模型中仅显示已启用的服务商
   const activeProviders = useMemo(
@@ -548,220 +553,300 @@ export function ModelPoolDialog({
     );
     const fieldClass =
       "h-8 rounded-lg border border-border/80 bg-background px-2 text-xs text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50";
+    const isExpanded = Boolean(expandedReasoning[candidate.key]);
+    const isDeclared = hasDeclaredReasoning(draft);
+    const mappedEffortsCount = Object.values(draft.mappings).filter(
+      (val) => val !== "",
+    ).length;
+
     return (
       <div
         data-testid={`model-pool-reasoning-editor-${candidate.provider_id}-${candidate.local_model}`}
-        className="mt-0.5 space-y-2.5 border-t border-border/50 pt-2.5"
+        className="w-full rounded-xl border border-border/60 bg-muted/25 overflow-hidden transition-all"
       >
-        <div className="grid gap-2 sm:grid-cols-2">
-          <label className="flex flex-col gap-1 text-[10px] font-medium text-muted-foreground">
-            <span>
+        {/* 顶部标题栏兼折叠切换条 */}
+        <button
+          type="button"
+          onClick={() =>
+            setExpandedReasoning((previous) => ({
+              ...previous,
+              [candidate.key]: !previous[candidate.key],
+            }))
+          }
+          className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-muted/40 transition-colors"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <SlidersHorizontal className="h-3.5 w-3.5 text-primary/70 shrink-0" />
+            <span className="text-xs font-medium text-foreground">
               {t(
                 "aiGatewayModelPoolReasoningProfileLabel",
                 "Native reasoning profile",
               )}
             </span>
-            <select
-              aria-label={t(
-                "aiGatewayModelPoolReasoningProfileLabel",
-                "Native reasoning profile",
-              )}
-              value={draft.profile}
-              onChange={(event) =>
-                updateReasoning(candidate, { profile: event.target.value })
-              }
-              disabled={busy || saving}
-              className={fieldClass}
-            >
-              <option value="">
-                {t("aiGatewayModelPoolReasoningProfileUnknown", "Unknown")}
-              </option>
-              {REASONING_PROFILE_VALUES.map((profile) => (
-                <option key={profile} value={profile}>
-                  {t(REASONING_PROFILE_LABEL_KEYS[profile] ?? profile, profile)}
-                </option>
-              ))}
-              {draft.profile !== "" &&
-              !(REASONING_PROFILE_VALUES as readonly string[]).includes(
-                draft.profile,
-              ) ? (
-                <option value={draft.profile}>{draft.profile}</option>
-              ) : null}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1 text-[10px] font-medium text-muted-foreground">
-            <span>
-              {t(
-                "aiGatewayModelPoolReasoningValuesLabel",
-                "Declared values",
-              )}
-            </span>
-            <input
-              type="text"
-              aria-label={t(
-                "aiGatewayModelPoolReasoningValuesLabel",
-                "Declared values",
-              )}
-              value={draft.values}
-              onChange={(event) =>
-                updateReasoning(candidate, { values: event.target.value })
-              }
-              disabled={busy || saving}
-              className={fieldClass}
-            />
-          </label>
-        </div>
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1 text-[10px] font-medium text-muted-foreground">
-            <span>
-              {t(
-                "aiGatewayModelPoolReasoningBudgetMinLabel",
-                "Minimum budget",
-              )}
-            </span>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              aria-label={t(
-                "aiGatewayModelPoolReasoningBudgetMinLabel",
-                "Minimum budget",
-              )}
-              value={draft.budgetMin}
-              onChange={(event) =>
-                updateReasoning(candidate, { budgetMin: event.target.value })
-              }
-              disabled={busy || saving}
-              className={`${fieldClass} w-28`}
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-[10px] font-medium text-muted-foreground">
-            <span>
-              {t(
-                "aiGatewayModelPoolReasoningBudgetMaxLabel",
-                "Maximum budget",
-              )}
-            </span>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              aria-label={t(
-                "aiGatewayModelPoolReasoningBudgetMaxLabel",
-                "Maximum budget",
-              )}
-              value={draft.budgetMax}
-              onChange={(event) =>
-                updateReasoning(candidate, { budgetMax: event.target.value })
-              }
-              disabled={busy || saving}
-              className={`${fieldClass} w-28`}
-            />
-          </label>
-          <label className="inline-flex items-center gap-1.5 pb-1.5 text-[10px] font-medium text-muted-foreground">
-            <input
-              type="checkbox"
-              aria-label={t(
-                "aiGatewayModelPoolReasoningSupportsDisableLabel",
-                "Supports explicit disable",
-              )}
-              checked={draft.supportsDisable}
-              onChange={(event) =>
-                updateReasoning(candidate, {
-                  supportsDisable: event.target.checked,
-                })
-              }
-              disabled={busy || saving}
-              className="h-3.5 w-3.5 rounded border-border accent-primary"
-            />
-            <span>
-              {t(
-                "aiGatewayModelPoolReasoningSupportsDisableLabel",
-                "Supports explicit disable",
-              )}
-            </span>
-          </label>
-        </div>
-        {draft.profile === "chat_thinking_switch" ? (
-          <p className="text-[10px] text-amber-600 dark:text-amber-400">
-            {t(
-              "aiGatewayModelPoolReasoningSwitchNoGradient",
-              "This profile selects one intensity: every positive mapping sends the same switch, so there is no intensity gradient.",
+            {isDeclared ? (
+              <span className="inline-flex items-center gap-1 rounded border border-indigo-500/25 bg-indigo-500/10 px-1.5 py-0.2 text-[10px] font-medium text-indigo-700 dark:text-indigo-300 shrink-0">
+                <span>
+                  {draft.profile
+                    ? t(
+                        REASONING_PROFILE_LABEL_KEYS[draft.profile] ??
+                          draft.profile,
+                        draft.profile,
+                      )
+                    : t("aiGatewayModelPoolReasoningCustom", "Custom")}
+                </span>
+                {mappedEffortsCount > 0 ? (
+                  <span>· {mappedEffortsCount}</span>
+                ) : null}
+              </span>
+            ) : (
+              <span className="text-[10px] text-muted-foreground">
+                ({t("aiGatewayModelPoolReasoningProfileUnknown", "Unknown")})
+              </span>
             )}
-          </p>
-        ) : null}
-        <div className="space-y-1">
-          <div className="text-[10px] font-medium text-muted-foreground">
-            {t("aiGatewayModelPoolReasoningMappingLabel", "Mapping matrix")}
           </div>
-          <div className="grid gap-1.5 sm:grid-cols-5">
-            {CANONICAL_REASONING_EFFORTS.map((effort) => (
-              <label
-                key={effort}
-                className="flex flex-col gap-1 text-[10px] text-muted-foreground"
-              >
-                <span>{effort}</span>
+          <ChevronDown
+            className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${
+              isExpanded ? "" : "-rotate-90"
+            }`}
+          />
+        </button>
+
+        {/* 配置表单主体 */}
+        <div
+          data-testid="model-pool-reasoning-body"
+          className={
+            isExpanded
+              ? "space-y-3 border-t border-border/50 p-3 bg-background/40"
+              : "hidden"
+          }
+        >
+          <div className="grid gap-2.5 sm:grid-cols-2">
+              <label className="flex flex-col gap-1 text-[11px] font-medium text-muted-foreground">
+                <span>
+                  {t(
+                    "aiGatewayModelPoolReasoningProfileLabel",
+                    "Native reasoning profile",
+                  )}
+                </span>
                 <select
-                  data-testid={`model-pool-reasoning-mapping-${effort}`}
-                  aria-label={`${t(
-                    "aiGatewayModelPoolReasoningMappingLabel",
-                    "Mapping matrix",
-                  )}: ${effort}`}
-                  value={draft.mappings[effort] ?? ""}
+                  aria-label={t(
+                    "aiGatewayModelPoolReasoningProfileLabel",
+                    "Native reasoning profile",
+                  )}
+                  value={draft.profile}
                   onChange={(event) =>
-                    updateReasoning(candidate, {
-                      mappings: {
-                        ...draft.mappings,
-                        [effort]: event.target.value,
-                      },
-                    })
+                    updateReasoning(candidate, { profile: event.target.value })
                   }
                   disabled={busy || saving}
                   className={fieldClass}
                 >
                   <option value="">
-                    {t(
-                      "aiGatewayModelPoolReasoningMappingUnmapped",
-                      "Unmapped",
-                    )}
+                    {t("aiGatewayModelPoolReasoningProfileUnknown", "Unknown")}
                   </option>
-                  {enumOptions.map((value) => (
-                    <option key={`enum:${value}`} value={`enum:${value}`}>
-                      {`enum:${value}`}
+                  {REASONING_PROFILE_VALUES.map((profile) => (
+                    <option key={profile} value={profile}>
+                      {t(
+                        REASONING_PROFILE_LABEL_KEYS[profile] ?? profile,
+                        profile,
+                      )}
                     </option>
                   ))}
-                  <option value="budget">
-                    {t("aiGatewayModelPoolReasoningActionBudget", "Budget")}
-                  </option>
-                  <option value="disable">
-                    {t("aiGatewayModelPoolReasoningActionDisable", "Disable")}
-                  </option>
+                  {draft.profile !== "" &&
+                  !(REASONING_PROFILE_VALUES as readonly string[]).includes(
+                    draft.profile,
+                  ) ? (
+                    <option value={draft.profile}>{draft.profile}</option>
+                  ) : null}
                 </select>
-                {draft.mappings[effort] === "budget" ? (
-                  <input
-                    type="number"
-                    min={MODEL_POOL_MIN_REASONING_BUDGET}
-                    step={1}
-                    data-testid={`model-pool-reasoning-budget-${effort}`}
-                    aria-label={`${t(
-                      "aiGatewayModelPoolReasoningBudgetLabel",
-                      "Reasoning budget",
-                    )}: ${effort}`}
-                    value={draft.budgetTokens[effort] ?? ""}
-                    onChange={(event) =>
-                      updateReasoning(candidate, {
-                        budgetTokens: {
-                          ...draft.budgetTokens,
-                          [effort]: event.target.value,
-                        },
-                      })
-                    }
-                    disabled={busy || saving}
-                    className={`${fieldClass} w-full`}
-                  />
-                ) : null}
               </label>
-            ))}
+              <label className="flex flex-col gap-1 text-[11px] font-medium text-muted-foreground">
+                <span>
+                  {t(
+                    "aiGatewayModelPoolReasoningValuesLabel",
+                    "Declared values",
+                  )}
+                </span>
+                <input
+                  type="text"
+                  aria-label={t(
+                    "aiGatewayModelPoolReasoningValuesLabel",
+                    "Declared values",
+                  )}
+                  value={draft.values}
+                  onChange={(event) =>
+                    updateReasoning(candidate, { values: event.target.value })
+                  }
+                  disabled={busy || saving}
+                  className={fieldClass}
+                />
+              </label>
+            </div>
+            <div className="flex flex-wrap items-end gap-3 pt-0.5">
+              <label className="flex flex-col gap-1 text-[11px] font-medium text-muted-foreground">
+                <span>
+                  {t(
+                    "aiGatewayModelPoolReasoningBudgetMinLabel",
+                    "Minimum budget",
+                  )}
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  aria-label={t(
+                    "aiGatewayModelPoolReasoningBudgetMinLabel",
+                    "Minimum budget",
+                  )}
+                  value={draft.budgetMin}
+                  onChange={(event) =>
+                    updateReasoning(candidate, {
+                      budgetMin: event.target.value,
+                    })
+                  }
+                  disabled={busy || saving}
+                  className={`${fieldClass} w-28`}
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-[11px] font-medium text-muted-foreground">
+                <span>
+                  {t(
+                    "aiGatewayModelPoolReasoningBudgetMaxLabel",
+                    "Maximum budget",
+                  )}
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  aria-label={t(
+                    "aiGatewayModelPoolReasoningBudgetMaxLabel",
+                    "Maximum budget",
+                  )}
+                  value={draft.budgetMax}
+                  onChange={(event) =>
+                    updateReasoning(candidate, {
+                      budgetMax: event.target.value,
+                    })
+                  }
+                  disabled={busy || saving}
+                  className={`${fieldClass} w-28`}
+                />
+              </label>
+              <label className="inline-flex items-center gap-1.5 pb-2 text-[11px] font-medium text-muted-foreground cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  aria-label={t(
+                    "aiGatewayModelPoolReasoningSupportsDisableLabel",
+                    "Supports explicit disable",
+                  )}
+                  checked={draft.supportsDisable}
+                  onChange={(event) =>
+                    updateReasoning(candidate, {
+                      supportsDisable: event.target.checked,
+                    })
+                  }
+                  disabled={busy || saving}
+                  className="h-3.5 w-3.5 rounded border-border accent-primary"
+                />
+                <span>
+                  {t(
+                    "aiGatewayModelPoolReasoningSupportsDisableLabel",
+                    "Supports explicit disable",
+                  )}
+                </span>
+              </label>
+            </div>
+            {draft.profile === "chat_thinking_switch" ? (
+              <p className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+                {t(
+                  "aiGatewayModelPoolReasoningSwitchNoGradient",
+                  "This profile selects one intensity: every positive mapping sends the same switch, so there is no intensity gradient.",
+                )}
+              </p>
+            ) : null}
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-medium text-muted-foreground">
+                {t("aiGatewayModelPoolReasoningMappingLabel", "Mapping matrix")}
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+                {CANONICAL_REASONING_EFFORTS.map((effort) => (
+                  <div
+                    key={effort}
+                    className="flex flex-col gap-1.5 rounded-lg border border-border/50 bg-background/80 p-2 text-[11px] shadow-2xs"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-foreground/80">
+                        {effort}
+                      </span>
+                      {draft.mappings[effort] ? (
+                        <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                      ) : null}
+                    </div>
+                    <select
+                      data-testid={`model-pool-reasoning-mapping-${effort}`}
+                      aria-label={`${t(
+                        "aiGatewayModelPoolReasoningMappingLabel",
+                        "Mapping matrix",
+                      )}: ${effort}`}
+                      value={draft.mappings[effort] ?? ""}
+                      onChange={(event) =>
+                        updateReasoning(candidate, {
+                          mappings: {
+                            ...draft.mappings,
+                            [effort]: event.target.value,
+                          },
+                        })
+                      }
+                      disabled={busy || saving}
+                      className={fieldClass}
+                    >
+                      <option value="">
+                        {t(
+                          "aiGatewayModelPoolReasoningMappingUnmapped",
+                          "Unmapped",
+                        )}
+                      </option>
+                      {enumOptions.map((value) => (
+                        <option key={`enum:${value}`} value={`enum:${value}`}>
+                          {`enum:${value}`}
+                        </option>
+                      ))}
+                      <option value="budget">
+                        {t("aiGatewayModelPoolReasoningActionBudget", "Budget")}
+                      </option>
+                      <option value="disable">
+                        {t(
+                          "aiGatewayModelPoolReasoningActionDisable",
+                          "Disable",
+                        )}
+                      </option>
+                    </select>
+                    {draft.mappings[effort] === "budget" ? (
+                      <input
+                        type="number"
+                        min={MODEL_POOL_MIN_REASONING_BUDGET}
+                        step={1}
+                        data-testid={`model-pool-reasoning-budget-${effort}`}
+                        aria-label={`${t(
+                          "aiGatewayModelPoolReasoningBudgetLabel",
+                          "Reasoning budget",
+                        )}: ${effort}`}
+                        value={draft.budgetTokens[effort] ?? ""}
+                        onChange={(event) =>
+                          updateReasoning(candidate, {
+                            budgetTokens: {
+                              ...draft.budgetTokens,
+                              [effort]: event.target.value,
+                            },
+                          })
+                        }
+                        disabled={busy || saving}
+                        className={`${fieldClass} w-full`}
+                      />
+                    ) : null}
+                  </div>
+                ))}
+              </div>
           </div>
         </div>
       </div>
@@ -1250,13 +1335,20 @@ export function ModelPoolDialog({
           {/* Selected candidates */}
           <div
             data-testid="model-pool-selected-list"
-            className="space-y-2 rounded-xl border border-border/70 bg-muted/20 p-3"
+            className="space-y-3 rounded-xl border border-border/70 bg-muted/20 p-3"
           >
-            <div className="text-xs font-semibold text-foreground">
-              {t("aiGatewayModelPoolSelectedTitle", "Selected candidates")}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-foreground">
+                  {t("aiGatewayModelPoolSelectedTitle", "Selected candidates")}
+                </span>
+                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                  {selected.length}
+                </span>
+              </div>
             </div>
             {selected.length === 0 ? (
-              <p className="text-[11px] text-muted-foreground">
+              <p className="rounded-lg border border-dashed border-border/70 bg-card/40 px-3 py-6 text-center text-xs text-muted-foreground">
                 {t(
                   "aiGatewayModelPoolSelectedEmpty",
                   "Select at least one source model.",
@@ -1286,113 +1378,125 @@ export function ModelPoolDialog({
                 return (
                   <div
                     key={candidate.key}
-                    className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/70 p-2.5 transition hover:bg-card/90"
+                    className="flex flex-col rounded-xl border border-border/70 bg-card/70 p-3 transition hover:bg-card/90 space-y-2.5"
                   >
-                    {/* 左侧信息区：分为上下两行，层次分明 */}
-                    <div className="min-w-0 flex-1 space-y-1.5">
-                      {/* 第一行：模型映射与服务商来源 */}
-                      <div className="flex flex-wrap items-center gap-2">
+                    {/* 顶部主行：模型映射标识与右上角操作区 */}
+                    <div className="flex items-start justify-between gap-3">
+                      {/* 模型映射标识：本地模型 -> 上游模型 */}
+                      <div className="min-w-0 flex-1 flex flex-wrap items-center gap-2">
                         <span
-                          className="font-semibold text-xs text-foreground truncate max-w-[200px]"
+                          className="font-semibold text-sm text-foreground break-all"
                           title={candidate.local_model}
                         >
                           {candidate.local_model}
                         </span>
-                        <span className="text-muted-foreground/50 text-xs">→</span>
+                        <span className="text-muted-foreground/60 text-xs shrink-0 select-none">
+                          →
+                        </span>
                         <code
-                          className="rounded border border-border/50 bg-muted/70 px-1.5 py-0.5 font-mono text-[11px] text-foreground truncate max-w-[240px]"
+                          className="rounded-md border border-border/60 bg-muted/80 px-2 py-0.5 font-mono text-xs text-foreground break-all shadow-2xs"
                           title={candidate.upstream_model}
                         >
                           {candidate.upstream_model}
                         </code>
-
-                        {/* 来源服务商与模板徽标 */}
-                        <span className="inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                          <Server className="h-2.5 w-2.5 text-muted-foreground/80 shrink-0" />
-                          <span className="font-medium text-foreground/80 truncate max-w-[120px]">
-                            {providerName}
-                          </span>
-                          {candidateTemplateName ? (
-                            <span
-                              data-testid={`model-pool-selected-template-badge-${candidate.provider_id}`}
-                              className="inline-flex items-center gap-0.5 rounded border border-indigo-500/25 bg-indigo-500/10 px-1 py-0.2 text-[9px] font-medium text-indigo-700 dark:text-indigo-300 shrink-0"
-                              title={candidateTemplateName}
-                            >
-                              <Sparkles className="h-2 w-2" />
-                              <span>{candidateTemplateName}</span>
-                            </span>
-                          ) : null}
-                        </span>
                       </div>
 
-                      {/* 第二行：协议、可用性状态与异常原因 */}
-                      <div className="flex flex-wrap items-center gap-2 text-[10px]">
-                        <span
-                          className={`inline-flex items-center rounded-md px-1.5 py-0.5 font-medium ${protocolBadgeClass(
-                            candidate.protocol,
-                          )}`}
+                      {/* 右上角操作区：权重输入组件 + 移除按钮 */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex items-center gap-1.5 bg-muted/50 border border-border/60 rounded-lg px-2 py-1 shadow-2xs">
+                          <span className="text-[11px] font-medium text-muted-foreground select-none">
+                            {t("aiGatewayModelPoolWeightLabel", "weight")}
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={100}
+                            step={1}
+                            value={weights[candidate.key] ?? "1"}
+                            onChange={(event) =>
+                              setWeights((previous) => ({
+                                ...previous,
+                                [candidate.key]: event.target.value,
+                              }))
+                            }
+                            aria-label={t("aiGatewayModelPoolWeightAria", {
+                              model: candidate.local_model,
+                              defaultValue: "{{model}} weight",
+                            })}
+                            disabled={busy || saving}
+                            className="h-6 w-12 rounded border border-border/70 bg-background px-1 text-center font-mono text-xs text-foreground shadow-2xs outline-none focus:border-primary/60 focus-visible:ring-1 focus-visible:ring-primary/20 disabled:opacity-50"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeCandidate(candidate.key)}
+                          disabled={busy || saving}
+                          aria-label={t("aiGatewayModelPoolRemoveAria", {
+                            model: candidate.local_model,
+                            defaultValue: "Remove {{model}}",
+                          })}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition disabled:opacity-50"
                         >
-                          {protocolShortLabel(candidate.protocol)}
-                        </span>
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 次行：属性与状态栏（服务商、模板、协议、可用性健康状态、异常原因） */}
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      {/* 来源服务商与模板徽标 */}
+                      <span className="inline-flex items-center gap-1.5 rounded-md border border-border/50 bg-muted/60 px-2 py-0.5 text-[11px] text-muted-foreground">
+                        <Server className="h-3 w-3 text-muted-foreground/80 shrink-0" />
                         <span
-                          className={`inline-flex items-center rounded-md px-1.5 py-0.5 font-medium ${
-                            state.ready
-                              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                              : "bg-amber-500/15 text-amber-700 dark:text-amber-400"
-                          }`}
+                          className="font-medium text-foreground/90 break-words"
+                          title={providerName}
                         >
-                          {label}
+                          {providerName}
                         </span>
-                        {state.reason ? (
+                        {candidateTemplateName ? (
                           <span
-                            className="truncate max-w-[280px] text-amber-600 dark:text-amber-400"
-                            title={state.reason}
+                            data-testid={`model-pool-selected-template-badge-${candidate.provider_id}`}
+                            className="inline-flex items-center gap-0.5 rounded border border-indigo-500/25 bg-indigo-500/10 px-1.5 py-0.2 text-[10px] font-medium text-indigo-700 dark:text-indigo-300 shrink-0"
+                            title={candidateTemplateName}
                           >
-                            {state.reason}
+                            <Sparkles className="h-2.5 w-2.5" />
+                            <span>{candidateTemplateName}</span>
                           </span>
                         ) : null}
-                      </div>
+                      </span>
+
+                      {/* 协议徽标 */}
+                      <span
+                        className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ${protocolBadgeClass(
+                          candidate.protocol,
+                        )}`}
+                      >
+                        {protocolShortLabel(candidate.protocol)}
+                      </span>
+
+                      {/* 可用性状态徽标 */}
+                      <span
+                        className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
+                          state.ready
+                            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
+                            : "bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/25"
+                        }`}
+                      >
+                        {label}
+                      </span>
+
+                      {/* 异常原因（如果存在） */}
+                      {state.reason ? (
+                        <span
+                          className="inline-flex items-center rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-700 dark:text-amber-400 break-words"
+                          title={state.reason}
+                        >
+                          {state.reason}
+                        </span>
+                      ) : null}
                     </div>
 
-                    {/* 右侧操作区：权重配置与删除操作 */}
-                    <div className="flex items-center gap-2 shrink-0 self-center">
-                      <div className="flex items-center gap-1.5 bg-muted/40 border border-border/50 rounded-lg px-2 py-1">
-                        <span className="text-[10px] text-muted-foreground">
-                          {t("aiGatewayModelPoolWeightLabel", "weight")}
-                        </span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={100}
-                          step={1}
-                          value={weights[candidate.key] ?? "1"}
-                          onChange={(event) =>
-                            setWeights((previous) => ({
-                              ...previous,
-                              [candidate.key]: event.target.value,
-                            }))
-                          }
-                          aria-label={t("aiGatewayModelPoolWeightAria", {
-                            model: candidate.local_model,
-                            defaultValue: "{{model}} weight",
-                          })}
-                          disabled={busy || saving}
-                          className="h-6 w-12 rounded border border-border/70 bg-background px-1 text-center font-mono text-xs text-foreground shadow-2xs outline-none focus:border-primary/60 focus-visible:ring-1 focus-visible:ring-primary/20 disabled:opacity-50"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => removeCandidate(candidate.key)}
-                        disabled={busy || saving}
-                        aria-label={t("aiGatewayModelPoolRemoveAria", {
-                          model: candidate.local_model,
-                          defaultValue: "Remove {{model}}",
-                        })}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition disabled:opacity-50"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
+                    {/* 底部内嵌推理策略面板 */}
                     {reasoningEditor(candidate)}
                   </div>
                 );

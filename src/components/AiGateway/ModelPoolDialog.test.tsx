@@ -1552,5 +1552,33 @@ describe("ModelPoolDialog 模型池推理策略回归（Step 4 repair）", () =>
       ).toHaveValue(3072);
     },
   );
+
+  it("支持在已选列表中切换候选模型推理配置的折叠与展开状态（默认收起）", async () => {
+    await openModelPoolDialog();
+
+    // 勾选一个候选模型加入已选列表
+    fireEvent.click(screen.getByRole("checkbox", { name: /local-a1/i }));
+
+    const selectedList = screen.getByTestId("model-pool-selected-list");
+    expect(within(selectedList).getByText(/local-a1/i)).toBeInTheDocument();
+
+    const editor = screen.getByTestId("model-pool-reasoning-editor-p-a-local-a1");
+    const body = within(editor).getByTestId("model-pool-reasoning-body");
+
+    // 默认是收起状态，带有 hidden 样式类
+    expect(body).toHaveClass("hidden");
+
+    // 点击展开按钮
+    const toggleBtn = within(editor).getByRole("button");
+    fireEvent.click(toggleBtn);
+
+    // 展开后移除 hidden 样式类
+    expect(body).not.toHaveClass("hidden");
+
+    // 再次点击折叠按钮
+    fireEvent.click(toggleBtn);
+    expect(body).toHaveClass("hidden");
+  });
 });
+
 
