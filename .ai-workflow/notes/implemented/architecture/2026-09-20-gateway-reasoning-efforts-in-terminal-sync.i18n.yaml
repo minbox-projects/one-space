@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-20-gateway-reasoning-efforts-in-terminal-sync.md
-2026-09-20-gateway-reasoning-efforts-in-terminal-sync.md: f8e4ddda8a8a85a35ec65e180ea850f7cbf98dc5
-2026-09-20-gateway-reasoning-efforts-in-terminal-sync.zh.md: 50d254a0c61f37ccdbd701515302815113208ef6
+2026-09-20-gateway-reasoning-efforts-in-terminal-sync.md: 3dec70baef5f2056f50efd287fc6e486ae6db757
+2026-09-20-gateway-reasoning-efforts-in-terminal-sync.zh.md: 4a7bac08825f14f81e23da707fcb65725504b90f

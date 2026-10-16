@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (.ai-workflow/notes/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+# ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-16-provider-template-reasoning-sync.md
+2026-10-16-provider-template-reasoning-sync.md: 1bbcbeda218d63b091d972e73092525097d45241
+2026-10-16-provider-template-reasoning-sync.zh.md: c77ef93b07aea60470e542cf7eceef39d0d57c4a

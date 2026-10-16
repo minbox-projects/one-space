@@ -150,7 +150,8 @@ pub struct ModelMapping {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     /// Ordered reasoning-effort levels this mapping advertises; maintained manually
-    /// in the provider editor. Templates and template syncs neither carry nor write it.
+    /// in the provider editor and refreshed by a template sync from the template
+    /// model's explicitly declared capabilities while the row still inherits them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<String>,
     /// Runtime health: whether the row was automatically disabled after failures.

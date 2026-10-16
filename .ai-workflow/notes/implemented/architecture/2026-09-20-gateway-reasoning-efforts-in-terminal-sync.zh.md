@@ -10,7 +10,7 @@ Status: implemented
 
 ## Decision
 
-终端同步构造 opencode 网关服务商时，凡 `reasoning_efforts` 非空的映射都会把档位写入其模型条目。`build_gateway_provider` 写入 `"reasoning": true`，以及一个以各档位标识符为键、值为 `{ "reasoningEffort": "<effort>" }` 的 `variants` 对象；没有档位的映射保持原有的 `{ "name": ... }` 形态，因此未配置档位的模型不变。档位标识符会被去除首尾空白，空白项被丢弃，重复项通过对象键自然合并。映射键仍为 `local_model`，重复仍保留首个，且只按既有规则输出启用服务商的启用行。codex 不受影响：其网关记录仍只选择单个 `model` 且不带 variants。`reasoning_efforts` 仍不存在于模板中、也绝不由模板同步写入；只是终端同步的输出现在会反映它。
+终端同步构造 opencode 网关服务商时，凡 `reasoning_efforts` 非空的映射都会把档位写入其模型条目。`build_gateway_provider` 写入 `"reasoning": true`，以及一个以各档位标识符为键、值为 `{ "reasoningEffort": "<effort>" }` 的 `variants` 对象；没有档位的映射保持原有的 `{ "name": ... }` 形态，因此未配置档位的模型不变。档位标识符会被去除首尾空白，空白项被丢弃，重复项通过对象键自然合并。映射键仍为 `local_model`，重复仍保留首个，且只按既有规则输出启用服务商的启用行。codex 不受影响：其网关记录仍只选择单个 `model` 且不带 variants。映射的 `reasoning_efforts` 现在或由操作者直接声明、或经服务商模板继承获得，终端同步的输出会反映该映射实际携带的档位集合。
 
 ## Alternatives considered
 
@@ -22,6 +22,7 @@ Status: implemented
 ## Consequences
 
 - `api_gateway_sync_terminal` 写出的 opencode 网关服务商现在为该模型精确公布映射配置的档位；空列表产生旧的极简条目，因此旧构建读到的形态不变。
-- 持久化网关 schema、命令签名与模板形态都不变：`reasoning_efforts` 仍是带 serde 默认的映射字段，回滚只会在下一次同步时丢弃多出来的模型键。
+- 持久化网关 schema、命令签名与模板形态都不变：`reasoning_efforts` 仍是模板模型与映射上带 serde 默认的可选字段，回滚只会在下一次同步时丢弃多出来的模型键。
 - `MEMORY.md` 与 `api-gateway` / `api-gateway-backend` 导航条目现在描述同步的 variants；`navigation.md` 已按权威 JSON 重新生成。
-- Supersession（取代评估）：部分取代。[API Gateway Provider Templates and Incremental Model Sync](2026-09-18-api-gateway-provider-templates.md) 曾声明映射推理档位绝不写入终端同步配置；该终端同步事实由本记录更正，其称谓、模板绑定、忽略集合生命周期、「仅当未被改动才更新」的合并与星期价格决策继续有效。其余 active 记录互不相关。
+- Supersession（取代评估）：部分取代。[API Gateway Provider Templates and Incremental Model Sync](2026-09-18-api-gateway-provider-templates.md) 曾声明映射推理档位绝不写入终端同步配置；该终端同步事实由本记录更正，其称谓、模板绑定、忽略集合生命周期、「仅当未被改动才更新」的合并与星期价格决策继续有效。
+- Supersession（取代评估）：部分取代。[Provider Template Reasoning Capability Sync](../feature/2026-10-16-provider-template-reasoning-sync.md) 仅就推理能力的所有权与来源部分取代本记录：模板同步现在会把 `reasoning_efforts` 写入继承的映射，与操作者的直接声明并存，而本记录的变体投影决策继续有效。

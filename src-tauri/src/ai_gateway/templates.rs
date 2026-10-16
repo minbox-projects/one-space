@@ -531,6 +531,67 @@ fn complete_model_display_name(base: Option<&str>, identifier: &str) -> Option<S
     Some(format!("{base} {transformed}"))
 }
 
+/// Built-in CommandCode template id and its two official model views: the
+/// ordinary list stays authoritative for membership, names and endpoints, while
+/// the client catalog supplies explicit reasoning-effort declarations.
+const COMMANDCODE_TEMPLATE_ID: &str = "commandcode";
+const COMMANDCODE_ORDINARY_URL: &str = "https://api.commandcode.ai/provider/v1/models";
+const COMMANDCODE_CLIENT_URL: &str = "https://api.commandcode.ai/provider/v1/models?view=client";
+
+/// Provider API reasoning-effort values CommandCode accepts; `off` is a CLI
+/// control that must never be exported as an upstream effort.
+const COMMANDCODE_PROVIDER_API_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// Normalize an explicitly declared reasoning-effort value: `null` and an empty
+/// array clear the set; an array of strings is trimmed, blank-dropped and
+/// deduplicated in source order; any other shape is malformed.
+fn normalize_declared_efforts(value: &Value) -> Result<Vec<String>, String> {
+    match value {
+        Value::Null => Ok(Vec::new()),
+        Value::Array(items) => {
+            let mut out: Vec<String> = Vec::with_capacity(items.len());
+            for item in items {
+                let text = item.as_str().ok_or_else(|| {
+                    "a declared reasoning-effort field must be an array of strings".to_string()
+                })?;
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if !out.iter().any(|existing| existing == trimmed) {
+                    out.push(trimmed.to_string());
+                }
+            }
+            Ok(out)
+        }
+        _ => Err(
+            "a declared reasoning-effort field must be an array of strings or null".to_string(),
+        ),
+    }
+}
+
+/// The explicitly declared reasoning-effort set of an object entry, when the
+/// entry carries one: `reasoningEfforts` wins over a coexisting
+/// `reasoning_efforts`, and an absent field is `None` so the previous value is
+/// preserved.
+fn declared_reasoning_efforts(
+    object: &serde_json::Map<String, Value>,
+) -> Result<Option<Vec<String>>, String> {
+    match object
+        .get("reasoningEfforts")
+        .or_else(|| object.get("reasoning_efforts"))
+    {
+        Some(value) => normalize_declared_efforts(value).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// The property of a source entry that marks it hidden from clients; only an
+/// exact boolean `true` skips the entry.
+fn source_entry_is_hidden(object: &serde_json::Map<String, Value>) -> bool {
+    matches!(object.get("hidden"), Some(Value::Bool(true)))
+}
+
 /// Parse a model-list payload and merge it over the template's current models.
 ///
 /// Accepted payload shapes are a `data` array, a `models` array, a root array
@@ -542,9 +603,12 @@ fn complete_model_display_name(base: Option<&str>, identifier: &str) -> Option<S
 /// `supported_endpoints` is an array: Chat Completions wins over Responses,
 /// which wins over Anthropic Messages; an array declaring none of those drops
 /// the entry. A missing or non-array field keeps the entry with no protocol so
-/// it inherits the template protocol. Existing models keep their local
+/// it inherits the template protocol. An object entry may also declare
+/// `reasoningEfforts` (winning over `reasoning_efforts`): an array replaces the
+/// set, `null`/`[]` clears it and an absent field preserves the previous value,
+/// while any other declared shape is malformed. Existing models keep their local
 /// `enabled` flag and any source-omitted display name/protocol; new models start
-/// enabled.
+/// enabled. An entry whose `hidden` is exactly `true` is skipped.
 /// Duplicate identifiers keep the first. A missing model array, an entry
 /// without an identifier and an empty effective set are fatal.
 fn parse_model_list_source(
@@ -605,6 +669,10 @@ fn parse_model_list_source(
         let object = entry.as_object().ok_or_else(|| {
             "response contains a model entry without an identifier".to_string()
         })?;
+        if source_entry_is_hidden(object) {
+            continue;
+        }
+        let declared_efforts = declared_reasoning_efforts(object)?;
         let identifier = object
             .get("id")
             .and_then(Value::as_str)
@@ -663,6 +731,12 @@ fn parse_model_list_source(
             source_name.or_else(|| previous_model.and_then(|model| model.display_name.as_deref())),
             &identifier,
         );
+        let reasoning_efforts = match declared_efforts {
+            Some(efforts) => efforts,
+            None => previous_model
+                .map(|model| model.reasoning_efforts.clone())
+                .unwrap_or_default(),
+        };
         merged.push(ProviderTemplateModel {
             upstream_model: identifier,
             local_model: previous_model.and_then(|model| model.local_model.clone()),
@@ -674,7 +748,7 @@ fn parse_model_list_source(
             cache_write: previous_model.map(|model| model.cache_write).unwrap_or(0.0),
             output: previous_model.map(|model| model.output).unwrap_or(0.0),
             off_peaks: previous_model.map(|model| model.off_peaks.clone()).unwrap_or_default(),
-            reasoning_efforts: previous_model.map(|model| model.reasoning_efforts.clone()).unwrap_or_default(),
+            reasoning_efforts,
         });
     }
 
@@ -739,9 +813,27 @@ fn upsert_template_state(
     }
 }
 
+/// The set form of a declared reasoning-effort list: every token trimmed, blank
+/// tokens dropped, duplicates removed and the remainder sorted so two lists
+/// compare equal regardless of order, duplication or surrounding whitespace.
+fn normalized_effort_set(efforts: &[String]) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::with_capacity(efforts.len());
+    for effort in efforts {
+        let trimmed = effort.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !out.iter().any(|existing| *existing == trimmed) {
+            out.push(trimmed);
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
 /// Propagate a template update to every derived provider whose `template_id`
 /// matches: provider name/base_url/protocol update only while they still equal
-/// the previous template values, and only enabled template models add or update
+/// the previous template values, and only enabled template models add new
 /// mappings. A mapping is deleted when its upstream model left the template
 /// (whatever its enabled flag) or when it was already disabled and its model the
 /// new template does not list; a retired model is appended once to the
@@ -752,8 +844,12 @@ fn upsert_template_state(
 /// display name/protocol update only while they equal the previous template
 /// values (`local_model` is never touched); a mapping whose effective protocol
 /// equals the provider protocol is stored as `None` (follow the provider)
-/// instead of an explicit value. Ignored models and disabled template
-/// models are skipped.
+/// instead of an explicit value. Every existing matching mapping whose
+/// normalized effort set still equals the previous template model's set — an
+/// alias, a user-disabled or auto-disabled row, or a disabled template model —
+/// follows the new template capabilities, while an independently customized set
+/// is preserved; enablement and health flags are never changed. Ignored models
+/// and disabled template models never create a new mapping.
 ///
 /// Returns one [`ProviderRetirementNotice`] for every bound provider with at
 /// least one removal in this sync, in provider order. Each notice lists the
@@ -860,6 +956,38 @@ fn propagate_to_derived(
                 retired_models: removed.clone(),
             });
             removed_by_provider.push((provider.id.clone(), removed));
+        }
+
+        // Explicit capability maintenance runs before creation and on existing
+        // rows only, so it never creates a mapping and never resurrects an
+        // ignored model. A row whose set still equals the previous template
+        // model's set is inherited and follows the new set; any other set is an
+        // independent override and is preserved.
+        for model in &new_template.models {
+            if provider
+                .ignored_models
+                .iter()
+                .any(|ignored| ignored == &model.upstream_model)
+            {
+                continue;
+            }
+            let Some(previous_model) = previous
+                .models
+                .iter()
+                .find(|candidate| candidate.upstream_model == model.upstream_model)
+            else {
+                continue;
+            };
+            let inherited_set = normalized_effort_set(&previous_model.reasoning_efforts);
+            for mapping in provider
+                .mappings
+                .iter_mut()
+                .filter(|mapping| mapping.upstream_model == model.upstream_model)
+            {
+                if normalized_effort_set(&mapping.reasoning_efforts) == inherited_set {
+                    mapping.reasoning_efforts = model.reasoning_efforts.clone();
+                }
+            }
         }
 
         for model in new_template.models.iter().filter(|model| model.enabled) {
@@ -1039,37 +1167,186 @@ pub(in crate::ai_gateway) fn apply_template_sync_from_body(
     apply_template_sync_with_notices(config, template_id, |_| Ok(raw.to_string()), |_| Ok(()))
 }
 
-/// Fetch a template's model list from its configured `models_url` through
-/// `reqwest` with a 15-second timeout and no credentials. A blank URL, non-2xx
-/// status, timeout and network error return an actionable error naming the URL
-/// and the reason.
-pub(in crate::ai_gateway) async fn fetch_template_models(
+/// Fetch a template's model list through an injectable request seam and, for the
+/// canonical CommandCode template, enrich the ordinary list with the official
+/// client catalog's capabilities.
+///
+/// The ordinary list stays authoritative for membership, names and endpoints: a
+/// second credential-free request reads the client view and only joins matching
+/// declared efforts by exact upstream id, so a client-only entry never adds a
+/// model. The seam returns the final ordinary-list JSON body. Any client failure
+/// (request, unsupported `schemaVersion`, invalid `data`, missing or duplicate
+/// id, malformed declared effort) fails the whole operation naming the client
+/// URL. Every other URL is fetched once as configured.
+pub(in crate::ai_gateway) async fn fetch_template_models_with<F, Fut>(
     template: &ProviderTemplate,
-) -> Result<String, String> {
+    mut fetch: F,
+) -> Result<String, String>
+where
+    F: FnMut(String) -> Fut + Send,
+    Fut: core::future::Future<Output = Result<String, String>> + Send,
+{
     let url = template
         .models_url
         .as_deref()
         .map(str::trim)
         .filter(|url| !url.is_empty())
-        .ok_or_else(|| "template has no model-list URL configured".to_string())?;
+        .ok_or_else(|| "template has no model-list URL configured".to_string())?
+        .to_string();
 
+    if template.id.trim() != COMMANDCODE_TEMPLATE_ID || url != COMMANDCODE_ORDINARY_URL {
+        return fetch(url.clone())
+            .await
+            .map_err(|reason| format!("failed to fetch {url}: {reason}"));
+    }
+
+    let ordinary = fetch(COMMANDCODE_ORDINARY_URL.to_string())
+        .await
+        .map_err(|reason| format!("failed to fetch {COMMANDCODE_ORDINARY_URL}: {reason}"))?;
+    let client = fetch(COMMANDCODE_CLIENT_URL.to_string())
+        .await
+        .map_err(|reason| format!("failed to fetch {COMMANDCODE_CLIENT_URL}: {reason}"))?;
+    join_commandcode_client_capabilities(&ordinary, &client)
+}
+
+/// The client-catalog failure message, always naming the client URL.
+fn commandcode_client_error(reason: impl std::fmt::Display) -> String {
+    format!("failed to parse {COMMANDCODE_CLIENT_URL}: {reason}")
+}
+
+/// A mutable reference to the model-entry array of an accepted source shape:
+/// `data`, `models`, or the root array.
+fn model_entries_mut(value: &mut Value) -> Option<&mut Vec<Value>> {
+    match value {
+        Value::Array(entries) => Some(entries),
+        Value::Object(map) => {
+            if map.get("data").is_some_and(Value::is_array) {
+                map.get_mut("data").and_then(Value::as_array_mut)
+            } else if map.get("models").is_some_and(Value::is_array) {
+                map.get_mut("models").and_then(Value::as_array_mut)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Enrich an ordinary CommandCode model list with the official client catalog's
+/// declared reasoning efforts, joined by exact upstream id. Only capabilities
+/// are joined: the ordinary entries, their order, names and endpoints are
+/// untouched, and a client-only or hidden catalog entry never adds a model.
+/// Effort values are normalized, then filtered to the CommandCode Provider API
+/// set so a CLI-only `off` is never exported.
+fn join_commandcode_client_capabilities(
+    ordinary: &str,
+    client: &str,
+) -> Result<String, String> {
+    let client_value: Value = serde_json::from_str(client)
+        .map_err(|error| commandcode_client_error(format!("not valid JSON: {error}")))?;
+    if client_value.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
+        return Err(commandcode_client_error("unsupported catalog schemaVersion"));
+    }
+    let client_entries = client_value
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| commandcode_client_error("the catalog is missing its model data array"))?;
+
+    let mut declared: Vec<(String, Option<Vec<String>>)> =
+        Vec::with_capacity(client_entries.len());
+    for entry in client_entries {
+        let object = entry
+            .as_object()
+            .ok_or_else(|| commandcode_client_error("the catalog contains a non-object entry"))?;
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| commandcode_client_error("the catalog contains an entry without an id"))?
+            .to_string();
+        if declared.iter().any(|(existing, _)| existing == &id) {
+            return Err(commandcode_client_error(format!(
+                "the catalog declares the duplicate id {id}"
+            )));
+        }
+        let efforts = declared_reasoning_efforts(object)
+            .map_err(commandcode_client_error)?
+            .map(|efforts| {
+                efforts
+                    .into_iter()
+                    .filter(|effort| COMMANDCODE_PROVIDER_API_EFFORTS.contains(&effort.as_str()))
+                    .collect::<Vec<String>>()
+            });
+        declared.push((id, efforts));
+    }
+
+    let mut ordinary_value: Value = serde_json::from_str(ordinary)
+        .map_err(|error| format!("response is not valid JSON: {error}"))?;
+    let entries = model_entries_mut(&mut ordinary_value)
+        .ok_or_else(|| "response is missing the model list".to_string())?;
+
+    for entry in entries.iter_mut() {
+        let Some(object) = entry.as_object_mut() else {
+            continue;
+        };
+        let identifier = object
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                object
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+            })
+            .map(str::to_string);
+        let Some(identifier) = identifier else {
+            continue;
+        };
+        let Some((_, Some(efforts))) = declared.iter().find(|(id, _)| id == &identifier) else {
+            continue;
+        };
+        object.insert(
+            "reasoningEfforts".to_string(),
+            Value::Array(efforts.iter().cloned().map(Value::String).collect()),
+        );
+    }
+
+    serde_json::to_string(&ordinary_value)
+        .map_err(|error| format!("failed to encode the enriched model list: {error}"))
+}
+
+/// Fetch a template's model list from its configured `models_url` through
+/// `reqwest` with a 15-second timeout and no credentials, delegating the
+/// CommandCode client-catalog join to [`fetch_template_models_with`]. A blank
+/// URL, non-2xx status, timeout and network error return an actionable error
+/// naming the URL and the reason.
+pub(in crate::ai_gateway) async fn fetch_template_models(
+    template: &ProviderTemplate,
+) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
-        .map_err(|error| format!("failed to prepare a request for {url}: {error}"))?;
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| format!("failed to fetch {url}: {error}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("failed to fetch {url}: HTTP {status}"));
-    }
-    response
-        .text()
-        .await
-        .map_err(|error| format!("failed to read {url}: {error}"))
+        .map_err(|error| format!("failed to prepare a model-list request: {error}"))?;
+    fetch_template_models_with(template, move |url| {
+        let client = client.clone();
+        async move {
+            let response = client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            let status = response.status();
+            if !status.is_success() {
+                return Err(format!("HTTP {status}"));
+            }
+            response.text().await.map_err(|error| error.to_string())
+        }
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------

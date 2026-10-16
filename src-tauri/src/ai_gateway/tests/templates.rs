@@ -10,15 +10,16 @@
 //! manual and other-template mappings untouched.
 
 use crate::ai_gateway::commands::{
-    execute_template_sync, record_template_mappings_retired_messages, TEMPLATE_SYNC_MESSAGE_INPUTS,
+    build_gateway_provider, execute_template_sync, record_template_mappings_retired_messages,
+    TerminalSyncProfile, TEMPLATE_SYNC_MESSAGE_INPUTS,
 };
 use crate::ai_gateway::templates::{
     apply_create_provider_from_template, apply_delete_provider_model,
     apply_delete_provider_template, apply_restore_provider_model,
     apply_template_sync_from_body, apply_template_sync_with,
     apply_template_sync_with_notices, apply_upsert_provider_template, builtin_templates,
-    find_builtin_template, parse_template_snapshot, provider_template_views,
-    ProviderRetirementNotice, ProviderTemplateView,
+    fetch_template_models_with, find_builtin_template, parse_template_snapshot,
+    provider_template_views, ProviderRetirementNotice, ProviderTemplateView,
 };
 use crate::ai_gateway::types_config::{
     GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelMapping, ModelPrice, ProviderTemplate,
@@ -26,6 +27,7 @@ use crate::ai_gateway::types_config::{
 };
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
+use std::sync::{Arc, Mutex};
 
 const SYNC_URL: &str = "https://tpl.example.com/v1/models";
 
@@ -4974,5 +4976,924 @@ fn generic_template_sync_keeps_the_protocol_inheritance_fallback() {
         provider.mappings[0].effective_protocol(provider.protocol),
         UpstreamProtocol::Responses,
         "the generic entry must inherit the template's Responses protocol"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 20261016-provider-template-reasoning-sync — Step 1.
+//
+// The source adapter enriches the ordinary CommandCode model list with the
+// explicit client-catalog capabilities, every template sync replaces the
+// declared reasoning-effort sets, and inherited mappings follow the template
+// set while independent overrides survive. These tests pin the public
+// template-sync/create/restore boundary only.
+// ---------------------------------------------------------------------------
+
+/// REQ-002 / REQ-003 / AC-003 / AC-005 (RED): a generic source that declares
+/// `reasoningEfforts: ["low", "high"]` replaces the previous template capability
+/// set `["low"]` and propagates the new set to an inherited provider mapping
+/// that matched the previous template set.
+#[test]
+fn reasoning_metadata_sync_replaces_source_capabilities_for_template_and_inherited_mapping() {
+    let previous = template_with_models(
+        "t",
+        Some(SYNC_URL),
+        UpstreamProtocol::ChatCompletions,
+        vec![ProviderTemplateModel {
+            upstream_model: "m".to_string(),
+            display_name: Some("M".to_string()),
+            reasoning_efforts: vec!["low".to_string()],
+            ..ProviderTemplateModel::default()
+        }],
+    );
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, previous);
+    let mut provider = bound_provider("p", "t");
+    let mut mapping = model_mapping("m");
+    mapping.display_name = Some("M".to_string());
+    mapping.reasoning_efforts = vec!["low".to_string()];
+    provider.mappings = vec![mapping];
+    config.providers.push(provider);
+
+    let body = json!({
+        "data": [{"id": "m", "name": "M", "reasoningEfforts": ["low", "high"]}]
+    })
+    .to_string();
+    let view = apply_template_sync_with(&mut config, "t", |_t| Ok(body.clone()), |_n| Ok(()))
+        .expect("the declared capability array must sync");
+
+    let template_model = view
+        .template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "m")
+        .expect("the model must remain");
+    assert_eq!(
+        template_model.reasoning_efforts,
+        vec!["low".to_string(), "high".to_string()],
+        "the source reasoningEfforts array must replace the previous template set"
+    );
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p")
+        .expect("the bound provider must remain");
+    let mapping = find_mapping(provider, "m").expect("the inherited mapping must remain");
+    assert_eq!(
+        mapping.reasoning_efforts,
+        vec!["low".to_string(), "high".to_string()],
+        "an inherited mapping must follow the new template capability set"
+    );
+}
+
+/// A template model fixture whose display name mirrors its id and whose
+/// reasoning-effort set is exactly `efforts`.
+fn model_with_efforts(upstream_model: &str, efforts: &[&str]) -> ProviderTemplateModel {
+    ProviderTemplateModel {
+        upstream_model: upstream_model.to_string(),
+        display_name: Some(upstream_model.to_string()),
+        reasoning_efforts: efforts.iter().map(|effort| effort.to_string()).collect(),
+        ..ProviderTemplateModel::default()
+    }
+}
+
+/// REQ-002 / AC-003: a source array is trimmed, blank-dropped and deduplicated in
+/// source order; an explicit `null` and an explicit `[]` both clear the previous
+/// set; an absent field preserves it; and the camel `reasoningEfforts` wins over
+/// a coexisting snake `reasoning_efforts`.
+#[test]
+fn sync_source_capability_semantics_distinguish_array_null_empty_and_absence() {
+    let previous = template_with_models(
+        "t",
+        Some(SYNC_URL),
+        UpstreamProtocol::ChatCompletions,
+        vec![
+            model_with_efforts("replaced", &["low"]),
+            model_with_efforts("cleared-null", &["low"]),
+            model_with_efforts("cleared-empty", &["low"]),
+            model_with_efforts("absent", &["low"]),
+            model_with_efforts("precedence", &["low"]),
+        ],
+    );
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, previous);
+
+    let body = json!({"data": [
+        {"id": "replaced", "reasoningEfforts": [" low ", "high", "low", "  "]},
+        {"id": "cleared-null", "reasoningEfforts": null},
+        {"id": "cleared-empty", "reasoningEfforts": []},
+        {"id": "absent"},
+        {"id": "precedence", "reasoningEfforts": ["camel"], "reasoning_efforts": ["snake"]}
+    ]})
+    .to_string();
+
+    let view = apply_template_sync_with(&mut config, "t", |_| Ok(body.clone()), |_| Ok(()))
+        .expect("the declared capability field variants must sync");
+    let efforts = |id: &str| {
+        view.template
+            .models
+            .iter()
+            .find(|model| model.upstream_model == id)
+            .unwrap_or_else(|| panic!("the model {id} must remain"))
+            .reasoning_efforts
+            .clone()
+    };
+
+    assert_eq!(
+        efforts("replaced"),
+        vec!["low".to_string(), "high".to_string()],
+        "an array is trimmed, blank-dropped and deduplicated in source order"
+    );
+    assert!(
+        efforts("cleared-null").is_empty(),
+        "an explicit null clears the previous set"
+    );
+    assert!(
+        efforts("cleared-empty").is_empty(),
+        "an explicit empty array clears the previous set"
+    );
+    assert_eq!(
+        efforts("absent"),
+        vec!["low".to_string()],
+        "an absent field preserves the previous value"
+    );
+    assert_eq!(
+        efforts("precedence"),
+        vec!["camel".to_string()],
+        "the camel reasoningEfforts wins over a coexisting snake field"
+    );
+}
+
+/// REQ-002 / AC-004: a generic (non-CommandCode) source keeps its explicitly
+/// declared tokens verbatim, including a token the CommandCode allowlist would
+/// drop.
+#[test]
+fn sync_generic_source_capabilities_preserve_non_commandcode_tokens() {
+    let previous = template_with_models(
+        "t",
+        Some(SYNC_URL),
+        UpstreamProtocol::ChatCompletions,
+        vec![model_with_efforts("m", &["low"])],
+    );
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, previous);
+
+    let body = json!({"data": [
+        {"id": "m", "name": "m", "reasoningEfforts": ["minimal", "off", "custom"]}
+    ]})
+    .to_string();
+    let view = apply_template_sync_with(&mut config, "t", |_| Ok(body.clone()), |_| Ok(()))
+        .expect("a generic source must sync its explicit tokens");
+    assert_eq!(
+        view.template.models[0].reasoning_efforts,
+        vec!["minimal".to_string(), "off".to_string(), "custom".to_string()],
+        "a generic source keeps its explicit non-CommandCode tokens"
+    );
+}
+
+/// REQ-002 / AC-003 / AC-007: a declared capability value that is not a string
+/// array — a boolean, an object, a string scalar, an array holding a non-string
+/// or a nested array — is malformed: the sync fails naming the URL and never
+/// publishes.
+#[test]
+fn sync_malformed_declared_capability_fails_without_publishing() {
+    for bad in [
+        json!(true),
+        json!({"effort": "high"}),
+        json!("high"),
+        json!(["high", 3]),
+        json!([["high"]]),
+    ] {
+        let mut config = seeded_config(
+            UpstreamProtocol::ChatCompletions,
+            vec![model_with_efforts("m", &["low"])],
+        );
+        let before = serde_json::to_value(&config).expect("encode before");
+        let body = json!({"data": [{"id": "m", "name": "m", "reasoningEfforts": bad}]}).to_string();
+
+        let error = apply_template_sync_with(
+            &mut config,
+            "t",
+            |_| Ok(body.clone()),
+            |_next: &GatewayConfig| -> Result<(), String> {
+                panic!("a malformed capability must not persist")
+            },
+        )
+        .expect_err("a malformed declared capability must fail the sync");
+
+        assert!(
+            error.contains(SYNC_URL),
+            "the parse failure must name the URL: {error}"
+        );
+        assert_eq!(
+            before,
+            serde_json::to_value(&config).expect("encode after"),
+            "a malformed capability must write nothing"
+        );
+    }
+}
+
+/// REQ-003 / AC-005: every mapping whose normalized set equals the previous
+/// template set follows the new set — including a reordered-equivalent set and
+/// every alias of the same upstream model on one provider — while a mapping with
+/// an independently customized set is preserved.
+#[test]
+fn sync_updates_every_inherited_alias_and_preserves_independent_overrides() {
+    let previous = template_with_models(
+        "t",
+        Some(SYNC_URL),
+        UpstreamProtocol::ChatCompletions,
+        vec![model_with_efforts("m", &["low", "high"])],
+    );
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, previous);
+
+    let mut p1 = bound_provider("p1", "t");
+    let mut inherited = model_mapping("m");
+    inherited.reasoning_efforts = vec!["low".to_string(), "high".to_string()];
+    let mut alias = model_mapping("m");
+    alias.local_model = "m-alias".to_string();
+    alias.reasoning_efforts = vec!["high".to_string(), "low".to_string()];
+    let mut customized = model_mapping("m");
+    customized.local_model = "m-custom".to_string();
+    customized.reasoning_efforts = vec!["low".to_string()];
+    p1.mappings = vec![inherited, alias, customized];
+    config.providers.push(p1);
+
+    let mut p2 = bound_provider("p2", "t");
+    let mut inherited_p2 = model_mapping("m");
+    inherited_p2.reasoning_efforts = vec!["low".to_string(), "high".to_string()];
+    p2.mappings = vec![inherited_p2];
+    config.providers.push(p2);
+
+    let body = json!({"data": [{"id": "m", "name": "m", "reasoningEfforts": ["medium", "high"]}]})
+        .to_string();
+    apply_template_sync_with(&mut config, "t", |_| Ok(body.clone()), |_| Ok(()))
+        .expect("the capability change must propagate");
+
+    let p1 = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p1")
+        .expect("p1 must remain");
+    let by_local = |local: &str| {
+        p1.mappings
+            .iter()
+            .find(|mapping| mapping.local_model == local)
+            .unwrap_or_else(|| panic!("the mapping {local} must remain"))
+    };
+    assert_eq!(
+        by_local("m").reasoning_efforts,
+        vec!["medium".to_string(), "high".to_string()],
+        "an exact inherited set follows the new template set"
+    );
+    assert_eq!(
+        by_local("m-alias").reasoning_efforts,
+        vec!["medium".to_string(), "high".to_string()],
+        "a reordered-equivalent set counts as inherited and follows the new set"
+    );
+    assert_eq!(
+        by_local("m-custom").reasoning_efforts,
+        vec!["low".to_string()],
+        "an independently customized set must survive"
+    );
+
+    let p2 = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p2")
+        .expect("p2 must remain");
+    assert_eq!(
+        find_mapping(p2, "m")
+            .expect("p2's mapping")
+            .reasoning_efforts,
+        vec!["medium".to_string(), "high".to_string()],
+        "every bound provider's inherited mapping follows the new set"
+    );
+}
+
+/// REQ-003 / AC-006: capability maintenance never changes provider, mapping or
+/// template enablement/health, never resurrects an ignored model, updates the
+/// existing metadata of a disabled template model without creating a mapping,
+/// and gives a newly created mapping the current template capabilities.
+#[test]
+fn sync_updates_metadata_without_resurrecting_or_enabling() {
+    let previous = template_with_models(
+        "t",
+        Some(SYNC_URL),
+        UpstreamProtocol::ChatCompletions,
+        vec![
+            model_with_efforts("kept", &["low"]),
+            model_with_efforts("ud-model", &["low"]),
+            ProviderTemplateModel {
+                upstream_model: "disabled-template".to_string(),
+                display_name: Some("Disabled Template".to_string()),
+                enabled: false,
+                reasoning_efforts: vec!["low".to_string()],
+                ..ProviderTemplateModel::default()
+            },
+            ProviderTemplateModel {
+                upstream_model: "disabled-absent".to_string(),
+                display_name: Some("Disabled Absent".to_string()),
+                enabled: false,
+                reasoning_efforts: vec!["low".to_string()],
+                ..ProviderTemplateModel::default()
+            },
+            model_with_efforts("ignored", &["low"]),
+        ],
+    );
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, previous);
+
+    let mut provider = bound_provider("p", "t");
+    provider.enabled = false;
+    let mut kept = model_mapping("kept");
+    kept.reasoning_efforts = vec!["low".to_string()];
+    let mut user_disabled = model_mapping("ud-model");
+    user_disabled.enabled = false;
+    user_disabled.reasoning_efforts = vec!["low".to_string()];
+    let mut disabled_template_mapping = model_mapping("disabled-template");
+    disabled_template_mapping.reasoning_efforts = vec!["low".to_string()];
+    provider.mappings = vec![kept, user_disabled, disabled_template_mapping];
+    provider.ignored_models = vec!["ignored".to_string()];
+    config.providers.push(provider);
+
+    let body = json!({"data": [
+        {"id": "kept", "reasoningEfforts": ["low", "high"]},
+        {"id": "ud-model", "reasoningEfforts": ["low", "high"]},
+        {"id": "disabled-template", "reasoningEfforts": ["low", "high"]},
+        {"id": "disabled-absent", "reasoningEfforts": ["low", "high"]},
+        {"id": "ignored", "reasoningEfforts": ["low", "high"]},
+        {"id": "new-model", "reasoningEfforts": ["low", "high"]}
+    ]})
+    .to_string();
+    apply_template_sync_with(&mut config, "t", |_| Ok(body.clone()), |_| Ok(()))
+        .expect("the metadata maintenance must succeed");
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p")
+        .expect("the bound provider must remain");
+    assert!(!provider.enabled, "a disabled provider must stay disabled");
+
+    let kept = find_mapping(provider, "kept").expect("the enabled mapping must remain");
+    assert!(kept.enabled, "an enabled mapping stays enabled");
+    assert_eq!(
+        kept.reasoning_efforts,
+        vec!["low".to_string(), "high".to_string()],
+        "an enabled mapping follows the new set"
+    );
+
+    let user_disabled = find_mapping(provider, "ud-model").expect("the user-disabled mapping");
+    assert!(
+        !user_disabled.enabled,
+        "a user-disabled mapping must stay disabled"
+    );
+    assert_eq!(
+        user_disabled.reasoning_efforts,
+        vec!["low".to_string(), "high".to_string()],
+        "a user-disabled mapping still receives metadata maintenance"
+    );
+
+    let disabled_template_mapping = find_mapping(provider, "disabled-template")
+        .expect("the existing mapping of a disabled template model must remain");
+    assert_eq!(
+        disabled_template_mapping.reasoning_efforts,
+        vec!["low".to_string(), "high".to_string()],
+        "an existing inherited mapping of a disabled template model follows the new set"
+    );
+
+    assert!(
+        find_mapping(provider, "disabled-absent").is_none(),
+        "a disabled template model must not create a new mapping"
+    );
+    assert!(
+        find_mapping(provider, "ignored").is_none(),
+        "an ignored model must never be resurrected"
+    );
+    let new_model = find_mapping(provider, "new-model").expect("a new enabled model must be added");
+    assert_eq!(
+        new_model.reasoning_efforts,
+        vec!["low".to_string(), "high".to_string()],
+        "a newly created mapping copies the current template capabilities"
+    );
+}
+
+/// REQ-004 / AC-007: when persistence fails, the staged capability changes are
+/// never published to the template or to any inherited mapping.
+#[test]
+fn sync_persist_failure_leaves_declared_capabilities_unpublished() {
+    let mut config = seeded_config(
+        UpstreamProtocol::ChatCompletions,
+        vec![model_with_efforts("m", &["low"])],
+    );
+    let mut provider = bound_provider("p", "t");
+    let mut mapping = model_mapping("m");
+    mapping.reasoning_efforts = vec!["low".to_string()];
+    provider.mappings = vec![mapping];
+    config.providers.push(provider);
+    let before = serde_json::to_value(&config).expect("encode before");
+
+    let body = json!({"data": [{"id": "m", "reasoningEfforts": ["medium"]}]}).to_string();
+    let error = apply_template_sync_with(
+        &mut config,
+        "t",
+        |_| Ok(body.clone()),
+        |_next: &GatewayConfig| -> Result<(), String> { Err("disk full".to_string()) },
+    )
+    .expect_err("a failed persist must fail the sync");
+
+    assert!(error.contains("disk full"), "the reason must surface: {error}");
+    assert_eq!(
+        before,
+        serde_json::to_value(&config).expect("encode after"),
+        "a failed persistence must leave every declared capability unpublished"
+    );
+}
+
+/// REQ-003 / REQ-006: a previously ignored model can be restored from the
+/// current template data and the restored mapping copies the template's current
+/// capabilities.
+#[test]
+fn restore_provider_model_copies_current_template_capabilities() {
+    let mut config = seeded_config(
+        UpstreamProtocol::ChatCompletions,
+        vec![model_with_efforts("m", &["low", "high"])],
+    );
+    let mut provider = bound_provider("p", "t");
+    provider.ignored_models = vec!["m".to_string()];
+    provider.mappings = Vec::new();
+    config.providers.push(provider);
+
+    apply_restore_provider_model(&mut config, "p", "m", |_| Ok(()))
+        .expect("an ignored model present in the template must restore");
+
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p")
+        .expect("the bound provider must remain");
+    let restored = find_mapping(provider, "m").expect("the restored mapping must exist");
+    assert_eq!(
+        restored.reasoning_efforts,
+        vec!["low".to_string(), "high".to_string()],
+        "a restored mapping copies the current template capabilities"
+    );
+    assert!(
+        !provider.ignored_models.iter().any(|model| model == "m"),
+        "the restored model must leave the ignored set"
+    );
+}
+
+/// REQ-005 / AC-009: the existing terminal projection boundary reflects a
+/// template-sync capability addition as new OpenCode variants and a later
+/// explicit clear as their removal.
+#[test]
+fn template_sync_capabilities_add_and_remove_opencode_variants_through_projection() {
+    let mut config = seeded_config(
+        UpstreamProtocol::ChatCompletions,
+        vec![model_with_efforts("m", &[])],
+    );
+    let mut provider = bound_provider("p", "t");
+    provider.mappings = vec![model_mapping("m")];
+    config.providers.push(provider);
+
+    let add = json!({"data": [{"id": "m", "name": "m", "reasoningEfforts": ["low", "high"]}]})
+        .to_string();
+    apply_template_sync_with(&mut config, "t", |_| Ok(add.clone()), |_| Ok(()))
+        .expect("the capability addition must sync");
+    assert_eq!(
+        find_mapping(&config.providers[0], "m")
+            .expect("the mapping must remain")
+            .reasoning_efforts,
+        vec!["low".to_string(), "high".to_string()],
+        "the sync must save the added capabilities on the mapping"
+    );
+
+    let generated = build_gateway_provider(
+        "g",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key",
+        &config.providers,
+        TerminalSyncProfile::RELEASE,
+    )
+    .expect("the opencode projection must build");
+    assert_eq!(
+        generated["tool_config"]["models"]["m"]["reasoning"],
+        json!(true),
+        "added capabilities must project the reasoning flag: {generated}"
+    );
+    assert_eq!(
+        generated["tool_config"]["models"]["m"]["variants"],
+        json!({
+            "low": {"reasoningEffort": "low"},
+            "high": {"reasoningEffort": "high"},
+        }),
+        "added capabilities must project as opencode variants: {generated}"
+    );
+
+    let clear = json!({"data": [{"id": "m", "name": "m", "reasoningEfforts": []}]}).to_string();
+    apply_template_sync_with(&mut config, "t", |_| Ok(clear.clone()), |_| Ok(()))
+        .expect("the capability clear must sync");
+    assert!(
+        find_mapping(&config.providers[0], "m")
+            .expect("the mapping must remain")
+            .reasoning_efforts
+            .is_empty(),
+        "the sync must clear the mapping capabilities"
+    );
+
+    let generated = build_gateway_provider(
+        "g",
+        "opencode",
+        "http://127.0.0.1:17688",
+        "local-key",
+        &config.providers,
+        TerminalSyncProfile::RELEASE,
+    )
+    .expect("the opencode projection must build");
+    assert!(
+        generated["tool_config"]["models"]["m"].get("variants").is_none(),
+        "cleared capabilities must remove the opencode variants: {generated}"
+    );
+    assert!(
+        generated["tool_config"]["models"]["m"].get("reasoning").is_none(),
+        "cleared capabilities must remove the reasoning flag: {generated}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 20261016-provider-template-reasoning-sync — Step 1, source adapter.
+//
+// These tests drive the deterministic fetch seam the frozen plan permits inside
+// `templates.rs`:
+//
+//     pub(in crate::ai_gateway) async fn fetch_template_models_with<F, Fut>(
+//         template: &ProviderTemplate,
+//         fetch: F,
+//     ) -> Result<String, String>
+//     where
+//         F: FnMut(String) -> Fut + Send,
+//         Fut: std::future::Future<Output = Result<String, String>> + Send;
+//
+// It returns one enriched ordinary-list JSON body; the production
+// `fetch_template_models` calls it with a credential-free GET through the
+// existing 15-second client. These tests therefore await the backend adding the
+// exact seam and are not compile-green before it exists.
+// ---------------------------------------------------------------------------
+
+const COMMANDCODE_ORDINARY_URL: &str = "https://api.commandcode.ai/provider/v1/models";
+const COMMANDCODE_CLIENT_URL: &str = "https://api.commandcode.ai/provider/v1/models?view=client";
+
+/// A canonical CommandCode template fixture whose `models_url` is the official
+/// ordinary list.
+fn commandcode_template(models: Vec<ProviderTemplateModel>) -> ProviderTemplate {
+    ProviderTemplate {
+        id: "commandcode".to_string(),
+        name: "CommandCode".to_string(),
+        description: String::new(),
+        base_url: "https://api.commandcode.ai/provider/v1".to_string(),
+        protocol: UpstreamProtocol::ChatCompletions,
+        source: COMMANDCODE_ORDINARY_URL.to_string(),
+        models_url: Some(COMMANDCODE_ORDINARY_URL.to_string()),
+        models,
+        icon: None,
+        ..ProviderTemplate::default()
+    }
+}
+
+/// REQ-001 / AC-001: the canonical CommandCode adapter requests the ordinary
+/// list and then the client catalog, keeps only ordinary-list membership while
+/// retaining its names and endpoint protocols, and joins capabilities by exact
+/// upstream id without credentials.
+#[tokio::test]
+async fn fetch_commandcode_source_joins_client_capabilities_by_exact_id() {
+    let template = commandcode_template(vec![
+        ProviderTemplateModel {
+            upstream_model: "chat-a".to_string(),
+            display_name: Some("Chat A".to_string()),
+            protocol: Some(UpstreamProtocol::ChatCompletions),
+            ..ProviderTemplateModel::default()
+        },
+        ProviderTemplateModel {
+            upstream_model: "messages-b".to_string(),
+            display_name: Some("Messages B".to_string()),
+            protocol: Some(UpstreamProtocol::AnthropicMessages),
+            ..ProviderTemplateModel::default()
+        },
+    ]);
+    let ordinary = json!({"data": [
+        {"id": "chat-a", "name": "Chat A", "supported_endpoints": ["/chat/completions"]},
+        {"id": "messages-b", "name": "Messages B", "supported_endpoints": ["/messages"]}
+    ]})
+    .to_string();
+    let client = json!({
+        "schemaVersion": 1,
+        "data": [
+            {"id": "chat-a", "reasoningEfforts": ["low", "high"]},
+            {"id": "messages-b", "reasoningEfforts": ["medium"]},
+            {"id": "hidden-extra", "reasoningEfforts": ["max"]}
+        ]
+    })
+    .to_string();
+
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_in = seen.clone();
+    let body = fetch_template_models_with(&template, move |requested: String| {
+        seen_in.lock().expect("url log").push(requested.clone());
+        let reply = if requested.contains("view=client") {
+            client.clone()
+        } else {
+            ordinary.clone()
+        };
+        async move { Ok::<String, String>(reply) }
+    })
+    .await
+    .expect("the CommandCode adapter must join both official sources");
+
+    assert_eq!(
+        *seen.lock().expect("url log"),
+        vec![
+            COMMANDCODE_ORDINARY_URL.to_string(),
+            COMMANDCODE_CLIENT_URL.to_string()
+        ],
+        "the adapter must request the ordinary list and then the client catalog"
+    );
+
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, template);
+    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode", &body)
+        .expect("the enriched ordinary body must sync");
+
+    let ids: Vec<&str> = view
+        .template
+        .models
+        .iter()
+        .map(|model| model.upstream_model.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["chat-a", "messages-b"],
+        "only ordinary-list models may remain"
+    );
+
+    let chat = view
+        .template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "chat-a")
+        .expect("chat-a must remain");
+    assert_eq!(
+        chat.reasoning_efforts,
+        vec!["low".to_string(), "high".to_string()],
+        "the client capability array must be joined by exact id"
+    );
+    assert_eq!(
+        chat.protocol,
+        Some(UpstreamProtocol::ChatCompletions),
+        "the ordinary endpoint protocol must be retained"
+    );
+
+    let messages = view
+        .template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "messages-b")
+        .expect("messages-b must remain");
+    assert_eq!(
+        messages.reasoning_efforts,
+        vec!["medium".to_string()],
+        "the client capability array must be joined by exact id"
+    );
+    assert_eq!(
+        messages.protocol,
+        Some(UpstreamProtocol::AnthropicMessages),
+        "the ordinary Messages endpoint declaration must be retained"
+    );
+    assert!(
+        view.template
+            .models
+            .iter()
+            .all(|model| model.upstream_model != "hidden-extra"),
+        "a client-only entry must never add a model"
+    );
+}
+
+/// REQ-001 / AC-002: a non-canonical custom URL fetches only that configured
+/// source — with no extra official lookup — and its explicit inline capability
+/// fields are consumed. A CommandCode template with a different URL is covered
+/// by the same non-canonical branch.
+#[tokio::test]
+async fn fetch_generic_source_requests_only_the_configured_url() {
+    let configured_url = "https://custom.example.com/v1/models".to_string();
+    let template = template_with_models(
+        "custom",
+        Some(&configured_url),
+        UpstreamProtocol::ChatCompletions,
+        vec![],
+    );
+
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_in = seen.clone();
+    let expected = configured_url.clone();
+    let body = fetch_template_models_with(&template, move |requested: String| {
+        seen_in.lock().expect("url log").push(requested.clone());
+        let reply = if requested == expected {
+            json!({"data": [{"id": "m", "name": "M", "reasoningEfforts": ["minimal", "custom"]}]})
+                .to_string()
+        } else {
+            String::new()
+        };
+        async move { Ok::<String, String>(reply) }
+    })
+    .await
+    .expect("a custom source must fetch once");
+
+    assert_eq!(
+        *seen.lock().expect("url log"),
+        vec![configured_url.clone()],
+        "a non-canonical URL must fetch only the configured source"
+    );
+
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, template);
+    let (view, _) = apply_template_sync_from_body(&mut config, "custom", &body)
+        .expect("the inline capability fields must sync");
+    assert_eq!(
+        view.template.models[0].reasoning_efforts,
+        vec!["minimal".to_string(), "custom".to_string()],
+        "a generic source keeps its explicit inline tokens"
+    );
+}
+
+/// REQ-001 / REQ-002 / REQ-004 / AC-003 / AC-007: a CommandCode client id absent
+/// from the client catalog preserves the previous template value instead of
+/// clearing it.
+#[tokio::test]
+async fn fetch_commandcode_missing_client_id_preserves_previous_capabilities() {
+    let template = commandcode_template(vec![ProviderTemplateModel {
+        upstream_model: "kept".to_string(),
+        display_name: Some("Kept".to_string()),
+        protocol: Some(UpstreamProtocol::ChatCompletions),
+        reasoning_efforts: vec!["low".to_string()],
+        ..ProviderTemplateModel::default()
+    }]);
+    let ordinary = json!({"data": [
+        {"id": "kept", "name": "Kept", "supported_endpoints": ["/chat/completions"]}
+    ]})
+    .to_string();
+    let client = json!({
+        "schemaVersion": 1,
+        "data": [{"id": "other", "reasoningEfforts": ["max"]}]
+    })
+    .to_string();
+
+    let body = fetch_template_models_with(&template, move |requested: String| {
+        let reply = if requested.contains("view=client") {
+            client.clone()
+        } else {
+            ordinary.clone()
+        };
+        async move { Ok::<String, String>(reply) }
+    })
+    .await
+    .expect("the join must succeed when a client id is absent");
+
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, template);
+    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode", &body)
+        .expect("the sync must succeed");
+    let kept = view
+        .template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "kept")
+        .expect("kept must remain");
+    assert_eq!(
+        kept.reasoning_efforts,
+        vec!["low".to_string()],
+        "a missing supplemental id must preserve the previous value"
+    );
+}
+
+/// REQ-004 / AC-004 / AC-007: a client request failure, an unsupported client
+/// schema and a malformed declared capability are each fatal, name the client
+/// URL and publish no body.
+#[tokio::test]
+async fn fetch_commandcode_client_failures_are_fatal_without_a_body() {
+    let template = commandcode_template(vec![]);
+    let ordinary_body = || json!({"data": [{"id": "a", "name": "A"}]}).to_string();
+
+    let transport = fetch_template_models_with(&template, {
+        let ordinary = ordinary_body();
+        move |requested: String| {
+            let reply: Result<String, String> = if requested.contains("view=client") {
+                Err("connection refused".to_string())
+            } else {
+                Ok(ordinary.clone())
+            };
+            async move { reply }
+        }
+    })
+    .await;
+    let error = transport.expect_err("a client transport failure must be fatal");
+    assert!(
+        error.contains("view=client"),
+        "the client failure must name the client URL: {error}"
+    );
+
+    let unsupported = fetch_template_models_with(&template, {
+        let ordinary = ordinary_body();
+        move |requested: String| {
+            let reply: Result<String, String> = if requested.contains("view=client") {
+                Ok(json!({"schemaVersion": 2, "data": [{"id": "a", "reasoningEfforts": ["low"]}]})
+                    .to_string())
+            } else {
+                Ok(ordinary.clone())
+            };
+            async move { reply }
+        }
+    })
+    .await;
+    let error = unsupported.expect_err("an unsupported client schema must be fatal");
+    assert!(
+        error.contains("view=client"),
+        "the schema failure must name the client URL: {error}"
+    );
+
+    let malformed = fetch_template_models_with(&template, {
+        let ordinary = ordinary_body();
+        move |requested: String| {
+            let reply: Result<String, String> = if requested.contains("view=client") {
+                Ok(json!({"schemaVersion": 1, "data": [{"id": "a", "reasoningEfforts": true}]})
+                    .to_string())
+            } else {
+                Ok(ordinary.clone())
+            };
+            async move { reply }
+        }
+    })
+    .await;
+    let error = malformed.expect_err("a malformed declared capability must be fatal");
+    assert!(
+        error.contains("view=client"),
+        "the malformed capability must name the client URL: {error}"
+    );
+}
+
+/// REQ-002 / AC-004: CommandCode client metadata containing `off`, duplicates,
+/// blanks and supported values yields only the Provider API five-value set once
+/// in source order; `off` is never exported.
+#[tokio::test]
+async fn fetch_commandcode_source_filters_efforts_to_the_provider_api_set() {
+    let template = commandcode_template(vec![]);
+    let ordinary = json!({"data": [
+        {"id": "cc-model", "name": "CC Model", "supported_endpoints": ["/chat/completions"]}
+    ]})
+    .to_string();
+    let client = json!({
+        "schemaVersion": 1,
+        "data": [{
+            "id": "cc-model",
+            "reasoningEfforts": ["off", " low ", "medium", "low", "high", "xhigh", "max", "bogus", ""]
+        }]
+    })
+    .to_string();
+
+    let body = fetch_template_models_with(&template, move |requested: String| {
+        let reply = if requested.contains("view=client") {
+            client.clone()
+        } else {
+            ordinary.clone()
+        };
+        async move { Ok::<String, String>(reply) }
+    })
+    .await
+    .expect("the CommandCode adapter must succeed");
+
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, template);
+    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode", &body)
+        .expect("the enriched body must sync");
+    let model = view
+        .template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "cc-model")
+        .expect("cc-model must remain");
+    assert_eq!(
+        model.reasoning_efforts,
+        vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+            "max".to_string(),
+        ],
+        "only the Provider API five-value set remains once in source order: {:?}",
+        model.reasoning_efforts
     );
 }
