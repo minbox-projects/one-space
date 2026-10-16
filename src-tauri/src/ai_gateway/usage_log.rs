@@ -218,9 +218,11 @@ pub struct UsageLogRecord {
     /// measured zero offset stays `Some(0.0)`.
     #[serde(default)]
     pub first_token_ms: Option<f64>,
-    /// Average output tokens per second over the unrounded generation window
-    /// (REQ-002/REQ-003). `None` when unavailable; an explicit valid zero count
-    /// over a positive window is `Some(0.0)`.
+    /// Average output tokens per second over the unrounded whole-attempt window
+    /// (REQ-002/REQ-003). The stored column is an availability marker only: a
+    /// measured read reprojects it from the row's own `output_tokens` and
+    /// positive `duration_ms` (`record_from_row`). `None` when unavailable; an
+    /// explicit valid zero count over a positive attempt is `Some(0.0)`.
     #[serde(default)]
     pub avg_tps: Option<f64>,
     /// Pool-only resolved preference (`low|medium|high|xhigh|none|auto`);
@@ -1162,8 +1164,36 @@ fn metrics_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<UsageMetri
     })
 }
 
+/// Reproject the whole-attempt average TPS from the persisted output count and
+/// total duration (REQ-003), without rewriting the database.
+///
+/// The stored `avg_tps` column is an availability marker only: a row measured by
+/// an attempt observation (stored value present) is recomputed as
+/// `output_tokens / (duration_ms / 1000)` from its own persisted values, so
+/// every read path — `all_records`, filtered/grouped pages and reopened
+/// databases — reports the whole-attempt rate (including the pre-output wait)
+/// and a historical row measured under an obsolete divisor is corrected on read.
+/// A stored `NULL` stays unknown; an explicit zero count over a positive
+/// duration stays `0.0`; a non-positive duration yields `None` rather than an
+/// infinite rate.
+fn projected_avg_tps(
+    stored_avg_tps: Option<f64>,
+    output_tokens: u64,
+    duration_ms: u64,
+) -> Option<f64> {
+    if stored_avg_tps.is_none() || duration_ms == 0 {
+        return None;
+    }
+    Some(output_tokens as f64 / (duration_ms as f64 / 1000.0))
+}
+
 fn record_from_row(row: &Row<'_>) -> rusqlite::Result<UsageLogRecord> {
     let result: String = row.get(5)?;
+    // Reuse the persisted count and duration for both the record fields and the
+    // whole-attempt TPS projection, so no value is fetched twice.
+    let output_tokens = row.get::<_, i64>(10)? as u64;
+    let duration_ms = row.get::<_, i64>(13)? as u64;
+    let avg_tps = projected_avg_tps(row.get::<_, Option<f64>>(19)?, output_tokens, duration_ms);
     let cost_breakdown = row
         .get::<_, Option<String>>(17)?
         .map(|value| serde_json::from_str(&value))
@@ -1197,16 +1227,16 @@ fn record_from_row(row: &Row<'_>) -> rusqlite::Result<UsageLogRecord> {
         input_tokens: row.get::<_, i64>(7)? as u64,
         cache_read_tokens: row.get::<_, i64>(8)? as u64,
         cache_write_tokens: row.get::<_, i64>(9)? as u64,
-        output_tokens: row.get::<_, i64>(10)? as u64,
+        output_tokens,
         total_tokens: row.get::<_, i64>(11)? as u64,
         amount: row.get::<_, Option<f64>>(12)?,
         cost_breakdown,
-        duration_ms: row.get::<_, i64>(13)? as u64,
+        duration_ms,
         error_message: row.get::<_, Option<String>>(14)?,
         terminal: row.get::<_, i64>(15)? != 0,
         reasoning_effort: row.get::<_, Option<String>>(16)?,
         first_token_ms: row.get::<_, Option<f64>>(18)?,
-        avg_tps: row.get::<_, Option<f64>>(19)?,
+        avg_tps,
         resolved_reasoning_effort: row.get::<_, Option<String>>(20)?,
         native_reasoning,
     })

@@ -1,5 +1,5 @@
 //! Read-only observation of the first meaningful upstream stream output and the
-//! truthful generation-window output rate
+//! truthful whole-attempt output rate
 //! (20261014-gateway-request-latency: REQ-002/REQ-003, AC-002/AC-003).
 //!
 //! The observer is fed the raw upstream bytes exactly as the relay receives
@@ -13,9 +13,11 @@
 //! heartbeat/comment, an empty delta, a role-only or other metadata event, a
 //! usage-only event, an error event or a completion marker is never output.
 //! Average TPS is the explicitly reported valid cumulative output-token count
-//! divided by the unrounded positive first-output-to-end interval; the interval
-//! is kept as a real instant difference so neither the rounded `duration_ms` nor
-//! a clamped denominator can leak into the rate.
+//! divided by the unrounded positive whole-attempt interval (the attempt start
+//! to its end, including any pre-output wait); the interval is kept as a real
+//! instant difference so neither the rounded `duration_ms` nor a clamped
+//! denominator can leak into the rate. A first meaningful output is still
+//! required to make the attempt eligible for a rate.
 
 use super::UpstreamProtocol;
 use serde_json::Value;
@@ -25,7 +27,7 @@ use tokio::time::Instant;
 /// pathological stream that never emits a blank line cannot grow unbounded.
 const MAX_BUFFER_BYTES: usize = 256 * 1024;
 
-/// The first meaningful upstream output and the generation window of one
+/// The first meaningful upstream output and the whole-attempt window of one
 /// upstream attempt. One observer exists per attempt (retries and probes always
 /// start from a fresh observation).
 pub(in crate::ai_gateway) struct OutputTimingObserver {
@@ -65,7 +67,7 @@ impl OutputTimingObserver {
 
     /// Finish the attempt at `ended_at`. A final meaningful event that arrived
     /// without the usual blank-line terminator is recognized here, and the end
-    /// instant closes the generation window. The first call wins, so an end
+    /// instant closes the whole-attempt window. The first call wins, so an end
     /// observed while forwarding is not overwritten by later bookkeeping.
     pub(in crate::ai_gateway) fn finish_at(&mut self, ended_at: Instant) {
         if self.finished_at.is_none() {
@@ -90,17 +92,25 @@ impl OutputTimingObserver {
         )
     }
 
-    /// Average output tokens per second over the unrounded generation window
-    /// from the first meaningful output to the attempt end. `None` when no first
-    /// output or no explicit valid count exists, or when the window is
-    /// non-positive. An explicit zero count over a positive window is `0.0`.
+    /// Average output tokens per second over the unrounded whole-attempt window
+    /// from the attempt start to its end (including any pre-output wait). A
+    /// first meaningful output is still required to make the attempt eligible
+    /// for a rate, and the first and end instants may coincide. `None` when no
+    /// first output or no explicit valid count exists, or when the whole attempt
+    /// is non-positive. An explicit zero count over a positive attempt is `0.0`.
     pub(in crate::ai_gateway) fn average_tps(
         &self,
         reported_output_tokens: Option<u64>,
     ) -> Option<f64> {
-        let first = self.first_output_at?;
+        // The first meaningful output stays required for eligibility; the
+        // divisor is the whole attempt, so the pre-output wait counts too.
+        if self.first_output_at.is_none() {
+            return None;
+        }
         let end = self.finished_at?;
-        let seconds = end.saturating_duration_since(first).as_secs_f64();
+        let seconds = end
+            .saturating_duration_since(self.started_at)
+            .as_secs_f64();
         if !(seconds > 0.0) {
             return None;
         }
@@ -109,7 +119,8 @@ impl OutputTimingObserver {
     }
 
     /// Both persisted measurements for one attempt, derived from the same
-    /// observed window and the independently validated reported output count.
+    /// observed attempt-window instants and the independently validated reported
+    /// output count.
     pub(in crate::ai_gateway) fn timing(
         &self,
         reported_output_tokens: Option<u64>,

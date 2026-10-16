@@ -247,8 +247,8 @@ const CHAT_DONE: &str = "data: [DONE]\n\n";
 ///
 /// `first_text_delay_ms` is the offset of the first meaningful output from the
 /// attempt start; `generation_window_ms` is the delay after it until the usage
-/// snapshot and stream end, i.e. exactly the first-output-to-end window that
-/// the average-TPS divisor must use.
+/// snapshot and stream end. The whole attempt -- the pre-output wait plus this
+/// window -- is the average-TPS divisor.
 fn chat_stream_with_first_text_at(
     first_text_delay_ms: u64,
     generation_window_ms: u64,
@@ -293,7 +293,7 @@ async fn stream_request(
 }
 
 // ---------------------------------------------------------------------------
-// AC-002 primary: 1 s first output, 5 s stream end, 200 output tokens => 50 TPS.
+// AC-002 primary: 1 s first output, 5 s stream end, 200 output tokens => 40 TPS.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -325,9 +325,17 @@ async fn chat_stream_persists_first_token_and_average_tps_after_reopen() {
          output (~1000 ms), got {first}"
     );
     let tps = measured(record, "avg_tps");
+    let whole_attempt = record.output_tokens as f64 / (record.duration_ms as f64 / 1000.0);
     assert!(
-        (40.0..=65.0).contains(&tps),
-        "200 tokens over the ~4 s generation window must be ~50 t/s, got {tps}"
+        (tps - whole_attempt).abs() < 1e-6,
+        "200 tokens over the measured whole attempt (~5 s) must be ~40 t/s, got {tps}"
+    );
+    let window_rate =
+        record.output_tokens as f64 / ((record.duration_ms as f64 - first) / 1000.0);
+    assert!(
+        tps < window_rate - 5.0,
+        "the rate must not divide by the ~1 s first-output-to-end window \
+         (~{window_rate} t/s), got {tps}"
     );
 
     // It survives a database reopen: the value is persisted, not only cached.
@@ -341,20 +349,24 @@ async fn chat_stream_persists_first_token_and_average_tps_after_reopen() {
         (measured(restored, "first_token_ms") - first).abs() < 1e-9,
         "the persisted first-token latency must survive reopen"
     );
+    assert!(
+        (measured(restored, "avg_tps") - tps).abs() < 1e-9,
+        "the whole-attempt TPS must survive reopen"
+    );
 
     stop_server().await.unwrap();
     drop(home);
 }
 
-/// The persisted TPS must divide by the first-output-to-end window, never by
-/// the whole attempt duration (which includes the pre-output interval).
+/// The persisted TPS must divide by the whole attempt, never by the
+/// first-output-to-end window that drops the pre-output wait.
 #[tokio::test]
-async fn chat_stream_tps_uses_generation_window_not_whole_attempt() {
+async fn chat_stream_tps_uses_whole_attempt_not_generation_window() {
     let home = temp_home("output-timing-chat-window");
     let port = free_port().await;
-    // First text at ~2.0 s, stream end at ~2.0 s + 1.0 s => ~1.0 s generation
-    // window. 400 tokens / 1.0 s = 400 t/s. The whole-attempt divisor would give
-    // 400/3 ≈ 133 t/s, and a rounded-millisecond or clamped divisor would differ.
+    // First text at ~2.0 s, stream end at ~2.0 s + 1.0 s => ~3.0 s whole
+    // attempt. 400 tokens / 3.0 s = ~133 t/s. The obsolete first-output-to-end
+    // divisor would give 400/1.0 = ~400 t/s.
     let upstream_url =
         spawn_chunked_sse_mock(chat_stream_with_first_text_at(2_000, 1_000, "400")).await;
     let provider = upstream_provider("p1", "Provider One", &upstream_url, "sk", None);
@@ -377,10 +389,21 @@ async fn chat_stream_tps_uses_generation_window_not_whole_attempt() {
         "first-token latency must track the ~2000 ms first output, got {first}"
     );
     let tps = measured(record, "avg_tps");
+    let whole_attempt = record.output_tokens as f64 / (record.duration_ms as f64 / 1000.0);
     assert!(
-        (260.0..=620.0).contains(&tps),
-        "400 tokens over the ~1 s generation window must be ~400 t/s and must not use the \
-         whole-attempt duration as the divisor, got {tps}"
+        (tps - whole_attempt).abs() < 1e-6,
+        "400 tokens over the measured whole attempt (~3 s) must be ~133 t/s, got {tps}"
+    );
+    let window_rate =
+        record.output_tokens as f64 / ((record.duration_ms as f64 - first) / 1000.0);
+    assert!(
+        window_rate > 250.0,
+        "the fixture must keep the obsolete generation window distinctly faster, got {window_rate}"
+    );
+    assert!(
+        tps < window_rate - 100.0,
+        "the rate must not divide by the ~1 s first-output-to-end window \
+         (~{window_rate} t/s), got {tps}"
     );
 
     stop_server().await.unwrap();
@@ -584,7 +607,7 @@ async fn responses_stream_persists_timing() {
         "the first Responses output delta must set the first observation (~700 ms), got {first}"
     );
     let tps = measured(record, "avg_tps");
-    assert!(tps > 0.0, "a measured generation window must yield a positive TPS, got {tps}");
+    assert!(tps > 0.0, "a measured whole attempt must yield a positive TPS, got {tps}");
 
     stop_server().await.unwrap();
     drop(home);
@@ -645,7 +668,7 @@ async fn anthropic_native_messages_stream_persists_timing() {
         "the first native content delta must set the first observation (~900 ms), got {first}"
     );
     let tps = measured(record, "avg_tps");
-    assert!(tps > 0.0, "a measured native generation window must yield TPS, got {tps}");
+    assert!(tps > 0.0, "a measured native whole attempt must yield TPS, got {tps}");
 
     stop_server().await.unwrap();
     drop(home);
@@ -827,7 +850,8 @@ async fn explicit_zero_output_count_yields_zero_tps_and_keeps_first_token() {
     let tps = measured(record, "avg_tps");
     assert!(
         tps.abs() < 1e-9,
-        "an explicitly reported zero output count over a positive interval must be 0.00 t/s, got {tps}"
+        "an explicitly reported zero output count over a positive whole attempt must be \
+         0.00 t/s, got {tps}"
     );
 
     stop_server().await.unwrap();
@@ -926,30 +950,48 @@ async fn retry_attempts_keep_their_own_timing() {
 // Deterministic persistence boundaries (no clock involved).
 // ---------------------------------------------------------------------------
 
+/// A measured read recomputes average TPS from the stored output count and the
+/// whole `duration_ms`; the legacy stored `avg_tps` is only an availability
+/// marker and must never be projected. A fractional millisecond duration must
+/// stay fractional and never collapse to a whole-second divisor.
 #[test]
-fn measured_timing_columns_round_trip_without_rounding() {
+fn measured_rows_recalculate_whole_attempt_tps_from_duration_ms() {
     let (dir, db_path) = temp_db("output-timing-roundtrip");
     // Opening through the store creates and migrates the schema.
     let store = UsageLogStore::at(&db_path);
     store.count().expect("initialize the usage database");
 
-    // 200 tokens / (5 s - 1 s) = 50.00 t/s, with the first offset at 1000 ms.
-    insert_timing_row(&db_path, 1_700_000_000_000, "exact", 200, 5_000, Some(1_000.0), Some(50.0));
-    // A fractional denominator must survive unrounded: 200 / 3.5 s.
+    // 200 tokens / the 5.000 s whole attempt = 40.00 t/s; the raw column keeps the
+    // obsolete generation-window 50.00 that must never be projected.
+    insert_timing_row(
+        &db_path,
+        1_700_000_000_000,
+        "exact",
+        200,
+        5_000,
+        Some(1_000.0),
+        Some(50.0),
+    );
+    // 200 tokens / the 3.500 s whole attempt = 57.142857... t/s, unrounded.
     insert_timing_row(
         &db_path,
         1_700_000_000_001,
         "fractional",
         200,
-        5_000,
+        3_500,
         Some(1_500.0),
-        Some(200.0 / 3.5),
+        Some(50.0),
     );
 
     let records = store.all_records().expect("read the timing rows");
     let exact = records.iter().find(|row| row.local_model == "exact").expect("exact row");
     assert_eq!(measured(exact, "first_token_ms"), 1_000.0);
-    assert_eq!(measured(exact, "avg_tps"), 50.0);
+    assert_eq!(
+        measured(exact, "avg_tps"),
+        40.0,
+        "a measured read must recompute 200 tokens / the 5.000 s whole attempt = 40.00 t/s, \
+         not the stored 50.00"
+    );
 
     let fractional = records
         .iter()
@@ -958,11 +1000,15 @@ fn measured_timing_columns_round_trip_without_rounding() {
     let tps = measured(fractional, "avg_tps");
     assert!(
         (tps - 200.0 / 3.5).abs() < 1e-9,
-        "a fractional TPS must round-trip without rounding, got {tps}"
+        "200 tokens / the 3.5 s whole attempt must round-trip unrounded, got {tps}"
     );
     assert!(
-        (tps - 50.0).abs() > 1.0 && (tps - 200.0 / 4.0).abs() > 1.0,
-        "the fractional value must not collapse to a rounded-second divisor, got {tps}"
+        (tps - 200.0 / 4.0).abs() > 1.0 && (tps - 200.0 / 3.0).abs() > 1.0,
+        "the fractional whole attempt must not collapse to a rounded-second divisor, got {tps}"
+    );
+    assert!(
+        (tps - 200.0 / 2.0).abs() > 1.0,
+        "the read must not fall back to the 2 s first-output-to-end window, got {tps}"
     );
 
     let _ = fs::remove_dir_all(&dir);
@@ -1022,7 +1068,11 @@ fn single_and_batch_queries_expose_timing_for_filtered_pages() {
     let record = &page.records[0];
     assert_eq!(record.local_model, "page-a");
     assert_eq!(measured(record, "first_token_ms"), 1_000.0);
-    assert_eq!(measured(record, "avg_tps"), 50.0);
+    assert_eq!(
+        measured(record, "avg_tps"),
+        40.0,
+        "the filtered page must project the whole-attempt 200 / 5.000 s = 40.00 t/s"
+    );
 
     let all = store
         .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
@@ -1032,6 +1082,105 @@ fn single_and_batch_queries_expose_timing_for_filtered_pages() {
         all.records.iter().all(|row| serialized(row).get("avg_tps").is_some()),
         "every measured row must project the timing field"
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The direct fix: a row measured under the obsolete first-output-to-end divisor
+/// is re-projected from its stored whole `duration_ms` and `output_tokens`
+/// without rewriting the database. The raw `avg_tps` column keeps the old value;
+/// only the read projection changes. Rows without a measured TPS stay unknown.
+#[test]
+fn legacy_stored_tps_reprojects_whole_attempt_without_database_rewrite() {
+    let (dir, db_path) = temp_db("output-timing-legacy-tps-reproject");
+    let store = UsageLogStore::at(&db_path);
+    store.count().expect("initialize the usage database");
+
+    // The exact logged attempt: 1739 output tokens over a 41.830 s whole attempt
+    // with a 41622.7707 ms first-token offset. The old code stored the
+    // generation-window rate 8449.763198666167 t/s; the whole-attempt rate is
+    // 1739 / 41.83 = 41.573... t/s (displayed 41.57).
+    insert_timing_row(
+        &db_path,
+        1_700_000_000_000,
+        "legacy-tps",
+        1_739,
+        41_830,
+        Some(41_622.7707),
+        Some(8_449.763_198_666_167),
+    );
+    // A measured row whose output count was never captured keeps a null TPS.
+    insert_timing_row(
+        &db_path,
+        1_700_000_000_001,
+        "legacy-unknown",
+        100,
+        1_000,
+        None,
+        None,
+    );
+
+    let expected = 1_739.0 / (41_830.0 / 1_000.0);
+    let filter = LogFilter {
+        status: None,
+        model: Some("legacy-tps".to_string()),
+        provider: None,
+    };
+    let page = store
+        .query_logs(&TimeRange::default(), &filter, 1)
+        .expect("query the legacy row");
+    assert_eq!(page.records.len(), 1, "the model filter must select the legacy row");
+    let record = &page.records[0];
+    let first = measured(record, "first_token_ms");
+    assert!(
+        (first - 41_622.7707).abs() < 1e-9,
+        "the observed first-token latency must be preserved, got {first}"
+    );
+    let tps = measured(record, "avg_tps");
+    assert!(
+        (tps - expected).abs() < 1e-9,
+        "the read must project 1739 / 41.83 = {expected} t/s, not the stored \
+         generation-window rate, got {tps}"
+    );
+    assert!(
+        (tps - 8_449.763_198_666_167).abs() > 1.0,
+        "the obsolete stored rate must not be projected, got {tps}"
+    );
+
+    // The raw columns are never rewritten: only the read projection changed.
+    let raw = rusqlite::Connection::open(&db_path).expect("open raw usage db");
+    let stored: (Option<f64>, Option<f64>) = raw
+        .query_row(
+            "SELECT avg_tps, first_token_ms FROM usage_logs WHERE local_model = 'legacy-tps'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read the raw stored timing columns");
+    assert!(
+        (stored.0.expect("stored avg_tps") - 8_449.763_198_666_167).abs() < 1e-9,
+        "the raw stored avg_tps must stay the old value, got {:?}",
+        stored.0
+    );
+
+    // A reopen projects the same recalculated value and keeps the unknown row null.
+    let reopened = UsageLogStore::at(&db_path);
+    let restored = reopened.all_records().expect("read after reopen");
+    let restored = restored
+        .iter()
+        .find(|row| row.local_model == "legacy-tps")
+        .expect("the legacy row survives reopen");
+    assert!(
+        (measured(restored, "avg_tps") - expected).abs() < 1e-9,
+        "the recalculated whole-attempt TPS must survive a database reopen"
+    );
+    let unknown = reopened
+        .all_records()
+        .expect("read the unknown row")
+        .into_iter()
+        .find(|row| row.local_model == "legacy-unknown")
+        .expect("the unknown row must exist");
+    assert_unavailable(&unknown, "first_token_ms");
+    assert_unavailable(&unknown, "avg_tps");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -1118,8 +1267,8 @@ fn old_projection_append_keeps_timing_null_and_old_data_intact() {
 }
 
 // ---------------------------------------------------------------------------
-// Deterministic calculator evidence (AC-002): the observed first-output-to-end
-// interval and the reported output count, exercised through the same stable
+// Deterministic calculator evidence (AC-002): the whole per-attempt elapsed time
+// and the reported output count, exercised through the same stable
 // `OutputTimingObserver` boundary the production relay uses. These are the
 // independent arithmetic proofs the persisted-SQL rows above cannot provide:
 // they feed explicit monotonic `Instant`s and assert fixed expected values, so a
@@ -1156,7 +1305,7 @@ fn observer_observes(protocol: UpstreamProtocol, event: &[u8]) -> bool {
 }
 
 #[test]
-fn observer_calculates_the_exact_first_output_to_end_rate() {
+fn observer_calculates_the_exact_whole_attempt_rate() {
     let base = std::time::Instant::now();
     let started = tokio::time::Instant::from_std(base);
     let first = instant(base, Duration::from_millis(1_000));
@@ -1173,103 +1322,148 @@ fn observer_calculates_the_exact_first_output_to_end_rate() {
     );
     let tps = observer
         .average_tps(Some(200))
-        .expect("200 tokens over the 5 s - 1 s window is a valid rate");
+        .expect("200 tokens over the positive 5 s whole attempt is a valid rate");
     assert!(
-        (tps - 50.0).abs() < 1e-9,
-        "200 tokens / (5 s - 1 s) = 50.00 t/s, got {tps}"
+        (tps - 40.0).abs() < 1e-9,
+        "200 tokens / the whole 5 s attempt = 40.00 t/s, not the 4 s \
+         first-output-to-end window, got {tps}"
     );
     assert_eq!(
         observer.timing(Some(200)),
-        (Some(1_000.0), Some(50.0)),
-        "timing() must return the same first-token and TPS pair"
+        (Some(1_000.0), Some(40.0)),
+        "timing() must return the same first-token and whole-attempt TPS pair"
     );
 }
 
 #[test]
-fn observer_fractional_window_is_never_rounded_to_whole_seconds() {
+fn observer_fractional_whole_attempt_is_never_rounded_to_whole_seconds() {
     let base = std::time::Instant::now();
     let started = tokio::time::Instant::from_std(base);
     let first = instant(base, Duration::from_millis(1_500));
-    let end = instant(base, Duration::from_millis(5_000));
+    let end = instant(base, Duration::from_millis(3_500));
 
     let mut observer = OutputTimingObserver::new(UpstreamProtocol::ChatCompletions, started);
     observer.feed_at(&chat_event(json!({"content": "x"})), first);
     observer.finish_at(end);
 
     assert_eq!(observer.first_token_ms(), Some(1_500.0));
-    let tps = observer.average_tps(Some(200)).expect("a 3.5 s window is positive");
+    let tps = observer
+        .average_tps(Some(200))
+        .expect("a positive 3.5 s whole attempt is a valid denominator");
     assert!(
         (tps - 200.0 / 3.5).abs() < 1e-9,
-        "200 tokens / 3.5 s = {:.9}, got {tps}",
+        "200 tokens / the whole 3.5 s attempt = {:.9}, got {tps}",
         200.0 / 3.5
     );
     assert!(
         (tps - 200.0 / 4.0).abs() > 1.0,
-        "the fractional window must not collapse to a rounded 4 s divisor, got {tps}"
+        "the fractional whole attempt must not collapse to a rounded 4 s divisor, got {tps}"
     );
     assert!(
         (tps - 200.0 / 3.0).abs() > 1.0,
-        "the fractional window must not collapse to a rounded 3 s divisor, got {tps}"
+        "the fractional whole attempt must not collapse to a rounded 3 s divisor, got {tps}"
+    );
+    assert!(
+        (tps - 200.0 / 2.0).abs() > 1.0,
+        "the divisor must be the 3.5 s whole attempt, not the 2 s first-output-to-end \
+         window, got {tps}"
     );
 }
 
 #[test]
-fn observer_sub_millisecond_window_is_neither_rounded_nor_clamped() {
+fn observer_sub_millisecond_whole_attempt_is_neither_rounded_nor_clamped() {
     let base = std::time::Instant::now();
     let started = tokio::time::Instant::from_std(base);
-    let first = started;
-    let end = instant(base, Duration::from_micros(500));
+    let first = instant(base, Duration::from_micros(100));
+    let end = instant(base, Duration::from_micros(600));
 
     let mut observer = OutputTimingObserver::new(UpstreamProtocol::ChatCompletions, started);
     observer.feed_at(&chat_event(json!({"content": "x"})), first);
     observer.finish_at(end);
 
-    assert_eq!(
-        observer.first_token_ms(),
-        Some(0.0),
-        "a zero first-token offset is a valid observation, not unknown"
+    let first_ms = observer
+        .first_token_ms()
+        .expect("a 100 microsecond first-token offset is observed");
+    assert!(
+        (first_ms - 0.1).abs() < 1e-9,
+        "a 100 microsecond first-token offset is a valid unrounded observation, got {first_ms}"
     );
     let tps = observer
         .average_tps(Some(200))
-        .expect("a 0.5 ms window is a positive interval");
+        .expect("a 0.6 ms whole attempt is a positive interval");
     assert!(
-        (tps - 400_000.0).abs() < 0.5,
-        "200 tokens / 0.0005 s = 400000 t/s, got {tps}"
+        (tps - 200.0 / 0.0006).abs() < 1.0,
+        "200 tokens / the 0.0006 s whole attempt = {:.3} t/s, got {tps}",
+        200.0 / 0.0006
     );
     assert!(
         (tps - 200_000.0).abs() > 1_000.0,
         "the divisor must not be clamped to the 1 ms floor, got {tps}"
     );
+    assert!(
+        (tps - 400_000.0).abs() > 1_000.0,
+        "the divisor must be the 0.6 ms whole attempt, not the 0.5 ms \
+         first-output-to-end window, got {tps}"
+    );
 }
 
 #[test]
-fn observer_zero_or_non_positive_interval_has_no_tps() {
+fn observer_zero_or_non_positive_whole_attempt_has_no_tps() {
     let base = std::time::Instant::now();
+
+    // Zero-length whole attempt: the attempt starts and ends with its first output.
     let started = tokio::time::Instant::from_std(base);
-    let first = instant(base, Duration::from_millis(1_000));
-
-    // Zero-length generation window: the attempt ends at the first output.
     let mut zero = OutputTimingObserver::new(UpstreamProtocol::ChatCompletions, started);
-    zero.feed_at(&chat_event(json!({"content": "x"})), first);
-    zero.finish_at(first);
-    assert_eq!(zero.first_token_ms(), Some(1_000.0));
-    assert_eq!(zero.average_tps(Some(200)), None, "a zero interval yields no TPS");
+    zero.feed_at(&chat_event(json!({"content": "x"})), started);
+    zero.finish_at(started);
+    assert_eq!(zero.first_token_ms(), Some(0.0));
+    assert_eq!(
+        zero.average_tps(Some(200)),
+        None,
+        "a zero-length whole attempt yields no TPS"
+    );
 
-    // Non-positive window: the end instant precedes the first output.
-    let mut negative = OutputTimingObserver::new(UpstreamProtocol::ChatCompletions, started);
-    negative.feed_at(&chat_event(json!({"content": "x"})), first);
+    // Non-positive whole attempt: the attempted end precedes the attempt start.
+    let late_start = instant(base, Duration::from_millis(1_000));
+    let mut negative = OutputTimingObserver::new(UpstreamProtocol::ChatCompletions, late_start);
+    negative.feed_at(&chat_event(json!({"content": "x"})), late_start);
     negative.finish_at(instant(base, Duration::from_millis(500)));
     assert_eq!(
         negative.average_tps(Some(200)),
         None,
-        "a non-positive interval yields no TPS"
+        "a non-positive whole attempt yields no TPS"
     );
 
     // No first output at all.
+    let started = tokio::time::Instant::from_std(base);
     let mut none = OutputTimingObserver::new(UpstreamProtocol::ChatCompletions, started);
     none.finish_at(instant(base, Duration::from_millis(3_000)));
     assert_eq!(none.first_token_ms(), None);
     assert_eq!(none.average_tps(Some(200)), None);
+}
+
+/// An all-at-once stream can have its first meaningful output arrive together
+/// with the attempt end. That is a zero generation window, but the whole attempt
+/// from its start to that end is positive, so the full-attempt rate remains
+/// measurable.
+#[test]
+fn observer_uses_whole_attempt_when_first_output_matches_attempt_end() {
+    let base = std::time::Instant::now();
+    let started = tokio::time::Instant::from_std(base);
+    let all_at_once = instant(base, Duration::from_millis(2_000));
+
+    let mut observer = OutputTimingObserver::new(UpstreamProtocol::ChatCompletions, started);
+    observer.feed_at(&chat_event(json!({"content": "x"})), all_at_once);
+    observer.finish_at(all_at_once);
+
+    assert_eq!(observer.first_token_ms(), Some(2_000.0));
+    let tps = observer
+        .average_tps(Some(200))
+        .expect("a positive 2 s whole attempt stays measurable with first == end");
+    assert!(
+        (tps - 100.0).abs() < 1e-9,
+        "200 tokens / the whole 2 s attempt = 100.00 t/s with first == end, got {tps}"
+    );
 }
 
 #[test]
@@ -1291,7 +1485,7 @@ fn observer_missing_count_is_unknown_but_an_explicit_zero_is_measured() {
     assert_eq!(
         observer.average_tps(Some(0)),
         Some(0.0),
-        "an explicit zero count over a positive window is 0.00 t/s"
+        "an explicit zero count over a positive whole attempt is 0.00 t/s"
     );
 }
 
@@ -1538,7 +1732,7 @@ fn observer_recognizes_non_text_reasoning_tool_and_whitespace_output() {
 /// (still raw-forwarded by same-protocol Chat upstreams) carries a generated
 /// function name/arguments and must set the first meaningful observation. First
 /// output at 1 s, stream end at 5 s and 200 reported tokens yield a 1000 ms first
-/// token and 50.00 t/s.
+/// token and 40.00 t/s over the whole attempt.
 #[test]
 fn observer_recognizes_deprecated_chat_function_call_name_and_arguments() {
     let base = std::time::Instant::now();
@@ -1559,12 +1753,12 @@ fn observer_recognizes_deprecated_chat_function_call_name_and_arguments() {
     );
     assert_eq!(
         name.average_tps(Some(200)),
-        Some(50.0),
-        "200 tokens over the 5 s - 1 s window is 50.00 t/s"
+        Some(40.0),
+        "200 tokens over the whole 5 s attempt is 40.00 t/s"
     );
     assert_eq!(
         name.timing(Some(200)),
-        (Some(1_000.0), Some(50.0)),
+        (Some(1_000.0), Some(40.0)),
         "timing() returns the same measured pair for the deprecated shape"
     );
 
@@ -1579,7 +1773,7 @@ fn observer_recognizes_deprecated_chat_function_call_name_and_arguments() {
         Some(1_000.0),
         "a deprecated function_call.arguments is generated output at ~1000 ms"
     );
-    assert_eq!(arguments.average_tps(Some(200)), Some(50.0));
+    assert_eq!(arguments.average_tps(Some(200)), Some(40.0));
 }
 
 /// Counterexample guard for the deprecated shape: an empty or identifier-only
@@ -1626,7 +1820,7 @@ fn observer_recognizes_initial_anthropic_thinking_block_but_not_signature_only()
         Some(1_000.0),
         "an initial thinking content block with actual reasoning text is output"
     );
-    assert_eq!(thinking.average_tps(Some(200)), Some(50.0));
+    assert_eq!(thinking.average_tps(Some(200)), Some(40.0));
 
     assert!(
         !observer_observes(
@@ -1676,7 +1870,7 @@ fn observer_interprets_events_with_the_actual_upstream_protocol() {
 // ---------------------------------------------------------------------------
 
 /// A Chat stream: role-only metadata, then ordinary text, then the given raw
-/// `usage` object, then `[DONE]`, each on its own chunk so the generation window
+/// `usage` object, then `[DONE]`, each on its own chunk so the whole attempt
 /// is measurable.
 fn chat_stream_with_usage_literal(usage: &str) -> Vec<SseChunk> {
     vec![

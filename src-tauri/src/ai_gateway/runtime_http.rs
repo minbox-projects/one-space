@@ -556,7 +556,7 @@ pub(in crate::ai_gateway) struct AttemptLog {
     /// Measured first meaningful upstream output latency in milliseconds,
     /// unrounded; `None` when unavailable (REQ-002).
     pub(in crate::ai_gateway) first_token_ms: Option<f64>,
-    /// Average output tokens per second over the unrounded generation window;
+    /// Average output tokens per second over the unrounded whole-attempt window;
     /// `None` when unavailable (REQ-002/REQ-003).
     pub(in crate::ai_gateway) avg_tps: Option<f64>,
     /// Pool-only resolved preference (`low|medium|high|xhigh|none|auto`); `None`
@@ -2064,7 +2064,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         // Fresh per-attempt observation of the raw upstream protocol bytes. It
         // is fed the same chunks used for usage capture, before awaited writes,
         // and is finished before health settlement and persistence so the
-        // generation window excludes downstream and bookkeeping time.
+        // whole-attempt window excludes downstream and bookkeeping time.
         let mut output_timing = OutputTimingObserver::new(upstream_protocol, started);
         let (
             class,
@@ -2332,9 +2332,9 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         // The failed attempt keeps the usage accumulated so far
                         // (REQ-004/REQ-005/AC-009).
                         if let Some(reason) = stream_error.take() {
-                            // The generation window ends at the failure, before
-                            // health settlement, persistence or the downstream
-                            // error fragment.
+                            // The whole-attempt window ends at the failure,
+                            // before health settlement, persistence or the
+                            // downstream error fragment.
                             output_timing.finish_at(Instant::now());
                             if let Some(target) = &probe_target {
                                 // A mid-stream probe failure re-arms the
@@ -2478,7 +2478,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                             }
                             None => {
                                 // The upstream stream ended: close the
-                                // generation window before health settlement,
+                                // whole-attempt window before health settlement,
                                 // persistence and downstream completion
                                 // bookkeeping.
                                 output_timing.finish_at(Instant::now());

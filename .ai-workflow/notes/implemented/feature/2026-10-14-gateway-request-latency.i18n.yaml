@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-14-gateway-request-latency.md
-2026-10-14-gateway-request-latency.md: 8031f754c97eca2884509044b8cce6e143c77e6e
-2026-10-14-gateway-request-latency.zh.md: d3a296123471f6a4d83c51a3d26e0909c46b7ab7
+2026-10-14-gateway-request-latency.md: fb803cabf387730870f6f5d87028e65d5ed43239
+2026-10-14-gateway-request-latency.zh.md: 01e37ddb491f7dcf7e4fb5bff4bc4ddd749d554c
