@@ -781,34 +781,23 @@ describe("ModelPoolDialog", () => {
 //   - pool default control: a labelled native <select> whose accessible name is
 //       t("aiGatewayModelPoolReasoningDefaultLabel"); option values are the six
 //       canonical tokens (auto|low|medium|high|xhigh|none).
-//   - candidate profile control: a labelled native <select> whose accessible
-//       name is t("aiGatewayModelPoolReasoningProfileLabel"); option values are
-//       "" (unknown, not declared) plus the five profile tokens
-//       (openai_effort|anthropic_effort_inherit|anthropic_effort_adaptive|
-//       anthropic_manual_budget|chat_thinking_switch).
-//   - declared values: an input named t("aiGatewayModelPoolReasoningValuesLabel")
-//       holding the comma+space joined declared native values.
-//   - budget range: number inputs named
-//       t("aiGatewayModelPoolReasoningBudgetMinLabel" / ...MaxLabel).
-//   - supports disable: a checkbox named
-//       t("aiGatewayModelPoolReasoningSupportsDisableLabel").
 //   - mapping matrix: per-effort native <select> with
 //       data-testid="model-pool-reasoning-mapping-<effort>"; option value "" is
 //       t("aiGatewayModelPoolReasoningMappingUnmapped"), otherwise
-//       "enum:<value>" | "budget" | "disable".
+//       "enum:<value>" | "budget:<tokens>" | "disable".
 //   - persisted pool payload gains pool.default_reasoning_effort and
 //       candidate.reasoning {profile,values,budget,supports_disable,mappings}.
+//
+// Direct follow-up (model-pool-bindings-only): the candidate profile /
+// declared-values / min-max budget / supports-disable controls and the
+// per-effort numeric budget input were REMOVED. Stored native metadata is a
+// read-only input for round-trip valid configuration and never an editable
+// parameter.
 // ---------------------------------------------------------------------------
 
 function reasoningDefaultSelect(): HTMLSelectElement {
   return screen.getByLabelText(
     i18n.t("aiGatewayModelPoolReasoningDefaultLabel"),
-  ) as HTMLSelectElement;
-}
-
-function candidateProfileSelect(): HTMLSelectElement {
-  return screen.getByLabelText(
-    i18n.t("aiGatewayModelPoolReasoningProfileLabel"),
   ) as HTMLSelectElement;
 }
 
@@ -886,7 +875,7 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
     expect(mappingSelect("high")).toHaveValue("");
   });
 
-  it("展示候选声明的原生配置、取值范围与映射矩阵，未映射档位保持显式未映射", async () => {
+  it("存储的声明只作为只读输入，编辑器只暴露绑定选择", async () => {
     mockState.config = buildConfig([
       {
         id: "pool-declared",
@@ -919,16 +908,26 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
     fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-declared"));
 
     expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
-    expect(candidateProfileSelect()).toHaveValue("openai_effort");
+    const editor = screen.getByTestId("model-pool-reasoning-editor-p-a-local-a1");
+    // 高级声明已被移除：profile / 声明取值 / 预算区间 / 禁用复选框都不再存在。
     expect(
-      screen.getByLabelText(i18n.t("aiGatewayModelPoolReasoningValuesLabel")),
-    ).toHaveValue("low, medium, high");
+      screen.queryByLabelText(i18n.t("aiGatewayModelPoolReasoningProfileLabel")),
+    ).toBeNull();
     expect(
-      screen.getByLabelText(
+      screen.queryByLabelText(i18n.t("aiGatewayModelPoolReasoningValuesLabel")),
+    ).toBeNull();
+    expect(
+      screen.queryByLabelText(
         i18n.t("aiGatewayModelPoolReasoningSupportsDisableLabel"),
       ),
-    ).not.toBeChecked();
+    ).toBeNull();
+    expect(editor.querySelector("details")).toBeNull();
+    expect(editor.querySelector("input")).toBeNull();
 
+    // 存储的声明仅作为只读输入：绑定选择回显已存的 enum 并仍提供其原生取值。
+    const high = mappingSelect("high");
+    expect(high).toHaveValue("enum:high");
+    expect(within(high).getByRole("option", { name: "high" })).toBeInTheDocument();
     // The five canonical preferences each expose an explicit unmapped option.
     for (const effort of ["low", "medium", "high", "xhigh", "none"]) {
       const select = mappingSelect(effort);
@@ -938,11 +937,10 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
         }),
       ).toBeInTheDocument();
     }
-    expect(mappingSelect("high")).toHaveValue("enum:high");
     expect(mappingSelect("low")).toHaveValue("");
   });
 
-  it("编辑遗留/未知 profile 的候选时不推断映射也不生成声明值", async () => {
+  it("编辑遗留/未知 profile 的候选时不推断映射也不暴露声明控件", async () => {
     mockState.config = buildConfig([
       {
         id: "pool-unknown",
@@ -973,12 +971,17 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
     fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-unknown"));
 
     expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
-    expect(candidateProfileSelect()).toHaveValue("legacy_unknown_profile");
-    expect(mappingSelect("high")).toHaveValue("");
-    // No declared value is fabricated from the unknown profile.
+    const editor = screen.getByTestId("model-pool-reasoning-editor-p-a-local-a1");
+    // 未知 profile 不再作为表单暴露，DOM 中不存在任何声明控件。
     expect(
-      screen.getByLabelText(i18n.t("aiGatewayModelPoolReasoningValuesLabel")),
-    ).toHaveValue("");
+      screen.queryByLabelText(i18n.t("aiGatewayModelPoolReasoningProfileLabel")),
+    ).toBeNull();
+    expect(
+      screen.queryByLabelText(i18n.t("aiGatewayModelPoolReasoningValuesLabel")),
+    ).toBeNull();
+    expect(editor.querySelector("input")).toBeNull();
+    // No declared value is fabricated from the unknown profile, no mapping inferred.
+    expect(mappingSelect("high")).toHaveValue("");
   });
 
   it("多档位共享同一原生动作可往返保存；switch 配置说明其没有强度梯度", async () => {
@@ -1122,23 +1125,24 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
 // ---------------------------------------------------------------------------
 // Step 4 repair (20261015-pool-only-reasoning) REQ-001 / REQ-002 / REQ-004 /
 // AC-002 / AC-004 / AC-008:
-//   (A) each manual-budget mapping keeps its own native `budget_tokens` through
-//       an unrelated save and stays independently editable, and an invalid
-//       budget is refused without clearing the draft;
+//   (A) each manual-budget mapping keeps its own native `budget_tokens`, and the
+//       existing distinct stored budgets are the only rebind targets exposed as
+//       read-only options; no numeric budget/range input exists;
 //   (D) the dialog shows a live static coverage summary separated from runtime
 //       readiness, a new/changed concrete default needs a currently resolvable
 //       mapping, while an unchanged default + declaration stays retainable;
-//   (E) profile/action option labels are localized in both locales while their
+//   (E) binding/action option labels are localized in both locales while their
 //       option values stay the stable product tokens.
 //
-// New public interfaces pinned for Frontend:
-//   - per-effort budget value input for a `budget` mapping:
-//       data-testid="model-pool-reasoning-budget-<effort>" (type="number"),
-//       accessible label = `${t("aiGatewayModelPoolReasoningBudgetLabel")}: <effort>`.
+// Public interfaces pinned for Frontend:
+//   - candidate editor: data-testid="model-pool-reasoning-editor-<providerId>-<localModel>"
+//       holding the binding selects and NO advanced declaration surface.
 //   - live static coverage value: data-testid="model-pool-reasoning-static-coverage"
 //       (label text keeps aiGatewayModelPoolReasoningCoverageLabel).
 //   - live runtime readiness value: data-testid="model-pool-reasoning-runtime-readiness"
 //       (label text keeps aiGatewayModelPoolReasoningRuntimeReadinessLabel).
+//   - a stored manual-budget action is a read-only option `budget:<tokens>`
+//       labelled `${t("aiGatewayModelPoolReasoningActionBudget")} · <tokens>`.
 // ---------------------------------------------------------------------------
 
 type PoolCandidatePayload = {
@@ -1147,26 +1151,6 @@ type PoolCandidatePayload = {
 };
 
 describe("ModelPoolDialog 模型池推理策略回归（Step 4 repair）", () => {
-  const PROFILE_LABEL_KEYS: Array<[string, string]> = [
-    ["openai_effort", "aiGatewayModelPoolReasoningProfileOpenaiEffort"],
-    [
-      "anthropic_effort_inherit",
-      "aiGatewayModelPoolReasoningProfileAnthropicEffortInherit",
-    ],
-    [
-      "anthropic_effort_adaptive",
-      "aiGatewayModelPoolReasoningProfileAnthropicEffortAdaptive",
-    ],
-    [
-      "anthropic_manual_budget",
-      "aiGatewayModelPoolReasoningProfileAnthropicManualBudget",
-    ],
-    [
-      "chat_thinking_switch",
-      "aiGatewayModelPoolReasoningProfileChatThinkingSwitch",
-    ],
-  ];
-
   const ANTHROPIC_PROVIDERS = [
     {
       id: "p-a",
@@ -1285,10 +1269,21 @@ describe("ModelPoolDialog 模型池推理策略回归（Step 4 repair）", () =>
     await screen.findByTestId("model-pool-dialog");
   }
 
-  function budgetInput(effort: string): HTMLInputElement {
+  function editorFor(providerId: string, localModel: string): HTMLElement {
     return screen.getByTestId(
-      `model-pool-reasoning-budget-${effort}`,
-    ) as HTMLInputElement;
+      `model-pool-reasoning-editor-${providerId}-${localModel}`,
+    );
+  }
+
+  function expandEditor(editor: HTMLElement): void {
+    fireEvent.click(within(editor).getAllByRole("button")[0]);
+  }
+
+  function optionByValue(
+    select: HTMLSelectElement,
+    value: string,
+  ): HTMLOptionElement | undefined {
+    return Array.from(select.options).find((option) => option.value === value);
   }
 
   function mappingAction(
@@ -1313,21 +1308,117 @@ describe("ModelPoolDialog 模型池推理策略回归（Step 4 repair）", () =>
     installMock();
   });
 
-  it("无关改名保存保留每个档位各自的预算", async () => {
+  it.each(["en", "zh"] as const)(
+    "%s 下已存手动预算只读展示：含 token 数的本地化选项且无数字输入",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
+
+      const editor = editorFor("p-a", "local-a1");
+      expandEditor(editor);
+      const prefix = i18n.t("aiGatewayModelPoolReasoningActionBudget");
+
+      for (const [effort, tokens] of [
+        ["low", 1536],
+        ["high", 3072],
+      ] as const) {
+        const select = within(editor).getByTestId(
+          `model-pool-reasoning-mapping-${effort}`,
+        ) as HTMLSelectElement;
+        expect(select).toHaveValue(`budget:${tokens}`);
+        expect(optionByValue(select, `budget:${tokens}`)?.textContent).toBe(
+          `${prefix} · ${tokens}`,
+        );
+      }
+
+      // No per-effort numeric budget input, no advanced declaration controls.
+      expect(within(editor).queryByRole("spinbutton")).toBeNull();
+      expect(editor.querySelector("input")).toBeNull();
+      expect(editor.querySelector("details")).toBeNull();
+      expect(
+        screen.queryByLabelText(
+          i18n.t("aiGatewayModelPoolReasoningSupportsDisableLabel"),
+        ),
+      ).toBeNull();
+    },
+  );
+
+  it("把 high 重绑定到已存预算 budget:1536 并保存为类型化动作", async () => {
     const user = userEvent.setup();
     await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
 
-    expect(budgetInput("low")).toHaveValue(1536);
-    expect(budgetInput("high")).toHaveValue(3072);
-
-    const nameInput = screen.getByTestId("model-pool-name-input");
-    await user.clear(nameInput);
-    await user.type(nameInput, "Renamed Budget Pool");
+    const editor = editorFor("p-a", "local-a1");
+    expandEditor(editor);
+    const high = within(editor).getByTestId(
+      "model-pool-reasoning-mapping-high",
+    ) as HTMLSelectElement;
+    await user.selectOptions(high, "budget:1536");
     fireEvent.click(screen.getByTestId("model-pool-save"));
 
     await waitFor(() => expect(upsertCalls()).toHaveLength(1));
     const saved = upsertCalls()[0];
     expect(saved.default_reasoning_effort).toBe("high");
+    // Exactly the chosen existing budget is emitted for high; low is untouched.
+    expect(mappingAction(saved, "low")).toEqual({
+      kind: "budget",
+      budget_tokens: 1536,
+    });
+    expect(mappingAction(saved, "high")).toEqual({
+      kind: "budget",
+      budget_tokens: 1536,
+    });
+    // The manual profile and its declared range survive unchanged.
+    expect(reasoningOf(saved).profile).toBe("anthropic_manual_budget");
+    expect(reasoningOf(saved).budget).toEqual({ min: 1024, max: 8192 });
+    expect(reasoningOf(saved).values).toEqual([]);
+  });
+
+  it("取消再重新勾选同一来源仍保留已存 manual-budget 元数据与预算档位", async () => {
+    await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
+
+    // Uncheck the saved candidate in the source list, then check the very same
+    // source again: the immutable stored base must survive the round-trip
+    // instead of being replaced by the bare source candidate.
+    const sourceCheckbox = screen.getByRole("checkbox", {
+      name: "Provider A local-a1 remote-a1",
+    });
+    fireEvent.click(sourceCheckbox);
+    expect(
+      screen.queryByTestId("model-pool-reasoning-editor-p-a-local-a1"),
+    ).toBeNull();
+    fireEvent.click(sourceCheckbox);
+
+    const editor = editorFor("p-a", "local-a1");
+    expandEditor(editor);
+
+    // No advanced declaration or numeric budget surface returns.
+    expect(within(editor).queryByRole("spinbutton")).toBeNull();
+    expect(editor.querySelector("input")).toBeNull();
+    expect(editor.querySelector("details")).toBeNull();
+    expect(
+      screen.queryByLabelText(
+        i18n.t("aiGatewayModelPoolReasoningSupportsDisableLabel"),
+      ),
+    ).toBeNull();
+
+    for (const [effort, tokens] of [
+      ["low", 1536],
+      ["high", 3072],
+    ] as const) {
+      const select = within(editor).getByTestId(
+        `model-pool-reasoning-mapping-${effort}`,
+      ) as HTMLSelectElement;
+      expect(select).toHaveValue(`budget:${tokens}`);
+    }
+
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+
+    const saved = upsertCalls()[0];
+    expect(saved.default_reasoning_effort).toBe("high");
+    expect(reasoningOf(saved).profile).toBe("anthropic_manual_budget");
+    expect(reasoningOf(saved).budget).toEqual({ min: 1024, max: 8192 });
+    expect(reasoningOf(saved).values).toEqual([]);
     expect(mappingAction(saved, "low")).toEqual({
       kind: "budget",
       budget_tokens: 1536,
@@ -1338,105 +1429,53 @@ describe("ModelPoolDialog 模型池推理策略回归（Step 4 repair）", () =>
     });
   });
 
-  it("键盘修改 high 档预算不影响 low 档预算", async () => {
+  it("草稿态静态覆盖随绑定实时更新", async () => {
     const user = userEvent.setup();
-    await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
-
-    const high = budgetInput("high");
-    await user.clear(high);
-    await user.type(high, "4096");
-    fireEvent.click(screen.getByTestId("model-pool-save"));
-
-    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
-    const saved = upsertCalls()[0];
-    expect(mappingAction(saved, "high")).toEqual({
-      kind: "budget",
-      budget_tokens: 4096,
-    });
-    expect(mappingAction(saved, "low")).toEqual({
-      kind: "budget",
-      budget_tokens: 1536,
-    });
-  });
-
-  it("拒绝小数预算并保留草稿", async () => {
-    await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
-
-    fireEvent.change(budgetInput("high"), { target: { value: "4096.5" } });
-    fireEvent.click(screen.getByTestId("model-pool-save"));
-
-    expect(await screen.findByTestId("model-pool-error")).toBeInTheDocument();
-    expect(upsertCalls()).toHaveLength(0);
-    expect(budgetInput("high").value).toBe("4096.5");
-  });
-
-  it("拒绝超出声明上限的预算并保留草稿", async () => {
-    await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
-
-    fireEvent.change(budgetInput("high"), { target: { value: "32768" } });
-    fireEvent.click(screen.getByTestId("model-pool-save"));
-
-    expect(await screen.findByTestId("model-pool-error")).toBeInTheDocument();
-    expect(upsertCalls()).toHaveLength(0);
-    expect(budgetInput("high").value).toBe("32768");
-  });
-
-  it("拒绝低于 1024 的预算并保留草稿", async () => {
-    await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
-
-    fireEvent.change(budgetInput("high"), { target: { value: "512" } });
-    fireEvent.click(screen.getByTestId("model-pool-save"));
-
-    expect(await screen.findByTestId("model-pool-error")).toBeInTheDocument();
-    expect(upsertCalls()).toHaveLength(0);
-    expect(budgetInput("high").value).toBe("512");
-  });
-
-  it("拒绝低于适配器下限的声明区间并保留草稿", async () => {
-    const user = userEvent.setup();
-    await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
-
-    // `auto` removes the structural default guard so only the range check can
-    // reject this save.
-    await user.selectOptions(reasoningDefaultSelect(), "auto");
-    fireEvent.change(
-      screen.getByLabelText(
-        i18n.t("aiGatewayModelPoolReasoningBudgetMinLabel"),
-      ),
-      { target: { value: "100" } },
-    );
-    fireEvent.click(screen.getByTestId("model-pool-save"));
-
-    expect(await screen.findByTestId("model-pool-error")).toBeInTheDocument();
-    expect(upsertCalls()).toHaveLength(0);
-    expect(
-      screen.getByLabelText(i18n.t("aiGatewayModelPoolReasoningBudgetMinLabel")),
-    ).toHaveValue(100);
-  });
-
-  it("草稿态静态覆盖随声明编辑实时更新", async () => {
-    await openForEdit(liveCoveragePool);
+    // Both exact source mappings declare native `high`, so binding the
+    // untouched candidate's high preference is a plain binding with no manual
+    // profile/value editing.
+    const providers = [
+      {
+        id: "p-a",
+        name: "Provider A",
+        protocol: "chat_completions",
+        enabled: true,
+        mappings: [
+          {
+            local_model: "local-a1",
+            upstream_model: "remote-a1",
+            reasoning_efforts: ["high"],
+          },
+        ],
+      },
+      {
+        id: "p-b",
+        name: "Provider B",
+        protocol: "responses",
+        enabled: true,
+        mappings: [
+          {
+            local_model: "local-b1",
+            upstream_model: "remote-b1",
+            reasoning_efforts: ["high"],
+          },
+        ],
+      },
+    ];
+    await openForEdit(liveCoveragePool, providers);
 
     expect(
       screen.getByTestId("model-pool-reasoning-static-coverage"),
     ).toHaveTextContent(coverageCopy(1, 2));
 
-    const editor = screen.getByTestId("model-pool-reasoning-editor-p-b-local-b1");
-    fireEvent.change(
-      within(editor).getByLabelText(
-        i18n.t("aiGatewayModelPoolReasoningProfileLabel"),
-      ),
-      { target: { value: "openai_effort" } },
-    );
-    fireEvent.change(
-      within(editor).getByLabelText(
-        i18n.t("aiGatewayModelPoolReasoningValuesLabel"),
-      ),
-      { target: { value: "high" } },
-    );
-    fireEvent.change(
-      within(editor).getByTestId("model-pool-reasoning-mapping-high"),
-      { target: { value: "enum:high" } },
+    const editor = editorFor("p-b", "local-b1");
+    expandEditor(editor);
+    const high = within(editor).getByTestId(
+      "model-pool-reasoning-mapping-high",
+    ) as HTMLSelectElement;
+    await user.selectOptions(
+      high,
+      within(high).getByRole("option", { name: "high" }),
     );
 
     expect(
@@ -1515,43 +1554,111 @@ describe("ModelPoolDialog 模型池推理策略回归（Step 4 repair）", () =>
     );
   });
 
-  it.each(["en", "zh"] as const)(
-    "%s 下 profile 与 budget/disable 选项显示本地化名称且取值仍是稳定 token",
-    async (language) => {
-      await i18n.changeLanguage(language);
-      await openForEdit(manualBudgetPool, ANTHROPIC_PROVIDERS);
+  it("manual-budget 绑定只提供已存的预算动作，不把来源原生档位当作 enum 也不能输入新预算", async () => {
+    // The exact source mapping declares native ['low','high'], which a
+    // manual-budget profile can never target as an enum: the binding offers only
+    // the existing distinct stored budgets and never enum:low/high.
+    const providers = [
+      {
+        id: "p-a",
+        name: "Provider A",
+        protocol: "anthropic_messages",
+        enabled: true,
+        mappings: [
+          {
+            local_model: "local-a1",
+            upstream_model: "remote-a1",
+            protocol: "anthropic_messages",
+            reasoning_efforts: ["low", "high"],
+          },
+        ],
+      },
+    ];
+    await openForEdit(manualBudgetPool, providers);
 
-      const profileSelect = candidateProfileSelect();
-      for (const [token, key] of PROFILE_LABEL_KEYS) {
-        const option = within(profileSelect).getByRole("option", {
-          name: i18n.t(key),
-        }) as HTMLOptionElement;
-        expect(option.value).toBe(token);
-      }
+    const editor = editorFor("p-a", "local-a1");
+    expandEditor(editor);
 
-      const highSelect = mappingSelect("high");
-      expect(
-        (
-          within(highSelect).getByRole("option", {
-            name: i18n.t("aiGatewayModelPoolReasoningActionBudget"),
-          }) as HTMLOptionElement
-        ).value,
-      ).toBe("budget");
-      expect(
-        (
-          within(highSelect).getByRole("option", {
-            name: i18n.t("aiGatewayModelPoolReasoningActionDisable"),
-          }) as HTMLOptionElement
-        ).value,
-      ).toBe("disable");
+    const high = within(editor).getByTestId(
+      "model-pool-reasoning-mapping-high",
+    ) as HTMLSelectElement;
+    const optionValues = Array.from(high.options).map((option) => option.value);
+    expect(optionValues.some((value) => value.startsWith("enum:"))).toBe(false);
+    expect(optionValues).toEqual(
+      expect.arrayContaining(["budget:1536", "budget:3072"]),
+    );
+    // Only existing stored budget actions are offered: no numeric/typing surface.
+    expect(within(editor).queryByRole("spinbutton")).toBeNull();
+    expect(editor.querySelector("input")).toBeNull();
+  });
 
-      expect(
-        screen.getByLabelText(
-          `${i18n.t("aiGatewayModelPoolReasoningBudgetLabel")}: high`,
-        ),
-      ).toHaveValue(3072);
-    },
-  );
+  it("chat-thinking-switch 绑定只提供内建 enabled，不把来源原生档位当作 enum", async () => {
+    const user = userEvent.setup();
+    // The source declares native ['medium','high'], but a switch profile's only
+    // valid positive native value is `enabled`; the incompatible unioned
+    // metadata must be filtered and the intrinsic `enabled` offered instead.
+    const providers = [
+      {
+        id: "p-a",
+        name: "Provider A",
+        protocol: "chat_completions",
+        enabled: true,
+        mappings: [
+          {
+            local_model: "local-a1",
+            upstream_model: "remote-a1",
+            reasoning_efforts: ["medium", "high"],
+          },
+        ],
+      },
+    ];
+    const switchPool: Record<string, unknown> = {
+      id: "pool-switch-bind",
+      name: "Switch Bind Pool",
+      model: "switch-bind-model",
+      enabled: true,
+      default_reasoning_effort: "high",
+      candidates: [
+        {
+          provider_id: "p-a",
+          local_model: "local-a1",
+          upstream_model: "remote-a1",
+          protocol: "chat_completions",
+          weight: 1,
+          reasoning: {
+            profile: "chat_thinking_switch",
+            values: [],
+            supports_disable: false,
+            mappings: [],
+          },
+        },
+      ],
+    };
+    await openForEdit(switchPool, providers);
+
+    const editor = screen.getByTestId("model-pool-reasoning-editor-p-a-local-a1");
+    fireEvent.click(within(editor).getAllByRole("button")[0]);
+
+    const high = within(editor).getByTestId(
+      "model-pool-reasoning-mapping-high",
+    ) as HTMLSelectElement;
+    const optionValues = Array.from(high.options).map((option) => option.value);
+    expect(optionValues).toContain("enum:enabled");
+    expect(optionValues).not.toContain("enum:medium");
+    expect(optionValues).not.toContain("enum:high");
+
+    await user.selectOptions(high, "enum:enabled");
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+    const saved = upsertCalls()[0];
+    expect(saved.default_reasoning_effort).toBe("high");
+    expect(reasoningOf(saved).profile).toBe("chat_thinking_switch");
+    expect(mappingAction(saved, "high")).toEqual({
+      kind: "enum",
+      value: "enabled",
+    });
+  });
 
   it("支持在已选列表中切换候选模型推理配置的折叠与展开状态（默认收起）", async () => {
     await openModelPoolDialog();
@@ -1568,8 +1675,11 @@ describe("ModelPoolDialog 模型池推理策略回归（Step 4 repair）", () =>
     // 默认是收起状态，带有 hidden 样式类
     expect(body).toHaveClass("hidden");
 
-    // 点击展开按钮
-    const toggleBtn = within(editor).getByRole("button");
+    // 点击展开按钮：按外层切换条的可访问名称定位，避免新增的 <summary>
+    // 披露控件使旧的结构化单按钮选择失效（导航适配，不弱化折叠断言）。
+    const toggleBtn = within(editor).getByRole("button", {
+      name: new RegExp(`^${i18n.t("aiGatewayModelPoolReasoningBindingsLabel")}`),
+    });
     fireEvent.click(toggleBtn);
 
     // 展开后移除 hidden 样式类
@@ -1579,6 +1689,446 @@ describe("ModelPoolDialog 模型池推理策略回归（Step 4 repair）", () =>
     fireEvent.click(toggleBtn);
     expect(body).toHaveClass("hidden");
   });
+});
+
+// ---------------------------------------------------------------------------
+// Direct change (model-pool-reasoning-bindings): the main candidate editor
+// binds each model-supported native effort to the five canonical pool
+// preferences and derives a pool-local native declaration from the chosen
+// bindings only. The former advanced profile/values/budget surface was removed
+// entirely by the model-pool-bindings-only follow-up.
+//
+// Public contract pinned for Frontend:
+//   - per-candidate panel:  data-testid="model-pool-reasoning-editor-<providerId>-<localModel>"
+//   - binding selects:      data-testid="model-pool-reasoning-mapping-<effort>"
+//       inside the panel and the ONLY controls it contains
+//   - no advanced surface:  data-testid="model-pool-reasoning-advanced" must not
+//       exist, and the panel contains no <details>/<summary>/<input>
+//   - binding option labels are plain native values; the stable option values
+//       may keep the `enum:<value>` spelling.
+//   - choosing a binding builds candidate.reasoning {profile,values,mappings};
+//       an untouched candidate stays without a `reasoning` key.
+// ---------------------------------------------------------------------------
+
+describe("ModelPoolDialog 模型池推理绑定（binding）", () => {
+  const PROTOCOL_CASES = [
+    { protocol: "chat_completions", expectedProfile: "openai_effort" },
+    { protocol: "responses", expectedProfile: "openai_effort" },
+    { protocol: "anthropic_messages", expectedProfile: "anthropic_effort_inherit" },
+  ] as const;
+
+  function bindingProviders(protocol: string): unknown[] {
+    return [
+      {
+        id: "p-a",
+        name: "Provider A",
+        protocol,
+        enabled: true,
+        mappings: [
+          {
+            local_model: "local-a1",
+            upstream_model: "remote-a1",
+            protocol,
+            reasoning_efforts: ["minimal", "max", "none"],
+          },
+        ],
+      },
+      {
+        id: "p-b",
+        name: "Provider B",
+        protocol: "responses",
+        enabled: true,
+        mappings: [
+          {
+            local_model: "local-b1",
+            upstream_model: "remote-b1",
+            reasoning_efforts: ["sibling_only"],
+          },
+        ],
+      },
+    ];
+  }
+
+  function editorFor(providerId: string, localModel: string): HTMLElement {
+    return screen.getByTestId(
+      `model-pool-reasoning-editor-${providerId}-${localModel}`,
+    );
+  }
+
+  function expandPanel(editor: HTMLElement): void {
+    fireEvent.click(within(editor).getAllByRole("button")[0]);
+  }
+
+  function bindingSelect(editor: HTMLElement, effort: string): HTMLSelectElement {
+    return within(editor).getByTestId(
+      `model-pool-reasoning-mapping-${effort}`,
+    ) as HTMLSelectElement;
+  }
+
+  function optionTexts(select: HTMLSelectElement): string[] {
+    return Array.from(select.options).map((option) => option.textContent ?? "");
+  }
+
+  function offersDisable(select: HTMLSelectElement): boolean {
+    return Array.from(select.options).some(
+      (option) => option.value === "disable",
+    );
+  }
+
+  function candidateReasoning(
+    pool: Record<string, unknown>,
+    localModel: string,
+  ): Record<string, unknown> | undefined {
+    const candidate = candidatesOf(pool).find(
+      (item) => item.local_model === localModel,
+    );
+    return candidate?.reasoning as Record<string, unknown> | undefined;
+  }
+
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+    mockState.config = buildConfig([]);
+    mockState.statusPayload = [];
+    mockState.upsertError = null;
+    mockState.deleted = [];
+    installMock();
+  });
+
+  it.each(PROTOCOL_CASES)(
+    "把 canonical medium 绑定到原生 max 并用候选协议默认适配器保存（%s）",
+    async ({ protocol, expectedProfile }) => {
+      const user = userEvent.setup();
+      mockState.config = buildConfig([], bindingProviders(protocol));
+      await openModelPoolDialog();
+
+      fireEvent.click(screen.getByRole("checkbox", { name: /local-a1/i }));
+      // Provider B is the second enabled provider and starts collapsed.
+      fireEvent.click(screen.getByTestId("model-pool-source-group-p-b"));
+      fireEvent.click(screen.getByRole("checkbox", { name: /local-b1/i }));
+
+      const editor = editorFor("p-a", "local-a1");
+      expandPanel(editor);
+
+      for (const effort of ["low", "medium", "high", "xhigh", "none"]) {
+        expect(bindingSelect(editor, effort)).toBeInTheDocument();
+      }
+
+      const medium = bindingSelect(editor, "medium");
+      // Native options are the exact source-declared values as plain labels,
+      // never the `enum:` implementation text.
+      expect(optionTexts(medium)).toEqual(
+        expect.arrayContaining(["minimal", "max"]),
+      );
+      for (const text of optionTexts(medium)) {
+        expect(text).not.toContain("enum:");
+      }
+      // No cross-sibling borrowing: Provider B's native option never appears.
+      expect(
+        within(medium).queryByRole("option", { name: "sibling_only" }),
+      ).toBeNull();
+      // A positive preference never offers the explicit disable action.
+      expect(offersDisable(medium)).toBe(false);
+
+      // The former advanced declaration surface is physically absent: no
+      // <details>/<summary>, no advanced testid and no <input> anywhere in the
+      // candidate editor. The binding selects are the only controls.
+      expect(
+        within(editor).queryByTestId("model-pool-reasoning-advanced"),
+      ).toBeNull();
+      expect(editor.querySelector("details")).toBeNull();
+      expect(editor.querySelector("summary")).toBeNull();
+      expect(editor.querySelector("input")).toBeNull();
+
+      // `none` offers the explicit disable only where the source declares it
+      // supported (Provider A declares `none`; Provider B does not).
+      expect(offersDisable(bindingSelect(editor, "none"))).toBe(true);
+      const siblingEditor = editorFor("p-b", "local-b1");
+      expandPanel(siblingEditor);
+      expect(offersDisable(bindingSelect(siblingEditor, "none"))).toBe(false);
+
+      // Bind canonical medium -> native max without entering profile/values/range.
+      await user.selectOptions(
+        medium,
+        within(medium).getByRole("option", { name: "max" }),
+      );
+
+      fireEvent.click(screen.getByTestId("model-pool-save"));
+      await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+
+      const pool = upsertCalls()[0];
+      const bound = candidateReasoning(pool, "local-a1");
+      // The default adapter follows the candidate protocol.
+      expect(bound?.profile).toBe(expectedProfile);
+      // The declaration is derived: exactly the bound native value, and exactly
+      // one mapping with no implicit mapping for any other canonical effort.
+      expect(bound?.values).toEqual(["max"]);
+      expect(bound?.mappings).toEqual([
+        { effort: "medium", action: { kind: "enum", value: "max" } },
+      ]);
+      // The untouched candidate stays unknown: no `reasoning` key is emitted.
+      expect(candidateReasoning(pool, "local-b1")).toBeUndefined();
+      // The source provider list is never rewritten by a pool save.
+      expect(
+        invokeMock.mock.calls.some(
+          ([command]) => command === "ai_gateway_upsert_provider",
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("绑定改到另一个原生档位时，未在元数据中的已存值仍保留", async () => {
+    const user = userEvent.setup();
+    const bindProviders = [
+      {
+        id: "p-a",
+        name: "Provider A",
+        protocol: "chat_completions",
+        enabled: true,
+        mappings: [
+          {
+            local_model: "local-a1",
+            upstream_model: "remote-a1",
+            reasoning_efforts: ["minimal", "max"],
+          },
+        ],
+      },
+    ];
+    const pool: Record<string, unknown> = {
+      id: "pool-bind-edit",
+      name: "Bind Edit Pool",
+      model: "bind-edit",
+      enabled: true,
+      default_reasoning_effort: "medium",
+      candidates: [
+        {
+          provider_id: "p-a",
+          local_model: "local-a1",
+          upstream_model: "remote-a1",
+          protocol: "chat_completions",
+          weight: 1,
+          reasoning: {
+            profile: "openai_effort",
+            values: ["legacy_custom"],
+            supports_disable: false,
+            mappings: [
+              {
+                effort: "medium",
+                action: { kind: "enum", value: "legacy_custom" },
+              },
+            ],
+          },
+        },
+      ],
+    };
+    mockState.config = buildConfig([pool], bindProviders);
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Provider A");
+    fireEvent.click(
+      screen.getByTestId("ai-gateway-model-pool-edit-pool-bind-edit"),
+    );
+    await screen.findByTestId("model-pool-dialog");
+
+    const editor = editorFor("p-a", "local-a1");
+    expandPanel(editor);
+    const medium = bindingSelect(editor, "medium");
+    // A stored declaration value absent from the source metadata stays offered.
+    expect(
+      within(medium).getByRole("option", { name: "legacy_custom" }),
+    ).toBeInTheDocument();
+    expect(
+      within(medium).getByRole("option", { name: "minimal" }),
+    ).toBeInTheDocument();
+
+    await user.selectOptions(
+      medium,
+      within(medium).getByRole("option", { name: "minimal" }),
+    );
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+    const saved = candidateReasoning(upsertCalls()[0], "local-a1");
+    expect(saved?.profile).toBe("openai_effort");
+    expect(saved?.mappings).toEqual([
+      { effort: "medium", action: { kind: "enum", value: "minimal" } },
+    ]);
+    const values = (saved?.values ?? []) as string[];
+    expect(values).toHaveLength(2);
+    expect(values).toEqual(expect.arrayContaining(["minimal", "legacy_custom"]));
+  });
+
+  it("把 canonical none 绑定到源声明的 none 时保存为显式 disable", async () => {
+    const user = userEvent.setup();
+    mockState.config = buildConfig([], bindingProviders("chat_completions"));
+    await openModelPoolDialog();
+
+    // Isolate the `none` binding: an `auto` default needs no positive mapping.
+    await user.selectOptions(reasoningDefaultSelect(), "auto");
+    fireEvent.click(screen.getByRole("checkbox", { name: /local-a1/i }));
+    const editor = editorFor("p-a", "local-a1");
+    expandPanel(editor);
+
+    const none = bindingSelect(editor, "none");
+    // The exact source mapping declares `none`, so the explicit disable is
+    // offered without any advanced declaration.
+    expect(offersDisable(none)).toBe(true);
+    await user.selectOptions(none, "disable");
+
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+
+    const pool = upsertCalls()[0];
+    expect(pool.default_reasoning_effort).toBe("auto");
+    const bound = candidateReasoning(pool, "local-a1");
+    expect(bound?.profile).toBe("openai_effort");
+    expect(bound?.supports_disable).toBe(true);
+    expect(bound?.mappings).toEqual([
+      { effort: "none", action: { kind: "disable" } },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Direct follow-up (model-pool-bindings-only): after expanding a fresh candidate
+// there is NO advanced declaration/details/summary/profileSelect/textbox/numeric
+// budget/disable checkbox anywhere in the candidate editor; the five canonical
+// binding selects are the only controls and save exact enum/none metadata.
+// ---------------------------------------------------------------------------
+
+describe("ModelPoolDialog 模型池推理绑定回归（无高级声明界面）", () => {
+  function providerWithNative(protocol: string): unknown[] {
+    return [
+      {
+        id: "p-a",
+        name: "Provider A",
+        protocol,
+        enabled: true,
+        mappings: [
+          {
+            local_model: "local-a1",
+            upstream_model: "remote-a1",
+            protocol,
+            reasoning_efforts: ["minimal", "max", "none"],
+          },
+        ],
+      },
+    ];
+  }
+
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+    mockState.config = buildConfig([]);
+    mockState.statusPayload = [];
+    mockState.upsertError = null;
+    mockState.deleted = [];
+    installMock();
+  });
+
+  it.each(["en", "zh"] as const)(
+    "%s 下展开全新候选后不存在任何高级声明控件，五个绑定选择保存精确枚举/禁用元数据",
+    async (language) => {
+      const user = userEvent.setup();
+      await i18n.changeLanguage(language);
+      mockState.config = buildConfig([], providerWithNative("chat_completions"));
+      // The console entry and its localized tab label, since the shared helper
+      // only clicks the English tab name.
+      renderWithProviders(<AiGateway />);
+      await screen.findByText("Provider A");
+      fireEvent.click(
+        screen.getByRole("tab", {
+          name: new RegExp(`^${i18n.t("aiGatewayModelPoolsTab")}`),
+        }),
+      );
+      fireEvent.click(screen.getByTestId("ai-gateway-add-model-pool"));
+      await screen.findByTestId("model-pool-dialog");
+
+      fireEvent.click(screen.getByRole("checkbox", { name: /local-a1/i }));
+      const editor = screen.getByTestId(
+        "model-pool-reasoning-editor-p-a-local-a1",
+      );
+      fireEvent.click(within(editor).getAllByRole("button")[0]);
+
+      // Physically absent: no details/summary and no <input> at all, so no
+      // profile select, declared-values textbox, numeric budget/range input or
+      // disable checkbox can be present (not merely CSS-hidden).
+      expect(editor.querySelector("details")).toBeNull();
+      expect(editor.querySelector("summary")).toBeNull();
+      expect(editor.querySelector("input")).toBeNull();
+      expect(
+        within(editor).queryByTestId("model-pool-reasoning-advanced"),
+      ).toBeNull();
+      expect(
+        screen.queryByLabelText(
+          i18n.t("aiGatewayModelPoolReasoningProfileLabel"),
+        ),
+      ).toBeNull();
+      expect(
+        screen.queryByLabelText(
+          i18n.t("aiGatewayModelPoolReasoningValuesLabel"),
+        ),
+      ).toBeNull();
+      expect(
+        screen.queryByLabelText(
+          i18n.t("aiGatewayModelPoolReasoningBudgetMinLabel"),
+        ),
+      ).toBeNull();
+      expect(
+        screen.queryByLabelText(
+          i18n.t("aiGatewayModelPoolReasoningSupportsDisableLabel"),
+        ),
+      ).toBeNull();
+
+      // All five canonical preference selects exist and keep an explicit
+      // unmapped option in the active locale.
+      for (const effort of ["low", "medium", "high", "xhigh", "none"]) {
+        const select = within(editor).getByTestId(
+          `model-pool-reasoning-mapping-${effort}`,
+        ) as HTMLSelectElement;
+        expect(select).toBeInTheDocument();
+        expect(
+          within(select).getByRole("option", {
+            name: i18n.t("aiGatewayModelPoolReasoningMappingUnmapped"),
+          }),
+        ).toBeInTheDocument();
+      }
+
+      // Bind medium -> source-declared native `max`; none -> explicit disable.
+      const medium = within(editor).getByTestId(
+        "model-pool-reasoning-mapping-medium",
+      ) as HTMLSelectElement;
+      await user.selectOptions(
+        medium,
+        within(medium).getByRole("option", { name: "max" }),
+      );
+      const none = within(editor).getByTestId(
+        "model-pool-reasoning-mapping-none",
+      ) as HTMLSelectElement;
+      expect(
+        within(none).getByRole("option", {
+          name: i18n.t("aiGatewayModelPoolReasoningActionDisable"),
+        }),
+      ).toBeInTheDocument();
+      await user.selectOptions(none, "disable");
+
+      fireEvent.click(screen.getByTestId("model-pool-save"));
+      await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+
+      const pool = upsertCalls()[0];
+      expect(pool.default_reasoning_effort).toBe("medium");
+      const candidate = candidatesOf(pool).find(
+        (item) => item.local_model === "local-a1",
+      );
+      const reasoning = candidate?.reasoning as Record<string, unknown>;
+      expect(reasoning.profile).toBe("openai_effort");
+      expect(reasoning.values).toEqual(["max"]);
+      expect(reasoning.supports_disable).toBe(true);
+      expect(reasoning.mappings).toEqual([
+        { effort: "medium", action: { kind: "enum", value: "max" } },
+        { effort: "none", action: { kind: "disable" } },
+      ]);
+    },
+  );
 });
 
 

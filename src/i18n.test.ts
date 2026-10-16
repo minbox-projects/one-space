@@ -1238,7 +1238,14 @@ describe("AI 网关延迟指标国际化键", () => {
 // Step 4 (REQ-004 / REQ-006): pool reasoning policy editor copy and pool
 // attempt-evidence log copy. These exact accessible labels are the contract the
 // Step 4 frontend implements and the RTL suites query by name.
-// RED assertions: Frontend must add every key below to both dictionaries and
+//
+// Direct follow-up (model-pool-bindings-only): the advanced declaration surface
+// (native profile / declared values / min-max budget / supports-disable) and its
+// technical profile labels were removed, so their keys are no longer pinned.
+// The retained binding/default/mapping/coverage/readiness and log keys stay
+// pinned; the no-native hint now points at the provider model instead of the
+// removed advanced options.
+// RED assertions: Frontend must update every key below in both dictionaries and
 // both key manifests.
 // ---------------------------------------------------------------------------
 
@@ -1247,25 +1254,21 @@ const POOL_REASONING_UI_COPY: Record<string, Record<"en" | "zh", string>> = {
     en: "Reasoning default",
     zh: "默认推理偏好",
   },
-  aiGatewayModelPoolReasoningProfileLabel: {
-    en: "Native reasoning profile",
-    zh: "原生推理配置",
+  aiGatewayModelPoolReasoningBindingsLabel: {
+    en: "Reasoning bindings",
+    zh: "推理档位绑定",
   },
-  aiGatewayModelPoolReasoningValuesLabel: {
-    en: "Declared values",
-    zh: "声明的取值",
+  aiGatewayModelPoolReasoningBindingsHint: {
+    en: "Bind each pool level to this model's native level; only explicit bindings are saved.",
+    zh: "将模型池的每个档位绑定到该模型的原生档位；仅显式绑定才会保存。",
   },
-  aiGatewayModelPoolReasoningBudgetMinLabel: {
-    en: "Minimum budget",
-    zh: "最小预算",
+  aiGatewayModelPoolReasoningNativeEffortsLabel: {
+    en: "Native levels",
+    zh: "原生档位",
   },
-  aiGatewayModelPoolReasoningBudgetMaxLabel: {
-    en: "Maximum budget",
-    zh: "最大预算",
-  },
-  aiGatewayModelPoolReasoningSupportsDisableLabel: {
-    en: "Supports explicit disable",
-    zh: "支持显式禁用",
+  aiGatewayModelPoolReasoningNoNativeEfforts: {
+    en: "This model declares no native reasoning levels; configure reasoning levels in the provider model.",
+    zh: "此模型未声明原生推理档位，请在服务商模型中配置推理档位。",
   },
   aiGatewayModelPoolReasoningMappingLabel: {
     en: "Mapping matrix",
@@ -1291,36 +1294,10 @@ const POOL_REASONING_UI_COPY: Record<string, Record<"en" | "zh", string>> = {
     en: "Provider default (auto)",
     zh: "服务商默认（auto）",
   },
-  // Step 4 repair: the per-effort manual-budget control and the localized
-  // profile/action option labels. Option *values* stay the stable product
-  // tokens (`openai_effort`…, `budget`, `disable`); only the visible labels are
-  // localized, so the operator never reads a raw token in either language.
-  aiGatewayModelPoolReasoningBudgetLabel: {
-    en: "Reasoning budget",
-    zh: "推理预算",
-  },
+  // The budget action label still names an existing stored budget option; option
+  // values stay stable product tokens (`budget:<tokens>`, `disable`).
   aiGatewayModelPoolReasoningActionBudget: { en: "Budget", zh: "预算" },
   aiGatewayModelPoolReasoningActionDisable: { en: "Disable", zh: "禁用" },
-  aiGatewayModelPoolReasoningProfileOpenaiEffort: {
-    en: "OpenAI effort",
-    zh: "OpenAI 推理档位",
-  },
-  aiGatewayModelPoolReasoningProfileAnthropicEffortInherit: {
-    en: "Anthropic effort (inherit thinking)",
-    zh: "Anthropic 推理档位（继承思考）",
-  },
-  aiGatewayModelPoolReasoningProfileAnthropicEffortAdaptive: {
-    en: "Anthropic effort (adaptive thinking)",
-    zh: "Anthropic 推理档位（自适应思考）",
-  },
-  aiGatewayModelPoolReasoningProfileAnthropicManualBudget: {
-    en: "Anthropic manual budget",
-    zh: "Anthropic 手动预算",
-  },
-  aiGatewayModelPoolReasoningProfileChatThinkingSwitch: {
-    en: "Chat thinking switch",
-    zh: "Chat 思考开关",
-  },
   aiGatewayLogsReasoningRequested: { en: "Requested", zh: "请求" },
   aiGatewayLogsReasoningResolved: { en: "Resolved", zh: "解析" },
   aiGatewayLogsReasoningNative: { en: "Native control", zh: "原生控制" },

@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-15-pool-only-reasoning.md
-2026-10-15-pool-only-reasoning.md: a6b3c0873c010ba2c0ea98f3f7131302439a550c
-2026-10-15-pool-only-reasoning.zh.md: ddd292d85535cd8e582f2bd62a9e3a171bdd3b47
+2026-10-15-pool-only-reasoning.md: 09502ecb4cf33e2a46add61259165711d4304898
+2026-10-15-pool-only-reasoning.zh.md: 991f67b657ecbb4f719c756890a654c3674bd3e9

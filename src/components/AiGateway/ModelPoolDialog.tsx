@@ -23,7 +23,6 @@ import { errorToMessage } from "@/lib/messages";
 import {
   CANONICAL_REASONING_EFFORTS,
   MODEL_POOL_AVAILABILITY_LABEL_KEYS,
-  MODEL_POOL_MIN_REASONING_BUDGET,
   modelPoolCandidateKey,
   modelPoolCandidateServesEffort,
   newModelPoolId,
@@ -43,198 +42,194 @@ import { protocolBadgeClass, protocolShortLabel } from "./gatewayShared";
 
 type DraftCandidate = GatewayModelPoolCandidate & { key: string };
 
-/** The five bounded native reasoning profiles the editor can declare. */
-const REASONING_PROFILE_VALUES = [
-  "openai_effort",
-  "anthropic_effort_inherit",
-  "anthropic_effort_adaptive",
-  "anthropic_manual_budget",
-  "chat_thinking_switch",
-] as const;
-
-/** Localized visible labels for the bounded profiles; values stay the tokens. */
-const REASONING_PROFILE_LABEL_KEYS: Record<string, string> = {
-  openai_effort: "aiGatewayModelPoolReasoningProfileOpenaiEffort",
-  anthropic_effort_inherit:
-    "aiGatewayModelPoolReasoningProfileAnthropicEffortInherit",
-  anthropic_effort_adaptive:
-    "aiGatewayModelPoolReasoningProfileAnthropicEffortAdaptive",
-  anthropic_manual_budget:
-    "aiGatewayModelPoolReasoningProfileAnthropicManualBudget",
-  chat_thinking_switch:
-    "aiGatewayModelPoolReasoningProfileChatThinkingSwitch",
-};
-
-/** Editable candidate-local reasoning draft; every field is a string in the UI. */
+/**
+ * The candidate-local reasoning draft. It stores only the operator's chosen
+ * bindings — public effort -> stable mapping option — and never an editable
+ * profile, declared value, budget range, disable toggle or budget token. The
+ * immutable stored `candidate.reasoning` remains the read-only base the payload
+ * is derived from, so no manual-parameter state ever goes dormant here.
+ */
 type ReasoningDraft = {
-  profile: string;
-  values: string;
-  budgetMin: string;
-  budgetMax: string;
-  supportsDisable: boolean;
-  /** public effort -> mapping option (`""` unmapped, `enum:<v>`, `budget`, `disable`). */
+  /** public effort -> mapping option (`""` unmapped, `enum:<v>`, `budget:<tokens>`, `disable`). */
   mappings: Record<string, string>;
-  /** public effort -> the mapping's own native budget tokens (as typed). */
-  budgetTokens: Record<string, string>;
 };
 
+/** Convert one stored typed action into its stable binding option value. */
 function actionToOptionValue(action: ModelPoolReasoningAction): string {
   if (action?.kind === "enum" && typeof action.value === "string") {
     return `enum:${action.value}`;
   }
-  if (action?.kind === "budget") return "budget";
+  if (action?.kind === "budget") {
+    return typeof action.budget_tokens === "number"
+      ? `budget:${action.budget_tokens}`
+      : "budget";
+  }
   if (action?.kind === "disable") return "disable";
   return "";
 }
 
+/** Seed a draft from the stored declaration's bindings only. */
 function reasoningDraftFrom(
   reasoning: GatewayModelPoolReasoning | null | undefined,
 ): ReasoningDraft {
   const mappings: Record<string, string> = {};
-  const budgetTokens: Record<string, string> = {};
   for (const mapping of reasoning?.mappings ?? []) {
     const option = actionToOptionValue(mapping.action);
     if (option !== "") mappings[mapping.effort] = option;
-    if (mapping.action?.kind === "budget") {
-      const tokens = mapping.action.budget_tokens;
-      budgetTokens[mapping.effort] =
-        typeof tokens === "number" ? String(tokens) : "";
-    }
   }
-  return {
-    profile: reasoning?.profile ?? "",
-    values: (reasoning?.values ?? []).join(", "),
-    budgetMin:
-      reasoning?.budget?.min != null ? String(reasoning.budget.min) : "",
-    budgetMax:
-      reasoning?.budget?.max != null ? String(reasoning.budget.max) : "",
-    supportsDisable: reasoning?.supports_disable === true,
-    mappings,
-    budgetTokens,
-  };
+  return { mappings };
 }
 
-function splitDeclaredValues(values: string): string[] {
-  const result: string[] = [];
-  for (const part of values.split(",")) {
-    const trimmed = part.trim();
-    if (trimmed !== "" && !result.includes(trimmed)) result.push(trimmed);
-  }
-  return result;
+/** The bounded adapter a candidate protocol uses for its first explicit binding. */
+function defaultProfileForProtocol(protocol: GatewayUpstreamProtocol): string {
+  return protocol === "anthropic_messages"
+    ? "anthropic_effort_inherit"
+    : "openai_effort";
 }
 
-function parseOptionalInt(value: string): number | null {
-  const trimmed = value.trim();
-  if (trimmed === "") return null;
-  const parsed = Number(trimmed);
-  return Number.isInteger(parsed) ? parsed : null;
+/** The reserved disable/omission native token; never a positive binding target. */
+function isReservedNoneEffort(value: string): boolean {
+  return value.trim().toLowerCase() === "none";
 }
 
-/** Convert one mapping option back into its typed native action. */
-function optionValueToAction(
-  option: string,
+/** The exact source mapping one candidate references, if it currently resolves. */
+function findCandidateMapping(
+  providers: GatewayUpstreamProvider[],
+  candidate: Pick<
+    GatewayModelPoolCandidate,
+    "provider_id" | "local_model" | "upstream_model" | "protocol"
+  >,
+) {
+  const provider = providers.find((item) => item.id === candidate.provider_id);
+  if (!provider) return null;
+  return (
+    (provider.mappings ?? []).find(
+      (mapping) =>
+        mapping.local_model.trim() === candidate.local_model &&
+        mapping.upstream_model.trim() === candidate.upstream_model &&
+        (mapping.protocol ?? provider.protocol ?? "chat_completions") ===
+          candidate.protocol,
+    ) ?? null
+  );
+}
+
+/**
+ * The native reasoning levels offered for one candidate: the exact source
+ * mapping's declared `reasoning_efforts`, unioned with the candidate's stored
+ * declared values, its stored enum actions and its currently bound enums.
+ * Everything is trimmed and de-duplicated without rewriting its case, and no
+ * sibling model, other provider or name-based profile guess contributes.
+ */
+function candidateNativeEfforts(
+  providers: GatewayUpstreamProvider[],
+  candidate: DraftCandidate,
   draft: ReasoningDraft,
-  effort: string,
-): ModelPoolReasoningAction | null {
+): string[] {
+  const mapping = findCandidateMapping(providers, candidate);
+  const storedEnum = (candidate.reasoning?.mappings ?? [])
+    .filter(
+      (item) => item.action?.kind === "enum" && typeof item.action.value === "string",
+    )
+    .map((item) => item.action.value as string);
+  const boundEnum = Object.values(draft.mappings)
+    .filter((option) => option.startsWith("enum:"))
+    .map((option) => option.slice("enum:".length));
+  const normalized: string[] = [];
+  for (const value of [
+    ...(mapping?.reasoning_efforts ?? []),
+    ...(candidate.reasoning?.values ?? []),
+    ...storedEnum,
+    ...boundEnum,
+  ]) {
+    const trimmed = value.trim();
+    if (trimmed !== "" && !normalized.includes(trimmed)) normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+/** Convert one binding option back into its typed native action. */
+function optionValueToAction(option: string): ModelPoolReasoningAction | null {
   if (option.startsWith("enum:")) {
     return { kind: "enum", value: option.slice("enum:".length) };
   }
-  if (option === "budget") {
-    // Each manual-budget mapping owns its own native token count; the declared
-    // range only constrains it. The count is never substituted with the range.
-    const tokens = parseOptionalInt(draft.budgetTokens[effort] ?? "");
-    return tokens != null
+  if (option.startsWith("budget:")) {
+    const tokens = Number(option.slice("budget:".length).trim());
+    return Number.isInteger(tokens)
       ? { kind: "budget", budget_tokens: tokens }
       : { kind: "budget" };
   }
+  if (option === "budget") return { kind: "budget" };
   if (option === "disable") return { kind: "disable" };
   return null;
 }
 
-/** Build a candidate's persisted reasoning payload from its draft. */
-function reasoningDraftPayload(draft: ReasoningDraft): GatewayModelPoolReasoning {
-  const values = splitDeclaredValues(draft.values);
-  const min = parseOptionalInt(draft.budgetMin);
-  const max = parseOptionalInt(draft.budgetMax);
-  const mappings = CANONICAL_REASONING_EFFORTS.flatMap((effort) => {
-    const option = draft.mappings[effort] ?? "";
-    const action = optionValueToAction(option, draft, effort);
-    return action ? [{ effort, action }] : [];
-  });
-  return {
-    profile: draft.profile,
-    values,
-    ...(min != null || max != null
-      ? { budget: { min: min ?? undefined, max: max ?? undefined } }
-      : {}),
-    supports_disable: draft.supportsDisable,
-    mappings,
-  };
+/** The distinct native budget tokens a stored declaration offers as rebind targets. */
+function storedBudgetTokens(
+  reasoning: GatewayModelPoolReasoning | null | undefined,
+): number[] {
+  const tokens: number[] = [];
+  for (const mapping of reasoning?.mappings ?? []) {
+    const value = mapping.action?.budget_tokens;
+    if (mapping.action?.kind === "budget" && typeof value === "number") {
+      if (!tokens.includes(value)) tokens.push(value);
+    }
+  }
+  return tokens;
 }
 
-/** Whether a draft declares anything at all; an untouched candidate stays unknown. */
-function hasDeclaredReasoning(draft: ReasoningDraft): boolean {
+/** Whether a stored declaration carries any metadata at all. */
+function hasStoredReasoning(
+  reasoning: GatewayModelPoolReasoning | null | undefined,
+): boolean {
+  if (!reasoning) return false;
   return (
-    draft.profile !== "" ||
-    splitDeclaredValues(draft.values).length > 0 ||
-    draft.supportsDisable ||
-    Object.values(draft.mappings).some((option) => option !== "")
+    (reasoning.profile ?? "") !== "" ||
+    (reasoning.values ?? []).length > 0 ||
+    reasoning.budget != null ||
+    reasoning.supports_disable === true ||
+    (reasoning.mappings ?? []).length > 0
   );
 }
 
-/** The declared manual-budget range of one draft, distinguishing absent from invalid. */
-function declaredBudgetRange(draft: ReasoningDraft): {
-  min: number | null;
-  max: number | null;
-  declared: boolean;
-  invalid: boolean;
-} {
-  const minRaw = draft.budgetMin.trim();
-  const maxRaw = draft.budgetMax.trim();
-  const declared = minRaw !== "" || maxRaw !== "";
-  const min = minRaw === "" ? null : parseOptionalInt(minRaw);
-  const max = maxRaw === "" ? null : parseOptionalInt(maxRaw);
-  return {
-    min,
-    max,
-    declared,
-    invalid: declared && (min === null || max === null),
-  };
-}
-
 /**
- * The localizable key of the first declaration the backend would refuse, or
- * `null`. It rejects a fractional/absent/out-of-range budget token, a declared
- * range below the adapter minimum and an inverted range before any write, so the
- * operator keeps the whole draft and sees a localized reason.
+ * Derive a candidate's persisted reasoning payload from its immutable stored
+ * base and the operator's chosen bindings. The stored `profile`, `values`,
+ * `budget` and `supports_disable` are retained as read-only inputs, so editing
+ * never rewrites them; the payload only appends a chosen native enum value to
+ * `values` when needed and sets `supports_disable` when the operator binds `none`
+ * to an explicit disable. An untouched new candidate (no stored declaration and
+ * no binding) emits nothing, so clearing every binding never leaves an orphaned
+ * declaration.
  */
-function draftReasoningError(
-  drafts: ReasoningDraft[],
-): "aiGatewayModelPoolErrorReasoningDefaultUnmapped" | null {
-  const key = "aiGatewayModelPoolErrorReasoningDefaultUnmapped" as const;
-  for (const draft of drafts) {
-    if (!hasDeclaredReasoning(draft)) continue;
-    const range = declaredBudgetRange(draft);
-    if (range.declared) {
-      if (range.invalid) return key;
-      if ((range.min as number) < MODEL_POOL_MIN_REASONING_BUDGET) return key;
-      if ((range.max as number) < (range.min as number)) return key;
+function deriveReasoning(
+  base: GatewayModelPoolReasoning | null | undefined,
+  draft: ReasoningDraft,
+  protocol: GatewayUpstreamProtocol,
+): GatewayModelPoolReasoning | undefined {
+  const bindings = CANONICAL_REASONING_EFFORTS.flatMap((effort) => {
+    const action = optionValueToAction(draft.mappings[effort] ?? "");
+    return action ? [{ effort, action }] : [];
+  });
+  if (!hasStoredReasoning(base) && bindings.length === 0) return undefined;
+
+  const values = [...(base?.values ?? [])];
+  for (const binding of bindings) {
+    if (binding.action.kind !== "enum" || typeof binding.action.value !== "string") {
+      continue;
     }
-    const budgetEfforts = CANONICAL_REASONING_EFFORTS.filter(
-      (effort) => draft.mappings[effort] === "budget",
-    );
-    if (budgetEfforts.length > 0) {
-      if (!range.declared || range.invalid) return key;
-      for (const effort of budgetEfforts) {
-        const tokens = parseOptionalInt(draft.budgetTokens[effort] ?? "");
-        if (tokens === null) return key;
-        if (tokens < (range.min as number) || tokens > (range.max as number)) {
-          return key;
-        }
-      }
-    }
+    if (!values.includes(binding.action.value)) values.push(binding.action.value);
   }
-  return null;
+  const storedProfile = base?.profile ?? "";
+  return {
+    profile:
+      storedProfile !== "" ? storedProfile : defaultProfileForProtocol(protocol),
+    values,
+    ...(base?.budget != null ? { budget: base.budget } : {}),
+    supports_disable:
+      base?.supports_disable === true ||
+      bindings.some((binding) => binding.action.kind === "disable"),
+    mappings: bindings,
+  };
 }
 
 /** Stable full-identity declaration signature for one effort, order-independent. */
@@ -353,6 +348,21 @@ export function ModelPoolDialog({
   }, [poolStatus]);
 
   const sourceGroups = useMemo(() => {
+    // The immutable stored base for each already-saved candidate, indexed by its
+    // full source identity. Re-selecting a previously deselected source row must
+    // reattach that exact base (profile/values/budget/supports_disable) rather
+    // than the bare source tuple, so the stored manual/adaptive metadata survives
+    // a deselect/reselect round-trip. Only the exact identity matches: no sibling
+    // model or other provider ever contributes, and new sources stay unknown.
+    const storedReasoningByKey = new Map<string, GatewayModelPoolReasoning>();
+    for (const candidate of pool?.candidates ?? []) {
+      if (candidate.reasoning) {
+        storedReasoningByKey.set(
+          modelPoolCandidateKey(candidate),
+          candidate.reasoning,
+        );
+      }
+    }
     const groups = activeProviders.map((provider) => {
       const template = provider.template_id
         ? templates.find((t) => t.template.id === provider.template_id)?.template
@@ -376,7 +386,14 @@ export function ModelPoolDialog({
                 "chat_completions",
               weight: 1,
             };
-            return { key: modelPoolCandidateKey(candidate), candidate };
+            const key = modelPoolCandidateKey(candidate);
+            const storedReasoning = storedReasoningByKey.get(key);
+            return {
+              key,
+              candidate: storedReasoning
+                ? { ...candidate, reasoning: storedReasoning }
+                : candidate,
+            };
           })
           .filter((row): row is { key: string; candidate: GatewayModelPoolCandidate } =>
             row !== null,
@@ -384,7 +401,7 @@ export function ModelPoolDialog({
       };
     });
     return groups;
-  }, [activeProviders, templates]);
+  }, [activeProviders, templates, pool]);
 
   const normalizedQuery = query.trim().toLowerCase();
 
@@ -418,17 +435,19 @@ export function ModelPoolDialog({
     );
   }, [filteredCandidates, selectedKeys]);
 
-  // Live static coverage derived from the current draft declarations and the
+  // Live static coverage derived from the current binding drafts and the
   // current provider list; readiness stays a separate, key/health-aware count.
   const draftReasoningCatalog = useMemo(() => {
     const candidates = selected.map((candidate) => {
       const draft =
         reasoningDrafts[candidate.key] ??
         reasoningDraftFrom(candidate.reasoning);
-      const reasoning = hasDeclaredReasoning(draft)
-        ? reasoningDraftPayload(draft)
-        : undefined;
-      return { ...candidate, reasoning };
+      const reasoning = deriveReasoning(
+        candidate.reasoning,
+        draft,
+        candidate.protocol,
+      );
+      return { ...candidate, ...(reasoning ? { reasoning } : {}) };
     });
     const coverage = CANONICAL_REASONING_EFFORTS.map((effort) => ({
       effort,
@@ -542,22 +561,33 @@ export function ModelPoolDialog({
     const draft =
       reasoningDrafts[candidate.key] ??
       reasoningDraftFrom(candidate.reasoning);
-    const declaredValues = splitDeclaredValues(draft.values);
-    const enumOptions = Array.from(
-      new Set([
-        ...declaredValues,
-        ...Object.values(draft.mappings)
-          .filter((option) => option.startsWith("enum:"))
-          .map((option) => option.slice("enum:".length)),
-      ]),
+    const base = candidate.reasoning ?? null;
+    // Native choices come from this candidate's exact source mapping, unioned
+    // with its own stored values and bound enums so legacy declarations stay
+    // representable; nothing is borrowed from a sibling model, another provider
+    // or a name-based profile guess.
+    const nativeEfforts = candidateNativeEfforts(providers, candidate, draft);
+    const nativePositiveEfforts = nativeEfforts.filter(
+      (value) => !isReservedNoneEffort(value),
     );
+    // The stored (immutable) profile decides which native targets are valid; a
+    // binding never rewrites it, and a new candidate picks its adapter only at
+    // derivation time.
+    const storedProfile = base?.profile ?? "";
+    const isManualProfile = storedProfile === "anthropic_manual_budget";
+    const isSwitchProfile = storedProfile === "chat_thinking_switch";
+    const budgetTokens = storedBudgetTokens(base);
+    const noneOffersDisable =
+      nativeEfforts.includes("none") || base?.supports_disable === true;
     const fieldClass =
       "h-8 rounded-lg border border-border/80 bg-background px-2 text-xs text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50";
     const isExpanded = Boolean(expandedReasoning[candidate.key]);
-    const isDeclared = hasDeclaredReasoning(draft);
-    const mappedEffortsCount = Object.values(draft.mappings).filter(
-      (val) => val !== "",
-    ).length;
+
+    const updateBinding = (effort: string, option: string) => {
+      updateReasoning(candidate, {
+        mappings: { ...draft.mappings, [effort]: option },
+      });
+    };
 
     return (
       <div
@@ -567,6 +597,7 @@ export function ModelPoolDialog({
         {/* 顶部标题栏兼折叠切换条 */}
         <button
           type="button"
+          aria-expanded={isExpanded}
           onClick={() =>
             setExpandedReasoning((previous) => ({
               ...previous,
@@ -579,30 +610,10 @@ export function ModelPoolDialog({
             <SlidersHorizontal className="h-3.5 w-3.5 text-primary/70 shrink-0" />
             <span className="text-xs font-medium text-foreground">
               {t(
-                "aiGatewayModelPoolReasoningProfileLabel",
-                "Native reasoning profile",
+                "aiGatewayModelPoolReasoningBindingsLabel",
+                "Reasoning bindings",
               )}
             </span>
-            {isDeclared ? (
-              <span className="inline-flex items-center gap-1 rounded border border-indigo-500/25 bg-indigo-500/10 px-1.5 py-0.2 text-[10px] font-medium text-indigo-700 dark:text-indigo-300 shrink-0">
-                <span>
-                  {draft.profile
-                    ? t(
-                        REASONING_PROFILE_LABEL_KEYS[draft.profile] ??
-                          draft.profile,
-                        draft.profile,
-                      )
-                    : t("aiGatewayModelPoolReasoningCustom", "Custom")}
-                </span>
-                {mappedEffortsCount > 0 ? (
-                  <span>· {mappedEffortsCount}</span>
-                ) : null}
-              </span>
-            ) : (
-              <span className="text-[10px] text-muted-foreground">
-                ({t("aiGatewayModelPoolReasoningProfileUnknown", "Unknown")})
-              </span>
-            )}
           </div>
           <ChevronDown
             className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${
@@ -620,156 +631,99 @@ export function ModelPoolDialog({
               : "hidden"
           }
         >
-          <div className="grid gap-2.5 sm:grid-cols-2">
-              <label className="flex flex-col gap-1 text-[11px] font-medium text-muted-foreground">
-                <span>
-                  {t(
-                    "aiGatewayModelPoolReasoningProfileLabel",
-                    "Native reasoning profile",
-                  )}
-                </span>
-                <select
-                  aria-label={t(
-                    "aiGatewayModelPoolReasoningProfileLabel",
-                    "Native reasoning profile",
-                  )}
-                  value={draft.profile}
-                  onChange={(event) =>
-                    updateReasoning(candidate, { profile: event.target.value })
-                  }
-                  disabled={busy || saving}
-                  className={fieldClass}
-                >
-                  <option value="">
-                    {t("aiGatewayModelPoolReasoningProfileUnknown", "Unknown")}
-                  </option>
-                  {REASONING_PROFILE_VALUES.map((profile) => (
-                    <option key={profile} value={profile}>
-                      {t(
-                        REASONING_PROFILE_LABEL_KEYS[profile] ?? profile,
-                        profile,
-                      )}
-                    </option>
-                  ))}
-                  {draft.profile !== "" &&
-                  !(REASONING_PROFILE_VALUES as readonly string[]).includes(
-                    draft.profile,
-                  ) ? (
-                    <option value={draft.profile}>{draft.profile}</option>
-                  ) : null}
-                </select>
-              </label>
-              <label className="flex flex-col gap-1 text-[11px] font-medium text-muted-foreground">
-                <span>
-                  {t(
-                    "aiGatewayModelPoolReasoningValuesLabel",
-                    "Declared values",
-                  )}
-                </span>
-                <input
-                  type="text"
-                  aria-label={t(
-                    "aiGatewayModelPoolReasoningValuesLabel",
-                    "Declared values",
-                  )}
-                  value={draft.values}
-                  onChange={(event) =>
-                    updateReasoning(candidate, { values: event.target.value })
-                  }
-                  disabled={busy || saving}
-                  className={fieldClass}
-                />
-              </label>
-            </div>
-            <div className="flex flex-wrap items-end gap-3 pt-0.5">
-              <label className="flex flex-col gap-1 text-[11px] font-medium text-muted-foreground">
-                <span>
-                  {t(
-                    "aiGatewayModelPoolReasoningBudgetMinLabel",
-                    "Minimum budget",
-                  )}
-                </span>
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  aria-label={t(
-                    "aiGatewayModelPoolReasoningBudgetMinLabel",
-                    "Minimum budget",
-                  )}
-                  value={draft.budgetMin}
-                  onChange={(event) =>
-                    updateReasoning(candidate, {
-                      budgetMin: event.target.value,
-                    })
-                  }
-                  disabled={busy || saving}
-                  className={`${fieldClass} w-28`}
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-[11px] font-medium text-muted-foreground">
-                <span>
-                  {t(
-                    "aiGatewayModelPoolReasoningBudgetMaxLabel",
-                    "Maximum budget",
-                  )}
-                </span>
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  aria-label={t(
-                    "aiGatewayModelPoolReasoningBudgetMaxLabel",
-                    "Maximum budget",
-                  )}
-                  value={draft.budgetMax}
-                  onChange={(event) =>
-                    updateReasoning(candidate, {
-                      budgetMax: event.target.value,
-                    })
-                  }
-                  disabled={busy || saving}
-                  className={`${fieldClass} w-28`}
-                />
-              </label>
-              <label className="inline-flex items-center gap-1.5 pb-2 text-[11px] font-medium text-muted-foreground cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  aria-label={t(
-                    "aiGatewayModelPoolReasoningSupportsDisableLabel",
-                    "Supports explicit disable",
-                  )}
-                  checked={draft.supportsDisable}
-                  onChange={(event) =>
-                    updateReasoning(candidate, {
-                      supportsDisable: event.target.checked,
-                    })
-                  }
-                  disabled={busy || saving}
-                  className="h-3.5 w-3.5 rounded border-border accent-primary"
-                />
-                <span>
-                  {t(
-                    "aiGatewayModelPoolReasoningSupportsDisableLabel",
-                    "Supports explicit disable",
-                  )}
-                </span>
-              </label>
-            </div>
-            {draft.profile === "chat_thinking_switch" ? (
-              <p className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-400">
-                {t(
-                  "aiGatewayModelPoolReasoningSwitchNoGradient",
-                  "This profile selects one intensity: every positive mapping sends the same switch, so there is no intensity gradient.",
-                )}
-              </p>
-            ) : null}
-            <div className="space-y-1.5">
+          {/* 主面板：把模型池统一档位绑定到该模型的原生档位 */}
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
               <div className="text-[11px] font-medium text-muted-foreground">
-                {t("aiGatewayModelPoolReasoningMappingLabel", "Mapping matrix")}
+                {t(
+                  "aiGatewayModelPoolReasoningBindingsLabel",
+                  "Reasoning bindings",
+                )}
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
-                {CANONICAL_REASONING_EFFORTS.map((effort) => (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[10px] text-muted-foreground">
+                  {t(
+                    "aiGatewayModelPoolReasoningNativeEffortsLabel",
+                    "Native levels",
+                  )}
+                  :
+                </span>
+                {nativeEfforts.length > 0 ? (
+                  nativeEfforts.map((value) => (
+                    <span
+                      key={value}
+                      className="inline-flex items-center rounded border border-border/60 bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-foreground/80"
+                    >
+                      {value}
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-[10px] text-muted-foreground">
+                    {t(
+                      "aiGatewayModelPoolReasoningNoNativeEfforts",
+                      "This model declares no native reasoning levels; configure reasoning levels in the provider model.",
+                    )}
+                  </span>
+                )}
+              </div>
+            </div>
+            <p className="text-[10px] leading-relaxed text-muted-foreground">
+              {t(
+                "aiGatewayModelPoolReasoningBindingsHint",
+                "Bind each pool level to a native level; only explicit bindings are saved.",
+              )}
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+              {CANONICAL_REASONING_EFFORTS.map((effort) => {
+                const isNone = effort === "none";
+                const bindingOptions: Array<{ value: string; label: string }> =
+                  [];
+                if (isNone) {
+                  // `none` is the explicit disable: it never offers an enum or
+                  // a budget, and only where the source declares `none` or the
+                  // stored declaration already supports it.
+                  if (noneOffersDisable) {
+                    bindingOptions.push({
+                      value: "disable",
+                      label: t(
+                        "aiGatewayModelPoolReasoningActionDisable",
+                        "Disable",
+                      ),
+                    });
+                  }
+                } else if (isManualProfile) {
+                  // A manual-budget candidate keeps exactly its original stored
+                  // distinct budgets as immutable rebind targets; source native
+                  // levels are not representable as enums and no new token or
+                  // range may be typed.
+                  for (const tokens of budgetTokens) {
+                    bindingOptions.push({
+                      value: `budget:${tokens}`,
+                      label: `${t(
+                        "aiGatewayModelPoolReasoningActionBudget",
+                        "Budget",
+                      )} · ${tokens}`,
+                    });
+                  }
+                } else if (isSwitchProfile) {
+                  // A switch profile's only positive native value is `enabled`,
+                  // supplied by the adapter even when the source metadata omits
+                  // it; no other native level is a valid switch target.
+                  bindingOptions.push({
+                    value: "enum:enabled",
+                    label: "enabled",
+                  });
+                } else {
+                  // Enum-capable profiles and an unset/unknown declaration keep
+                  // offering this candidate's exact native levels.
+                  for (const value of nativePositiveEfforts) {
+                    bindingOptions.push({
+                      value: `enum:${value}`,
+                      label: value,
+                    });
+                  }
+                }
+                return (
                   <div
                     key={effort}
                     className="flex flex-col gap-1.5 rounded-lg border border-border/50 bg-background/80 p-2 text-[11px] shadow-2xs"
@@ -790,12 +744,7 @@ export function ModelPoolDialog({
                       )}: ${effort}`}
                       value={draft.mappings[effort] ?? ""}
                       onChange={(event) =>
-                        updateReasoning(candidate, {
-                          mappings: {
-                            ...draft.mappings,
-                            [effort]: event.target.value,
-                          },
-                        })
+                        updateBinding(effort, event.target.value)
                       }
                       disabled={busy || saving}
                       className={fieldClass}
@@ -806,48 +755,26 @@ export function ModelPoolDialog({
                           "Unmapped",
                         )}
                       </option>
-                      {enumOptions.map((value) => (
-                        <option key={`enum:${value}`} value={`enum:${value}`}>
-                          {`enum:${value}`}
+                      {bindingOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
                         </option>
                       ))}
-                      <option value="budget">
-                        {t("aiGatewayModelPoolReasoningActionBudget", "Budget")}
-                      </option>
-                      <option value="disable">
-                        {t(
-                          "aiGatewayModelPoolReasoningActionDisable",
-                          "Disable",
-                        )}
-                      </option>
                     </select>
-                    {draft.mappings[effort] === "budget" ? (
-                      <input
-                        type="number"
-                        min={MODEL_POOL_MIN_REASONING_BUDGET}
-                        step={1}
-                        data-testid={`model-pool-reasoning-budget-${effort}`}
-                        aria-label={`${t(
-                          "aiGatewayModelPoolReasoningBudgetLabel",
-                          "Reasoning budget",
-                        )}: ${effort}`}
-                        value={draft.budgetTokens[effort] ?? ""}
-                        onChange={(event) =>
-                          updateReasoning(candidate, {
-                            budgetTokens: {
-                              ...draft.budgetTokens,
-                              [effort]: event.target.value,
-                            },
-                          })
-                        }
-                        disabled={busy || saving}
-                        className={`${fieldClass} w-full`}
-                      />
-                    ) : null}
                   </div>
-                ))}
-              </div>
+                );
+              })}
+            </div>
           </div>
+
+          {isSwitchProfile ? (
+            <p className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+              {t(
+                "aiGatewayModelPoolReasoningSwitchNoGradient",
+                "This profile selects one intensity: every positive mapping sends the same switch, so there is no intensity gradient.",
+              )}
+            </p>
+          ) : null}
         </div>
       </div>
     );
@@ -867,21 +794,23 @@ export function ModelPoolDialog({
       );
       return;
     }
-    // Reject a declaration the backend would refuse before any write, so the
-    // whole draft is retained and the operator sees a localized reason.
-    const selectedDrafts = selected.map((candidate) => ({
-      candidate,
-      draft:
+    // Derive each candidate's persisted reasoning from its immutable stored base
+    // and the operator's chosen bindings; the whole draft is retained on any
+    // rejection and the operator sees a localized reason.
+    const selectedDrafts = selected.map((candidate) => {
+      const draft =
         reasoningDrafts[candidate.key] ??
-        reasoningDraftFrom(candidate.reasoning),
-    }));
-    const reasoningErrorKey = draftReasoningError(
-      selectedDrafts.map((entry) => entry.draft),
-    );
-    if (reasoningErrorKey) {
-      setError(t(reasoningErrorKey));
-      return;
-    }
+        reasoningDraftFrom(candidate.reasoning);
+      return {
+        candidate,
+        draft,
+        reasoning: deriveReasoning(
+          candidate.reasoning,
+          draft,
+          candidate.protocol,
+        ),
+      };
+    });
     // A concrete default preference requires at least one currently valid
     // candidate mapping; `auto` omits the controls. The same save may not delete
     // the retained default's last declaration, while a retained, unchanged
@@ -899,7 +828,7 @@ export function ModelPoolDialog({
         setError(defaultUnmapped());
         return;
       }
-      const currentlyValid = selectedDrafts.some(({ candidate, draft }) =>
+      const currentlyValid = selectedDrafts.some(({ candidate, reasoning }) =>
         modelPoolCandidateServesEffort(
           providers,
           {
@@ -908,9 +837,7 @@ export function ModelPoolDialog({
             upstream_model: candidate.upstream_model,
             protocol: candidate.protocol,
             weight: candidate.weight,
-            ...(hasDeclaredReasoning(draft)
-              ? { reasoning: reasoningDraftPayload(draft) }
-              : {}),
+            ...(reasoning ? { reasoning } : {}),
           },
           defaultEffort,
         ),
@@ -923,11 +850,7 @@ export function ModelPoolDialog({
         selectedDrafts.map(({ candidate, draft }) => ({
           key: candidate.key,
           action: draft.mappings[defaultEffort]
-            ? optionValueToAction(
-                draft.mappings[defaultEffort],
-                draft,
-                defaultEffort,
-              )
+            ? optionValueToAction(draft.mappings[defaultEffort])
             : null,
         })),
       );
@@ -974,15 +897,18 @@ export function ModelPoolDialog({
       const draft =
         reasoningDrafts[candidate.key] ??
         reasoningDraftFrom(candidate.reasoning);
+      const reasoning = deriveReasoning(
+        candidate.reasoning,
+        draft,
+        candidate.protocol,
+      );
       candidates.push({
         provider_id: candidate.provider_id,
         local_model: candidate.local_model,
         upstream_model: candidate.upstream_model,
         protocol: candidate.protocol,
         weight,
-        ...(hasDeclaredReasoning(draft)
-          ? { reasoning: reasoningDraftPayload(draft) }
-          : {}),
+        ...(reasoning ? { reasoning } : {}),
       });
     }
     setError(null);

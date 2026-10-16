@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (.ai-workflow/notes/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+# ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/simplification/2026-10-16-model-pool-bindings-only-editor.md
+2026-10-16-model-pool-bindings-only-editor.md: d4f1d1ec228d220c71a9707783c76e2c677696d1
+2026-10-16-model-pool-bindings-only-editor.zh.md: b42dbead0b3934279e7bd016e3f0b735f68e5db4

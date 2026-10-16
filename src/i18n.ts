@@ -845,12 +845,12 @@ const resources = {
       aiGatewayModelPoolStatusUnsupportedProtocol: "Unsupported protocol",
       aiGatewayModelPoolReasonLabel: "Reason",
       aiGatewayModelPoolReasoningDefaultLabel: "Reasoning default",
-      aiGatewayModelPoolReasoningProfileLabel: "Native reasoning profile",
-      aiGatewayModelPoolReasoningProfileUnknown: "Unknown",
-      aiGatewayModelPoolReasoningValuesLabel: "Declared values",
-      aiGatewayModelPoolReasoningBudgetMinLabel: "Minimum budget",
-      aiGatewayModelPoolReasoningBudgetMaxLabel: "Maximum budget",
-      aiGatewayModelPoolReasoningSupportsDisableLabel: "Supports explicit disable",
+      aiGatewayModelPoolReasoningBindingsLabel: "Reasoning bindings",
+      aiGatewayModelPoolReasoningBindingsHint:
+        "Bind each pool level to this model's native level; only explicit bindings are saved.",
+      aiGatewayModelPoolReasoningNativeEffortsLabel: "Native levels",
+      aiGatewayModelPoolReasoningNoNativeEfforts:
+        "This model declares no native reasoning levels; configure reasoning levels in the provider model.",
       aiGatewayModelPoolReasoningMappingLabel: "Mapping matrix",
       aiGatewayModelPoolReasoningMappingUnmapped: "Unmapped",
       aiGatewayModelPoolReasoningSwitchNoGradient:
@@ -860,18 +860,8 @@ const resources = {
       aiGatewayModelPoolReasoningDefaultAuto: "Provider default (auto)",
       aiGatewayModelPoolReasoningCoverageValue: "{{mapped}}/{{total}} candidates mapped",
       aiGatewayModelPoolReasoningRuntimeReadyCount: "{{ready}}/{{total}} candidates ready",
-      aiGatewayModelPoolReasoningBudgetLabel: "Reasoning budget",
       aiGatewayModelPoolReasoningActionBudget: "Budget",
       aiGatewayModelPoolReasoningActionDisable: "Disable",
-      aiGatewayModelPoolReasoningProfileOpenaiEffort: "OpenAI effort",
-      aiGatewayModelPoolReasoningProfileAnthropicEffortInherit:
-        "Anthropic effort (inherit thinking)",
-      aiGatewayModelPoolReasoningProfileAnthropicEffortAdaptive:
-        "Anthropic effort (adaptive thinking)",
-      aiGatewayModelPoolReasoningProfileAnthropicManualBudget:
-        "Anthropic manual budget",
-      aiGatewayModelPoolReasoningProfileChatThinkingSwitch:
-        "Chat thinking switch",
       aiGatewayModelPoolErrorReasoningDefaultUnmapped:
         "Invalid model pool reasoning policy: the default preference needs at least one valid candidate mapping.",
       aiGatewayModelPoolsTab: "Model pools",
@@ -4748,12 +4738,12 @@ const resources = {
       aiGatewayModelPoolStatusUnsupportedProtocol: "不支持的协议",
       aiGatewayModelPoolReasonLabel: "原因",
       aiGatewayModelPoolReasoningDefaultLabel: "默认推理偏好",
-      aiGatewayModelPoolReasoningProfileLabel: "原生推理配置",
-      aiGatewayModelPoolReasoningProfileUnknown: "未知",
-      aiGatewayModelPoolReasoningValuesLabel: "声明的取值",
-      aiGatewayModelPoolReasoningBudgetMinLabel: "最小预算",
-      aiGatewayModelPoolReasoningBudgetMaxLabel: "最大预算",
-      aiGatewayModelPoolReasoningSupportsDisableLabel: "支持显式禁用",
+      aiGatewayModelPoolReasoningBindingsLabel: "推理档位绑定",
+      aiGatewayModelPoolReasoningBindingsHint:
+        "将模型池的每个档位绑定到该模型的原生档位；仅显式绑定才会保存。",
+      aiGatewayModelPoolReasoningNativeEffortsLabel: "原生档位",
+      aiGatewayModelPoolReasoningNoNativeEfforts:
+        "此模型未声明原生推理档位，请在服务商模型中配置推理档位。",
       aiGatewayModelPoolReasoningMappingLabel: "映射矩阵",
       aiGatewayModelPoolReasoningMappingUnmapped: "未映射",
       aiGatewayModelPoolReasoningSwitchNoGradient:
@@ -4763,17 +4753,8 @@ const resources = {
       aiGatewayModelPoolReasoningDefaultAuto: "服务商默认（auto）",
       aiGatewayModelPoolReasoningCoverageValue: "{{mapped}}/{{total}} 个候选已映射",
       aiGatewayModelPoolReasoningRuntimeReadyCount: "{{ready}}/{{total}} 个候选就绪",
-      aiGatewayModelPoolReasoningBudgetLabel: "推理预算",
       aiGatewayModelPoolReasoningActionBudget: "预算",
       aiGatewayModelPoolReasoningActionDisable: "禁用",
-      aiGatewayModelPoolReasoningProfileOpenaiEffort: "OpenAI 推理档位",
-      aiGatewayModelPoolReasoningProfileAnthropicEffortInherit:
-        "Anthropic 推理档位（继承思考）",
-      aiGatewayModelPoolReasoningProfileAnthropicEffortAdaptive:
-        "Anthropic 推理档位（自适应思考）",
-      aiGatewayModelPoolReasoningProfileAnthropicManualBudget:
-        "Anthropic 手动预算",
-      aiGatewayModelPoolReasoningProfileChatThinkingSwitch: "Chat 思考开关",
       aiGatewayModelPoolErrorReasoningDefaultUnmapped:
         "模型池推理策略无效：默认偏好至少需要一个有效候选映射。",
       aiGatewayModelPoolsTab: "模型池",

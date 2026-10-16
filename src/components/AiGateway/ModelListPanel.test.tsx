@@ -1381,3 +1381,95 @@ describe("ModelListPanel 模型池静态目录与候选项隔离（Step 4 repair
   });
 });
 
+// ---------------------------------------------------------------------------
+// Direct change (model-pool-reasoning-bindings): after the operator binds the
+// canonical preferences to native values, the pool row advertises the bound
+// canonical tokens only, while the ordinary source row keeps the exact native
+// identifiers from the referenced mapping metadata.
+// ---------------------------------------------------------------------------
+
+describe("ModelListPanel 绑定后池行与来源行的档位隔离（binding）", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("池行只展示绑定的规范档位，普通来源行仍展示原生档位", () => {
+    const provider = makeProvider({
+      id: "p-bind",
+      name: "Bind Provider",
+      mappings: [
+        {
+          local_model: "local-a1",
+          upstream_model: "remote-a1",
+          reasoning_efforts: ["minimal", "max"],
+        },
+      ],
+    });
+    const boundPool: GatewayModelPool = {
+      id: "pool-bind",
+      name: "Bound Pool",
+      model: "bound-pool",
+      enabled: true,
+      default_reasoning_effort: "medium",
+      candidates: [
+        {
+          provider_id: "p-bind",
+          local_model: "local-a1",
+          upstream_model: "remote-a1",
+          protocol: "chat_completions",
+          weight: 1,
+          reasoning: {
+            profile: "openai_effort",
+            values: ["minimal", "max"],
+            supports_disable: false,
+            mappings: [
+              { effort: "high", action: { kind: "enum", value: "max" } },
+              { effort: "medium", action: { kind: "enum", value: "minimal" } },
+            ],
+          },
+        },
+      ],
+    };
+
+    renderWithProviders(
+      <ModelListPanel providers={[provider]} modelPools={[boundPool]} />,
+    );
+
+    function findRow(model: string): HTMLElement {
+      const row = screen
+        .queryAllByTestId("ai-gateway-model-list-row")
+        .find((item) => item.getAttribute("data-model") === model);
+      if (!row) throw new Error(`missing row ${model}`);
+      return row;
+    }
+
+    const poolRow = findRow("bound-pool");
+    // The pool row advertises the bound canonical tokens only.
+    expect(
+      within(poolRow).getByTestId("ai-gateway-model-list-effort-medium"),
+    ).toHaveTextContent("medium");
+    expect(
+      within(poolRow).getByTestId("ai-gateway-model-list-effort-high"),
+    ).toHaveTextContent("high");
+    expect(
+      within(poolRow).queryByTestId("ai-gateway-model-list-effort-minimal"),
+    ).toBeNull();
+    expect(
+      within(poolRow).queryByTestId("ai-gateway-model-list-effort-max"),
+    ).toBeNull();
+
+    const providerRow = findRow("local-a1");
+    // The ordinary source row still shows the exact native identifiers.
+    expect(
+      within(providerRow).getByTestId("ai-gateway-model-list-effort-minimal"),
+    ).toHaveTextContent("minimal");
+    expect(
+      within(providerRow).getByTestId("ai-gateway-model-list-effort-max"),
+    ).toHaveTextContent("max");
+    expect(
+      within(providerRow).queryByTestId("ai-gateway-model-list-effort-medium"),
+    ).toBeNull();
+  });
+});
+
