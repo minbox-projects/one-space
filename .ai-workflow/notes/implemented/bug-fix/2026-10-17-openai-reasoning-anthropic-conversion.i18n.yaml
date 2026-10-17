@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (.ai-workflow/notes/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+# ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/bug-fix/2026-10-17-openai-reasoning-anthropic-conversion.md
+2026-10-17-openai-reasoning-anthropic-conversion.md: a813c3e3cdffe4aab83c1fc60e0798e1913666fe
+2026-10-17-openai-reasoning-anthropic-conversion.zh.md: ff7757ce6f8fd5bf5c30e9d50deded4feeddeb57
