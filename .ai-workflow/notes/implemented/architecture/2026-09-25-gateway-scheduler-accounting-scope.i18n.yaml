@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-25-gateway-scheduler-accounting-scope.md
-2026-09-25-gateway-scheduler-accounting-scope.md: 4f1c395f8de18604deb40ddb7a15f4cb41edb0e7
-2026-09-25-gateway-scheduler-accounting-scope.zh.md: 8646c38a5a27ef7576705caa87aa8347fc501ead
+2026-09-25-gateway-scheduler-accounting-scope.md: 9dc41e1abb002d8c748754856447545d1c7ff061
+2026-09-25-gateway-scheduler-accounting-scope.zh.md: fc68df19e8c44c82db1c4550fcc8fbc67b6f06cb

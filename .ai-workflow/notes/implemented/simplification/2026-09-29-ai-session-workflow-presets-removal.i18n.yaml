@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/simplification/2026-09-29-ai-session-workflow-presets-removal.md
-2026-09-29-ai-session-workflow-presets-removal.md: bd5dcba14f39b010174798a9683cad1b46f33347
-2026-09-29-ai-session-workflow-presets-removal.zh.md: c645e2b63e24f30f261c242d1b590bfb0de9f511
+2026-09-29-ai-session-workflow-presets-removal.md: af6949ca836d17a4c72830b7f87a9e7ecad4972e
+2026-09-29-ai-session-workflow-presets-removal.zh.md: dc13a998203e6f5b13ab475771f62b5facb11ce4

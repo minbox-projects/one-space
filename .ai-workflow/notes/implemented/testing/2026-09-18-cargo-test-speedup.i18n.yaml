@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/testing/2026-09-18-cargo-test-speedup.md
-2026-09-18-cargo-test-speedup.md: 6658c02ca655fe0e4288b801661c85d0f3770d48
-2026-09-18-cargo-test-speedup.zh.md: eabe0808e11ce810df95449844199ee59a47a248
+2026-09-18-cargo-test-speedup.md: 12d6b35ae33e409a65066b345e2e4624c8999d5a
+2026-09-18-cargo-test-speedup.zh.md: a2502eea4c1161b123b54a20dc93e91c6eede2aa

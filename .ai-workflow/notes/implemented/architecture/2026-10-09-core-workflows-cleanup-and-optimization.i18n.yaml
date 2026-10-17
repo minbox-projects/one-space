@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-10-09-core-workflows-cleanup-and-optimization.md
-2026-10-09-core-workflows-cleanup-and-optimization.md: 9f82ca3ef12683df3651598e7dd3638e731e7433
-2026-10-09-core-workflows-cleanup-and-optimization.zh.md: a19c7dc74317cff7339dee76da5db7e16b3eccaa
+2026-10-09-core-workflows-cleanup-and-optimization.md: 35d6e9a8a5bacbbda86a8a29d86df57f753f7222
+2026-10-09-core-workflows-cleanup-and-optimization.zh.md: 0cc0c6b2a67b6e764c927155aef971445f594fb4

@@ -10,7 +10,7 @@ Status: implemented
 
 ## Decision
 
-首字延迟与平均 TPS 由只读的 `OutputTimingObserver`（`src-tauri/src/ai_gateway/output_timing.rs`）按每次上游尝试测量。它在尝试的 `tokio::time::Instant` 起点新建，喂入与 usage 采集相同的原始上游分片、且在等待的下游写出之前，因此观察的是转换前的真实上游协议；它在健康结算、持久化与下游完成之前结束，因此观测间隔不包含记账时间。首字延迟是尝试起点到首个有意义上游输出的单调时钟间隔；平均 TPS 是该尝试有效且被显式上报的累计输出 token 数除以未取整的整次尝试间隔，已由 [Gateway Whole-Attempt Average TPS](../bug-fix/2026-10-16-gateway-whole-attempt-tps.md) 修订（计划 20261014-gateway-request-latency）。
+首字延迟与平均 TPS 由只读的 `OutputTimingObserver`（`src-tauri/src/ai_gateway/output_timing.rs`）按每次上游尝试测量。它在尝试的 `tokio::time::Instant` 起点新建，喂入与 usage 采集相同的原始上游分片、且在等待的下游写出之前，因此观察的是转换前的真实上游协议；它在健康结算、持久化与下游完成之前结束，因此观测间隔不包含记账时间。首字延迟是尝试起点到首个有意义上游输出的单调时钟间隔；平均 TPS 是该尝试有效且被显式上报的累计输出 token 数除以未取整的整次尝试间隔，已由 [Gateway Whole-Attempt Average TPS](../bug-fix/2026-10-16-gateway-whole-attempt-tps.md) 在同一交付中修订。
 
 有意义输出为非空文本、推理/思考、生成的工具或函数名，或生成的工具参数，并按真实上游协议解释：Chat Completions（含已弃用的 `delta.function_call` 名称/参数）、Responses 的输出文本/推理/函数参数增量以及已带名称或参数的 function_call 条目，以及 Anthropic Messages 的文本/思考/input-JSON 增量再加初始即带内容的 `content_block_start` text、thinking 或 `tool_use` 块。心跳或注释、空增量、仅角色或其他元数据事件、仅 usage 事件、错误事件、完成标记与仅标识符的工具信封都不是输出。非空字符串内的空白属于输出，绝不裁剪。增量 SSE 缓冲处理 LF 与 CRLF 分帧、多行 `data:`、分片事件以及没有空行终止符的最后一个有效事件（在 finish 时识别）。
 

@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-25-gateway-config-write-serialization-and-read-cache.md
-2026-09-25-gateway-config-write-serialization-and-read-cache.md: f5468fe5faaed6bf1ea3bea99390bc65ad99a5da
-2026-09-25-gateway-config-write-serialization-and-read-cache.zh.md: 181be59147e70658d43901dc9dbf1c16eec64447
+2026-09-25-gateway-config-write-serialization-and-read-cache.md: db860bba7e45fd927b6319a759d05ffd61eb76ad
+2026-09-25-gateway-config-write-serialization-and-read-cache.zh.md: 86e0ff666abd5b256f15deca56d593825a2fabfc

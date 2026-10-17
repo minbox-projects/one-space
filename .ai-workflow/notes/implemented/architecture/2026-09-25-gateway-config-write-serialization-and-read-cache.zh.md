@@ -22,7 +22,7 @@ Status: implemented
 
 懒迁移在同一把锁下保持原子且一次性。当 `read_config_locked` 报告存储版本更旧时，`read_config_file` 获取 `CONFIG_WRITE_LOCK`，在锁内重读文件并重新确认版本，之后才盖上当前版本并经 `write_config` 重写；若期间已有并发写入者发布当前版本配置，读取者直接服务该配置且不写入。迁移重写失败保留磁盘上此前的完整字节，下一次读取重试。
 
-持久化层不再自行发明值：普通读取或写入除 `normalize_stored_config` 规范化外原样返回存储配置，写入路径仍应用 `scope_model_prices` 裁剪。显式存储值——包括空 `reasoning_efforts` 列表、显式或零价格、已存 `local_model` 以及全部持久化 schema 字段——均被保留；推理强度绝不自动生成，价格行绝不跨服务商借用。此前的隐式查询 `query_model_reasoning_efforts` 与 `normalize_template_prices_and_efforts` 连同两处调用由 [Core Workflows Cleanup and Optimization](2026-10-09-core-workflows-cleanup-and-optimization.md) Step 7 移除；运行态（结算与 key 标记）写入不再触发模板或价格重算。
+持久化层不再自行发明值：普通读取或写入除 `normalize_stored_config` 规范化外原样返回存储配置，写入路径仍应用 `scope_model_prices` 裁剪。显式存储值——包括空 `reasoning_efforts` 列表、显式或零价格、已存 `local_model` 以及全部持久化 schema 字段——均被保留；推理强度绝不自动生成，价格行绝不跨服务商借用。此前的隐式查询 `query_model_reasoning_efforts` 与 `normalize_template_prices_and_efforts` 连同两处调用由 [Core Workflows Cleanup and Optimization](2026-10-09-core-workflows-cleanup-and-optimization.md) 移除；运行态（结算与 key 标记）写入不再触发模板或价格重算。
 
 ## Alternatives considered
 
@@ -43,6 +43,6 @@ Status: implemented
 - 热读取绝不解密，任何文件身份变化都让下一次读取观察到新内容，包括不调用任何失效辅助函数的直接磁盘重写；文件缺失或为空使条目失效。
 - 每次写入都使用唯一临时文件与原子 rename，因此部分写入绝不可能发布，写入失败保留此前的完整字节；版本门控懒迁移保持原子且一次性，其版本在锁内重新确认。
 - 成功发布把归一化值存入读取缓存并驱动差集式调度器清理；写入失败不触碰缓存与调度器。
-- 验证：`src-tauri/src/ai_gateway/tests/routing_hardening.rs` 覆盖 AC-001 至 AC-005 与 AC-008 至 AC-009（八线程并发 key 标记、key 标记与结算竞争、重复并发写入者、用户编辑与结算竞争、并发写入下一次性迁移、绕过失效辅助函数的直接磁盘重写所驱动的元数据缓存一致性、以及字节不变的无操作结算），完整 `cargo test --manifest-path src-tauri/Cargo.toml --lib ai_gateway` 套件覆盖迁移、命令、用量日志与接缝套件。
+- 验证：`src-tauri/src/ai_gateway/tests/routing_hardening.rs` 覆盖串行写入与读取缓存行为（八线程并发 key 标记、key 标记与结算竞争、重复并发写入者、用户编辑与结算竞争、并发写入下一次性迁移、绕过失效辅助函数的直接磁盘重写所驱动的元数据缓存一致性、以及字节不变的无操作结算），完整 `cargo test --manifest-path src-tauri/Cargo.toml --lib ai_gateway` 套件覆盖迁移、命令、用量日志与接缝套件。
 - `MEMORY.md` 已在同一变更中更新串行写入原语、文件身份读取缓存与无操作抑制；持久化配置 schema 保持版本 2、无新字段也无新迁移，Tauri 命令签名与前端不变，回滚只还原并发、缓存与重写行为。
 - Supersession：无取代。[Gateway Migration Is Permanent and Version-Gated](2026-09-24-version-gated-gateway-migration.md) 予以保留并交叉链接；本记录在其懒重写之外增加串行化、版本重确认与读取缓存，而其 schema 门控、一次性懒迁移、遗留文件改名与清理决策继续有效、未变。[API Gateway Provider Templates and Incremental Model Sync](2026-09-18-api-gateway-provider-templates.md) 予以保留并交叉链接；模板拉取现在在写锁之外执行，暂存同步经串行变更持久化，而其增量传播规则、写入边界与「一次原子写入」的结果继续有效。其他活动记录均未记载配置写入或读取机制。

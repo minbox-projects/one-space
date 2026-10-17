@@ -32,6 +32,6 @@ SWRR 算法本身不变：每个候选的当前权重累加其有效权重（`we
 - 同一服务商与本地模型在不同协议下保持独立的胜出序列，因为入站协议是计费键的一部分。
 - SWRR 的累加、选择、平手决胜、剩余候选排序与零或单候选直通均不变，同集合 3:1 平滑序列继续成立；会话亲和仍在自己的临界区内解析顺序，其绑定规则未被触碰。
 - 被删除并持久化的服务商在成功发布之后其调度器条目被移除，因此重新创建该 id 会从全新状态开始；写入失败、仅另一份配置知晓的 id、以及仅仅缺失的 id 都绝不触发任何清理。
-- 验证：`src-tauri/src/ai_gateway/tests.rs` 中的中继级行为测试覆盖 AC-032 至 AC-036（混合集合分布、3:1 平滑回归、独立协议序列、经调度器访问器观察的已删除服务商清理、以及空或单候选直通），已适配的直接调度器测试保留全部断言，完整 `cargo test --manifest-path src-tauri/Cargo.toml --lib ai_gateway` 套件证明没有其他调度或会话亲和回归。
+- 验证：`src-tauri/src/ai_gateway/tests.rs` 中的中继级行为测试覆盖 SWRR 调度行为（混合集合分布、3:1 平滑回归、独立协议序列、经调度器访问器观察的已删除服务商清理、以及空或单候选直通），已适配的直接调度器测试保留全部断言，完整 `cargo test --manifest-path src-tauri/Cargo.toml --lib ai_gateway` 套件证明没有其他调度或会话亲和回归。
 - `MEMORY.md` 与 `.ai-workflow/index/navigation.json` 已在同一变更中更新复合计费键与发布时清理；持久化配置 schema 保持版本 2、无新字段也无新迁移，Tauri 命令签名与前端不变，回滚只还原调度器隔离与清理行为。
 - Supersession：部分取代。[API Gateway Smooth Weighted Round Robin Routes Requests and Fallback Candidates](2026-09-20-api-gateway-weighted-routing.md) 予以保留并交叉链接；本记录只取代其「按服务商 id 作键的进程全局状态」前提并新增发布时清理，而其服务商权重配置、SWRR 算法、平手决胜、与会话亲和的协同以及零或单候选直通继续有效。[Gateway Session Affinity Pins a Session and Model to One Upstream](2026-09-20-gateway-session-affinity-routing.md) 不受影响：亲和重排原样消费按作用域排序的结果，该记录没有任何事实变化，因此不记录取代。本记录所依赖的配置写入机制由 [Gateway Configuration Writes Serialize on One Lock and Reads Cache by File Identity](2026-09-25-gateway-config-write-serialization-and-read-cache.md) 记载；其他活动记录均未记载调度器计费。

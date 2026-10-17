@@ -34,6 +34,6 @@ Status: implemented
 - 旧行或更旧 payload 的缺失快照读回为 `null`，表示不可用，绝不表示零；显式零费率或零费用保留为零。
 - 存储变更是加法且可空的，因此更旧的显式列客户端仍可查询与追加，回滚时该列无害且旧行为 `null`。
 - 既有 `amount`/指标 SQL 与 usage 解析不变，未引入当前配置价格回读、回填或取整修复。
-- 本记录由计划 `20261009-gateway-request-cost-breakdown` 的 Step 1（后端快照与存储）与 Step 2（前端检视）交付：不分组请求日志列表通过关联的花费明细控件展示存储快照与权威 `amount`。
+- 本记录描述已交付的后端快照与存储以及前端检视：不分组请求日志列表通过关联的花费明细控件展示存储快照与权威 `amount`。
 - 部分取代：[API Gateway Usage Stats and Request Logs](../architecture/2026-09-17-ai-gateway-usage-logs.md) 被保留并交叉链接；本记录在存储行字段上新增可选的固化 `cost_breakdown` 快照及其可空列，而该记录的 SQLite 日志、记录时价格冻结、保留、`group_by` 契约与 `local_model` 面决策仍然有效。
 - `MEMORY.md`、`navigation.json` 的 `ai-gateway` 条目（镜像类型与展示行为）与 `ai-gateway-backend` 条目（类型、helper、列与快照行为）描述同一组事实，`navigation.md` 已按权威 JSON 重新生成。

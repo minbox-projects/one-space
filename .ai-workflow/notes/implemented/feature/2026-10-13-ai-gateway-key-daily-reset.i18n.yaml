@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-13-ai-gateway-key-daily-reset.md
-2026-10-13-ai-gateway-key-daily-reset.md: 1f87fdb49f6526367b54ee7c89b1d9b8252362d8
-2026-10-13-ai-gateway-key-daily-reset.zh.md: eb414cb5e87e1087618859c9b5aec6f4ce8d51e9
+2026-10-13-ai-gateway-key-daily-reset.md: bad2801bc9f3272327e285773b012ac09929ee0c
+2026-10-13-ai-gateway-key-daily-reset.zh.md: ccaca49d3b2e98281e403c63104c49926a2177b2

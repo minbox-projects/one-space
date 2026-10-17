@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-25-gateway-key-health-lifecycle.md
-2026-09-25-gateway-key-health-lifecycle.md: a2db102b310764722a128d77ca1bf729d676cbd0
-2026-09-25-gateway-key-health-lifecycle.zh.md: bc08a85099343ea6bd56b85ac79751982fdb02c2
+2026-09-25-gateway-key-health-lifecycle.md: a07175071a4a7d8d1892726625523c5628c64018
+2026-09-25-gateway-key-health-lifecycle.zh.md: beffdc74043a4cadd6666c241a03724a2a5d30bc
