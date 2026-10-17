@@ -804,10 +804,6 @@ async fn unsupported_chat_conversion_fields_fail_field_specifically() {
             "response_format",
             json!({"model": LOCAL_MODEL, "response_format": {"type": "json_schema", "json_schema": {"name": "x", "schema": {"type": "object"}}}, "messages": [{"role": "user", "content": "hi"}]}),
         ),
-        (
-            "reasoning_effort",
-            json!({"model": LOCAL_MODEL, "reasoning_effort": "high", "messages": [{"role": "user", "content": "hi"}]}),
-        ),
     ];
     for (field, body) in cases {
         let (status, _ct, text) = call_gateway(
@@ -2882,9 +2878,12 @@ async fn pool_messages_candidate_rejects_strict_tool_control_before_attempt() {
 
 // ---------------------------------------------------------------------------
 // Step 2 (20261015-pool-only-reasoning): a pool Anthropic candidate receives its
-// declared native controls after conversion, while the ordinary adapter keeps
-// rejecting unsupported reasoning controls (`unsupported_chat_conversion_fields_
-// fail_field_specifically` above is the retained ordinary guard).
+// declared native controls after conversion. The ordinary adapter now translates
+// recognized Chat/Responses reasoning controls into native `output_config`/
+// `thinking` (`chat_conversion_translates_reasoning_effort_to_native_controls`
+// and `responses_conversion_translates_reasoning_effort_and_ignores_summary`),
+// while still rejecting unsupported values and members
+// (`unsupported_reasoning_controls_fail_field_specifically`).
 // ---------------------------------------------------------------------------
 
 /// AC-006: a Chat request routed to a pool Anthropic candidate with an adaptive
@@ -2965,6 +2964,304 @@ async fn pool_anthropic_candidate_receives_native_controls_after_conversion() {
     assert!(
         sent.get("reasoning_effort").is_none(),
         "the recognized entry control must be stripped before conversion: {sent}"
+    );
+
+    stop_server().await.expect("stop the listener");
+    drop(home);
+}
+
+// ---------------------------------------------------------------------------
+// Direct fix: an ordinary (non-pool) OpenAI request served by an Anthropic
+// Messages upstream translates the client reasoning control instead of
+// rejecting it with a field-specific 400. Only the loopback HTTP boundary and
+// the captured native upstream body are asserted; no private converter helper
+// is called.
+// ---------------------------------------------------------------------------
+
+/// Chat `/v1/chat/completions`: a top-level `reasoning_effort` (or its
+/// `reasoningEffort` alias) is trimmed and translated to the native
+/// `output_config`/`thinking` controls, and the entry control never leaks
+/// upstream.
+#[tokio::test]
+async fn chat_conversion_translates_reasoning_effort_to_native_controls() {
+    let home = temp_home("conv-reasoning-chat");
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            anthropic_message(
+                json!([{"type": "text", "text": "ok"}]),
+                "end_turn",
+                json!({"input_tokens": 1, "output_tokens": 1}),
+            ),
+        )
+    })
+    .await;
+    write_raw_gateway_config(&raw_config(
+        port,
+        vec![anthropic_provider_value(
+            "p-reasoning-chat",
+            &upstream_url,
+            LOCAL_MODEL,
+            UPSTREAM_MODEL,
+            UPSTREAM_SECRET,
+        )],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    // `high` must become an exact `output_config` object and must not leak the
+    // client-facing control.
+    let high = converted_body(
+        port,
+        &log,
+        "/v1/chat/completions",
+        json!({
+            "model": LOCAL_MODEL,
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "high",
+        }),
+    )
+    .await;
+    assert_eq!(
+        high["output_config"],
+        json!({"effort": "high"}),
+        "reasoning_effort high must become output_config.effort high: {high}"
+    );
+    assert!(
+        high.get("reasoning_effort").is_none(),
+        "the entry reasoning control must not leak upstream: {high}"
+    );
+
+    // The camelCase alias is honored, and `minimal` maps to `low`.
+    let minimal = converted_body(
+        port,
+        &log,
+        "/v1/chat/completions",
+        json!({
+            "model": LOCAL_MODEL,
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoningEffort": "minimal",
+        }),
+    )
+    .await;
+    assert_eq!(
+        minimal.pointer("/output_config/effort").and_then(Value::as_str),
+        Some("low"),
+        "the reasoningEffort alias must be honored and minimal must map to low: {minimal}"
+    );
+
+    // Surrounding whitespace is trimmed before matching a value.
+    let trimmed = converted_body(
+        port,
+        &log,
+        "/v1/chat/completions",
+        json!({
+            "model": LOCAL_MODEL,
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "  xhigh  ",
+        }),
+    )
+    .await;
+    assert_eq!(
+        trimmed.pointer("/output_config/effort").and_then(Value::as_str),
+        Some("xhigh"),
+        "the reasoning effort value must be trimmed: {trimmed}"
+    );
+
+    // `none` disables thinking and must not add an `output_config`.
+    let none = converted_body(
+        port,
+        &log,
+        "/v1/chat/completions",
+        json!({
+            "model": LOCAL_MODEL,
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "none",
+        }),
+    )
+    .await;
+    assert_eq!(
+        none["thinking"],
+        json!({"type": "disabled"}),
+        "reasoning_effort none must disable thinking: {none}"
+    );
+    assert!(
+        none.get("output_config").is_none(),
+        "a disabled-thinking request must not carry output_config: {none}"
+    );
+
+    // `max` is a recognized value forwarded verbatim.
+    let max = converted_body(
+        port,
+        &log,
+        "/v1/chat/completions",
+        json!({
+            "model": LOCAL_MODEL,
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "max",
+        }),
+    )
+    .await;
+    assert_eq!(
+        max.pointer("/output_config/effort").and_then(Value::as_str),
+        Some("max"),
+        "reasoning_effort max must become output_config.effort max: {max}"
+    );
+
+    stop_server().await.expect("stop the listener");
+    drop(home);
+}
+
+/// Responses `/v1/responses`: a `reasoning` object with `effort` is translated
+/// to the native `output_config`, an accepted `summary` member is ignored, and
+/// a summary-only object adds neither `output_config` nor `thinking`.
+#[tokio::test]
+async fn responses_conversion_translates_reasoning_effort_and_ignores_summary() {
+    let home = temp_home("conv-reasoning-responses");
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            anthropic_message(
+                json!([{"type": "text", "text": "ok"}]),
+                "end_turn",
+                json!({"input_tokens": 1, "output_tokens": 1}),
+            ),
+        )
+    })
+    .await;
+    write_raw_gateway_config(&raw_config(
+        port,
+        vec![anthropic_provider_value(
+            "p-reasoning-responses",
+            &upstream_url,
+            LOCAL_MODEL,
+            UPSTREAM_MODEL,
+            UPSTREAM_SECRET,
+        )],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let with_summary = converted_body(
+        port,
+        &log,
+        "/v1/responses",
+        json!({
+            "model": LOCAL_MODEL,
+            "input": "hi",
+            "reasoning": {"effort": "xhigh", "summary": "auto"},
+        }),
+    )
+    .await;
+    assert_eq!(
+        with_summary.pointer("/output_config/effort").and_then(Value::as_str),
+        Some("xhigh"),
+        "the Responses reasoning effort must translate to output_config: {with_summary}"
+    );
+    assert!(
+        with_summary.get("reasoning").is_none(),
+        "the client reasoning object must not leak upstream: {with_summary}"
+    );
+    assert!(
+        !serde_json::to_string(&with_summary)
+            .expect("serialize the converted body")
+            .contains("summary"),
+        "the accepted-and-ignored summary member must not survive conversion: {with_summary}"
+    );
+
+    let summary_only = converted_body(
+        port,
+        &log,
+        "/v1/responses",
+        json!({
+            "model": LOCAL_MODEL,
+            "input": "hi",
+            "reasoning": {"summary": "concise"},
+        }),
+    )
+    .await;
+    assert!(
+        summary_only.get("output_config").is_none(),
+        "a summary-only reasoning object must not add output_config: {summary_only}"
+    );
+    assert!(
+        summary_only.get("thinking").is_none(),
+        "a summary-only reasoning object must not add thinking: {summary_only}"
+    );
+
+    stop_server().await.expect("stop the listener");
+    drop(home);
+}
+
+/// Unsupported client reasoning controls fail field-specifically with a 400
+/// before any upstream attempt: an unknown effort value, a non-string effort
+/// value, a non-object `reasoning`, a summary-only object accepted above, and
+/// an unknown member.
+#[tokio::test]
+async fn unsupported_reasoning_controls_fail_field_specifically() {
+    let home = temp_home("conv-reasoning-invalid");
+    let port = free_port().await;
+    let (upstream_url, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(200, anthropic_message(json!([]), "end_turn", json!({})))
+    })
+    .await;
+    write_raw_gateway_config(&raw_config(
+        port,
+        vec![anthropic_provider_value(
+            "p-reasoning-invalid",
+            &upstream_url,
+            LOCAL_MODEL,
+            UPSTREAM_MODEL,
+            UPSTREAM_SECRET,
+        )],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let cases: Vec<(&str, &str, Value)> = vec![
+        (
+            "reasoning_effort",
+            "/v1/chat/completions",
+            json!({"model": LOCAL_MODEL, "messages": [{"role": "user", "content": "hi"}], "reasoning_effort": "bogus"}),
+        ),
+        (
+            "reasoning_effort",
+            "/v1/chat/completions",
+            json!({"model": LOCAL_MODEL, "messages": [{"role": "user", "content": "hi"}], "reasoning_effort": 5}),
+        ),
+        (
+            "reasoning",
+            "/v1/responses",
+            json!({"model": LOCAL_MODEL, "input": "hi", "reasoning": {"effort": "auto"}}),
+        ),
+        (
+            "reasoning.mode",
+            "/v1/responses",
+            json!({"model": LOCAL_MODEL, "input": "hi", "reasoning": {"effort": "high", "mode": "pro"}}),
+        ),
+    ];
+    for (field, path, body) in cases {
+        let (status, _ct, text) = call_gateway(
+            port,
+            "POST",
+            path,
+            &[("authorization", "Bearer local-key")],
+            Some(body),
+        )
+        .await;
+        assert_eq!(
+            status, 400,
+            "an unsupported reasoning control `{field}` must be a field-specific 400: {status} {text}"
+        );
+        assert!(
+            text.contains(field),
+            "the 400 must identify `{field}`: {text}"
+        );
+    }
+
+    assert_eq!(
+        captured_len(&log),
+        0,
+        "no unsupported reasoning request may reach an upstream"
     );
 
     stop_server().await.expect("stop the listener");

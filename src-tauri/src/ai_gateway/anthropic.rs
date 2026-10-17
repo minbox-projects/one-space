@@ -261,7 +261,7 @@ fn convert_tools(value: Option<&Value>) -> Result<Option<Vec<Value>>, String> {
         .map(Some)
 }
 
-fn reject_common_conversion_fields(body: &Map<String, Value>, chat: bool) -> Result<(), String> {
+fn reject_common_conversion_fields(body: &Map<String, Value>) -> Result<(), String> {
     if let Some(value) = body.get("n") {
         if value.as_u64() != Some(1) {
             return Err(field_error(
@@ -281,23 +281,122 @@ fn reject_common_conversion_fields(body: &Map<String, Value>, chat: bool) -> Res
             ));
         }
     }
-    let reasoning = body
-        .get(if chat {
-            "reasoning_effort"
-        } else {
-            "reasoning"
-        })
-        .or_else(|| body.get("reasoningEffort"));
-    if reasoning.is_some_and(|value| match value {
-        Value::Null => false,
-        Value::String(text) => !text.trim().is_empty(),
-        Value::Object(object) => !object.is_empty(),
-        _ => true,
-    }) {
-        return Err(field_error(
-            "reasoning_effort",
-            "is not translatable to Anthropic Messages",
-        ));
+    Ok(())
+}
+
+/// Translate an already-trimmed, non-blank client reasoning effort into the
+/// native Anthropic top-level control. The translation table is:
+///
+/// - `low` / `medium` / `high` / `xhigh` / `max` become `output_config.effort`
+///   with the same value, the levels Anthropic accepts verbatim;
+/// - `minimal` becomes `output_config.effort = "low"`, the lowest real native
+///   effort, because Anthropic has no `minimal` level;
+/// - `none` becomes `thinking: {"type": "disabled"}`;
+/// - any other value (including `auto` and case variants) is a field-named 400
+///   naming `field`, so an unsupported client control fails before any upstream
+///   attempt instead of silently changing reasoning depth.
+fn insert_reasoning_effort(
+    result: &mut Map<String, Value>,
+    field: &str,
+    value: &str,
+) -> Result<(), String> {
+    match value {
+        "low" | "medium" | "high" | "xhigh" | "max" => {
+            result.insert("output_config".to_string(), json!({"effort": value}));
+        }
+        "minimal" => {
+            result.insert("output_config".to_string(), json!({"effort": "low"}));
+        }
+        "none" => {
+            result.insert("thinking".to_string(), json!({"type": "disabled"}));
+        }
+        other => {
+            return Err(field_error(
+                field,
+                format!("unsupported reasoning effort '{other}'"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Translate the Chat `/v1/chat/completions` reasoning control onto the native
+/// body. `reasoning_effort` is the OpenAI spelling and `reasoningEffort` the
+/// OpenCode compatibility spelling; the first present non-blank string wins,
+/// matching the existing `runtime_http::extract_reasoning_effort` log
+/// semantics, while `null` and blank/whitespace-only strings mean no control. A
+/// present non-string value is a field-named 400 rather than being ignored, so a
+/// malformed client control cannot silently change reasoning depth.
+fn apply_chat_reasoning_control(
+    body: &Map<String, Value>,
+    result: &mut Map<String, Value>,
+) -> Result<(), String> {
+    for field in ["reasoning_effort", "reasoningEffort"] {
+        let Some(value) = body.get(field) else {
+            continue;
+        };
+        if value.is_null() {
+            continue;
+        }
+        let Some(text) = value.as_str() else {
+            return Err(field_error(field, "must be a string"));
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        return insert_reasoning_effort(result, field, trimmed);
+    }
+    Ok(())
+}
+
+/// Translate the Responses `/v1/responses` reasoning control onto the native
+/// body. `reasoning` absent or `null` means no control; a non-object is a
+/// field-named 400. Inside the object, `effort` follows the Chat value rules and
+/// `summary` is accepted and ignored: it is a caller output-presentation control
+/// that never changes reasoning depth, so refusing it would block clients such
+/// as Codex that always send it, while the conversion cannot deliver reasoning
+/// summaries anyway. Any other member is a field-named 400.
+fn apply_responses_reasoning_control(
+    body: &Map<String, Value>,
+    result: &mut Map<String, Value>,
+) -> Result<(), String> {
+    let Some(reasoning) = body.get("reasoning") else {
+        return Ok(());
+    };
+    if reasoning.is_null() {
+        return Ok(());
+    }
+    let Some(object) = reasoning.as_object() else {
+        return Err(field_error("reasoning", "must be an object"));
+    };
+    for (member, value) in object {
+        match member.as_str() {
+            "effort" => {
+                if value.is_null() {
+                    continue;
+                }
+                let Some(text) = value.as_str() else {
+                    return Err(field_error("reasoning.effort", "must be a string"));
+                };
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                insert_reasoning_effort(result, "reasoning.effort", trimmed)?;
+            }
+            "summary" => {
+                if !value.is_null() && !value.is_string() {
+                    return Err(field_error("reasoning.summary", "must be a string"));
+                }
+            }
+            other => {
+                return Err(field_error(
+                    &format!("reasoning.{other}"),
+                    "unsupported reasoning option",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -341,7 +440,7 @@ fn assistant_tool_blocks(message: &Map<String, Value>) -> Result<Vec<Value>, Str
 }
 
 fn convert_chat(body: &Map<String, Value>, model: &str) -> Result<Value, String> {
-    reject_common_conversion_fields(body, true)?;
+    reject_common_conversion_fields(body)?;
     let max_tokens = output_cap(body, &["max_completion_tokens", "max_tokens"])?;
     let messages = body
         .get("messages")
@@ -430,6 +529,7 @@ fn convert_chat(body: &Map<String, Value>, model: &str) -> Result<Value, String>
     {
         result.insert("tool_choice".to_string(), choice);
     }
+    apply_chat_reasoning_control(body, &mut result)?;
     Ok(Value::Object(result))
 }
 
@@ -490,7 +590,7 @@ fn append_responses_item(item: &Value, messages: &mut Vec<Value>) -> Result<(), 
 }
 
 fn convert_responses(body: &Map<String, Value>, model: &str) -> Result<Value, String> {
-    reject_common_conversion_fields(body, false)?;
+    reject_common_conversion_fields(body)?;
     for field in [
         "previous_response_id",
         "conversation",
@@ -551,6 +651,7 @@ fn convert_responses(body: &Map<String, Value>, model: &str) -> Result<Value, St
     {
         result.insert("tool_choice".to_string(), choice);
     }
+    apply_responses_reasoning_control(body, &mut result)?;
     Ok(Value::Object(result))
 }
 
