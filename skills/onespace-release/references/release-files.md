@@ -36,3 +36,5 @@ Tag 消息格式：
 3. 构建必须成功（按需执行 `npm run build` 和 `npm run tauri build`）
 4. Tag 必须唯一（`git tag --list v<version>` 结果为空）
 5. `python3 skills/onespace-release/scripts/release_tool.py tag <version> --dry-run` 预检通过
+6. macOS 签名 secrets 已配置且非空：`APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`（缺失会在任何构建之前失败，见 [release-signing.md](release-signing.md)）
+7. macOS 签名产物已通过 `bash skills/onespace-release/scripts/verify_release_artifact.sh <path-to-OneSpace.app>` 验证

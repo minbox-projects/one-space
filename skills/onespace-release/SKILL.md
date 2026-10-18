@@ -43,6 +43,16 @@ python3 skills/onespace-release/scripts/release_tool.py tag 0.1.5 --dry-run
 4. 使用附注标签（`git tag -a`），消息格式为 `release: v<version>`。
 5. 默认使用 `v` 前缀，除非仓库策略明确要求变更。
 
+## 发布前置条件
+
+macOS 发布需要签名材料；缺失会导致 macOS 任务在任何构建之前失败。
+
+1. GitHub 仓库 secrets 必须配置 `APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD` 与 `APPLE_SIGNING_IDENTITY`，其值来自一次性引导脚本的输出。
+2. 发布工作流在 macOS 任务中包含三个签名步骤：构建前的签名守卫、导入签名证书并断言身份存在、以及 `tauri-action` 之后的产物验证；任一 secret 为空时，守卫在构建前失败。
+3. 发布后可用 `bash skills/onespace-release/scripts/verify_release_artifact.sh <path-to-OneSpace.app>` 验证产物的指定要求锚定到证书。
+
+一次性引导、GitHub secret 配置、验证命令、绝不重新生成的规则与回滚路径见 [references/release-signing.md](references/release-signing.md)。
+
 ## 文件范围
 
 编辑发布相关字段前，先阅读 [references/release-files.md](references/release-files.md)。
@@ -56,3 +66,4 @@ python3 skills/onespace-release/scripts/release_tool.py tag 0.1.5 --dry-run
 ### references/
 
 - `release-files.md`：发布文件清单、tag 规范、发布前检查项。
+- `release-signing.md`：macOS 发布签名的引导、secret 配置、验证与回滚说明。

@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (.ai-workflow/notes/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+# ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/process/2026-10-18-macos-release-signing.md
+2026-10-18-macos-release-signing.md: 67dd9cbdc91b1ef180df1365c05d2439bfbe226f
+2026-10-18-macos-release-signing.zh.md: b60846e0526b0f70467992272ed3e58e69c47d09
